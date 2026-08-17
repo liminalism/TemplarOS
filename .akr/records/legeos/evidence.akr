@@ -1,0 +1,87 @@
+akr 0.1
+project legeos
+
+record legeos.evidence.m0-adrs-present/1 : evidence {
+    title "M0: ADRs 0001-0011 present and mirrored as decision records"
+    state verified
+    result pass
+    method observation
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    artifact "docs/adr/README.md"
+    summary """
+        docs/adr/0001..0011 exist (11 files); each maps to an AKR decision record legeos.decision.* (D1..D11) via the ADR index and docs/planning/ADOPTION.md
+        """
+}
+
+record legeos.evidence.m0-check-interfaces/1 : evidence {
+    title "M0: every D-Bus interface has an XML contract"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "cargo run -q -p xtask -- check-interfaces"
+    summary """
+        check-interfaces: 13 org.legeos.* interfaces found in code, each with an XML contract in interfaces/dbus/
+        """
+}
+
+record legeos.evidence.m0-deb-builds/1 : evidence {
+    title "M0: cargo-deb packaging path works"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "cargo deb -p lege-sessiond"
+    artifact "target/debian/legeos-sessiond_0.1.0-1_amd64.deb"
+    summary """
+        cargo deb produced legeos-sessiond_0.1.0-1_amd64.deb containing usr/libexec/lege-sessiond, usr/lib/systemd/user/lege-sessiond.service, usr/share/legeos/apps/org.legeos.Viewer.json and the copyright file (built from the same tree as HEAD, before the commit)
+        """
+}
+
+record legeos.evidence.m0-deps-check/1 : evidence {
+    title "M0: lege-window has no async/D-Bus dependency"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "cargo run -q -p xtask -- deps-check"
+    summary """
+        deps-check: lege-window is free of async runtimes and D-Bus (57 transitive deps, none of tokio/zbus/async-std/smol)
+        """
+}
+
+record legeos.evidence.m0-smoke/1 : evidence {
+    title "M0: daemons start in dry-run/once mode; doctor runs on a fixture root"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "tests/integration/run.sh"
+    summary """
+        lege-sessiond --dry-run (state DB migrated, 1 manifest, 12 roles, 6 settings), lege-resourced --once (ObserveOnly tick), lege-filed --dry-run, lege-session --dry-run, lege-shell --list-drawers, lege doctor --root fixture: 'integration smoke: ok'
+        """
+}
+
+record legeos.evidence.m0-tree-check/1 : evidence {
+    title "M0: repository tree matches ARCHITECTURE.md"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "cargo run -q -p xtask -- tree-check"
+    summary """
+        tree-check: 41 required directories exist, each with a README
+        """
+}
+
+record legeos.evidence.m0-workspace-builds-and-tests/1 : evidence {
+    title "M0: workspace formats, lints and tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+    summary """
+        fmt clean, clippy -D warnings clean (pedantic subset), 55 tests passed / 0 failed across 20 packages including 2000-case geometry proptests
+        """
+}

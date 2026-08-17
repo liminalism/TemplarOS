@@ -1,0 +1,14 @@
+akr 0.1
+project legeos
+
+record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercut {
+    title "Promoting decisions to active with `akr revise <key> --state active` in…"
+    state verified
+    statement """
+        Promoting decisions to active with `akr revise <key> --state active` in text mode printed only "nothing written" — the actual reason (V-021: active decision cites nothing; and V-005: supported_by may not target a constraint, use implements) only appeared with --format json. Text mode should print the blocking diagnostics too.
+        """
+    observed_at git:595f75f325e764e25b0befc39b6286e2a0e77f27
+    about "akr"
+    author "claude"
+    created_at 2026-08-17
+}

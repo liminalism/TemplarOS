@@ -3,7 +3,7 @@ project legeos
 
 record legeos.milestone.m0-initial-structure/1 : milestone {
     title "M0 — Initial project structure of the LegeOS distribution"
-    state proposed
+    state completed
     scope [ all ]
     intent """
         Create the complete initial repository structure of LegeOS — a tightly integrated desktop OS on an Ubuntu 26.04 LTS core: every component home (crates, services, session, compositor integration, shell, apps, portal, CLI, installer, interfaces, distro/image/packaging, debian, tests, docs, ci), a compiling and tested Rust workspace seeded with the planning-document scaffold code (identity, associations, governor, window geometry), declarative distro configuration pinned to Ubuntu 26.04 'resolute' / kernel 7.0, ADRs for every structural decision, and this ledger.
@@ -18,6 +18,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 docs/adr/0001–0011 exist and each structural decision (D1–D11 in the plan) has an ADR and an AKR decision record.
                 """
             method observation
+            verified_by [ @legeos.evidence.m0-adrs-present/1 ]
         }
         check check-interfaces {
             statement """
@@ -25,6 +26,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.m0-check-interfaces/1 ]
         }
         check deb-builds {
             statement """
@@ -32,6 +34,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "cargo deb -p lege-sessiond"
+            verified_by [ @legeos.evidence.m0-deb-builds/1 ]
         }
         check deps-check {
             statement """
@@ -39,6 +42,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "cargo run -q -p xtask -- deps-check"
+            verified_by [ @legeos.evidence.m0-deps-check/1 ]
         }
         check smoke {
             statement """
@@ -46,6 +50,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "tests/integration/run.sh"
+            verified_by [ @legeos.evidence.m0-smoke/1 ]
         }
         check tree-check {
             statement """
@@ -53,6 +58,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "cargo run -q -p xtask -- tree-check"
+            verified_by [ @legeos.evidence.m0-tree-check/1 ]
         }
         check workspace-builds-and-tests {
             statement """
@@ -60,6 +66,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
                 """
             method command
             command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+            verified_by [ @legeos.evidence.m0-workspace-builds-and-tests/1 ]
         }
     }
     source {

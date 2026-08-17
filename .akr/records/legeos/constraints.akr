@@ -3,7 +3,7 @@ project legeos
 
 record legeos.constraint.first-release-scope/1 : constraint {
     title "The first release does not attempt a custom kernel, libc, package format/manager, display protocol, object filesystem, universal checkpointing, all NVIDIA generations, an app store, phone/tablet/server editions, or third-party shell extensions"
-    state proposed
+    state active
     scope [ all ]
     topic first-release-scope
     statement """
@@ -27,7 +27,7 @@ record legeos.constraint.first-release-scope/1 : constraint {
 
 record legeos.constraint.identity-and-launch-safety/1 : constraint {
     title "Identity comes from the launch cgroup, never from a client's self-declared app_id; Exec= is never run through a shell; the governor is observe-only until traces are reviewed and never selects a victim by memory size alone"
-    state proposed
+    state active
     scope [
         path "crates/lege-appd/**",
         path "crates/lege-window/**",
@@ -55,7 +55,7 @@ record legeos.constraint.identity-and-launch-safety/1 : constraint {
 
 record legeos.constraint.one-provider-per-role/1 : constraint {
     title "Exactly one selected provider per exclusive system role may autostart"
-    state proposed
+    state active
     scope [
         path "crates/lege-session-core/src/autostart.rs",
         path "crates/lege-session-core/src/providers.rs",
@@ -83,7 +83,7 @@ record legeos.constraint.one-provider-per-role/1 : constraint {
 
 record legeos.constraint.packaging-and-render-thread/1 : constraint {
     title "Every component is a Debian package (nothing under /usr/local or untracked in $HOME); lege-window carries no async runtime or D-Bus dependency"
-    state proposed
+    state active
     scope [ path "crates/lege-window/**", path "debian/**", path "tools/xtask/**" ]
     topic packaging-and-render-thread
     statement """
@@ -115,7 +115,7 @@ record legeos.constraint.packaging-and-render-thread/1 : constraint {
 
 record legeos.constraint.services-not-indicators/1 : constraint {
     title "System behaviour belongs in services; tray icons, panels and applets are views"
-    state proposed
+    state active
     scope [ path "crates/lege-session-core/**", path "services/**", path "shell/**" ]
     topic services-not-indicators
     statement """
