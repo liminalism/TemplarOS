@@ -1,0 +1,4 @@
+id = "external-monitor-each-output-path"
+profiles = ["hybrid-intel-nvidia"]
+steps = ["connect HDMI (dGPU path)", "move a window there", "disconnect", "connect USB-C/DP (iGPU path)", "repeat"]
+expect = ["no window is unrecoverable after each step", "scale factor correct per output", "drag anchor stays under pointer across outputs"]

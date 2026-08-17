@@ -1,0 +1,13 @@
+target/release/lege-sessiond usr/libexec/
+session/units/user/lege-sessiond.service usr/lib/systemd/user/
+distro/app-manifests/*.json usr/share/legeos/apps/
+interfaces/dbus/org.legeos.AppIdentity1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.legeos.Launcher1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.legeos.Associations1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.legeos.Providers1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.legeos.History1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.legeos.Settings1.xml usr/share/dbus-1/interfaces/
+distro/policy/systemd/user/session.slice.d usr/lib/systemd/user/
+distro/policy/systemd/user/app.slice.d usr/lib/systemd/user/
+distro/policy/systemd/user/background.slice.d usr/lib/systemd/user/
+distro/policy/environment.d/60-legeos.conf usr/lib/environment.d/

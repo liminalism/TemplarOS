@@ -1,0 +1,5 @@
+Types: deb
+URIs: https://archive.legeos.org/ubuntu
+Suites: legeos-26.04
+Components: main nvidia
+Signed-By: /usr/share/keyrings/legeos-archive-keyring.gpg

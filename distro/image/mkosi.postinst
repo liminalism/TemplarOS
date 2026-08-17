@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs inside the image after package installation.
+set -eu
+# Identity: os-release from distro/branding (rendered by `just image`).
+if [ -f /usr/lib/os-release.legeos ]; then
+    mv /usr/lib/os-release.legeos /usr/lib/os-release
+fi
+# The generic autostart runner is masked in the LegeOS session; sessiond arbitrates autostart.
+systemctl --global mask xdg-desktop-autostart.target || true
+# Enable the session-scope core once packages ship their units.
+systemctl --global enable legeos-session.target 2>/dev/null || true
+systemctl enable lege-hostd.service lege-boot-health.service 2>/dev/null || true

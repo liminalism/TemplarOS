@@ -1,0 +1,9 @@
+[Unit]
+Description=LegeOS graphical session
+Documentation=https://legeos.org/docs/session
+Requires=basic.target
+Wants=lege-comp.service lege-sessiond.service lege-resourced.service lege-filed.service lege-shell.service
+# The generic XDG autostart runner is masked by lege-session; sessiond arbitrates autostart
+# (one selected provider per exclusive role) and launches approved entries with identity + cgroups.
+Conflicts=xdg-desktop-autostart.target
+After=basic.target

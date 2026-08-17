@@ -1,0 +1,36 @@
+# cargo-deny configuration (licences, advisories, duplicate/banned crates).
+[graph]
+all-features = false
+
+[advisories]
+ignore = []
+
+[licenses]
+# Own code is MPL-2.0. Dependencies must be permissive or weak-copyleft; strong copyleft only via forks
+# that keep their upstream licence (they are not workspace members).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The compositor render thread must never block: lege-window must stay free of async runtimes and D-Bus.
+# (Enforced structurally by `cargo xtask deps-check`; listed here for documentation.)
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-git = []

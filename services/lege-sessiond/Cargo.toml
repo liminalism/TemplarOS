@@ -1,0 +1,41 @@
+[package]
+name = "lege-sessiond"
+description = "LegeOS user session policy daemon: application identity & launching, associations, providers/autostart, history, notifications, settings, projects, power, location"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lege-sessiond"
+path = "src/main.rs"
+
+[dependencies]
+lege-types = { workspace = true }
+lege-appd = { workspace = true }
+lege-associationd = { workspace = true }
+lege-session-core = { workspace = true }
+lege-state = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "legeos-sessiond"
+section = "admin"
+priority = "optional"
+depends = "$auto, systemd, xdg-utils"
+assets = [
+    ["target/release/lege-sessiond", "usr/libexec/lege-sessiond", "755"],
+    ["../../session/units/user/lege-sessiond.service", "usr/lib/systemd/user/lege-sessiond.service", "644"],
+    ["../../distro/app-manifests/org.legeos.Viewer.json", "usr/share/legeos/apps/org.legeos.Viewer.json", "644"],
+]

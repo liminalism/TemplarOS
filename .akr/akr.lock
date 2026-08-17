@@ -1,0 +1,29 @@
+akr-lock 0.1
+project legeos
+
+build {
+    tool "akr 0.3.1"
+    grammar "0.1"
+    vocabulary "0.2"
+    source_graph "sha256:e8608306d05c49601d77d8db5e5bb94f49b1db865600b1a65be417dfa66e9214"
+}
+
+source ".akr/project.akr" {
+    hash "sha256:05f0eb3a0495959ac104e93e9280c58de334bdd07688fc9ffe99a2541f678de9"
+    records 0
+}
+
+source ".akr/records/legeos/constraints.akr" {
+    hash "sha256:def1619d4e6eeee3d92f8d8729d30619ff988137c5a3f219c9de7ca0ed414f02"
+    records 5
+}
+
+source ".akr/records/legeos/decisions.akr" {
+    hash "sha256:ff71ea558ffebcf22e6884d2e69a5ab0bee0163a7d01f1494928610dc28cec53"
+    records 11
+}
+
+source ".akr/records/legeos/milestones.akr" {
+    hash "sha256:bd931109a9a8216d2c49f482e2837a27b9b490b90f0d7048afaf6822aea56111"
+    records 1
+}

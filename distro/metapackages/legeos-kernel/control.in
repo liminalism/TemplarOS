@@ -1,0 +1,6 @@
+Package: legeos-kernel
+Architecture: amd64
+Depends: linux-generic (>= @KERNEL_MIN@), linux-firmware, ${misc:Depends}
+Description: LegeOS kernel set (Ubuntu 26.04 kernel + version-locked NVIDIA modules)
+ One tested set: kernel, LRM modules and firmware move together and are updated only through
+ lege-hostd's transactional path with automatic rollback.

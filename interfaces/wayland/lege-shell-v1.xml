@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Private, authenticated protocol between the compositor core (lege-comp) and the restartable
+     shell (lege-shell). Listing uses ext-foreign-toplevel-list-v1 / cosmic-toplevel-info; this
+     protocol carries the *commands* only the trusted shell connection may issue, and the
+     sanitized toplevel data (canonical app id, instance id, verified flag). Draft. -->
+<protocol name="lege_shell_v1">
+  <copyright>Copyright 2026 LegeOS contributors. MPL-2.0.</copyright>
+
+  <interface name="lege_shell_manager_v1" version="1">
+    <description summary="shell control entry point">
+      Bound only by the client the compositor itself launched as the shell.
+    </description>
+    <request name="get_toplevel_list">
+      <arg name="id" type="new_id" interface="lege_shell_toplevel_list_v1"/>
+    </request>
+    <request name="show_all_windows">
+      <description summary="recovery view: every window, on the Recovery layer"/>
+    </request>
+    <request name="set_layer_surface">
+      <description summary="declare which typed layer a shell surface belongs to"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="layer" type="uint" enum="layer"/>
+    </request>
+    <enum name="layer">
+      <entry name="shell_overlay" value="3"/>
+      <entry name="notification" value="4"/>
+      <entry name="home_surface" value="7"/>
+    </enum>
+  </interface>
+
+  <interface name="lege_shell_toplevel_list_v1" version="1">
+    <event name="toplevel">
+      <arg name="id" type="new_id" interface="lege_shell_toplevel_v1"/>
+    </event>
+  </interface>
+
+  <interface name="lege_shell_toplevel_v1" version="1">
+    <event name="identity">
+      <arg name="canonical_app_id" type="string" allow-null="true"/>
+      <arg name="instance_id" type="string" allow-null="true"/>
+      <arg name="verified" type="uint"/>
+    </event>
+    <event name="title"><arg name="title" type="string"/></event>
+    <event name="state">
+      <arg name="activated" type="uint"/>
+      <arg name="fullscreen" type="uint"/>
+      <arg name="shelved" type="uint"/>
+    </event>
+    <event name="closed"/>
+    <request name="activate">
+      <arg name="activation_token" type="string"/>
+    </request>
+    <request name="close"/>
+    <request name="move_to_visible_area"/>
+    <request name="shelve"/>
+    <request name="unshelve"/>
+  </interface>
+</protocol>

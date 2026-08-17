@@ -1,0 +1,24 @@
+[Unit]
+Description=LegeOS resource governor (cgroup v2 + PSI, observe-only until enabled)
+Documentation=https://legeos.org/docs/resources
+PartOf=legeos-session.target
+After=lege-sessiond.service
+
+[Service]
+Type=simple
+BusName=org.legeos.Resources
+ExecStart=/usr/libexec/lege-resourced
+Restart=always
+RestartSec=200ms
+Slice=session.slice
+# The governor must keep ticking while everything else thrashes (ADR-0002).
+MemoryLow=64M
+CPUWeight=1000
+IOWeight=1000
+OOMScoreAdjust=-1000
+LimitMEMLOCK=64M
+Nice=-10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# cgroup control files of the user's own units are writable through the delegated subtree.

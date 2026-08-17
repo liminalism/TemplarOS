@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/provider-capability.schema.json",
+  "title": "Provider capability",
+  "type": "object",
+  "required": ["role"],
+  "additionalProperties": false,
+  "properties": {
+    "role": { "enum": ["network-status-ui", "notification-server", "file-chooser", "file-manager", "lock-screen", "association-broker", "clipboard-manager", "power-manager", "screenshot-service", "input-method", "portal-backend", "greeter"] },
+    "priority": { "type": "integer", "minimum": 0, "default": 50, "description": "Distribution defaults use 100, third parties 50" }
+  }
+}

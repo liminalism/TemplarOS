@@ -1,0 +1,25 @@
+[Unit]
+Description=LegeOS session policy daemon (identity, launching, associations, providers, history, settings)
+Documentation=https://legeos.org/docs/sessiond
+PartOf=legeos-session.target
+After=dbus.socket
+Requires=dbus.socket
+
+[Service]
+Type=notify
+BusName=org.legeos.Session
+ExecStart=/usr/libexec/lege-sessiond
+Restart=on-failure
+RestartSec=1
+WatchdogSec=30
+Slice=session.slice
+MemoryLow=128M
+CPUWeight=500
+IOWeight=500
+OOMScoreAdjust=-800
+# Hardening: it launches applications through the user manager, nothing more.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/legeos %h/.config/legeos %h/.local/share/applications
+StateDirectory=legeos

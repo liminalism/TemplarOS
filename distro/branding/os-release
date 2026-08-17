@@ -1,0 +1,14 @@
+NAME="LegeOS"
+PRETTY_NAME="LegeOS 0.1 (aurora, Ubuntu 26.04 LTS base)"
+ID=legeos
+ID_LIKE="ubuntu debian"
+VERSION="0.1 (aurora)"
+VERSION_ID="0.1"
+VERSION_CODENAME=aurora
+UBUNTU_CODENAME=resolute
+HOME_URL="https://legeos.org"
+DOCUMENTATION_URL="https://legeos.org/docs"
+SUPPORT_URL="https://legeos.org/support"
+BUG_REPORT_URL="https://github.com/legeos/legeos/issues"
+LOGO=legeos
+ANSI_COLOR="0;36"

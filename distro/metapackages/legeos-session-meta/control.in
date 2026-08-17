@@ -1,0 +1,4 @@
+Package: legeos-session-full
+Architecture: all
+Depends: legeos-session, legeos-sessiond, legeos-resourced, legeos-filed, legeos-shell, legeos-portal, legeos-cli, lege-comp, ${misc:Depends}
+Description: LegeOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)

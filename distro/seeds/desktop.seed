@@ -1,0 +1,10 @@
+# Default applications; sandboxed apps come via Flatpak (ADR-0011)
+legeos-settings
+lege-files
+cosmic-term
+flatpak
+fonts-noto
+fonts-noto-color-emoji
+xdg-utils
+shared-mime-info
+desktop-file-utils

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Compositor-core owned recovery surfaces (Layer::Recovery). Used by the resource overlay
+     to identify the likely offender and offer "save / terminate / open terminal" without relying
+     on the ordinary shell. Draft. -->
+<protocol name="lege_recovery_v1">
+  <copyright>Copyright 2026 LegeOS contributors. MPL-2.0.</copyright>
+  <interface name="lege_recovery_manager_v1" version="1">
+    <description summary="emergency overlay">
+      Only lege-resourced (via sessiond) may request the pressure overlay; the compositor draws it
+      itself so it works when the shell is dead.
+    </description>
+    <request name="show_pressure_overlay">
+      <arg name="offender_app_id" type="string" allow-null="true"/>
+      <arg name="offender_instance_id" type="string" allow-null="true"/>
+      <arg name="message" type="string"/>
+    </request>
+    <request name="hide_pressure_overlay"/>
+    <event name="user_choice">
+      <arg name="choice" type="uint" enum="choice"/>
+    </event>
+    <enum name="choice">
+      <entry name="wait" value="0"/>
+      <entry name="checkpoint_and_terminate" value="1"/>
+      <entry name="terminate" value="2"/>
+      <entry name="open_terminal" value="3"/>
+    </enum>
+  </interface>
+</protocol>

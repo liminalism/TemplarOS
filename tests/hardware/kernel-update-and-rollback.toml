@@ -1,0 +1,13 @@
+id = "kernel-update-and-rollback"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "lege update plan --kernel <candidate>",
+  "reboot",
+  "lege-boot-health passes → entry blessed",
+  "lege update plan --kernel <broken-candidate> (simulated: missing nvidia module)",
+  "reboot",
+]
+expect = [
+  "second candidate fails boot-health, counter reaches 0, previous deployment boots",
+  "history shows the rollback with cause",
+]

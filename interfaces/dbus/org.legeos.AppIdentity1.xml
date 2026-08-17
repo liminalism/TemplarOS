@@ -1,0 +1,27 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session (session bus). Path: /org/legeos/Session/AppIdentity.
+     Which application owns this PID/window? Verified through the launch cgroup, never through
+     the client's self-declared app_id. Implemented in crates/lege-appd/src/dbus.rs. -->
+<node>
+  <interface name="org.legeos.AppIdentity1">
+    <!-- confidence: 0 unknown, 1 claim-only, 2 verified-launch, 3 verified-launch-claim-mismatch -->
+    <method name="ResolveWindow">
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="wayland_app_id" type="s" direction="in"/>
+      <arg name="startup_wm_class" type="s" direction="in"/>
+      <arg name="sandbox_app_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="instance_id" type="s" direction="out"/>
+      <arg name="confidence" type="y" direction="out"/>
+      <arg name="claim_matches_manifest" type="b" direction="out"/>
+    </method>
+    <!-- (instance_id, app_id, systemd_unit, control_group) -->
+    <method name="ListInstances">
+      <arg name="instances" type="a(ssss)" direction="out"/>
+    </method>
+    <method name="ListApps">
+      <arg name="app_ids" type="as" direction="out"/>
+    </method>
+  </interface>
+</node>

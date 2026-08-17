@@ -1,0 +1,27 @@
+#!/usr/bin/make -f
+# Cargo workspace built offline from vendored crates (ADR-0009). Stage 1 uses `cargo deb` per binary;
+# this rules file is the Stage-2 archive path.
+export CARGO_HOME = $(CURDIR)/debian/cargo_home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+export RUSTFLAGS = -Cdebuginfo=1
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p $(CARGO_HOME)
+	# vendor/ is shipped in the orig tarball (`just vendor`); make cargo use it and nothing else.
+	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n' > $(CARGO_HOME)/config.toml
+
+override_dh_auto_build:
+	cargo build --release --frozen --offline --workspace
+
+override_dh_auto_test:
+	cargo test --release --frozen --offline --workspace
+
+override_dh_auto_install:
+	# Binaries and data are placed by debian/*.install from target/release and the repo tree.
+	:
+
+override_dh_auto_clean:
+	rm -rf $(CARGO_HOME)

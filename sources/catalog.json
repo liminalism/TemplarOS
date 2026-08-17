@@ -1,0 +1,24 @@
+[
+  {
+    "added_at": "2026-08-17",
+    "availability": "full",
+    "byte_len": 39304,
+    "content_hash": "sha256:b29cdcb0937b53a867369c78d36f064ad0a5363e80de2b62e1d37c2758d2c779",
+    "id": "planning-initial-shape",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/planning-initial-shape--b29cdcb0.md",
+    "title": "Planning: initial shape — assessment and architecture of the LegeOS desktop OS"
+  },
+  {
+    "added_at": "2026-08-17",
+    "availability": "full",
+    "byte_len": 70006,
+    "content_hash": "sha256:36db34549b4a126144472326d4965ad3f93c8ea6e799aa3d9c124e8cd4202a9f",
+    "id": "planning-subsequent-shape",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/planning-subsequent-shape--36db3454.md",
+    "title": "Planning: subsequent shape — integrated Rust service samples (appd, associationd, resourced, window service)"
+  }
+]

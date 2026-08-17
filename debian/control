@@ -1,0 +1,78 @@
+Source: legeos
+Section: admin
+Priority: optional
+Maintainer: LegeOS contributors <dev@legeos.org>
+Rules-Requires-Root: no
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.93), rustc (>= 1.93), pkgconf, libsqlite3-dev, just
+Standards-Version: 4.7.0
+Homepage: https://legeos.org
+Vcs-Git: https://github.com/legeos/legeos.git
+Vcs-Browser: https://github.com/legeos/legeos
+
+Package: legeos-sessiond
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, xdg-utils
+Description: LegeOS session policy daemon
+ One user-session daemon hosting application identity and launching (appd), the association
+ broker, provider/autostart arbitration, history, notifications, typed settings, projects,
+ power and location policy under the bus name org.legeos.Session.
+
+Package: legeos-resourced
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: LegeOS resource governor
+ Desktop-aware cgroup v2 + PSI pressure containment as a small, protected process.
+ Observe-only until enabled.
+
+Package: legeos-filed
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, udisks2
+Description: LegeOS file service
+ Transactional file operations with journal and undo, storage information and reserve, recents,
+ last-used directories and search behind the file manager, Home Surface and file-chooser portal.
+
+Package: legeos-hostd
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd
+Description: LegeOS host daemon
+ Staged kernel/driver update transactions, boot deployments and rollback, driver authority and
+ GPU mode, storage reserve and hardware profile on the system bus (org.legeos.Host).
+
+Package: legeos-boot-health
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: LegeOS boot health probe
+ System-scope probe gating systemd-bless-boot so a candidate deployment is promoted only when the
+ graphics stack and session are healthy.
+
+Package: legeos-session
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, legeos-sessiond, legeos-resourced, legeos-filed, legeos-shell
+Recommends: greetd, cosmic-greeter
+Description: LegeOS session entry and units
+ wayland-sessions entry, legeos-session.target and the core user units with their protection values.
+
+Package: legeos-shell
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
+Description: LegeOS shell
+ Restartable shell: Home Surface drawers, panel/dock, launcher, window shelf, notification renderer.
+
+Package: legeos-settings
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
+Description: LegeOS Settings
+ Settings over the typed schema, providers, background applications, associations and history.
+
+Package: legeos-portal
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, legeos-sessiond, legeos-filed
+Provides: xdg-desktop-portal-backend
+Description: LegeOS xdg-desktop-portal backend
+ One backend for FileChooser, AppChooser/OpenURI, Background and Settings, all clients of the same services.
+
+Package: legeos-cli
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: LegeOS command line
+ lege: one CLI over the OS services, including lege doctor.

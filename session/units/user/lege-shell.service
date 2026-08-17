@@ -1,0 +1,17 @@
+[Unit]
+Description=LegeOS shell (Home Surface, panel, launcher, window shelf) — restartable
+Documentation=https://legeos.org/docs/shell
+PartOf=legeos-session.target
+After=lege-comp.service lege-sessiond.service
+Requisite=lege-comp.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lege-shell
+# Everything decorative restarts without terminating applications.
+Restart=always
+RestartSec=500ms
+Slice=session.slice
+MemoryLow=64M
+CPUWeight=500
+OOMScoreAdjust=-600

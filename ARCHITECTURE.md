@@ -1,0 +1,66 @@
+# Architecture
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│ lege-shell (Home Surface, panel/dock, launcher, window shelf, notifications) │
+│ lege-settings · lege-files (fork) · xdg-desktop-portal-lege · lege (CLI)   │
+└───────────────┬────────────────────────────────────┬──────────────────────┘
+                │ D-Bus (session bus)                 │ private lege_shell_v1
+┌───────────────┴──────────────┐  ┌────────────┐  ┌──┴──────────────────────┐
+│ lege-sessiond  org.legeos.Session │  │ lege-filed │  │ lege-comp (cosmic-comp fork) │
+│  AppIdentity1  Launcher1          │  │ org.legeos │  │  + lege-comp-integration     │
+│  Associations1 Providers1         │  │   .Files   │  │  + lege-window (one scene,   │
+│  History1 Settings1 Projects1     │  │            │  │    recovery invariant,       │
+│  Power1 Location1 Notifications   │  └────────────┘  │    typed layers)             │
+└───────────────┬──────────────┘                     └──────────┬───────────┘
+                │ signals                                       │
+        ┌───────┴────────┐                          Wayland / XWayland / DRM-KMS
+        │ lege-resourced │ org.legeos.Resources — separate, mlocked, MemoryLow, OOMScoreAdjust=-1000
+        └────────────────┘ reads app.slice cgroups directly (self-describing unit names)
+──────────────────────────────── system bus ────────────────────────────────
+┌────────────────────────────────────────────────────────────────────────┐
+│ lege-hostd  org.legeos.Host — Updates1 Deployments1 Drivers1 Storage1 Hardware1 │
+│ lege-boot-health (system scope) → boot-complete.target → systemd-bless-boot     │
+└────────────────────────────────────────────────────────────────────────┘
+        Ubuntu 26.04 LTS: systemd, cgroup v2, apt, btrfs, PipeWire, NetworkManager, BlueZ, Mesa, NVIDIA LRM
+```
+
+## Processes (why these and not more)
+
+| Process | Scope | Why separate |
+|---|---|---|
+| `lege-comp` | user, session.slice | Wayland display server; a crash disconnects clients → conservative, minimal |
+| `lege-shell` | user | everything decorative; restartable at will |
+| `lege-sessiond` | user | **the** policy daemon: identity/launch, associations, providers/autostart, history, notifications, settings, projects, power, location — one state DB, one crash unit, no cross-daemon races (ADR-0001) |
+| `lege-resourced` | user | must tick while everything else thrashes; no SQLite/fsync/D-Bus on its loop (ADR-0002) |
+| `lege-filed` | user | heavy I/O; a stuck mount must not stall policy |
+| `lege-hostd` | root, system bus | the one privileged surface, one polkit policy (ADR-0003) |
+| `lege-boot-health` | root, oneshot | gates `boot-complete.target` (ADR-0004) |
+| `xdg-desktop-portal-lege` | user, D-Bus activated | one backend over the same services |
+
+## Crates → processes
+
+| Crate | Hosted by | Contents |
+|---|---|---|
+| `lege-types` | everyone | AppId/InstanceId/manifests/claims, provider roles, unit naming, checkpoint protocol, D-Bus names |
+| `lege-appd` | sessiond | Registry (PID→cgroup→instance→AppId), launcher, manifests, `AppIdentity1`/`Launcher1` |
+| `lege-associationd` | sessiond | rule engine, MIME detector, `mimeapps.list` export, `Associations1` |
+| `lege-session-core` | sessiond | providers, autostart, history, notifications, settings schema, projects, power, location, first-run |
+| `lege-state` | sessiond, filed | SQLite migrations |
+| `lege-window` | lege-comp | geometry invariant (`repair_window ⇒ is_recoverable`, proptest), window records, drag, layers — **no async deps** |
+| `lege-comp-integration` | lege-comp | `IdentityCache` over D-Bus, protocol names |
+| `lege-client` | shell, apps, portal, cli, comp | proxies + app SDK (checkpoint protocol) |
+| `lege-hwdetect` | hostd, installer, doctor | GPU detection, flavour, modes |
+| `lege-resourced` (lib) | itself | cgroup wrapper, PSI, pure `Governor`, executor, `app.slice` scan |
+| `lege-filed` (lib) | itself | operation journal, storage/reserve, last-dir policy |
+| `lege` (lib) | cli, tests | `doctor` engine |
+
+## Invariants the code enforces
+
+* One instance ⇔ one canonical AppId ⇔ one cgroup ⇔ one resource record ⇔ N windows.
+* A window's identity comes from its cgroup; claims only raise `claim_mismatch`.
+* After every drag/output change, `is_recoverable(window)` holds (proptest, 2000 cases).
+* Detected MIME beats extension unless the user created an explicit override.
+* Exactly one provider per exclusive role may autostart.
+* The governor is observe-only until traces are reviewed; it never selects by memory size alone.
+* Nothing under `/usr/local`; every file is owned by a package.

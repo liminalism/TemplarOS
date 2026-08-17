@@ -1,0 +1,15 @@
+[package]
+name = "lege-hwdetect"
+description = "One hardware detection implementation shared by the installer, lege-hostd (driver authority) and lege doctor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

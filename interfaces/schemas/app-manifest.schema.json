@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/app-manifest.schema.json",
+  "title": "LegeOS application manifest",
+  "description": "The application contract. Mirrors lege_types::AppManifest. Installed under /usr/share/legeos/apps/<AppId>.json (system), /etc/legeos/apps (admin), $XDG_DATA_HOME/legeos/apps (user).",
+  "type": "object",
+  "required": ["id", "display_name", "primary_desktop_file_id", "executable", "resource_class"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$", "minLength": 3, "maxLength": 255,
+            "description": "Canonical reverse-DNS application ID, e.g. org.legeos.Files" },
+    "display_name": { "type": "string" },
+    "primary_desktop_file_id": { "type": "string", "pattern": "\\.desktop$" },
+    "executable": { "type": "string", "description": "Absolute path launched by appd (never through a shell)" },
+    "aliases": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "desktop_file_ids": { "type": "array", "items": { "type": "string" } },
+        "wayland_app_ids": { "type": "array", "items": { "type": "string" } },
+        "startup_wm_classes": { "type": "array", "items": { "type": "string" } },
+        "flatpak_ids": { "type": "array", "items": { "type": "string" } },
+        "executable_paths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "mime_types": { "type": "array", "items": { "type": "string", "pattern": "^[^/;=\\s]+/[^/;=\\s]+$" },
+                    "description": "Exact types or major/* wildcards" },
+    "resource_class": { "enum": ["SessionCritical", "Interactive", "Normal", "Background", "Disposable"] },
+    "supports_checkpoint": { "type": "boolean", "default": false },
+    "provides": {
+      "type": "array", "description": "Exclusive roles this application can fill (see provider-capability.schema.json)",
+      "items": { "$ref": "provider-capability.schema.json" }
+    },
+    "background": {
+      "type": "array", "description": "Background permissions requested",
+      "items": { "enum": ["login-autostart", "continuous-background", "network-while-hidden", "global-shortcuts", "screen-capture", "input-monitoring", "notifications", "removable-media"] }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+# greetd configuration for LegeOS (ADR-0010: cosmic-greeter reusing the compositor fork).
+# Installed as /etc/greetd/config.toml by the legeos-session package once the greeter fork lands.
+[terminal]
+vt = 1
+
+[default_session]
+command = "cosmic-greeter"
+user = "cosmic-greeter"

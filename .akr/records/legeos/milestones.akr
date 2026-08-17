@@ -1,0 +1,81 @@
+akr 0.1
+project legeos
+
+record legeos.milestone.m0-initial-structure/1 : milestone {
+    title "M0 — Initial project structure of the LegeOS distribution"
+    state proposed
+    scope [ all ]
+    intent """
+        Create the complete initial repository structure of LegeOS — a tightly integrated desktop OS on an Ubuntu 26.04 LTS core: every component home (crates, services, session, compositor integration, shell, apps, portal, CLI, installer, interfaces, distro/image/packaging, debian, tests, docs, ci), a compiling and tested Rust workspace seeded with the planning-document scaffold code (identity, associations, governor, window geometry), declarative distro configuration pinned to Ubuntu 26.04 'resolute' / kernel 7.0, ADRs for every structural decision, and this ledger.
+        """
+    target 2026-08-17
+    note """
+        Stages after M0 (planning doc 01): S1 replacement session on Lubuntu 26.04, S2 own archive + image, S3 hardware/update policy, S4 transactional deployment.
+        """
+    acceptance {
+        check adrs-present {
+            statement """
+                docs/adr/0001–0011 exist and each structural decision (D1–D11 in the plan) has an ADR and an AKR decision record.
+                """
+            method observation
+        }
+        check check-interfaces {
+            statement """
+                Every org.legeos.* zbus interface in the code has an XML contract in interfaces/dbus/.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces"
+        }
+        check deb-builds {
+            statement """
+                cargo deb produces a Debian package for lege-sessiond containing the binary, its user unit and the app manifest.
+                """
+            method command
+            command "cargo deb -p lege-sessiond"
+        }
+        check deps-check {
+            statement """
+                lege-window has no async runtime or D-Bus in its dependency graph (compositor render-thread rule).
+                """
+            method command
+            command "cargo run -q -p xtask -- deps-check"
+        }
+        check smoke {
+            statement """
+                Daemons start in dry-run/once mode and lege doctor runs against a fixture root (tests/integration/run.sh).
+                """
+            method command
+            command "tests/integration/run.sh"
+        }
+        check tree-check {
+            statement """
+                Every component home in ARCHITECTURE.md exists and has a README (cargo xtask tree-check).
+                """
+            method command
+            command "cargo run -q -p xtask -- tree-check"
+        }
+        check workspace-builds-and-tests {
+            statement """
+                cargo fmt --check, cargo clippy --workspace --all-targets -D warnings and cargo test --workspace all pass (unit tests, association/PSI/governor tests, geometry proptests).
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+        }
+    }
+    source {
+        kind external
+        role origin
+        document "planning-initial-shape"
+        use """
+            Architecture, stages, and the five claims the first release must prove.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "planning-subsequent-shape"
+        use """
+            Workspace layout and the scaffold code for os-types, appd, associationd, resourced and window-service.
+            """
+    }
+}

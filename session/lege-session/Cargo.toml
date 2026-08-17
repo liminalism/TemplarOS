@@ -1,0 +1,34 @@
+[package]
+name = "lege-session"
+description = "LegeOS session entry point: imports the environment into the user manager, starts legeos-session.target and waits for the compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lege-session"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "legeos-session"
+section = "x11"
+priority = "optional"
+depends = "$auto, systemd, legeos-sessiond, legeos-resourced, legeos-filed"
+assets = [
+    ["target/release/lege-session", "usr/bin/lege-session", "755"],
+    ["../../session/units/wayland-sessions/legeos.desktop", "usr/share/wayland-sessions/legeos.desktop", "644"],
+    ["../../session/units/user/legeos-session.target", "usr/lib/systemd/user/legeos-session.target", "644"],
+    ["../../session/units/user/lege-comp.service", "usr/lib/systemd/user/lege-comp.service", "644"],
+    ["../../session/units/user/lege-shell.service", "usr/lib/systemd/user/lege-shell.service", "644"],
+]

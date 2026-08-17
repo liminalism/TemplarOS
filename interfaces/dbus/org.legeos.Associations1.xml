@@ -1,0 +1,24 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Associations.
+     The one authoritative "which application opens this?" broker. reason is one of
+     project-mime-default | explicit-extension-override | global-mime-default |
+     generic-extension-fallback | ask-user. An empty canonical_app_id means "ask". -->
+<node>
+  <interface name="org.legeos.Associations1">
+    <method name="ResolveFile">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="detected_mime" type="s" direction="out"/>
+      <arg name="reason" type="s" direction="out"/>
+    </method>
+    <method name="SetMimeDefault">
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <method name="ListMimeDefaults">
+      <arg name="defaults" type="a(ss)" direction="out"/>
+    </method>
+  </interface>
+</node>

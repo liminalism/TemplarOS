@@ -1,0 +1,2 @@
+# Canonical-signed prebuilt modules (LRM) — never DKMS, never nvidia-installer. Branch pinned by legeos-kernel.
+legeos-nvidia-open

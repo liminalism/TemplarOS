@@ -1,0 +1,44 @@
+# Upstream forks pinned here, fetched into ../../forks/ (gitignored) by `just forks-fetch` (ADR-0005).
+# Each fork lives in its own repository with an `upstream` tracking branch and a `legeos` patch branch;
+# `pin` is the legeos-branch commit the distribution builds. Empty pin = tip of `branch` (dev only).
+
+[cosmic-comp]
+upstream = "https://github.com/pop-os/cosmic-comp"
+fork = "https://github.com/legeos/cosmic-comp"
+branch = "legeos"
+pin = ""
+purpose = "Compositor core: one-workspace invariant, lege-window bridge, recovery overlay, typed layers, ext-session-lock"
+package = "lege-comp"
+depends_on = ["compositor/lege-comp-integration"]
+
+[cosmic-files]
+upstream = "https://github.com/pop-os/cosmic-files"
+fork = "https://github.com/legeos/cosmic-files"
+branch = "legeos"
+pin = ""
+purpose = "File manager as a client of lege-filed (shared last-dir policy, storage info always visible)"
+package = "lege-files"
+
+[xdg-desktop-portal-cosmic]
+upstream = "https://github.com/pop-os/xdg-desktop-portal-cosmic"
+fork = "https://github.com/legeos/xdg-desktop-portal-cosmic"
+branch = "legeos"
+pin = ""
+purpose = "ScreenCast/Screenshot backends until xdg-desktop-portal-lege covers them"
+package = "xdg-desktop-portal-cosmic"
+
+[cosmic-greeter]
+upstream = "https://github.com/pop-os/cosmic-greeter"
+fork = "https://github.com/legeos/cosmic-greeter"
+branch = "legeos"
+pin = ""
+purpose = "Greeter reusing the compositor fork (ADR-0010)"
+package = "cosmic-greeter"
+
+[cosmic-applets]
+upstream = "https://github.com/pop-os/cosmic-applets"
+fork = "https://github.com/legeos/cosmic-applets"
+branch = "legeos"
+pin = ""
+purpose = "Indicators as views (network/bluetooth/audio) until lege-shell has its own"
+package = "cosmic-applets"

@@ -1,0 +1,26 @@
+# AppArmor profile for lege-hostd (complain mode until the update path is exercised).
+# Runs as root and drives apt through a child transient unit; confine what it can touch directly.
+abi <abi/4.0>,
+include <tunables/global>
+
+/usr/libexec/lege-hostd flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/dbus-strict>
+
+  /usr/libexec/lege-hostd mr,
+  /var/lib/legeos/hostd/** rwk,
+  /run/legeos/** rw,
+  /sys/bus/pci/devices/** r,
+  /sys/class/drm/** r,
+  /sys/module/nvidia/ r,
+  /boot/efi/** rw,
+  /efi/** rw,
+  /usr/share/legeos/** r,
+  /etc/legeos/** r,
+  /usr/bin/systemd-run PUx,
+  /usr/bin/systemctl PUx,
+  /usr/bin/bootctl PUx,
+  /usr/lib/systemd/systemd-bless-boot PUx,
+  /usr/sbin/grub-reboot PUx,
+  /usr/sbin/grub-set-default PUx,
+}

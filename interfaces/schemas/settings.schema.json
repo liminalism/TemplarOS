@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/settings.schema.json",
+  "title": "LegeOS typed settings schema entry",
+  "description": "One SettingSpec (crates/lege-session-core/src/settings.rs). Values are stored as TOML under ~/.config/legeos/; every change is recorded in history.",
+  "type": "object",
+  "required": ["key", "description", "default"],
+  "additionalProperties": false,
+  "properties": {
+    "key": { "type": "string", "pattern": "^[a-z0-9-]+(\\.[a-z0-9-]+)+$" },
+    "description": { "type": "string" },
+    "default": { "type": "object", "required": ["type", "value"],
+                 "properties": { "type": { "enum": ["bool", "int", "float", "str", "choice", "str-list"] }, "value": {} } },
+    "choices": { "type": "array", "items": { "type": "string" } },
+    "min": { "type": "integer" },
+    "max": { "type": "integer" },
+    "privileged": { "type": "boolean", "default": false }
+  }
+}

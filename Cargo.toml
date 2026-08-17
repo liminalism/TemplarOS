@@ -1,0 +1,101 @@
+# LegeOS workspace.
+#
+# Layout (see ARCHITECTURE.md):
+#   crates/      pure library crates — the testable cores of every OS domain
+#   services/    daemons (thin hosts over the crates)
+#   session/     session entry + systemd user units
+#   compositor/  compositor integration crate (the cosmic-comp fork depends on it by path)
+#   shell/ apps/ portals/ cli/  user-facing binaries
+#   tools/xtask  repository automation
+[workspace]
+resolver = "3"
+members = [
+    "crates/lege-types",
+    "crates/lege-appd",
+    "crates/lege-associationd",
+    "crates/lege-window",
+    "crates/lege-session-core",
+    "crates/lege-state",
+    "crates/lege-client",
+    "crates/lege-hwdetect",
+    "services/lege-sessiond",
+    "services/lege-resourced",
+    "services/lege-filed",
+    "services/lege-hostd",
+    "services/lege-boot-health",
+    "session/lege-session",
+    "compositor/lege-comp-integration",
+    "shell/lege-shell",
+    "apps/lege-settings",
+    "portals/xdg-desktop-portal-lege",
+    "cli/lege",
+    "tools/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Ubuntu 26.04 "resolute" ships rustc 1.93; the archive build must work there (ADR-0008).
+rust-version = "1.93"
+license = "MPL-2.0"
+repository = "https://github.com/legeos/legeos"
+homepage = "https://legeos.org"
+authors = ["LegeOS contributors"]
+
+[workspace.dependencies]
+# internal
+lege-types = { path = "crates/lege-types" }
+lege-appd = { path = "crates/lege-appd" }
+lege-associationd = { path = "crates/lege-associationd" }
+lege-window = { path = "crates/lege-window" }
+lege-session-core = { path = "crates/lege-session-core" }
+lege-state = { path = "crates/lege-state" }
+lege-client = { path = "crates/lege-client" }
+lege-hwdetect = { path = "crates/lege-hwdetect" }
+lege-resourced = { path = "services/lege-resourced" }
+lege-filed = { path = "services/lege-filed" }
+lege = { path = "cli/lege" }
+
+# external
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+parking_lot = "0.12"
+proptest = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+struct_excessive_bools = "allow"
+doc_markdown = "allow"
+unused_async = "allow"
+duration_suboptimal_units = "allow"
+implicit_hasher = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"

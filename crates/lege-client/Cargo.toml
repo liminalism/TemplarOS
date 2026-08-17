@@ -1,0 +1,18 @@
+[package]
+name = "lege-client"
+description = "Client side of LegeOS: zbus proxies for org.legeos.*, name constants, and the first-party application SDK (checkpoint protocol, instance environment)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lege-types = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zbus = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Host. Path: /org/legeos/Host. Detected hardware profile. -->
+<node>
+  <interface name="org.legeos.Host.Hardware1">
+    <!-- GraphicsProfile JSON (crates/lege-hwdetect) -->
+    <method name="GraphicsProfile"><arg name="profile_json" type="s" direction="out"/></method>
+  </interface>
+</node>

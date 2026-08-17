@@ -1,0 +1,16 @@
+[Unit]
+Description=LegeOS host daemon (staged updates, deployments, driver authority, storage reserve)
+Documentation=https://legeos.org/docs/host
+After=dbus.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=dbus
+BusName=org.legeos.Host
+ExecStart=/usr/libexec/lege-hostd
+Restart=on-failure
+StateDirectory=legeos/hostd
+RuntimeDirectory=legeos
+# apt runs as a child transient unit, so hostd itself can be confined.
+NoNewPrivileges=no
+ProtectHome=yes

@@ -1,0 +1,18 @@
+# The LegeOS session (all built from this repository or its forks)
+legeos-session
+legeos-sessiond
+legeos-resourced
+legeos-filed
+legeos-hostd
+legeos-boot-health
+legeos-shell
+legeos-portal
+legeos-cli
+lege-comp
+cosmic-greeter
+greetd
+xdg-desktop-portal
+xdg-desktop-portal-cosmic
+xwayland
+polkitd
+dbus-broker

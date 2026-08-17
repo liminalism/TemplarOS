@@ -1,0 +1,6 @@
+Package: legeos-nvidia-open
+Architecture: amd64
+Depends: linux-modules-nvidia-@NVIDIA_BRANCH@-open-generic (= @NVIDIA_LRM_VERSION@),
+ nvidia-driver-@NVIDIA_BRANCH@-open (= @NVIDIA_USERSPACE_VERSION@), ${misc:Depends}
+Conflicts: legeos-nvidia-proprietary, nvidia-dkms-@NVIDIA_BRANCH@, nvidia-dkms-@NVIDIA_BRANCH@-open
+Description: NVIDIA open kernel modules + userspace (Turing and newer), one driver authority

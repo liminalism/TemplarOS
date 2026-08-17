@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+      - run: rustup default 1.97.1
+      - run: sudo apt-get update && sudo apt-get install -y just libsqlite3-dev
+      - run: cargo install cargo-deb cargo-deny --locked
+      - run: ci/run.sh

@@ -1,0 +1,19 @@
+[package]
+name = "lege-session-core"
+description = "Session policy domains hosted by lege-sessiond: providers, autostart, history, notifications, settings, projects, power, location, first-run"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lege-types = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

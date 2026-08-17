@@ -1,0 +1,13 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Files (session bus, lege-filed). Path: /org/legeos/Files.
+     Storage information that must be unavoidable in every file UI. -->
+<node>
+  <interface name="org.legeos.Files.Volumes1">
+    <!-- VolumeInfo JSON: mount_point, fs_type, total/free/available/reserved bytes, read_only -->
+    <method name="InfoForPath">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="volume_json" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

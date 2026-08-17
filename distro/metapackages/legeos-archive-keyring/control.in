@@ -1,0 +1,6 @@
+Package: legeos-archive-keyring
+Architecture: all
+Depends: ${misc:Depends}
+Description: LegeOS archive signing key, sources and pinning
+ Installs /usr/share/keyrings/legeos-archive-keyring.gpg, /etc/apt/sources.list.d/legeos.sources and
+ /etc/apt/preferences.d/legeos-nvidia (third-party driver repositories pinned to -1).

@@ -1,0 +1,4 @@
+# Runtime power management for the discrete GPU in hybrid mode (applied only when
+# hardware.gpu-mode = hybrid; lege-hostd toggles this rule via a drop-in).
+ACTION=="bind", SUBSYSTEM=="pci", DRIVERS=="nvidia", ATTR{vendor}=="0x10de", ATTR{class}=="0x030000", TEST=="power/control", ATTR{power/control}="auto"
+ACTION=="bind", SUBSYSTEM=="pci", DRIVERS=="nvidia", ATTR{vendor}=="0x10de", ATTR{class}=="0x030200", TEST=="power/control", ATTR{power/control}="auto"

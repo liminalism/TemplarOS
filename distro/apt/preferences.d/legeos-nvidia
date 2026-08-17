@@ -1,0 +1,12 @@
+# One driver authority: third-party NVIDIA sources move an installation into an unsupported state.
+Package: *
+Pin: release o=LP-PPA-graphics-drivers
+Pin-Priority: -1
+
+Package: *
+Pin: origin developer.download.nvidia.com
+Pin-Priority: -1
+
+Package: nvidia-driver-* nvidia-dkms-* libnvidia-*
+Pin: release o=Ubuntu
+Pin-Priority: 500

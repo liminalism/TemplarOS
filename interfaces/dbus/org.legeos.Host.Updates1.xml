@@ -1,0 +1,15 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Host (system bus, lege-hostd). Path: /org/legeos/Host.
+     Staged kernel/driver update transactions. polkit: org.legeos.host.update -->
+<node>
+  <interface name="org.legeos.Host.Updates1">
+    <method name="Current">
+      <arg name="transaction_json" type="s" direction="out"/>
+    </method>
+    <method name="Plan">
+      <arg name="changes_json" type="s" direction="in"/>
+      <arg name="transaction_id" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

@@ -1,0 +1,1 @@
+rw quiet splash zswap.enabled=1 zswap.max_pool_percent=20 zswap.compressor=zstd zswap.zpool=zsmalloc

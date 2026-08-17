@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>LegeOS</vendor>
+  <vendor_url>https://legeos.org</vendor_url>
+
+  <action id="org.legeos.host.update">
+    <description>Stage or apply a system update transaction</description>
+    <message>Authentication is required to update the system</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="org.legeos.host.deploy">
+    <description>Change boot deployments (stage, promote, roll back)</description>
+    <message>Authentication is required to change boot deployments</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="org.legeos.host.gpu-mode">
+    <description>Change the graphics mode (hybrid / integrated / discrete)</description>
+    <message>Authentication is required to change the graphics mode</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="org.legeos.host.storage-reserve">
+    <description>Change the storage reserve or override it once</description>
+    <message>Authentication is required to change the storage reserve</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+</policyconfig>

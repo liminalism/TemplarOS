@@ -1,0 +1,6 @@
+[Default Applications]
+application/pdf=org.legeos.Viewer.desktop;
+text/html=firefox.desktop;
+
+[Added Associations]
+application/pdf=org.legeos.Viewer.desktop;

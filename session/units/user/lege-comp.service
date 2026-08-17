@@ -1,0 +1,19 @@
+[Unit]
+Description=LegeOS compositor core (single scene, conservative, protected)
+Documentation=https://legeos.org/docs/compositor
+PartOf=legeos-session.target
+Before=lege-shell.service
+# A compositor crash disconnects every client: it is the one thing that must not restart casually.
+OnFailure=lege-shell.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/lege-comp
+Restart=no
+Slice=session.slice
+# Session-critical protection (planning doc 01 §5): the user must always be able to move the
+# pointer, switch windows, reach the recovery overlay and a terminal.
+MemoryLow=256M
+CPUWeight=1000
+IOWeight=1000
+OOMScoreAdjust=-900

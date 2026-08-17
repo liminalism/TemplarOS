@@ -1,0 +1,5 @@
+legeos (0.1.0~dev1) resolute; urgency=medium
+
+  * Initial project structure (milestone M0): workspace, daemons, session units, distro layer.
+
+ -- LegeOS contributors <dev@legeos.org>  Mon, 17 Aug 2026 12:00:00 +0000

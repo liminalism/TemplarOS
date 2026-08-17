@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: legeos
+Source: https://github.com/legeos/legeos
+Comment: Regenerate the per-crate stanzas with `cargo xtask copyright`. Forks are separate source
+ packages and keep their upstream (GPL-3.0) licences.
+
+Files: *
+Copyright: 2026 LegeOS contributors
+License: MPL-2.0
+
+License: MPL-2.0
+ This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the
+ MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ .
+ On Debian systems the full text is in /usr/share/common-licenses/MPL-2.0.

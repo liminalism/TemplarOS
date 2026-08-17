@@ -1,0 +1,39 @@
+[package]
+name = "lege-filed"
+description = "LegeOS file service: transactional file operations with journal and undo, volumes and storage reserve, recents and last-used directories, search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lege-filed"
+path = "src/main.rs"
+
+[dependencies]
+lege-types = { workspace = true }
+lege-state = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+zbus = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "legeos-filed"
+section = "admin"
+priority = "optional"
+depends = "$auto, systemd, udisks2"
+assets = [
+    ["target/release/lege-filed", "usr/libexec/lege-filed", "755"],
+    ["../../session/units/user/lege-filed.service", "usr/lib/systemd/user/lege-filed.service", "644"],
+]

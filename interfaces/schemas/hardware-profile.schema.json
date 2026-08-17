@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/hardware-profile.schema.json",
+  "title": "LegeOS hardware profile",
+  "description": "Declarative description of a supported machine class (distro/hardware/profiles/*.toml, converted to JSON at build time).",
+  "type": "object",
+  "required": ["id", "name", "gpus"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "gpus": { "type": "array", "items": { "type": "object", "required": ["vendor"],
+              "properties": { "vendor": { "enum": ["intel", "amd", "nvidia"] }, "device_ids": { "type": "array", "items": { "type": "string" } } } } },
+    "nvidia_flavour": { "enum": ["open", "proprietary"] },
+    "gpu_modes": { "type": "array", "items": { "enum": ["hybrid", "integrated", "discrete"] } },
+    "default_gpu_mode": { "enum": ["hybrid", "integrated", "discrete"] },
+    "kernel_flavour": { "type": "string" },
+    "test_matrix": { "type": "array", "items": { "type": "string" } }
+  }
+}

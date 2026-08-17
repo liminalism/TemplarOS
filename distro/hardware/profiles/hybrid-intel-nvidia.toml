@@ -1,0 +1,27 @@
+# The reference laptop: Intel Iris Xe + NVIDIA RTX 4060 Laptop GPU (planning doc 01 §4).
+id = "hybrid-intel-nvidia"
+name = "Hybrid Intel iGPU + NVIDIA dGPU laptop"
+kernel_flavour = "linux-generic"
+nvidia_flavour = "open"
+gpu_modes = ["hybrid", "integrated", "discrete"]
+default_gpu_mode = "hybrid"
+
+[[gpus]]
+vendor = "intel"
+device_ids = ["0xa7a0", "0xa7a1", "0x46a6", "0x46a8"]   # Iris Xe (Raptor/Alder Lake)
+
+[[gpus]]
+vendor = "nvidia"
+device_ids = ["0x28e0", "0x28a1", "0x2820"]              # RTX 4060/4070 Laptop (AD107M/AD106M)
+
+# See ../test-matrix.md; run with `lege doctor --hardware`.
+test_matrix = [
+  "intel-desktop-nvidia-offload",
+  "nvidia-desktop",
+  "external-monitor-each-output-path",
+  "suspend-resume",
+  "kernel-update-and-rollback",
+  "driver-update-and-rollback",
+  "wayland-and-xwayland-apps",
+  "cuda-and-vulkan-where-installed",
+]

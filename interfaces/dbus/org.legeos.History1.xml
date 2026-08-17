@@ -1,0 +1,17 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/History.
+     System-wide change history; each item is an Event JSON document (crates/lege-session-core/src/history.rs). -->
+<node>
+  <interface name="org.legeos.History1">
+    <method name="Recent">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="events_json" type="as" direction="out"/>
+    </method>
+    <method name="Search">
+      <arg name="query" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="events_json" type="as" direction="out"/>
+    </method>
+  </interface>
+</node>

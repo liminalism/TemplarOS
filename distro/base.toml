@@ -1,0 +1,38 @@
+# The one place the base is declared. Everything else (mkosi, seeds, metapackages, CI) reads this.
+# ADR-0007: Ubuntu 26.04 LTS "resolute", Ubuntu's own kernel. Mainline 7.2 is *not* pinned; it is a
+# candidate for the transactional kernel/driver path in lege-hostd, never hand-installed.
+
+[base]
+distribution = "ubuntu"
+series = "26.04"
+codename = "resolute"
+lts = true
+support_until = "2031-04"          # follows the base
+architectures = ["amd64"]
+mirror = "http://archive.ubuntu.com/ubuntu"
+components = ["main", "universe", "restricted"]   # restricted: NVIDIA LRM/userspace
+security_mirror = "http://security.ubuntu.com/ubuntu"
+
+[kernel]
+flavour = "linux-generic"          # 7.0 GA at release; "linux-generic-hwe-26.04" once HWE ships
+metapackage = "legeos-kernel"      # version-locks kernel + LRM (linux-modules-nvidia-*) + firmware
+mainline_candidate = "7.2"         # tracked only through hostd transactions
+
+[nvidia]
+source = "ubuntu-lrm"              # Canonical-signed prebuilt modules, never DKMS or the .run installer
+flavours = ["open", "proprietary"] # mutually exclusive on disk; one selected from detected hardware
+metapackages = { open = "legeos-nvidia-open", proprietary = "legeos-nvidia-proprietary" }
+
+[image]
+tool = "mkosi"
+format = "disk"
+bootloader = "systemd-boot"        # dev/VM images; Secure-Boot posture per ADR-0004
+root_filesystem = "btrfs"          # subvolumes from day one so deployments can be snapshots (ADR-0004)
+
+[identity]
+name = "LegeOS"
+id = "legeos"
+id_like = "ubuntu debian"
+version = "0.1"                    # distro/release/VERSIONING.md
+codename = "aurora"
+home_url = "https://legeos.org"

@@ -1,0 +1,13 @@
+id = "suspend-resume"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "systemctl suspend",
+  "wait-for-resume",
+]
+expect = [
+  "lege-comp.service active within 5s",
+  "pipewire.service active",
+  "NetworkManager connectivity full within 10s",
+  "no 'GPU reset' or 'Xid' in journal since suspend",
+  "all windows recoverable (lege doctor --hardware --check window-recoverability)",
+]

@@ -1,0 +1,15 @@
+linux-firmware
+mesa-vulkan-drivers
+mesa-va-drivers
+libgl1-mesa-dri
+vulkan-tools
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+network-manager
+bluez
+upower
+power-profiles-daemon
+fwupd
+udisks2

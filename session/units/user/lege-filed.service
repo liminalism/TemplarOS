@@ -1,0 +1,18 @@
+[Unit]
+Description=LegeOS file service (mounts, transactional operations, recents, search)
+Documentation=https://legeos.org/docs/files
+PartOf=legeos-session.target
+After=lege-sessiond.service
+
+[Service]
+Type=simple
+BusName=org.legeos.Files
+ExecStart=/usr/libexec/lege-filed
+Restart=on-failure
+RestartSec=1
+Slice=session.slice
+# Heavy I/O lives here on purpose: a stuck mount must not stall policy daemons.
+CPUWeight=200
+IOWeight=300
+OOMScoreAdjust=-500
+StateDirectory=legeos

@@ -1,0 +1,2 @@
+target/release/lege-boot-health usr/libexec/
+session/units/system/lege-boot-health.service usr/lib/systemd/system/

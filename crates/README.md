@@ -1,0 +1,5 @@
+# crates/ — pure library cores
+
+Every OS domain is a library first: I/O-free policy engines with unit tests, hosted by the thin daemons in
+`services/`. `lege-types` is the shared vocabulary; `lege-window` must stay free of async runtimes/D-Bus
+(render-thread rule); `lege-client` is what applications and UIs link. See `ARCHITECTURE.md` for the table.

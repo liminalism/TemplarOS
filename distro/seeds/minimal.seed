@@ -1,0 +1,22 @@
+# Ubuntu 26.04 "resolute" minimal bootable base
+ubuntu-minimal
+systemd
+systemd-boot
+systemd-resolved
+systemd-timesyncd
+udev
+kmod
+btrfs-progs
+dosfstools
+e2fsprogs
+apt
+apt-utils
+ca-certificates
+gnupg
+iproute2
+iputils-ping
+sudo
+less
+vim-tiny
+legeos-archive-keyring
+legeos-kernel

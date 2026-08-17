@@ -1,0 +1,14 @@
+# Default palette (light/dark). No wallpaper by default: the Home Surface is the ground.
+[light]
+ground = "#f4f5f7"
+surface = "#ffffff"
+text = "#1b1f24"
+accent = "#0f7b8a"
+danger = "#b3261e"
+
+[dark]
+ground = "#121417"
+surface = "#1b1f24"
+text = "#e6e8eb"
+accent = "#3cc0d0"
+danger = "#f2857a"
