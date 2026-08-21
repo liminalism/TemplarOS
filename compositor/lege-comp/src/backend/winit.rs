@@ -138,6 +138,8 @@ pub fn run() -> anyhow::Result<()> {
         session_lock: crate::session_lock::SessionLockState::default(),
         foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
         show_all_windows: None,
+        switcher: None,
+        chrome: crate::chrome::ChromeState::new(),
     };
 
     let _shell_global = dh.create_global::<State, crate::protocols::lege_shell_v1::lege_shell_manager_v1::LegeShellManagerV1, _>(
@@ -200,16 +202,28 @@ pub fn run() -> anyhow::Result<()> {
                     state.process_input_event(event, Some(OUTPUT_NAME));
                 }
                 WinitEvent::Redraw => {
-                    let chrome = crate::chrome::collect_elements(state, &output_for_loop);
                     // `render_output`'s returned damage regions borrow the bound framebuffer, which
                     // would keep `graphics` mutably borrowed into the `submit` call below — sidestep
                     // that by only asking "did anything change", then submitting full-output damage
                     // (matching `smallvil`'s winit backend, which does the same for the same reason).
                     let rendered = match graphics.bind() {
                         Ok((renderer, mut framebuffer)) => {
+                            let chrome = crate::chrome::collect_elements(
+                                &mut state.chrome,
+                                &crate::chrome::ChromeInputs {
+                                    space: &state.space,
+                                    window_service: &state.window_service,
+                                    recovery_protocol: &state.recovery_protocol,
+                                    show_all_windows: state.show_all_windows.as_deref(),
+                                    session_lock: &state.session_lock,
+                                    switcher: state.switcher.as_ref(),
+                                },
+                                &output_for_loop,
+                                renderer,
+                            );
                             match render_output::<
                                 _,
-                                smithay::backend::renderer::element::solid::SolidColorRenderElement,
+                                smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
                                 _,
                                 _,
                             >(

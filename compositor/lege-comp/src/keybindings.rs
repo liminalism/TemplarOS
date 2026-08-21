@@ -56,6 +56,43 @@ pub fn recovery_action(modifiers: ModifiersState, keysym: Keysym) -> Option<Reco
     None
 }
 
+/// Keyboard navigation for the pressure overlay's four buttons
+/// (`lege_recovery_v1.show_pressure_overlay`) while it is showing — captured entirely by
+/// `src/input.rs::on_keyboard` before any key can reach a client, exactly like [`RecoveryAction`]
+/// but scoped to "the overlay is up" rather than a fixed global combination, since Left/Right/
+/// Enter are ordinary keys every application also uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OverlayAction {
+    MovePrevious,
+    MoveNext,
+    Confirm,
+}
+
+/// Which [`OverlayAction`], if any, `keysym` performs while the pressure overlay is shown. Left
+/// and Up both step backward, Right/Down/Tab both step forward — matching the two-axis layout
+/// (`chrome::layout::pressure_overlay_buttons`'s row-or-grid shape) without requiring the user to
+/// know which one is currently in effect for this output's size.
+pub fn overlay_action(modifiers: ModifiersState, keysym: Keysym) -> Option<OverlayAction> {
+    let raw = keysym.raw();
+    if raw == keysyms::KEY_Left || raw == keysyms::KEY_Up {
+        return Some(OverlayAction::MovePrevious);
+    }
+    if raw == keysyms::KEY_Right || raw == keysyms::KEY_Down {
+        return Some(OverlayAction::MoveNext);
+    }
+    if raw == keysyms::KEY_Tab {
+        return Some(if modifiers.shift {
+            OverlayAction::MovePrevious
+        } else {
+            OverlayAction::MoveNext
+        });
+    }
+    if raw == keysyms::KEY_Return || raw == keysyms::KEY_KP_Enter || raw == keysyms::KEY_space {
+        return Some(OverlayAction::Confirm);
+    }
+    None
+}
+
 impl<B: Backend + 'static> LegeCompState<B> {
     /// Run `action` straight against `WindowService`, exactly as COMPOSITOR.md's keybinding row
     /// specifies: `handle_command` with `trusted_shell: true` because the *compositor itself* is
@@ -98,6 +135,26 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 let forward = matches!(action, RecoveryAction::CycleFocusForward);
                 if let Some(next) = self.window_service.cycle_focus(current, forward) {
                     crate::input::activate_window(self, next);
+                    // Draw the compositor-owned fallback switcher HUD (`src/chrome/mod.rs`) so
+                    // cycling is visible without the shell — stacking order for a stable,
+                    // deterministic list (`WindowService::windows()`'s own order is not
+                    // guaranteed). `src/input.rs` clears this on the next input that is not
+                    // itself another switcher step.
+                    let entries = self
+                        .window_service
+                        .stacking_order()
+                        .into_iter()
+                        .filter_map(|id| {
+                            self.window_service
+                                .window(id)
+                                .filter(|window| !window.shelved)
+                                .map(|window| (id, window.title.clone()))
+                        })
+                        .collect();
+                    self.switcher = Some(crate::chrome::SwitcherState {
+                        entries,
+                        selected: next,
+                    });
                 }
             }
         }
@@ -142,6 +199,64 @@ mod tests {
         assert_eq!(
             recovery_action(mods(false, true, true), Keysym::new(keysyms::KEY_Tab)),
             Some(RecoveryAction::CycleFocusBackward)
+        );
+    }
+
+    #[test]
+    fn overlay_arrows_and_tab_move_the_selection_in_both_directions() {
+        let none = mods(false, false, false);
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Right)),
+            Some(OverlayAction::MoveNext)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Down)),
+            Some(OverlayAction::MoveNext)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Left)),
+            Some(OverlayAction::MovePrevious)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Up)),
+            Some(OverlayAction::MovePrevious)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Tab)),
+            Some(OverlayAction::MoveNext)
+        );
+        assert_eq!(
+            overlay_action(mods(false, false, true), Keysym::new(keysyms::KEY_Tab)),
+            Some(OverlayAction::MovePrevious)
+        );
+    }
+
+    #[test]
+    fn overlay_enter_and_space_confirm() {
+        let none = mods(false, false, false);
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_Return)),
+            Some(OverlayAction::Confirm)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_KP_Enter)),
+            Some(OverlayAction::Confirm)
+        );
+        assert_eq!(
+            overlay_action(none, Keysym::new(keysyms::KEY_space)),
+            Some(OverlayAction::Confirm)
+        );
+    }
+
+    #[test]
+    fn overlay_action_ignores_unrelated_keys() {
+        assert_eq!(
+            overlay_action(mods(false, false, false), Keysym::new(keysyms::KEY_a)),
+            None
+        );
+        assert_eq!(
+            overlay_action(mods(false, false, false), Keysym::new(keysyms::KEY_Escape)),
+            None
         );
     }
 

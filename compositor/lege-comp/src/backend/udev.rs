@@ -44,7 +44,9 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma, ImportMemWl,
-            element::{solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement},
+            element::{
+                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
+            },
             gles::GlesRenderer,
         },
         session::{Session, libseat::LibSeatSession},
@@ -99,7 +101,7 @@ use std::{collections::HashMap, time::Duration};
 // rather than `///`) generates `UdevRenderElement` and its `RenderElement<GlesRenderer>` impl.
 smithay::backend::renderer::element::render_elements! {
     UdevRenderElement<=GlesRenderer>;
-    Custom=SolidColorRenderElement,
+    Custom=MemoryRenderBufferRenderElement<GlesRenderer>,
     Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
@@ -285,6 +287,8 @@ pub fn run() -> anyhow::Result<()> {
         session_lock: crate::session_lock::SessionLockState::default(),
         foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
         show_all_windows: None,
+        switcher: None,
+        chrome: crate::chrome::ChromeState::new(),
     };
 
     let _shell_global = dh.create_global::<State, crate::protocols::lege_shell_v1::lege_shell_manager_v1::LegeShellManagerV1, _>(
@@ -800,8 +804,7 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
 
-    let chrome = crate::chrome::collect_elements(state, &output);
-    if render_and_queue(state, node, crtc, &output, chrome) {
+    if render_and_queue(state, node, crtc, &output) {
         schedule_retry(state, node, crtc);
     }
 }
@@ -810,17 +813,30 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
 /// page flip if anything actually changed. Returns whether the caller should fall back to a timer
 /// retry: true on any failure or a damage-free frame (nothing queued, so no page-flip completion
 /// will come to drive the next attempt), false once a flip is queued.
-fn render_and_queue(
-    state: &mut State,
-    node: DrmNode,
-    crtc: crtc::Handle,
-    output: &Output,
-    chrome: Vec<SolidColorRenderElement>,
-) -> bool {
+fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output: &Output) -> bool {
     let Some(device) = state.backend_data.devices.get_mut(&node) else {
         return false;
     };
     let renderer = &mut device.renderer;
+
+    // `state.chrome`/`state.space`/`state.window_service`/... are fields of `state` disjoint
+    // from `state.backend_data` (which `device`/`renderer` above borrow from) — Rust's borrow
+    // checker tracks that disjointness through this whole function, which is exactly why
+    // `chrome::collect_elements` takes these pieces individually (`ChromeInputs`) rather than
+    // `&LegeCompState<B>` as a whole (see that type's doc).
+    let chrome_elements = crate::chrome::collect_elements(
+        &mut state.chrome,
+        &crate::chrome::ChromeInputs {
+            space: &state.space,
+            window_service: &state.window_service,
+            recovery_protocol: &state.recovery_protocol,
+            show_all_windows: state.show_all_windows.as_deref(),
+            session_lock: &state.session_lock,
+            switcher: state.switcher.as_ref(),
+        },
+        output,
+        renderer,
+    );
 
     let space_elements =
         match space_render_elements::<_, Window, _>(renderer, [&state.space], output, 1.0) {
@@ -832,8 +848,8 @@ fn render_and_queue(
         };
 
     let mut elements: Vec<UdevRenderElement> =
-        Vec::with_capacity(chrome.len() + space_elements.len());
-    elements.extend(chrome.into_iter().map(UdevRenderElement::Custom));
+        Vec::with_capacity(chrome_elements.len() + space_elements.len());
+    elements.extend(chrome_elements.into_iter().map(UdevRenderElement::Custom));
     elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
 
     let Some(surface) = device.surfaces.get_mut(&crtc) else {

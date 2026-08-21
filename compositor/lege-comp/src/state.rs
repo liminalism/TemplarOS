@@ -145,6 +145,13 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// Non-`None` while the "show every window" recovery view is active: the scattered layout to
     /// draw and hit-test against instead of `window_service`'s ordinary geometry.
     pub show_all_windows: Option<Vec<(lege_window::WindowId, lege_window::Rect)>>,
+    /// Non-`None` while the compositor-drawn fallback switcher (`WindowService::cycle_focus`,
+    /// `src/keybindings.rs`) is showing.
+    pub switcher: Option<crate::chrome::SwitcherState>,
+    /// The compositor's own chrome renderer — the discovered font (if any) and every painted
+    /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
+    /// reconstructed per-frame.
+    pub chrome: crate::chrome::ChromeState,
 }
 
 smithay::delegate_dispatch2!(@<B: Backend + 'static> LegeCompState<B>);

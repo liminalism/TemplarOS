@@ -320,6 +320,39 @@ impl<B: Backend + 'static> LegeCompState<B> {
             return;
         };
 
+        // The pressure overlay is modal while it is showing: every key is captured here, never
+        // forwarded to whatever client happened to have focus before it appeared (COMPOSITOR.md's
+        // "Layer::Recovery ... above everything except the lock screen"). Gated on `!locked` for
+        // the same reason `run_recovery_action` below is: a hostile overlay state must not become
+        // a way to interact with anything while the session is locked (`src/session_lock.rs`'s
+        // module doc on partial input isolation).
+        if !self.session_lock.locked && self.recovery_protocol.pressure_overlay.is_some() {
+            let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
+            let action = keyboard.input::<Option<crate::keybindings::OverlayAction>, _>(
+                self,
+                event.key_code(),
+                event.state(),
+                serial,
+                time,
+                |_, modifiers, handle| {
+                    // Always `Intercept`, even for a key that maps to nothing: `Forward` would
+                    // hand it to the client behind the overlay, which is exactly what a modal
+                    // overlay must not do.
+                    if !pressed {
+                        return FilterResult::Intercept(None);
+                    }
+                    FilterResult::Intercept(crate::keybindings::overlay_action(
+                        *modifiers,
+                        handle.modified_sym(),
+                    ))
+                },
+            );
+            if let Some(Some(action)) = action {
+                self.apply_overlay_action(action);
+            }
+            return;
+        }
+
         let action = keyboard.input::<crate::keybindings::RecoveryAction, _>(
             self,
             event.key_code(),
@@ -337,10 +370,39 @@ impl<B: Backend + 'static> LegeCompState<B> {
             },
         );
 
-        if let Some(action) = action
-            && !self.session_lock.locked
-        {
-            self.run_recovery_action(action);
+        if let Some(action) = action {
+            // The fallback switcher HUD (`chrome::SwitcherState`) stays up only until something
+            // else happens — any reserved action other than another cycle step clears it here;
+            // `run_recovery_action` itself repopulates it for a cycle step.
+            if !matches!(
+                action,
+                crate::keybindings::RecoveryAction::CycleFocusForward
+                    | crate::keybindings::RecoveryAction::CycleFocusBackward
+            ) {
+                self.switcher = None;
+            }
+            if !self.session_lock.locked {
+                self.run_recovery_action(action);
+            }
+        } else {
+            self.switcher = None;
+        }
+    }
+
+    /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
+    /// highlighted choice, or send it back to whichever connection asked for the overlay
+    /// (`protocols_recovery.rs::RecoveryProtocolState::confirm_selected`).
+    fn apply_overlay_action(&mut self, action: crate::keybindings::OverlayAction) {
+        match action {
+            crate::keybindings::OverlayAction::MovePrevious => {
+                self.recovery_protocol.move_selection(false);
+            }
+            crate::keybindings::OverlayAction::MoveNext => {
+                self.recovery_protocol.move_selection(true);
+            }
+            crate::keybindings::OverlayAction::Confirm => {
+                self.recovery_protocol.confirm_selected();
+            }
         }
     }
 
@@ -384,7 +446,19 @@ impl<B: Backend + 'static> LegeCompState<B> {
         let button = event.button_code();
         let button_state = event.state();
 
+        // Same modality as `on_keyboard`'s overlay branch: a click while the overlay is up picks
+        // a button (or does nothing, on a miss) and is never forwarded to a client underneath.
+        if !self.session_lock.locked && self.recovery_protocol.pressure_overlay.is_some() {
+            if button_state == ButtonState::Pressed {
+                self.handle_pressure_overlay_click(pointer.current_location());
+            }
+            return;
+        }
+
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+            // A click means the user is doing something else — the fallback switcher HUD
+            // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
+            self.switcher = None;
             self.handle_press_for_focus_or_drag(pointer.current_location(), serial);
         }
 
@@ -398,6 +472,36 @@ impl<B: Backend + 'static> LegeCompState<B> {
             },
         );
         pointer.frame(self);
+    }
+
+    /// Hit-test `location` (global logical) against whichever output it falls on and, if it lands
+    /// on one of the pressure overlay's four drawn buttons (`chrome::layout::pressure_choice_at`,
+    /// the same layout `chrome::mod::collect_elements` draws), select and immediately confirm it
+    /// — a click is both "select" and "activate" for a button, unlike keyboard navigation's two
+    /// separate steps. A miss (clicking elsewhere on the overlay) does nothing, matching a modal
+    /// dialog with no implicit dismiss.
+    fn handle_pressure_overlay_click(&mut self, location: Point<f64, Logical>) {
+        let pos = to_lege_point(location);
+        let Some(output) = self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.to_f64().contains(location))
+        }) else {
+            return;
+        };
+        let Some(geometry) = self.space.output_geometry(output) else {
+            return;
+        };
+        let area = lege_window::Rect::new(
+            geometry.loc.x,
+            geometry.loc.y,
+            geometry.size.w,
+            geometry.size.h,
+        );
+        if let Some(choice) = crate::chrome::layout::pressure_choice_at(area, pos) {
+            self.recovery_protocol.select(choice);
+            self.recovery_protocol.confirm_selected();
+        }
     }
 
     /// The topmost window (by `WindowService::stacking_order`) whose geometry contains `pos`, if

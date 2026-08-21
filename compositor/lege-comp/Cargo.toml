@@ -27,6 +27,14 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# The compositor's own chrome renderer (`src/chrome/`): the recovery band/tab, the pressure
+# overlay, the "show every window" labels, the fallback switcher and the lock screen are real
+# painted pixels, not solid-colour placeholders. Both crates have no dependencies of their own
+# (root `Cargo.toml`'s comment on `[workspace.dependencies]`), which is what makes them safe to
+# link into the compositor's render thread.
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+
 # Directly needed to compile the `wayland-scanner`-generated bindings for our two private
 # protocols (src/protocols.rs). Version-unified by Cargo with whatever `smithay` pulls in
 # transitively — kept at the same `0.31`/`0.32` lines deliberately so there is only ever one
@@ -73,6 +81,14 @@ features = [
 [dependencies.smithay-drm-extras]
 git = "https://github.com/smithay/smithay.git"
 rev = "1ed69cb"
+
+[dev-dependencies]
+# `test-fonts` embeds two real Noto faces behind a feature specifically so downstream crates'
+# tests get deterministic glyphs without depending on whatever fonts (if any) the host running
+# `cargo test` happens to have installed — see `src/chrome/text.rs` tests. Cargo unifies features
+# across dev/normal dependencies of the same crate, so this never reaches a non-test build.
+pixelkit-text = { workspace = true, features = ["test-fonts"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
