@@ -555,6 +555,11 @@ fn check_packaging(root: &Path) -> Result<()> {
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
     problems.extend(unshipped_unit_binaries(&units, &installed));
     problems.extend(colliding_destinations(&shipped));
+    problems.extend(dangling_manifest_executables(
+        root,
+        &installed,
+        &fork_packages(root)?,
+    )?);
     let seeds = read_seeds(root)?;
     let built = built_package_names(root, &control_packages)?;
     problems.extend(seed_problems(&seeds, &built));
@@ -586,6 +591,66 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// Forward: a `Package:` with no crate to build it is a package `debian/rules` expects and
 /// `cargo deb` will never produce. Reverse: a crate whose deb name matches no stanza builds a
 /// `.deb` nothing installs — the same typo, caught from the other side.
+/// Whether some package provides a manifest's executable: installed by a package here, or named
+/// by a fork whose file list this repository cannot see.
+fn manifest_executable_is_provided(
+    executable: &str,
+    installed: &BTreeSet<String>,
+    fork_packages: &BTreeSet<String>,
+) -> bool {
+    let basename = executable.rsplit('/').next().unwrap_or(executable);
+    installed.contains(executable) || fork_packages.contains(basename)
+}
+
+/// Application manifests naming an executable that nothing provides.
+///
+/// A manifest in `distro/app-manifests/` is shipped to `/usr/share/legeos/apps/` and registers its
+/// MIME types, so it is a live promise that opening one of those files will launch that binary.
+/// `org.legeos.Viewer.json` was a test fixture that had been copied into the packaged directory:
+/// byte-identical to `tests/fixtures/manifests/`, naming `/usr/bin/lege-viewer` for a crate that
+/// has never existed, and claiming `application/pdf`. Installed, it would have become the
+/// registered PDF handler and every PDF would have failed to open — against a system whose fourth
+/// stated claim is that file opening is predictable.
+///
+/// An executable is provided if some package here installs it, or if its name is a fork's package
+/// (`/usr/bin/lege-files` comes from the cosmic-files fork, whose file list is not visible from
+/// this repository). A curated manifest for a third-party application the user has not installed
+/// is a runtime observation, not a build error — `lege doctor` warns about those.
+fn dangling_manifest_executables(
+    root: &Path,
+    installed: &BTreeSet<String>,
+    fork_packages: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let dir = root.join("distro/app-manifests");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut problems = Vec::new();
+    for entry in std::fs::read_dir(&dir).context("reading distro/app-manifests")? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let manifest: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let Some(executable) = manifest["executable"].as_str() else {
+            continue;
+        };
+        if manifest_executable_is_provided(executable, installed, fork_packages) {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        problems.push(format!(
+            "distro/app-manifests/{name}: executable {executable} is installed by no package and \
+             is not a fork's package"
+        ));
+    }
+    problems.sort();
+    Ok(problems)
+}
+
 /// Destinations that more than one package installs.
 ///
 /// `dpkg` refuses this at unpack time — "trying to overwrite X, which is also in package Y" — so
@@ -724,6 +789,13 @@ fn built_package_names(root: &Path, control_packages: &[String]) -> Result<BTree
     for (_, text) in metapackage_controls(root)? {
         built.extend(parse_control_packages(&text));
     }
+    built.extend(fork_packages(root)?);
+    Ok(built)
+}
+
+/// The `package = ` name of every fork in `distro/forks/manifest.toml`.
+fn fork_packages(root: &Path) -> Result<BTreeSet<String>> {
+    let mut packages = BTreeSet::new();
     let manifest = root.join("distro/forks/manifest.toml");
     if manifest.is_file() {
         let text = std::fs::read_to_string(&manifest).context("reading forks manifest")?;
@@ -731,12 +803,12 @@ fn built_package_names(root: &Path, control_packages: &[String]) -> Result<BTree
             if let Some(rest) = line.trim().strip_prefix("package") {
                 let value = rest.trim_start_matches([' ', '=']).trim().trim_matches('"');
                 if !value.is_empty() {
-                    built.insert(value.to_owned());
+                    packages.insert(value.to_owned());
                 }
             }
         }
     }
-    Ok(built)
+    Ok(packages)
 }
 
 /// `(seed file name, package names)` for every `distro/seeds/*.seed`.
@@ -1090,8 +1162,9 @@ fn copyright(root: &Path) -> Result<()> {
 mod extraction_tests {
     use super::{
         VendoredAssets, client_interface_names, colliding_destinations,
-        metapackage_dependency_problems, packaging_problems, parse_control_packages, seed_problems,
-        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
+        manifest_executable_is_provided, metapackage_dependency_problems, packaging_problems,
+        parse_control_packages, seed_problems, server_interface_names, unlicensed_assets,
+        unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1272,6 +1345,30 @@ mod extraction_tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("legeos-orphan"));
         assert!(problems[0].contains("no crate [package.metadata.deb]"));
+    }
+
+    #[test]
+    fn a_manifest_executable_counts_as_provided_only_when_something_provides_it() {
+        let installed = BTreeSet::from(["/usr/bin/lege-shell".to_owned()]);
+        let forks = BTreeSet::from(["lege-files".to_owned()]);
+
+        assert!(manifest_executable_is_provided(
+            "/usr/bin/lege-shell",
+            &installed,
+            &forks
+        ));
+        // From the cosmic-files fork, whose file list is not visible from this repository.
+        assert!(manifest_executable_is_provided(
+            "/usr/bin/lege-files",
+            &installed,
+            &forks
+        ));
+        // The one that shipped: a fixture manifest for a crate that has never existed.
+        assert!(!manifest_executable_is_provided(
+            "/usr/bin/lege-viewer",
+            &installed,
+            &forks
+        ));
     }
 
     #[test]

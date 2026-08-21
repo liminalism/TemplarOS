@@ -517,8 +517,14 @@ impl Check for AppManifestsValid {
     fn id(&self) -> &'static str {
         "app-manifests"
     }
+    /// A warning, not an error. `distro/app-manifests/README.md` says curated alias manifests for
+    /// third-party applications — Waterfox, Steam, Wine prefixes — "live here permanently", so a
+    /// manifest whose executable is absent usually just means the user has not installed that
+    /// application, which is not a fault in the system. The genuinely broken case — a manifest
+    /// naming a binary no package anywhere provides — is a build-time question, and belongs to
+    /// `xtask check-packaging` rather than here.
     fn severity(&self) -> Severity {
-        Severity::Error
+        Severity::Warning
     }
     fn run(&self, context: &Context) -> Finding {
         let manifests = load_manifests(context);
@@ -549,8 +555,15 @@ impl Check for AppManifestsValid {
             finding(
                 self,
                 Outcome::Fail,
-                format!("{} manifest(s) with a missing executable", missing.len()),
-                missing.join(", "),
+                format!(
+                    "{} manifest(s) name an executable that is not installed",
+                    missing.len()
+                ),
+                format!(
+                    "{} — expected if the application simply is not installed; a fault only if \
+                     nothing provides it at all",
+                    missing.join(", ")
+                ),
             )
         }
     }

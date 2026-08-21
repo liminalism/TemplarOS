@@ -48,5 +48,5 @@ depends = "$auto, systemd, xdg-utils"
 assets = [
     ["target/release/lege-sessiond", "usr/libexec/lege-sessiond", "755"],
     ["../../session/units/user/lege-sessiond.service", "usr/lib/systemd/user/lege-sessiond.service", "644"],
-    ["../../distro/app-manifests/org.legeos.Viewer.json", "usr/share/legeos/apps/org.legeos.Viewer.json", "644"],
+    ["../../distro/app-manifests/*.json", "usr/share/legeos/apps/", "644"],
 ]
