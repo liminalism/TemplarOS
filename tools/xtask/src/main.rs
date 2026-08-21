@@ -28,6 +28,9 @@ enum Command {
     /// Every client `#[proxy(interface = "org.legeos...")]` has a live `#[zbus::interface]`
     /// implementation somewhere in the workspace, not just an XML file.
     CheckProxies,
+    /// Every vendored asset (a font, an icon set — anything not built from source in this
+    /// repository) carries its own licence file, so `debian/copyright` can account for it.
+    CheckAssets,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
     Copyright,
 }
@@ -86,6 +89,7 @@ fn main() -> Result<()> {
         Command::CheckInterfaces => check_interfaces(&root),
         Command::CheckPackaging => check_packaging(&root),
         Command::CheckProxies => check_proxies(&root),
+        Command::CheckAssets => check_assets(&root),
         Command::Copyright => copyright(&root),
     }
 }
@@ -576,6 +580,128 @@ fn parse_control_packages(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Filenames accepted as a licence record beside a vendored asset.
+const LICENCE_FILENAMES: &[&str] = &[
+    "LICENSE",
+    "LICENCE",
+    "COPYING",
+    "LICENSE.txt",
+    "COPYING.txt",
+];
+
+/// One vendored asset directory, and whether a licence file sits with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendoredAssets {
+    pub dir: String,
+    pub licence: Option<String>,
+}
+
+/// Vendored assets without a licence file beside them.
+///
+/// `cargo metadata` sees crate manifests, so a font or icon checked into `assets/` is invisible
+/// to it — and therefore invisible to `debian/copyright`, which is generated from it. That is a
+/// licensing defect that ships silently: the package carries someone else's work with no record
+/// of the terms. This is the check that stops it.
+fn unlicensed_assets(found: &[VendoredAssets]) -> Vec<String> {
+    found
+        .iter()
+        .filter(|assets| assets.licence.is_none())
+        .map(|assets| {
+            format!(
+                "{}: vendored assets with no {} beside them",
+                assets.dir,
+                LICENCE_FILENAMES.join("/")
+            )
+        })
+        .collect()
+}
+
+/// Find every `assets/` directory belonging to a crate in the workspace.
+fn scan_vendored_assets(root: &Path) -> Vec<VendoredAssets> {
+    let mut found = Vec::new();
+    for entry in walk_assets_dirs(root) {
+        let licence = LICENCE_FILENAMES
+            .iter()
+            .map(|name| entry.join(name))
+            .find(|candidate| candidate.is_file())
+            .or_else(|| {
+                std::fs::read_dir(&entry).ok().and_then(|children| {
+                    children
+                        .filter_map(std::result::Result::ok)
+                        .map(|child| child.path())
+                        .filter(|path| path.is_dir())
+                        .flat_map(|dir| {
+                            LICENCE_FILENAMES
+                                .iter()
+                                .map(|name| dir.join(name))
+                                .collect::<Vec<_>>()
+                        })
+                        .find(|candidate| candidate.is_file())
+                })
+            });
+        found.push(VendoredAssets {
+            dir: relative(root, &entry),
+            licence: licence.map(|path| relative(root, &path)),
+        });
+    }
+    found.sort_by(|a, b| a.dir.cmp(&b.dir));
+    found
+}
+
+fn walk_assets_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if matches!(
+                &*name,
+                "target" | ".git" | "vendor" | "forks" | "node_modules"
+            ) {
+                continue;
+            }
+            if name == "assets" {
+                out.push(path);
+            } else {
+                stack.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn check_assets(root: &Path) -> Result<()> {
+    let found = scan_vendored_assets(root);
+    let problems = unlicensed_assets(&found);
+    if problems.is_empty() {
+        println!(
+            "check-assets: {} vendored asset director(ies), each with a licence file",
+            found.len()
+        );
+        Ok(())
+    } else {
+        for problem in &problems {
+            eprintln!("check-assets: {problem}");
+        }
+        bail!("{} problem(s)", problems.len())
+    }
+}
+
 fn copyright(root: &Path) -> Result<()> {
     let output = Process::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -597,15 +723,50 @@ fn copyright(root: &Path) -> Result<()> {
             package["license"].as_str().unwrap_or("MPL-2.0")
         );
     }
+    // Vendored assets are not crates, so `cargo metadata` never mentions them; without this the
+    // package would ship third-party work with no record of its terms.
+    for assets in scan_vendored_assets(root) {
+        println!(
+            "Files: {}/*\nCopyright: see {}\nLicense: see {}\n",
+            assets.dir,
+            assets
+                .licence
+                .as_deref()
+                .unwrap_or("(MISSING — run check-assets)"),
+            assets
+                .licence
+                .as_deref()
+                .unwrap_or("(MISSING — run check-assets)")
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        client_interface_names, packaging_problems, parse_control_packages, server_interface_names,
+        VendoredAssets, client_interface_names, packaging_problems, parse_control_packages,
+        server_interface_names, unlicensed_assets,
     };
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn vendored_assets_without_a_licence_are_reported() {
+        let found = vec![
+            VendoredAssets {
+                dir: "shell/lege-shell/assets".into(),
+                licence: Some("shell/lege-shell/assets/fonts/LICENSE".into()),
+            },
+            VendoredAssets {
+                dir: "apps/lege-greeter/assets".into(),
+                licence: None,
+            },
+        ];
+        let problems = unlicensed_assets(&found);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("apps/lege-greeter/assets:"));
+        assert!(unlicensed_assets(&found[..1]).is_empty());
+    }
 
     fn names(set: &BTreeSet<String>) -> Vec<&str> {
         set.iter().map(String::as_str).collect()

@@ -2,20 +2,26 @@
 //!
 //! `lege_window::shell::{ShellToplevel, DockGrouping, grouping_key}` is the whole policy
 //! (planning doc 02 §7 end-to-end opening flow); this module only turns one grouped snapshot
-//! into the lines a text dock prints. Takes `&[ShellToplevel]` directly, the same seam as
-//! [`crate::drawers::window_shelf`]: in the running system that vector comes from the
-//! compositor's private `lege_shell_v1` protocol, which is out of scope for this milestone's
-//! client-side surface, so tests construct it directly instead of standing up a fake transport.
+//! into the lines a text dock prints, or (`crate::surface::dock_screen`) the entries a graphical
+//! one draws. Takes `&[ShellToplevel]` directly, the same seam as [`crate::drawers::window_shelf`]:
+//! in the running system that vector comes from the compositor's private `lege_shell_v1` protocol
+//! (`crate::wayland_bridge`), so tests construct it directly instead of standing up a fake
+//! transport.
 
-use lege_window::{DockGrouping, ShellToplevel, grouping_key};
+use lege_window::{DockGrouping, ShellToplevel, WindowId, grouping_key};
 use std::collections::BTreeMap;
 
-/// One dock entry: a group's key, how many windows it has, and their titles in encounter order.
+/// One dock entry: a group's key, its windows' ids (for activating one) and titles, both in
+/// encounter order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockEntry {
     pub key: String,
     pub window_count: usize,
     pub titles: Vec<String>,
+    /// Every window in this group, in the same order as `titles`. Unused by the text renderer
+    /// below (a line of text has nothing to click); `crate::surface::dock_screen` activates
+    /// `window_ids[0]` — the group's first-encountered window — when its icon is clicked.
+    pub window_ids: Vec<WindowId>,
 }
 
 /// Group `toplevels` under `policy` and return one [`DockEntry`] per group, ordered by key.
@@ -33,7 +39,7 @@ pub fn group(toplevels: &[ShellToplevel], policy: DockGrouping) -> Vec<DockEntry
             key,
             window_count: windows.len(),
             titles: windows
-                .into_iter()
+                .iter()
                 .map(|window| {
                     if window.title.is_empty() {
                         "(untitled)".to_owned()
@@ -42,6 +48,7 @@ pub fn group(toplevels: &[ShellToplevel], policy: DockGrouping) -> Vec<DockEntry
                     }
                 })
                 .collect(),
+            window_ids: windows.iter().map(|window| window.window_id).collect(),
         })
         .collect()
 }

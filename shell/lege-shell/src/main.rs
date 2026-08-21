@@ -1,33 +1,27 @@
 //! `lege-shell` — everything decorative, restartable without terminating applications.
 //!
-//! This milestone builds the part that has to be right whatever renders it: the Home Surface as
-//! a **model over the services**, plus a text renderer. Every drawer is a live view of an
-//! `org.legeos.*` interface rather than state the shell keeps for itself (planning doc 01 §1),
-//! the dock groups by canonical `AppId` through `lege_window::shell` so it needs no local
-//! `WM_CLASS` heuristics, and the pressure overlay's wording is a pure function of one
+//! The Home Surface and the dock are a **model over the services** (`lege_shell::drawers`,
+//! `lege_shell::dock`) with two renderers over it: a text one (`--print <drawer>`,
+//! `--list-drawers`) and a graphical one (`--surface`, `lege_shell::surface`). Every drawer is a
+//! live view of an `org.legeos.*` interface rather than state the shell keeps for itself (planning
+//! doc 01 §1), the dock groups by canonical `AppId` through `lege_window::shell` so it needs no
+//! local `WM_CLASS` heuristics, and the pressure overlay's wording is a pure function of one
 //! `Resources1` signal.
 //!
-//! No UI toolkit is linked yet, deliberately: libcosmic is a large git dependency and the first
-//! real surface belongs to a later milestone. `--print <drawer>` is what makes the model
-//! exercisable and testable today, and it is also how `docs/architecture/accessibility.md`'s
-//! "everything the shell shows is available through `lege` too" is met for the shell's own
-//! surfaces while the graphical ones do not exist.
+//! The text renderer is not a fallback the graphical one obsoletes: `--print`/`--list-drawers`
+//! stay, unconditionally, as `docs/architecture/accessibility.md`'s "everything the shell shows is
+//! available through `lege` too" for the shell's own surfaces, and as what this crate's tests and
+//! `tests/integration/run.sh` exercise with no compositor, no session bus and no display at all.
 //!
 //! A drawer whose service is not running prints one clear line saying so. The shell is the last
 //! thing that should panic when a daemon is missing.
 
 use anyhow::Result;
 use clap::Parser;
-use lege_client::proxies::{
-    FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy, ProjectsProxy,
-    SettingsProxy,
-};
+use lege_client::proxies::SettingsProxy;
 use lege_window::ShellToplevel;
 
-use lege_shell::{
-    dock, drawers, drawers::standard_paths::StandardDrawer, home_surface::Drawer, pressure,
-    settings,
-};
+use lege_shell::{data, dock, drawers, home_surface::Drawer, pressure, settings};
 
 /// LegeOS shell.
 #[derive(Debug, Parser)]
@@ -44,6 +38,16 @@ struct Cli {
     /// How many entries to show in the drawers that are lists.
     #[arg(long, default_value_t = 20)]
     limit: u32,
+
+    /// Open the graphical Home Surface and dock. Needs a Wayland compositor; for the private
+    /// `lege_shell_v1` protocol (live Window Shelf and dock contents, layer/exclusive-zone
+    /// placement) `WAYLAND_DISPLAY` must name the compositor's trusted-shell socket
+    /// (`compositor/lege-comp/src/shell_socket.rs`'s `<main socket>-shell`), not the ordinary one
+    /// — without that, the surface still opens and still shows every D-Bus-backed drawer, just
+    /// with an empty dock and Window Shelf, the same graceful degradation every other drawer
+    /// already has for its own service being absent.
+    #[arg(long)]
+    surface: bool,
 }
 
 #[tokio::main]
@@ -63,8 +67,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.surface {
+        return lege_shell::surface::run();
+    }
+
     tracing::info!(
-        "lege-shell: no graphical surface in this milestone; use --print <drawer> or --list-drawers"
+        "lege-shell: pass --surface for the graphical Home Surface and dock, or --print \
+         <drawer>/--list-drawers for the text form"
     );
     Ok(())
 }
@@ -127,108 +136,35 @@ async fn print_target(target: &str, limit: u32) -> Result<String> {
     Ok(render_drawer(drawer, limit).await)
 }
 
-/// Connect to the session bus, or explain why not in one line.
-async fn session() -> std::result::Result<zbus::Connection, String> {
-    zbus::Connection::session()
-        .await
-        .map_err(|error| format!("service unavailable: no session bus ({error})"))
-}
-
-/// `service unavailable: <why>` — the single line a drawer prints instead of its contents.
-fn unavailable(what: &str, error: &anyhow::Error) -> String {
-    format!("{what} — service unavailable: {error:#}")
-}
-
 async fn render_drawer(drawer: Drawer, limit: u32) -> String {
-    // The Network drawer and the Window Shelf need no bus at all: one has no service to reach,
-    // and the other's producer (the private `lege_shell_v1` protocol) does not exist yet.
-    match drawer {
-        Drawer::Network => return drawers::network::render(),
-        Drawer::WindowShelf => return render_window_shelf(),
-        _ => {}
+    // The Window Shelf needs no bus at all: its producer is the private `lege_shell_v1`
+    // protocol, which this text-only binary has no connection to (see `render_window_shelf`).
+    // Every other drawer, including Network, is `data::render_drawer`'s job — shared verbatim
+    // with the graphical surface's own background refresh (`surface::data`).
+    if drawer == Drawer::WindowShelf {
+        return render_window_shelf();
     }
-
-    let connection = match session().await {
-        Ok(connection) => connection,
-        Err(message) => return format!("{} — {message}", drawer.name()),
-    };
-
-    match drawer {
-        Drawer::Recent => match FilesRecentsProxy::new(&connection).await {
-            Ok(proxy) => drawers::recent::render(&proxy, limit)
-                .await
-                .unwrap_or_else(|error| unavailable("Recent", &error)),
-            Err(error) => unavailable("Recent", &error.into()),
-        },
-        Drawer::Drives => match FilesVolumesProxy::new(&connection).await {
-            Ok(proxy) => drawers::volumes::render(&proxy)
-                .await
-                .unwrap_or_else(|error| unavailable("Drives", &error)),
-            Err(error) => unavailable("Drives", &error.into()),
-        },
-        Drawer::Operations => match FilesOperationsProxy::new(&connection).await {
-            Ok(proxy) => drawers::operations::render(&proxy, limit)
-                .await
-                .unwrap_or_else(|error| unavailable("Operations", &error)),
-            Err(error) => unavailable("Operations", &error.into()),
-        },
-        Drawer::Trash => match FilesOperationsProxy::new(&connection).await {
-            Ok(proxy) => drawers::trash::render(&proxy, limit)
-                .await
-                .unwrap_or_else(|error| unavailable("Trash", &error)),
-            Err(error) => unavailable("Trash", &error.into()),
-        },
-        Drawer::Projects => match ProjectsProxy::new(&connection).await {
-            Ok(proxy) => drawers::projects::render(&proxy)
-                .await
-                .unwrap_or_else(|error| unavailable("Projects", &error)),
-            Err(error) => unavailable("Projects", &error.into()),
-        },
-        Drawer::Downloads | Drawer::Documents | Drawer::Media => {
-            let standard = match drawer {
-                Drawer::Downloads => StandardDrawer::Downloads,
-                Drawer::Documents => StandardDrawer::Documents,
-                _ => StandardDrawer::Media,
-            };
-            render_standard(&connection, standard).await
-        }
-        // Handled above, before the connection was made.
-        Drawer::Network | Drawer::WindowShelf => unreachable!(),
-    }
+    data::render_drawer(drawer, limit).await
 }
 
-async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer) -> String {
-    let Some(home) = drawers::standard_paths::home_dir() else {
-        return format!(
-            "{} — service unavailable: $HOME is not set",
-            standard.title()
-        );
-    };
-    let user_dirs = drawers::standard_paths::read_user_dirs(&home);
-    match FilesSearchProxy::new(connection).await {
-        Ok(proxy) => drawers::standard_paths::render(&proxy, standard, &home, user_dirs.as_deref())
-            .await
-            .unwrap_or_else(|error| unavailable(standard.title(), &error)),
-        Err(error) => unavailable(standard.title(), &error.into()),
-    }
-}
-
-/// The Window Shelf's producer does not exist yet (see [`drawers::window_shelf`]), so there is
-/// no vector of toplevels to render — say that rather than printing an empty shelf, which would
-/// wrongly read as "nothing is minimised".
+/// This text-only command opens no Wayland connection at all
+/// (`docs/architecture/accessibility.md`'s headless path), so it has no toplevel list to show —
+/// say that rather than printing an empty shelf, which would wrongly read as "nothing is
+/// minimised". The graphical surface (`lege-shell --surface`) renders this same drawer against a
+/// live `lege_shell_v1` connection instead (`surface::home_screen`).
 fn render_window_shelf() -> String {
     let none: [ShellToplevel; 0] = [];
     format!(
-        "{}\n(the compositor's private lege_shell_v1 protocol has no client in this milestone, \
-         so no window list is available yet)",
+        "{}\n(this text command has no lege_shell_v1 connection; run `lege-shell --surface` for \
+         a live window list)",
         drawers::window_shelf::render(&none)
     )
 }
 
 /// The dock, grouped by whatever `shell.dock.grouping` says. Same caveat as the Window Shelf:
-/// the toplevel list has no producer yet, so this renders the empty dock and says why.
+/// no Wayland connection here means no toplevel list, so this renders the empty dock and says why.
 async fn render_dock() -> String {
-    let policy = match session().await {
+    let policy = match data::session().await {
         Ok(connection) => match SettingsProxy::new(&connection).await {
             Ok(proxy) => settings::dock_grouping(&proxy).await,
             Err(_) => lege_window::DockGrouping::ByApplication,
@@ -237,8 +173,8 @@ async fn render_dock() -> String {
     };
     let none: [ShellToplevel; 0] = [];
     format!(
-        "{}\ngrouping: {policy:?}\n(the compositor's private lege_shell_v1 protocol has no client \
-         in this milestone, so no window list is available yet)",
+        "{}\ngrouping: {policy:?}\n(this text command has no lege_shell_v1 connection; run \
+         `lege-shell --surface` for a live dock)",
         dock::render(&none, policy)
     )
 }

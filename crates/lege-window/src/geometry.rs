@@ -4,6 +4,7 @@
 //! at least one active output, after every drag, output change, scale change, resume and
 //! application geometry request. All coordinates are global compositor-logical coordinates.
 
+use crate::layers::Layer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -173,6 +174,60 @@ pub fn work_area_for(logical: Rect, zones: &[Exclusive]) -> Rect {
             },
         }
     })
+}
+
+/// Where the compositor should place a shell surface on `output`.
+///
+/// xdg-shell gives a client no way to position itself, and that is correct rather than a gap: a
+/// surface that could place itself anywhere would be a window that could place itself anywhere,
+/// and the whole point of this crate is that placement is the compositor's decision. So a dock
+/// does not ask to sit at the bottom of the screen — it declares that it *is* a dock reserving
+/// the bottom edge, and where that puts it follows.
+///
+/// * A surface with an [`Exclusive`] claim is placed flush against that edge, spanning the
+///   output's full extent along it. It is measured against `logical`, not [`Output::usable`],
+///   because the claim is what *creates* the usable area — insetting it by its own reservation
+///   would walk it off the screen one frame at a time.
+/// * A [`Layer::HomeSurface`] surface with no claim fills the output: it is the backdrop, the
+///   thing visible wherever no window is.
+/// * Anything else keeps its requested size and is moved wholly inside the usable area, so a
+///   launcher or a notification cannot open underneath the dock that reserved space above it.
+pub fn shell_surface_placement(
+    layer: Layer,
+    exclusive: Option<Exclusive>,
+    output: &Output,
+    requested: Rect,
+) -> Rect {
+    let full = output.logical;
+    if let Some(zone) = exclusive {
+        let size = zone.size.max(0);
+        return match zone.edge {
+            Edge::Top => Rect::new(full.x, full.y, full.width, size.min(full.height)),
+            Edge::Bottom => {
+                let height = size.min(full.height);
+                Rect::new(
+                    full.x,
+                    full.bottom().saturating_sub(height),
+                    full.width,
+                    height,
+                )
+            }
+            Edge::Left => Rect::new(full.x, full.y, size.min(full.width), full.height),
+            Edge::Right => {
+                let width = size.min(full.width);
+                Rect::new(
+                    full.right().saturating_sub(width),
+                    full.y,
+                    width,
+                    full.height,
+                )
+            }
+        };
+    }
+    if layer == Layer::HomeSurface {
+        return full;
+    }
+    move_into_view(requested, std::slice::from_ref(output))
 }
 
 /// Minimum visible width of the recovery band.
@@ -472,6 +527,99 @@ mod tests {
         let repaired = repair_window(lost, &edp());
         assert!(is_recoverable(repaired, &edp()));
         assert_eq!((repaired.width, repaired.height), (1200, 900));
+    }
+
+    #[test]
+    fn a_shell_surface_is_placed_by_what_it_is() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        let output = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
+            screen,
+            &[Exclusive {
+                edge: Edge::Bottom,
+                size: 64,
+            }],
+        ));
+        let asked_for = Rect::new(7000, 7000, 900, 64);
+
+        // A dock claiming the bottom edge lands on the bottom edge, spanning the output —
+        // measured against the whole output, not the usable area its own claim created.
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    edge: Edge::Bottom,
+                    size: 64
+                }),
+                &output,
+                asked_for,
+            ),
+            Rect::new(0, 1016, 1920, 64)
+        );
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    edge: Edge::Top,
+                    size: 40
+                }),
+                &output,
+                asked_for,
+            ),
+            Rect::new(0, 0, 1920, 40)
+        );
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    edge: Edge::Left,
+                    size: 72
+                }),
+                &output,
+                asked_for,
+            ),
+            Rect::new(0, 0, 72, 1080)
+        );
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    edge: Edge::Right,
+                    size: 72
+                }),
+                &output,
+                asked_for,
+            ),
+            Rect::new(1848, 0, 72, 1080)
+        );
+
+        // The Home Surface is the backdrop, so it fills the output whatever it asked for.
+        assert_eq!(
+            shell_surface_placement(Layer::HomeSurface, None, &output, asked_for),
+            screen
+        );
+
+        // Anything else keeps its size and is pulled wholly inside the usable area, so a
+        // launcher cannot open underneath the dock.
+        let launcher = shell_surface_placement(
+            Layer::ShellOverlay,
+            None,
+            &output,
+            Rect::new(7000, 7000, 400, 300),
+        );
+        assert_eq!((launcher.width, launcher.height), (400, 300));
+        assert_eq!(output.usable().intersection(launcher), Some(launcher));
+
+        // A claim larger than the output is clamped rather than placed off-screen.
+        let greedy = shell_surface_placement(
+            Layer::ShellOverlay,
+            Some(Exclusive {
+                edge: Edge::Bottom,
+                size: 99_999,
+            }),
+            &output,
+            asked_for,
+        );
+        assert_eq!(greedy, screen);
     }
 
     #[test]

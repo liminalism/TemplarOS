@@ -1,6 +1,6 @@
 [package]
 name = "lege-shell"
-description = "LegeOS restartable shell: the Home Surface as a model over the services (drawers, dock grouping, pressure overlay text) plus a text renderer; no UI toolkit yet"
+description = "LegeOS restartable shell: the Home Surface and dock as a model over the services, rendered as a real pixelkit surface (--surface) and as text (--print/--list-drawers)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -28,6 +28,46 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
+
+# The graphical Home Surface + dock (src/surface/**): pixelkit is this project's toolkit
+# (declared in the root workspace manifest; see that file's comment on why it is a path
+# dependency for now).
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
+
+# `pixelkit-shell` opens windows through winit, but its own `PixelApp`/`run_app` never hands the
+# caller the winit `Window` (see src/surface/window.rs's module doc) — reaching the compositor's
+# private `lege_shell_v1` protocol needs the window's raw Wayland surface, so this crate drives its
+# own `winit::application::ApplicationHandler` directly, reusing pixelkit-shell's lower-level,
+# independently-public pieces (`SoftbufferPresenter`, `Input`, `Scale`, the key/mouse enums)
+# instead of `run_app`. Pinned to the same "0.30" line pixelkit's own Cargo.toml uses, so Cargo
+# resolves one compiled winit rather than two.
+winit = "0.30"
+
+# Directly needed to reach into the wl_display winit already opened on the compositor's private
+# trusted-shell socket (src/wayland_bridge.rs) and speak `lege_shell_v1` on it — winit exposes only
+# a raw pointer (`raw_window_handle`/`platform::wayland`), never a `wayland_client::Connection`, so
+# this crate rebuilds one over winit's own foreign `wl_display` via
+# `wayland_backend::sys::client::Backend::from_foreign_display` (the sanctioned entry point for a
+# library "plugging itself into an existing Wayland connection"; see that module's doc comment).
+# Pinned to the same "0.31"/"0.3" lines the compositor's own manifest uses for the matching reason:
+# so there is only ever one compiled `wayland-client`/`wayland-backend`, the same instance winit
+# itself already pulled in transitively.
+# `client_system` selects wayland-backend's libwayland-client-backed implementation (the one with
+# `Backend::from_foreign_display`/`ObjectId::from_ptr`) rather than its pure-Rust reimplementation,
+# which has neither — winit enables the same feature on its own `wayland-backend` dependency, so
+# this is also what keeps the two crates' feature sets (and therefore Cargo's unification of them
+# into one compiled `wayland-backend`) aligned rather than accidentally relying on winit having
+# requested it first.
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-scanner = "0.31"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -36,6 +36,9 @@ deps-check:
 
 check-interfaces:
     cargo run -q -p xtask -- check-interfaces
+    cargo run -q -p xtask -- check-proxies
+    cargo run -q -p xtask -- check-packaging
+    cargo run -q -p xtask -- check-assets
 
 # `lege doctor` against this machine
 doctor *ARGS:
