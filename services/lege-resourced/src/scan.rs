@@ -20,10 +20,20 @@ pub struct DiscoveredInstance {
     pub cgroup: Cgroup,
 }
 
-/// The `app.slice` of the current user's manager.
+/// The `app.slice` of the current user's manager: application launches only.
 pub fn user_app_slice(uid: u32) -> PathBuf {
     Path::new(CGROUP_ROOT).join(format!(
         "user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
+    ))
+}
+
+/// The `session.slice` of the current user's manager: session-critical infrastructure
+/// (compositor, shell, audio, `lege-resourced` itself — see [`crate::protect`]), never
+/// application instances. Same self-describing-path derivation as `user_app_slice`: no D-Bus
+/// round-trip, no dependency on systemd having answered a query (ADR-0002).
+pub fn user_session_slice(uid: u32) -> PathBuf {
+    Path::new(CGROUP_ROOT).join(format!(
+        "user.slice/user-{uid}.slice/user@{uid}.service/session.slice"
     ))
 }
 
@@ -77,5 +87,15 @@ mod tests {
         assert_eq!(found[0].instance_id, id);
         assert!(discover(&dir.join("missing")).unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn app_and_session_slices_are_distinct_siblings() {
+        let app = user_app_slice(1000);
+        let session = user_session_slice(1000);
+        assert_ne!(app, session);
+        assert_eq!(app.parent(), session.parent());
+        assert!(app.ends_with("app.slice"));
+        assert!(session.ends_with("session.slice"));
     }
 }

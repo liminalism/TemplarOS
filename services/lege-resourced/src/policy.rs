@@ -2,12 +2,15 @@
 //!
 //! The constants are starting values for trace collection on real systems, not final policy.
 //! A browser with 12 GiB of useful tabs may be less disposable than a background image
-//! conversion using 5 GiB; memory size alone must never select the victim.
+//! conversion using 5 GiB; memory size alone must never select the victim. [`GovernorConfig`]
+//! (including [`VictimWeights`]) is loadable from a file (`crate::config`) precisely so these
+//! numbers can be replaced once recorded traces (`crate::trace`) show what they should be.
 
 use lege_types::InstanceId;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
+    fmt,
     time::{Duration, Instant},
 };
 
@@ -22,6 +25,68 @@ pub enum PressureLevel {
     Elevated,
     Severe,
     Critical,
+}
+
+impl PressureLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Elevated => "elevated",
+            Self::Severe => "severe",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+impl fmt::Display for PressureLevel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The containment ladder (planning doc 02 §8, ADR-0002): `observe-only` records and explains
+/// but performs nothing; each later stage additionally performs everything the stages below it
+/// decide. Persisted across restarts (`crate::daemon`) and defaults to `ObserveOnly`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Stage {
+    #[default]
+    ObserveOnly,
+    Trim,
+    Throttle,
+    Checkpoint,
+    Terminate,
+}
+
+impl Stage {
+    pub const ALL: [Self; 5] = [
+        Self::ObserveOnly,
+        Self::Trim,
+        Self::Throttle,
+        Self::Checkpoint,
+        Self::Terminate,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ObserveOnly => "observe-only",
+            Self::Trim => "trim",
+            Self::Throttle => "throttle",
+            Self::Checkpoint => "checkpoint",
+            Self::Terminate => "terminate",
+        }
+    }
+
+    /// Parse the D-Bus/config-file spelling (`SetStage`, `resourced.toml`, `stage.toml`).
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|stage| stage.as_str() == text)
+    }
+}
+
+impl fmt::Display for Stage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// One application instance as seen by the governor on this tick.
@@ -40,7 +105,8 @@ pub struct AppSample {
     pub disposable: bool,
 }
 
-/// What the governor wants done. The executor applies it (or only logs it in observe-only mode).
+/// What the governor wants done. The executor applies it (or only logs it, at a stage that does
+/// not yet permit it).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     TrimCaches {
@@ -67,7 +133,81 @@ pub enum Action {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl Action {
+    /// The lowest [`Stage`] at which this action is actually performed rather than only decided
+    /// and signalled with `applied=false`.
+    ///
+    /// `RestoreDynamicLimits` is allowed at every stage (including `observe-only`): undoing a
+    /// temporary override is never itself a risk, and it must still run when the stage is
+    /// lowered while an override is outstanding.
+    pub fn minimum_stage(&self) -> Stage {
+        match self {
+            Self::RestoreDynamicLimits { .. } => Stage::ObserveOnly,
+            Self::TrimCaches { .. } => Stage::Trim,
+            Self::SetMemoryHigh { .. } | Self::Reclaim { .. } => Stage::Throttle,
+            Self::RequestCheckpoint { .. } => Stage::Checkpoint,
+            Self::KillCgroup { .. } => Stage::Terminate,
+        }
+    }
+
+    /// The `kind` string used on the wire (`org.legeos.Resources1.PressureAction`, trace records).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::TrimCaches { .. } => "trim-caches",
+            Self::SetMemoryHigh { .. } => "set-memory-high",
+            Self::Reclaim { .. } => "reclaim",
+            Self::RequestCheckpoint { .. } => "request-checkpoint",
+            Self::KillCgroup { .. } => "kill-cgroup",
+            Self::RestoreDynamicLimits { .. } => "restore-limits",
+        }
+    }
+
+    pub fn instance_id(&self) -> InstanceId {
+        match self {
+            Self::TrimCaches { instance_id }
+            | Self::SetMemoryHigh { instance_id, .. }
+            | Self::Reclaim { instance_id, .. }
+            | Self::RequestCheckpoint { instance_id, .. }
+            | Self::KillCgroup { instance_id, .. }
+            | Self::RestoreDynamicLimits { instance_id } => *instance_id,
+        }
+    }
+}
+
+/// Weights for [`victim_score_breakdown`]. Starting values only — see the module doc comment.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VictimWeights {
+    /// Per GiB of `memory_current`.
+    pub memory_gib: f64,
+    /// Per GiB/s of positive `memory_growth_per_second`.
+    pub growth_gib_per_second: f64,
+    /// Per point of `full_psi_avg10`.
+    pub full_psi_avg10: f64,
+    /// Flat bonus when `disposable`.
+    pub disposable_bonus: f64,
+    /// Flat term (expected negative — protective) when `visible`.
+    pub visible_protection: f64,
+    /// Flat term (expected negative — protective) when `foreground`.
+    pub foreground_protection: f64,
+    /// Flat term (expected negative — protective) when `reports_unsaved_state`.
+    pub unsaved_protection: f64,
+}
+
+impl Default for VictimWeights {
+    fn default() -> Self {
+        Self {
+            memory_gib: 8.0,
+            growth_gib_per_second: 30.0,
+            full_psi_avg10: 4.0,
+            disposable_bonus: 60.0,
+            visible_protection: -20.0,
+            foreground_protection: -80.0,
+            unsaved_protection: -60.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GovernorConfig {
     pub reserve_bytes: u64,
     pub critical_reserve_bytes: u64,
@@ -78,6 +218,12 @@ pub struct GovernorConfig {
 
     pub emergency_kill_delay: Duration,
     pub minimum_high_limit: u64,
+
+    /// Consecutive ticks a *lower* raw level must persist before the effective level actually
+    /// drops (hysteresis). Escalation is always immediate — only relaxation is debounced.
+    pub hysteresis_downgrade_ticks: u32,
+
+    pub victim_weights: VictimWeights,
 }
 
 impl Default for GovernorConfig {
@@ -91,6 +237,8 @@ impl Default for GovernorConfig {
             critical_full_avg10: 2.0,
             emergency_kill_delay: Duration::from_secs(3),
             minimum_high_limit: 512 * MIB,
+            hysteresis_downgrade_ticks: 3,
+            victim_weights: VictimWeights::default(),
         }
     }
 }
@@ -100,6 +248,9 @@ impl Default for GovernorConfig {
 pub struct Governor {
     config: GovernorConfig,
     critical_since: Option<Instant>,
+    current_level: PressureLevel,
+    /// A raw level below `current_level` seen for `pending.1` consecutive ticks so far.
+    pending: Option<(PressureLevel, u32)>,
 }
 
 impl Governor {
@@ -107,6 +258,8 @@ impl Governor {
         Self {
             config,
             critical_since: None,
+            current_level: PressureLevel::Normal,
+            pending: None,
         }
     }
 
@@ -114,7 +267,13 @@ impl Governor {
         &self.config
     }
 
-    /// Classify global state from `MemAvailable` and global memory PSI.
+    /// The hysteresis-debounced level as of the last [`Governor::tick_level`] call.
+    pub fn current_level(&self) -> PressureLevel {
+        self.current_level
+    }
+
+    /// Classify *raw* global state from `MemAvailable` and global memory PSI, with no hysteresis.
+    /// Exposed for direct testing of the thresholds; `tick_level` is what the daemon calls.
     pub fn classify(
         &self,
         available_bytes: u64,
@@ -134,6 +293,38 @@ impl Governor {
         } else {
             PressureLevel::Normal
         }
+    }
+
+    /// Classify and apply hysteresis: escalation is immediate, de-escalation requires
+    /// `hysteresis_downgrade_ticks` consecutive ticks at (or below) the lower level first, so a
+    /// single good sample does not flap the level back down.
+    pub fn tick_level(
+        &mut self,
+        available_bytes: u64,
+        global_some_avg10: f64,
+        global_full_avg10: f64,
+    ) -> PressureLevel {
+        let raw = self.classify(available_bytes, global_some_avg10, global_full_avg10);
+        match raw.cmp(&self.current_level) {
+            Ordering::Greater => {
+                self.current_level = raw;
+                self.pending = None;
+            }
+            Ordering::Less => {
+                let streak = match self.pending {
+                    Some((level, streak)) if level == raw => streak + 1,
+                    _ => 1,
+                };
+                if streak >= self.config.hysteresis_downgrade_ticks.max(1) {
+                    self.current_level = raw;
+                    self.pending = None;
+                } else {
+                    self.pending = Some((raw, streak));
+                }
+            }
+            Ordering::Equal => self.pending = None,
+        }
+        self.current_level
     }
 
     /// Decide what to do this tick.
@@ -156,13 +347,14 @@ impl Governor {
                 .collect();
         }
 
+        let weights = &self.config.victim_weights;
         let Some(target) =
             applications
                 .iter()
                 .filter(|app| !app.protected)
                 .max_by(|left, right| {
-                    victim_score(left)
-                        .partial_cmp(&victim_score(right))
+                    victim_score(left, weights)
+                        .partial_cmp(&victim_score(right, weights))
                         .unwrap_or(Ordering::Equal)
                 })
         else {
@@ -241,29 +433,79 @@ impl Governor {
     }
 }
 
-/// Higher = better victim. Never memory size alone.
-pub fn victim_score(app: &AppSample) -> f64 {
-    if app.protected {
-        return f64::NEG_INFINITY;
-    }
+/// Decomposition of [`victim_score`] into its weighted terms, so `ExplainInstance` and `lege res`
+/// can say *why* rather than just *how much* (planning doc 01 §5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScoreBreakdown {
+    pub memory_term: f64,
+    pub growth_term: f64,
+    pub psi_term: f64,
+    pub disposable_term: f64,
+    pub visible_term: f64,
+    pub foreground_term: f64,
+    pub unsaved_term: f64,
+    pub total: f64,
+}
 
+/// Higher = better victim. Never memory size alone: growth, PSI contribution, foreground/visible
+/// state, unsaved work and disposability all move the score: see [`VictimWeights`].
+///
+/// This computes the score as if `app` *were* eligible, even when `app.protected` is set: a
+/// protected instance's exclusion is enforced once, structurally, by [`Governor::decide`]
+/// filtering it out of the candidate pool before scoring — never by an out-of-band sentinel value
+/// here (a `NEG_INFINITY` "protected" score cannot round-trip through JSON, and this value is
+/// what trace records and `ExplainInstance` report). Callers that need "is this excluded"
+/// read `app.protected` directly, alongside the real score.
+pub fn victim_score_breakdown(app: &AppSample, weights: &VictimWeights) -> ScoreBreakdown {
     let memory_gib = app.memory_current as f64 / GIB as f64;
     let growth_gib = app.memory_growth_per_second.max(0) as f64 / GIB as f64;
 
-    let mut score = memory_gib * 8.0 + growth_gib * 30.0 + app.full_psi_avg10 * 4.0;
-    if app.disposable {
-        score += 60.0;
+    let memory_term = memory_gib * weights.memory_gib;
+    let growth_term = growth_gib * weights.growth_gib_per_second;
+    let psi_term = app.full_psi_avg10 * weights.full_psi_avg10;
+    let disposable_term = if app.disposable {
+        weights.disposable_bonus
+    } else {
+        0.0
+    };
+    let visible_term = if app.visible {
+        weights.visible_protection
+    } else {
+        0.0
+    };
+    let foreground_term = if app.foreground {
+        weights.foreground_protection
+    } else {
+        0.0
+    };
+    let unsaved_term = if app.reports_unsaved_state {
+        weights.unsaved_protection
+    } else {
+        0.0
+    };
+
+    let total = memory_term
+        + growth_term
+        + psi_term
+        + disposable_term
+        + visible_term
+        + foreground_term
+        + unsaved_term;
+
+    ScoreBreakdown {
+        memory_term,
+        growth_term,
+        psi_term,
+        disposable_term,
+        visible_term,
+        foreground_term,
+        unsaved_term,
+        total,
     }
-    if app.visible {
-        score -= 20.0;
-    }
-    if app.foreground {
-        score -= 80.0;
-    }
-    if app.reports_unsaved_state {
-        score -= 60.0;
-    }
-    score
+}
+
+pub fn victim_score(app: &AppSample, weights: &VictimWeights) -> f64 {
+    victim_score_breakdown(app, weights).total
 }
 
 #[cfg(test)]
@@ -388,10 +630,138 @@ mod tests {
 
     #[test]
     fn disposable_beats_bigger_visible_app() {
+        let weights = VictimWeights::default();
         let mut big_visible = sample(8);
         big_visible.visible = true;
         let mut small_disposable = sample(1);
         small_disposable.disposable = true;
-        assert!(victim_score(&small_disposable) > victim_score(&big_visible));
+        assert!(victim_score(&small_disposable, &weights) > victim_score(&big_visible, &weights));
+    }
+
+    #[test]
+    fn score_breakdown_terms_sum_to_total() {
+        let weights = VictimWeights::default();
+        let mut app = sample(4);
+        app.memory_growth_per_second = (100 * MIB) as i64;
+        app.full_psi_avg10 = 2.0;
+        app.disposable = true;
+        app.visible = true;
+        let breakdown = victim_score_breakdown(&app, &weights);
+        let sum = breakdown.memory_term
+            + breakdown.growth_term
+            + breakdown.psi_term
+            + breakdown.disposable_term
+            + breakdown.visible_term
+            + breakdown.foreground_term
+            + breakdown.unsaved_term;
+        assert!((sum - breakdown.total).abs() < f64::EPSILON);
+        assert!(breakdown.visible_term < 0.0);
+        assert!(breakdown.disposable_term > 0.0);
+    }
+
+    #[test]
+    fn protected_is_excluded_by_decide_not_by_an_infinite_score() {
+        // The score itself stays finite and JSON-serializable even when protected: exclusion is
+        // `Governor::decide`'s job (see `protected_and_foreground_apps_are_not_victims` above),
+        // not an out-of-band sentinel in the score.
+        let weights = VictimWeights::default();
+        let mut app = sample(20);
+        app.protected = true;
+        let score = victim_score_breakdown(&app, &weights).total;
+        assert!(score.is_finite());
+        assert!(serde_json::to_string(&victim_score_breakdown(&app, &weights)).is_ok());
+    }
+
+    #[test]
+    fn action_minimum_stage_matches_the_ladder() {
+        let instance_id = InstanceId::new();
+        assert_eq!(
+            Action::RestoreDynamicLimits { instance_id }.minimum_stage(),
+            Stage::ObserveOnly
+        );
+        assert_eq!(
+            Action::TrimCaches { instance_id }.minimum_stage(),
+            Stage::Trim
+        );
+        assert_eq!(
+            Action::SetMemoryHigh {
+                instance_id,
+                bytes: 0
+            }
+            .minimum_stage(),
+            Stage::Throttle
+        );
+        assert_eq!(
+            Action::Reclaim {
+                instance_id,
+                bytes: 0
+            }
+            .minimum_stage(),
+            Stage::Throttle
+        );
+        assert_eq!(
+            Action::RequestCheckpoint {
+                instance_id,
+                deadline: Duration::ZERO
+            }
+            .minimum_stage(),
+            Stage::Checkpoint
+        );
+        assert_eq!(
+            Action::KillCgroup {
+                instance_id,
+                reason: String::new()
+            }
+            .minimum_stage(),
+            Stage::Terminate
+        );
+    }
+
+    #[test]
+    fn stage_ordering_and_round_trip() {
+        assert!(Stage::ObserveOnly < Stage::Trim);
+        assert!(Stage::Trim < Stage::Throttle);
+        assert!(Stage::Throttle < Stage::Checkpoint);
+        assert!(Stage::Checkpoint < Stage::Terminate);
+        for stage in Stage::ALL {
+            assert_eq!(Stage::parse(stage.as_str()), Some(stage));
+        }
+        assert_eq!(Stage::parse("bogus"), None);
+    }
+
+    #[test]
+    fn hysteresis_debounces_deescalation_but_not_escalation() {
+        let mut governor = Governor::new(GovernorConfig {
+            hysteresis_downgrade_ticks: 3,
+            ..Default::default()
+        });
+
+        // Severe (available <= reserve_bytes).
+        assert_eq!(
+            governor.tick_level(2 * GIB, 0.0, 0.0),
+            PressureLevel::Severe
+        );
+        // A single good sample does not immediately relax the level...
+        assert_eq!(
+            governor.tick_level(16 * GIB, 0.0, 0.0),
+            PressureLevel::Severe
+        );
+        assert_eq!(
+            governor.tick_level(16 * GIB, 0.0, 0.0),
+            PressureLevel::Severe
+        );
+        // ...but the third consecutive good sample does.
+        assert_eq!(
+            governor.tick_level(16 * GIB, 0.0, 0.0),
+            PressureLevel::Normal
+        );
+
+        // Escalation is always immediate, even mid-debounce.
+        governor.tick_level(2 * GIB, 0.0, 0.0);
+        governor.tick_level(16 * GIB, 0.0, 0.0);
+        assert_eq!(
+            governor.tick_level(512 * MIB, 0.0, 0.0),
+            PressureLevel::Critical
+        );
     }
 }

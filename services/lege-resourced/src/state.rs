@@ -1,0 +1,426 @@
+//! State shared between the sampling loop (a plain OS thread — ADR-0002: a stalled bus must never
+//! delay containment) and the D-Bus interface (`crate::dbus`, on the tokio runtime).
+//!
+//! Split deliberately narrow: the loop owns everything it needs to *act* privately
+//! (`crate::executor::ManagedInstance`, the `Governor`) and only publishes what the bus needs to
+//! *read* ([`Report`], the trace ring) or *write* ([`Enrichment`], the stage, forget-requests)
+//! through [`SharedState`]'s locks. Every lock here is held only for a plain, synchronous read,
+//! clone or `fs::write` of a few bytes — never across an `.await` — so a slow D-Bus peer cannot
+//! stall the loop, and the loop cannot stall a bus call.
+
+use crate::policy::{PressureLevel, ScoreBreakdown, Stage};
+use crate::psi::Psi;
+use crate::trace::TraceRing;
+use lege_types::{AppId, InstanceId};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
+
+/// Enrichment received over D-Bus: who is on screen and what must not be a victim. Defaults are
+/// chosen to be *protective*: an instance the compositor and sessiond have not yet described
+/// stays out of the "obviously fine to trim" bucket until they say otherwise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Enrichment {
+    pub foreground: bool,
+    pub visible: bool,
+    pub protected: bool,
+    pub disposable: bool,
+    pub supports_checkpoint: bool,
+    pub has_unsaved_work: bool,
+}
+
+impl Default for Enrichment {
+    fn default() -> Self {
+        Self {
+            foreground: false,
+            // Unknown is treated as "could be visible": the protective default, until the
+            // compositor's first `SetInstanceState` call says otherwise.
+            visible: true,
+            protected: false,
+            disposable: false,
+            supports_checkpoint: false,
+            has_unsaved_work: false,
+        }
+    }
+}
+
+/// One instance's data and score, as of the last tick — the payload of `Status`/`Report`/
+/// `ExplainInstance`, and what a trace record's `instances` entries mirror.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InstanceReport {
+    pub instance_id: InstanceId,
+    pub app_id: AppId,
+    pub memory_current_bytes: u64,
+    pub memory_growth_bytes_per_second: i64,
+    pub full_psi_avg10: f64,
+    pub foreground: bool,
+    pub visible: bool,
+    pub protected: bool,
+    pub disposable: bool,
+    pub has_unsaved_work: bool,
+    pub victim_score: f64,
+    pub score_breakdown: ScoreBreakdown,
+}
+
+/// The latest tick's full snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Report {
+    pub level: PressureLevel,
+    pub stage: Stage,
+    pub uptime_seconds: u64,
+    pub mem_available_bytes: u64,
+    pub global_memory_psi: Psi,
+    pub global_io_psi: Psi,
+    pub instances: Vec<InstanceReport>,
+}
+
+/// The answer to `ExplainInstance`: why this instance would (or would not) be picked next, in
+/// words and in numbers (planning doc 01 §5's worked example).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Explanation {
+    pub instance_id: InstanceId,
+    pub known: bool,
+    pub level: PressureLevel,
+    pub stage: Stage,
+    pub protected: Option<bool>,
+    pub victim_score: Option<f64>,
+    pub score_breakdown: Option<ScoreBreakdown>,
+    /// 1-based rank among unprotected candidates, best (most likely victim) first.
+    pub rank: Option<usize>,
+    pub candidate_count: usize,
+    pub would_be_selected: bool,
+    pub top_candidate_app_id: Option<AppId>,
+    pub summary: String,
+}
+
+impl Report {
+    pub fn instance(&self, instance_id: InstanceId) -> Option<&InstanceReport> {
+        self.instances
+            .iter()
+            .find(|instance| instance.instance_id == instance_id)
+    }
+
+    /// Unprotected instances ranked best-victim-first.
+    fn ranked_candidates(&self) -> Vec<&InstanceReport> {
+        let mut candidates: Vec<&InstanceReport> =
+            self.instances.iter().filter(|i| !i.protected).collect();
+        candidates.sort_by(|left, right| {
+            right
+                .victim_score
+                .partial_cmp(&left.victim_score)
+                .unwrap_or(Ordering::Equal)
+        });
+        candidates
+    }
+
+    /// The candidate `decide()` would currently pick: the highest-scoring *unprotected*
+    /// instance, if any.
+    pub fn top_candidate(&self) -> Option<&InstanceReport> {
+        self.ranked_candidates().into_iter().next()
+    }
+
+    pub fn explain(&self, instance_id: InstanceId) -> Explanation {
+        let ranked = self.ranked_candidates();
+        let top_app_id = ranked.first().map(|top| top.app_id.clone());
+
+        let Some(found) = self.instance(instance_id) else {
+            return Explanation {
+                instance_id,
+                known: false,
+                level: self.level,
+                stage: self.stage,
+                protected: None,
+                victim_score: None,
+                score_breakdown: None,
+                rank: None,
+                candidate_count: ranked.len(),
+                would_be_selected: false,
+                top_candidate_app_id: top_app_id,
+                summary: "not currently tracked by the governor".to_owned(),
+            };
+        };
+
+        let rank = ranked
+            .iter()
+            .position(|candidate| candidate.instance_id == instance_id)
+            .map(|index| index + 1);
+        let would_be_selected =
+            self.level != PressureLevel::Normal && !found.protected && rank == Some(1);
+
+        let summary = if found.protected {
+            format!(
+                "{} is session-protected and can never be selected as a victim.",
+                found.app_id
+            )
+        } else if self.level == PressureLevel::Normal {
+            format!(
+                "{} would not be selected: pressure is currently normal.",
+                found.app_id
+            )
+        } else if would_be_selected {
+            format!(
+                "{} is the current top candidate at {}: score {:.1} (memory {:.1}, growth {:.1}, psi {:.1}).",
+                found.app_id,
+                self.level,
+                found.victim_score,
+                found.score_breakdown.memory_term,
+                found.score_breakdown.growth_term,
+                found.score_breakdown.psi_term,
+            )
+        } else {
+            match ranked.first() {
+                Some(top) => format!(
+                    "{} would not be selected: {} currently scores higher ({:.1} vs {:.1}).",
+                    found.app_id, top.app_id, top.victim_score, found.victim_score,
+                ),
+                None => format!("{} would not be selected.", found.app_id),
+            }
+        };
+
+        Explanation {
+            instance_id,
+            known: true,
+            level: self.level,
+            stage: self.stage,
+            protected: Some(found.protected),
+            victim_score: Some(found.victim_score),
+            score_breakdown: Some(found.score_breakdown),
+            rank,
+            candidate_count: ranked.len(),
+            would_be_selected,
+            top_candidate_app_id: top_app_id,
+            summary,
+        }
+    }
+}
+
+/// Everything the sampling loop and the D-Bus interface share.
+#[derive(Debug)]
+pub struct SharedState {
+    stage: RwLock<Stage>,
+    stage_path: Option<PathBuf>,
+    pub enrichment: RwLock<HashMap<InstanceId, Enrichment>>,
+    /// Instances `ForgetInstance` has been asked to drop; the loop drains this, restores any
+    /// temporary limits and removes its own record on the next tick (see the module doc comment
+    /// for why this is not done synchronously inside the D-Bus call).
+    pub pending_forgets: Mutex<HashSet<InstanceId>>,
+    pub report: RwLock<Option<Report>>,
+    pub traces: Mutex<TraceRing>,
+}
+
+impl SharedState {
+    /// `stage_path`: where the containment stage is persisted and reloaded (`None` disables
+    /// persistence — used by tests and by `--once`, which has no business changing it anyway).
+    pub fn new(stage_path: Option<PathBuf>, traces: TraceRing) -> Self {
+        let stage = stage_path
+            .as_deref()
+            .and_then(load_stage_file)
+            .unwrap_or_default();
+        Self {
+            stage: RwLock::new(stage),
+            stage_path,
+            enrichment: RwLock::new(HashMap::new()),
+            pending_forgets: Mutex::new(HashSet::new()),
+            report: RwLock::new(None),
+            traces: Mutex::new(traces),
+        }
+    }
+
+    /// No persistence, in-memory trace ring: for tests and `--once`.
+    pub fn in_memory() -> Self {
+        Self::new(None, TraceRing::in_memory(256))
+    }
+
+    pub fn stage(&self) -> Stage {
+        *self.stage.read()
+    }
+
+    /// Change the containment stage and best-effort persist it. A failed write is logged, not
+    /// propagated: the in-memory stage (what actually governs behaviour) has already changed.
+    pub fn set_stage(&self, stage: Stage) {
+        *self.stage.write() = stage;
+        if let Some(path) = &self.stage_path
+            && let Err(error) = persist_stage_file(path, stage)
+        {
+            tracing::warn!(path = %path.display(), %error, "could not persist containment stage");
+        }
+    }
+
+    pub fn enrichment_for(&self, instance_id: InstanceId) -> Enrichment {
+        self.enrichment
+            .read()
+            .get(&instance_id)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct StageFile {
+    stage: String,
+}
+
+fn load_stage_file(path: &Path) -> Option<Stage> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let file: StageFile = toml::from_str(&text).ok()?;
+    Stage::parse(&file.stage)
+}
+
+fn persist_stage_file(path: &Path, stage: Stage) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = toml::to_string(&StageFile {
+        stage: stage.as_str().to_owned(),
+    })
+    .unwrap_or_default();
+    std::fs::write(path, text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(score: f64, protected: bool) -> InstanceReport {
+        InstanceReport {
+            instance_id: InstanceId::new(),
+            app_id: "org.legeos.Test".parse().unwrap(),
+            memory_current_bytes: 0,
+            memory_growth_bytes_per_second: 0,
+            full_psi_avg10: 0.0,
+            foreground: false,
+            visible: false,
+            protected,
+            disposable: false,
+            has_unsaved_work: false,
+            victim_score: score,
+            score_breakdown: ScoreBreakdown::default(),
+        }
+    }
+
+    fn report(instances: Vec<InstanceReport>, level: PressureLevel) -> Report {
+        Report {
+            level,
+            stage: Stage::ObserveOnly,
+            uptime_seconds: 0,
+            mem_available_bytes: 0,
+            global_memory_psi: Psi::default(),
+            global_io_psi: Psi::default(),
+            instances,
+        }
+    }
+
+    #[test]
+    fn top_candidate_ignores_protected_instances() {
+        let low = instance(1.0, false);
+        let high_protected = instance(99.0, true);
+        let snapshot = report(vec![low.clone(), high_protected], PressureLevel::Severe);
+        assert_eq!(
+            snapshot.top_candidate().unwrap().instance_id,
+            low.instance_id
+        );
+    }
+
+    #[test]
+    fn explain_unknown_instance() {
+        let snapshot = report(vec![instance(5.0, false)], PressureLevel::Severe);
+        let explanation = snapshot.explain(InstanceId::new());
+        assert!(!explanation.known);
+        assert!(!explanation.would_be_selected);
+    }
+
+    #[test]
+    fn explain_top_candidate_says_it_would_be_selected() {
+        let winner = instance(50.0, false);
+        let loser = instance(5.0, false);
+        let snapshot = report(vec![winner.clone(), loser], PressureLevel::Critical);
+        let explanation = snapshot.explain(winner.instance_id);
+        assert!(explanation.known);
+        assert!(explanation.would_be_selected);
+        assert_eq!(explanation.rank, Some(1));
+        assert!(explanation.summary.contains("top candidate"));
+    }
+
+    #[test]
+    fn explain_runner_up_says_who_scores_higher() {
+        let winner = instance(50.0, false);
+        let loser = instance(5.0, false);
+        let snapshot = report(vec![winner, loser.clone()], PressureLevel::Critical);
+        let explanation = snapshot.explain(loser.instance_id);
+        assert!(!explanation.would_be_selected);
+        assert_eq!(explanation.rank, Some(2));
+        assert!(explanation.summary.contains("scores higher"));
+    }
+
+    #[test]
+    fn explain_protected_instance_is_never_selectable() {
+        let protected = instance(1000.0, true);
+        let snapshot = report(vec![protected.clone()], PressureLevel::Critical);
+        let explanation = snapshot.explain(protected.instance_id);
+        assert!(!explanation.would_be_selected);
+        assert!(explanation.summary.contains("session-protected"));
+    }
+
+    #[test]
+    fn explain_at_normal_pressure_never_selects_anyone() {
+        let winner = instance(50.0, false);
+        let snapshot = report(vec![winner.clone()], PressureLevel::Normal);
+        let explanation = snapshot.explain(winner.instance_id);
+        assert!(!explanation.would_be_selected);
+        assert!(explanation.summary.contains("pressure is currently normal"));
+    }
+
+    #[test]
+    fn enrichment_default_is_protective_on_visibility() {
+        let enrichment = Enrichment::default();
+        assert!(enrichment.visible);
+        assert!(!enrichment.foreground);
+        assert!(!enrichment.protected);
+    }
+
+    #[test]
+    fn shared_state_enrichment_for_falls_back_to_default() {
+        let shared = SharedState::in_memory();
+        let id = InstanceId::new();
+        assert_eq!(shared.enrichment_for(id), Enrichment::default());
+        shared.enrichment.write().insert(
+            id,
+            Enrichment {
+                foreground: true,
+                ..Enrichment::default()
+            },
+        );
+        assert!(shared.enrichment_for(id).foreground);
+    }
+
+    #[test]
+    fn stage_persists_across_a_reload() {
+        let dir = std::env::temp_dir().join(format!("lege-resourced-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("stage.toml");
+
+        let shared = SharedState::new(Some(path.clone()), TraceRing::in_memory(4));
+        assert_eq!(shared.stage(), Stage::ObserveOnly);
+        shared.set_stage(Stage::Throttle);
+        assert_eq!(shared.stage(), Stage::Throttle);
+
+        let reloaded = SharedState::new(Some(path), TraceRing::in_memory(4));
+        assert_eq!(reloaded.stage(), Stage::Throttle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_stage_file_defaults_to_observe_only() {
+        let path = std::env::temp_dir().join(format!(
+            "lege-resourced-stage-missing-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let shared = SharedState::new(Some(path), TraceRing::in_memory(4));
+        assert_eq!(shared.stage(), Stage::ObserveOnly);
+    }
+}

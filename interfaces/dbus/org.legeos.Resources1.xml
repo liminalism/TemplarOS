@@ -68,7 +68,9 @@
       <arg name="instance_id" type="s" direction="in"/>
     </method>
 
-    <!-- Recorded observe-only traces, newest first, as JSON lines. -->
+    <!-- Recorded traces, newest first, as JSON lines: every tick at elevated-or-worse pressure,
+         and every decision at any level -- the evidence reviewed before raising the stage past
+         observe-only, not only what happened while it was observe-only. -->
     <method name="RecentTraces">
       <arg name="limit" type="u" direction="in"/>
       <arg name="traces_json" type="s" direction="out"/>

@@ -12,13 +12,22 @@ Restart=always
 RestartSec=200ms
 Slice=session.slice
 # The governor must keep ticking while everything else thrashes (ADR-0002).
-MemoryLow=64M
+MemoryLow=96M
 CPUWeight=1000
 IOWeight=1000
 OOMScoreAdjust=-1000
-LimitMEMLOCK=64M
+LimitMEMLOCK=96M
 Nice=-10
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
-# cgroup control files of the user's own units are writable through the delegated subtree.
+# Read-only, not hidden: resourced reads $XDG_CONFIG_HOME/legeos/resourced.toml (calibrated
+# thresholds) and needs the rest of $HOME visible for that lookup to work at all. StateDirectory
+# below still grants read-write access to its one write target regardless of this setting.
+ProtectHome=read-only
+# $XDG_STATE_HOME/legeos: the containment-stage setting (stage.toml) and the bounded trace ring
+# (traces.jsonl) — see docs/protocols and crate docs for `lege-resourced`. Shared with
+# lege-sessiond/lege-filed's StateDirectory=legeos; each daemon only touches its own files there.
+StateDirectory=legeos
+# cgroup control files of the user's own units (including compositor/shell/audio protection
+# writes under session.slice) are writable through the delegated subtree; ProtectSystem=strict
+# does not restrict /sys/fs/cgroup (that would be ProtectControlGroups=, deliberately unset).

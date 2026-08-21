@@ -39,6 +39,12 @@ impl Cgroup {
         &self.directory
     }
 
+    /// Whether this cgroup's directory still exists — the instance's unit may have exited
+    /// between ticks and left nothing behind for `scan::discover` to find again.
+    pub fn exists(&self) -> bool {
+        self.directory.is_dir()
+    }
+
     /// The systemd-style control-group path (`/user.slice/...`).
     pub fn control_group_path(&self) -> PathBuf {
         self.directory.strip_prefix(CGROUP_ROOT).map_or_else(
@@ -109,10 +115,20 @@ impl Cgroup {
 
     fn write_control(&self, name: &str, value: &str) -> Result<()> {
         let path = self.directory.join(name);
-        // Important for memory.high and memory.max: never make resourced synchronously reclaim
-        // the target application's memory.
+        // O_NONBLOCK on *every* control-file write, not only memory.high/memory.max: the kernel
+        // documents memory.high and memory.reclaim as writes that can synchronously perform
+        // reclaim (or wait on it) unless opened non-blocking, and cgroup.kill/memory.oom.group
+        // cost nothing to open the same way. A governor write must never itself become the stall
+        // it exists to contain (ADR-0002).
+        // `truncate(true)` is a no-op on the real kernfs/cgroupfs interface — a write there
+        // replaces the attribute's value wholesale regardless of what was written before, with
+        // no byte-addressable "file length" to truncate. It matters for anything backed by a
+        // regular file (tests, or any future non-kernfs use of this wrapper): without it, a
+        // shorter replacement value only overwrites a matching-length prefix and leaves a stale
+        // tail from the previous write behind.
         let mut file = OpenOptions::new()
             .write(true)
+            .truncate(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
