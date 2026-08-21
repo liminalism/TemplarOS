@@ -1,0 +1,41 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Files (session bus, lege-filed). Path: /org/legeos/Files.
+
+     Search over indexed roots — what makes every Home Surface drawer searchable, and what lets
+     a drawer *be* a saved query rather than only a directory. Names, paths and metadata, not
+     file contents: a daemon that reads every file the user owns costs I/O, battery and a much
+     larger privacy surface than the drawers need. -->
+<node>
+  <interface name="org.legeos.Files.Search1">
+    <method name="IndexRoot">
+      <arg name="root" type="s" direction="in"/>
+      <arg name="entries" type="u" direction="out"/>
+    </method>
+    <method name="Roots">
+      <arg name="roots" type="as" direction="out"/>
+    </method>
+    <method name="ForgetRoot">
+      <arg name="root" type="s" direction="in"/>
+    </method>
+
+    <!-- Hits as JSON, best match first: exact, then prefix, then substring, then path-only,
+         each group most recently modified first. An empty roots array searches everything
+         indexed; an empty query matches nothing. -->
+    <method name="Search">
+      <arg name="query" type="s" direction="in"/>
+      <arg name="roots" type="as" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="hits_json" type="s" direction="out"/>
+    </method>
+
+    <method name="SaveQuery">
+      <arg name="name" type="s" direction="in"/>
+      <arg name="query" type="s" direction="in"/>
+      <arg name="roots" type="as" direction="in"/>
+    </method>
+    <method name="SavedQueries">
+      <arg name="queries_json" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

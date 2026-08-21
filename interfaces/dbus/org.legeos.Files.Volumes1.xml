@@ -1,12 +1,32 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.legeos.Files (session bus, lege-filed). Path: /org/legeos/Files.
-     Storage information that must be unavoidable in every file UI. -->
+
+     Storage information that must be unavoidable in every file UI: the sidebar, the Drives
+     drawer and the file chooser all render this one list, so none of them can show a volume
+     without also showing how full it is, and a user never has to open a disk utility to find
+     out that a drive is nearly full. -->
 <node>
   <interface name="org.legeos.Files.Volumes1">
     <!-- VolumeInfo JSON: mount_point, fs_type, total/free/available/reserved bytes, read_only -->
     <method name="InfoForPath">
       <arg name="path" type="s" direction="in"/>
+      <arg name="volume_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Every user-visible volume as a JSON array; kernel and container filesystems are not
+         volumes and never appear. -->
+    <method name="List">
+      <arg name="volumes_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Whether writing pending_bytes under path is allowed. verdict is ok | warn | refuse:
+         the reserve is the space kept back for logging in, updating and recovering, and an
+         application may not consume it without an explicit override. -->
+    <method name="CheckReserve">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="pending_bytes" type="t" direction="in"/>
+      <arg name="verdict" type="s" direction="out"/>
       <arg name="volume_json" type="s" direction="out"/>
     </method>
   </interface>

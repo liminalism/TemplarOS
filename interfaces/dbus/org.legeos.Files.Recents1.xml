@@ -1,0 +1,58 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Files (session bus, lege-filed). Path: /org/legeos/Files.
+
+     Recent files and the last-used directory. One policy, one store: the file manager, the
+     Home Surface and the file-chooser portal ask the same question and get the same answer,
+     which is what removes the repetitive navigation that otherwise needs a local patch in each
+     of them. Every suggestion carries the reason it was made. -->
+<node>
+  <interface name="org.legeos.Files.Recents1">
+    <!-- action is opened | saved | created | modified. -->
+    <method name="Record">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="action" type="s" direction="in"/>
+      <arg name="mime" type="s" direction="in"/>
+    </method>
+
+    <!-- Newest first; an empty app_id means every application. -->
+    <method name="List">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="entries_json" type="s" direction="out"/>
+    </method>
+
+    <method name="Forget">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+
+    <!-- Drop entries whose file is gone; returns how many. -->
+    <method name="PruneMissing">
+      <arg name="removed" type="u" direction="out"/>
+    </method>
+
+    <!-- Suggestion JSON, tagged with its source: last-for-app | last-for-operation |
+         current-project | fallback. operation is open | save | import | export. -->
+    <method name="SuggestDirectory">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="operation" type="s" direction="in"/>
+      <arg name="suggestion_json" type="s" direction="out"/>
+    </method>
+
+    <method name="RecordDirectory">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="operation" type="s" direction="in"/>
+      <arg name="directory" type="s" direction="in"/>
+    </method>
+
+    <!-- The open project's root is offered before the general fallback. -->
+    <method name="SetProject">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="root" type="s" direction="in"/>
+    </method>
+    <method name="ClearProject">
+      <arg name="project_id" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>
