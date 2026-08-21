@@ -34,8 +34,9 @@ enum BackendKind {
 #[derive(Debug, Parser)]
 #[command(name = "lege-comp", version, about)]
 struct Cli {
-    /// Which backend to run. Defaults to udev when a DRM device is expected to be present
-    /// (`XDG_SESSION_TYPE` unset or not `wayland`/`x11`), winit otherwise — overridable either way.
+    /// Which backend to run. Defaults to udev when neither `WAYLAND_DISPLAY` nor `DISPLAY` is set
+    /// (starting the session compositor from a bare TTY), winit otherwise (already nested inside
+    /// a Wayland/X11 session) — overridable either way ([`default_backend`]).
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
 }
