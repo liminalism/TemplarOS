@@ -3,6 +3,7 @@
 //! `Output`/topology changes enter `lege-window`") and closing a window from either a Wayland or
 //! an XWayland toplevel.
 
+pub mod check;
 pub mod udev;
 pub mod winit;
 

@@ -13,33 +13,15 @@
 
 use crate::state::{Backend, LegeCompState};
 use lege_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
-use lege_window::WindowService;
 use smithay::{
     backend::{
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
-    desktop::{PopupManager, Space, space::render_output},
-    input::{SeatState, pointer::CursorImageStatus},
+    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{calloop::EventLoop, wayland_server::Display},
-    utils::{Clock, Transform},
-    wayland::{
-        compositor::CompositorState,
-        dmabuf::DmabufState,
-        foreign_toplevel_list::ForeignToplevelListState,
-        fractional_scale::FractionalScaleManagerState,
-        output::OutputManagerState,
-        presentation::PresentationState,
-        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
-        session_lock::SessionLockManagerState,
-        shell::xdg::{XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState},
-        shm::ShmState,
-        viewporter::ViewporterState,
-        xdg_activation::XdgActivationState,
-        xwayland_keyboard_grab::XWaylandKeyboardGrabState,
-        xwayland_shell::XWaylandShellState,
-    },
+    utils::Transform,
 };
 
 const OUTPUT_NAME: &str = "winit";
@@ -85,72 +67,18 @@ pub fn run() -> anyhow::Result<()> {
     // it is also the name a caller would export `WAYLAND_DISPLAY` to in their own shell.
     tracing::info!(socket = %socket_name, "wayland socket ready — set WAYLAND_DISPLAY to this to connect a client");
 
-    let mut seat_state: SeatState<State> = SeatState::new();
-    let mut seat = seat_state.new_wl_seat(&dh, OUTPUT_NAME);
-    seat.add_keyboard(smithay::input::keyboard::XkbConfig::default(), 200, 25)
-        .expect("failed to add keyboard to seat");
-    seat.add_pointer();
-
-    let mut state = State {
-        backend_data: WinitBackendData,
-        display_handle: dh.clone(),
-        loop_handle: event_loop.handle(),
-        loop_signal: event_loop.get_signal(),
-        clock: Clock::new(),
-        start_time: std::time::Instant::now(),
-
-        compositor_state: CompositorState::new::<State>(&dh),
-        shm_state: ShmState::new::<State>(&dh, Vec::new()),
-        output_manager_state: OutputManagerState::new_with_xdg_output::<State>(&dh),
-        seat_state,
-        data_device_state: DataDeviceState::new::<State>(&dh),
-        primary_selection_state: PrimarySelectionState::new::<State>(&dh),
-        viewporter_state: ViewporterState::new::<State>(&dh),
-        fractional_scale_manager_state: FractionalScaleManagerState::new::<State>(&dh),
-        presentation_state: PresentationState::new::<State>(&dh, libc::CLOCK_MONOTONIC as u32),
-        xdg_shell_state: XdgShellState::new::<State>(&dh),
-        xdg_decoration_state: XdgDecorationState::new::<State>(&dh),
-        xdg_dialog_state: XdgDialogState::new::<State>(&dh),
-        xdg_activation_state: XdgActivationState::new::<State>(&dh),
-        session_lock_manager_state: SessionLockManagerState::new::<State, _>(&dh, |_| true),
-        foreign_toplevel_list_state: ForeignToplevelListState::new::<State>(&dh),
-        dmabuf_state: DmabufState::new(),
-        xwayland_shell_state: XWaylandShellState::new::<State>(&dh),
-        xwayland_keyboard_grab_state: XWaylandKeyboardGrabState::new::<State>(&dh),
-        xwm: None,
-        xwayland_display: None,
-
-        seat,
-        seat_name: OUTPUT_NAME.to_owned(),
-        cursor_status: CursorImageStatus::default_named(),
-
-        space: Space::default(),
-        popups: PopupManager::default(),
-        windows: crate::window_bridge::WindowIndex::new(),
-
-        window_service: WindowService::new(identity_cache.clone(), Vec::new()),
+    let mut state = State::new(
+        WinitBackendData,
+        OUTPUT_NAME,
+        &dh,
+        event_loop.handle(),
+        event_loop.get_signal(),
         identity_cache,
         governor,
         shell_broadcaster,
+    )?;
 
-        shell_protocol: crate::protocols_shell::ShellProtocolState::default(),
-        recovery_protocol: crate::protocols_recovery::RecoveryProtocolState::default(),
-        session_lock: crate::session_lock::SessionLockState::default(),
-        foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
-        show_all_windows: None,
-        switcher: None,
-        chrome: crate::chrome::ChromeState::new(),
-    };
-
-    let _shell_global = dh.create_global::<State, crate::protocols::lege_shell_v1::lege_shell_manager_v1::LegeShellManagerV1, _>(
-        1,
-        crate::protocols_shell::ShellManagerGlobalData,
-    );
-    let _recovery_global = dh
-        .create_global::<State, crate::protocols::lege_recovery_v1::lege_recovery_manager_v1::LegeRecoveryManagerV1, _>(
-            1,
-            crate::protocols_recovery::RecoveryManagerGlobalData,
-        );
+    State::create_private_globals(&dh);
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;
     tracing::info!(socket = %shell_socket_name, "trusted-shell socket ready");
 

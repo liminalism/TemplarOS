@@ -8,8 +8,26 @@ Files: *
 Copyright: 2026 LegeOS contributors
 License: MPL-2.0
 
+Files: compositor/lege-comp/*
+Copyright: 2026 LegeOS contributors
+Comment: ADR-0012. lege-comp is written directly against Smithay (MIT) with cosmic-comp
+ (GPL-3.0-only) read as a reference; it is the single licence exception in this source package,
+ and ADR-0008 records it as such.
+License: GPL-3.0-only
+
 License: MPL-2.0
  This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the
  MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
  .
  On Debian systems the full text is in /usr/share/common-licenses/MPL-2.0.
+
+License: GPL-3.0-only
+ This program is free software: you can redistribute it and/or modify it under the terms of the
+ GNU General Public License, version 3, as published by the Free Software Foundation.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+ without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
+ the GNU General Public License for more details.
+ .
+ On Debian systems the full text of the GNU General Public License version 3 is in
+ /usr/share/common-licenses/GPL-3.

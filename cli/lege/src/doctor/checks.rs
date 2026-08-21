@@ -17,6 +17,8 @@ pub fn all() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(OsRelease),
         Box::new(SessionUnitsPresent),
+        Box::new(UnitBinariesPresent),
+        Box::new(CompositorUsable),
         Box::new(ProtectedUnitsHaveResourceControl),
         Box::new(NvidiaFlavourConsistent),
         Box::new(NoStandaloneNvidiaInstaller),
@@ -41,6 +43,159 @@ fn load_manifests(context: &Context) -> Vec<AppManifest> {
     .iter()
     .flat_map(|dir| lege_appd::manifests::load_dir(&context.path(dir)).unwrap_or_default())
     .collect()
+}
+
+/// Every LegeOS unit's `ExecStart=` binary is actually installed.
+///
+/// `SessionUnitsPresent` above checks the units are there, which is not the same thing: a unit is
+/// a promise that a binary will be at a path, and an install can satisfy the first half and not
+/// the second. That is not hypothetical — `lege-comp.service` shipped for a while with no package
+/// installing `/usr/bin/lege-comp` at all, and both this check and `xtask check-packaging` were
+/// blind to it. Selecting LegeOS at the login screen would have started the session target and
+/// dropped the user straight back to the greeter with nothing to explain why.
+///
+/// Reading `ExecStart` from the installed units rather than a hardcoded list means a unit added
+/// later is covered without anyone remembering to come back here.
+struct UnitBinariesPresent;
+impl Check for UnitBinariesPresent {
+    fn id(&self) -> &'static str {
+        "unit-binaries"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn run(&self, context: &Context) -> Finding {
+        let mut checked = 0usize;
+        let mut missing = Vec::new();
+        for dir in [
+            "/usr/lib/systemd/user",
+            "/usr/lib/systemd/system",
+            "/usr/lib/systemd/user/legeos-session.target.wants",
+        ] {
+            let Ok(entries) = fs::read_dir(context.path(dir)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // Only our own units: the rest of the system's units are not ours to judge.
+                if !name.starts_with("lege") || !name.ends_with(".service") {
+                    continue;
+                }
+                let Ok(text) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                for binary in exec_start_binaries(&text) {
+                    checked += 1;
+                    if !exists(&context.root, &binary) {
+                        missing.push(format!("{name} -> {binary}"));
+                    }
+                }
+            }
+        }
+        if checked == 0 {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no LegeOS units installed to check",
+                "nothing under /usr/lib/systemd matching lege*.service",
+            );
+        }
+        if missing.is_empty() {
+            finding(
+                self,
+                Outcome::Pass,
+                format!("{checked} unit binary/ies installed"),
+                "",
+            )
+        } else {
+            missing.sort();
+            finding(
+                self,
+                Outcome::Fail,
+                format!(
+                    "{} unit(s) point at a binary that is not installed",
+                    missing.len()
+                ),
+                missing.join(", "),
+            )
+        }
+    }
+}
+
+/// Absolute `ExecStart=` binaries in a unit file, with systemd's prefix characters and any
+/// arguments stripped. A relative or variable-expanded command is skipped rather than guessed at.
+fn exec_start_binaries(unit: &str) -> Vec<String> {
+    unit.lines()
+        .filter_map(|line| line.trim().strip_prefix("ExecStart="))
+        .filter_map(|command| {
+            command
+                .trim_start_matches(['-', '@', '+', '!', ':'])
+                .split_whitespace()
+                .next()
+        })
+        .filter(|binary| binary.starts_with('/'))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// The compositor can actually start: its binary, its private protocol definitions, and XWayland.
+///
+/// XWayland is a runtime lookup rather than a linked library, so nothing in the build catches its
+/// absence; without it every X11 application fails to start with no diagnostic pointing here.
+struct CompositorUsable;
+impl Check for CompositorUsable {
+    fn id(&self) -> &'static str {
+        "compositor-usable"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn run(&self, context: &Context) -> Finding {
+        if !exists(&context.root, "/usr/bin/lege-comp") {
+            return finding(
+                self,
+                Outcome::Fail,
+                "compositor not installed",
+                "/usr/bin/lege-comp is missing; selecting LegeOS at the greeter would fail with \
+                 no session",
+            );
+        }
+        let mut warnings = Vec::new();
+        for protocol in [
+            "/usr/share/legeos/protocols/lege-shell-v1.xml",
+            "/usr/share/legeos/protocols/lege-recovery-v1.xml",
+        ] {
+            if !exists(&context.root, protocol) {
+                warnings.push(protocol.to_owned());
+            }
+        }
+        // XWayland lives in different places across derivatives; accept any of them.
+        let xwayland = ["/usr/bin/Xwayland", "/usr/libexec/Xwayland"]
+            .iter()
+            .any(|p| exists(&context.root, p));
+        if !xwayland {
+            warnings.push("Xwayland (X11 applications will not start)".to_owned());
+        }
+        if warnings.is_empty() {
+            finding(
+                self,
+                Outcome::Pass,
+                "compositor installed with XWayland",
+                "",
+            )
+        } else {
+            finding(
+                self,
+                Outcome::Fail,
+                format!(
+                    "compositor installed but {} support file(s) missing",
+                    warnings.len()
+                ),
+                warnings.join(", "),
+            )
+        }
+    }
 }
 
 /// `/etc/os-release` identifies LegeOS and its Ubuntu base.
@@ -687,6 +842,83 @@ mod tests {
                 .iter()
                 .any(|f| f.id == "os-release" && f.outcome == Outcome::Pass)
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exec_start_binaries_strips_systemd_prefixes_and_arguments() {
+        let unit = "[Service]\nExecStart=-/usr/bin/lege-comp --backend udev\n\
+                    ExecStart=@/usr/libexec/lege-filed\nExecStart=relative-thing\n\
+                    ExecStartPre=/usr/bin/not-this\n";
+        assert_eq!(
+            exec_start_binaries(unit),
+            vec![
+                "/usr/bin/lege-comp".to_owned(),
+                "/usr/libexec/lege-filed".to_owned()
+            ]
+        );
+    }
+
+    /// The regression that shipped: the unit is installed, the binary it names is not, and every
+    /// other check is perfectly happy about it.
+    #[test]
+    fn a_unit_naming_an_uninstalled_binary_fails_even_though_the_unit_is_present() {
+        let root = fixture_root("unit-binaries");
+        let units = root.join("usr/lib/systemd/user");
+        fs::create_dir_all(&units).unwrap();
+        fs::write(
+            units.join("lege-comp.service"),
+            "[Service]\nExecStart=/usr/bin/lege-comp\n",
+        )
+        .unwrap();
+
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let findings = run_all(&context);
+        let unit_binaries = findings.iter().find(|f| f.id == "unit-binaries").unwrap();
+        assert_eq!(unit_binaries.outcome, Outcome::Fail);
+        assert!(unit_binaries.detail.contains("/usr/bin/lege-comp"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "compositor-usable" && f.outcome == Outcome::Fail)
+        );
+
+        // Install the binary and the check goes green.
+        fs::create_dir_all(root.join("usr/bin")).unwrap();
+        fs::write(root.join("usr/bin/lege-comp"), "").unwrap();
+        let findings = run_all(&context);
+        assert_eq!(
+            findings
+                .iter()
+                .find(|f| f.id == "unit-binaries")
+                .unwrap()
+                .outcome,
+            Outcome::Pass
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compositor_check_reports_missing_xwayland_and_protocols_separately_from_the_binary() {
+        let root = fixture_root("compositor-usable");
+        fs::create_dir_all(root.join("usr/bin")).unwrap();
+        fs::write(root.join("usr/bin/lege-comp"), "").unwrap();
+        let findings = run_all(&Context {
+            root: root.clone(),
+            hardware: false,
+        });
+        let compositor = findings
+            .iter()
+            .find(|f| f.id == "compositor-usable")
+            .unwrap();
+        assert_eq!(compositor.outcome, Outcome::Fail);
+        assert!(compositor.detail.contains("Xwayland"));
+        assert!(compositor.detail.contains("lege-shell-v1.xml"));
+        // The binary is there, so it must not claim the compositor is uninstalled.
+        assert!(!compositor.summary.contains("not installed"));
         let _ = fs::remove_dir_all(&root);
     }
 

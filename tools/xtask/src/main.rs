@@ -515,14 +515,25 @@ fn check_packaging(root: &Path) -> Result<()> {
     // reads the same `[package.metadata.deb]` table `cargo deb` reads — never a hand-rolled scan
     // of Cargo.toml that could drift from what cargo-deb actually sees.
     let mut deb_name_to_crate = BTreeMap::new();
+    let mut deb_assets = Vec::new();
     for package in packages {
         if let Some(deb_name) = package["metadata"]["deb"]["name"].as_str() {
             let crate_name = package["name"].as_str().unwrap_or("?");
             deb_name_to_crate.insert(deb_name.to_owned(), crate_name.to_owned());
         }
+        if let Some(assets) = package["metadata"]["deb"]["assets"].as_array() {
+            for asset in assets {
+                if let Some(destination) = asset.get(1).and_then(serde_json::Value::as_str) {
+                    deb_assets.push(destination.to_owned());
+                }
+            }
+        }
     }
 
-    let problems = packaging_problems(&control_packages, &deb_name_to_crate);
+    let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
+    let units = unit_exec_starts(root)?;
+    let shipped = shipped_destinations(root, &deb_assets)?;
+    problems.extend(unshipped_unit_binaries(&units, &shipped));
     if !problems.is_empty() {
         for problem in &problems {
             eprintln!("check-packaging: {problem}");
@@ -531,8 +542,10 @@ fn check_packaging(root: &Path) -> Result<()> {
     }
 
     println!(
-        "check-packaging: {} debian/control package(s) all have matching crate metadata",
-        control_packages.len()
+        "check-packaging: {} debian/control package(s) all have matching crate metadata; \
+         {} unit ExecStart binary/ies all installed by a package",
+        control_packages.len(),
+        units.len()
     );
     Ok(())
 }
@@ -544,6 +557,103 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// Forward: a `Package:` with no crate to build it is a package `debian/rules` expects and
 /// `cargo deb` will never produce. Reverse: a crate whose deb name matches no stanza builds a
 /// `.deb` nothing installs — the same typo, caught from the other side.
+/// Every destination path the two packaging paths install, as absolute-looking `/usr/...` strings.
+///
+/// `debian/*.install` lines are `<source> <destination-directory>`, so the installed path is the
+/// directory plus the source's file name; `[package.metadata.deb]` assets name their destination
+/// outright. Both are folded into one set because both are real build paths and a binary shipped
+/// by only one of them is still a divergence between what `just deb` and `dpkg-buildpackage`
+/// produce.
+fn shipped_destinations(root: &Path, deb_assets: &[String]) -> Result<BTreeSet<String>> {
+    let mut shipped: BTreeSet<String> = deb_assets
+        .iter()
+        .map(|destination| format!("/{}", destination.trim_start_matches('/')))
+        .collect();
+    let debian = root.join("debian");
+    if debian.is_dir() {
+        for entry in std::fs::read_dir(&debian).context("reading debian/")? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("install") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            for line in text.lines() {
+                let mut fields = line.split_whitespace();
+                let (Some(source), Some(destination)) = (fields.next(), fields.next()) else {
+                    continue;
+                };
+                let name = source.rsplit('/').next().unwrap_or(source);
+                shipped.insert(format!(
+                    "/{}/{name}",
+                    destination.trim_start_matches('/').trim_end_matches('/')
+                ));
+            }
+        }
+    }
+    Ok(shipped)
+}
+
+/// Units whose `ExecStart=` binary no package installs.
+///
+/// This is the leg `packaging_problems` cannot cover. That one checks `debian/control` and the
+/// crate metadata against *each other*, so a binary missing from both looks perfectly consistent —
+/// which is exactly how `lege-comp` came to have a unit pointing at `/usr/bin/lege-comp` that no
+/// package shipped. A unit is a promise that a binary will be at a path; this checks the promise
+/// against what is actually installed there.
+fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String>) -> Vec<String> {
+    units
+        .iter()
+        .filter(|(_, binary)| !shipped.contains(binary.as_str()))
+        .map(|(unit, binary)| {
+            format!("{unit}: ExecStart={binary}, but no package installs that path")
+        })
+        .collect()
+}
+
+/// `(unit file name, ExecStart binary)` for every unit under `session/units/`.
+fn unit_exec_starts(root: &Path) -> Result<Vec<(String, String)>> {
+    let mut units = Vec::new();
+    let mut stack = vec![root.join("session/units")];
+    while let Some(dir) = stack.pop() {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("service") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_owned();
+            for line in text.lines() {
+                if let Some(command) = line.trim().strip_prefix("ExecStart=") {
+                    // Strip systemd's `-`/`@`/`+`/`!` prefixes and any arguments.
+                    let command = command.trim_start_matches(['-', '@', '+', '!']);
+                    if let Some(binary) = command.split_whitespace().next()
+                        && binary.starts_with('/')
+                    {
+                        units.push((name.clone(), binary.to_owned()));
+                    }
+                }
+            }
+        }
+    }
+    units.sort();
+    Ok(units)
+}
+
 fn packaging_problems(
     control_packages: &[String],
     deb_name_to_crate: &BTreeMap<String, String>,
@@ -746,7 +856,7 @@ fn copyright(root: &Path) -> Result<()> {
 mod extraction_tests {
     use super::{
         VendoredAssets, client_interface_names, packaging_problems, parse_control_packages,
-        server_interface_names, unlicensed_assets,
+        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -927,6 +1037,31 @@ mod extraction_tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("legeos-orphan"));
         assert!(problems[0].contains("no crate [package.metadata.deb]"));
+    }
+
+    #[test]
+    fn check_packaging_goes_red_for_a_unit_whose_binary_no_package_ships() {
+        // The lege-comp case: a unit promising /usr/bin/lege-comp while debian/control and the
+        // crate metadata agree with each other perfectly, because neither mentions it at all.
+        let units = vec![(
+            "lege-comp.service".to_owned(),
+            "/usr/bin/lege-comp".to_owned(),
+        )];
+        let shipped = BTreeSet::from(["/usr/bin/lege-shell".to_owned()]);
+        let problems = unshipped_unit_binaries(&units, &shipped);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("lege-comp.service"));
+        assert!(problems[0].contains("/usr/bin/lege-comp"));
+    }
+
+    #[test]
+    fn check_packaging_accepts_a_unit_whose_binary_is_shipped() {
+        let units = vec![(
+            "lege-sessiond.service".to_owned(),
+            "/usr/libexec/lege-sessiond".to_owned(),
+        )];
+        let shipped = BTreeSet::from(["/usr/libexec/lege-sessiond".to_owned()]);
+        assert!(unshipped_unit_binaries(&units, &shipped).is_empty());
     }
 
     #[test]

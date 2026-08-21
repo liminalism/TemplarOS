@@ -34,6 +34,13 @@ enum BackendKind {
 #[derive(Debug, Parser)]
 #[command(name = "lege-comp", version, about)]
 struct Cli {
+    /// Construct the compositor, report what it advertises, and exit without opening a display.
+    ///
+    /// The one mode that runs on a machine with no seat and no host compositor, which is where CI
+    /// and package builds happen (`src/backend/check.rs` says what it does and does not prove).
+    #[arg(long)]
+    check: bool,
+
     /// Which backend to run. Defaults to udev when neither `WAYLAND_DISPLAY` nor `DISPLAY` is set
     /// (starting the session compositor from a bare TTY), winit otherwise (already nested inside
     /// a Wayland/X11 session) — overridable either way ([`default_backend`]).
@@ -49,6 +56,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
+    if cli.check {
+        return backend::check::run();
+    }
     let backend = cli.backend.unwrap_or_else(default_backend);
 
     tracing::info!(?backend, "starting lege-comp");

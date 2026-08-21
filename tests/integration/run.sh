@@ -68,6 +68,16 @@ expect_clean_failure() {
 # unit tests, not this smoke script).
 "$bin/lege-boot-health" --report-only --root tests/fixtures/image-root >/dev/null
 
+# The compositor, headlessly: constructs every protocol global, binds both its public and
+# trusted-shell sockets, and exits. This is the one compositor mode that runs where there is no
+# seat and no host compositor to nest inside, which is everywhere except a developer's own
+# session. Rendering and input are not covered here and are not claimed to be — those are the
+# nested and on-hardware checks. `src/backend/check.rs`'s own test then connects a real Wayland
+# client over the socket and asserts the advertised protocol set, including that an ordinary
+# client cannot see the trusted-shell protocols.
+"$bin/lege-comp" --check >/dev/null
+echo "lege-comp --check: ok"
+
 "$bin/lege-shell" --list-drawers >/dev/null
 # `--print <drawer>` renders every Home Surface drawer as text with no session bus, no live
 # compositor and no toolkit — the direct fulfilment of "everything the shell shows must be

@@ -154,6 +154,120 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub chrome: crate::chrome::ChromeState,
 }
 
+impl<B: Backend + 'static> LegeCompState<B> {
+    /// Build the compositor's whole state: every protocol global, the seat, and the
+    /// `WindowService` that decides everything.
+    ///
+    /// This exists so the protocol set is declared exactly once. It used to be written out twice,
+    /// identically but for the seat name, in `src/backend/winit.rs` and `src/backend/udev.rs` —
+    /// which quietly made the winit backend's central claim ("every code path above this file is
+    /// identical between winit and udev, so exercising it here exercises the real thing")
+    /// contingent on nobody ever adding a protocol to one file and forgetting the other. A
+    /// protocol advertised on hardware but not in test is precisely the bug that claim must
+    /// exclude, so there is now one list and both backends read from it.
+    ///
+    /// What legitimately differs between backends — the renderer, the outputs, DMA-BUF, and the
+    /// seat's name — stays with the backend and is either a parameter here or set up afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        backend_data: B,
+        seat_name: &str,
+        dh: &DisplayHandle,
+        loop_handle: LoopHandle<'static, Self>,
+        loop_signal: smithay::reexports::calloop::LoopSignal,
+        identity_cache: DbusIdentityCache,
+        governor: GovernorNotifier,
+        shell_broadcaster: ShellStateBroadcaster,
+    ) -> anyhow::Result<Self> {
+        use smithay::wayland::{
+            compositor::CompositorState,
+            fractional_scale::FractionalScaleManagerState,
+            output::OutputManagerState,
+            presentation::PresentationState,
+            selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+            session_lock::SessionLockManagerState,
+            shell::xdg::{XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState},
+            shm::ShmState,
+            viewporter::ViewporterState,
+            xdg_activation::XdgActivationState,
+            xwayland_keyboard_grab::XWaylandKeyboardGrabState,
+            xwayland_shell::XWaylandShellState,
+        };
+
+        let mut seat_state: SeatState<Self> = SeatState::new();
+        let mut seat = seat_state.new_wl_seat(dh, seat_name);
+        seat.add_keyboard(smithay::input::keyboard::XkbConfig::default(), 200, 25)
+            .map_err(|error| anyhow::anyhow!("adding keyboard to seat: {error}"))?;
+        seat.add_pointer();
+
+        Ok(Self {
+            backend_data,
+            display_handle: dh.clone(),
+            loop_handle,
+            loop_signal,
+            clock: Clock::new(),
+            start_time: std::time::Instant::now(),
+
+            compositor_state: CompositorState::new::<Self>(dh),
+            shm_state: ShmState::new::<Self>(dh, Vec::new()),
+            output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(dh),
+            seat_state,
+            data_device_state: DataDeviceState::new::<Self>(dh),
+            primary_selection_state: PrimarySelectionState::new::<Self>(dh),
+            viewporter_state: ViewporterState::new::<Self>(dh),
+            fractional_scale_manager_state: FractionalScaleManagerState::new::<Self>(dh),
+            presentation_state: PresentationState::new::<Self>(dh, libc::CLOCK_MONOTONIC as u32),
+            xdg_shell_state: XdgShellState::new::<Self>(dh),
+            xdg_decoration_state: XdgDecorationState::new::<Self>(dh),
+            xdg_dialog_state: XdgDialogState::new::<Self>(dh),
+            xdg_activation_state: XdgActivationState::new::<Self>(dh),
+            session_lock_manager_state: SessionLockManagerState::new::<Self, _>(dh, |_| true),
+            foreign_toplevel_list_state:
+                smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(dh),
+            dmabuf_state: smithay::wayland::dmabuf::DmabufState::new(),
+            xwayland_shell_state: XWaylandShellState::new::<Self>(dh),
+            xwayland_keyboard_grab_state: XWaylandKeyboardGrabState::new::<Self>(dh),
+            xwm: None,
+            xwayland_display: None,
+
+            seat,
+            seat_name: seat_name.to_owned(),
+            cursor_status: CursorImageStatus::default_named(),
+
+            space: Space::default(),
+            popups: PopupManager::default(),
+            windows: WindowIndex::new(),
+
+            window_service: WindowService::new(identity_cache.clone(), Vec::new()),
+            identity_cache,
+            governor,
+            shell_broadcaster,
+
+            shell_protocol: crate::protocols_shell::ShellProtocolState::default(),
+            recovery_protocol: crate::protocols_recovery::RecoveryProtocolState::default(),
+            session_lock: crate::session_lock::SessionLockState::default(),
+            foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
+            show_all_windows: None,
+            switcher: None,
+            chrome: crate::chrome::ChromeState::new(),
+        })
+    }
+
+    /// Create the two private protocol globals (`lege_shell_v1`, `lege_recovery_v1`).
+    ///
+    /// Kept beside [`LegeCompState::new`] for the same reason: both backends must advertise both.
+    pub fn create_private_globals(dh: &DisplayHandle) {
+        dh.create_global::<Self, crate::protocols::lege_shell_v1::lege_shell_manager_v1::LegeShellManagerV1, _>(
+            1,
+            crate::protocols_shell::ShellManagerGlobalData,
+        );
+        dh.create_global::<Self, crate::protocols::lege_recovery_v1::lege_recovery_manager_v1::LegeRecoveryManagerV1, _>(
+            1,
+            crate::protocols_recovery::RecoveryManagerGlobalData,
+        );
+    }
+}
+
 smithay::delegate_dispatch2!(@<B: Backend + 'static> LegeCompState<B>);
 
 /// Registers the two calloop sources every backend needs regardless of how it drives rendering:

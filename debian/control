@@ -47,10 +47,19 @@ Description: LegeOS boot health probe
 
 Package: legeos-session
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, legeos-sessiond, legeos-resourced, legeos-filed, legeos-shell
-Recommends: greetd, cosmic-greeter
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, legeos-sessiond, legeos-resourced, legeos-filed, legeos-comp, legeos-shell
+Recommends: greetd, legeos-greeter
 Description: LegeOS session entry and units
  wayland-sessions entry, legeos-session.target and the core user units with their protection values.
+
+Package: legeos-comp
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, xwayland
+Description: LegeOS compositor
+ The display server: one continuous scene across every output, typed overlay layers, a
+ compositor-owned recovery band on every window, and the geometry invariants that make a window
+ impossible to lose. Window-management policy lives in lege-window; this is what drives it.
+ Licensed GPL-3.0-only (ADR-0012), unlike the rest of LegeOS.
 
 Package: legeos-shell
 Architecture: any
