@@ -1,0 +1,205 @@
+//! The compositor's top-level state: one `LegeCompState<B>` per running compositor, owning every
+//! Smithay protocol delegate plus the one `WindowService` that actually decides geometry, layers
+//! and recoverability (`crates/lege-window`). Everything Smithay-protocol-shaped lives here or in
+//! a sibling module implementing a trait on this type; `lege_window`/`lege_comp_integration` are
+//! never modified to fit Smithay's shape — this crate is the adapter, not the other way round.
+//!
+//! Smithay 0.7.0 wires every protocol delegate through one macro,
+//! [`smithay::delegate_dispatch2`], rather than the classic per-protocol `delegate_xxx!` calls:
+//! any type implementing `Dispatch2`/`GlobalDispatch2` for a given Wayland interface is picked up
+//! automatically, which is also how our own `lege_shell_v1`/`lege_recovery_v1` protocol objects
+//! (`src/protocols_shell.rs`, `src/protocols_recovery.rs`) are wired — the same one macro call at
+//! the bottom of this file covers Smithay's built-in protocols and ours alike.
+
+use crate::window_bridge::WindowIndex;
+use lege_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
+use lege_window::WindowService;
+use smithay::{
+    desktop::{PopupManager, Space, Window},
+    input::{Seat, SeatState, pointer::CursorImageStatus},
+    reexports::{
+        calloop::LoopHandle,
+        wayland_server::{
+            Client, DisplayHandle,
+            backend::{ClientData, ClientId, DisconnectReason},
+            protocol::wl_surface::WlSurface,
+        },
+    },
+    utils::{Clock, Monotonic},
+    wayland::{
+        compositor::{CompositorClientState, CompositorState},
+        dmabuf::DmabufState,
+        fractional_scale::FractionalScaleManagerState,
+        output::OutputManagerState,
+        presentation::PresentationState,
+        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        session_lock::SessionLockManagerState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState},
+        shm::ShmState,
+        viewporter::ViewporterState,
+        xdg_activation::XdgActivationState,
+        xwayland_keyboard_grab::XWaylandKeyboardGrabState,
+        xwayland_shell::XWaylandShellState,
+    },
+    xwayland::X11Wm,
+};
+
+/// Per-`wl_client` bookkeeping. The one field the rest of this crate cares about is
+/// `trusted_shell`: it is `true` for exactly the connection accepted on the private socket
+/// (`src/shell_socket.rs`) the compositor itself listens on for the shell, and it is the sole
+/// source of the `CommandContext::trusted_shell` flag `handle_command` and the `lege_shell_v1`
+/// request handlers (`src/protocols_shell.rs`) both gate on — see [`client_is_trusted_shell`].
+#[derive(Debug, Default)]
+pub struct ClientState {
+    pub compositor_state: CompositorClientState,
+    pub trusted_shell: bool,
+}
+
+impl ClientData for ClientState {
+    fn initialized(&self, _client_id: ClientId) {}
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+/// Whether `client` is the one connection the compositor itself accepted as the trusted shell
+/// (`ClientKind::TrustedShell`, COMPOSITOR.md's `lege_shell_v1` row). Every other connection is
+/// `ClientKind::Application` — there is no request-time way to become trusted, only
+/// connection-time (`src/shell_socket.rs`).
+pub fn client_is_trusted_shell(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_some_and(|state| state.trusted_shell)
+}
+
+/// What each backend (winit, udev) supplies. Kept intentionally small: everything that is not
+/// backend-specific — protocol state, `WindowService`, input policy — lives on `LegeCompState`
+/// itself so it is shared, not duplicated, between the two backends (COMPOSITOR.md "Backends").
+pub trait Backend {
+    /// Human-readable seat name advertised over `wl_seat`.
+    fn seat_name(&self) -> String;
+
+    /// Give the backend a chance to import a client buffer early (DMA-BUF direct scanout paths);
+    /// a no-op is always correct, just less efficient.
+    fn early_import(&mut self, _surface: &WlSurface) {}
+}
+
+/// Everything the render-thread loop owns. Generic over `B` so the same state (and every handler
+/// impl below) is shared verbatim between the winit and udev/KMS backends (`src/backend/`).
+#[derive(Debug)]
+pub struct LegeCompState<B: Backend + 'static> {
+    pub backend_data: B,
+    pub display_handle: DisplayHandle,
+    pub loop_handle: LoopHandle<'static, LegeCompState<B>>,
+    pub loop_signal: smithay::reexports::calloop::LoopSignal,
+    pub clock: Clock<Monotonic>,
+    pub start_time: std::time::Instant,
+
+    // Protocol delegate state. Each of these is created once in `LegeCompState::new` and is the
+    // `&mut Self -> &mut FooState` target of exactly one `FooHandler` impl, spread across this
+    // file and its siblings by concern (see the module doc).
+    pub compositor_state: CompositorState,
+    pub shm_state: ShmState,
+    pub output_manager_state: OutputManagerState,
+    pub seat_state: SeatState<Self>,
+    pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub viewporter_state: ViewporterState,
+    pub fractional_scale_manager_state: FractionalScaleManagerState,
+    pub presentation_state: PresentationState,
+    pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
+    pub xdg_dialog_state: XdgDialogState,
+    pub xdg_activation_state: XdgActivationState,
+    pub session_lock_manager_state: SessionLockManagerState,
+    pub foreign_toplevel_list_state:
+        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub dmabuf_state: DmabufState,
+    pub xwayland_shell_state: XWaylandShellState,
+    pub xwayland_keyboard_grab_state: XWaylandKeyboardGrabState,
+    pub xwm: Option<X11Wm>,
+    pub xwayland_display: Option<u32>,
+
+    pub seat: Seat<Self>,
+    pub seat_name: String,
+    pub cursor_status: CursorImageStatus,
+
+    /// Rendering/hit-testing mirror of `window_service`, kept in sync by
+    /// `src/space_sync.rs::sync_space` after every call that can change geometry or stacking —
+    /// `lege_window::WindowService` remains the sole authority; nothing ever reads `Space` to make
+    /// a policy decision, only to render or hit-test what policy already decided.
+    pub space: Space<Window>,
+    pub popups: PopupManager,
+    pub windows: WindowIndex,
+
+    pub window_service: WindowService<DbusIdentityCache>,
+    pub identity_cache: DbusIdentityCache,
+    pub governor: GovernorNotifier,
+    pub shell_broadcaster: ShellStateBroadcaster,
+
+    /// State for the two private protocols (`src/protocols_shell.rs`, `src/protocols_recovery.rs`)
+    /// and the compositor-drawn recovery UI they and the fixed keybindings
+    /// (`src/keybindings.rs`) share.
+    pub shell_protocol: crate::protocols_shell::ShellProtocolState,
+    pub recovery_protocol: crate::protocols_recovery::RecoveryProtocolState,
+    pub session_lock: crate::session_lock::SessionLockState,
+    pub foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState,
+    /// Non-`None` while the "show every window" recovery view is active: the scattered layout to
+    /// draw and hit-test against instead of `window_service`'s ordinary geometry.
+    pub show_all_windows: Option<Vec<(lege_window::WindowId, lege_window::Rect)>>,
+}
+
+smithay::delegate_dispatch2!(@<B: Backend + 'static> LegeCompState<B>);
+
+/// Registers the two calloop sources every backend needs regardless of how it drives rendering:
+/// new client connections on the main public socket, and the `Display`'s own fd (dispatching
+/// already-connected clients' requests). Returns the socket name so the caller can put it in
+/// `WAYLAND_DISPLAY` for spawned clients.
+pub fn init_wayland_listener<B: Backend + 'static>(
+    display: smithay::reexports::wayland_server::Display<LegeCompState<B>>,
+    loop_handle: &LoopHandle<'static, LegeCompState<B>>,
+) -> anyhow::Result<String> {
+    use smithay::reexports::calloop::{Interest, Mode as CalloopMode, generic::Generic};
+    use smithay::wayland::socket::ListeningSocketSource;
+
+    let socket_source = ListeningSocketSource::new_auto()?;
+    let socket_name = socket_source.socket_name().to_string_lossy().into_owned();
+
+    loop_handle
+        .insert_source(
+            socket_source,
+            |client_stream, (), state: &mut LegeCompState<B>| {
+                if let Err(error) = state
+                    .display_handle
+                    .insert_client(client_stream, std::sync::Arc::new(ClientState::default()))
+                {
+                    tracing::warn!(%error, "failed to add wayland client");
+                }
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("inserting wayland socket source: {error}"))?;
+
+    // `display` is moved into the `Generic` source below and lives there for the rest of the
+    // compositor's lifetime, so `NoIoDrop::get_mut`'s "must not be dropped while borrowed"
+    // contract holds by construction — matching every Smithay-based compositor's identical
+    // pattern (`anvil`, `smallvil`).
+    loop_handle
+        .insert_source(
+            Generic::new(display, Interest::READ, CalloopMode::Level),
+            |_, display, state: &mut LegeCompState<B>| {
+                // SAFETY: the wrapped `Display` is not dropped while this callback can run — it
+                // is owned by this same calloop source for the compositor's whole lifetime. There
+                // is no safe alternative: `NoIoDrop::get_mut` is `unsafe` by Smithay's own design
+                // (every Smithay-based compositor's identical wayland-display source takes this
+                // same call), because calloop's `Generic` wrapper cannot itself prove the I/O
+                // object it owns is still alive at this point — only the caller's control-flow
+                // guarantee (never dropped early, established above) can.
+                #[allow(unsafe_code)]
+                unsafe {
+                    display.get_mut().dispatch_clients(state)?;
+                }
+                Ok(smithay::reexports::calloop::PostAction::Continue)
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("inserting wayland display source: {error}"))?;
+
+    Ok(socket_name)
+}

@@ -16,3 +16,11 @@
 
 The compositor binary is built from this workspace like everything else. It is the one crate licensed
 GPL-3.0-only rather than MPL-2.0 (ADR-0012); `cargo deny` allows that for `lege-comp` alone.
+
+## Running it nested (development)
+
+`lege-comp --backend winit` (the default whenever `WAYLAND_DISPLAY`/`DISPLAY` is already set) hosts the
+compositor inside the current session as an ordinary window, and logs the socket name it created
+(`wayland-N`) and its private trusted-shell socket (`wayland-N-shell`) at startup. Point a client at the
+former to test against it, e.g. `WAYLAND_DISPLAY=wayland-N weston-terminal`. `--backend udev` runs against
+real DRM/KMS hardware via `LibSeatSession` and is not exercisable from a nested session.

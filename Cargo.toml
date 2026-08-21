@@ -25,6 +25,7 @@ members = [
     "services/lege-boot-health",
     "session/lege-session",
     "compositor/lege-comp-integration",
+    "compositor/lege-comp",
     "shell/lege-shell",
     "apps/lege-settings",
     "portals/xdg-desktop-portal-lege",
@@ -52,6 +53,7 @@ lege-session-core = { path = "crates/lege-session-core" }
 lege-state = { path = "crates/lege-state" }
 lege-client = { path = "crates/lege-client" }
 lege-hwdetect = { path = "crates/lege-hwdetect" }
+lege-comp-integration = { path = "compositor/lege-comp-integration" }
 lege-resourced = { path = "services/lege-resourced" }
 lege-filed = { path = "services/lege-filed" }
 lege = { path = "cli/lege" }

@@ -1,0 +1,78 @@
+[package]
+name = "lege-comp"
+description = "The compositor: Smithay directly (ADR-0012), driven entirely by lege-window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The one crate in the workspace not under MPL-2.0 (ADR-0012, ADR-0008): Smithay is MIT, but this
+# crate reads cosmic-comp (GPL-3.0-only) freely as an implementation reference for driver,
+# XWayland and protocol quirks, so it carries that licence deliberately. `deny.toml` allows it.
+license = "GPL-3.0-only"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lege-comp"
+path = "src/main.rs"
+
+[dependencies]
+lege-window = { workspace = true }
+lege-comp-integration = { workspace = true }
+lege-types = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Directly needed to compile the `wayland-scanner`-generated bindings for our two private
+# protocols (src/protocols.rs). Version-unified by Cargo with whatever `smithay` pulls in
+# transitively — kept at the same `0.31`/`0.32` lines deliberately so there is only ever one
+# compiled `wayland-server`/`wayland-protocols`, and its types are the same types Smithay's own
+# handler traits hand back (`ToplevelSurface`, `WlSurface`, ...).
+#
+# wayland-scanner 0.31 dropped the old build.rs-callable `generate_code` function in favour of
+# `generate_interfaces!`/`generate_server_code!` proc-macros invoked directly from source — there
+# is no build.rs entry point left to call at this pinned version, so bindings are generated in
+# src/protocols.rs instead of a build script (see that file's module doc for why).
+wayland-server = "0.31"
+wayland-backend = "0.3"
+wayland-protocols = { version = "0.32", features = ["staging", "server"] }
+wayland-scanner = "0.31"
+
+# Pinned to the exact revision the workspace was validated against (compositor/COMPOSITOR.md,
+# ADR-0012). `desktop` gives us `Space`/`Window`/`PopupManager` as a rendering/hit-test mirror —
+# never a policy source; `lege_window::WindowService` stays the sole geometry/z-order authority
+# (see src/space_sync.rs).
+[dependencies.smithay]
+git = "https://github.com/smithay/smithay.git"
+rev = "1ed69cb"
+default-features = false
+features = [
+    "desktop",
+    "wayland_frontend",
+    "backend_egl",
+    "backend_winit",
+    "renderer_gl",
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_vulkan",
+    "renderer_pixman",
+    "renderer_multi",
+    "xwayland",
+    "x11rb_event_source",
+]
+
+# `smithay-drm-extras` supplies `DrmScanner` and EDID-based `display_info`, used by the udev
+# backend for connector enumeration — same repo/rev as `smithay` itself.
+[dependencies.smithay-drm-extras]
+git = "https://github.com/smithay/smithay.git"
+rev = "1ed69cb"
+
+[lints]
+workspace = true

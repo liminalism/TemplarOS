@@ -1,0 +1,475 @@
+//! `xdg_shell` and `zxdg_toplevel_decoration_v1`: the compositor-facing half of COMPOSITOR.md's
+//! table rows for mapping, title, decoration and fullscreen. `CompositorHandler::commit` lives
+//! here too because the moment a toplevel becomes mapped ([`window_bridge::should_map_toplevel`])
+//! is detected at commit time, not at `new_toplevel` (which fires before any content exists).
+//!
+//! Every toplevel is placed in `Space` immediately at `new_toplevel` (before it is mapped into
+//! `WindowService` at all) purely so Smithay's own commit/configure machinery — which several
+//! `desktop` helpers key off `Space` lookups — has somewhere to find it; `Space` is never
+//! consulted for placement or policy (`state.rs`'s doc comment, `src/space_sync.rs`).
+
+use crate::state::{Backend, LegeCompState};
+use crate::window_bridge::{claims_from_wayland, client_kind, now_monotonic_ns};
+use lege_window::Decoration;
+use smithay::wayland::seat::WaylandFocus;
+use smithay::{
+    backend::renderer::utils::on_commit_buffer_handler,
+    desktop::{
+        PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
+    },
+    input::Seat,
+    reexports::{
+        wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        wayland_server::{
+            Client, Resource,
+            protocol::{wl_output, wl_seat, wl_surface::WlSurface},
+        },
+    },
+    utils::Serial,
+    wayland::{
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, get_parent,
+            is_sync_subsurface, with_states,
+        },
+        shell::xdg::{
+            Configure, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
+            XdgShellState, XdgToplevelSurfaceData,
+            decoration::XdgDecorationHandler,
+            dialog::{ToplevelDialogHint, XdgDialogHandler},
+        },
+        xdg_activation::{
+            XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+        },
+    },
+};
+
+impl<B: Backend + 'static> CompositorHandler for LegeCompState<B> {
+    fn compositor_state(&mut self) -> &mut CompositorState {
+        &mut self.compositor_state
+    }
+
+    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // XWayland's own connection carries Smithay's `XWaylandClientData`, not our `ClientState`
+        // (`src/xwayland.rs`'s `XWayland::spawn` inserts it internally) — every other connection
+        // goes through `crate::state::init_wayland_listener`/`crate::shell_socket::install`, both
+        // of which always insert `ClientState`, so those two cases are exhaustive.
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &state.compositor_state;
+        }
+        &client
+            .get_data::<crate::state::ClientState>()
+            .expect("every non-XWayland client is inserted with ClientState")
+            .compositor_state
+    }
+
+    fn commit(&mut self, surface: &WlSurface) {
+        on_commit_buffer_handler::<Self>(surface);
+        self.backend_data.early_import(surface);
+
+        if !is_sync_subsurface(surface) {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            if let Some(window) = window_for_surface(&self.space, &root) {
+                window.on_commit();
+            }
+        }
+
+        self.popups.commit(surface);
+        ensure_initial_popup_configure(&mut self.popups, surface);
+        self.handle_toplevel_commit(surface);
+    }
+}
+
+/// `Space::elements().find(...)` by root `WlSurface` — the one Smithay-mandated lookup this
+/// module needs `Space` for (surface-tree bookkeeping, not placement; see the module doc).
+fn window_for_surface(space: &Space<Window>, surface: &WlSurface) -> Option<Window> {
+    space
+        .elements()
+        .find(|window| window.wl_surface().as_deref() == Some(surface))
+        .cloned()
+}
+
+fn ensure_initial_popup_configure(popups: &mut PopupManager, surface: &WlSurface) {
+    if let Some(popup) = popups.find_popup(surface)
+        && let PopupKind::Xdg(ref xdg) = popup
+        && !xdg.is_initial_configure_sent()
+    {
+        // Smithay only refuses this for a genuinely malformed positioner, which the client
+        // already violated protocol to produce — nothing left for the compositor to repair.
+        xdg.send_configure().expect("initial popup configure");
+    }
+}
+
+impl<B: Backend + 'static> LegeCompState<B> {
+    /// The one place a toplevel's mapped-ness is decided (`window_bridge::should_map_toplevel`),
+    /// and the one place its title is kept in sync once mapped (`xdg_toplevel.set_title`'s row in
+    /// COMPOSITOR.md — Smithay delivers this as [`XdgShellHandler::title_changed`] instead, which
+    /// only fires post-map, so the just-mapped title is read here directly from
+    /// [`XdgToplevelSurfaceData`] instead of waiting for a redundant first change notification).
+    fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
+        let Some(window) = window_for_surface(&self.space, surface) else {
+            return;
+        };
+        let Some(toplevel) = window.toplevel().cloned() else {
+            return;
+        };
+        if toplevel.wl_surface() != surface {
+            return;
+        }
+
+        if !toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+            return;
+        }
+
+        let object_id = surface.id();
+        if self.windows.is_mapped(&object_id) {
+            return;
+        }
+        self.windows.track_pending(object_id.clone());
+
+        let has_buffer =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| {
+                s.buffer().is_some()
+            })
+            .unwrap_or(false);
+        if !self
+            .windows
+            .ready_to_map(&object_id, has_buffer, toplevel.is_initial_configure_sent())
+        {
+            return;
+        }
+
+        // `window.geometry()` (Smithay's `Window::geometry`) itself calls `with_states` on this
+        // exact surface — nesting it inside our own `with_states` below would try to re-lock the
+        // same non-reentrant per-surface mutex from the same thread and deadlock the whole render
+        // loop. Read it first, outside any `with_states` closure.
+        let geometry = window.geometry();
+        let (title, app_id) = with_states(surface, |states| {
+            let data = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .expect("xdg toplevel surfaces always carry XdgToplevelSurfaceData")
+                .lock()
+                .unwrap();
+            (data.title.clone(), data.app_id.clone())
+        });
+
+        let client = surface.client();
+        let peer_pid = client
+            .clone()
+            .and_then(|client| client.get_credentials(&self.display_handle).ok())
+            .map_or(0, |credentials| credentials.pid.max(0) as u32);
+        let trusted_shell =
+            client.is_some_and(|client| crate::state::client_is_trusted_shell(&client));
+        let claims = claims_from_wayland(app_id);
+        let requested = lege_window::Rect::new(
+            geometry.loc.x,
+            geometry.loc.y,
+            geometry.size.w,
+            geometry.size.h,
+        );
+
+        let window_id = self.window_service.on_toplevel_mapped(
+            peer_pid,
+            client_kind(trusted_shell),
+            claims,
+            title.unwrap_or_default(),
+            requested,
+        );
+        self.windows.mark_mapped(surface.clone(), window_id);
+
+        let repaired = self
+            .window_service
+            .window(window_id)
+            .map_or(requested, |record| record.geometry);
+        self.space
+            .map_element(window.clone(), (repaired.x, repaired.y), false);
+        tracing::info!(
+            ?window_id,
+            requested = ?requested,
+            geometry = ?repaired,
+            recoverable = lege_window::is_recoverable(repaired, self.window_service.outputs()),
+            "toplevel mapped"
+        );
+        crate::space_sync::sync_after_change(self);
+    }
+}
+
+impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
+    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+        &mut self.xdg_shell_state
+    }
+
+    fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let window = Window::new_wayland_window(surface);
+        // Placed off-screen at the origin until `handle_toplevel_commit` maps it through
+        // `WindowService::on_toplevel_mapped` and repairs its geometry — nothing reads this
+        // location as policy before that point.
+        self.space.map_element(window, (0, 0), false);
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let object_id = surface.wl_surface().id();
+        if let Some(window) = window_for_surface(&self.space, surface.wl_surface()) {
+            self.space.unmap_elem(&window);
+        }
+        if let Some(window_id) = self.windows.remove(&object_id) {
+            tracing::info!(?window_id, "toplevel destroyed");
+            crate::space_sync::on_window_destroyed(self, window_id);
+        }
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let object_id = surface.wl_surface().id();
+        let Some(window_id) = self.windows.window_id_for(&object_id) else {
+            return;
+        };
+        let title = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .map(|data| data.lock().unwrap().title.clone().unwrap_or_default())
+        })
+        .unwrap_or_default();
+        self.window_service.set_title(window_id, title);
+        crate::space_sync::sync_after_change(self);
+    }
+
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        self.unconstrain_popup(&surface);
+        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+    }
+
+    fn reposition_request(
+        &mut self,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
+    ) {
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        self.unconstrain_popup(&surface);
+        surface.send_repositioned(token);
+    }
+
+    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
+        // No popup-dismiss-on-outside-click grab this milestone: popups still work (they map,
+        // render and receive input while focused), they just don't auto-close on an outside
+        // click/tap yet. Tracked as a follow-up, not a correctness gap in the geometry contract
+        // this crate exists to uphold.
+    }
+
+    fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::from_resource(&seat) else {
+            return;
+        };
+        let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) else {
+            return;
+        };
+        crate::input::start_drag(self, &seat, serial, window_id);
+    }
+
+    fn resize_request(
+        &mut self,
+        _surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        _edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+    ) {
+        // Interactive resize is not part of the geometry contract COMPOSITOR.md specifies
+        // (`WindowService` has no resize policy — only placement/recovery), so client-requested
+        // interactive resize is intentionally not wired to a grab this milestone; the client's
+        // own resize handles (server- or client-side) still work through ordinary
+        // `xdg_toplevel.set_window_geometry` + configure round-trips.
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<wl_output::WlOutput>,
+    ) {
+        surface.with_pending_state(|state| {
+            state
+                .states
+                .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
+        });
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+        if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
+            self.window_service.set_fullscreen(window_id, true);
+            crate::space_sync::sync_after_change(self);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state
+                .states
+                .unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
+        });
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+        if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
+            self.window_service.set_fullscreen(window_id, false);
+            crate::space_sync::sync_after_change(self);
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
+            self.window_service.shelve(window_id);
+            crate::space_sync::sync_after_change(self);
+        }
+    }
+
+    fn ack_configure(&mut self, _surface: WlSurface, _configure: Configure) {}
+}
+
+impl<B: Backend + 'static> LegeCompState<B> {
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            return;
+        };
+        let Some(window) = window_for_surface(&self.space, &root) else {
+            return;
+        };
+        let Some(output) = self.space.outputs().next() else {
+            return;
+        };
+        let Some(output_geo) = self.space.output_geometry(output) else {
+            return;
+        };
+        let Some(window_geo) = self.space.element_geometry(&window) else {
+            return;
+        };
+
+        let mut target = output_geo;
+        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        target.loc -= window_geo.loc;
+
+        popup.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
+    }
+}
+
+impl<B: Backend + 'static> XdgDecorationHandler for LegeCompState<B> {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // We have no server-side chrome renderer yet (`src/chrome.rs`'s module doc), so
+        // client-side is the only mode that actually produces a usable title bar today.
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ClientSide);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(mode);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+        self.apply_decoration(&toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ClientSide);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+        self.apply_decoration(&toplevel, Mode::ClientSide);
+    }
+}
+
+impl<B: Backend + 'static> LegeCompState<B> {
+    fn apply_decoration(&mut self, toplevel: &ToplevelSurface, mode: Mode) {
+        let Some(window_id) = self.windows.window_id_for(&toplevel.wl_surface().id()) else {
+            return;
+        };
+        let decoration = if mode == Mode::ServerSide {
+            Decoration::ServerSide
+        } else {
+            Decoration::ClientSide
+        };
+        self.window_service.set_decoration(window_id, decoration);
+        crate::space_sync::sync_after_change(self);
+    }
+}
+
+/// `xdg_dialog_v1`: native Wayland modal-dialog tracking, the counterpart to
+/// `src/xwayland.rs`'s `modal_request`/`unmodal_request` for XWayland windows — COMPOSITOR.md's
+/// "compositor's own modal-dialog tracking (`xdg_dialog_v1`, or transient-for heuristics for
+/// XWayland)" row.
+impl<B: Backend + 'static> XdgDialogHandler for LegeCompState<B> {
+    fn dialog_hint_changed(&mut self, toplevel: ToplevelSurface, hint: ToplevelDialogHint) {
+        let Some(window_id) = self.windows.window_id_for(&toplevel.wl_surface().id()) else {
+            return;
+        };
+        self.window_service
+            .set_modal(window_id, hint == ToplevelDialogHint::Modal);
+        crate::space_sync::sync_after_change(self);
+    }
+}
+
+impl<B: Backend + 'static> XdgActivationHandler for LegeCompState<B> {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        let Some(window_id) = self.windows.window_id_for(&surface.id()) else {
+            return;
+        };
+        let had_recent_input_evidence = token_data
+            .serial
+            .as_ref()
+            .and_then(|(serial, _seat_resource)| {
+                self.seat
+                    .get_keyboard()
+                    .and_then(|keyboard| keyboard.last_enter())
+                    .map(|last_enter| serial.is_no_older_than(&last_enter))
+            })
+            .unwrap_or(false);
+
+        let now_monotonic_ns = now_monotonic_ns(&self.clock);
+        let grant = lege_window::ActivationGrant {
+            token: token.as_str().to_owned(),
+            requesting_instance: None,
+            target_instance: None,
+            expires_at_monotonic_ns: now_monotonic_ns.saturating_add(5_000_000_000),
+            had_recent_input_evidence,
+        };
+        let ctx = lege_window::CommandContext {
+            trusted_shell: true,
+            now_monotonic_ns,
+        };
+        if self
+            .window_service
+            .handle_command(
+                lege_window::WindowCommand::Activate { window_id, grant },
+                ctx,
+            )
+            .is_ok()
+        {
+            crate::input::activate_window(self, window_id);
+            crate::space_sync::sync_after_change(self);
+        }
+    }
+}
