@@ -1,15 +1,11 @@
 # Upstream forks pinned here, fetched into ../../forks/ (gitignored) by `just forks-fetch` (ADR-0005).
+#
+# The compositor is NOT here: `lege-comp` is written against Smithay and is an ordinary member of
+# this workspace, not a fork of cosmic-comp (ADR-0012). Nor is the greeter: `lege-greeter` is our
+# own, so that logging in does not require a COSMIC toolkit stack.
 # Each fork lives in its own repository with an `upstream` tracking branch and a `legeos` patch branch;
 # `pin` is the legeos-branch commit the distribution builds. Empty pin = tip of `branch` (dev only).
 
-[cosmic-comp]
-upstream = "https://github.com/pop-os/cosmic-comp"
-fork = "https://github.com/legeos/cosmic-comp"
-branch = "legeos"
-pin = ""
-purpose = "Compositor core: one-workspace invariant, lege-window bridge, recovery overlay, typed layers, ext-session-lock"
-package = "lege-comp"
-depends_on = ["compositor/lege-comp-integration"]
 
 [cosmic-files]
 upstream = "https://github.com/pop-os/cosmic-files"
@@ -27,13 +23,6 @@ pin = ""
 purpose = "ScreenCast/Screenshot backends until xdg-desktop-portal-lege covers them"
 package = "xdg-desktop-portal-cosmic"
 
-[cosmic-greeter]
-upstream = "https://github.com/pop-os/cosmic-greeter"
-fork = "https://github.com/legeos/cosmic-greeter"
-branch = "legeos"
-pin = ""
-purpose = "Greeter reusing the compositor fork (ADR-0010)"
-package = "cosmic-greeter"
 
 [cosmic-applets]
 upstream = "https://github.com/pop-os/cosmic-applets"

@@ -9,8 +9,8 @@ launches applications through systemd `StartTransientUnit`; the governor serves 
 protection and contains through a staged ladder that defaults to observing; the file service runs
 operations as resumable journalled transactions; the compositor core enforces typed layers, one scene and
 recovery that works without the shell; the host daemon promotes or rolls back a kernel and its driver as a
-pair. The clients (CLI, portal, shell, Settings) are landing; the compositor fork and any graphical surface
-are M2, so **you cannot log into this yet**. See `docs/generated/ROADMAP.md` for what is accepted and on
+pair. The clients (CLI, portal, shell, Settings) are landing; the compositor and any graphical surface are
+M2, so **you cannot log into this yet**. See `docs/generated/ROADMAP.md` for what is accepted and on
 what evidence, `docs/planning/` for the founding analysis, and `docs/adr/` for every decision.
 
 ## The five things the first release must prove
@@ -31,7 +31,7 @@ what evidence, `docs/planning/` for the founding analysis, and `docs/adr/` for e
   governor** (`lege-resourced`); **one file service** (`lege-filed`); **one privileged host daemon**
   (`lege-hostd`). One state store, one event history ("why did that happen? undo."), one typed settings
   schema, one CLI (`lege`), one portal backend, one selected provider per exclusive system role.
-* **Compositor core vs shell.** A conservative single-scene compositor (cosmic-comp fork) with typed overlay
+* **Compositor core vs shell.** A conservative single-scene compositor (`lege-comp`, on Smithay) with typed overlay
   layers and a compositor-owned recovery band on every window; everything decorative restarts freely.
 * **Transactional kernel/NVIDIA updates** on btrfs deployments with systemd boot assessment and a
   system-scope health probe.

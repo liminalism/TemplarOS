@@ -6,9 +6,14 @@ all-features = false
 ignore = []
 
 [licenses]
-# Own code is MPL-2.0. Dependencies must be permissive or weak-copyleft; strong copyleft only via forks
-# that keep their upstream licence (they are not workspace members).
+# Own code is MPL-2.0 (ADR-0008). Dependencies must be permissive or weak-copyleft.
+#
+# GPL-3.0-only is allowed for exactly one crate: `lege-comp` (ADR-0012). The compositor is written
+# against Smithay (MIT) but reads `cosmic-comp` (GPL-3.0-only) as an implementation reference for
+# driver, XWayland and protocol quirks, so it carries that licence deliberately. MPL-2.0 combines
+# into a GPL-3.0 work, so it may link the rest of the workspace unchanged; nothing links it back.
 allow = [
+    "GPL-3.0",
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

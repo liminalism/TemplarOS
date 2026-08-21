@@ -4,7 +4,7 @@
 #   crates/      pure library crates — the testable cores of every OS domain
 #   services/    daemons (thin hosts over the crates)
 #   session/     session entry + systemd user units
-#   compositor/  compositor integration crate (the cosmic-comp fork depends on it by path)
+#   compositor/  lege-comp (the Smithay compositor) + lege-comp-integration
 #   shell/ apps/ portals/ cli/  user-facing binaries
 #   tools/xtask  repository automation
 [workspace]

@@ -7,7 +7,7 @@
 └───────────────┬────────────────────────────────────┬──────────────────────┘
                 │ D-Bus (session bus)                 │ private lege_shell_v1
 ┌───────────────┴──────────────┐  ┌────────────┐  ┌──┴──────────────────────┐
-│ lege-sessiond  org.legeos.Session │  │ lege-filed │  │ lege-comp (cosmic-comp fork) │
+│ lege-sessiond  org.legeos.Session │  │ lege-filed │  │ lege-comp (Smithay)          │
 │  AppIdentity1  Launcher1          │  │ org.legeos │  │  + lege-comp-integration     │
 │  Associations1 Providers1         │  │   .Files   │  │  + lege-window (one scene,   │
 │  History1 Settings1 Projects1     │  │            │  │    recovery invariant,       │
@@ -48,7 +48,8 @@
 | `lege-session-core` | sessiond | providers, autostart, history, notifications, settings schema, projects, power, location, first-run |
 | `lege-state` | sessiond, filed | SQLite migrations |
 | `lege-window` | lege-comp | geometry invariant (`repair_window ⇒ is_recoverable`, proptest), window records, drag, layers — **no async deps** |
-| `lege-comp-integration` | lege-comp | `IdentityCache` over D-Bus, protocol names |
+| `lege-comp-integration` | lege-comp | `IdentityCache` over D-Bus, governor notifier, shell broadcaster |
+| `lege-comp` (bin) | itself | the Smithay compositor: DRM/KMS + winit backends, protocols, render loop (ADR-0012, GPL-3.0) |
 | `lege-client` | shell, apps, portal, cli, comp | proxies + app SDK (checkpoint protocol) |
 | `lege-hwdetect` | hostd, installer, doctor | GPU detection, flavour, modes |
 | `lege-resourced` (lib) | itself | cgroup wrapper, PSI, pure `Governor`, executor, `app.slice` scan |

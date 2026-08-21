@@ -13,5 +13,6 @@
 | 0009 | Packaging: cargo-deb → vendored source package | accepted |
 | 0010 | systemd session; greetd + cosmic-greeter; compositor-owned lock | accepted |
 | 0011 | Flatpak not snapd; telemetry-free crash handling | accepted |
+| 0012 | Compositor built on Smithay, not forked from cosmic-comp | accepted |
 
 Mirrored as AKR `decision` records (`.akr/`, rendered in `docs/generated/`).

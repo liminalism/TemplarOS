@@ -1,7 +1,7 @@
 Package: legeos-desktop
 Architecture: all
 Depends: legeos-session, legeos-sessiond, legeos-resourced, legeos-filed, legeos-hostd, legeos-boot-health,
- legeos-shell, legeos-portal, legeos-cli, legeos-settings, lege-comp, lege-files, cosmic-greeter, greetd,
+ legeos-shell, legeos-portal, legeos-cli, legeos-settings, lege-comp, lege-files, lege-greeter, greetd,
  xdg-desktop-portal, xwayland, pipewire, pipewire-pulse, wireplumber, network-manager, bluez, upower,
  mesa-vulkan-drivers, linux-firmware, flatpak, fcitx5, orca, ${misc:Depends}
 Recommends: legeos-kernel

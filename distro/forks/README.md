@@ -6,4 +6,5 @@ Debian package). `fetch.sh` (via `just forks-fetch`) clones/updates them into `f
 avoids. Each fork repo keeps `upstream` (tracking) and `legeos` (patches) branches; CI runs a rebase check
 monthly (`release/CADENCE.md`).
 
-The compositor fork depends by path on `compositor/lege-comp-integration`; the files fork on `lege-client`.
+The compositor is not a fork (ADR-0012): `lege-comp` is a workspace member built on Smithay. The files
+fork depends by path on `lege-client`.
