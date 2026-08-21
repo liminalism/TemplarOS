@@ -1,0 +1,13 @@
+id = "wayland-and-xwayland-apps"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "launch a native Wayland app (e.g. lege-settings)",
+  "launch an XWayland app (e.g. a legacy X11-only tool)",
+  "check identity resolution for both: org.legeos.AppIdentity1 shows verified-launch, correct cgroup and canonical AppId",
+  "check dock grouping: both appear as one entry each, no duplicates from XWayland's separate WM_CLASS",
+]
+expect = [
+  "both launch and render correctly under the hybrid GPU configuration in every gpu-mode",
+  "identity resolution is verified-launch (never claim-only) for both",
+  "the dock groups each app under its canonical AppId, not its XWayland/Wayland surface identity",
+]

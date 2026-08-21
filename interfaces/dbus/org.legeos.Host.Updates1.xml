@@ -1,7 +1,8 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.legeos.Host (system bus, lege-hostd). Path: /org/legeos/Host.
-     Staged kernel/driver update transactions. polkit: org.legeos.host.update -->
+     Staged kernel/driver update transactions. polkit: org.legeos.host.update (Plan only;
+     Current/History/Transaction are unauthenticated reads). -->
 <node>
   <interface name="org.legeos.Host.Updates1">
     <method name="Current">
@@ -10,6 +11,15 @@
     <method name="Plan">
       <arg name="changes_json" type="s" direction="in"/>
       <arg name="transaction_id" type="s" direction="out"/>
+    </method>
+    <!-- Every transaction the journal remembers, as JSON (Vec<Transaction>). -->
+    <method name="History">
+      <arg name="transactions_json" type="s" direction="out"/>
+    </method>
+    <!-- One past (or current) transaction by id, as JSON, or "" if unknown. -->
+    <method name="Transaction">
+      <arg name="id" type="s" direction="in"/>
+      <arg name="transaction_json" type="s" direction="out"/>
     </method>
   </interface>
 </node>

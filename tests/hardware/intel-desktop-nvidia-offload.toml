@@ -1,0 +1,14 @@
+id = "intel-desktop-nvidia-offload"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "lege-hostd Hardware1.SetGpuMode hybrid",
+  "reboot",
+  "lege doctor --hardware --check gpu-mode (confirms /etc/legeos/hardware/gpu-mode == hybrid)",
+  "log in; confirm the session is driven by the Intel GPU (glxinfo | grep 'OpenGL renderer' shows Iris Xe)",
+  "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia vkcube",
+]
+expect = [
+  "compositor and shell render on the iGPU (no dGPU power draw at idle)",
+  "vkcube renders on the dGPU (nvidia-smi shows the vkcube process while it runs)",
+  "lege-boot-health passes: drm-connected-output, drm-modesetting and nvidia-module all pass",
+]

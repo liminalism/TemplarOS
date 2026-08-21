@@ -1,0 +1,14 @@
+id = "driver-update-and-rollback"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "lege update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <candidate-userspace>",
+  "reboot",
+  "lege-boot-health passes (module version matches userspace version) → entry blessed, Drivers1.Plan shows no violations",
+  "lege update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <mismatched-userspace> (simulated: userspace pinned to a different branch)",
+  "reboot",
+]
+expect = [
+  "first update: nvidia-module boot-health check passes, transaction reaches Promoted, the new deployment is known-good",
+  "second update: transaction verification rejects the mismatched pair before even staging a boot entry (Phase::Failed, never reaches AwaitingReboot) — the module/userspace version-lock check in the transaction engine catches it, not just boot-health",
+  "history (Updates1.History) shows the failed transaction with its reason",
+]

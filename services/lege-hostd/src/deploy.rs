@@ -1,142 +1,435 @@
 //! Boot deployments and rollback. The `BootManager` trait abstracts the two backends decided in
 //! ADR-0004: `systemd-boot` (boot-assessment counters + `systemd-bless-boot`) and `grub`
 //! (env-block counter maintained by hostd). Root is btrfs subvolumes; a deployment is a read-only
-//! snapshot plus a hostd-owned copy of kernel + initrd + entry on the ESP.
+//! snapshot plus a hostd-owned copy of kernel + initrd + entry on the ESP
+//! (`distro/deploy/README.md`), placed here rather than left where apt's maintainer scripts put
+//! them so Ubuntu's initramfs post-update hooks cannot rewrite the previous entry out from under
+//! a deployment that is supposed to be immutable.
+//!
+//! ADR-0004 is still *proposed*: which Secure-Boot posture (LegeOS-signed systemd-boot + MOK,
+//! Canonical-signed GRUB + this module's own counter, or SB off for dev) is a decision left to
+//! configuration — [`detect_backend`] is the one place that reads it, and it reads the
+//! installation's actual loader rather than assuming one.
 
+use crate::cmd::CommandRunner;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deployment {
     pub id: String,
-    /// btrfs subvolume path (e.g. `@deployments/2026-08-17T10-00`).
+    /// btrfs subvolume path (e.g. `@deployments/20260817T100000Z`).
     pub subvolume: String,
     /// ESP directory holding this deployment's kernel/initrd/entry.
     pub esp_dir: String,
-    pub kernel: String,
+    pub kernel: Option<String>,
     pub nvidia_modules: Option<String>,
     pub known_good: bool,
 }
 
 /// What every backend must provide.
-pub trait BootManager: Send + Sync {
+pub trait BootManager: Send + Sync + std::fmt::Debug {
     /// Register `candidate` as the next boot with `tries` attempts before automatic fallback.
-    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> anyhow::Result<()>;
+    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()>;
     /// Mark the currently booted deployment good (called by boot-health via hostd).
-    fn mark_good(&self) -> anyhow::Result<()>;
+    fn mark_good(&self) -> Result<()>;
     /// Make `previous` the default again and drop the candidate's tries.
-    fn rollback(&self, previous: &Deployment) -> anyhow::Result<()>;
+    fn rollback(&self, previous: &Deployment) -> Result<()>;
     /// Human-readable backend name for `lege doctor`.
     fn name(&self) -> &'static str;
 }
 
-/// systemd-boot backend: entries `legeos-<id>+<tries>.conf`, `systemd-bless-boot`.
-#[derive(Debug, Default)]
-pub struct SystemdBoot;
+/// Copy a candidate deployment's kernel image and initramfs from its snapshot into the
+/// hostd-owned ESP directory. Ubuntu-signed kernels only (Type #1 entries, no self-built UKI).
+pub fn place_boot_files(candidate_root: &Path, esp_root: &Path, id: &str) -> Result<PathBuf> {
+    let dest = esp_root.join("EFI/legeos").join(id);
+    fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
+    let boot = candidate_root.join("boot");
+    let kernel = find_entry_matching(&boot, "vmlinuz")
+        .with_context(|| format!("candidate has no kernel image under {}", boot.display()))?;
+    let initrd = find_entry_matching(&boot, "initrd.img")
+        .with_context(|| format!("candidate has no initramfs under {}", boot.display()))?;
+    fs::copy(&kernel, dest.join("vmlinuz")).context("copying kernel image")?;
+    fs::copy(&initrd, dest.join("initrd.img")).context("copying initramfs")?;
+    Ok(dest)
+}
+
+/// Whether `dir` has both a kernel image and an initramfs — the minimum for a bootable
+/// deployment, checked during transaction verification.
+pub fn has_bootable_files(dir: &Path) -> bool {
+    find_entry_matching(dir, "vmlinuz").is_some()
+        && find_entry_matching(dir, "initrd.img").is_some()
+}
+
+fn find_entry_matching(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+        })
+}
+
+/// systemd-boot backend: Boot Loader Spec "automatic boot assessment" — the entry filename
+/// carries a `+tries` suffix that systemd-boot itself decrements on every boot attempt, and
+/// `systemd-bless-boot` strips it once boot-health has passed.
+#[derive(Debug, Clone)]
+pub struct SystemdBoot {
+    pub commands: Arc<dyn CommandRunner>,
+    pub esp_root: PathBuf,
+}
+
+impl SystemdBoot {
+    fn entry_path(&self, id: &str, tries: Option<u8>) -> PathBuf {
+        let name = match tries {
+            Some(n) => format!("legeos-{id}+{n}.conf"),
+            None => format!("legeos-{id}.conf"),
+        };
+        self.esp_root.join("loader/entries").join(name)
+    }
+}
 
 impl BootManager for SystemdBoot {
-    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> anyhow::Result<()> {
-        tracing::info!(id = %candidate.id, tries, "would write boot-assessment entry (not implemented in M0)");
+    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
+        let entry = self.entry_path(&candidate.id, Some(tries));
+        if let Some(parent) = entry.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut body = format!(
+            "title LegeOS ({id})\nlinux /EFI/legeos/{id}/vmlinuz\ninitrd /EFI/legeos/{id}/initrd.img\noptions root=LABEL=legeos-root rw\n",
+            id = candidate.id,
+        );
+        if let Some(modules) = &candidate.nvidia_modules {
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "# nvidia-modules {modules}");
+        }
+        fs::write(&entry, body).with_context(|| format!("writing {}", entry.display()))?;
+        let file_name = entry
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("entry path has no file name")?;
+        self.commands.run("bootctl", &["set-default", file_name])?;
         Ok(())
     }
-    fn mark_good(&self) -> anyhow::Result<()> {
-        tracing::info!("would run systemd-bless-boot good (not implemented in M0)");
+
+    fn mark_good(&self) -> Result<()> {
+        self.commands.run("systemd-bless-boot", &["good"])?;
         Ok(())
     }
-    fn rollback(&self, previous: &Deployment) -> anyhow::Result<()> {
-        tracing::info!(id = %previous.id, "would restore previous default entry (not implemented in M0)");
+
+    fn rollback(&self, previous: &Deployment) -> Result<()> {
+        let entry = self.entry_path(&previous.id, None);
+        let file_name = entry
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("entry path has no file name")?;
+        self.commands.run("bootctl", &["set-default", file_name])?;
         Ok(())
     }
+
     fn name(&self) -> &'static str {
         "systemd-boot"
     }
 }
 
-/// Select the backend for this installation (ADR-0004). systemd-boot when its loader is present.
-pub fn detect_backend(root: &std::path::Path) -> Box<dyn BootManager> {
-    if root.join("boot/efi/loader/loader.conf").exists()
-        || root.join("efi/loader/loader.conf").exists()
-    {
-        Box::new(SystemdBoot)
-    } else {
-        Box::new(Grub)
-    }
+/// GRUB backend: `GRUB_DEFAULT=saved`. `grub-reboot` only affects the *next* boot, so hostd owns
+/// the multi-try counter itself (ADR-0004) in a small state file rather than GRUB's environment
+/// block, which Ubuntu's `grub-mkconfig` can rewrite.
+#[derive(Debug, Clone)]
+pub struct Grub {
+    pub commands: Arc<dyn CommandRunner>,
+    pub state_dir: PathBuf,
 }
 
-/// `org.legeos.Host.Deployments1`
-pub struct DeploymentsApi {
-    pub backend: Box<dyn BootManager>,
-    pub known: Vec<Deployment>,
-}
+impl Grub {
+    fn counter_path(&self) -> PathBuf {
+        self.state_dir.join("grub-tries")
+    }
 
-impl std::fmt::Debug for DeploymentsApi {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DeploymentsApi")
-            .field("backend", &self.backend.name())
-            .finish_non_exhaustive()
+    /// `(candidate id, tries remaining)`, if a candidate is currently staged.
+    pub fn staged(&self) -> Result<Option<(String, u8)>> {
+        match fs::read_to_string(self.counter_path()) {
+            Ok(content) => {
+                let mut lines = content.lines();
+                let id = lines.next().context("empty grub-tries state file")?;
+                let tries: u8 = lines
+                    .next()
+                    .context("grub-tries state file missing tries count")?
+                    .parse()
+                    .context("grub-tries count is not a number")?;
+                Ok(Some((id.to_owned(), tries)))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// One more failed trial boot happened without a `mark_good`. Returns the tries remaining
+    /// after decrementing (0 means the caller should roll back). Not automatically invoked —
+    /// something must drive the boot-attempt reconciliation across reboots; see the module docs.
+    #[allow(
+        dead_code,
+        reason = "real API, not yet wired to a live reboot loop — see module docs"
+    )]
+    pub fn decrement(&self) -> Result<u8> {
+        let Some((id, tries)) = self.staged()? else {
+            bail!("no candidate is staged");
+        };
+        let remaining = tries.saturating_sub(1);
+        fs::write(self.counter_path(), format!("{id}\n{remaining}\n"))?;
+        if remaining > 0 {
+            self.commands.run("grub-reboot", &[&id])?;
+        }
+        Ok(remaining)
     }
 }
-
-#[zbus::interface(name = "org.legeos.Host.Deployments1")]
-impl DeploymentsApi {
-    /// Boot-manager backend in use (`systemd-boot` or `grub`).
-    async fn backend(&self) -> String {
-        self.backend.name().to_owned()
-    }
-
-    /// Known deployments as JSON.
-    async fn list(&self) -> String {
-        serde_json::to_string(&self.known).unwrap_or_default()
-    }
-
-    /// Stage `id` for a trial boot with `tries` attempts (M0: logs only).
-    async fn stage(&self, id: &str, tries: u8) -> zbus::fdo::Result<()> {
-        let candidate =
-            self.known.iter().find(|d| d.id == id).ok_or_else(|| {
-                zbus::fdo::Error::FileNotFound(format!("unknown deployment {id}"))
-            })?;
-        self.backend
-            .stage_candidate(candidate, tries)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
-    }
-
-    /// Mark the running deployment good (called through boot-health).
-    async fn mark_good(&self) -> zbus::fdo::Result<()> {
-        self.backend
-            .mark_good()
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
-    }
-
-    /// Roll back to `id`.
-    async fn rollback(&self, id: &str) -> zbus::fdo::Result<()> {
-        let previous =
-            self.known.iter().find(|d| d.id == id).ok_or_else(|| {
-                zbus::fdo::Error::FileNotFound(format!("unknown deployment {id}"))
-            })?;
-        self.backend
-            .rollback(previous)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
-    }
-}
-
-/// GRUB backend: `GRUB_DEFAULT=saved`, `grub-reboot` for the trial, `grub-set-default` on success.
-#[derive(Debug, Default)]
-pub struct Grub;
 
 impl BootManager for Grub {
-    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> anyhow::Result<()> {
-        tracing::info!(id = %candidate.id, tries, "would grub-reboot into candidate (not implemented in M0)");
+    fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
+        fs::create_dir_all(&self.state_dir)?;
+        fs::write(
+            self.counter_path(),
+            format!("{}\n{}\n", candidate.id, tries),
+        )?;
+        self.commands.run("grub-reboot", &[&candidate.id])?;
         Ok(())
     }
-    fn mark_good(&self) -> anyhow::Result<()> {
-        tracing::info!("would grub-set-default (not implemented in M0)");
+
+    fn mark_good(&self) -> Result<()> {
+        let Some((id, _)) = self.staged()? else {
+            bail!("no candidate is staged to promote");
+        };
+        self.commands.run("grub-set-default", &[&id])?;
+        let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
-    fn rollback(&self, previous: &Deployment) -> anyhow::Result<()> {
-        tracing::info!(id = %previous.id, "would grub-set-default previous (not implemented in M0)");
+
+    fn rollback(&self, previous: &Deployment) -> Result<()> {
+        self.commands.run("grub-set-default", &[&previous.id])?;
+        let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
+
     fn name(&self) -> &'static str {
         "grub"
+    }
+}
+
+/// Load the known-deployment registry (`<state-dir>/deployments.json`) — empty if it does not
+/// exist yet (a fresh install has no deployments beyond the one it booted from).
+pub fn load_deployments(path: &Path) -> Result<Vec<Deployment>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Persist the registry atomically (write-temp-then-rename, matching the transaction journal).
+pub fn save_deployments(path: &Path, deployments: &[Deployment]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(deployments)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
+}
+
+/// Where the ESP is mounted under `root` — `boot/efi` on Ubuntu's default layout, `efi` on a
+/// minimal mkosi image. The one place this is decided, so [`detect_backend`] and the transaction
+/// engine's boot-file placement can never disagree about it.
+pub fn esp_root(root: &Path) -> PathBuf {
+    for candidate in ["boot/efi", "efi"] {
+        let esp = root.join(candidate);
+        if esp.join("loader/loader.conf").exists() {
+            return esp;
+        }
+    }
+    root.join("boot/efi")
+}
+
+/// Select the backend for this installation (ADR-0004). systemd-boot when its loader is present
+/// under the given root's ESP, GRUB otherwise. `root` is parameterized so tests never touch `/`.
+pub fn detect_backend(
+    root: &Path,
+    commands: Arc<dyn CommandRunner>,
+    state_dir: PathBuf,
+) -> Box<dyn BootManager> {
+    let esp = esp_root(root);
+    if esp.join("loader/loader.conf").exists() {
+        Box::new(SystemdBoot {
+            commands,
+            esp_root: esp,
+        })
+    } else {
+        Box::new(Grub {
+            commands,
+            state_dir,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cmd::FakeCommandRunner;
+
+    fn deployment(id: &str) -> Deployment {
+        Deployment {
+            id: id.to_owned(),
+            subvolume: format!("@deployments/{id}"),
+            esp_dir: format!("EFI/legeos/{id}"),
+            kernel: Some("linux-image-7.2.0-generic".into()),
+            nvidia_modules: Some("linux-modules-nvidia-580-open-generic".into()),
+            known_good: false,
+        }
+    }
+
+    #[test]
+    fn detect_backend_prefers_systemd_boot_when_loader_conf_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("boot/efi/loader")).unwrap();
+        fs::write(dir.path().join("boot/efi/loader/loader.conf"), "").unwrap();
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
+        assert_eq!(backend.name(), "systemd-boot");
+    }
+
+    #[test]
+    fn detect_backend_falls_back_to_grub() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
+        assert_eq!(backend.name(), "grub");
+    }
+
+    #[test]
+    fn esp_root_agrees_with_detect_backend_on_a_minimal_efi_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("efi/loader")).unwrap();
+        fs::write(dir.path().join("efi/loader/loader.conf"), "").unwrap();
+
+        assert_eq!(esp_root(dir.path()), dir.path().join("efi"));
+
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
+        assert_eq!(backend.name(), "systemd-boot");
+    }
+
+    #[test]
+    fn esp_root_defaults_to_boot_efi_when_nothing_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(esp_root(dir.path()), dir.path().join("boot/efi"));
+    }
+
+    #[test]
+    fn systemd_boot_writes_a_tries_suffixed_entry_and_sets_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = SystemdBoot {
+            commands: commands.clone(),
+            esp_root: dir.path().to_path_buf(),
+        };
+        backend.stage_candidate(&deployment("cand1"), 3).unwrap();
+        let entry = dir.path().join("loader/entries/legeos-cand1+3.conf");
+        assert!(entry.exists());
+        let body = fs::read_to_string(&entry).unwrap();
+        assert!(body.contains("linux /EFI/legeos/cand1/vmlinuz"));
+
+        let calls = commands.calls();
+        assert_eq!(calls[0].program, "bootctl");
+        assert_eq!(calls[0].args, ["set-default", "legeos-cand1+3.conf"]);
+
+        backend.mark_good().unwrap();
+        assert_eq!(commands.calls()[1].program, "systemd-bless-boot");
+
+        backend.rollback(&deployment("prev1")).unwrap();
+        assert_eq!(
+            commands.calls()[2].args,
+            ["set-default", "legeos-prev1.conf"]
+        );
+    }
+
+    #[test]
+    fn grub_owns_its_own_tries_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = Grub {
+            commands: commands.clone(),
+            state_dir: dir.path().to_path_buf(),
+        };
+        backend.stage_candidate(&deployment("cand1"), 3).unwrap();
+        assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 3)));
+        assert_eq!(commands.calls()[0].args, ["cand1"]);
+
+        assert_eq!(backend.decrement().unwrap(), 2);
+        assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 2)));
+
+        backend.mark_good().unwrap();
+        assert_eq!(backend.staged().unwrap(), None);
+        assert_eq!(commands.calls().last().unwrap().program, "grub-set-default");
+    }
+
+    #[test]
+    fn grub_rollback_clears_the_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = Arc::new(FakeCommandRunner::default());
+        let backend = Grub {
+            commands: commands.clone(),
+            state_dir: dir.path().to_path_buf(),
+        };
+        backend.stage_candidate(&deployment("cand1"), 1).unwrap();
+        backend.rollback(&deployment("prev1")).unwrap();
+        assert!(backend.staged().unwrap().is_none());
+        assert_eq!(
+            commands.calls().last().unwrap().args,
+            vec!["prev1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn place_boot_files_copies_kernel_and_initrd() {
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = dir.path().join("candidate/boot");
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(candidate.join("vmlinuz-7.2.0-generic"), b"kernel").unwrap();
+        fs::write(candidate.join("initrd.img-7.2.0-generic"), b"initrd").unwrap();
+
+        assert!(has_bootable_files(&candidate));
+
+        let esp = dir.path().join("esp");
+        let placed = place_boot_files(&dir.path().join("candidate"), &esp, "cand1").unwrap();
+        assert!(placed.join("vmlinuz").exists());
+        assert!(placed.join("initrd.img").exists());
+    }
+
+    #[test]
+    fn place_boot_files_fails_without_a_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("candidate/boot")).unwrap();
+        let esp = dir.path().join("esp");
+        assert!(place_boot_files(&dir.path().join("candidate"), &esp, "cand1").is_err());
+    }
+
+    #[test]
+    fn deployment_registry_round_trips_and_defaults_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployments.json");
+        assert!(load_deployments(&path).unwrap().is_empty());
+
+        let deployments = vec![deployment("a"), deployment("b")];
+        save_deployments(&path, &deployments).unwrap();
+        assert_eq!(load_deployments(&path).unwrap(), deployments);
     }
 }
