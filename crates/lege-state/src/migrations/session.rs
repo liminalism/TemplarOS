@@ -12,9 +12,10 @@
 //! declarations, so `org.legeos.Background1` can answer "what does this app want and why is it
 //! running" without a fresh `.desktop` scan.
 
-pub const MIGRATIONS: &[(&str, &str)] = &[(
-    "0002-session-domains",
-    r"
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0002-session-domains",
+        r"
         CREATE TABLE settings_values (
             key        TEXT PRIMARY KEY,
             value_json TEXT NOT NULL,
@@ -65,9 +66,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[(
             updated_ms INTEGER NOT NULL
         );
 ",
-), (
-    "0003-background-declarations",
-    r"
+    ),
+    (
+        "0003-background-declarations",
+        r"
         -- What the last autostart scan found this application declaring (planning doc 01 §7):
         -- the background permissions it requests and, if any, the exclusive role it ties its
         -- autostart to. Separate from `autostart_approvals` (the user's yes/no on top of it) so
@@ -79,4 +81,5 @@ pub const MIGRATIONS: &[(&str, &str)] = &[(
             requested TEXT NOT NULL
         );
 ",
-)];
+    ),
+];

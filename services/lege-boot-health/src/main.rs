@@ -23,7 +23,7 @@
 //! never silently treated as a pass; it shows up in both the JSON report and the human summary so
 //! "we didn't check" is never confused with "it's fine". The two marker checks use that same
 //! vocabulary to distinguish "nobody has ever been able to report this fact" from "somebody
-//! reported it unhealthy": see [`SESSION_REPORT_WIRED`].
+//! reported it unhealthy": see [`SESSION_HEALTHY_REPORT_WIRED`].
 //!
 //! Two checks read a marker file under `/run/legeos/` rather than querying the session directly,
 //! because a system-scope oneshot cannot reach into a user session bus to ask "is
@@ -39,8 +39,8 @@
 //!     called, once the session's own startup sequence finished *and* a successful client frame
 //!     was observed — broader than "the compositor process exists".
 //!
-//! The interface exists now, but nothing calls it yet: wiring the *caller* is the session-daemon
-//! track's job, tracked by [`SESSION_REPORT_WIRED`] below.
+//! `lege-sessiond` reports session health at readiness; the compositor-active fact has no
+//! track's job, tracked by the `*_REPORT_WIRED` switches below.
 
 use anyhow::Result;
 use clap::Parser;
@@ -67,10 +67,24 @@ use std::{
 ///     report healthy → [`Status::Fail`], which — combined with `Report::trial` — can once again
 ///     arm a rollback the way the module doc describes.
 ///
-/// Flipping this is a one-line, reviewable change, and [`Report`] always states which mode is in
-/// force (`session_report_wired`) so nobody re-arms a fail-closed check without noticing which
-/// side of that switch they are on.
-const SESSION_REPORT_WIRED: bool = false;
+/// Flipping one of these is a one-line, reviewable change, and [`Report`] always states which
+/// mode each marker is in, so nobody re-arms a fail-closed check without noticing which side of
+/// the switch they are on.
+///
+/// They are deliberately *separate*: the two markers are wired by different evidence and became
+/// available at different times. Collapsing them into one switch would mean arming a check whose
+/// writer does not exist in order to arm one whose writer does — the exact confusion between
+/// "unwired" and "unhealthy" this vocabulary exists to prevent.
+///
+/// `lege-sessiond` reports session health at the same moment it signals systemd readiness: the
+/// policy is loaded and the bus name is claimed.
+const SESSION_HEALTHY_REPORT_WIRED: bool = true;
+
+/// Still unwired, and honestly so. This asserts the compositor's Wayland socket is accepting
+/// connections, and nothing in the session can currently substantiate that — `lege-sessiond`
+/// neither owns the socket nor watches `lege-comp.service`. It becomes `true` when the compositor
+/// fork gains a signal worth believing, not before.
+const COMPOSITOR_ACTIVE_REPORT_WIRED: bool = false;
 
 /// Boot health probe.
 #[derive(Debug, Parser)]
@@ -135,10 +149,11 @@ struct Report {
     /// Whether a candidate deployment is actually on trial this boot — see the module docs.
     /// Only `trial && !healthy` may arm a forced reboot.
     trial: bool,
-    /// Mirrors [`SESSION_REPORT_WIRED`], so a reader of the JSON report can tell whether an
-    /// absent marker was treated as "not wired yet" or "genuinely unhealthy" without having to
-    /// know the binary's source.
-    session_report_wired: bool,
+    /// Mirrors [`SESSION_HEALTHY_REPORT_WIRED`] and [`COMPOSITOR_ACTIVE_REPORT_WIRED`], so a
+    /// reader of the JSON report can tell whether an absent marker was treated as "not wired yet"
+    /// or "genuinely unhealthy" without having to know the binary's source.
+    session_healthy_report_wired: bool,
+    compositor_active_report_wired: bool,
     checks: Vec<Check>,
 }
 
@@ -159,7 +174,8 @@ fn evaluate(root: &Path, timeout: Duration, trial: bool) -> Report {
     Report {
         healthy,
         trial,
-        session_report_wired: SESSION_REPORT_WIRED,
+        session_healthy_report_wired: SESSION_HEALTHY_REPORT_WIRED,
+        compositor_active_report_wired: COMPOSITOR_ACTIVE_REPORT_WIRED,
         checks,
     }
 }
@@ -185,7 +201,7 @@ fn run_checks(root: &Path, timeout: Duration) -> Vec<Check> {
                     "compositor-active",
                     &root,
                     "run/legeos/compositor-active",
-                    SESSION_REPORT_WIRED,
+                    COMPOSITOR_ACTIVE_REPORT_WIRED,
                 )
             }
         }),
@@ -197,7 +213,7 @@ fn run_checks(root: &Path, timeout: Duration) -> Vec<Check> {
                     "session-healthy",
                     &root,
                     "run/legeos/session-healthy",
-                    SESSION_REPORT_WIRED,
+                    SESSION_HEALTHY_REPORT_WIRED,
                 )
             }
         }),
@@ -276,14 +292,16 @@ fn bounded(
 
 fn print_human_summary(report: &Report) {
     eprintln!(
-        "lege-boot-health: {} (trial={}, session-report-wired={}, force-reboot={})",
+        "lege-boot-health: {} (trial={}, session-healthy-wired={}, compositor-active-wired={}, \
+         force-reboot={})",
         if report.healthy {
             "HEALTHY"
         } else {
             "UNHEALTHY"
         },
         report.trial,
-        report.session_report_wired,
+        report.session_healthy_report_wired,
+        report.compositor_active_report_wired,
         should_force_reboot(report),
     );
     for check in &report.checks {
@@ -394,7 +412,7 @@ fn drm_modesetting_initialized(root: &Path) -> Check {
     Check::pass("drm-modesetting", "card present, nomodeset absent")
 }
 
-/// `writer_wired` is [`SESSION_REPORT_WIRED`] at every real call site; a parameter here purely so
+/// `writer_wired` is [`SESSION_HEALTHY_REPORT_WIRED`] at every real call site; a parameter here purely so
 /// tests can exercise both branches without touching the constant.
 fn marker_check(name: &'static str, root: &Path, relative: &str, writer_wired: bool) -> Check {
     let path = root.join(relative);
@@ -410,7 +428,7 @@ fn marker_check(name: &'static str, root: &Path, relative: &str, writer_wired: b
         Err(_) => Check::skipped(
             name,
             format!(
-                "marker absent at {} (writer not wired yet — Session1 exists but nothing calls it; see SESSION_REPORT_WIRED)",
+                "marker absent at {} (no writer for this fact yet; see the *_REPORT_WIRED switches)",
                 path.display()
             ),
         ),
@@ -575,7 +593,7 @@ mod tests {
     #[test]
     fn marker_check_is_skipped_not_failed_while_the_writer_is_unwired() {
         let dir = fixture();
-        // writer_wired = false (matches SESSION_REPORT_WIRED today): absence means "nobody can
+        // writer_wired = false (matches COMPOSITOR_ACTIVE_REPORT_WIRED today): absence means "nobody can
         // write this yet", not "the session is unhealthy" — must never be Fail, or every machine
         // that has not wired the session-daemon side yet would look permanently unhealthy.
         let check = marker_check(
@@ -640,7 +658,8 @@ mod tests {
         let report = |healthy: bool, trial: bool| Report {
             healthy,
             trial,
-            session_report_wired: false,
+            session_healthy_report_wired: true,
+            compositor_active_report_wired: false,
             checks: vec![],
         };
         assert!(!should_force_reboot(&report(true, true)));
@@ -681,10 +700,33 @@ mod tests {
         fs::create_dir_all(&card).unwrap();
         fs::write(card.join("status"), "connected\n").unwrap();
         fs::create_dir_all(dir.path().join("sys/class/drm/card0")).unwrap();
+        // The session-healthy writer is wired (`SESSION_HEALTHY_REPORT_WIRED`), so a genuinely
+        // healthy boot is one where the session actually reported: an absent marker now means
+        // "the session did not come up", which is exactly the case a trial boot must fail on.
+        // The compositor-active marker stays absent on purpose — its writer is not wired, so it
+        // is Skipped, and a skip must never be what makes a boot unhealthy.
+        fs::create_dir_all(dir.path().join("run/legeos")).unwrap();
+        fs::write(dir.path().join("run/legeos/session-healthy"), "ok\n").unwrap();
 
         let report = evaluate(dir.path(), Duration::from_secs(5), true);
         assert!(report.healthy, "{:?}", report.checks);
         assert!(!should_force_reboot(&report));
+    }
+
+    #[test]
+    fn a_trial_boot_where_the_session_never_reported_is_unhealthy() {
+        // The case the whole rollback design exists for: the graphics stack came up, but the
+        // session never appeared. Before the writer was wired this was indistinguishable from
+        // "nobody can report this", and a black-screened trial boot looked healthy.
+        let dir = fixture();
+        let card = dir.path().join("sys/class/drm/card0-eDP-1");
+        fs::create_dir_all(&card).unwrap();
+        fs::write(card.join("status"), "connected\n").unwrap();
+        fs::create_dir_all(dir.path().join("sys/class/drm/card0")).unwrap();
+
+        let report = evaluate(dir.path(), Duration::from_secs(5), true);
+        assert!(!report.healthy);
+        assert!(should_force_reboot(&report), "{:?}", report.checks);
     }
 
     #[test]

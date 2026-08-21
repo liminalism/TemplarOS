@@ -80,9 +80,7 @@ pub fn check_reserve(operation: &Operation, config: &ExecutorConfig) -> Result<R
         .with_context(|| format!("checking free space on {}", destination.display()))?;
     // What is still to be written, not what the operation started as: bytes already copied are
     // on the volume, and counting them twice would refuse a resume that is nearly finished.
-    let outstanding = operation
-        .total_bytes
-        .saturating_sub(operation.done_bytes);
+    let outstanding = operation.total_bytes.saturating_sub(operation.done_bytes);
     Ok(storage::check_reserve(&volume, outstanding))
 }
 

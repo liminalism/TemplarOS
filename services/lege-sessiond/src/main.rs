@@ -407,6 +407,44 @@ async fn serve_interfaces(
     Ok(())
 }
 
+/// Tell `lege-hostd` the session came up, so `lege-boot-health` can tell "the session never
+/// started" apart from "nobody has ever been able to report it".
+///
+/// That distinction is the whole point of the marker: a kernel or driver deployment on trial must
+/// be able to fail because the session never appeared, and until something calls this the probe
+/// can only report `Skipped` and a black-screened trial boot looks identical to a healthy one
+/// (ADR-0004).
+///
+/// Only `ReportSessionHealthy` is sent. `ReportCompositorActive` asserts that the compositor's
+/// Wayland socket is accepting connections, and sessiond has no honest evidence of that: it
+/// neither owns the socket nor watches `lege-comp.service`. Reporting a fact we cannot
+/// substantiate would defeat the purpose of a fail-closed check, so that marker stays unwired and
+/// the boot probe keeps reporting it `Skipped` rather than `Pass`.
+///
+/// Entirely best-effort. A desktop that refused to start because a boot-health marker could not
+/// be written would be a far worse failure than the one this exists to catch.
+async fn report_session_healthy(system_connection: Option<&zbus::Connection>) {
+    let Some(connection) = system_connection else {
+        tracing::warn!("no system bus; session health not reported to lege-hostd");
+        return;
+    };
+    match lege_client::proxies::HostSessionProxy::new(connection).await {
+        Ok(proxy) => match proxy.report_session_healthy().await {
+            Ok(()) => tracing::info!("reported session health to lege-hostd"),
+            // hostd confirms the caller's PID sits in lege-sessiond.service's cgroup before
+            // believing this, so running the binary by hand is refused here. That is the check
+            // working as designed, not a fault to escalate.
+            Err(error) => tracing::warn!(
+                %error,
+                "lege-hostd would not record the session health report"
+            ),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "lege-hostd unreachable; session health not reported");
+        }
+    }
+}
+
 /// Report readiness and, if `WatchdogSec` is set, keep pinging the service manager.
 fn start_systemd_notify() {
     if let Err(error) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
@@ -483,7 +521,8 @@ async fn main() -> Result<()> {
         .context("connecting to the session bus")?;
     // The null transport was only ever a stand-in for `--dry-run`/tests, where this line never
     // runs; the live daemon always relays checkpoints for real.
-    services.checkpoint_transport = Arc::new(checkpoint::DbusCheckpointTransport::new(connection.clone()));
+    services.checkpoint_transport =
+        Arc::new(checkpoint::DbusCheckpointTransport::new(connection.clone()));
     // Best-effort: `Location1` retries lazily (see `apis::location`), so a system bus that is
     // briefly unreachable at session startup must not take the rest of the daemon down with it.
     let system_connection = match zbus::connection::Builder::system() {
@@ -503,6 +542,7 @@ async fn main() -> Result<()> {
     tracing::info!(?backend, "launch backend selected");
 
     reconcile::reconcile_instances(&connection, &services.registry, &services.store).await;
+    let host_connection = system_connection.clone();
     serve_interfaces(&connection, system_connection, &services, backend).await?;
 
     // Background work (autostart, crash ingestion, the checkpoint relay) needs to emit
@@ -521,7 +561,11 @@ async fn main() -> Result<()> {
         .context("claiming org.legeos.Session")?;
     tracing::info!(name = names::BUS_NAME, "lege-sessiond ready");
 
+    // Readiness and the health report are the same fact told to two different supervisors: the
+    // policy is loaded and the bus name is claimed. systemd learns it through sd_notify; hostd
+    // learns it so a trial boot can fail on a session that never came up.
     start_systemd_notify();
+    report_session_healthy(host_connection.as_ref()).await;
     spawn_background_tasks(&connection, &services, backend, history_notifier);
 
     pending::<()>().await;

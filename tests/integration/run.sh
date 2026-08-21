@@ -69,14 +69,11 @@ expect_clean_failure() {
 "$bin/lege-boot-health" --report-only --root tests/fixtures/image-root >/dev/null
 
 "$bin/lege-shell" --list-drawers >/dev/null
-# --print <drawer> is landing in shell/lege-shell/src/main.rs alongside this milestone; not there
-# yet as of this run, so this check degrades to a clear notice instead of aborting the rest of the
-# script over a flag another track has not wired up. Once it lands this starts asserting for real.
-if "$bin/lege-shell" --print recent >/dev/null 2>&1; then
-    echo "lege-shell --print: ok"
-else
-    echo "lege-shell --print recent: not implemented yet (shell/lege-shell/src/main.rs) — skipped" >&2
-fi
+# `--print <drawer>` renders every Home Surface drawer as text with no session bus, no live
+# compositor and no toolkit — the direct fulfilment of "everything the shell shows must be
+# available through lege too" for the shell's own text form.
+"$bin/lege-shell" --print recent >/dev/null
+echo "lege-shell --print: ok"
 
 "$bin/lege" doctor --root tests/fixtures/image-root --json >/dev/null || [ $? -ne 0 ]
 "$bin/lege" doctor --root tests/fixtures/image-root >/dev/null || [ $? -ne 0 ]

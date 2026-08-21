@@ -190,7 +190,9 @@ fn current_approval_within(tx: &Transaction<'_>, app_id: &AppId) -> Result<Optio
         .optional()
         .context("reading current autostart approval")?;
     stored
-        .map(|value| Approval::parse(&value).with_context(|| format!("invalid stored approval: {value:?}")))
+        .map(|value| {
+            Approval::parse(&value).with_context(|| format!("invalid stored approval: {value:?}"))
+        })
         .transpose()
 }
 
@@ -206,7 +208,9 @@ pub fn apply_approval_within(
     let previous = current_approval_within(tx, app_id)?;
     set_approval_within(tx, app_id, approval)?;
 
-    let old_json = previous.map(|value| serde_json::to_string(&value)).transpose()?;
+    let old_json = previous
+        .map(|value| serde_json::to_string(&value))
+        .transpose()?;
     let new_json = serde_json::to_string(&approval)?;
     let event_id = EventId::new();
     let change_id = change_log::record_within(
@@ -245,7 +249,11 @@ pub fn apply_approval_within(
 /// Reverse a `background.approval` change recorded in the shared `change_log`
 /// (`History1.Undo`). `key` is the app ID `apply_approval_within` used; `old_value_json` is
 /// `None` when the app had no stored approval (undecided) before the change being undone.
-pub fn revert_approval_within(tx: &Transaction<'_>, key: &str, old_value_json: Option<&str>) -> Result<()> {
+pub fn revert_approval_within(
+    tx: &Transaction<'_>,
+    key: &str,
+    old_value_json: Option<&str>,
+) -> Result<()> {
     let app_id: AppId = key
         .parse()
         .with_context(|| format!("invalid app id in change_log key: {key:?}"))?;
@@ -284,11 +292,13 @@ pub fn load_declarations(store: &Store) -> Result<Vec<AutostartEntry>> {
                     .iter()
                     .copied()
                     .find(|role| role.as_str() == value)
-                    .with_context(|| format!("invalid provider role in background_declarations: {value:?}"))
+                    .with_context(|| {
+                        format!("invalid provider role in background_declarations: {value:?}")
+                    })
             })
             .transpose()?;
-        let requested: Vec<BackgroundPermission> =
-            serde_json::from_str(&requested_json).context("parsing declared background permissions")?;
+        let requested: Vec<BackgroundPermission> = serde_json::from_str(&requested_json)
+            .context("parsing declared background permissions")?;
         entries.push(AutostartEntry {
             app_id,
             role,
@@ -301,7 +311,8 @@ pub fn load_declarations(store: &Store) -> Result<Vec<AutostartEntry>> {
 /// Persist (or refresh) one declaration; called once per discovered entry each autostart scan.
 /// Not itself a user decision, so it carries no history/undo — only `apply_approval_within` does.
 pub fn save_declaration_within(tx: &Transaction<'_>, entry: &AutostartEntry) -> Result<()> {
-    let requested_json = serde_json::to_string(&entry.requested).context("encoding declared permissions")?;
+    let requested_json =
+        serde_json::to_string(&entry.requested).context("encoding declared permissions")?;
     let role = entry.role.map(ProviderRole::as_str);
     tx.execute(
         "INSERT INTO background_declarations (app_id, role, requested) VALUES (?1, ?2, ?3)
@@ -430,9 +441,14 @@ mod tests {
         let entry = AutostartEntry {
             app_id: app.clone(),
             role: Some(ProviderRole::NotificationServer),
-            requested: vec![BackgroundPermission::ContinuousBackground, BackgroundPermission::Notifications],
+            requested: vec![
+                BackgroundPermission::ContinuousBackground,
+                BackgroundPermission::Notifications,
+            ],
         };
-        store.transaction(|tx| save_declaration_within(tx, &entry)).unwrap();
+        store
+            .transaction(|tx| save_declaration_within(tx, &entry))
+            .unwrap();
 
         let loaded = load_declarations(&store).unwrap();
         assert_eq!(loaded, vec![entry.clone()]);
@@ -442,7 +458,9 @@ mod tests {
             requested: vec![BackgroundPermission::ScreenCapture],
             ..entry
         };
-        store.transaction(|tx| save_declaration_within(tx, &updated)).unwrap();
+        store
+            .transaction(|tx| save_declaration_within(tx, &updated))
+            .unwrap();
         let loaded = load_declarations(&store).unwrap();
         assert_eq!(loaded, vec![updated]);
     }

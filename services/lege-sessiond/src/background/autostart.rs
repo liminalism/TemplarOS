@@ -144,7 +144,8 @@ pub async fn run(
             continue;
         };
         let request = to_request(&entry, app_id);
-        if let Err(error) = store.transaction(|tx| autostart::save_declaration_within(tx, &request)) {
+        if let Err(error) = store.transaction(|tx| autostart::save_declaration_within(tx, &request))
+        {
             tracing::warn!(app = %request.app_id, %error, "failed to persist background declaration");
         }
         let approval = autostart::approval_for(&approvals, &request.app_id);

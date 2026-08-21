@@ -45,7 +45,10 @@ impl BackgroundApi {
     /// Whether a history `AutostartDecision` event named this instance — the durable record
     /// `crate::background::autostart::run` leaves behind, and the only honest way to answer
     /// "did this one start from autostart" without inventing a second, redundant ledger.
-    fn instance_has_autostart_decision(&self, instance: lege_types::InstanceId) -> rusqlite::Result<bool> {
+    fn instance_has_autostart_decision(
+        &self,
+        instance: lege_types::InstanceId,
+    ) -> rusqlite::Result<bool> {
         let count: i64 = self.store.lock().query_row(
             "SELECT COUNT(*) FROM history WHERE kind = 'autostart-decision' AND instance_id = ?1",
             params![instance.to_string()],
@@ -54,8 +57,17 @@ impl BackgroundApi {
         Ok(count > 0)
     }
 
-    fn reason_for(&self, entry: &autostart::AutostartEntry, app_id: &AppId) -> fdo::Result<Option<String>> {
-        let Some(instance) = self.registry.list_instances().into_iter().find(|record| &record.app_id == app_id) else {
+    fn reason_for(
+        &self,
+        entry: &autostart::AutostartEntry,
+        app_id: &AppId,
+    ) -> fdo::Result<Option<String>> {
+        let Some(instance) = self
+            .registry
+            .list_instances()
+            .into_iter()
+            .find(|record| &record.app_id == app_id)
+        else {
             return Ok(None);
         };
         let started_via = if self
@@ -99,7 +111,8 @@ impl BackgroundApi {
         let mut entries = Vec::with_capacity(declarations.len());
         for declaration in declarations {
             let approval = autostart::approval_for(&approvals, &declaration.app_id);
-            let permissions_json = serde_json::to_string(&declaration.requested).unwrap_or_default();
+            let permissions_json =
+                serde_json::to_string(&declaration.requested).unwrap_or_default();
             let reason = self.reason_for(&declaration, &declaration.app_id)?;
             entries.push((
                 declaration.app_id.to_string(),
@@ -112,19 +125,31 @@ impl BackgroundApi {
         Ok(entries)
     }
 
-    async fn grant(&self, app_id: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<()> {
+    async fn grant(
+        &self,
+        app_id: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
         let app_id = parse_app_id(app_id)?;
         self.store
-            .transaction(|tx| autostart::apply_approval_within(tx, &app_id, Approval::Approved, "user"))
+            .transaction(|tx| {
+                autostart::apply_approval_within(tx, &app_id, Approval::Approved, "user")
+            })
             .map_err(failed)?;
         let _ = emitter.changed(app_id.to_string()).await;
         Ok(())
     }
 
-    async fn revoke(&self, app_id: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<()> {
+    async fn revoke(
+        &self,
+        app_id: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
         let app_id = parse_app_id(app_id)?;
         self.store
-            .transaction(|tx| autostart::apply_approval_within(tx, &app_id, Approval::Denied, "user"))
+            .transaction(|tx| {
+                autostart::apply_approval_within(tx, &app_id, Approval::Denied, "user")
+            })
             .map_err(failed)?;
         let _ = emitter.changed(app_id.to_string()).await;
         Ok(())
@@ -146,7 +171,11 @@ mod tests {
     use lege_types::{InstanceId, ProviderCapability};
     use std::path::PathBuf;
 
-    fn api(store: &Store, registry: &Arc<Registry>, providers: &Arc<RwLock<ProviderRegistry>>) -> BackgroundApi {
+    fn api(
+        store: &Store,
+        registry: &Arc<Registry>,
+        providers: &Arc<RwLock<ProviderRegistry>>,
+    ) -> BackgroundApi {
         BackgroundApi::new(store.clone(), registry.clone(), providers.clone())
     }
 
@@ -161,7 +190,9 @@ mod tests {
             role: None,
             requested: vec![autostart::BackgroundPermission::ContinuousBackground],
         };
-        store.transaction(|tx| autostart::save_declaration_within(tx, &entry)).unwrap();
+        store
+            .transaction(|tx| autostart::save_declaration_within(tx, &entry))
+            .unwrap();
 
         let entries = api(&store, &registry, &providers).list().await.unwrap();
         assert_eq!(entries.len(), 1);
@@ -200,7 +231,9 @@ mod tests {
                 priority: 100,
             },
         );
-        providers.write().select(lege_types::ProviderRole::NetworkStatusUi, tray.clone());
+        providers
+            .write()
+            .select(lege_types::ProviderRole::NetworkStatusUi, tray.clone());
 
         let instance_id = InstanceId::new();
         registry.register_instance(InstanceRecord {
@@ -254,7 +287,9 @@ mod tests {
             role: None,
             requested: vec![autostart::BackgroundPermission::Notifications],
         };
-        store.transaction(|tx| autostart::save_declaration_within(tx, &entry)).unwrap();
+        store
+            .transaction(|tx| autostart::save_declaration_within(tx, &entry))
+            .unwrap();
 
         registry.register_instance(InstanceRecord {
             id: InstanceId::new(),

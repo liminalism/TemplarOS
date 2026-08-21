@@ -120,9 +120,8 @@ impl CheckpointCaller for DbusCaller {
 fn call_budget(request: &CheckpointRequest) -> Duration {
     match request {
         CheckpointRequest::CheckpointNow { deadline, .. } => *deadline,
-        CheckpointRequest::PrepareForPressure { .. } | CheckpointRequest::RestoreInstance { .. } => {
-            Duration::from_secs(5)
-        }
+        CheckpointRequest::PrepareForPressure { .. }
+        | CheckpointRequest::RestoreInstance { .. } => Duration::from_secs(5),
     }
 }
 
@@ -138,7 +137,10 @@ fn refused(instance: InstanceId, reason: impl Into<String>) -> CheckpointRespons
 fn decode_response(instance: InstanceId, response_json: &str) -> CheckpointResponse {
     match serde_json::from_str::<CheckpointResponse>(response_json) {
         Ok(response) => response,
-        Err(error) => refused(instance, format!("invalid response from the instance: {error}")),
+        Err(error) => refused(
+            instance,
+            format!("invalid response from the instance: {error}"),
+        ),
     }
 }
 
@@ -164,15 +166,24 @@ impl DbusCheckpointTransport {
         Self { resolver, caller }
     }
 
-    async fn attempt(&self, instance: InstanceId, request: &CheckpointRequest) -> CheckpointResponse {
+    async fn attempt(
+        &self,
+        instance: InstanceId,
+        request: &CheckpointRequest,
+    ) -> CheckpointResponse {
         let bus_name = wire::instance_bus_name(instance);
 
         let resolved = match self.resolver.resolve(&bus_name).await {
             Ok(resolved) => resolved,
-            Err(error) => return refused(instance, format!("could not resolve {bus_name}: {error}")),
+            Err(error) => {
+                return refused(instance, format!("could not resolve {bus_name}: {error}"));
+            }
         };
         let Some((_app_id, resolved_instance)) = resolved else {
-            return refused(instance, format!("no application instance currently owns {bus_name}"));
+            return refused(
+                instance,
+                format!("no application instance currently owns {bus_name}"),
+            );
         };
         if resolved_instance != instance {
             return refused(
@@ -186,7 +197,12 @@ impl DbusCheckpointTransport {
 
         let request_json = match serde_json::to_string(request) {
             Ok(json) => json,
-            Err(error) => return refused(instance, format!("failed to encode the checkpoint request: {error}")),
+            Err(error) => {
+                return refused(
+                    instance,
+                    format!("failed to encode the checkpoint request: {error}"),
+                );
+            }
         };
         match self.caller.call(&bus_name, &request_json).await {
             Ok(response_json) => decode_response(instance, &response_json),
@@ -201,7 +217,10 @@ impl CheckpointTransport for DbusCheckpointTransport {
         let budget = call_budget(&request);
         match tokio::time::timeout(budget, self.attempt(instance, &request)).await {
             Ok(response) => response,
-            Err(_) => refused(instance, format!("no answer from the instance within {budget:?}")),
+            Err(_) => refused(
+                instance,
+                format!("no answer from the instance within {budget:?}"),
+            ),
         }
     }
 }
@@ -304,7 +323,10 @@ mod tests {
             Arc::new(PanicsIfCalled),
         );
         let response = transport
-            .send(target, CheckpointRequest::PrepareForPressure { instance: target })
+            .send(
+                target,
+                CheckpointRequest::PrepareForPressure { instance: target },
+            )
             .await;
         match response {
             CheckpointResponse::Refused { instance, reason } => {
@@ -318,10 +340,15 @@ mod tests {
     #[tokio::test]
     async fn an_unowned_bus_name_is_refused_without_being_called() {
         let target = InstanceId::new();
-        let transport =
-            DbusCheckpointTransport::with_fakes(Arc::new(FixedResolver(None)), Arc::new(PanicsIfCalled));
+        let transport = DbusCheckpointTransport::with_fakes(
+            Arc::new(FixedResolver(None)),
+            Arc::new(PanicsIfCalled),
+        );
         let response = transport
-            .send(target, CheckpointRequest::PrepareForPressure { instance: target })
+            .send(
+                target,
+                CheckpointRequest::PrepareForPressure { instance: target },
+            )
             .await;
         assert!(matches!(response, CheckpointResponse::Refused { .. }));
     }
@@ -339,7 +366,10 @@ mod tests {
             Arc::new(FixedCaller(reply)),
         );
         let response = transport
-            .send(target, CheckpointRequest::PrepareForPressure { instance: target })
+            .send(
+                target,
+                CheckpointRequest::PrepareForPressure { instance: target },
+            )
             .await;
         assert_eq!(
             response,
@@ -371,13 +401,15 @@ mod tests {
             instance: target,
             deadline: StdDuration::from_millis(50),
         };
-        let response = tokio::time::timeout(StdDuration::from_secs(2), transport.send(target, request))
-            .await
-            .expect("send() must itself return well within the outer test timeout");
+        let response =
+            tokio::time::timeout(StdDuration::from_secs(2), transport.send(target, request))
+                .await
+                .expect("send() must itself return well within the outer test timeout");
         match response {
-            CheckpointResponse::Refused { reason, .. } => assert!(reason.contains("no answer"), "{reason}"),
+            CheckpointResponse::Refused { reason, .. } => {
+                assert!(reason.contains("no answer"), "{reason}");
+            }
             other => panic!("expected Refused, got {other:?}"),
         }
     }
-
 }

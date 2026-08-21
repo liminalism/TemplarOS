@@ -274,8 +274,8 @@ mod location {
 }
 
 pub use app_identity::AppIdentityProxy;
-pub use background::BackgroundProxy;
 pub use associations::AssociationsProxy;
+pub use background::BackgroundProxy;
 pub use history::HistoryProxy;
 pub use launcher::LauncherProxy;
 pub use location::LocationProxy;
