@@ -534,6 +534,11 @@ fn check_packaging(root: &Path) -> Result<()> {
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     problems.extend(unshipped_unit_binaries(&units, &shipped));
+    let seeds = read_seeds(root)?;
+    let built = built_package_names(root, &control_packages)?;
+    problems.extend(seed_problems(&seeds, &built));
+    let metapackages = metapackage_controls(root)?;
+    problems.extend(metapackage_dependency_problems(&metapackages, &built));
     if !problems.is_empty() {
         for problem in &problems {
             eprintln!("check-packaging: {problem}");
@@ -543,9 +548,12 @@ fn check_packaging(root: &Path) -> Result<()> {
 
     println!(
         "check-packaging: {} debian/control package(s) all have matching crate metadata; \
-         {} unit ExecStart binary/ies all installed by a package",
+         {} unit ExecStart binary/ies all installed by a package; \
+         {} seed(s) and {} metapackage(s) name only packages that exist",
         control_packages.len(),
-        units.len()
+        units.len(),
+        seeds.len(),
+        metapackages.len()
     );
     Ok(())
 }
@@ -557,6 +565,158 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// Forward: a `Package:` with no crate to build it is a package `debian/rules` expects and
 /// `cargo deb` will never produce. Reverse: a crate whose deb name matches no stanza builds a
 /// `.deb` nothing installs — the same typo, caught from the other side.
+/// `(path, text)` for every `distro/metapackages/*/control.in`.
+fn metapackage_controls(root: &Path) -> Result<Vec<(String, String)>> {
+    let mut controls = Vec::new();
+    let dir = root.join("distro/metapackages");
+    if !dir.is_dir() {
+        return Ok(controls);
+    }
+    for entry in std::fs::read_dir(&dir).context("reading distro/metapackages")? {
+        let control = entry?.path().join("control.in");
+        if control.is_file() {
+            let text = std::fs::read_to_string(&control)
+                .with_context(|| format!("reading {}", control.display()))?;
+            controls.push((
+                control
+                    .strip_prefix(root)
+                    .unwrap_or(&control)
+                    .display()
+                    .to_string(),
+                text,
+            ));
+        }
+    }
+    Ok(controls)
+}
+
+/// LegeOS packages named in a metapackage's `Depends:`/`Recommends:` that nothing builds.
+///
+/// The seeds are one list of package names; a metapackage's dependency list is the other, and it
+/// had the same two wrong names in it. Substitution variables (`${misc:Depends}`) and version
+/// constraints are stripped before comparing.
+fn metapackage_dependency_problems(
+    controls: &[(String, String)],
+    built: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (path, text) in controls {
+        // A folded continuation line only continues the field above it, so whether an indented
+        // line is a dependency list depends on what came before. Without tracking that, a
+        // Description that mentions "lege-hostd's transactional path" reads as a dependency.
+        let mut in_dependency_field = false;
+        for line in text.lines() {
+            let body = match line.split_once(':') {
+                Some(("Depends" | "Recommends" | "Suggests", rest)) => {
+                    in_dependency_field = true;
+                    rest
+                }
+                // Any other field header ends the previous field.
+                Some((field, _)) if !field.starts_with(char::is_whitespace) => {
+                    in_dependency_field = false;
+                    continue;
+                }
+                _ if line.starts_with(' ') && in_dependency_field => line,
+                _ => {
+                    if !line.starts_with(' ') {
+                        in_dependency_field = false;
+                    }
+                    continue;
+                }
+            };
+            for dependency in body.split(',') {
+                let name = dependency.split_whitespace().next().unwrap_or_default();
+                if name.starts_with("lege") && !built.contains(name) {
+                    problems.push(format!(
+                        "{path}: depends on LegeOS package {name}, which nothing in this \
+                         repository builds"
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// Seed entries naming a LegeOS package that nothing in this repository builds.
+///
+/// The seeds are the image's package list, so a name that is almost right — `lege-comp` where the
+/// package is `legeos-comp` — is not a typo that shows up at build time here; it shows up as an
+/// unresolvable dependency when someone builds the image, far from the file that caused it. Only
+/// `lege`-prefixed entries are checked: the rest are Ubuntu's and not ours to know about.
+///
+/// Three things build a LegeOS package, and a seed may name any of them: `debian/control`, a
+/// metapackage directory under `distro/metapackages/`, and a fork's `package` in
+/// `distro/forks/manifest.toml`.
+fn seed_problems(seeds: &BTreeMap<String, Vec<String>>, built: &BTreeSet<String>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (seed, entries) in seeds {
+        for entry in entries {
+            if entry.starts_with("lege") && !built.contains(entry) {
+                problems.push(format!(
+                    "{seed}: names LegeOS package {entry}, which nothing in this repository builds \
+                     (not debian/control, distro/metapackages/ or a fork's package=)"
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// Every LegeOS package name this repository produces, from all three sources.
+fn built_package_names(root: &Path, control_packages: &[String]) -> Result<BTreeSet<String>> {
+    let mut built: BTreeSet<String> = control_packages.iter().cloned().collect();
+    // Read each metapackage's own `Package:` rather than its directory name — they differ:
+    // `distro/metapackages/legeos-session-meta/` builds `legeos-session-full`.
+    for (_, text) in metapackage_controls(root)? {
+        built.extend(parse_control_packages(&text));
+    }
+    let manifest = root.join("distro/forks/manifest.toml");
+    if manifest.is_file() {
+        let text = std::fs::read_to_string(&manifest).context("reading forks manifest")?;
+        for line in text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("package") {
+                let value = rest.trim_start_matches([' ', '=']).trim().trim_matches('"');
+                if !value.is_empty() {
+                    built.insert(value.to_owned());
+                }
+            }
+        }
+    }
+    Ok(built)
+}
+
+/// `(seed file name, package names)` for every `distro/seeds/*.seed`.
+fn read_seeds(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut seeds = BTreeMap::new();
+    let dir = root.join("distro/seeds");
+    if !dir.is_dir() {
+        return Ok(seeds);
+    }
+    for entry in std::fs::read_dir(&dir).context("reading distro/seeds")? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("seed") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let entries = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(ToOwned::to_owned)
+            .collect();
+        seeds.insert(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_owned(),
+            entries,
+        );
+    }
+    Ok(seeds)
+}
+
 /// Every destination path the two packaging paths install, as absolute-looking `/usr/...` strings.
 ///
 /// `debian/*.install` lines are `<source> <destination-directory>`, so the installed path is the
@@ -855,8 +1015,9 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        VendoredAssets, client_interface_names, packaging_problems, parse_control_packages,
-        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
+        VendoredAssets, client_interface_names, metapackage_dependency_problems,
+        packaging_problems, parse_control_packages, seed_problems, server_interface_names,
+        unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1037,6 +1198,56 @@ mod extraction_tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("legeos-orphan"));
         assert!(problems[0].contains("no crate [package.metadata.deb]"));
+    }
+
+    #[test]
+    fn check_packaging_goes_red_for_a_metapackage_depending_on_a_package_that_is_not_built() {
+        let controls = vec![(
+            "distro/metapackages/legeos-desktop/control.in".to_owned(),
+            "Package: legeos-desktop\nDepends: legeos-shell, lege-comp, greetd, ${misc:Depends}\n \
+             legeos-cli, lege-greeter\nDescription: LegeOS desktop\n Uses lege-hostd's \
+             transactional path with automatic rollback.\n"
+                .to_owned(),
+        )];
+        let built = BTreeSet::from([
+            "legeos-shell".to_owned(),
+            "legeos-cli".to_owned(),
+            "legeos-comp".to_owned(),
+        ]);
+        let problems = metapackage_dependency_problems(&controls, &built);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("lege-comp")));
+        // Found on a folded continuation line, which is how the real file is written.
+        assert!(problems.iter().any(|p| p.contains("lege-greeter")));
+        // Neither Ubuntu's packages nor substitution variables are ours to judge.
+        assert!(!problems.iter().any(|p| p.contains("greetd")));
+        assert!(!problems.iter().any(|p| p.contains("misc:Depends")));
+        // Prose in a Description continuation line is not a dependency list, however much its
+        // words look like package names.
+        assert!(
+            !problems.iter().any(|p| p.contains("hostd")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn check_packaging_goes_red_for_a_seed_naming_a_package_that_is_not_built() {
+        // The real case: every other line in session.seed is `legeos-*`, and these two were
+        // `lege-*` — the binary's name, not the package's.
+        let seeds = BTreeMap::from([(
+            "session.seed".to_owned(),
+            vec![
+                "legeos-shell".to_owned(),
+                "lege-comp".to_owned(),
+                "greetd".to_owned(),
+            ],
+        )]);
+        let built = BTreeSet::from(["legeos-shell".to_owned(), "legeos-comp".to_owned()]);
+        let problems = seed_problems(&seeds, &built);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("lege-comp"));
+        // greetd is Ubuntu's, not ours, and must not be judged.
+        assert!(!problems[0].contains("greetd"));
     }
 
     #[test]

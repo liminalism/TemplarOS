@@ -8,8 +8,8 @@ legeos-boot-health
 legeos-shell
 legeos-portal
 legeos-cli
-lege-comp
-lege-greeter
+legeos-comp
+legeos-greeter
 greetd
 xdg-desktop-portal
 xdg-desktop-portal-cosmic

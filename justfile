@@ -46,7 +46,7 @@ doctor *ARGS:
 
 # Stage-1 packages via cargo-deb (target/debian/)
 deb:
-    for p in lege-sessiond lege-resourced lege-filed lege-hostd lege-boot-health lege-session lege-comp lege-shell lege-settings xdg-desktop-portal-lege lege; do cargo deb -p "$p" -q; done
+    for p in lege-sessiond lege-resourced lege-filed lege-hostd lege-boot-health lege-session lege-comp lege-greeter lege-shell lege-settings xdg-desktop-portal-lege lege; do cargo deb -p "$p" -q; done
     ls -1 target/debian/*.deb
 
 # Vendor dependencies for the offline archive build (debian/rules)

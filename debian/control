@@ -61,6 +61,14 @@ Description: LegeOS compositor
  impossible to lose. Window-management policy lives in lege-window; this is what drives it.
  Licensed GPL-3.0-only (ADR-0012), unlike the rest of LegeOS.
 
+Package: legeos-greeter
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, legeos-comp
+Description: LegeOS greeter
+ The graphical login surface, on the same toolkit as the shell. It speaks greetd's JSON IPC over
+ its socket, so greetd performs the authentication and this package links no PAM, no shadow and
+ nothing setuid (ADR-0010 as amended by ADR-0012).
+
 Package: legeos-shell
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
