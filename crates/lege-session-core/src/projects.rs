@@ -2,11 +2,14 @@
 //! files, applications, window arrangement, terminal directories, environment, priority and
 //! permissions. Closing checkpoints (where supported); reopening restores.
 
+use anyhow::{Context, Result};
+use lege_state::Store;
 use lege_types::{AppId, InstanceId};
+use rusqlite::{Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ProjectId(pub String);
 
 /// One application instance remembered by a project.
@@ -52,5 +55,68 @@ impl Project {
             priority_boost: 0,
             mounts: Vec::new(),
         }
+    }
+}
+
+/// Load every persisted project, ordered by ID.
+pub fn load_all(store: &Store) -> Result<Vec<Project>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT json FROM projects ORDER BY project_id")
+        .context("preparing projects query")?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .context("reading projects")?;
+    let mut projects = Vec::new();
+    for row in rows {
+        let json = row?;
+        projects.push(serde_json::from_str(&json).context("parsing stored project")?);
+    }
+    Ok(projects)
+}
+
+/// Insert or update one project (the whole record is one JSON blob; projects are edited as a
+/// unit, never column-by-column).
+pub fn save_within(tx: &Transaction<'_>, project: &Project) -> Result<()> {
+    let json = serde_json::to_string(project).context("serializing project")?;
+    tx.execute(
+        "INSERT INTO projects (project_id, json) VALUES (?1, ?2)
+         ON CONFLICT (project_id) DO UPDATE SET json = excluded.json",
+        params![project.id.0, json],
+    )
+    .context("persisting project")?;
+    Ok(())
+}
+
+/// Remove a project permanently (its applications are not touched; close it first).
+pub fn delete_within(tx: &Transaction<'_>, id: &ProjectId) -> Result<()> {
+    tx.execute("DELETE FROM projects WHERE project_id = ?1", params![id.0])
+        .context("deleting project")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projects_round_trip_and_can_be_deleted() {
+        let store = Store::in_memory().unwrap();
+        let mut project = Project::new("thesis", "Thesis", PathBuf::from("/home/user/thesis"));
+        project.apps.push(ProjectApp {
+            app_id: "org.legeos.Viewer".parse().unwrap(),
+            arguments: vec!["main.pdf".into()],
+            last_instance: None,
+            checkpoint_token: None,
+        });
+
+        store.transaction(|tx| save_within(tx, &project)).unwrap();
+        let loaded = load_all(&store).unwrap();
+        assert_eq!(loaded, vec![project.clone()]);
+
+        store
+            .transaction(|tx| delete_within(tx, &project.id))
+            .unwrap();
+        assert!(load_all(&store).unwrap().is_empty());
     }
 }

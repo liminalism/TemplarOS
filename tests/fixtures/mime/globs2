@@ -1,0 +1,11 @@
+# Minimal shared-mime-info globs2 fixture (weight:mimetype:pattern[:cs]) for lege-associationd's
+# detector tests. Not the real system database — just enough rules to exercise weighting,
+# case-sensitivity and multi-dot suffixes.
+50:application/pdf:*.pdf
+50:text/plain:*.txt
+50:application/x-tar:*.tar
+50:application/gzip:*.gz
+60:application/x-compressed-tar:*.tar.gz
+50:text/x-python:*.py
+50:application/x-trash:*~
+50:text/x-csrc:*.C:cs

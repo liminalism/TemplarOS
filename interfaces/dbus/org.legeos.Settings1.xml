@@ -1,11 +1,40 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
-<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Settings. Typed settings schema. -->
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Settings. Typed settings schema; values
+     are recorded in history and support undo. Implemented in services/lege-sessiond/src/apis/settings.rs. -->
 <node>
   <interface name="org.legeos.Settings1">
     <!-- (key, description, default-json, privileged) -->
     <method name="Schema">
       <arg name="schema" type="a(sssb)" direction="out"/>
     </method>
+    <!-- The effective value (stored override, or the schema default) as JSON. -->
+    <method name="Get">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value_json" type="s" direction="out"/>
+    </method>
+    <!-- Validated against the schema, persisted, recorded in history with an Undo action. -->
+    <method name="Set">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value_json" type="s" direction="in"/>
+      <arg name="origin" type="s" direction="in"/>
+    </method>
+    <!-- Every known key at its effective value, as (key, value_json) pairs. -->
+    <method name="List">
+      <arg name="values" type="a(ss)" direction="out"/>
+    </method>
+    <!-- Recent settings_changes audit rows as JSON: {"key","old_json","new_json","origin","at_ms"}. -->
+    <method name="Changes">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="changes_json" type="as" direction="out"/>
+    </method>
+    <!-- Remove a stored override, returning to the schema default. -->
+    <method name="Reset">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="origin" type="s" direction="in"/>
+    </method>
+    <signal name="Changed">
+      <arg name="key" type="s"/>
+    </signal>
   </interface>
 </node>

@@ -13,5 +13,7 @@ pub mod dbus;
 pub mod detector;
 pub mod engine;
 pub mod export;
+pub mod import;
+pub mod store;
 
 pub use engine::{AssociationDb, AssociationEngine, DecisionReason, ExtensionRule, OpenDecision};

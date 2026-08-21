@@ -81,6 +81,13 @@ impl AssociationEngine {
         &self.db
     }
 
+    /// Replace the whole database at once — used after `History1.Undo` reverses a persisted
+    /// change, to bring the in-memory engine back in sync with `lege-state` without needing a
+    /// bespoke in-memory inverse for every kind of change.
+    pub fn replace_database(&mut self, db: AssociationDb) {
+        self.db = db;
+    }
+
     /// Resolve the handler for `path` whose content was detected as `detected_mime`.
     pub fn resolve(
         &self,
@@ -154,22 +161,48 @@ impl AssociationEngine {
 
     /// Set the global default for a MIME type. The application must declare support for it.
     pub fn set_mime_default(&mut self, mime: &str, app_id: AppId) -> Result<()> {
+        self.validate_mime_default(mime, &app_id)?;
+        self.apply_mime_default(mime, app_id);
+        Ok(())
+    }
+
+    /// Check whether `app_id` may become `mime`'s default, without mutating anything. Split out
+    /// from [`Self::set_mime_default`] so a D-Bus-backed caller can validate, persist to
+    /// `lege-state`, and only then apply in-memory — never the reverse order, which could leave
+    /// the in-memory engine ahead of a failed database write.
+    pub fn validate_mime_default(&self, mime: &str, app_id: &AppId) -> Result<()> {
         validate_mime(mime)?;
-        if !self.app_supports(&app_id, mime) {
+        if !self.app_supports(app_id, mime) {
             bail!("{app_id} is not registered as a handler for {mime}");
         }
-        self.db.mime_defaults.insert(mime.to_owned(), app_id);
         Ok(())
+    }
+
+    /// Apply an already-validated (and, in production, already-persisted) MIME default.
+    pub fn apply_mime_default(&mut self, mime: &str, app_id: AppId) {
+        self.db.mime_defaults.insert(mime.to_owned(), app_id);
     }
 
     /// Set (or override) the rule for a file extension.
     pub fn set_extension_default(&mut self, extension: &str, rule: ExtensionRule) -> Result<()> {
         let extension = normalize_extension(extension)?;
+        self.validate_extension_default(&rule)?;
+        self.apply_extension_default(extension, rule);
+        Ok(())
+    }
+
+    /// See [`Self::validate_mime_default`].
+    pub fn validate_extension_default(&self, rule: &ExtensionRule) -> Result<()> {
         if !self.app_exists(&rule.app_id) {
             bail!("unknown application {}", rule.app_id);
         }
-        self.db.extension_defaults.insert(extension, rule);
         Ok(())
+    }
+
+    /// Apply an already-validated extension rule. `extension` must already be normalized
+    /// ([`normalize_extension`]).
+    pub fn apply_extension_default(&mut self, extension: String, rule: ExtensionRule) {
+        self.db.extension_defaults.insert(extension, rule);
     }
 
     /// Set the default for a MIME type inside one project only.
@@ -179,19 +212,84 @@ impl AssociationEngine {
         mime: &str,
         app_id: AppId,
     ) -> Result<()> {
+        self.validate_project_mime_default(project_id, mime, &app_id)?;
+        self.apply_project_mime_default(project_id, mime, app_id);
+        Ok(())
+    }
+
+    /// See [`Self::validate_mime_default`].
+    pub fn validate_project_mime_default(
+        &self,
+        project_id: &str,
+        mime: &str,
+        app_id: &AppId,
+    ) -> Result<()> {
         validate_mime(mime)?;
         if project_id.trim().is_empty() {
             bail!("project id must not be empty");
         }
-        if !self.app_supports(&app_id, mime) {
+        if !self.app_supports(app_id, mime) {
             bail!("{app_id} is not registered as a handler for {mime}");
         }
+        Ok(())
+    }
+
+    /// Apply an already-validated project-scoped default.
+    pub fn apply_project_mime_default(&mut self, project_id: &str, mime: &str, app_id: AppId) {
         self.db
             .project_mime_defaults
             .entry(project_id.to_owned())
             .or_default()
             .insert(mime.to_owned(), app_id);
-        Ok(())
+    }
+
+    /// Resolve the handler for a URI scheme (`x-scheme-handler/<scheme>`, per
+    /// `docs/protocols/launch-and-activation.md`'s `ResolveUri`). There is no extension to fall
+    /// back to, so the order is simply project default, then global default, then ask.
+    pub fn resolve_scheme(&self, scheme: &str, project_id: Option<&str>) -> OpenDecision {
+        let mime = format!("x-scheme-handler/{scheme}");
+
+        if let Some(project_id) = project_id
+            && let Some(app_id) = self
+                .db
+                .project_mime_defaults
+                .get(project_id)
+                .and_then(|rules| rules.get(&mime))
+            && self.app_supports(app_id, &mime)
+        {
+            return decision(app_id.clone(), &mime, DecisionReason::ProjectMimeDefault);
+        }
+
+        if let Some(app_id) = self.db.mime_defaults.get(&mime)
+            && self.app_supports(app_id, &mime)
+        {
+            return decision(app_id.clone(), &mime, DecisionReason::GlobalMimeDefault);
+        }
+
+        OpenDecision {
+            app_id: None,
+            detected_mime: mime,
+            reason: DecisionReason::AskUser,
+        }
+    }
+
+    /// Remove the global default for `mime`, if any; returns what was removed.
+    pub fn forget_mime_default(&mut self, mime: &str) -> Option<AppId> {
+        self.db.mime_defaults.remove(mime)
+    }
+
+    /// Remove the rule for `extension`, if any; returns what was removed.
+    pub fn forget_extension_default(&mut self, extension: &str) -> Option<ExtensionRule> {
+        let extension = normalize_extension(extension).ok()?;
+        self.db.extension_defaults.remove(&extension)
+    }
+
+    /// Remove one project's default for `mime`, if any; returns what was removed.
+    pub fn forget_project_mime_default(&mut self, project_id: &str, mime: &str) -> Option<AppId> {
+        self.db
+            .project_mime_defaults
+            .get_mut(project_id)?
+            .remove(mime)
     }
 
     /// Drop defaults that point at applications which are no longer installed; returns them.
@@ -433,5 +531,57 @@ pub(crate) mod tests {
         let removed = engine.prune_stale();
         assert_eq!(removed.len(), 1);
         assert!(engine.database().mime_defaults.is_empty());
+    }
+
+    #[test]
+    fn scheme_resolution_has_no_extension_fallback() {
+        let mut engine = engine();
+        engine
+            .set_mime_default(
+                "x-scheme-handler/https",
+                "org.example.Browser".parse().unwrap(),
+            )
+            .unwrap();
+        let d = engine.resolve_scheme("https", None);
+        assert_eq!(d.reason, DecisionReason::GlobalMimeDefault);
+        assert_eq!(d.app_id.unwrap().as_str(), "org.example.Browser");
+
+        let d = engine.resolve_scheme("magnet", None);
+        assert_eq!(d.reason, DecisionReason::AskUser);
+    }
+
+    #[test]
+    fn forget_removes_exactly_the_named_rule() {
+        let mut engine = engine();
+        engine
+            .set_mime_default("application/pdf", "org.legeos.Viewer".parse().unwrap())
+            .unwrap();
+        engine
+            .set_extension_default(
+                "pdf",
+                ExtensionRule {
+                    app_id: "org.legeos.Viewer".parse().unwrap(),
+                    override_specific_mime: true,
+                },
+            )
+            .unwrap();
+        engine
+            .set_project_mime_default(
+                "thesis",
+                "application/pdf",
+                "org.example.Browser".parse().unwrap(),
+            )
+            .unwrap();
+
+        assert!(engine.forget_mime_default("application/pdf").is_some());
+        assert!(engine.forget_mime_default("application/pdf").is_none());
+        assert!(engine.forget_extension_default(".PDF").is_some());
+        assert!(
+            engine
+                .forget_project_mime_default("thesis", "application/pdf")
+                .is_some()
+        );
+        assert!(engine.database().mime_defaults.is_empty());
+        assert!(engine.database().extension_defaults.is_empty());
     }
 }

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod autostart;
+pub mod change_log;
 pub mod first_run;
 pub mod history;
 pub mod location;

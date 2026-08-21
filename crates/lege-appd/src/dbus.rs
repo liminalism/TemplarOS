@@ -5,7 +5,7 @@
 //! and updates the window record when the answer arrives.
 
 use crate::identity::Registry;
-use crate::launcher;
+use crate::launcher::{self, LaunchBackend};
 use lege_types::{AppCatalog, AppId, WindowClaims};
 use std::sync::Arc;
 use zbus::fdo;
@@ -91,11 +91,21 @@ impl IdentityApi {
 #[derive(Debug)]
 pub struct LauncherApi {
     registry: Arc<Registry>,
+    backend: LaunchBackend,
+    connection: zbus::Connection,
 }
 
 impl LauncherApi {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: Arc<Registry>,
+        backend: LaunchBackend,
+        connection: zbus::Connection,
+    ) -> Self {
+        Self {
+            registry,
+            backend,
+            connection,
+        }
     }
 }
 
@@ -121,6 +131,8 @@ impl LauncherApi {
             manifest,
             &arguments,
             nonempty(activation_token).as_deref(),
+            self.backend,
+            Some(&self.connection),
         )
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;

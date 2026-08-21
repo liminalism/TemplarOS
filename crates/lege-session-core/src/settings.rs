@@ -1,6 +1,9 @@
 //! Typed settings schema with validation. Values live as text (TOML) so they are diffable;
 //! every change is recorded in history. GUI, CLI and migrations all go through this schema.
 
+use anyhow::{Context, Result};
+use lege_state::Store;
+use rusqlite::{Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -181,6 +184,166 @@ pub fn baseline_schema() -> SettingsSchema {
     schema
 }
 
+/// Values that override the schema's defaults; absent keys fall back to `spec.default`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettingsValues(BTreeMap<String, SettingValue>);
+
+impl SettingsValues {
+    /// The effective value of `key`: the stored override, or the schema default.
+    pub fn effective(&self, schema: &SettingsSchema, key: &str) -> Option<SettingValue> {
+        self.0
+            .get(key)
+            .cloned()
+            .or_else(|| schema.specs.get(key).map(|spec| spec.default.clone()))
+    }
+
+    /// Every known key at its effective value, in key order.
+    pub fn list(&self, schema: &SettingsSchema) -> Vec<(String, SettingValue)> {
+        schema
+            .specs
+            .keys()
+            .map(|key| {
+                (
+                    key.clone(),
+                    self.effective(schema, key)
+                        .expect("key came from the schema itself"),
+                )
+            })
+            .collect()
+    }
+
+    /// The stored override only (not the default) — `None` means "not yet set".
+    pub fn stored(&self, key: &str) -> Option<&SettingValue> {
+        self.0.get(key)
+    }
+
+    fn set(&mut self, key: &str, value: SettingValue) {
+        self.0.insert(key.to_owned(), value);
+    }
+
+    fn reset(&mut self, key: &str) -> Option<SettingValue> {
+        self.0.remove(key)
+    }
+}
+
+/// Load every stored override.
+pub fn load_values(store: &Store) -> Result<SettingsValues> {
+    let connection = store.lock();
+    // `settings_values` is also the generic key/value table other domains piggyback on for
+    // small internal bookkeeping that is not a typed setting (the mimeapps-import marker, the
+    // power-profile overrides, the location policy blob — see their own modules), always under
+    // a `_internal.`-prefixed key by convention. Those rows are not `SettingValue` JSON, so they
+    // are excluded here rather than skipped-on-parse-failure, which would silently swallow a
+    // genuinely corrupt setting instead.
+    let mut statement = connection
+        .prepare("SELECT key, value_json FROM settings_values WHERE key NOT LIKE '\\_internal.%' ESCAPE '\\'")
+        .context("preparing settings_values query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .context("reading settings_values")?;
+    let mut values = BTreeMap::new();
+    for row in rows {
+        let (key, json) = row?;
+        let value: SettingValue = serde_json::from_str(&json)
+            .with_context(|| format!("parsing stored value for setting {key:?}"))?;
+        values.insert(key, value);
+    }
+    Ok(SettingsValues(values))
+}
+
+/// Validate and apply one change: persists the new value, appends to the `settings_changes`
+/// audit trail (old/new JSON, for `History1.Undo`) and returns that audit row's ID.
+///
+/// The caller (the daemon's `Settings1.Set` handler) still owns appending the general history
+/// event and the `change_log` row in the *same* transaction — this function only knows about
+/// settings storage, not about history phrasing.
+pub fn apply_within(
+    tx: &Transaction<'_>,
+    schema: &SettingsSchema,
+    values: &mut SettingsValues,
+    key: &str,
+    value: SettingValue,
+    origin: &str,
+) -> Result<(Option<String>, String, i64)> {
+    schema
+        .validate(key, &value)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let old_json = values
+        .stored(key)
+        .map(serde_json::to_string)
+        .transpose()
+        .context("serializing previous setting value")?;
+    let new_json = serde_json::to_string(&value).context("serializing new setting value")?;
+
+    tx.execute(
+        "INSERT INTO settings_values (key, value_json, updated_ms) VALUES (?1, ?2, ?3)
+         ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json, updated_ms = excluded.updated_ms",
+        params![key, new_json, lege_state::now_ms()],
+    )
+    .context("persisting setting value")?;
+    tx.execute(
+        "INSERT INTO settings_changes (at_ms, key, old_json, new_json, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![lege_state::now_ms(), key, old_json, new_json, origin],
+    )
+    .context("recording settings_changes audit row")?;
+
+    values.set(key, value);
+    Ok((old_json, new_json, tx.last_insert_rowid()))
+}
+
+/// Remove a stored override, returning to the schema default. Like [`apply_within`], leaves
+/// history/undo bookkeeping to the caller.
+pub fn reset_within(
+    tx: &Transaction<'_>,
+    values: &mut SettingsValues,
+    key: &str,
+    origin: &str,
+) -> Result<Option<String>> {
+    let Some(old) = values.reset(key) else {
+        return Ok(None);
+    };
+    let old_json = serde_json::to_string(&old).context("serializing reset setting value")?;
+    tx.execute("DELETE FROM settings_values WHERE key = ?1", params![key])
+        .context("deleting settings_values row")?;
+    // `new_json` is NOT NULL: the JSON literal `null` means "reset to the schema default",
+    // distinct from an absent column.
+    tx.execute(
+        "INSERT INTO settings_changes (at_ms, key, old_json, new_json, origin) VALUES (?1, ?2, ?3, 'null', ?4)",
+        params![lege_state::now_ms(), key, old_json, origin],
+    )
+    .context("recording settings_changes reset row")?;
+    Ok(Some(old_json))
+}
+
+/// Reverse a change recorded in the shared `change_log` (`History1.Undo`): `old_json` is exactly
+/// what [`apply_within`] returned as the previous value. `None` means the key had no stored
+/// override before the change being undone, so undoing it resets to the schema default.
+pub fn revert_within(
+    tx: &Transaction<'_>,
+    values: &mut SettingsValues,
+    key: &str,
+    old_json: Option<&str>,
+) -> Result<()> {
+    if let Some(json) = old_json {
+        let value: SettingValue =
+            serde_json::from_str(json).context("parsing a settings change_log's stored value")?;
+        tx.execute(
+            "INSERT INTO settings_values (key, value_json, updated_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json, updated_ms = excluded.updated_ms",
+            params![key, json, lege_state::now_ms()],
+        )
+        .context("restoring a settings_values row")?;
+        values.set(key, value);
+    } else {
+        tx.execute("DELETE FROM settings_values WHERE key = ?1", params![key])
+            .context("removing a settings_values row")?;
+        values.reset(key);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +374,106 @@ mod tests {
         assert_eq!(
             schema.validate("nope", &SettingValue::Bool(true)),
             Err(SettingError::UnknownKey("nope".into()))
+        );
+    }
+
+    #[test]
+    fn apply_persists_validates_and_reset_returns_the_default() {
+        let store = Store::in_memory().unwrap();
+        let schema = baseline_schema();
+        let mut values = load_values(&store).unwrap();
+        assert_eq!(
+            values.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("observe-only".into()))
+        );
+
+        let (old, new, _id) = store
+            .transaction(|tx| {
+                apply_within(
+                    tx,
+                    &schema,
+                    &mut values,
+                    "resources.mode",
+                    SettingValue::Choice("enforce".into()),
+                    "test",
+                )
+            })
+            .unwrap();
+        assert_eq!(old, None);
+        assert_eq!(new, "{\"type\":\"choice\",\"value\":\"enforce\"}");
+        assert_eq!(
+            values.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("enforce".into()))
+        );
+
+        // Reloading from the store observes the same override.
+        let reloaded = load_values(&store).unwrap();
+        assert_eq!(
+            reloaded.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("enforce".into()))
+        );
+
+        // An invalid value is rejected before anything is written.
+        let result = store.transaction(|tx| {
+            apply_within(
+                tx,
+                &schema,
+                &mut values,
+                "resources.mode",
+                SettingValue::Choice("bogus".into()),
+                "test",
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            values.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("enforce".into())),
+            "rejected change must not mutate the in-memory values"
+        );
+
+        store
+            .transaction(|tx| reset_within(tx, &mut values, "resources.mode", "test"))
+            .unwrap();
+        assert_eq!(
+            values.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("observe-only".into())),
+            "reset falls back to the schema default"
+        );
+    }
+
+    #[test]
+    fn revert_restores_the_previous_value_or_the_default_when_there_was_none() {
+        let store = Store::in_memory().unwrap();
+        let schema = baseline_schema();
+        let mut values = load_values(&store).unwrap();
+
+        let (old, _new, _id) = store
+            .transaction(|tx| {
+                apply_within(
+                    tx,
+                    &schema,
+                    &mut values,
+                    "resources.mode",
+                    SettingValue::Choice("enforce".into()),
+                    "test",
+                )
+            })
+            .unwrap();
+        assert_eq!(old, None);
+
+        store
+            .transaction(|tx| revert_within(tx, &mut values, "resources.mode", old.as_deref()))
+            .unwrap();
+        assert_eq!(
+            values.effective(&schema, "resources.mode"),
+            Some(SettingValue::Choice("observe-only".into())),
+            "reverting a change with no prior override falls back to the default"
+        );
+        assert!(
+            load_values(&store)
+                .unwrap()
+                .stored("resources.mode")
+                .is_none()
         );
     }
 }

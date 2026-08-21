@@ -3,8 +3,12 @@
 //! The LegeOS session masks `xdg-desktop-autostart.target` so nothing bypasses this.
 
 use crate::providers::ProviderRegistry;
+use anyhow::{Context, Result};
+use lege_state::Store;
 use lege_types::{AppId, ProviderRole};
+use rusqlite::{Transaction, params};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Background capabilities an application may request (planning doc 01 §7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -18,6 +22,37 @@ pub enum BackgroundPermission {
     InputMonitoring,
     Notifications,
     RemovableMedia,
+}
+
+impl BackgroundPermission {
+    /// The kebab-case name used in manifests, autostart `X-LegeOS-Background` entries and the
+    /// settings UI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LoginAutostart => "login-autostart",
+            Self::ContinuousBackground => "continuous-background",
+            Self::NetworkWhileHidden => "network-while-hidden",
+            Self::GlobalShortcuts => "global-shortcuts",
+            Self::ScreenCapture => "screen-capture",
+            Self::InputMonitoring => "input-monitoring",
+            Self::Notifications => "notifications",
+            Self::RemovableMedia => "removable-media",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text.trim() {
+            "login-autostart" => Self::LoginAutostart,
+            "continuous-background" => Self::ContinuousBackground,
+            "network-while-hidden" => Self::NetworkWhileHidden,
+            "global-shortcuts" => Self::GlobalShortcuts,
+            "screen-capture" => Self::ScreenCapture,
+            "input-monitoring" => Self::InputMonitoring,
+            "notifications" => Self::Notifications,
+            "removable-media" => Self::RemovableMedia,
+            _ => return None,
+        })
+    }
 }
 
 /// One autostart request.
@@ -37,6 +72,25 @@ pub enum Approval {
     Denied,
     /// Not yet decided: distribution defaults apply (approved for role providers, denied otherwise).
     Undecided,
+}
+
+impl Approval {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Undecided => "undecided",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "approved" => Self::Approved,
+            "denied" => Self::Denied,
+            "undecided" => Self::Undecided,
+            _ => return None,
+        })
+    }
 }
 
 /// Outcome per entry, always with a reason.
@@ -68,6 +122,58 @@ pub fn plan(
             (entry.app_id.clone(), verdict)
         })
         .collect()
+}
+
+/// Load every recorded approval/denial. An application with no row is [`Approval::Undecided`].
+pub fn load_approvals(store: &Store) -> Result<BTreeMap<AppId, Approval>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT app_id, approval FROM autostart_approvals")
+        .context("preparing autostart_approvals query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .context("reading autostart_approvals")?;
+    let mut approvals = BTreeMap::new();
+    for row in rows {
+        let (app_id, approval) = row?;
+        let app_id: AppId = app_id
+            .parse()
+            .with_context(|| format!("invalid app id in autostart_approvals: {app_id:?}"))?;
+        let approval = Approval::parse(&approval)
+            .with_context(|| format!("invalid approval value: {approval:?}"))?;
+        approvals.insert(app_id, approval);
+    }
+    Ok(approvals)
+}
+
+/// Read one application's approval, defaulting to [`Approval::Undecided`].
+pub fn approval_for(approvals: &BTreeMap<AppId, Approval>, app_id: &AppId) -> Approval {
+    approvals
+        .get(app_id)
+        .copied()
+        .unwrap_or(Approval::Undecided)
+}
+
+/// Persist a user/distribution decision. Storing [`Approval::Undecided`] deletes the row (the
+/// absence of a row *is* undecided), keeping the table free of no-op entries.
+pub fn set_approval_within(tx: &Transaction<'_>, app_id: &AppId, approval: Approval) -> Result<()> {
+    if approval == Approval::Undecided {
+        tx.execute(
+            "DELETE FROM autostart_approvals WHERE app_id = ?1",
+            params![app_id.as_str()],
+        )
+        .context("clearing autostart approval")?;
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO autostart_approvals (app_id, approval) VALUES (?1, ?2)
+         ON CONFLICT (app_id) DO UPDATE SET approval = excluded.approval",
+        params![app_id.as_str(), approval.as_str()],
+    )
+    .context("persisting autostart approval")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,5 +240,50 @@ mod tests {
             )
         );
         assert_eq!(plan[2], (c, Verdict::SkippedUndecided));
+    }
+
+    #[test]
+    fn approvals_persist_and_undecided_is_absence_of_a_row() {
+        let store = Store::in_memory().unwrap();
+        let app: AppId = "org.example.Sync".parse().unwrap();
+
+        assert_eq!(
+            approval_for(&load_approvals(&store).unwrap(), &app),
+            Approval::Undecided
+        );
+
+        store
+            .transaction(|tx| set_approval_within(tx, &app, Approval::Denied))
+            .unwrap();
+        assert_eq!(
+            approval_for(&load_approvals(&store).unwrap(), &app),
+            Approval::Denied
+        );
+
+        // Setting Undecided again removes the row rather than storing a no-op value.
+        store
+            .transaction(|tx| set_approval_within(tx, &app, Approval::Undecided))
+            .unwrap();
+        assert!(load_approvals(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn background_permission_round_trips_through_its_kebab_name() {
+        for permission in [
+            BackgroundPermission::LoginAutostart,
+            BackgroundPermission::ContinuousBackground,
+            BackgroundPermission::NetworkWhileHidden,
+            BackgroundPermission::GlobalShortcuts,
+            BackgroundPermission::ScreenCapture,
+            BackgroundPermission::InputMonitoring,
+            BackgroundPermission::Notifications,
+            BackgroundPermission::RemovableMedia,
+        ] {
+            assert_eq!(
+                BackgroundPermission::parse(permission.as_str()),
+                Some(permission)
+            );
+        }
+        assert_eq!(BackgroundPermission::parse("not-a-real-permission"), None);
     }
 }

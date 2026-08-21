@@ -1,0 +1,30 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Location.
+     Timezone/location policy (crates/lege-session-core/src/location.rs) — network-facing, so it
+     lives here rather than in lege-hostd (ADR-0003). Combines candidate sources, keeps a
+     confidence, remembers manual corrections, and refuses to silently apply a zone when sources
+     disagree. Applied through polkit-gated org.freedesktop.timedate1, never by writing
+     /etc/localtime. Implemented in services/lege-sessiond/src/apis/location.rs. -->
+<node>
+  <interface name="org.legeos.Location1">
+    <!-- candidates_json is a JSON array of {"provider","timezone","confidence"}. If the policy
+         decides to apply a zone, this call also performs that application (through timedate1)
+         and records history before returning. Returns the TimezoneDecision as JSON. -->
+    <method name="Decide">
+      <arg name="location_key" type="s" direction="in"/>
+      <arg name="candidates_json" type="s" direction="in"/>
+      <arg name="decision_json" type="s" direction="out"/>
+    </method>
+    <method name="SetManualOverride">
+      <arg name="location_key" type="s" direction="in"/>
+      <arg name="timezone" type="s" direction="in"/>
+    </method>
+    <method name="ClearManualOverride">
+      <arg name="location_key" type="s" direction="in"/>
+    </method>
+    <method name="ManualOverrides">
+      <arg name="overrides" type="a(ss)" direction="out"/>
+    </method>
+  </interface>
+</node>
