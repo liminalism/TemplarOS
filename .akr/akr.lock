@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:49e325c9ba987dc94eeb8b98832177ae16104e5b840d0671df75ea8eea911670"
+    source_graph "sha256:23c2dbc669e3ed34dbdb258354b8a710b8b6af301472ea6289184ef8c0e85ac1"
 }
 
 source ".akr/project.akr" {
@@ -24,8 +24,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:7b080d5d9ba75a48fb42fea6ba2fb2859b015d627808f568ed9c1950a63a8d08"
-    records 7
+    hash "sha256:85456673b57b866c292089301c172e7d6bd7aca30d38a8c97714e62f470911b3"
+    records 15
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,7 +39,7 @@ source ".akr/records/legeos/papercuts.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:6ee12b16ba95faf3a90740f1ecbf3294664292f01954f98ea980215eaf5ebb48"
+    hash "sha256:9c6d25b05946fbab727af25a170cb7ab2b3fe56db031f252ce2919d0ae84be14"
     records 6
 }
 
@@ -244,19 +244,19 @@ resolution @legeos.work.compositor-window-authority/1 {
 resolution @legeos.work.consumers-cli-portal-shell/1 {
     slot after
     to @legeos.work.compositor-window-authority/1
-    hash "sha256:dbb9f75130397ec595e40e50f055d99bd9b27ad2d1262be3562f8665b67fa66d"
+    hash "sha256:e6d0e04128fdc6037fdc50307a9eb8b2ceda69755ed9caa54a6e0796b7a36e35"
 }
 
 resolution @legeos.work.consumers-cli-portal-shell/1 {
     slot after
     to @legeos.work.governor-containment/1
-    hash "sha256:e48ce77dff38e3ad49a8cbc11c9ed8675f98f162ef6b18045721d46813e8d765"
+    hash "sha256:30ecfee9a27fdaaa14e05be7c5b1a6aab5db4df9da8e0231fa2dc5d9f8da6369"
 }
 
 resolution @legeos.work.consumers-cli-portal-shell/1 {
     slot after
     to @legeos.work.host-update-transaction/1
-    hash "sha256:1a28bd5860494d43b1a69903db4b6e8d471053b42f79e9d9183c8e37e99d5cc5"
+    hash "sha256:6b38531e6314e4f328e451b9125fd09179ebfe549bd8127d05f9ab374a756a8b"
 }
 
 resolution @legeos.work.consumers-cli-portal-shell/1 {
@@ -405,6 +405,46 @@ seal @legeos.evidence.m0-workspace-builds-and-tests/1 {
     hash "sha256:f40c96add7cbddac7d3a329fc302a8e74d2d77a4bc917fc3fdd7efc5ba816ebb"
 }
 
+seal @legeos.evidence.m1-check-interfaces/1 {
+    state verified
+    hash "sha256:2813e142fceb35510fb86aac8325dca3805a759ccb55c2ef3612667684289996"
+}
+
+seal @legeos.evidence.m1-deps-check/1 {
+    state verified
+    hash "sha256:441981dedd76c9de85d69d2bc89613d4afc21cbdadb26f07867ba221d55e9c1d"
+}
+
+seal @legeos.evidence.m1-governor-staged/1 {
+    state verified
+    hash "sha256:5e1b376b16234f68ec3b000f700b4eb10682d22de33503369b9d1d5d6f92d864"
+}
+
+seal @legeos.evidence.m1-operations-resume/1 {
+    state verified
+    hash "sha256:946c9f15a4d7334995b131a21d289c7c3364510aafae2baca5fb57bab4e19cdf"
+}
+
+seal @legeos.evidence.m1-session-persists/1 {
+    state verified
+    hash "sha256:24f23d0c98845853f24ada58bd33a398481d4a80847a3cfc97ab68282328dd12"
+}
+
+seal @legeos.evidence.m1-update-transaction-resumes/1 {
+    state verified
+    hash "sha256:fc95452267f26716476bc55e336e2e71ed887251b58d64b824559cca9061a8d3"
+}
+
+seal @legeos.evidence.m1-windows-recoverable/1 {
+    state verified
+    hash "sha256:e97a46da5d4641ce7bdc2c340d752c4060a45b9de0f779e2daed1f03ac999132"
+}
+
+seal @legeos.evidence.m1-workspace-builds-and-tests/1 {
+    state verified
+    hash "sha256:d8c27e260fd5cf2dee914a607b684188e136a7036f7a6a5d3e54536084ab87cf"
+}
+
 seal @legeos.milestone.m0-initial-structure/1 {
     state completed
     hash "sha256:bbb1e10f91c73425aa12a79bdb02ade3cc8e5a8573fd73c6db1f6666844a4bac"
@@ -413,4 +453,24 @@ seal @legeos.milestone.m0-initial-structure/1 {
 seal @legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 {
     state verified
     hash "sha256:8c9f28d0c3cfd03c3b3765328cbb06a3ac1a95ddf62ab9e90a809703d02803a1"
+}
+
+seal @legeos.work.compositor-window-authority/1 {
+    state completed
+    hash "sha256:e6d0e04128fdc6037fdc50307a9eb8b2ceda69755ed9caa54a6e0796b7a36e35"
+}
+
+seal @legeos.work.filed-transactions/1 {
+    state completed
+    hash "sha256:cee59788d408e308ca1076a6bbd98a8b444e8fa32bbd575fd6ba8b6782af8ca6"
+}
+
+seal @legeos.work.governor-containment/1 {
+    state completed
+    hash "sha256:30ecfee9a27fdaaa14e05be7c5b1a6aab5db4df9da8e0231fa2dc5d9f8da6369"
+}
+
+seal @legeos.work.host-update-transaction/1 {
+    state completed
+    hash "sha256:6b38531e6314e4f328e451b9125fd09179ebfe549bd8127d05f9ab374a756a8b"
 }

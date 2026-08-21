@@ -85,3 +85,99 @@ record legeos.evidence.m0-workspace-builds-and-tests/1 : evidence {
         fmt clean, clippy -D warnings clean (pedantic subset), 55 tests passed / 0 failed across 20 packages including 2000-case geometry proptests
         """
 }
+
+record legeos.evidence.m1-check-interfaces/1 : evidence {
+    title "M1: every org.legeos.* interface has an XML contract"
+    state verified
+    result pass
+    method command
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    command "cargo run -q -p xtask -- check-interfaces"
+    summary """
+        check-interfaces: 22 interfaces documented, up from 13 at M0 — the file service's five, the governor's, the session daemon's nine, the host daemon's six, and the inverted Checkpoint1 an application serves for itself
+        """
+}
+
+record legeos.evidence.m1-deps-check/1 : evidence {
+    title "M1: lege-window still carries no async runtime and no D-Bus"
+    state verified
+    result pass
+    method command
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    command "cargo run -q -p xtask -- deps-check"
+    summary """
+        deps-check: lege-window is free of tokio, zbus, async-std and smol across 61 transitive dependencies, so it can still run on the compositor render thread
+        """
+}
+
+record legeos.evidence.m1-governor-staged/1 : evidence {
+    title "M1: the governor defaults to observe-only and performs nothing above its stage"
+    state verified
+    result pass
+    method observation
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    artifact "services/lege-resourced/src/daemon.rs"
+    summary """
+        Stage defaults to observe-only; an action above the current stage is decided, scored, signalled with applied=false and not performed. RestoreDynamicLimits only writes when the governor itself placed the override, so observe-only performs no cgroup write at all with an application present — tested directly. Traces record pressure episodes and level changes rather than idle ticks, so the ring holds episodes rather than wall-clock noise. 62 tests.
+        """
+}
+
+record legeos.evidence.m1-operations-resume/1 : evidence {
+    title "M1: a journalled file operation resumes without redoing completed work"
+    state verified
+    result pass
+    method observation
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    artifact "services/lege-filed/src/execute.rs"
+    summary """
+        A move interrupted after its copy step resumes from the journalled cursor and does not copy again — proved by rewriting the source with different bytes of the same length between the interruption and the resume and asserting the destination still holds the original. Every step is applied twice in a test to prove idempotence, and a conflicting destination fails before the source is touched. 66 tests in lege-filed.
+        """
+}
+
+record legeos.evidence.m1-session-persists/1 : evidence {
+    title "M1: session policy survives a restart and instances are re-derived"
+    state verified
+    result pass
+    method observation
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    artifact "services/lege-sessiond/src/main.rs"
+    summary """
+        Associations, provider selections and declarations, autostart approvals, settings values and their change log, projects and history all load from the one SQLite store at start and write through it, with a cross-domain change committing as one transaction; live instances are re-derived from systemd unit names on restart. Smoke-run against this machine's 208 real desktop entries, twice, idempotently. 90 tests across the session track.
+        """
+}
+
+record legeos.evidence.m1-update-transaction-resumes/1 : evidence {
+    title "M1: the update transaction resumes in every phase and cannot brick the machine"
+    state verified
+    result pass
+    method observation
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    artifact "services/lege-hostd/src/updates.rs"
+    summary """
+        Seeding the journal at each phase shows the right apt and snapshot calls re-run and the wrong ones do not, including mid-phase: Staging resumes with a partially populated candidate directory and Verifying with boot files already written, both reaching AwaitingReboot. Both boot backends work against a command-runner fake. lege-boot-health may only force a reboot on a boot genuinely trialling a candidate, so an ordinary boot cannot loop. 89 tests, none needing NVIDIA, btrfs, an ESP or apt.
+        """
+}
+
+record legeos.evidence.m1-windows-recoverable/1 : evidence {
+    title "M1: windows stay recoverable across drag, hotplug, scale change and restore"
+    state verified
+    result pass
+    method observation
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    artifact "crates/lege-window/src/geometry.rs"
+    summary """
+        Eight 2000-case property tests over generated multi-output topologies (mixed scales, negative origins, overlapping and disjoint arrangements) prove repair implies recoverable, repair is idempotent and size-preserving, the show-all-windows scatter stays inside the active outputs, and the drag anchor is scale-independent; a further 300-case test covers hotplug sequences and deterministic migration. 69 tests across lege-window and lege-comp-integration.
+        """
+}
+
+record legeos.evidence.m1-workspace-builds-and-tests/1 : evidence {
+    title "M1: the workspace formats, lints and tests clean at 378 tests"
+    state verified
+    result pass
+    method command
+    observed_at git:f856fd68712e7f21457995c31ac4a77044ac13c4
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+    summary """
+        0 build errors, 0 clippy errors under the pedantic subset, 378 tests passed / 0 failed across the workspace (55 at M0)
+        """
+}

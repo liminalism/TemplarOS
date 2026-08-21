@@ -3,7 +3,7 @@ project legeos
 
 record legeos.work.compositor-window-authority/1 : work {
     title "The compositor's window authority: typed layers, one scene, explicit minimisation, recovery without the shell"
-    state proposed
+    state completed
     scope [ path "compositor/**", path "crates/lege-window/**", path "interfaces/wayland/**" ]
     intent """
         Make lege-window the thing that decides stacking and geometry rather than a set of helpers: typed overlay layers as a total order with rules about which client may claim which layer; the one-workspace invariant as a type-level property, with deterministic migration when an output is removed and validation of restored geometry against the current topology; explicit minimisation to a Window Shelf that is always restorable to a recoverable geometry; a compositor-owned recovery band, a show-all-windows scatter and an escape route out of fullscreen that all work when the shell is dead; drag anchors held in one global logical coordinate space across mixed-scale outputs; window commands gated on activation grants with recent-input evidence; and property tests over generated multi-output topologies. lege-comp-integration keeps the render thread off D-Bus, hardens the identity cache against PID reuse, and tells the governor which instance the user is looking at.
@@ -35,7 +35,7 @@ record legeos.work.consumers-cli-portal-shell/1 : work {
 
 record legeos.work.filed-transactions/1 : work {
     title "The file service: journalled transactions, trash, storage reserve, recents, search"
-    state proposed
+    state completed
     scope [
         path "crates/lege-client/src/proxies/files.rs",
         path "crates/lege-state/src/migrations/files.rs",
@@ -50,7 +50,7 @@ record legeos.work.filed-transactions/1 : work {
 
 record legeos.work.governor-containment/1 : work {
     title "The resource governor: a served interface, applied protection, a staged containment ladder and recorded traces"
-    state proposed
+    state completed
     scope [
         path "distro/policy/**",
         path "interfaces/dbus/org.legeos.Resources1.xml",
@@ -64,7 +64,7 @@ record legeos.work.governor-containment/1 : work {
 
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
-    state proposed
+    state completed
     scope [
         path "crates/lege-hwdetect/**",
         path "distro/deploy/**",
