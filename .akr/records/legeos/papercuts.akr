@@ -1,6 +1,17 @@
 akr 0.1
 project legeos
 
+record legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 : papercut {
+    title "ADR-0012 landed as a markdown ADR without a matching ledger record, so…"
+    state verified
+    statement """
+        ADR-0012 landed as a markdown ADR without a matching ledger record, so for several commits the ledger kept asserting cosmic-comp was a pinned fork (D6) and cosmic-greeter the greeter (D10), both active, while the tree said otherwise. Nothing flagged it — a decision recorded only in docs/adr/ is invisible to validation. Worth a check that every docs/adr/NNNN-*.md has a corresponding decision record.
+        """
+    observed_at git:4ad95f78386d93a93e6fa500c43661908e00a658
+    author "claude"
+    created_at 2026-08-21
+}
+
 record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
     title "Partitioning file ownership across five parallel agents left the shared…"
     state verified
