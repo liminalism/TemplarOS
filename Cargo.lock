@@ -654,6 +654,7 @@ name = "lege-state"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "rusqlite",
  "tracing",
 ]

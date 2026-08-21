@@ -1,13 +1,103 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
-<!-- Bus: org.legeos.Resources (session bus, separate protected process lege-resourced).
-     Path: /org/legeos/Resources. -->
+<!-- Bus: org.legeos.Resources (session bus, lege-resourced). Path: /org/legeos/Resources.
+
+     The governor never needs this interface to act: launch units are self-describing
+     (`app-legeos-<AppId>@<InstanceId>.service`), so cgroup -> instance comes from
+     /sys/fs/cgroup alone and emergency containment works with no D-Bus round-trip at all
+     (ADR-0002). What arrives here is *enrichment* — who is on screen, what must never be a
+     victim — and observation for the shell, Settings and `lege res`.
+
+     Enrichment senders:
+       * lege-comp (through lege-comp-integration) -> SetInstanceState, on focus/visibility change.
+       * lege-sessiond                             -> SetInstanceHints, on manifest load, project
+                                                      open/close and checkpoint replies.
+     Consumers of PressureAction: lege-sessiond (relays the checkpoint protocol to applications
+     and records history) and lege-shell (the protected pressure overlay). -->
 <node>
   <interface name="org.legeos.Resources1">
-    <!-- level: normal | elevated | severe | critical -->
+
+    <!-- Current pressure level (normal|elevated|severe|critical) and whether the governor is
+         still observe-only. -->
     <method name="Status">
       <arg name="level" type="s" direction="out"/>
       <arg name="observe_only" type="b" direction="out"/>
     </method>
+
+    <!-- Full status as JSON: level, stage, uptime, MemAvailable, global PSI, per-instance
+         samples with their victim scores and score breakdowns. -->
+    <method name="Report">
+      <arg name="report_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Why this instance would (or would not) be chosen next, in words and in numbers. -->
+    <method name="ExplainInstance">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="explanation_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Containment stage: observe-only | trim | throttle | checkpoint | terminate.
+         Each stage enables everything below it (planning doc 02 §8: enable recovery actions
+         in stages, only after recorded traces show sensible choices). -->
+    <method name="Stage">
+      <arg name="stage" type="s" direction="out"/>
+    </method>
+    <method name="SetStage">
+      <arg name="stage" type="s" direction="in"/>
+    </method>
+
+    <!-- Compositor enrichment: which instance the user is actually looking at. -->
+    <method name="SetInstanceState">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="foreground" type="b" direction="in"/>
+      <arg name="visible" type="b" direction="in"/>
+    </method>
+
+    <!-- Session-daemon enrichment: protection, disposability, checkpoint support and whether
+         the application currently holds unsaved work. -->
+    <method name="SetInstanceHints">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="protected" type="b" direction="in"/>
+      <arg name="disposable" type="b" direction="in"/>
+      <arg name="supports_checkpoint" type="b" direction="in"/>
+      <arg name="has_unsaved_work" type="b" direction="in"/>
+    </method>
+
+    <!-- An instance ended; drop its record and any temporary limits. -->
+    <method name="ForgetInstance">
+      <arg name="instance_id" type="s" direction="in"/>
+    </method>
+
+    <!-- Recorded observe-only traces, newest first, as JSON lines. -->
+    <method name="RecentTraces">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="traces_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Pressure level changed. -->
+    <signal name="PressureChanged">
+      <arg name="level" type="s"/>
+      <arg name="report_json" type="s"/>
+    </signal>
+
+    <!-- One decided action. `kind` is trim-caches | set-memory-high | reclaim |
+         request-checkpoint | kill-cgroup | restore-limits; `applied` is false in observe-only
+         mode and at stages below the action. `reason` is the sentence the history event and the
+         pressure overlay show the user. -->
+    <signal name="PressureAction">
+      <arg name="kind" type="s"/>
+      <arg name="instance_id" type="s"/>
+      <arg name="applied" type="b"/>
+      <arg name="reason" type="s"/>
+      <arg name="detail_json" type="s"/>
+    </signal>
+
+    <!-- A stall the memory governor does not own: storage | gpu-reset | kernel-lockup |
+         hardware. Each needs a different recovery path and a different message
+         (planning doc 01 §5). -->
+    <signal name="NonMemoryStall">
+      <arg name="kind" type="s"/>
+      <arg name="detail_json" type="s"/>
+    </signal>
   </interface>
 </node>

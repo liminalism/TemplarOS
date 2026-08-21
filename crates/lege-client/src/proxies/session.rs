@@ -1,4 +1,7 @@
-//! zbus proxies. Kept in sync with `interfaces/dbus/*.xml` (`cargo xtask check-interfaces`).
+//! Proxies for `lege-sessiond` (`org.legeos.Session`): identity, launching, associations,
+//! providers, history, settings, projects, power and location.
+//!
+//! Kept in sync with `interfaces/dbus/org.legeos.*.xml` (`cargo xtask check-interfaces`).
 
 use zbus::proxy;
 
@@ -48,14 +51,4 @@ pub trait Associations {
     fn set_mime_default(&self, mime: &str, app_id: &str) -> zbus::Result<()>;
 
     fn list_mime_defaults(&self) -> zbus::Result<Vec<(String, String)>>;
-}
-
-#[proxy(
-    interface = "org.legeos.Resources1",
-    default_service = "org.legeos.Resources",
-    default_path = "/org/legeos/Resources"
-)]
-pub trait Resources {
-    /// Current pressure level (`normal|elevated|severe|critical`) and observe-only flag.
-    fn status(&self) -> zbus::Result<(String, bool)>;
 }
