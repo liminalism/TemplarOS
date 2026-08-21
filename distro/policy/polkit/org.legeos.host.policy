@@ -1,28 +1,65 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  The one polkit action set for the one privileged daemon (ADR-0003). One action per
+  org.legeos.Host.* interface's mutating surface; every action here is checked in-process by
+  lege-hostd itself (crates/lege-hostd/src/polkit.rs: require_authorized), on every call, against
+  the caller's system-bus name — read-only methods (profiles, plans, usage reports, history) need
+  no action and are open to any bus peer, same as `systemctl status` needs no privilege while
+  `systemctl restart` does.
+-->
 <policyconfig>
   <vendor>LegeOS</vendor>
   <vendor_url>https://legeos.org</vendor_url>
 
   <action id="org.legeos.host.update">
-    <description>Stage or apply a system update transaction</description>
+    <description>Plan or apply a kernel/driver update transaction</description>
     <message>Authentication is required to update the system</message>
-    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
   </action>
+
   <action id="org.legeos.host.deploy">
-    <description>Change boot deployments (stage, promote, roll back)</description>
+    <description>Stage, bless or roll back a boot deployment</description>
     <message>Authentication is required to change boot deployments</message>
-    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
   </action>
-  <action id="org.legeos.host.gpu-mode">
-    <description>Change the graphics mode (hybrid / integrated / discrete)</description>
+
+  <action id="org.legeos.host.driver">
+    <description>Repair the NVIDIA driver version lock</description>
+    <message>Authentication is required to change the driver version lock</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.legeos.host.storage">
+    <description>Enforce the storage reserve (trim caches, drop old deployments)</description>
+    <message>Authentication is required to reclaim disk space</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.legeos.host.hardware">
+    <description>Change the GPU mode (hybrid / integrated / discrete)</description>
     <message>Authentication is required to change the graphics mode</message>
-    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
-  </action>
-  <action id="org.legeos.host.storage-reserve">
-    <description>Change the storage reserve or override it once</description>
-    <message>Authentication is required to change the storage reserve</message>
-    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
   </action>
 </policyconfig>
