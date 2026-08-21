@@ -78,7 +78,12 @@ pub fn check_reserve(operation: &Operation, config: &ExecutorConfig) -> Result<R
     };
     let volume = storage::query(&destination, config.reserve_percent)
         .with_context(|| format!("checking free space on {}", destination.display()))?;
-    Ok(storage::check_reserve(&volume, operation.total_bytes))
+    // What is still to be written, not what the operation started as: bytes already copied are
+    // on the volume, and counting them twice would refuse a resume that is nearly finished.
+    let outstanding = operation
+        .total_bytes
+        .saturating_sub(operation.done_bytes);
+    Ok(storage::check_reserve(&volume, outstanding))
 }
 
 fn destination_dir_of(step: &Step) -> Option<PathBuf> {
@@ -891,6 +896,15 @@ mod tests {
         // The override is what the user's explicit "do it anyway" turns into.
         operation.options.override_reserve = true;
         operation.state = OperationState::Planned;
+        assert_eq!(
+            check_reserve(&operation, &configuration).unwrap(),
+            ReserveVerdict::Ok
+        );
+
+        // Resuming counts only what is left: an operation that has already written almost
+        // everything must not be refused for the bytes that are already on the volume.
+        operation.options.override_reserve = false;
+        operation.done_bytes = operation.total_bytes;
         assert_eq!(
             check_reserve(&operation, &configuration).unwrap(),
             ReserveVerdict::Ok
