@@ -1,0 +1,41 @@
+akr 0.1
+project legeos
+
+record legeos.observation.transient-unit-launch-converged-independently/1 : observation {
+    title "Omarchy launches applications into transient systemd units too, then identifies windows by self-declared app_id anyway"
+    state superseded
+    scope [ path "crates/lege-appd/**", path "crates/lege-types/**" ]
+    statement """
+        Basecamp's Omarchy independently arrived at the same launch primitive LegeOS uses: bin/omarchy-launch-browser and five sibling scripts start applications with `systemd-run --user --collect --unit="omarchy-browser-$(date +%s%N)"`, giving one transient unit and therefore one cgroup per launch. It then does not use it. There is no reference to a cgroup, a unit or /proc/<pid>/cgroup anywhere under shell/; the shell identifies windows purely from the client's self-declared app_id (12 references). The cgroup exists and the information is discarded. This sharpens what LegeOS's identity model actually contributes: not that a per-launch cgroup exists, but that naming it app-legeos-<AppId>@<InstanceId>.service makes the cgroup name carry the identity, so a window's PID resolves to a cgroup, the cgroup name resolves to an AppId, and the governor, the dock and the notification router all key off one fact nobody had to ask the client for. Omarchy's unit name is a timestamp and carries no identity, so it cannot make that journey even though it has the cgroup. Independent convergence on the primitive is evidence the primitive is right; the naming convention is the part that turns it into an identity system, and is the part to defend in review.
+        """
+    observed_at git:c0302dabc9dc3e0e0ba2c5d3a7c66d05ef0f5eb3
+    method manual
+    source {
+        kind internal
+        role evidence
+        path "docs/research/omarchy-review.md"
+        use """
+            Section 7, correction 3 — verified against the cloned source rather than taken from the study's body, which had framed the difference as trusting app_id versus using cgroups.
+            """
+    }
+}
+
+record legeos.observation.transient-unit-launch-converged-independently/2 : observation {
+    title "Omarchy launches applications into transient systemd units too, then identifies windows by self-declared app_id anyway"
+    state verified
+    scope [ path "crates/lege-appd/**", path "crates/lege-types/**" ]
+    statement """
+        Basecamp's Omarchy independently arrived at the same launch primitive LegeOS uses: bin/omarchy-launch-browser and five sibling scripts start applications with `systemd-run --user --collect --unit="omarchy-browser-$(date +%s%N)"`, giving one transient unit and therefore one cgroup per launch. It then does not use it. There is no reference to a cgroup, a unit or /proc/<pid>/cgroup anywhere under shell/; the shell identifies windows purely from the client's self-declared app_id (12 references). The cgroup exists and the information is discarded. This sharpens what LegeOS's identity model actually contributes: not that a per-launch cgroup exists, but that naming it app-legeos-<AppId>@<InstanceId>.service makes the cgroup name carry the identity, so a window's PID resolves to a cgroup, the cgroup name resolves to an AppId, and the governor, the dock and the notification router all key off one fact nobody had to ask the client for. Omarchy's unit name is a timestamp and carries no identity, so it cannot make that journey even though it has the cgroup. Independent convergence on the primitive is evidence the primitive is right; the naming convention is the part that turns it into an identity system, and is the part to defend in review.
+        """
+    observed_at git:c0302da6d487844caf0e870733f56433e2ac2229
+    method manual
+    supersedes [ @legeos.observation.transient-unit-launch-converged-independently/1 ]
+    source {
+        kind internal
+        role evidence
+        path "docs/research/omarchy-review.md"
+        use """
+            Section 7, correction 3 — verified against the cloned source rather than taken from the study's body, which had framed the difference as trusting app_id versus using cgroups.
+            """
+    }
+}

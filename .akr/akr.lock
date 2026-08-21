@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:c04f96797415249ac4335c61e619fb76d4e48e26db25e78c1692e4a08b001adb"
+    source_graph "sha256:35c248334945f6d0ff0fd978f2d162b343a4ce539adb5ef9caf5add16cb1d2bf"
 }
 
 source ".akr/project.akr" {
@@ -33,14 +33,19 @@ source ".akr/records/legeos/milestones.akr" {
     records 3
 }
 
+source ".akr/records/legeos/observations.akr" {
+    hash "sha256:b06a5b218b1d85add7961d5476d02c859b77df6f0156ca6587abef3f27cb1a61"
+    records 2
+}
+
 source ".akr/records/legeos/papercuts.akr" {
     hash "sha256:0dc70b9df1028ece5079f4c839b208500d5a1c0d53bcd08b887eaf677888e8cc"
     records 3
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:ebe2db4c4b83bbf944b443ffb9cbcd33465a49c7c926b9a741cb112c1fcaf45a"
-    records 6
+    hash "sha256:044326867fd260c39de79d2f15222c3fb65b9b2a4eea1eb65ba8a7e2b228090e"
+    records 7
 }
 
 resolution @legeos.decision.base-ubuntu-2604-kernel-70/1 {
@@ -287,6 +292,12 @@ resolution @legeos.milestone.m2-session-runs/1 {
     slot depends_on
     to @legeos.decision.compositor-on-smithay/1
     hash "sha256:d806a9012d327d5c1608740d2d8c4cb1f174241da3a3f8b4af9428ff69a82dc4"
+}
+
+resolution @legeos.work.action-manifest-one-declaration-three-surfaces/1 {
+    slot depends_on
+    to @legeos.constraint.services-not-indicators/1
+    hash "sha256:71d7efb170fa8cb87be158a4056e7713a2d3ed3ba304f346a9eb99ef2872aecb"
 }
 
 resolution @legeos.work.compositor-window-authority/1 {
@@ -547,6 +558,16 @@ seal @legeos.milestone.m0-initial-structure/1 {
 seal @legeos.milestone.m1-session-runtime/1 {
     state completed
     hash "sha256:590f00030286e8c6e3fdd6cab172d3189b0ded3fed5cedd3d2d590c8560f1a92"
+}
+
+seal @legeos.observation.transient-unit-launch-converged-independently/1 {
+    state superseded
+    hash "sha256:b3c40c8de1d8a94802d9eff2bc0c17bda9f507e1067fe7bae3d5f0948d0d5a95"
+}
+
+seal @legeos.observation.transient-unit-launch-converged-independently/2 {
+    state verified
+    hash "sha256:8b58b7e41478f76bcad14ca8f343eeddf1171f19555e88cd1d8af057bd9639e6"
 }
 
 seal @legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 {

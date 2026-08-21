@@ -1,6 +1,36 @@
 akr 0.1
 project legeos
 
+record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
+    title "Declare every user-facing action once, and generate the menu, the cheat sheet and the CLI verb from it"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-types/**",
+        path "shell/**"
+    ]
+    intent """
+        LegeOS already commits to every capability being reachable from the CLI, the portal, the shell and Settings (M1 evidence m1-clients-reachable; docs/architecture/accessibility.md: "everything the shell shows is available through lege too"). Today that is a discipline maintained by hand across four implementations, and nothing prevents them drifting. Omarchy demonstrates the mechanism that makes it structural: one declaration — `o.bind(chord, human_label, action)` — is simultaneously the keybinding, the row in a mouse-navigable menu tree, and the entry in a cheat sheet generated from the same table, so the documentation cannot fall out of date with the behaviour because it is not a separate artefact. Adopt the pattern: an action manifest (id, human label, optional chord, CLI verb, availability predicate) living in a service crate rather than the shell, with the shell's menu, the discoverability surface and `lege`'s subcommand table all rendered from it. The manifest belonging to a service rather than the shell is what keeps it consistent with services-not-indicators: the shell renders the manifest, it does not own it.
+        """
+    note """
+        Not M2. What can happen during M2 is that the dock and Home Surface are built to read rows from a declaration rather than hard-coding them, because retrofitting that later is much more expensive than designing it in — so the cost of deferring the manifest is low only if M2's shell surfaces are written data-driven from the start.
+
+        The keyboard layer is strictly additive, and this is a decision, not an accident of scheduling. Every action must have a mouse or menu path that is not second-class — not a smaller target, not fewer capabilities, not discoverable only by first reading a shortcut list. A chord is an accelerator recorded alongside the menu entry in the same manifest, never the only route to a capability. Omarchy's own navigation manual claims "EVERYTHING happens via the keyboard", and its top-bar manual, documenting full click-and-scroll parity on every widget, contradicts it: read carefully, Omarchy is keyboard-primary with first-class mouse parity, which is the position worth copying rather than the slogan. This is consistent with LegeOS's existing accessibility invariants rather than a change to them.
+
+        See docs/research/omarchy-review.md §3.1 and §5.
+        """
+    depends_on [ @legeos.constraint.services-not-indicators ]
+    source {
+        kind internal
+        role rationale
+        path "docs/research/omarchy-review.md"
+        use """
+            The study this came from, including the verification pass that corrects three of its own claims against source.
+            """
+    }
+}
+
 record legeos.work.compositor-window-authority/1 : work {
     title "The compositor's window authority: typed layers, one scene, explicit minimisation, recovery without the shell"
     state completed
