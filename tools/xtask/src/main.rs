@@ -516,10 +516,25 @@ fn check_packaging(root: &Path) -> Result<()> {
     // of Cargo.toml that could drift from what cargo-deb actually sees.
     let mut deb_name_to_crate = BTreeMap::new();
     let mut deb_assets = Vec::new();
+    let mut maintainerless = Vec::new();
     for package in packages {
         if let Some(deb_name) = package["metadata"]["deb"]["name"].as_str() {
             let crate_name = package["name"].as_str().unwrap_or("?");
             deb_name_to_crate.insert(deb_name.to_owned(), crate_name.to_owned());
+            // Maintainer is mandatory in a binary package's control file. cargo-deb fills it from
+            // `[package.metadata.deb] maintainer` or, failing that, the crate's `authors`; with
+            // neither it emits a package dpkg itself warns about. Nine of ours were built that
+            // way, because `authors.workspace = true` had only ever been added to two crates.
+            let has_maintainer = package["metadata"]["deb"]["maintainer"].is_string()
+                || package["authors"]
+                    .as_array()
+                    .is_some_and(|authors| !authors.is_empty());
+            if !has_maintainer {
+                maintainerless.push(format!(
+                    "{deb_name} (crate {crate_name}): no maintainer and no authors, so the .deb \
+                     would have no Maintainer field"
+                ));
+            }
         }
         if let Some(assets) = package["metadata"]["deb"]["assets"].as_array() {
             for asset in assets {
@@ -531,6 +546,7 @@ fn check_packaging(root: &Path) -> Result<()> {
     }
 
     let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
+    problems.extend(maintainerless);
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     problems.extend(unshipped_unit_binaries(&units, &shipped));

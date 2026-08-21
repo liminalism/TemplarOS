@@ -1,0 +1,127 @@
+# Testing LegeOS
+
+There are four ways to run this, and they differ by how much you have to commit to. Start at the
+top; only go down when the thing you need to test requires it.
+
+The planning analysis (`docs/planning/01-initial-shape.md`) staged it this way deliberately. Stage
+1 is "a replacement session on Lubuntu 26.04", using an existing install "only as the development
+host". So the desktop-environment form below is **scaffolding, not the product** — it exists so
+the work is testable long before there is an installer, and it does not commit LegeOS to shipping
+as a desktop environment on someone else's distribution.
+
+| | What | What it costs | What it can prove |
+|---|---|---|---|
+| 1 | Nested compositor in your current session | nothing | protocols, geometry, recovery, chrome |
+| 2 | Install the `.deb`s and pick **LegeOS** at the login screen | packages on your current Ubuntu | the whole session, greeter included |
+| 3 | mkosi disk image in a VM | mkosi + network | the image, first boot, the installer path |
+| 4 | Real install on real hardware | a machine | DRM/KMS, both GPU paths, suspend, hotplug |
+
+There is also a fifth thing that is not a "way to run it" but catches more than any of them:
+`cargo test --workspace`, `tests/integration/run.sh`, and `lege-comp --check`. Those run anywhere,
+including where there is no display at all, and they are what CI has.
+
+## 1. Nested — no installation
+
+```sh
+cargo build --workspace
+./target/debug/lege-comp --backend winit
+```
+
+`--backend winit` is the default whenever `WAYLAND_DISPLAY` or `DISPLAY` is already set, so inside
+a desktop session the flag is redundant; it is spelled out here because being explicit about which
+backend is running matters when something misbehaves.
+
+It logs two socket names. Point a client at the first:
+
+```sh
+WAYLAND_DISPLAY=wayland-N weston-terminal      # or cosmic-term, foot, alacritty…
+```
+
+The second socket, `wayland-N-shell`, is the private one. Connecting there — and only there — is
+what makes a client the trusted shell, which is the sole way to see the `lege_shell_v1` and
+`lege_recovery_v1` protocols. Nothing a client can *say* grants that trust.
+
+What to exercise by hand, because no test covers it:
+
+* Drag a window mostly off-screen and let go. It must come back reachable.
+* Change the nested window's size, which the compositor sees as an output geometry change. Every
+  window must remain recoverable.
+* **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is
+  the compositor's job, not the shell's.
+
+| Keys | What it does | Works with the shell dead |
+|---|---|---|
+| `Ctrl+Alt+Space` | show every window, scattered | yes |
+| `Ctrl+Alt+Escape` | escape a fullscreen or modal window | yes |
+| `Alt+Tab` / `Alt+Shift+Tab` | compositor's fallback switcher | yes |
+
+These call `WindowService` directly rather than going over the wire protocol, which is why they
+keep working when there is no shell to route them through.
+
+## 2. Installed packages — the easiest full session
+
+This is the "desktop environment" form. You install LegeOS's packages onto the Ubuntu you already
+have, and a **LegeOS** entry appears in your display manager's session list.
+
+```sh
+just deb                                # builds target/debian/*.deb
+sudo dpkg -i target/debian/*.deb
+sudo apt-get -f install                 # pull in anything dpkg flagged
+```
+
+Then check it before you log out, because the whole point is not to end up unable to log in:
+
+```sh
+lege doctor --root /
+```
+
+`unit-binaries` and `compositor-usable` are the two that matter here. The first resolves every
+LegeOS unit's `ExecStart` against what is actually installed; the second additionally checks
+XWayland, which is a runtime lookup no build step can catch. If either fails, do not log out —
+fix it first.
+
+Now log out and choose **LegeOS** from the session menu.
+
+### If it does not come up
+
+Switch to a TTY with `Ctrl+Alt+F3` and log in there. `journalctl --user -b -u lege-comp` and
+`-u lege-shell` have the story. To get back to your usual desktop, just pick it from the session
+menu at the next login — installing these packages changes nothing about your existing session.
+
+### Caveats
+
+* Your machine's Ubuntu version need not be 26.04 for this path. The distribution itself pins
+  26.04 "resolute" (`distro/base.toml`), and paths 3 and 4 target that; these packages are Rust
+  binaries and systemd units and are far less fussy.
+* `greetd` is only *recommended* by `legeos-session`, and reconfiguring your display manager to
+  use it is a separate, riskier step. See `session/units/greetd/README.md` — including how to get
+  back — before doing that. You do not need it for this path: your existing display manager will
+  list the LegeOS session perfectly well.
+
+## 3. mkosi image in a VM
+
+`distro/image/` builds a disk image (`compose.sh`, `mkosi.conf`). This is Stage 2 — it is what
+proves the image composes, first boot works, and the btrfs deployment layout is right. It needs
+mkosi and network access to Ubuntu's archive.
+
+## 4. Real hardware
+
+Stage 4, and the only way to test what actually matters about a display server: DRM/KMS
+modesetting, direct scanout, both the Intel and NVIDIA paths, suspend/resume, and real monitor
+hotplug. `--backend udev` is the default the moment neither `WAYLAND_DISPLAY` nor `DISPLAY` is
+set, which is exactly the situation on a bare TTY. `tests/hardware/*.toml` is the matrix.
+
+## What runs without any of this
+
+```sh
+cargo test --workspace                  # unit, integration and property tests
+tests/integration/run.sh                # the daemons' runtime smoke
+./target/debug/lege-comp --check        # the compositor, headlessly
+```
+
+`--check` constructs every protocol global, binds both sockets and exits. It is the only
+compositor mode that runs where there is no seat and no host compositor to nest inside — CI, a
+build machine, a container. It says nothing about rendering or input, and does not claim to.
+
+`cargo test -p lege-comp` includes the one test that connects a real Wayland client over the real
+socket and asserts the advertised protocol set — in both directions across the trust boundary.
