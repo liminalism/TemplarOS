@@ -537,9 +537,12 @@ fn check_packaging(root: &Path) -> Result<()> {
             }
         }
         if let Some(assets) = package["metadata"]["deb"]["assets"].as_array() {
+            let deb_name = package["metadata"]["deb"]["name"]
+                .as_str()
+                .unwrap_or_else(|| package["name"].as_str().unwrap_or("?"));
             for asset in assets {
                 if let Some(destination) = asset.get(1).and_then(serde_json::Value::as_str) {
-                    deb_assets.push(destination.to_owned());
+                    deb_assets.push((deb_name.to_owned(), destination.to_owned()));
                 }
             }
         }
@@ -549,7 +552,9 @@ fn check_packaging(root: &Path) -> Result<()> {
     problems.extend(maintainerless);
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
-    problems.extend(unshipped_unit_binaries(&units, &shipped));
+    let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
+    problems.extend(unshipped_unit_binaries(&units, &installed));
+    problems.extend(colliding_destinations(&shipped));
     let seeds = read_seeds(root)?;
     let built = built_package_names(root, &control_packages)?;
     problems.extend(seed_problems(&seeds, &built));
@@ -581,6 +586,38 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// Forward: a `Package:` with no crate to build it is a package `debian/rules` expects and
 /// `cargo deb` will never produce. Reverse: a crate whose deb name matches no stanza builds a
 /// `.deb` nothing installs — the same typo, caught from the other side.
+/// Destinations that more than one package installs.
+///
+/// `dpkg` refuses this at unpack time — "trying to overwrite X, which is also in package Y" — so
+/// it is an install-blocking error found at the worst moment, on a user's machine, halfway
+/// through. It is trivially detectable here: legeos-session and legeos-comp both shipped
+/// `lege-comp.service` for exactly as long as it took to notice.
+///
+/// Only genuinely different packages count. The same file appearing in both a package's
+/// `debian/*.install` and its own cargo-deb assets is the two build paths agreeing, which is
+/// what they are supposed to do.
+fn colliding_destinations(shipped: &[(String, String)]) -> Vec<String> {
+    let mut by_destination: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (destination, package) in shipped {
+        by_destination
+            .entry(destination)
+            .or_default()
+            .insert(package);
+    }
+    by_destination
+        .into_iter()
+        .filter(|(_, packages)| packages.len() > 1)
+        .map(|(destination, packages)| {
+            let packages: Vec<&str> = packages.into_iter().collect();
+            format!(
+                "{destination}: installed by {} — dpkg refuses to unpack two packages over the \
+                 same path",
+                packages.join(" and ")
+            )
+        })
+        .collect()
+}
+
 /// `(path, text)` for every `distro/metapackages/*/control.in`.
 fn metapackage_controls(root: &Path) -> Result<Vec<(String, String)>> {
     let mut controls = Vec::new();
@@ -740,10 +777,18 @@ fn read_seeds(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
 /// outright. Both are folded into one set because both are real build paths and a binary shipped
 /// by only one of them is still a divergence between what `just deb` and `dpkg-buildpackage`
 /// produce.
-fn shipped_destinations(root: &Path, deb_assets: &[String]) -> Result<BTreeSet<String>> {
-    let mut shipped: BTreeSet<String> = deb_assets
+fn shipped_destinations(
+    root: &Path,
+    deb_assets: &[(String, String)],
+) -> Result<Vec<(String, String)>> {
+    let mut shipped: Vec<(String, String)> = deb_assets
         .iter()
-        .map(|destination| format!("/{}", destination.trim_start_matches('/')))
+        .map(|(package, destination)| {
+            (
+                format!("/{}", destination.trim_start_matches('/')),
+                package.clone(),
+            )
+        })
         .collect();
     let debian = root.join("debian");
     if debian.is_dir() {
@@ -752,6 +797,11 @@ fn shipped_destinations(root: &Path, deb_assets: &[String]) -> Result<BTreeSet<S
             if path.extension().and_then(|e| e.to_str()) != Some("install") {
                 continue;
             }
+            let package = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_owned();
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             for line in text.lines() {
@@ -759,10 +809,18 @@ fn shipped_destinations(root: &Path, deb_assets: &[String]) -> Result<BTreeSet<S
                 let (Some(source), Some(destination)) = (fields.next(), fields.next()) else {
                     continue;
                 };
+                // A glob in an install line names whatever matches at build time, which this
+                // cannot resolve; skip rather than invent a file name.
+                if source.contains('*') || source.contains('?') {
+                    continue;
+                }
                 let name = source.rsplit('/').next().unwrap_or(source);
-                shipped.insert(format!(
-                    "/{}/{name}",
-                    destination.trim_start_matches('/').trim_end_matches('/')
+                shipped.push((
+                    format!(
+                        "/{}/{name}",
+                        destination.trim_start_matches('/').trim_end_matches('/')
+                    ),
+                    package.clone(),
                 ));
             }
         }
@@ -1031,9 +1089,9 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        VendoredAssets, client_interface_names, metapackage_dependency_problems,
-        packaging_problems, parse_control_packages, seed_problems, server_interface_names,
-        unlicensed_assets, unshipped_unit_binaries,
+        VendoredAssets, client_interface_names, colliding_destinations,
+        metapackage_dependency_problems, packaging_problems, parse_control_packages, seed_problems,
+        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1214,6 +1272,30 @@ mod extraction_tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("legeos-orphan"));
         assert!(problems[0].contains("no crate [package.metadata.deb]"));
+    }
+
+    #[test]
+    fn check_packaging_goes_red_when_two_packages_install_the_same_path() {
+        // The real case: legeos-session and legeos-comp both shipped lege-comp.service.
+        let shipped = vec![
+            (
+                "/usr/lib/systemd/user/lege-comp.service".to_owned(),
+                "legeos-comp".to_owned(),
+            ),
+            (
+                "/usr/lib/systemd/user/lege-comp.service".to_owned(),
+                "legeos-session".to_owned(),
+            ),
+            // One package listing a file in both of its own build paths is agreement, not a
+            // collision.
+            ("/usr/bin/lege-shell".to_owned(), "legeos-shell".to_owned()),
+            ("/usr/bin/lege-shell".to_owned(), "legeos-shell".to_owned()),
+        ];
+        let problems = colliding_destinations(&shipped);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("lege-comp.service"));
+        assert!(problems[0].contains("legeos-comp"));
+        assert!(problems[0].contains("legeos-session"));
     }
 
     #[test]
