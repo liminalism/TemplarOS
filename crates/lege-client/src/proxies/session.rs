@@ -2,53 +2,262 @@
 //! providers, history, settings, projects, power and location.
 //!
 //! Kept in sync with `interfaces/dbus/org.legeos.*.xml` (`cargo xtask check-interfaces`).
+//!
+//! Each interface lives in its own inner module: the `#[zbus::proxy]` macro emits a
+//! `<Signal>Args`/`<Signal>Stream` companion type per signal at module scope, and several of
+//! these interfaces have a signal literally named `Changed` — nesting keeps those companion
+//! types from colliding. Only the generated `<Trait>Proxy` struct is re-exported flat (as
+//! before — the macro consumes the trait itself); a signal's `receive_<name>()` stream is
+//! consumed through `proxy.` methods, so callers never need to name the per-module companion
+//! types directly.
 
-use zbus::proxy;
+mod app_identity {
+    use zbus::proxy;
 
-#[proxy(
-    interface = "org.legeos.AppIdentity1",
-    default_service = "org.legeos.Session",
-    default_path = "/org/legeos/Session/AppIdentity"
-)]
-pub trait AppIdentity {
-    /// `(canonical_app_id, instance_id, confidence, claim_matches_manifest)`
-    fn resolve_window(
-        &self,
-        pid: u32,
-        wayland_app_id: &str,
-        startup_wm_class: &str,
-        sandbox_app_id: &str,
-    ) -> zbus::Result<(String, String, u8, bool)>;
+    #[proxy(
+        interface = "org.legeos.AppIdentity1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/AppIdentity"
+    )]
+    pub trait AppIdentity {
+        /// `(canonical_app_id, instance_id, confidence, claim_matches_manifest)`
+        fn resolve_window(
+            &self,
+            pid: u32,
+            wayland_app_id: &str,
+            startup_wm_class: &str,
+            sandbox_app_id: &str,
+        ) -> zbus::Result<(String, String, u8, bool)>;
 
-    fn list_instances(&self) -> zbus::Result<Vec<(String, String, String, String)>>;
+        fn list_instances(&self) -> zbus::Result<Vec<(String, String, String, String)>>;
 
-    fn list_apps(&self) -> zbus::Result<Vec<String>>;
+        fn list_apps(&self) -> zbus::Result<Vec<String>>;
+    }
 }
 
-#[proxy(
-    interface = "org.legeos.Launcher1",
-    default_service = "org.legeos.Session",
-    default_path = "/org/legeos/Session/Launcher"
-)]
-pub trait Launcher {
-    fn launch(
-        &self,
-        app_id: &str,
-        arguments: Vec<String>,
-        activation_token: &str,
-    ) -> zbus::Result<String>;
+mod launcher {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Launcher1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Launcher"
+    )]
+    pub trait Launcher {
+        fn launch(
+            &self,
+            app_id: &str,
+            arguments: Vec<String>,
+            activation_token: &str,
+        ) -> zbus::Result<String>;
+    }
 }
 
-#[proxy(
-    interface = "org.legeos.Associations1",
-    default_service = "org.legeos.Session",
-    default_path = "/org/legeos/Session/Associations"
-)]
-pub trait Associations {
-    /// `(canonical_app_id, detected_mime, reason)`
-    fn resolve_file(&self, path: &str, project_id: &str) -> zbus::Result<(String, String, String)>;
+mod associations {
+    use zbus::proxy;
 
-    fn set_mime_default(&self, mime: &str, app_id: &str) -> zbus::Result<()>;
+    #[proxy(
+        interface = "org.legeos.Associations1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Associations"
+    )]
+    pub trait Associations {
+        /// `(canonical_app_id, detected_mime, reason)`
+        fn resolve_file(
+            &self,
+            path: &str,
+            project_id: &str,
+        ) -> zbus::Result<(String, String, String)>;
 
-    fn list_mime_defaults(&self) -> zbus::Result<Vec<(String, String)>>;
+        /// `(canonical_app_id, detected_mime, reason)`
+        fn resolve_uri(
+            &self,
+            uri: &str,
+            project_id: &str,
+        ) -> zbus::Result<(String, String, String)>;
+
+        fn set_mime_default(&self, mime: &str, app_id: &str) -> zbus::Result<()>;
+
+        fn set_extension_default(
+            &self,
+            extension: &str,
+            app_id: &str,
+            override_specific_mime: bool,
+        ) -> zbus::Result<()>;
+
+        fn set_project_default(
+            &self,
+            project_id: &str,
+            mime: &str,
+            app_id: &str,
+        ) -> zbus::Result<()>;
+
+        fn list_mime_defaults(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        fn explain(&self, path: &str, project_id: &str) -> zbus::Result<String>;
+
+        fn forget(&self, scope: &str, key: &str, project_id: &str) -> zbus::Result<bool>;
+
+        #[zbus(signal)]
+        fn defaults_changed(&self, scope: String, key: String) -> zbus::Result<()>;
+    }
 }
+
+mod providers {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Providers1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Providers"
+    )]
+    pub trait Providers {
+        /// `(role, resolution-json)`
+        fn report(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        fn select(&self, role: &str, app_id: &str) -> zbus::Result<()>;
+
+        fn declare(&self, app_id: &str, role: &str, priority: u32) -> zbus::Result<()>;
+
+        fn undeclare(&self, app_id: &str) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        fn changed(&self, role: String) -> zbus::Result<()>;
+    }
+}
+
+mod history {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.History1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/History"
+    )]
+    pub trait History {
+        fn recent(&self, limit: u32) -> zbus::Result<Vec<String>>;
+
+        fn search(&self, query: &str, limit: u32) -> zbus::Result<Vec<String>>;
+
+        #[allow(clippy::too_many_arguments)]
+        fn append(
+            &self,
+            kind: &str,
+            app_id: &str,
+            instance_id: &str,
+            message: &str,
+            cause: &str,
+            actions_json: &str,
+            reversible: bool,
+        ) -> zbus::Result<String>;
+
+        fn undo(&self, event_id: &str) -> zbus::Result<bool>;
+
+        #[zbus(signal)]
+        fn changed(&self) -> zbus::Result<()>;
+    }
+}
+
+mod settings {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Settings1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Settings"
+    )]
+    pub trait Settings {
+        /// `(key, description, default-json, privileged)`
+        fn schema(&self) -> zbus::Result<Vec<(String, String, String, bool)>>;
+
+        fn get(&self, key: &str) -> zbus::Result<String>;
+
+        fn set(&self, key: &str, value_json: &str, origin: &str) -> zbus::Result<()>;
+
+        fn list(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        fn changes(&self, limit: u32) -> zbus::Result<Vec<String>>;
+
+        fn reset(&self, key: &str, origin: &str) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        fn changed(&self, key: String) -> zbus::Result<()>;
+    }
+}
+
+mod projects {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Projects1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Projects"
+    )]
+    pub trait Projects {
+        fn create(&self, project_id: &str, name: &str, root: &str) -> zbus::Result<()>;
+
+        /// `(project_id, name, root, is_open)`
+        fn list(&self) -> zbus::Result<Vec<(String, String, String, bool)>>;
+
+        fn open(&self, project_id: &str) -> zbus::Result<()>;
+
+        fn close(&self, project_id: &str) -> zbus::Result<()>;
+
+        fn add_app(
+            &self,
+            project_id: &str,
+            app_id: &str,
+            arguments: Vec<String>,
+        ) -> zbus::Result<()>;
+
+        fn remove_app(&self, project_id: &str, app_id: &str) -> zbus::Result<()>;
+
+        fn remove(&self, project_id: &str) -> zbus::Result<()>;
+    }
+}
+
+mod power {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Power1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Power"
+    )]
+    pub trait Power {
+        fn get_profile(&self, source: &str) -> zbus::Result<String>;
+
+        fn set_profile(&self, source: &str, profile_json: &str) -> zbus::Result<()>;
+
+        fn reset_profile(&self, source: &str) -> zbus::Result<()>;
+    }
+}
+
+mod location {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Location1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Location"
+    )]
+    pub trait Location {
+        fn decide(&self, location_key: &str, candidates_json: &str) -> zbus::Result<String>;
+
+        fn set_manual_override(&self, location_key: &str, timezone: &str) -> zbus::Result<()>;
+
+        fn clear_manual_override(&self, location_key: &str) -> zbus::Result<()>;
+
+        fn manual_overrides(&self) -> zbus::Result<Vec<(String, String)>>;
+    }
+}
+
+pub use app_identity::AppIdentityProxy;
+pub use associations::AssociationsProxy;
+pub use history::HistoryProxy;
+pub use launcher::LauncherProxy;
+pub use location::LocationProxy;
+pub use power::PowerProxy;
+pub use projects::ProjectsProxy;
+pub use providers::ProvidersProxy;
+pub use settings::SettingsProxy;

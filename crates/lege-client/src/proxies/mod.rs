@@ -4,11 +4,13 @@
 //! `cargo xtask check-interfaces` fails the build when the two drift apart. Everything is
 //! re-exported flat, so `lege_client::proxies::AppIdentityProxy` keeps working.
 
+pub mod checkpoint;
 pub mod files;
 pub mod host;
 pub mod resources;
 pub mod session;
 
+pub use checkpoint::*;
 pub use files::*;
 pub use host::*;
 pub use resources::*;

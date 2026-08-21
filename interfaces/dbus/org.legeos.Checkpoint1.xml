@@ -1,0 +1,38 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Served by an *application instance*, not by a daemon. Bus name:
+     org.legeos.Instance.i<InstanceId compact> (the instance claims it for itself at startup —
+     see lege_types::dbus::checkpoint). Path: /org/legeos/Checkpoint.
+
+     Every other org.legeos.* interface is a daemon answering clients; this one is inverted.
+     lege-resourced decides that pressure needs containment, lege-sessiond relays the request
+     here, and the application answers. That is what makes automatic termination survivable:
+     "freezing an application is not enough — it stops CPU use but does not release its
+     anonymous memory" (planning doc 01 section 5), so an application that can save and be
+     restarted is worth far more to the governor than one that can only be killed.
+
+     Legacy applications simply do not serve this, and are governed with less confidence: no
+     unsaved-work signal, no restore. That is a supported outcome, not a failure.
+
+     The request and response are the JSON encodings of
+     lege_types::checkpoint::{CheckpointRequest, CheckpointResponse} — one method rather than
+     one per message, so the wire format and the documented protocol cannot drift apart:
+
+       prepare-for-pressure  -> prepared { released_bytes }
+       checkpoint-now        -> checkpoint-complete { token, has_unsaved_work } | refused { reason }
+       restore-instance      -> checkpoint-complete { token } | refused { reason }
+
+     A `refused` answer is a legitimate reply (the instance is mid-transaction and cannot save
+     right now), not an error — and the governor may still terminate after the deadline. A D-Bus
+     error means something else went wrong entirely.
+
+     The session daemon must verify the peer before trusting an answer: resolve the name's PID
+     to its cgroup, exactly as AppIdentity1 resolves a window. A bus name is a claim. -->
+<node>
+  <interface name="org.legeos.Checkpoint1">
+    <method name="Request">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="response_json" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

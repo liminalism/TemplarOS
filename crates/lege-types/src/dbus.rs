@@ -68,8 +68,82 @@ pub mod host {
     pub const POLKIT_ACTION_PREFIX: &str = "org.legeos.host";
 }
 
+/// The checkpoint protocol, as it appears on the bus.
+///
+/// Every other interface here is served by a daemon and called by clients. This one is the other
+/// way round: an *application instance* serves it, and `lege-sessiond` calls into it on the
+/// governor's behalf (`docs/protocols/checkpoint.md`). That inversion is why it needs its own
+/// addressing rule.
+///
+/// An instance claims [`instance_bus_name`] for itself at startup — a name derived from the
+/// `InstanceId` it was launched with, so nothing has to be registered and no lookup table can go
+/// stale. The session daemon needs no directory: it knows the instance, so it knows the name.
+/// It should still verify before trusting an answer, by resolving that name's PID to a cgroup
+/// the same way `AppIdentity1` resolves a window — a name is a claim, and claims are checked.
+pub mod checkpoint {
+    use crate::InstanceId;
+
+    pub const IFACE: &str = "org.legeos.Checkpoint1";
+    pub const PATH: &str = "/org/legeos/Checkpoint";
+
+    /// Prefix of the per-instance bus name. The trailing `i` is not decoration: a D-Bus name
+    /// element may not begin with a digit, and an `InstanceId`'s compact form is 32 hex
+    /// characters that frequently does.
+    pub const BUS_NAME_PREFIX: &str = "org.legeos.Instance.i";
+
+    /// The bus name an instance claims for itself.
+    pub fn instance_bus_name(instance: InstanceId) -> String {
+        format!("{BUS_NAME_PREFIX}{}", instance.compact())
+    }
+
+    /// Recover the instance from a name produced by [`instance_bus_name`].
+    pub fn instance_from_bus_name(name: &str) -> Option<InstanceId> {
+        InstanceId::parse(name.strip_prefix(BUS_NAME_PREFIX)?)
+    }
+}
+
 /// Environment variables injected into every launched application instance.
 pub mod env {
     pub const INSTANCE_ID: &str = "LEGEOS_INSTANCE_ID";
     pub const APP_ID: &str = "LEGEOS_APP_ID";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkpoint;
+    use crate::InstanceId;
+
+    #[test]
+    fn an_instance_bus_name_round_trips() {
+        let instance = InstanceId::new();
+        let name = checkpoint::instance_bus_name(instance);
+        assert_eq!(checkpoint::instance_from_bus_name(&name), Some(instance));
+        assert_eq!(
+            checkpoint::instance_from_bus_name("org.legeos.Session"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_instance_bus_name_is_a_valid_dbus_name() {
+        // Each dot-separated element must be non-empty, may contain only [A-Za-z0-9_-], and must
+        // not begin with a digit — which is exactly why the prefix ends in a letter.
+        let name = checkpoint::instance_bus_name(InstanceId::new());
+        assert!(name.len() <= 255);
+        let elements: Vec<&str> = name.split('.').collect();
+        assert!(elements.len() >= 2);
+        for element in elements {
+            assert!(!element.is_empty(), "{name}");
+            assert!(
+                !element.starts_with(|c: char| c.is_ascii_digit()),
+                "element {element:?} of {name} begins with a digit"
+            );
+            assert!(
+                element
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+                "element {element:?} of {name} has an invalid character"
+            );
+        }
+    }
 }
