@@ -2,10 +2,10 @@ akr-lock 0.1
 project legeos
 
 build {
-    tool "akr 0.3.1"
+    tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:115f34852d8039b36bb2ddc4a6eb32327c40e8019281c9855dbe02eaf6034c2f"
+    source_graph "sha256:49e325c9ba987dc94eeb8b98832177ae16104e5b840d0671df75ea8eea911670"
 }
 
 source ".akr/project.akr" {
@@ -29,13 +29,18 @@ source ".akr/records/legeos/evidence.akr" {
 }
 
 source ".akr/records/legeos/milestones.akr" {
-    hash "sha256:9e3a72430e0b8d33147652cb6f8c32cd3ef0a91601c33e53714d7ebcc6d2d985"
-    records 1
+    hash "sha256:efa3e8d18f6ade1bbcfa032608b49465c6481e915d09236d096af932c8fc1f39"
+    records 2
 }
 
 source ".akr/records/legeos/papercuts.akr" {
     hash "sha256:8ac42cf824f2a36d50d6db9c664524f54f2286decbbd8ca8f99a6528a56410b8"
     records 1
+}
+
+source ".akr/records/legeos/work.akr" {
+    hash "sha256:6ee12b16ba95faf3a90740f1ecbf3294664292f01954f98ea980215eaf5ebb48"
+    records 6
 }
 
 resolution @legeos.decision.base-ubuntu-2604-kernel-70/1 {
@@ -192,6 +197,102 @@ resolution @legeos.decision.toolchain-licence-namespace/1 {
     slot supported_by
     to @legeos.evidence.m0-workspace-builds-and-tests/1
     hash "sha256:f40c96add7cbddac7d3a329fc302a8e74d2d77a4bc917fc3fdd7efc5ba816ebb"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot after
+    to @legeos.milestone.m0-initial-structure/1
+    hash "sha256:bbb1e10f91c73425aa12a79bdb02ade3cc8e5a8573fd73c6db1f6666844a4bac"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot depends_on
+    to @legeos.constraint.first-release-scope/1
+    hash "sha256:6295770df7f4d169a7dc61241a47d946d836f7fd325ab81ae9c8a114015296bf"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot depends_on
+    to @legeos.constraint.identity-and-launch-safety/1
+    hash "sha256:384a00920783ddd2990f6728291cd5aef14f28506c35e6125cb93a108a84d58d"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot depends_on
+    to @legeos.constraint.one-provider-per-role/1
+    hash "sha256:cfaef9a953022008630cf5c101413b102c3d1e950ca602f2aa4b9179218fab7a"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot depends_on
+    to @legeos.constraint.packaging-and-render-thread/1
+    hash "sha256:75c85ececd769cd1bcc1193dec2836a3fb74d2cb3b2b27adc1168b9a52b58029"
+}
+
+resolution @legeos.milestone.m1-session-runtime/1 {
+    slot depends_on
+    to @legeos.constraint.services-not-indicators/1
+    hash "sha256:71d7efb170fa8cb87be158a4056e7713a2d3ed3ba304f346a9eb99ef2872aecb"
+}
+
+resolution @legeos.work.compositor-window-authority/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
+}
+
+resolution @legeos.work.consumers-cli-portal-shell/1 {
+    slot after
+    to @legeos.work.compositor-window-authority/1
+    hash "sha256:dbb9f75130397ec595e40e50f055d99bd9b27ad2d1262be3562f8665b67fa66d"
+}
+
+resolution @legeos.work.consumers-cli-portal-shell/1 {
+    slot after
+    to @legeos.work.governor-containment/1
+    hash "sha256:e48ce77dff38e3ad49a8cbc11c9ed8675f98f162ef6b18045721d46813e8d765"
+}
+
+resolution @legeos.work.consumers-cli-portal-shell/1 {
+    slot after
+    to @legeos.work.host-update-transaction/1
+    hash "sha256:1a28bd5860494d43b1a69903db4b6e8d471053b42f79e9d9183c8e37e99d5cc5"
+}
+
+resolution @legeos.work.consumers-cli-portal-shell/1 {
+    slot after
+    to @legeos.work.sessiond-persistence-and-launch/1
+    hash "sha256:6963166ddac965175ef67d9c3f958bd41d1c102eeb3ee50bc0a7a3fbdab25840"
+}
+
+resolution @legeos.work.consumers-cli-portal-shell/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
+}
+
+resolution @legeos.work.filed-transactions/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
+}
+
+resolution @legeos.work.governor-containment/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
+}
+
+resolution @legeos.work.host-update-transaction/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
+}
+
+resolution @legeos.work.sessiond-persistence-and-launch/1 {
+    slot part_of
+    to @legeos.milestone.m1-session-runtime/1
+    hash "sha256:937e14729e1893625f875a2799c20342e53db511bd5875190fd42968bfd28d82"
 }
 
 seal @legeos.constraint.first-release-scope/1 {

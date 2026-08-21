@@ -86,3 +86,83 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
             """
     }
 }
+
+record legeos.milestone.m1-session-runtime/1 : milestone {
+    title "M1 — The session runs: persistent policy, real containment, journalled files, recoverable windows, transactional host"
+    state proposed
+    scope [ all ]
+    intent """
+        Turn the M0 scaffold into working code: lege-sessiond persists every domain in the one state store and launches applications through systemd StartTransientUnit with desktop-entry import and real MIME detection; lege-resourced serves Resources1, applies protection and containment through a staged ladder with recorded traces; lege-filed runs file operations as resumable journalled transactions with trash, recents, the shared last-directory answer and search; lege-window enforces typed layers, the one-workspace invariant, explicit minimisation and recovery that works without the shell; lege-hostd runs kernel/driver updates as one resumable transaction over two boot backends with polkit enforcement. Stage 1 of planning doc 01: a replacement session, packaged, on an Ubuntu 26.04 base.
+        """
+    note """
+        Scope is what the founding documents specify and what can be verified without NVIDIA hardware, a real compositor or root. Hardware validation (the test matrix), the cosmic-comp fork itself and the shell's toolkit surfaces stay for M2.
+        """
+    acceptance {
+        check check-interfaces {
+            statement """
+                every org.legeos.* interface implemented in code has an XML contract in interfaces/dbus/ and a client proxy
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces"
+        }
+        check deps-check {
+            statement """
+                lege-window still carries no async runtime and no D-Bus dependency, so it can run on the compositor render thread
+                """
+            method command
+            command "cargo run -q -p xtask -- deps-check"
+        }
+        check governor-staged {
+            statement """
+                the governor defaults to observe-only, records traces sufficient to review a decision, and performs no action above its configured containment stage
+                """
+            method observation
+        }
+        check operations-resume {
+            statement """
+                a file operation interrupted mid-way resumes from its journal without redoing completed work, and never removes a source before the destination is written and verified
+                """
+            method observation
+        }
+        check session-persists {
+            statement """
+                session state survives a restart: associations, provider selections, autostart approvals, settings, projects and history are reloaded from the one state store, and live instances are re-derived from systemd
+                """
+            method observation
+        }
+        check smoke {
+            statement """
+                every daemon starts in its dry-run/once mode on a machine with no LegeOS session, and lege doctor runs against a fixture image root
+                """
+            method command
+            command "tests/integration/run.sh"
+        }
+        check update-transaction-resumes {
+            statement """
+                the host update transaction resumes correctly after an interruption in each phase, and promotes or rolls back kernel and driver as a pair, against both boot backends
+                """
+            method observation
+        }
+        check windows-recoverable {
+            statement """
+                property tests over generated multi-output topologies show every window stays recoverable across drag, hotplug, scale change and session restore
+                """
+            method observation
+        }
+        check workspace-builds-and-tests {
+            statement """
+                cargo fmt, clippy -D warnings (pedantic subset) and the full test suite pass across the workspace, with substantially more tests than M0's 55
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+        }
+    }
+    after [ @legeos.milestone.m0-initial-structure ]
+    depends_on [
+        @legeos.constraint.first-release-scope,
+        @legeos.constraint.identity-and-launch-safety,
+        @legeos.constraint.one-provider-per-role,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+}
