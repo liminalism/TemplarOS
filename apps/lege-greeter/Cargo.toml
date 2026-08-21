@@ -1,0 +1,68 @@
+[package]
+name = "lege-greeter"
+description = "LegeOS greeter: a greetd JSON-IPC client with a pixelkit full-screen login surface (ADR-0010, ADR-0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lib]
+name = "lege_greeter"
+path = "src/lib.rs"
+
+# One binary. `main.rs`'s module doc explains why: on a bare VT there is no compositor yet for a
+# plain Wayland client to connect to, and `lege-comp` (not ours to change) has no "run one kiosk
+# client" mode — so this binary is its own tiny session orchestrator when it discovers no display
+# is already available, and the ordinary greeter UI process otherwise. No second binary, no
+# untested shell wrapper script.
+[[bin]]
+name = "lege-greeter"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# pixelkit: this project's toolkit (root Cargo.toml's `[workspace.dependencies]` comment). Used
+# the same way `shell/lege-shell/src/surface` uses it — see `src/surface/app.rs`'s module doc for
+# the one place this crate's usage differs from the shell's.
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
+
+# Pinned to the same "0.30" line pixelkit's own Cargo.toml and lege-shell's manifest use, so Cargo
+# resolves one compiled winit rather than two. Unlike lege-shell, this crate never reaches for
+# winit's raw window handle — the greeter is a plain, single Wayland client with no private
+# protocol to speak — so it needs no `wayland-client`/`wayland-backend`/`raw-window-handle` of its
+# own the way `shell/lege-shell/Cargo.toml` does.
+winit = "0.30"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Deterministic glyphs for headless widget-state tests (`src/screen.rs`), the same reasoning as
+# `compositor/lege-comp/Cargo.toml`'s identical dev-dependency: never depend on whatever fonts (if
+# any) the host running `cargo test` happens to have installed.
+pixelkit-text = { workspace = true, features = ["test-fonts"] }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "legeos-greeter"
+section = "x11"
+priority = "optional"
+# `depends` names `greetd` because this binary is meaningless without it (ADR-0010: greetd owns
+# PAM, this crate links none of its own) and `xwayland`/DRM/libinput libs resolve through
+# `$auto`/`legeos-comp`'s own dependency the same way `legeos-comp.install` already does — this
+# package's `lege-greeter-session` orchestrator role (`src/main.rs`) spawns `lege-comp` itself, so
+# it depends on that package directly rather than assuming it is merely "recommended" alongside.
+depends = "$auto, greetd, legeos-comp"
+assets = [["target/release/lege-greeter", "usr/bin/lege-greeter", "755"]]

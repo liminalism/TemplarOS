@@ -28,6 +28,7 @@ members = [
     "compositor/lege-comp",
     "shell/lege-shell",
     "apps/lege-settings",
+    "apps/lege-greeter",
     "portals/xdg-desktop-portal-lege",
     "cli/lege",
     "tools/xtask",

@@ -32,7 +32,12 @@ impl Backend for CheckBackendData {
 type State = LegeCompState<CheckBackendData>;
 
 /// Build everything, print a report, and return without entering the event loop.
-pub fn run() -> anyhow::Result<()> {
+///
+/// With `exec`, it goes one step further and actually runs that client under the compositor until
+/// it exits, returning its exit code. That makes the `--exec` path — including its shutdown
+/// handshake, which had a real race in it — testable on a machine with no display, no seat and no
+/// host compositor, which is the only kind CI has.
+pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
@@ -64,6 +69,12 @@ pub fn run() -> anyhow::Result<()> {
     State::create_private_globals(&dh);
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;
 
+    let session_command = exec
+        .map(|argv| {
+            crate::session_command::SessionCommand::spawn(argv, &socket_name, &event_loop.handle())
+        })
+        .transpose()?;
+
     // One dispatch turn: any global registered twice, or a calloop source inserted twice, fails
     // here rather than looking fine until the first client connects.
     event_loop.dispatch(Some(std::time::Duration::from_millis(0)), &mut state)?;
@@ -82,8 +93,17 @@ pub fn run() -> anyhow::Result<()> {
         state.window_service.outputs().len()
     );
     println!("  private protocols:    lege_shell_v1, lege_recovery_v1");
+
+    if let Some(command) = session_command {
+        println!("  running --exec client until it exits");
+        event_loop.run(None, &mut state, |_| {})?;
+        let code = command.shut_down();
+        println!("ok (--exec client exited {code})");
+        return Ok(code);
+    }
+
     println!("ok");
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]

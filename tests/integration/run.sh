@@ -78,6 +78,20 @@ expect_clean_failure() {
 "$bin/lege-comp" --check >/dev/null
 echo "lege-comp --check: ok"
 
+# `--exec` is how the greeter is started, so the compositor must exit when its client does and
+# report that client's exit code. Both directions are checked, and the immediate-exit case is the
+# regression test: calloop's EventLoop::run clears the stop flag on entry, so a client that exits
+# before the loop starts once left the compositor blocked forever — a greeter that dies on startup
+# would have meant a black screen with no way to log in. /bin/true is as immediate as it gets.
+"$bin/lege-comp" --check --exec /bin/true >/dev/null 2>&1
+exec_status=0
+"$bin/lege-comp" --check --exec /bin/false >/dev/null 2>&1 || exec_status=$?
+if [ "$exec_status" -ne 1 ]; then
+    echo "lege-comp --exec did not propagate its client's exit code (got $exec_status, want 1)" >&2
+    exit 1
+fi
+echo "lege-comp --exec: ok (exits with its client, propagates its code)"
+
 "$bin/lege-shell" --list-drawers >/dev/null
 # `--print <drawer>` renders every Home Surface drawer as text with no session bus, no live
 # compositor and no toolkit — the direct fulfilment of "everything the shell shows must be

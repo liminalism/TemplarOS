@@ -11,6 +11,7 @@ mod keybindings;
 mod protocols;
 mod protocols_recovery;
 mod protocols_shell;
+mod session_command;
 mod session_lock;
 mod shell_sink;
 mod shell_socket;
@@ -41,6 +42,16 @@ struct Cli {
     #[arg(long)]
     check: bool,
 
+    /// Run one client under this compositor and exit when it exits, with `WAYLAND_DISPLAY`
+    /// already set in its environment.
+    ///
+    /// This is how the greeter is started (`session/units/greetd/config.toml`): greetd runs
+    /// `lege-comp --exec lege-greeter`, and when the greeter finishes, the compositor goes with
+    /// it — which is what greetd(5) requires before it will start the user's session. Everything
+    /// after `--exec` is the command and its arguments.
+    #[arg(long, num_args = 1.., allow_hyphen_values = true, value_name = "COMMAND")]
+    exec: Vec<String>,
+
     /// Which backend to run. Defaults to udev when neither `WAYLAND_DISPLAY` nor `DISPLAY` is set
     /// (starting the session compositor from a bare TTY), winit otherwise (already nested inside
     /// a Wayland/X11 session) — overridable either way ([`default_backend`]).
@@ -56,16 +67,27 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
+    let exec = (!cli.exec.is_empty()).then_some(cli.exec);
     if cli.check {
-        return backend::check::run();
+        let code = backend::check::run(exec.as_deref())?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
     }
     let backend = cli.backend.unwrap_or_else(default_backend);
 
     tracing::info!(?backend, "starting lege-comp");
-    match backend {
-        BackendKind::Winit => backend::winit::run(),
-        BackendKind::Udev => backend::udev::run(),
+    let exit_code = match backend {
+        BackendKind::Winit => backend::winit::run(exec.as_deref()),
+        BackendKind::Udev => backend::udev::run(exec.as_deref()),
+    }?;
+    // The --exec child's exit code is this process's, so whatever started us sees what happened to
+    // the thing it actually asked for.
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
+    Ok(())
 }
 
 /// Nested (winit) whenever we can already see a host compositor/X server to nest inside;

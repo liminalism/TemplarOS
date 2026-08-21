@@ -41,7 +41,7 @@ type State = LegeCompState<WinitBackendData>;
 /// Runs the compositor nested inside the current session until the winit window closes.
 // See `src/backend/udev.rs::run`'s identical `#[allow]` for why this stays one function.
 #[allow(clippy::too_many_lines)]
-pub fn run() -> anyhow::Result<()> {
+pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
@@ -80,6 +80,12 @@ pub fn run() -> anyhow::Result<()> {
 
     State::create_private_globals(&dh);
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;
+    // After the socket is listening, so the child can connect the moment it starts.
+    let session_command = exec
+        .map(|argv| {
+            crate::session_command::SessionCommand::spawn(argv, &socket_name, &event_loop.handle())
+        })
+        .transpose()?;
     tracing::info!(socket = %shell_socket_name, "trusted-shell socket ready");
 
     let size = graphics.window_size();
@@ -205,5 +211,5 @@ pub fn run() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("inserting winit event source: {error}"))?;
 
     event_loop.run(None, &mut state, |_| {})?;
-    Ok(())
+    Ok(session_command.map_or(0, |command| command.shut_down()))
 }

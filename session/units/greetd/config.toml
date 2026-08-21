@@ -1,8 +1,27 @@
-# greetd configuration for LegeOS (ADR-0010: cosmic-greeter reusing the compositor fork).
-# Installed as /etc/greetd/config.toml by the legeos-session package once the greeter fork lands.
+# greetd configuration for LegeOS (ADR-0010, as amended by ADR-0012: greetd + lege-greeter, not
+# cosmic-greeter — lege-greeter uses pixelkit, the same toolkit as the shell, and speaks greetd's
+# JSON IPC directly; greetd alone owns PAM).
+#
+# Installed as /usr/share/legeos/greetd/config.toml by the legeos-session package
+# (debian/legeos-session.install); becoming the live /etc/greetd/config.toml is a packaging step
+# outside this file's own reach (see README.md beside this file for what still has to happen and
+# how to recover if it goes wrong).
 [terminal]
+# VT1. If the image still runs a getty on tty1 (`systemctl status getty@tty1.service`), disable or
+# mask it first — greetd and a getty both attached to the same VT corrupt each other's output. See
+# README.md's "Enabling" section.
 vt = 1
 
 [default_session]
-command = "cosmic-greeter"
-user = "cosmic-greeter"
+# The compositor runs the greeter, rather than the greeter starting a compositor and hunting for
+# its socket name in a log line. `--exec` puts WAYLAND_DISPLAY straight into the child's
+# environment and brings the compositor down when the child exits, which is exactly what
+# greetd(5) needs: "the session will start after the greeter process terminates".
+#
+# GREETD_SOCK is inherited through the compositor to the greeter without either of them doing
+# anything about it.
+command = "lege-comp --backend udev --exec /usr/bin/lege-greeter"
+# A dedicated system account, not a real login — see README.md's "The greetd user" section for
+# exactly what it needs (a fresh XDG_RUNTIME_DIR from pam_systemd, and DRM/input device access for
+# the udev backend, which runs as this user) and how to create it.
+user = "lege-greeter"

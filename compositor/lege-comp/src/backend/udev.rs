@@ -167,7 +167,7 @@ type State = LegeCompState<UdevBackendData>;
 // backend entry point takes (`anvil`, `smallvil`) — the alternative is threading a dozen
 // half-constructed pieces through several helper functions, which reads worse, not better.
 #[allow(clippy::too_many_lines)]
-pub fn run() -> anyhow::Result<()> {
+pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
@@ -229,6 +229,12 @@ pub fn run() -> anyhow::Result<()> {
 
     State::create_private_globals(&dh);
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;
+    // After the socket is listening, so the child can connect the moment it starts.
+    let session_command = exec
+        .map(|argv| {
+            crate::session_command::SessionCommand::spawn(argv, &socket_name, &event_loop.handle())
+        })
+        .transpose()?;
     tracing::info!(socket = %shell_socket_name, "trusted-shell socket ready");
 
     // Session pause/resume: drop and reacquire DRM master. Every currently-tracked device is
@@ -314,7 +320,7 @@ pub fn run() -> anyhow::Result<()> {
     state.start_xwayland(&event_loop.handle());
 
     event_loop.run(None, &mut state, |_| {})?;
-    Ok(())
+    Ok(session_command.map_or(0, |command| command.shut_down()))
 }
 
 /// Reactivates one already-tracked device after `Event::ActivateSession` and kicks a fresh render

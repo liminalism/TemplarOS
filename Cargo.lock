@@ -1202,6 +1202,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wayland-backend",
+ "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
  "wayland-server",
@@ -1241,6 +1242,24 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zbus",
+]
+
+[[package]]
+name = "lege-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pixelkit-raster",
+ "pixelkit-shell",
+ "pixelkit-text",
+ "pixelkit-ui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "winit 0.30.13",
 ]
 
 [[package]]
