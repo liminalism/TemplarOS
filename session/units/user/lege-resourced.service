@@ -5,8 +5,11 @@ PartOf=legeos-session.target
 After=lege-sessiond.service
 
 [Service]
+# Deliberately *not* Type=dbus: the governor's whole point is that it keeps deciding when
+# everything else is stalled, including the bus. It claims org.legeos.Resources for enrichment
+# and observation, but it must start, tick and contain a runaway application without one
+# (ADR-0002), so its readiness must not be defined as "the name appeared".
 Type=simple
-BusName=org.legeos.Resources
 ExecStart=/usr/libexec/lege-resourced
 Restart=always
 RestartSec=200ms

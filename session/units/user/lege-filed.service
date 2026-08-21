@@ -5,7 +5,10 @@ PartOf=legeos-session.target
 After=lege-sessiond.service
 
 [Service]
-Type=simple
+# Type=dbus, not simple: readiness *is* the bus name appearing, and BusName= is only honoured
+# under this type. The service resumes journalled operations before claiming the name, so a
+# client that sees org.legeos.Files is talking to a service that has already recovered.
+Type=dbus
 BusName=org.legeos.Files
 ExecStart=/usr/libexec/lege-filed
 Restart=on-failure

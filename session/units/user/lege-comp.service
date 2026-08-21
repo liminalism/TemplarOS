@@ -3,8 +3,13 @@ Description=LegeOS compositor core (single scene, conservative, protected)
 Documentation=https://legeos.org/docs/compositor
 PartOf=legeos-session.target
 Before=lege-shell.service
-# A compositor crash disconnects every client: it is the one thing that must not restart casually.
-OnFailure=lege-shell.service
+# A compositor crash disconnects every client, so it is the one thing that must not restart
+# casually: there is nothing left to restart *into*. Ending the session is the honest outcome,
+# and the greeter is what the user comes back to.
+#
+# (This previously read OnFailure=lege-shell.service, which was backwards: lege-shell.service
+# carries Requisite=lege-comp.service, so starting the shell after the compositor died would
+# have failed immediately and told the user nothing.)
 
 [Service]
 Type=notify
