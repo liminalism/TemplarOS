@@ -86,6 +86,18 @@ record legeos.evidence.m0-workspace-builds-and-tests/1 : evidence {
         """
 }
 
+record legeos.evidence.m1-boot-health-can-fail/1 : evidence {
+    title "M1: a trial boot can fail because the session never came up"
+    state verified
+    result pass
+    method observation
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    artifact "services/lege-boot-health/src/main.rs"
+    summary """
+        lege-sessiond reports session health to lege-hostd at the moment it signals systemd readiness, so an absent session-healthy marker now means the session did not come up rather than that nobody could report it. The compositor-active marker stays deliberately unwired and reports Skipped, because sessiond has no honest evidence for it; the two switches are separate so arming one never arms the other. A skip never arms a reboot, and only a boot genuinely trialling a candidate can force one.
+        """
+}
+
 record legeos.evidence.m1-check-interfaces/1 : evidence {
     title "M1: every org.legeos.* interface has an XML contract"
     state verified
@@ -98,6 +110,30 @@ record legeos.evidence.m1-check-interfaces/1 : evidence {
         """
 }
 
+record legeos.evidence.m1-checkpoint-transport/1 : evidence {
+    title "M1: the checkpoint protocol is deliverable end to end, and verifies its peer"
+    state verified
+    result pass
+    method observation
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    artifact "services/lege-sessiond/src/checkpoint.rs"
+    summary """
+        org.legeos.Checkpoint1 is served by an application instance and called by lege-sessiond on the governor's behalf, addressed by a bus name derived from the InstanceId so nothing is registered and no directory goes stale. The daemon resolves the claimed name's PID and confirms its cgroup names that exact instance before believing any answer — an application squatting another instance's name is refused without being called — and every call is bounded by the request's own deadline, so a peer barely responsive under the pressure that prompted the request is refused rather than hanging the relay.
+        """
+}
+
+record legeos.evidence.m1-clients-reachable/1 : evidence {
+    title "M1: every service is reachable from the CLI, the portal, the shell and Settings"
+    state verified
+    result pass
+    method observation
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    artifact "cli/lege/src/main.rs"
+    summary """
+        lege covers app, open (URIs and paths, with the broker's own explanation under --explain), res, files, history with undo, providers, settings, project, power and the whole Host surface; the portal serves FileChooser over the same last-directory answer the file manager uses, plus OpenURI, AppChooser, Settings and Background; lege-shell renders all ten drawers live over D-Bus with dock grouping by canonical AppId; lege-settings serves six pages. Every service-absent path degrades to one sentence naming the service, verified with no bus present. Toolkit-dependent choosers are explicit seam traits that refuse rather than fabricate.
+        """
+}
+
 record legeos.evidence.m1-deps-check/1 : evidence {
     title "M1: lege-window still carries no async runtime and no D-Bus"
     state verified
@@ -107,6 +143,18 @@ record legeos.evidence.m1-deps-check/1 : evidence {
     command "cargo run -q -p xtask -- deps-check"
     summary """
         deps-check: lege-window is free of tokio, zbus, async-std and smol across 61 transitive dependencies, so it can still run on the compositor render thread
+        """
+}
+
+record legeos.evidence.m1-final-gate/1 : evidence {
+    title "M1 final gate: 584 tests, clippy-pedantic and fmt clean across the workspace"
+    state verified
+    result pass
+    method command
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+    summary """
+        0 build errors, 0 clippy errors under the pedantic subset, formatting clean, 584 tests passed / 0 failed across the workspace — up from 55 at M0. Every test runs unprivileged with no session bus, no compositor and no NVIDIA, btrfs, ESP or apt.
         """
 }
 
@@ -134,6 +182,18 @@ record legeos.evidence.m1-operations-resume/1 : evidence {
         """
 }
 
+record legeos.evidence.m1-repository-checks/1 : evidence {
+    title "M1: all five repository checks pass, including two new ones"
+    state verified
+    result pass
+    method command
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    command "cargo run -q -p xtask -- tree-check && cargo run -q -p xtask -- deps-check && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-packaging"
+    summary """
+        tree-check 41 directories; deps-check clean; check-interfaces 23 server, 23 client, 23 XML; check-proxies confirms every client interface has a live server implementation, not merely an XML file; check-packaging ties all 10 debian/control packages to crate metadata. The interface and proxy scanners are string-literal-aware and were corrected by the tests written for them.
+        """
+}
+
 record legeos.evidence.m1-session-persists/1 : evidence {
     title "M1: session policy survives a restart and instances are re-derived"
     state verified
@@ -143,6 +203,18 @@ record legeos.evidence.m1-session-persists/1 : evidence {
     artifact "services/lege-sessiond/src/main.rs"
     summary """
         Associations, provider selections and declarations, autostart approvals, settings values and their change log, projects and history all load from the one SQLite store at start and write through it, with a cross-domain change committing as one transaction; live instances are re-derived from systemd unit names on restart. Smoke-run against this machine's 208 real desktop entries, twice, idempotently. 90 tests across the session track.
+        """
+}
+
+record legeos.evidence.m1-smoke/1 : evidence {
+    title "M1: the integration smoke test passes, and can no longer pass on a broken build"
+    state verified
+    result pass
+    method command
+    observed_at git:3a28503b901e356aa341c1d0381bb13be3018ffa
+    command "tests/integration/run.sh"
+    summary """
+        Every daemon runs its dry-run or read-only probe, lege-shell prints a drawer, doctor runs against the fixture image root, and each bus-backed subcommand is asserted to fail by naming the service it could not reach. The script now builds the workspace as a hard gate first and refuses to report ok if it does not compile — previously a compile error passed as a 'clean failure', so the smoke test could report ok while the CLI did not build.
         """
 }
 

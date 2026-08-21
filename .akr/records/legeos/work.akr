@@ -13,7 +13,7 @@ record legeos.work.compositor-window-authority/1 : work {
 
 record legeos.work.consumers-cli-portal-shell/1 : work {
     title "The clients: the CLI over the whole OS, one portal backend, the Home Surface model, Settings"
-    state proposed
+    state completed
     scope [
         path "apps/lege-settings/**",
         path "cli/lege/**",
@@ -81,7 +81,7 @@ record legeos.work.host-update-transaction/1 : work {
 
 record legeos.work.sessiond-persistence-and-launch/1 : work {
     title "The session daemon: one state store, StartTransientUnit launching, desktop-entry import, the full domain surface"
-    state proposed
+    state completed
     scope [
         path "crates/lege-appd/**",
         path "crates/lege-associationd/**",

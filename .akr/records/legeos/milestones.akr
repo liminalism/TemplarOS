@@ -89,7 +89,7 @@ record legeos.milestone.m0-initial-structure/1 : milestone {
 
 record legeos.milestone.m1-session-runtime/1 : milestone {
     title "M1 — The session runs: persistent policy, real containment, journalled files, recoverable windows, transactional host"
-    state proposed
+    state completed
     scope [ all ]
     intent """
         Turn the M0 scaffold into working code: lege-sessiond persists every domain in the one state store and launches applications through systemd StartTransientUnit with desktop-entry import and real MIME detection; lege-resourced serves Resources1, applies protection and containment through a staged ladder with recorded traces; lege-filed runs file operations as resumable journalled transactions with trash, recents, the shared last-directory answer and search; lege-window enforces typed layers, the one-workspace invariant, explicit minimisation and recovery that works without the shell; lege-hostd runs kernel/driver updates as one resumable transaction over two boot backends with polkit enforcement. Stage 1 of planning doc 01: a replacement session, packaged, on an Ubuntu 26.04 base.
@@ -104,6 +104,7 @@ record legeos.milestone.m1-session-runtime/1 : milestone {
                 """
             method command
             command "cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.m1-repository-checks/1 ]
         }
         check deps-check {
             statement """
@@ -111,24 +112,28 @@ record legeos.milestone.m1-session-runtime/1 : milestone {
                 """
             method command
             command "cargo run -q -p xtask -- deps-check"
+            verified_by [ @legeos.evidence.m1-deps-check/1 ]
         }
         check governor-staged {
             statement """
                 the governor defaults to observe-only, records traces sufficient to review a decision, and performs no action above its configured containment stage
                 """
             method observation
+            verified_by [ @legeos.evidence.m1-governor-staged/1 ]
         }
         check operations-resume {
             statement """
                 a file operation interrupted mid-way resumes from its journal without redoing completed work, and never removes a source before the destination is written and verified
                 """
             method observation
+            verified_by [ @legeos.evidence.m1-operations-resume/1 ]
         }
         check session-persists {
             statement """
                 session state survives a restart: associations, provider selections, autostart approvals, settings, projects and history are reloaded from the one state store, and live instances are re-derived from systemd
                 """
             method observation
+            verified_by [ @legeos.evidence.m1-session-persists/1 ]
         }
         check smoke {
             statement """
@@ -136,18 +141,21 @@ record legeos.milestone.m1-session-runtime/1 : milestone {
                 """
             method command
             command "tests/integration/run.sh"
+            verified_by [ @legeos.evidence.m1-smoke/1 ]
         }
         check update-transaction-resumes {
             statement """
                 the host update transaction resumes correctly after an interruption in each phase, and promotes or rolls back kernel and driver as a pair, against both boot backends
                 """
             method observation
+            verified_by [ @legeos.evidence.m1-update-transaction-resumes/1 ]
         }
         check windows-recoverable {
             statement """
                 property tests over generated multi-output topologies show every window stays recoverable across drag, hotplug, scale change and session restore
                 """
             method observation
+            verified_by [ @legeos.evidence.m1-windows-recoverable/1 ]
         }
         check workspace-builds-and-tests {
             statement """
@@ -155,6 +163,7 @@ record legeos.milestone.m1-session-runtime/1 : milestone {
                 """
             method command
             command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+            verified_by [ @legeos.evidence.m1-final-gate/1 ]
         }
     }
     after [ @legeos.milestone.m0-initial-structure ]
