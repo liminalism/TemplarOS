@@ -1,0 +1,17 @@
+{
+  "steps": [
+    [
+      { "name": "eDP-1", "logical": { "x": 0, "y": 0, "width": 1920, "height": 1080 }, "scale_milli": 1250 }
+    ],
+    [
+      { "name": "eDP-1", "logical": { "x": 0, "y": 0, "width": 1920, "height": 1080 }, "scale_milli": 1250 },
+      { "name": "HDMI-A-1", "logical": { "x": 1920, "y": 0, "width": 2560, "height": 1440 }, "scale_milli": 1000 }
+    ],
+    [
+      { "name": "HDMI-A-1", "logical": { "x": 0, "y": 0, "width": 2560, "height": 1440 }, "scale_milli": 1000 }
+    ],
+    [
+      { "name": "eDP-1", "logical": { "x": 0, "y": 0, "width": 1920, "height": 1080 }, "scale_milli": 1250 }
+    ]
+  ]
+}

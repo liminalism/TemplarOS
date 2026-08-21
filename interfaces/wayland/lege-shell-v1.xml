@@ -14,16 +14,37 @@
       <arg name="id" type="new_id" interface="lege_shell_toplevel_list_v1"/>
     </request>
     <request name="show_all_windows">
-      <description summary="recovery view: every window, on the Recovery layer"/>
+      <description summary="recovery view: every window, scattered across active outputs on the Recovery layer, with no reliance on the shell to compute the layout">
+        Also compositor-keybinding-reachable with no shell running at all (`compositor/FORK.md`);
+        this request exists so the shell can offer the same action from its own UI.
+      </description>
+    </request>
+    <request name="escape_fullscreen_or_modal">
+      <description summary="compositor-level way out of a fullscreen or modal window">
+        `toplevel` null escapes whichever window currently holds activation, if any. Also
+        compositor-keybinding-reachable with no shell running (`docs/architecture/accessibility.md`).
+      </description>
+      <arg name="toplevel" type="object" interface="lege_shell_toplevel_v1" allow-null="true"/>
     </request>
     <request name="set_layer_surface">
-      <description summary="declare which typed layer a shell surface belongs to"/>
+      <description summary="declare which typed layer a shell surface belongs to">
+        Only `shell_overlay`, `notification`, `home_surface` and `system_modal` are valid here —
+        `secure_lock` and `recovery` are compositor-owned and refused even for the shell; a
+        client-side window's own layer (`normal` / `app_on_top`) is set through xdg-shell, not
+        this request.
+      </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="layer" type="uint" enum="layer"/>
     </request>
+    <!-- Mirrors `lege_window::Layer`'s discriminants exactly (`interfaces/wayland/README.md`). -->
     <enum name="layer">
+      <entry name="secure_lock" value="0"/>
+      <entry name="recovery" value="1"/>
+      <entry name="system_modal" value="2"/>
       <entry name="shell_overlay" value="3"/>
       <entry name="notification" value="4"/>
+      <entry name="app_on_top" value="5"/>
+      <entry name="normal" value="6"/>
       <entry name="home_surface" value="7"/>
     </enum>
   </interface>
@@ -45,7 +66,15 @@
       <arg name="activated" type="uint"/>
       <arg name="fullscreen" type="uint"/>
       <arg name="shelved" type="uint"/>
+      <!-- Meaningful only while shelved: 0 for a window that has never been shelved, otherwise
+           the Window Shelf's authoritative most-recently-shelved-first sort key. The shell sorts
+           by this value rather than tracking shelve order itself. -->
+      <arg name="shelf_rank" type="uint"/>
     </event>
+    <!-- Which typed layer this toplevel currently occupies (`lege_window::WindowService::layer_of`).
+         Ordinary application toplevels report `normal` or `app_on_top`; the compositor is the
+         sole source of truth, so the shell never has to infer stacking from anything else. -->
+    <event name="layer"><arg name="layer" type="uint" enum="lege_shell_manager_v1.layer"/></event>
     <event name="closed"/>
     <request name="activate">
       <arg name="activation_token" type="string"/>

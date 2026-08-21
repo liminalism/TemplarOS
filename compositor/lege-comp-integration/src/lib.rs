@@ -1,121 +1,67 @@
 //! Integration crate for the compositor fork (`forks/cosmic-comp`, see `../FORK.md`).
 //!
-//! The render thread only ever touches [`DbusIdentityCache::resolve_cached`] (a lock-free-ish
-//! map lookup). Resolution requests are queued to a tokio task that talks to
-//! `org.legeos.AppIdentity1`; answers are drained by the compositor loop through
-//! [`DbusIdentityCache::drain_answers`] and fed to `WindowService::update_identity`.
+//! * [`identity`] — `DbusIdentityCache`, the render-thread-safe, PID-reuse-safe, self-healing
+//!   client of `org.legeos.AppIdentity1`.
+//! * [`broadcaster`] — turns `lege_window::WindowService` state into sanitized snapshots for the
+//!   shell, encoded and sent off the render thread.
+//! * [`governor`] — coalesced focus/visibility enrichment to `org.legeos.Resources1`.
+//! * [`protocol`] — names and wire/`Layer` mapping for the private Wayland protocols in
+//!   `interfaces/wayland/`; the `wayland-scanner` glue itself lives in the fork.
+//!
+//! The render thread only ever touches synchronous, allocation-cheap methods on the types here
+//! (`DbusIdentityCache::resolve_cached`, `ShellStateBroadcaster::publish`,
+//! `GovernorNotifier::set_instance_state`/`forget_instance`) — every one of them hands work to a
+//! background tokio task instead of blocking on D-Bus or a slow shell client.
 
 #![forbid(unsafe_code)]
 
-use lege_client::proxies::AppIdentityProxy;
-use lege_types::{IdentityConfidence, InstanceId, WindowClaims};
-use lege_window::{CachedIdentity, IdentityCache, WindowId};
-use parking_lot::Mutex;
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::mpsc;
+pub mod broadcaster;
+pub mod governor;
+pub mod identity;
+mod pid;
 
-/// Names of the private shell protocol (XML in `interfaces/wayland/`).
+pub use broadcaster::{ShellStateBroadcaster, ShellStateSink, ShellStateSnapshot, snapshot};
+pub use governor::GovernorNotifier;
+pub use identity::DbusIdentityCache;
+
+/// Names and semantics of the private protocols (XML in `interfaces/wayland/`). The
+/// `wayland-scanner`-generated bindings live in the compositor fork; this module is the shared
+/// vocabulary between that generated code and `lege_window`'s types.
 pub mod protocol {
+    use lege_window::Layer;
+
     pub const SHELL_V1: &str = "lege_shell_v1";
     pub const RECOVERY_V1: &str = "lege_recovery_v1";
-}
 
-#[derive(Debug)]
-struct Request {
-    window_id: WindowId,
-    pid: u32,
-    claims: WindowClaims,
-}
+    /// `lege_shell_manager_v1.layer` / `lege_shell_toplevel_v1.layer`'s wire values are exactly
+    /// `Layer`'s `repr(u8)` discriminants — this is the one conversion point both directions
+    /// should use instead of hand-rolling the mapping at each call site in the fork.
+    pub fn layer_to_wire(layer: Layer) -> u32 {
+        layer as u32
+    }
 
-/// Identity cache backed by D-Bus. Cheap to clone (Arc inside).
-#[derive(Clone, Debug)]
-pub struct DbusIdentityCache {
-    by_pid: Arc<Mutex<HashMap<u32, CachedIdentity>>>,
-    answers: Arc<Mutex<Vec<(WindowId, CachedIdentity)>>>,
-    requests: mpsc::UnboundedSender<Request>,
-}
+    /// Inverse of [`layer_to_wire`]. `None` for a value outside `0..=7`, which a conformant peer
+    /// never sends.
+    pub fn layer_from_wire(value: u32) -> Option<Layer> {
+        Layer::ALL
+            .into_iter()
+            .find(|layer| layer_to_wire(*layer) == value)
+    }
 
-impl DbusIdentityCache {
-    /// Spawn the resolver task on the given runtime handle.
-    pub fn spawn(handle: &tokio::runtime::Handle) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Request>();
-        let by_pid: Arc<Mutex<HashMap<u32, CachedIdentity>>> = Arc::default();
-        let answers: Arc<Mutex<Vec<(WindowId, CachedIdentity)>>> = Arc::default();
-        let (by_pid_task, answers_task) = (Arc::clone(&by_pid), Arc::clone(&answers));
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-        handle.spawn(async move {
-            let connection = match zbus::Connection::session().await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::warn!(%error, "no session bus; identities stay provisional");
-                    return;
-                }
-            };
-            let proxy = match AppIdentityProxy::new(&connection).await {
-                Ok(proxy) => proxy,
-                Err(error) => {
-                    tracing::warn!(%error, "AppIdentity proxy unavailable");
-                    return;
-                }
-            };
-            while let Some(request) = rx.recv().await {
-                let claims = &request.claims;
-                let result = proxy
-                    .resolve_window(
-                        request.pid,
-                        claims.wayland_app_id.as_deref().unwrap_or(""),
-                        claims.startup_wm_class.as_deref().unwrap_or(""),
-                        claims.sandbox_app_id.as_deref().unwrap_or(""),
-                    )
-                    .await;
-                let identity = match result {
-                    Ok((app, instance, confidence, matches)) => {
-                        let confidence = IdentityConfidence::from_wire(confidence);
-                        CachedIdentity {
-                            app_id: app.parse().ok(),
-                            instance_id: InstanceId::parse(&instance),
-                            verified: confidence.is_verified(),
-                            claim_mismatch: !matches && confidence.is_verified(),
-                        }
-                    }
-                    Err(error) => {
-                        tracing::debug!(%error, pid = request.pid, "identity resolution failed; provisional");
-                        CachedIdentity::UNKNOWN
-                    }
-                };
-                by_pid_task.lock().insert(request.pid, identity.clone());
-                answers_task.lock().push((request.window_id, identity));
+        #[test]
+        fn every_layer_round_trips_through_the_wire_encoding() {
+            for layer in Layer::ALL {
+                assert_eq!(layer_from_wire(layer_to_wire(layer)), Some(layer));
             }
-        });
-
-        Self {
-            by_pid,
-            answers,
-            requests: tx,
         }
-    }
 
-    /// Take resolved answers to apply with `WindowService::update_identity`.
-    pub fn drain_answers(&self) -> Vec<(WindowId, CachedIdentity)> {
-        std::mem::take(&mut *self.answers.lock())
-    }
-
-    /// Forget a PID (process exited).
-    pub fn forget(&self, pid: u32) {
-        self.by_pid.lock().remove(&pid);
-    }
-}
-
-impl IdentityCache for DbusIdentityCache {
-    fn resolve_cached(&self, pid: u32, _claims: &WindowClaims) -> Option<CachedIdentity> {
-        self.by_pid.lock().get(&pid).cloned()
-    }
-
-    fn request_resolution(&self, window_id: WindowId, pid: u32, claims: WindowClaims) {
-        let _ = self.requests.send(Request {
-            window_id,
-            pid,
-            claims,
-        });
+        #[test]
+        fn an_out_of_range_wire_value_is_rejected() {
+            assert_eq!(layer_from_wire(8), None);
+        }
     }
 }

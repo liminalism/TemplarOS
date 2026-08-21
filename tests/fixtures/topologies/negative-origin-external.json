@@ -1,0 +1,4 @@
+[
+  { "name": "eDP-1", "logical": { "x": 0, "y": 360, "width": 1920, "height": 1080 }, "scale_milli": 1250 },
+  { "name": "DP-1", "logical": { "x": -2560, "y": 0, "width": 2560, "height": 1440 }, "scale_milli": 1000 }
+]

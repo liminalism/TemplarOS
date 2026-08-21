@@ -1,0 +1,4 @@
+[
+  { "name": "eDP-1", "logical": { "x": 0, "y": 0, "width": 1920, "height": 1080 }, "scale_milli": 1000 },
+  { "name": "HDMI-1", "logical": { "x": 0, "y": 0, "width": 1920, "height": 1080 }, "scale_milli": 1000 }
+]

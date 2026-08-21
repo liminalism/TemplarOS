@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Compositor-core owned recovery surfaces (Layer::Recovery). Used by the resource overlay
      to identify the likely offender and offer "save / terminate / open terminal" without relying
-     on the ordinary shell. Draft. -->
+     on the ordinary shell. Draft.
+
+     Not modelled as protocol here because no client (not even the trusted shell) needs to ask
+     for them over the wire — the compositor core binds them directly to fixed key combinations
+     and calls straight into `lege_window::WindowService`, so they work with no client connected
+     at all (`docs/architecture/accessibility.md`):
+       * the "show every window" scatter (`WindowService::handle_command(ShowAllWindows, ...)` /
+         `geometry::scatter_layout`) — `lege_shell_manager_v1.show_all_windows` in
+         `lege-shell-v1.xml` exists only so the *shell's own UI* can also trigger it;
+       * the fullscreen/modal escape route (`WindowService::escape`) — likewise mirrored as
+         `lege_shell_manager_v1.escape_fullscreen_or_modal` for the shell's UI;
+       * the minimal fallback window switcher (`WindowService::cycle_focus`);
+       * the per-window recovery tab the compositor paints over client-side-decorated and
+         borderless windows (`WindowService::recovery_affordance`) — pure compositor-side
+         rendering, no client is even aware of it. -->
 <protocol name="lege_recovery_v1">
   <copyright>Copyright 2026 LegeOS contributors. MPL-2.0.</copyright>
   <interface name="lege_recovery_manager_v1" version="1">

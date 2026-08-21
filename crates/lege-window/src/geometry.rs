@@ -93,6 +93,27 @@ pub fn recovery_band(window: Rect) -> Rect {
     }
 }
 
+/// The compositor's grab affordance for one window: the recovery band, plus whether the
+/// compositor must actively paint a temporary tab over it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryAffordance {
+    pub band: Rect,
+    /// True for client-side-decorated and borderless windows: the client controls that screen
+    /// area and may draw over it, so the compositor cannot rely on a client-drawn title bar to
+    /// make the window recoverable and must paint its own temporary tab.
+    pub requires_compositor_paint: bool,
+}
+
+/// Compute the affordance for a window at `geometry`. `client_owns_band` is
+/// `Decoration::needs_compositor_recovery_tab()` from `service.rs`, passed in rather than the
+/// enum itself so this module stays free of window-record concerns.
+pub fn recovery_affordance(geometry: Rect, client_owns_band: bool) -> RecoveryAffordance {
+    RecoveryAffordance {
+        band: recovery_band(geometry),
+        requires_compositor_paint: client_owns_band,
+    }
+}
+
 /// True when enough of the recovery band is visible on some output.
 pub fn is_recoverable(window: Rect, outputs: &[Output]) -> bool {
     let band = recovery_band(window);
@@ -136,6 +157,162 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
         x: clamp(window.x, minimum_x, maximum_x),
         y: clamp(window.y, minimum_y, maximum_y),
         ..window
+    }
+}
+
+/// Reposition `window` to be as fully visible as possible on the nearest active output. Unlike
+/// [`repair_window`], this does not settle for the minimal recovery band: when the window fits
+/// within the target output it ends up entirely on-screen. Size is always preserved. Used by
+/// `WindowCommand::MoveToVisibleArea`.
+pub fn move_into_view(window: Rect, outputs: &[Output]) -> Rect {
+    if outputs.is_empty() {
+        return window;
+    }
+
+    let output = choose_target_output(window, outputs).logical;
+
+    let minimum_x = output.x;
+    let maximum_x = output.right().saturating_sub(window.width.max(1));
+    let minimum_y = output.y;
+    let maximum_y = output.bottom().saturating_sub(window.height.max(1));
+
+    Rect {
+        x: clamp(window.x, minimum_x, maximum_x),
+        y: clamp(window.y, minimum_y, maximum_y),
+        ..window
+    }
+}
+
+/// Lay out `windows` across `outputs` as a grid per output, without consulting the shell. Used
+/// by the compositor-owned "show every window" recovery view (planning doc 01 §3), which must
+/// work even when the shell process is dead. Every returned rectangle is fully contained in the
+/// output it was assigned to, so a window can never be scattered somewhere it cannot be seen.
+///
+/// Outputs are filled round-robin in the order given; within an output, windows tile in reading
+/// order (row-major) at their original size, shrunk only as much as needed to fit their cell.
+/// With no outputs, nothing can be shown anywhere and the input is returned unchanged.
+pub fn scatter_layout<Id: Copy>(windows: &[(Id, Rect)], outputs: &[Output]) -> Vec<(Id, Rect)> {
+    if outputs.is_empty() || windows.is_empty() {
+        return windows.to_vec();
+    }
+
+    let mut per_output: Vec<Vec<(Id, Rect)>> = vec![Vec::new(); outputs.len()];
+    for (index, window) in windows.iter().enumerate() {
+        per_output[index % outputs.len()].push(*window);
+    }
+
+    let mut placed = Vec::with_capacity(windows.len());
+    for (output, assigned) in outputs.iter().zip(per_output) {
+        let count = assigned.len();
+        if count == 0 {
+            continue;
+        }
+
+        let columns = (count as f64).sqrt().ceil().max(1.0) as i32;
+        let rows = (i32::try_from(count).unwrap_or(i32::MAX) + columns - 1) / columns;
+        let rows = rows.max(1);
+        let cell_width = (output.logical.width.max(1) / columns.max(1)).max(1);
+        let cell_height = (output.logical.height.max(1) / rows.max(1)).max(1);
+
+        for (index, (id, original)) in assigned.into_iter().enumerate() {
+            let column = i32::try_from(index).unwrap_or(i32::MAX) % columns;
+            let row = i32::try_from(index).unwrap_or(i32::MAX) / columns;
+
+            let width = original.width.max(1).min(cell_width);
+            let height = original.height.max(1).min(cell_height);
+            let cell_x = output
+                .logical
+                .x
+                .saturating_add(column.saturating_mul(cell_width));
+            let cell_y = output
+                .logical
+                .y
+                .saturating_add(row.saturating_mul(cell_height));
+
+            placed.push((
+                id,
+                Rect {
+                    x: cell_x.saturating_add((cell_width - width) / 2),
+                    y: cell_y.saturating_add((cell_height - height) / 2),
+                    width,
+                    height,
+                },
+            ));
+        }
+    }
+
+    placed
+}
+
+/// A point in one output's own physical pixel space (its framebuffer), as opposed to the
+/// global logical scene [`Point`] lives in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct PhysicalPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Convert a point in global logical coordinates to `output`'s physical pixel space.
+///
+/// This, and [`physical_to_logical`], are the *only* places `scale_milli` should ever be
+/// applied to a coordinate. Persistent state — window geometry, the drag anchor — stays
+/// logical, so a drag crossing outputs of different scale never re-derives its anchor through a
+/// lossy physical round-trip (planning doc 02 §6).
+pub fn logical_to_physical(point: Point, output: &Output) -> PhysicalPoint {
+    PhysicalPoint {
+        x: scale_round(
+            i64::from(point.x) - i64::from(output.logical.x),
+            i64::from(output.scale_milli),
+        ),
+        y: scale_round(
+            i64::from(point.y) - i64::from(output.logical.y),
+            i64::from(output.scale_milli),
+        ),
+    }
+}
+
+/// Inverse of [`logical_to_physical`].
+pub fn physical_to_logical(point: PhysicalPoint, output: &Output) -> Point {
+    Point {
+        x: output.logical.x.saturating_add(unscale_round(
+            i64::from(point.x),
+            i64::from(output.scale_milli),
+        )),
+        y: output.logical.y.saturating_add(unscale_round(
+            i64::from(point.y),
+            i64::from(output.scale_milli),
+        )),
+    }
+}
+
+/// `offset * scale_milli / 1000`, rounded half-away-from-zero and saturated to `i32`. Using one
+/// fixed rounding rule in both directions is what keeps repeated conversions from drifting: see
+/// the `physical_logical_round_trip_stabilises` property test.
+fn scale_round(offset: i64, scale_milli: i64) -> i32 {
+    div_round(offset.saturating_mul(scale_milli), 1000)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// `offset * 1000 / scale_milli`, saturated to `i32`. Zero scale (not physically meaningful)
+/// maps to zero rather than panicking.
+fn unscale_round(offset: i64, scale_milli: i64) -> i32 {
+    if scale_milli == 0 {
+        return 0;
+    }
+    div_round(offset.saturating_mul(1000), scale_milli)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Integer division rounded half-away-from-zero, instead of `/`'s truncation-toward-zero.
+fn div_round(numerator: i64, denominator: i64) -> i64 {
+    if denominator == 0 {
+        return 0;
+    }
+    let half = denominator / 2;
+    if (numerator < 0) == (denominator < 0) {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
     }
 }
 
@@ -243,24 +420,32 @@ mod tests {
         assert_eq!(repair_window(w, &[]), w);
     }
 
-    fn arb_output() -> impl Strategy<Value = Output> {
-        (
-            -8000i32..8000,
-            -8000i32..8000,
-            200i32..7680,
-            200i32..4320,
-            prop_oneof![Just(1000u32), Just(1250), Just(1500), Just(2000)],
-        )
-            .prop_map(|(x, y, w, h, scale)| Output {
-                name: String::from("out"),
-                logical: Rect::new(x, y, w, h),
-                scale_milli: scale,
-            })
-    }
+    use crate::test_support::{arb_output, arb_window, load_topology};
 
-    fn arb_window() -> impl Strategy<Value = Rect> {
-        (-20000i32..20000, -20000i32..20000, 1i32..6000, 1i32..4000)
-            .prop_map(|(x, y, w, h)| Rect::new(x, y, w, h))
+    #[test]
+    fn fixture_topologies_repair_to_recoverable() {
+        let probe_windows = [
+            Rect::new(-5000, -5000, 400, 300),
+            Rect::new(20000, 20000, 800, 600),
+            Rect::new(100, 100, 400, 300),
+            Rect::new(0, 0, 10000, 10000),
+        ];
+        for name in [
+            "laptop-plus-hdmi",
+            "triple-mixed-scale",
+            "negative-origin-external",
+            "overlapping-outputs",
+            "disjoint-outputs",
+        ] {
+            let outputs = load_topology(name);
+            for window in probe_windows {
+                let repaired = repair_window(window, &outputs);
+                assert!(
+                    is_recoverable(repaired, &outputs),
+                    "fixture {name}: {window:?} -> {repaired:?} not recoverable on {outputs:?}"
+                );
+            }
+        }
     }
 
     proptest! {
@@ -288,6 +473,112 @@ mod tests {
             if is_recoverable(window, &outputs) {
                 prop_assert_eq!(repair_window(window, &outputs), window);
             }
+        }
+
+        /// `move_into_view` always leaves a recoverable window, and fully contains it when it
+        /// fits inside the target output.
+        #[test]
+        fn move_into_view_is_recoverable_and_contains_when_it_fits(
+            window in arb_window(),
+            outputs in prop::collection::vec(arb_output(), 1..4),
+        ) {
+            let moved = move_into_view(window, &outputs);
+            prop_assert_eq!((moved.width, moved.height), (window.width, window.height));
+            prop_assert!(is_recoverable(moved, &outputs));
+
+            let target = choose_target_output(window, &outputs);
+            if window.width <= target.logical.width && window.height <= target.logical.height {
+                prop_assert_eq!(target.logical.intersection(moved), Some(moved));
+            }
+        }
+
+        /// Every window `scatter_layout` places lands fully inside the output it was assigned
+        /// to: the recovery view can never lose a window off the edge of the screen.
+        #[test]
+        fn scattered_windows_stay_within_their_output(
+            windows in prop::collection::vec(arb_window(), 1..12),
+            outputs in prop::collection::vec(arb_output(), 1..4),
+        ) {
+            let tagged: Vec<(usize, Rect)> = windows.into_iter().enumerate().collect();
+            let placed = scatter_layout(&tagged, &outputs);
+            prop_assert_eq!(placed.len(), tagged.len());
+            for (_, rect) in &placed {
+                prop_assert!(outputs.iter().any(|output| output.logical.intersection(*rect) == Some(*rect)));
+            }
+        }
+
+        /// Converting a point forward then back is exact when the scale divides evenly.
+        #[test]
+        fn logical_physical_round_trip_exact_at_unit_scale(
+            x in -20000i32..20000, y in -20000i32..20000,
+            ox in -8000i32..8000, oy in -8000i32..8000,
+        ) {
+            let output = Output {
+                name: "o".into(),
+                logical: Rect::new(ox, oy, 1920, 1080),
+                scale_milli: 1000,
+            };
+            let point = Point { x, y };
+            let physical = logical_to_physical(point, &output);
+            prop_assert_eq!(physical_to_logical(physical, &output), point);
+        }
+
+        /// The forward/backward conversion never drifts: a second round trip through physical
+        /// space reproduces exactly the same physical and logical values as the first, instead
+        /// of walking further away each time (the failure mode this boundary exists to prevent).
+        #[test]
+        fn physical_logical_round_trip_stabilises(
+            x in -20000i32..20000, y in -20000i32..20000,
+            ox in -8000i32..8000, oy in -8000i32..8000,
+            scale in prop_oneof![Just(1000u32), Just(1250), Just(1500), Just(1750), Just(2000)],
+        ) {
+            let output = Output {
+                name: "o".into(),
+                logical: Rect::new(ox, oy, 1920, 1080),
+                scale_milli: scale,
+            };
+            let l1 = Point { x, y };
+            let p1 = logical_to_physical(l1, &output);
+            let l2 = physical_to_logical(p1, &output);
+            let p2 = logical_to_physical(l2, &output);
+            let l3 = physical_to_logical(p2, &output);
+            prop_assert_eq!(p1, p2, "physical value must stabilise after one lossy hop");
+            prop_assert_eq!(l2, l3, "logical value must stabilise after one lossy hop");
+        }
+
+        /// The drag anchor is defined purely in logical coordinates and never touches
+        /// `scale_milli`; converting the pointer position through two outputs of different
+        /// scale must not change the logical anchor offset a drag was started with.
+        #[test]
+        fn anchor_offset_is_independent_of_output_scale(
+            wx in 0i32..1000, wy in 0i32..1000, ww in 1i32..2000, wh in 1i32..2000,
+            px in -20000i32..20000, py in -20000i32..20000,
+            scale_a in prop_oneof![Just(1000u32), Just(1500), Just(2000)],
+            scale_b in prop_oneof![Just(1000u32), Just(1500), Just(2000)],
+        ) {
+            let window = Rect::new(wx, wy, ww, wh);
+            let pointer = Point { x: px, y: py };
+            let anchor = Point { x: pointer.x - window.x, y: pointer.y - window.y };
+
+            let output_a = Output { name: "a".into(), logical: Rect::new(0, 0, 1920, 1080), scale_milli: scale_a };
+            let output_b = Output { name: "b".into(), logical: Rect::new(1920, 0, 2560, 1440), scale_milli: scale_b };
+
+            // Round-tripping the pointer through either output's physical space and back must
+            // not change the logical point at all when it is not itself the value being
+            // quantised — the anchor is computed and applied entirely in logical space.
+            let recovered_a = physical_to_logical(logical_to_physical(pointer, &output_a), &output_a);
+            let recovered_b = physical_to_logical(logical_to_physical(pointer, &output_b), &output_b);
+            let new_window_a = Rect { x: recovered_a.x - anchor.x, y: recovered_a.y - anchor.y, ..window };
+            let new_window_b = Rect { x: recovered_b.x - anchor.x, y: recovered_b.y - anchor.y, ..window };
+            prop_assert_eq!(new_window_a, new_window_b, "anchor must place the window identically regardless of which output's scale it round-tripped through");
+        }
+
+        /// The recorded three-output mixed-scale desk fixture, exercised with arbitrary window
+        /// rectangles rather than the four fixed probes in `fixture_topologies_repair_to_recoverable`.
+        #[test]
+        fn arbitrary_windows_are_recoverable_on_the_triple_mixed_scale_fixture(window in arb_window()) {
+            let outputs = load_topology("triple-mixed-scale");
+            prop_assert!(is_recoverable(repair_window(window, &outputs), &outputs));
         }
     }
 }
