@@ -393,12 +393,14 @@ fn spawn_background_tasks(
     connection: &zbus::Connection,
     services: &Services,
     backend: LaunchBackend,
+    history_notifier: apis::history::HistoryChangeNotifier,
 ) {
     tokio::spawn(background::autostart::run(
         services.registry.clone(),
         services.providers.clone(),
         services.store.clone(),
         services.history.clone(),
+        history_notifier.clone(),
         backend,
         connection.clone(),
         services.resolver.clone(),
@@ -409,9 +411,11 @@ fn spawn_background_tasks(
         services.registry.clone(),
         services.checkpoint_transport.clone(),
         services.history.clone(),
+        history_notifier.clone(),
     ));
     tokio::spawn(background::crash_ingest::run(
         services.store.clone(),
+        history_notifier,
         Duration::from_secs(30),
     ));
     tokio::spawn(background::notification_provider::run(
@@ -432,7 +436,7 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let services = load_services(&cli)?;
+    let mut services = load_services(&cli)?;
 
     if cli.dry_run {
         print_dry_run_summary(&services);
@@ -443,6 +447,9 @@ async fn main() -> Result<()> {
         .build()
         .await
         .context("connecting to the session bus")?;
+    // The null transport was only ever a stand-in for `--dry-run`/tests, where this line never
+    // runs; the live daemon always relays checkpoints for real.
+    services.checkpoint_transport = Arc::new(checkpoint::DbusCheckpointTransport::new(connection.clone()));
     // Best-effort: `Location1` retries lazily (see `apis::location`), so a system bus that is
     // briefly unreachable at session startup must not take the rest of the daemon down with it.
     let system_connection = match zbus::connection::Builder::system() {
@@ -464,6 +471,16 @@ async fn main() -> Result<()> {
     reconcile::reconcile_instances(&connection, &services.registry, &services.store).await;
     serve_interfaces(&connection, system_connection, &services, backend).await?;
 
+    // Background work (autostart, crash ingestion, the checkpoint relay) needs to emit
+    // `History1.Changed` the same way a D-Bus-invoked mutation does; that requires the
+    // interface to already be served, hence fetching it only now.
+    let history_interface = connection
+        .object_server()
+        .interface::<_, apis::history::HistoryApi>(names::HISTORY_PATH)
+        .await
+        .context("fetching the served HistoryApi interface")?;
+    let history_notifier = apis::history::HistoryChangeNotifier::new(history_interface);
+
     connection
         .request_name(names::BUS_NAME)
         .await
@@ -471,7 +488,7 @@ async fn main() -> Result<()> {
     tracing::info!(name = names::BUS_NAME, "lege-sessiond ready");
 
     start_systemd_notify();
-    spawn_background_tasks(&connection, &services, backend);
+    spawn_background_tasks(&connection, &services, backend, history_notifier);
 
     pending::<()>().await;
     Ok(())

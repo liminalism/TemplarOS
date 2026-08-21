@@ -219,3 +219,26 @@ impl HistoryApi {
     #[zbus(signal)]
     async fn changed(signal_emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
+
+/// A handle background work (autostart, crash ingestion, the checkpoint relay) uses to tell
+/// already-connected clients that history changed — the same `History1.Changed` a D-Bus-invoked
+/// mutation already emits via `#[zbus(signal_emitter)]`, so the shell's history view does not
+/// silently miss a crash, an autostart decision or a pressure action: precisely the planning
+/// document's own examples of things a user must be able to see and undo. Background work still
+/// owns *how* it persists an event; this only adds the signal.
+#[derive(Clone)]
+pub struct HistoryChangeNotifier(zbus::object_server::InterfaceRef<HistoryApi>);
+
+impl HistoryChangeNotifier {
+    pub fn new(interface: zbus::object_server::InterfaceRef<HistoryApi>) -> Self {
+        Self(interface)
+    }
+
+    /// Emit `History1.Changed`. Best-effort: the event this follows is already durably
+    /// persisted, so a signal failure is logged, never propagated as if the append itself failed.
+    pub async fn notify(&self) {
+        if let Err(error) = self.0.changed().await {
+            tracing::debug!(%error, "failed to emit History1.Changed");
+        }
+    }
+}

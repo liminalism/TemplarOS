@@ -1,6 +1,17 @@
 akr 0.1
 project legeos
 
+record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
+    title "Partitioning file ownership across five parallel agents left the shared…"
+    state verified
+    statement """
+        Partitioning file ownership across five parallel agents left the shared vocabulary crates (lege-types, lege-client/src/proxies) owned by nobody, so a cross-cutting contract could not be added by anyone: the checkpoint protocol was documented and implemented on both ends but had no wire transport, and the session daemon correctly reported it was barred from adding one. Whoever partitions parallel work should own the shared vocabulary themselves and settle cross-cutting contracts up front, as was done for org.legeos.Resources1 — that one worked precisely because it was fixed before the agents started.
+        """
+    observed_at git:b543668447e5e95a089b70cd971624abb77cab19
+    author "claude"
+    created_at 2026-08-21
+}
+
 record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercut {
     title "Promoting decisions to active with `akr revise <key> --state active` in…"
     state verified

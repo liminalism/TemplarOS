@@ -4,8 +4,14 @@
 shell, file layer, application identity system, resource governor, driver/update transaction system and
 installation image. Start from scratch in *policy and user interaction*, not in plumbing that already works.
 
-Status: **M0 — initial project structure.** The workspace builds and its cores are tested; the session does
-not run yet. See `docs/planning/` for the founding analysis and `docs/adr/` for every decision.
+Status: **M1 — the services are real.** The session daemon persists every domain in one state store and
+launches applications through systemd `StartTransientUnit`; the governor serves its interface, applies
+protection and contains through a staged ladder that defaults to observing; the file service runs
+operations as resumable journalled transactions; the compositor core enforces typed layers, one scene and
+recovery that works without the shell; the host daemon promotes or rolls back a kernel and its driver as a
+pair. The clients (CLI, portal, shell, Settings) are landing; the compositor fork and any graphical surface
+are M2, so **you cannot log into this yet**. See `docs/generated/ROADMAP.md` for what is accepted and on
+what evidence, `docs/planning/` for the founding analysis, and `docs/adr/` for every decision.
 
 ## The five things the first release must prove
 

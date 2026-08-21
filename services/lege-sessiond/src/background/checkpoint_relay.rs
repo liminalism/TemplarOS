@@ -3,7 +3,7 @@
 //! [`crate::checkpoint::CheckpointTransport`], records the outcome in history, and pushes the
 //! reply back as `SetInstanceHints(has_unsaved_work=…)`.
 
-use crate::checkpoint::CheckpointTransport;
+use crate::{apis::history::HistoryChangeNotifier, checkpoint::CheckpointTransport};
 use futures_util::StreamExt;
 use lege_appd::Registry;
 use lege_client::proxies::ResourcesProxy;
@@ -21,6 +21,7 @@ pub async fn run(
     registry: Arc<Registry>,
     checkpoint: Arc<dyn CheckpointTransport>,
     history: Arc<SqliteHistory>,
+    notifier: HistoryChangeNotifier,
 ) {
     let proxy = match ResourcesProxy::new(&connection).await {
         Ok(proxy) => proxy,
@@ -62,7 +63,7 @@ pub async fn run(
         let (message, has_unsaved_work) = describe(&response);
         let app_id = registry.instance(instance_id).map(|record| record.app_id);
 
-        if let Err(error) = history.append(Event {
+        match history.append(Event {
             id: EventId::new(),
             at_ms: lege_state::now_ms(),
             kind: EventKind::ResourceAction,
@@ -73,7 +74,8 @@ pub async fn run(
             actions: Vec::new(),
             reversible: false,
         }) {
-            tracing::warn!(%error, "failed to record checkpoint-relay history event");
+            Ok(()) => notifier.notify().await,
+            Err(error) => tracing::warn!(%error, "failed to record checkpoint-relay history event"),
         }
 
         let (protected, disposable, supports_checkpoint) = app_id

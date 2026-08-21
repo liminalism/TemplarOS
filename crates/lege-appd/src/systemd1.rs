@@ -14,7 +14,7 @@
 //! (rule: no session bus, no root, no real hardware) — it is exercised by `--dry-run` staying
 //! silent about it and by manual/integration testing instead.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use lege_types::{AppId, AppManifest, InstanceId, dbus::env, unit};
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use zbus::{
@@ -97,6 +97,14 @@ pub async fn start_transient_unit(
     })
 }
 
+/// Poll for the unit's `ControlGroup` property once `GetUnit` has confirmed the unit
+/// `StartTransientUnit` just created actually exists. Systemd sets `ControlGroup` as part of
+/// creating the unit, before the first process starts, so this is normally immediate; a handful
+/// of short retries is a safety margin, not the primary mechanism. If the property still is not
+/// populated once that budget is spent, that is a polling problem, not a launch failure — the
+/// unit is confirmed to exist and is running — so a derived guess is returned instead of failing
+/// the whole launch (identity still resolves correctly through `unit::parse_cgroup_path`'s
+/// self-describing match either way).
 async fn wait_for_control_group(connection: &Connection, unit_name: &str) -> Result<PathBuf> {
     let manager = ManagerProxy::new(connection).await?;
     let unit_path = manager
@@ -120,7 +128,13 @@ async fn wait_for_control_group(connection: &Connection, unit_name: &str) -> Res
             _ => {}
         }
     }
-    bail!("systemd did not expose a ControlGroup for {unit_name}")
+    tracing::warn!(
+        unit_name,
+        "systemd did not expose a ControlGroup within the retry budget; registering with a \
+         derived path (the unit is running — identity still resolves through its \
+         self-describing name)"
+    );
+    Ok(PathBuf::from(format!("app.slice/{unit_name}")))
 }
 
 /// Whether `org.freedesktop.systemd1` answers on `connection` (used to pick the launch backend

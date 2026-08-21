@@ -104,6 +104,7 @@ pub async fn run(
     providers: Arc<RwLock<ProviderRegistry>>,
     store: Store,
     history: Arc<SqliteHistory>,
+    notifier: crate::apis::history::HistoryChangeNotifier,
     backend: LaunchBackend,
     connection: zbus::Connection,
     resolver: Arc<dyn ExecResolver>,
@@ -181,7 +182,7 @@ pub async fn run(
             }
         }
 
-        if let Err(error) = history.append(Event {
+        match history.append(Event {
             id: EventId::new(),
             at_ms: lege_state::now_ms(),
             kind: EventKind::AutostartDecision,
@@ -192,7 +193,8 @@ pub async fn run(
             actions: Vec::new(),
             reversible: false,
         }) {
-            tracing::warn!(%error, "failed to record autostart history event");
+            Ok(()) => notifier.notify().await,
+            Err(error) => tracing::warn!(%error, "failed to record autostart history event"),
         }
     }
 }

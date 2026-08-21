@@ -86,7 +86,7 @@ fn save_cursor_within(tx: &rusqlite::Transaction<'_>, cursor: &str) -> Result<()
 
 /// One ingestion pass: fetch entries newer than the persisted cursor, turn the ones that are
 /// ours into history events, and advance the cursor. Returns how many events were appended.
-pub async fn ingest_once(store: &Store) -> Result<usize> {
+pub async fn ingest_once(store: &Store, notifier: &crate::apis::history::HistoryChangeNotifier) -> Result<usize> {
     let cursor = load_cursor(store)?;
     let mut command = Command::new("journalctl");
     command.args([
@@ -130,6 +130,7 @@ pub async fn ingest_once(store: &Store) -> Result<usize> {
             }
             Ok(())
         })?;
+        notifier.notify().await;
         ingested += 1;
     }
 
@@ -144,9 +145,9 @@ pub async fn ingest_once(store: &Store) -> Result<usize> {
 }
 
 /// Poll forever, spaced `interval` apart. Intended to be spawned once at startup.
-pub async fn run(store: Store, interval: Duration) {
+pub async fn run(store: Store, notifier: crate::apis::history::HistoryChangeNotifier, interval: Duration) {
     loop {
-        match ingest_once(&store).await {
+        match ingest_once(&store, &notifier).await {
             Ok(0) => {}
             Ok(count) => tracing::info!(count, "ingested crash events from systemd-coredump"),
             Err(error) => tracing::warn!(%error, "failed to poll the systemd-coredump journal"),

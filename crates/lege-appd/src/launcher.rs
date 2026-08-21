@@ -134,7 +134,7 @@ async fn launch_via_systemd_run(
         bail!("systemd-run failed with {status}");
     }
 
-    let control_group = wait_for_control_group(&unit_name).await?;
+    let control_group = wait_for_control_group(&unit_name).await;
 
     Ok(InstanceRecord {
         id: instance_id,
@@ -144,24 +144,35 @@ async fn launch_via_systemd_run(
     })
 }
 
-async fn wait_for_control_group(unit: &str) -> Result<PathBuf> {
+/// Poll for the unit's `ControlGroup` property. `systemd-run`'s own exit status already told us
+/// the unit was accepted, so exhausting the retry budget here is "the property is not populated
+/// yet" (or the polling itself is flaky), never "the launch failed": returning a derived guess
+/// instead of an error keeps the instance registered and the caller told the launch succeeded,
+/// which it did. Identity still resolves correctly even from the guess, since it is only ever
+/// consulted through `unit::parse_cgroup_path`'s self-describing match, not string equality.
+async fn wait_for_control_group(unit: &str) -> PathBuf {
     for _ in 0..100 {
-        let output = Command::new("systemctl")
+        if let Ok(output) = Command::new("systemctl")
             .args(["--user", "show", unit, "--property=ControlGroup", "--value"])
             .output()
             .await
-            .context("querying systemd ControlGroup")?;
-
-        if output.status.success() {
-            let value = String::from_utf8(output.stdout)?;
+            && output.status.success()
+            && let Ok(value) = String::from_utf8(output.stdout)
+        {
             let value = value.trim();
             if !value.is_empty() {
-                return Ok(PathBuf::from(value));
+                return PathBuf::from(value);
             }
         }
 
         sleep(Duration::from_millis(10)).await;
     }
 
-    bail!("systemd did not expose a ControlGroup for {unit}")
+    tracing::warn!(
+        unit,
+        "systemd did not expose a ControlGroup within the retry budget; registering with a \
+         derived path (the unit is running — identity still resolves through its \
+         self-describing name)"
+    );
+    PathBuf::from(format!("app.slice/{unit}"))
 }
