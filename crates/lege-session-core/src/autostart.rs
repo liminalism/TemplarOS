@@ -2,11 +2,15 @@
 //! daemon launches only entries that are approved and, for exclusive roles, selected.
 //! The LegeOS session masks `xdg-desktop-autostart.target` so nothing bypasses this.
 
-use crate::providers::ProviderRegistry;
+use crate::{
+    change_log,
+    history::{Event, EventAction, EventId, EventKind, append_within},
+    providers::ProviderRegistry,
+};
 use anyhow::{Context, Result};
 use lege_state::Store;
 use lege_types::{AppId, ProviderRole};
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -75,7 +79,7 @@ pub enum Approval {
 }
 
 impl Approval {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Approved => "approved",
             Self::Denied => "denied",
@@ -83,7 +87,7 @@ impl Approval {
         }
     }
 
-    fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         Some(match text {
             "approved" => Self::Approved,
             "denied" => Self::Denied,
@@ -173,6 +177,138 @@ pub fn set_approval_within(tx: &Transaction<'_>, app_id: &AppId, approval: Appro
         params![app_id.as_str(), approval.as_str()],
     )
     .context("persisting autostart approval")?;
+    Ok(())
+}
+
+fn current_approval_within(tx: &Transaction<'_>, app_id: &AppId) -> Result<Option<Approval>> {
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT approval FROM autostart_approvals WHERE app_id = ?1",
+            params![app_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("reading current autostart approval")?;
+    stored
+        .map(|value| Approval::parse(&value).with_context(|| format!("invalid stored approval: {value:?}")))
+        .transpose()
+}
+
+/// Set an application's background-permission approval, recording history/undo in the same
+/// transaction (`org.legeos.Background1.Grant`/`Revoke`; `History1.Undo`'s `background.approval`
+/// domain reverses it via [`revert_approval_within`]).
+pub fn apply_approval_within(
+    tx: &Transaction<'_>,
+    app_id: &AppId,
+    approval: Approval,
+    origin: &str,
+) -> Result<EventId> {
+    let previous = current_approval_within(tx, app_id)?;
+    set_approval_within(tx, app_id, approval)?;
+
+    let old_json = previous.map(|value| serde_json::to_string(&value)).transpose()?;
+    let new_json = serde_json::to_string(&approval)?;
+    let event_id = EventId::new();
+    let change_id = change_log::record_within(
+        tx,
+        "background.approval",
+        app_id.as_str(),
+        old_json.as_deref(),
+        Some(&new_json),
+        event_id,
+    )?;
+    let message = match approval {
+        Approval::Approved => format!("{app_id} was approved to run in the background."),
+        Approval::Denied => format!("{app_id} was denied permission to run in the background."),
+        Approval::Undecided => format!("{app_id}'s background permission was reset to undecided."),
+    };
+    append_within(
+        tx,
+        &Event {
+            id: event_id,
+            at_ms: lege_state::now_ms(),
+            kind: EventKind::AutostartDecision,
+            app_id: Some(app_id.clone()),
+            instance_id: None,
+            message,
+            cause: Some(origin.to_owned()),
+            actions: vec![EventAction {
+                label: "Undo".into(),
+                command: change_log::undo_command(change_id),
+            }],
+            reversible: true,
+        },
+    )?;
+    Ok(event_id)
+}
+
+/// Reverse a `background.approval` change recorded in the shared `change_log`
+/// (`History1.Undo`). `key` is the app ID `apply_approval_within` used; `old_value_json` is
+/// `None` when the app had no stored approval (undecided) before the change being undone.
+pub fn revert_approval_within(tx: &Transaction<'_>, key: &str, old_value_json: Option<&str>) -> Result<()> {
+    let app_id: AppId = key
+        .parse()
+        .with_context(|| format!("invalid app id in change_log key: {key:?}"))?;
+    let approval = match old_value_json {
+        Some(json) => serde_json::from_str(json).context("parsing a stored background approval")?,
+        None => Approval::Undecided,
+    };
+    set_approval_within(tx, &app_id, approval)
+}
+
+/// Load every persisted declaration (what the last autostart scan found this application
+/// requesting). An app with no row here has never been seen declaring background capability.
+pub fn load_declarations(store: &Store) -> Result<Vec<AutostartEntry>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT app_id, role, requested FROM background_declarations")
+        .context("preparing background_declarations query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .context("reading background_declarations")?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let (app_id, role, requested_json) = row?;
+        let app_id: AppId = app_id
+            .parse()
+            .with_context(|| format!("invalid app id in background_declarations: {app_id:?}"))?;
+        let role = role
+            .map(|value| {
+                ProviderRole::ALL
+                    .iter()
+                    .copied()
+                    .find(|role| role.as_str() == value)
+                    .with_context(|| format!("invalid provider role in background_declarations: {value:?}"))
+            })
+            .transpose()?;
+        let requested: Vec<BackgroundPermission> =
+            serde_json::from_str(&requested_json).context("parsing declared background permissions")?;
+        entries.push(AutostartEntry {
+            app_id,
+            role,
+            requested,
+        });
+    }
+    Ok(entries)
+}
+
+/// Persist (or refresh) one declaration; called once per discovered entry each autostart scan.
+/// Not itself a user decision, so it carries no history/undo — only `apply_approval_within` does.
+pub fn save_declaration_within(tx: &Transaction<'_>, entry: &AutostartEntry) -> Result<()> {
+    let requested_json = serde_json::to_string(&entry.requested).context("encoding declared permissions")?;
+    let role = entry.role.map(ProviderRole::as_str);
+    tx.execute(
+        "INSERT INTO background_declarations (app_id, role, requested) VALUES (?1, ?2, ?3)
+         ON CONFLICT (app_id) DO UPDATE SET role = excluded.role, requested = excluded.requested",
+        params![entry.app_id.as_str(), role, requested_json],
+    )
+    .context("persisting background declaration")?;
     Ok(())
 }
 
@@ -285,5 +421,104 @@ mod tests {
             );
         }
         assert_eq!(BackgroundPermission::parse("not-a-real-permission"), None);
+    }
+
+    #[test]
+    fn declarations_persist_and_reload_including_the_role() {
+        let store = Store::in_memory().unwrap();
+        let app: AppId = "org.example.Sync".parse().unwrap();
+        let entry = AutostartEntry {
+            app_id: app.clone(),
+            role: Some(ProviderRole::NotificationServer),
+            requested: vec![BackgroundPermission::ContinuousBackground, BackgroundPermission::Notifications],
+        };
+        store.transaction(|tx| save_declaration_within(tx, &entry)).unwrap();
+
+        let loaded = load_declarations(&store).unwrap();
+        assert_eq!(loaded, vec![entry.clone()]);
+
+        // Re-saving (a later scan) overwrites rather than duplicating.
+        let updated = AutostartEntry {
+            requested: vec![BackgroundPermission::ScreenCapture],
+            ..entry
+        };
+        store.transaction(|tx| save_declaration_within(tx, &updated)).unwrap();
+        let loaded = load_declarations(&store).unwrap();
+        assert_eq!(loaded, vec![updated]);
+    }
+
+    #[test]
+    fn apply_approval_persists_records_history_and_undo_reverses_it() {
+        let store = Store::in_memory().unwrap();
+        let app: AppId = "org.example.Sync".parse().unwrap();
+
+        let event_id = store
+            .transaction(|tx| apply_approval_within(tx, &app, Approval::Approved, "user"))
+            .unwrap();
+        assert_eq!(
+            approval_for(&load_approvals(&store).unwrap(), &app),
+            Approval::Approved
+        );
+
+        let connection = store.lock();
+        let message: String = connection
+            .query_row(
+                "SELECT message FROM history WHERE event_id = ?1",
+                params![event_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("approved"), "{message}");
+        let (domain, key, old_value): (String, String, Option<String>) = connection
+            .query_row(
+                "SELECT domain, key, old_value FROM change_log WHERE event_id = ?1",
+                params![event_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(domain, "background.approval");
+        assert_eq!(key, app.as_str());
+        assert_eq!(old_value, None, "no approval was stored before this change");
+
+        store
+            .transaction(|tx| revert_approval_within(tx, &key, old_value.as_deref()))
+            .unwrap();
+        assert_eq!(
+            approval_for(&load_approvals(&store).unwrap(), &app),
+            Approval::Undecided,
+            "reverting a change with no prior approval returns to undecided"
+        );
+    }
+
+    #[test]
+    fn undo_restores_a_previous_approval_not_just_undecided() {
+        let store = Store::in_memory().unwrap();
+        let app: AppId = "org.example.Sync".parse().unwrap();
+
+        store
+            .transaction(|tx| apply_approval_within(tx, &app, Approval::Approved, "user"))
+            .unwrap();
+        let second_event = store
+            .transaction(|tx| apply_approval_within(tx, &app, Approval::Denied, "user"))
+            .unwrap();
+
+        let old_value: Option<String> = store
+            .lock()
+            .query_row(
+                "SELECT old_value FROM change_log WHERE event_id = ?1",
+                params![second_event.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_value.as_deref(), Some("\"approved\""));
+
+        store
+            .transaction(|tx| revert_approval_within(tx, app.as_str(), old_value.as_deref()))
+            .unwrap();
+        assert_eq!(
+            approval_for(&load_approvals(&store).unwrap(), &app),
+            Approval::Approved
+        );
     }
 }

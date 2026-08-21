@@ -3,4 +3,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bus;
 pub mod doctor;
+pub mod files;
+pub mod format;
+pub mod history;
+pub mod humanize;
+pub mod open;
+pub mod power;
+pub mod project;
+pub mod providers;
+pub mod res;
+pub mod settings;
+pub mod update;

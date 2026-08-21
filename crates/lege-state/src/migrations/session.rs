@@ -8,7 +8,9 @@
 //! the single selection per role), a small notification-ID ledger so a fast crash/restart never
 //! reissues a live ID, one shared undo log for every domain that offers "Undo", desktop-entry
 //! import bookkeeping (so re-scans are incremental and a later native manifest can be detected),
-//! and the `systemd-coredump` journal cursor.
+//! and the `systemd-coredump` journal cursor. `0003` adds persisted background-permission
+//! declarations, so `org.legeos.Background1` can answer "what does this app want and why is it
+//! running" without a fresh `.desktop` scan.
 
 pub const MIGRATIONS: &[(&str, &str)] = &[(
     "0002-session-domains",
@@ -61,6 +63,20 @@ pub const MIGRATIONS: &[(&str, &str)] = &[(
             id         INTEGER PRIMARY KEY CHECK (id = 1),
             cursor     TEXT NOT NULL,
             updated_ms INTEGER NOT NULL
+        );
+",
+), (
+    "0003-background-declarations",
+    r"
+        -- What the last autostart scan found this application declaring (planning doc 01 §7):
+        -- the background permissions it requests and, if any, the exclusive role it ties its
+        -- autostart to. Separate from `autostart_approvals` (the user's yes/no on top of it) so
+        -- org.legeos.Background1 can answer 'what does it want, and did we say yes' without a
+        -- fresh .desktop scan.
+        CREATE TABLE background_declarations (
+            app_id    TEXT PRIMARY KEY,
+            role      TEXT,
+            requested TEXT NOT NULL
         );
 ",
 )];

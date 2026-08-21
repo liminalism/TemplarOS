@@ -12,7 +12,11 @@ lege-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 zbus = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true

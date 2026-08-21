@@ -1,5 +1,5 @@
 //! Proxies for `lege-sessiond` (`org.legeos.Session`): identity, launching, associations,
-//! providers, history, settings, projects, power and location.
+//! providers, history, settings, projects, power, location and background permissions.
 //!
 //! Kept in sync with `interfaces/dbus/org.legeos.*.xml` (`cargo xtask check-interfaces`).
 //!
@@ -10,6 +10,27 @@
 //! before — the macro consumes the trait itself); a signal's `receive_<name>()` stream is
 //! consumed through `proxy.` methods, so callers never need to name the per-module companion
 //! types directly.
+
+mod background {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Background1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Background"
+    )]
+    pub trait Background {
+        /// `(app_id, permissions_json, approval, running, reason_json)`
+        fn list(&self) -> zbus::Result<Vec<(String, String, String, bool, String)>>;
+
+        fn grant(&self, app_id: &str) -> zbus::Result<()>;
+
+        fn revoke(&self, app_id: &str) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        fn changed(&self, app_id: String) -> zbus::Result<()>;
+    }
+}
 
 mod app_identity {
     use zbus::proxy;
@@ -253,6 +274,7 @@ mod location {
 }
 
 pub use app_identity::AppIdentityProxy;
+pub use background::BackgroundProxy;
 pub use associations::AssociationsProxy;
 pub use history::HistoryProxy;
 pub use launcher::LauncherProxy;

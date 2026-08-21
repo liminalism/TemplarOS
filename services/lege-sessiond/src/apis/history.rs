@@ -177,6 +177,15 @@ impl HistoryApi {
                             entry.old_value.as_deref(),
                         )?;
                     }
+                    "background.approval" => {
+                        // No in-memory cache to reload afterward: `Background1` always reads
+                        // approvals straight from the store.
+                        lege_session_core::autostart::revert_approval_within(
+                            tx,
+                            &entry.key,
+                            entry.old_value.as_deref(),
+                        )?;
+                    }
                     other => bail!("no undo applier registered for change_log domain {other:?}"),
                 }
 

@@ -271,10 +271,10 @@ fn print_dry_run_summary(services: &Services) {
     println!("history:      {history_count} events");
 }
 
-/// Serve every `org.legeos.Session` interface, in-process, before the bus name is claimed.
-async fn serve_interfaces(
+/// Application-identity/launch/association/provider domains: the ones a launch or an "open
+/// this file" round trip touches.
+async fn serve_launch_and_association_interfaces(
     connection: &zbus::Connection,
-    system_connection: Option<zbus::Connection>,
     services: &Services,
     backend: LaunchBackend,
 ) -> Result<()> {
@@ -313,6 +313,28 @@ async fn serve_interfaces(
         )
         .await
         .context("serving Providers1")?;
+    object_server
+        .at(
+            apis::background::PATH,
+            apis::background::BackgroundApi::new(
+                services.store.clone(),
+                services.registry.clone(),
+                services.providers.clone(),
+            ),
+        )
+        .await
+        .context("serving Background1")?;
+    Ok(())
+}
+
+/// The rest of the session-core domains: history/settings/projects/power/location.
+async fn serve_policy_interfaces(
+    connection: &zbus::Connection,
+    system_connection: Option<zbus::Connection>,
+    services: &Services,
+    backend: LaunchBackend,
+) -> Result<()> {
+    let object_server = connection.object_server();
     object_server
         .at(
             names::HISTORY_PATH,
@@ -370,6 +392,18 @@ async fn serve_interfaces(
         )
         .await
         .context("serving Location1")?;
+    Ok(())
+}
+
+/// Serve every `org.legeos.Session` interface, in-process, before the bus name is claimed.
+async fn serve_interfaces(
+    connection: &zbus::Connection,
+    system_connection: Option<zbus::Connection>,
+    services: &Services,
+    backend: LaunchBackend,
+) -> Result<()> {
+    serve_launch_and_association_interfaces(connection, services, backend).await?;
+    serve_policy_interfaces(connection, system_connection, services, backend).await?;
     Ok(())
 }
 

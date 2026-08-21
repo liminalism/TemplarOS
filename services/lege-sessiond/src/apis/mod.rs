@@ -3,6 +3,7 @@
 //! transaction as any history/undo-log write, and, where the interface documents one, emits a
 //! `Changed` signal afterward.
 
+pub mod background;
 pub mod history;
 pub mod location;
 pub mod notifications;

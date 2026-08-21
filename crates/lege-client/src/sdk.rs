@@ -1,6 +1,18 @@
 //! The application SDK: identity from the environment and the checkpoint protocol.
+//!
+//! [`serve_checkpoint`] is the other half of `org.legeos.Checkpoint1`
+//! (`interfaces/dbus/org.legeos.Checkpoint1.xml`): inverted from every other `org.legeos.*`
+//! interface, this one is *served by the application*, not by a daemon. `lege-sessiond` relays
+//! the governor's request through [`lege_client::proxies::CheckpointProxy`](crate::proxies::CheckpointProxy)
+//! to whichever bus name the instance claimed for itself
+//! (`lege_types::dbus::checkpoint::instance_bus_name`); this module is the receiving end a
+//! first-party application links to answer it.
 
-use lege_types::{AppId, InstanceId, checkpoint::CheckpointRequest, dbus::env};
+use lege_types::{
+    AppId, InstanceId,
+    checkpoint::{CheckpointRequest, CheckpointResponse},
+    dbus::{checkpoint as checkpoint_dbus, env},
+};
 
 /// The identity `appd` gave this process at launch, if it was launched through LegeOS.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +86,100 @@ pub fn dispatch<H: CheckpointHandler>(
             }
         }
     }
+}
+
+/// Why [`serve_checkpoint`] could not start.
+#[derive(Debug, thiserror::Error)]
+pub enum ServeCheckpointError {
+    /// No `LEGEOS_APP_ID`/`LEGEOS_INSTANCE_ID` in the environment: this process was not started
+    /// through the broker, so it has no instance identity and therefore no bus name to claim.
+    /// This is the documented legacy case (`docs/protocols/checkpoint.md`: "legacy applications
+    /// are governed with less confidence"), not a fault — callers should treat it as "do not
+    /// serve the checkpoint protocol," not as an error to surface to the user.
+    #[error("not launched through LegeOS: no instance identity in the environment")]
+    NotLaunchedThroughLegeOs,
+
+    /// Claiming the instance bus name, or exporting the object, failed.
+    #[error("could not serve org.legeos.Checkpoint1: {0}")]
+    Zbus(#[from] zbus::Error),
+}
+
+/// The `org.legeos.Checkpoint1` object a served instance exports at
+/// [`checkpoint_dbus::PATH`]. Holds the caller's [`CheckpointHandler`] plus the one piece of
+/// state the wire protocol itself does not carry: the token from this process's own most recent
+/// [`CheckpointResponse::CheckpointComplete`], consulted when a later `restore-instance` request
+/// arrives with no token of its own (the current [`CheckpointRequest::RestoreInstance`] variant
+/// does not carry one — restoring a *different*, freshly launched process from an older
+/// instance's token is therefore not yet answerable by this SDK; only "resume within the same
+/// still-running process" is).
+#[derive(Debug)]
+struct CheckpointServer<H> {
+    identity: LaunchIdentity,
+    handler: H,
+    last_token: Option<String>,
+}
+
+#[zbus::interface(name = "org.legeos.Checkpoint1")]
+impl<H> CheckpointServer<H>
+where
+    H: CheckpointHandler + Send + Sync + 'static,
+{
+    /// The JSON encoding of a [`CheckpointRequest`], answered with the JSON encoding of a
+    /// [`CheckpointResponse`]. A `refused` response is a legitimate answer (the instance is
+    /// mid-transaction and cannot save right now) returned as ordinary method output, never as a
+    /// D-Bus error; a D-Bus error here means the request itself could not even be understood.
+    async fn request(&mut self, request_json: &str) -> zbus::fdo::Result<String> {
+        let response = match serde_json::from_str::<CheckpointRequest>(request_json) {
+            Ok(request) => {
+                let response = dispatch(&mut self.handler, &request, self.last_token.as_deref());
+                if let CheckpointResponse::CheckpointComplete { token, .. } = &response {
+                    self.last_token = Some(token.clone());
+                }
+                response
+            }
+            Err(error) => CheckpointResponse::Refused {
+                instance: self.identity.instance_id,
+                reason: format!("malformed checkpoint request: {error}"),
+            },
+        };
+        serde_json::to_string(&response)
+            .map_err(|error| zbus::fdo::Error::Failed(format!("encoding response: {error}")))
+    }
+}
+
+/// Claim this instance's checkpoint bus name
+/// (`lege_types::dbus::checkpoint::instance_bus_name`) on `connection` and serve
+/// `org.legeos.Checkpoint1` there for `handler`, so pressure containment can save this
+/// application's work instead of only killing it.
+///
+/// Reads [`LaunchIdentity::from_env`] itself: an application started outside the broker has no
+/// instance identity and nothing to claim, so this returns
+/// [`ServeCheckpointError::NotLaunchedThroughLegeOs`] rather than inventing one. `connection` is
+/// a parameter (not established here) so tests can serve over a private peer-to-peer pair
+/// instead of a real session bus.
+pub async fn serve_checkpoint<H>(
+    connection: &zbus::Connection,
+    handler: H,
+) -> Result<(), ServeCheckpointError>
+where
+    H: CheckpointHandler + Send + Sync + 'static,
+{
+    let identity =
+        LaunchIdentity::from_env().ok_or(ServeCheckpointError::NotLaunchedThroughLegeOs)?;
+    let bus_name = checkpoint_dbus::instance_bus_name(identity.instance_id);
+    connection
+        .object_server()
+        .at(
+            checkpoint_dbus::PATH,
+            CheckpointServer {
+                identity,
+                handler,
+                last_token: None,
+            },
+        )
+        .await?;
+    connection.request_name(bus_name).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -151,5 +257,100 @@ mod tests {
             Some(&token),
         );
         assert!(matches!(r, CheckpointResponse::Prepared { .. }));
+    }
+
+    fn server(handler: Editor) -> CheckpointServer<Editor> {
+        CheckpointServer {
+            identity: LaunchIdentity {
+                app_id: "org.legeos.Test".parse().unwrap(),
+                instance_id: InstanceId::new(),
+            },
+            handler,
+            last_token: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn request_round_trips_json_and_remembers_the_token_for_a_later_restore() {
+        let instance = InstanceId::new();
+        let mut server = server(Editor {
+            dirty: true,
+            saved: None,
+        });
+        server.identity.instance_id = instance;
+
+        let checkpoint_json = serde_json::to_string(&CheckpointRequest::CheckpointNow {
+            instance,
+            deadline: Duration::from_secs(3),
+        })
+        .unwrap();
+        let response_json = server.request(&checkpoint_json).await.unwrap();
+        let response: CheckpointResponse = serde_json::from_str(&response_json).unwrap();
+        let CheckpointResponse::CheckpointComplete {
+            has_unsaved_work, ..
+        } = response
+        else {
+            panic!("{response_json}")
+        };
+        assert!(has_unsaved_work);
+        assert_eq!(server.last_token.as_deref(), Some("state-v1"));
+
+        // A restore with no token of its own on the wire still succeeds: the server remembered
+        // the token from the checkpoint it just completed.
+        let restore_json = serde_json::to_string(&CheckpointRequest::RestoreInstance {
+            instance,
+            previous: instance,
+        })
+        .unwrap();
+        let response_json = server.request(&restore_json).await.unwrap();
+        let response: CheckpointResponse = serde_json::from_str(&response_json).unwrap();
+        assert!(matches!(response, CheckpointResponse::Prepared { .. }));
+    }
+
+    #[tokio::test]
+    async fn malformed_request_json_is_a_refusal_not_a_dbus_error() {
+        let mut server = server(Editor {
+            dirty: false,
+            saved: None,
+        });
+        let response_json = server.request("not json").await.unwrap();
+        let response: CheckpointResponse = serde_json::from_str(&response_json).unwrap();
+        let CheckpointResponse::Refused { reason, .. } = response else {
+            panic!("{response_json}")
+        };
+        assert!(reason.contains("malformed"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn serving_without_a_launch_identity_is_refused_before_touching_the_connection() {
+        // The sandboxed test process is not launched through the broker, so neither
+        // LEGEOS_APP_ID nor LEGEOS_INSTANCE_ID is set — exactly the documented legacy case.
+        assert!(std::env::var(env::APP_ID).is_err());
+        assert!(std::env::var(env::INSTANCE_ID).is_err());
+
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let guid = zbus::Guid::generate();
+        let (client_conn, _server_conn) = tokio::try_join!(
+            zbus::connection::Builder::unix_stream(client).p2p().build(),
+            zbus::connection::Builder::unix_stream(server)
+                .server(guid)
+                .unwrap()
+                .p2p()
+                .build(),
+        )
+        .unwrap();
+
+        let result = serve_checkpoint(
+            &client_conn,
+            Editor {
+                dirty: false,
+                saved: None,
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ServeCheckpointError::NotLaunchedThroughLegeOs)
+        ));
     }
 }

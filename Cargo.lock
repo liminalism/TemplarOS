@@ -450,9 +450,16 @@ name = "lege"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "lege-appd",
+ "lege-associationd",
  "lege-client",
+ "lege-filed",
  "lege-hwdetect",
+ "lege-resourced",
+ "lege-session-core",
+ "lege-state",
  "lege-types",
  "serde",
  "serde_json",
@@ -522,6 +529,8 @@ dependencies = [
  "lege-types",
  "serde",
  "serde_json",
+ "thiserror",
+ "tokio",
  "zbus",
 ]
 
@@ -666,8 +675,13 @@ dependencies = [
  "anyhow",
  "clap",
  "lege-client",
+ "lege-types",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
@@ -675,13 +689,17 @@ name = "lege-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "lege-client",
  "lege-types",
  "lege-window",
  "serde",
+ "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
@@ -1580,9 +1598,16 @@ name = "xdg-desktop-portal-lege"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "futures-util",
  "lege-client",
+ "lege-filed",
+ "lege-resourced",
+ "lege-session-core",
  "lege-types",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
