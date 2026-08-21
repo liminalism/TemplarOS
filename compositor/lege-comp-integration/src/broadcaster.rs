@@ -88,11 +88,7 @@ mod tests {
 
     #[test]
     fn snapshot_reflects_layer_and_shelf_state() {
-        let outputs = vec![Output {
-            name: "eDP-1".into(),
-            logical: Rect::new(0, 0, 1920, 1080),
-            scale_milli: 1000,
-        }];
+        let outputs = vec![Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)];
         let mut service = WindowService::new(NullCache, outputs);
         let normal = service.on_toplevel_mapped(
             1,

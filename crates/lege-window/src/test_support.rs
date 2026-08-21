@@ -3,7 +3,7 @@
 //! (mixed scale, negative origins, hotplug sequences, overlapping and disjoint arrangements) for
 //! proptest.
 
-use crate::geometry::{Output, Rect};
+use crate::geometry::{Edge, Exclusive, Output, Rect};
 use proptest::prelude::*;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -33,16 +33,16 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn into_output(fixture: OutputFixture) -> Output {
-    Output {
-        name: fixture.name,
-        logical: Rect::new(
+    Output::new(
+        fixture.name,
+        Rect::new(
             fixture.logical.x,
             fixture.logical.y,
             fixture.logical.width,
             fixture.logical.height,
         ),
-        scale_milli: fixture.scale_milli,
-    }
+        fixture.scale_milli,
+    )
 }
 
 /// Load a single-topology fixture (a flat JSON array of outputs), e.g. `laptop-plus-hdmi`.
@@ -85,12 +85,37 @@ pub fn arb_output() -> impl Strategy<Value = Output> {
             Just(1750),
             Just(2000)
         ],
+        arb_exclusive_zones(),
     )
-        .prop_map(|(x, y, width, height, scale)| Output {
-            name: "out".into(),
-            logical: Rect::new(x, y, width, height),
-            scale_milli: scale,
+        .prop_map(|(x, y, width, height, scale, zones)| {
+            let logical = Rect::new(x, y, width, height);
+            let output = Output::new("out", logical, scale);
+            if zones.is_empty() {
+                output
+            } else {
+                output.with_work_area(crate::geometry::work_area_for(logical, &zones))
+            }
         })
+}
+
+/// Exclusive zones a shell might claim — **including absurd ones**. Sizes reach far beyond any
+/// plausible output on purpose: every geometry invariant must survive a shell that asks for a
+/// dock taller than the screen, because a restartable, replaceable process does not get to
+/// decide whether windows can be reached.
+pub fn arb_exclusive_zones() -> impl Strategy<Value = Vec<Exclusive>> {
+    prop::collection::vec(
+        (
+            prop_oneof![
+                Just(Edge::Top),
+                Just(Edge::Bottom),
+                Just(Edge::Left),
+                Just(Edge::Right)
+            ],
+            0i32..6000,
+        )
+            .prop_map(|(edge, size)| Exclusive { edge, size }),
+        0..3,
+    )
 }
 
 /// A window-sized rectangle, including ones already far off any plausible output.
@@ -117,16 +142,16 @@ pub fn arb_hotplug_sequence() -> impl Strategy<Value = Vec<Vec<Output>>> {
             let mut sequence = vec![topology.clone()];
             for (index, add) in steps.into_iter().enumerate() {
                 if add || topology.len() <= 1 {
-                    topology.push(Output {
-                        name: format!("hotplug-{index}"),
-                        logical: Rect::new(
+                    topology.push(Output::new(
+                        format!("hotplug-{index}"),
+                        Rect::new(
                             2000 + i32::try_from(index).unwrap_or(0) * 2000,
                             0,
                             1920,
                             1080,
                         ),
-                        scale_milli: 1000,
-                    });
+                        1000,
+                    ));
                 } else {
                     topology.remove(0);
                 }

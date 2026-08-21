@@ -76,6 +76,103 @@ pub struct Output {
     /// Informational. Dragging remains in logical coordinates; scale is applied at rendering
     /// and input-conversion boundaries only.
     pub scale_milli: u32,
+
+    /// What is left of [`Output::logical`] once shell surfaces that reserve space — a dock, a
+    /// panel — have taken theirs. `None` means the whole output, which is the state of every
+    /// output until a shell claims an edge.
+    ///
+    /// Read it through [`Output::usable`], never directly: the raw value is what a shell asked
+    /// for, and a shell does not get the last word on whether a window can be reached.
+    #[serde(default)]
+    pub work_area: Option<Rect>,
+}
+
+impl Output {
+    /// An output with no reserved space.
+    pub fn new(name: impl Into<String>, logical: Rect, scale_milli: u32) -> Self {
+        Self {
+            name: name.into(),
+            logical,
+            scale_milli,
+            work_area: None,
+        }
+    }
+
+    /// The same output with `work_area` set — normally computed by [`work_area_for`].
+    #[must_use]
+    pub fn with_work_area(mut self, work_area: Rect) -> Self {
+        self.work_area = Some(work_area);
+        self
+    }
+
+    /// Where windows may actually be placed.
+    ///
+    /// **A shell surface must never be able to make windows unreachable.** The shell is a
+    /// restartable, replaceable process; if a buggy or hostile one claims an exclusive zone that
+    /// swallows the output — or one so large that no recovery band could fit in what remains —
+    /// the claim is ignored and the full output is returned. Reserving space is a request, and
+    /// like every other client request in this system it is checked rather than obeyed.
+    pub fn usable(&self) -> Rect {
+        let Some(requested) = self.work_area else {
+            return self.logical;
+        };
+        match requested.intersection(self.logical) {
+            Some(area)
+                if area.width >= MIN_RECOVERY_WIDTH && area.height >= RECOVERY_BAND_HEIGHT =>
+            {
+                area
+            }
+            _ => self.logical,
+        }
+    }
+}
+
+/// Which side of an output a shell surface reserves space against.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// One shell surface's claim on an output's space: a dock of `size` logical pixels along `edge`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Exclusive {
+    pub edge: Edge,
+    pub size: i32,
+}
+
+/// Shrink `logical` by every zone, in the order given.
+///
+/// Kept here rather than in the compositor because it is geometry, and geometry in this project
+/// is tested without a compositor. Zones are applied cumulatively, so two docks on the same edge
+/// stack rather than overlap; a negative size is treated as zero.
+pub fn work_area_for(logical: Rect, zones: &[Exclusive]) -> Rect {
+    zones.iter().fold(logical, |area, zone| {
+        let size = zone.size.max(0);
+        match zone.edge {
+            Edge::Top => Rect {
+                y: area.y.saturating_add(size),
+                height: area.height.saturating_sub(size),
+                ..area
+            },
+            Edge::Bottom => Rect {
+                height: area.height.saturating_sub(size),
+                ..area
+            },
+            Edge::Left => Rect {
+                x: area.x.saturating_add(size),
+                width: area.width.saturating_sub(size),
+                ..area
+            },
+            Edge::Right => Rect {
+                width: area.width.saturating_sub(size),
+                ..area
+            },
+        }
+    })
 }
 
 /// Minimum visible width of the recovery band.
@@ -114,13 +211,17 @@ pub fn recovery_affordance(geometry: Rect, client_owns_band: bool) -> RecoveryAf
     }
 }
 
-/// True when enough of the recovery band is visible on some output.
+/// True when enough of the recovery band is visible on some output's usable area.
+///
+/// Against [`Output::usable`], not [`Output::logical`]: a band hidden underneath a dock is not
+/// something the user can grab, so counting it would make "recoverable" mean "drawn somewhere"
+/// rather than "reachable".
 pub fn is_recoverable(window: Rect, outputs: &[Output]) -> bool {
     let band = recovery_band(window);
     let required_width = window.width.clamp(1, MIN_RECOVERY_WIDTH);
 
     outputs.iter().any(|output| {
-        band.intersection(output.logical)
+        band.intersection(output.usable())
             .is_some_and(|visible| visible.width >= required_width && visible.height >= band.height)
     })
 }
@@ -133,7 +234,7 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
     }
 
     let target = choose_target_output(window, outputs);
-    let output = target.logical;
+    let output = target.usable();
 
     let visible_width = window
         .width
@@ -169,7 +270,7 @@ pub fn move_into_view(window: Rect, outputs: &[Output]) -> Rect {
         return window;
     }
 
-    let output = choose_target_output(window, outputs).logical;
+    let output = choose_target_output(window, outputs).usable();
 
     let minimum_x = output.x;
     let maximum_x = output.right().saturating_sub(window.width.max(1));
@@ -203,6 +304,7 @@ pub fn scatter_layout<Id: Copy>(windows: &[(Id, Rect)], outputs: &[Output]) -> V
 
     let mut placed = Vec::with_capacity(windows.len());
     for (output, assigned) in outputs.iter().zip(per_output) {
+        let area = output.usable();
         let count = assigned.len();
         if count == 0 {
             continue;
@@ -211,8 +313,8 @@ pub fn scatter_layout<Id: Copy>(windows: &[(Id, Rect)], outputs: &[Output]) -> V
         let columns = (count as f64).sqrt().ceil().max(1.0) as i32;
         let rows = (i32::try_from(count).unwrap_or(i32::MAX) + columns - 1) / columns;
         let rows = rows.max(1);
-        let cell_width = (output.logical.width.max(1) / columns.max(1)).max(1);
-        let cell_height = (output.logical.height.max(1) / rows.max(1)).max(1);
+        let cell_width = (area.width.max(1) / columns.max(1)).max(1);
+        let cell_height = (area.height.max(1) / rows.max(1)).max(1);
 
         for (index, (id, original)) in assigned.into_iter().enumerate() {
             let column = i32::try_from(index).unwrap_or(i32::MAX) % columns;
@@ -220,14 +322,8 @@ pub fn scatter_layout<Id: Copy>(windows: &[(Id, Rect)], outputs: &[Output]) -> V
 
             let width = original.width.max(1).min(cell_width);
             let height = original.height.max(1).min(cell_height);
-            let cell_x = output
-                .logical
-                .x
-                .saturating_add(column.saturating_mul(cell_width));
-            let cell_y = output
-                .logical
-                .y
-                .saturating_add(row.saturating_mul(cell_height));
+            let cell_x = area.x.saturating_add(column.saturating_mul(cell_width));
+            let cell_y = area.y.saturating_add(row.saturating_mul(cell_height));
 
             placed.push((
                 id,
@@ -363,11 +459,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn edp() -> Vec<Output> {
-        vec![Output {
-            name: "eDP-1".to_owned(),
-            logical: Rect::new(0, 0, 1920, 1080),
-            scale_milli: 1000,
-        }]
+        vec![Output::new(
+            "eDP-1".to_owned(),
+            Rect::new(0, 0, 1920, 1080),
+            1000,
+        )]
     }
 
     #[test]
@@ -379,12 +475,155 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_zones_shrink_the_work_area_and_stack() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        assert_eq!(
+            work_area_for(
+                screen,
+                &[Exclusive {
+                    edge: Edge::Top,
+                    size: 40
+                }]
+            ),
+            Rect::new(0, 40, 1920, 1040)
+        );
+        assert_eq!(
+            work_area_for(
+                screen,
+                &[Exclusive {
+                    edge: Edge::Bottom,
+                    size: 64
+                }]
+            ),
+            Rect::new(0, 0, 1920, 1016)
+        );
+        // A panel at the top and a dock at the bottom take from opposite ends.
+        assert_eq!(
+            work_area_for(
+                screen,
+                &[
+                    Exclusive {
+                        edge: Edge::Top,
+                        size: 40
+                    },
+                    Exclusive {
+                        edge: Edge::Bottom,
+                        size: 64
+                    },
+                ]
+            ),
+            Rect::new(0, 40, 1920, 976)
+        );
+        // Two claims on the same edge stack rather than overlap.
+        let stacked = work_area_for(
+            screen,
+            &[
+                Exclusive {
+                    edge: Edge::Left,
+                    size: 50,
+                },
+                Exclusive {
+                    edge: Edge::Left,
+                    size: 30,
+                },
+            ],
+        );
+        assert_eq!(stacked, Rect::new(80, 0, 1840, 1080));
+        // A negative claim is not a way to grow the work area past the output.
+        assert_eq!(
+            work_area_for(
+                screen,
+                &[Exclusive {
+                    edge: Edge::Top,
+                    size: -500
+                }]
+            ),
+            screen
+        );
+    }
+
+    #[test]
+    fn a_shell_cannot_make_windows_unreachable() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        let ordinary = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
+            screen,
+            &[Exclusive {
+                edge: Edge::Bottom,
+                size: 64,
+            }],
+        ));
+        assert_eq!(ordinary.usable(), Rect::new(0, 0, 1920, 1016));
+
+        // A dock taller than the screen, a dock that leaves a sliver too small for a recovery
+        // band, and a work area that has wandered off the output entirely: each claim is
+        // refused and the whole output is returned, because a restartable shell process does
+        // not get to decide whether the user can reach their windows.
+        for hostile in [
+            work_area_for(
+                screen,
+                &[Exclusive {
+                    edge: Edge::Top,
+                    size: 5000,
+                }],
+            ),
+            work_area_for(
+                screen,
+                &[Exclusive {
+                    edge: Edge::Top,
+                    size: 1060,
+                }],
+            ),
+            Rect::new(9000, 9000, 800, 600),
+            Rect::new(0, 0, 0, 0),
+        ] {
+            let output = Output::new("eDP-1", screen, 1000).with_work_area(hostile);
+            assert_eq!(
+                output.usable(),
+                screen,
+                "work area {hostile:?} should have been refused"
+            );
+            let window = Rect::new(400, 300, 800, 600);
+            let outputs = [output];
+            assert!(is_recoverable(repair_window(window, &outputs), &outputs));
+        }
+    }
+
+    #[test]
+    fn a_window_under_the_dock_is_not_considered_recoverable() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        // A panel occupying the top 80 logical pixels.
+        let output = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
+            screen,
+            &[Exclusive {
+                edge: Edge::Top,
+                size: 80,
+            }],
+        ));
+        let outputs = vec![output];
+
+        // A window whose whole recovery band sits beneath the panel: visible, but not grabbable.
+        let buried = Rect::new(200, 10, 900, 700);
+        assert!(
+            !is_recoverable(buried, &outputs),
+            "a band hidden under the panel must not count as reachable"
+        );
+
+        let repaired = repair_window(buried, &outputs);
+        assert!(is_recoverable(repaired, &outputs));
+        assert!(
+            repaired.y >= 80,
+            "repaired to {repaired:?}, still under the panel"
+        );
+        assert_eq!((repaired.width, repaired.height), (900, 700));
+    }
+
+    #[test]
     fn visible_window_is_not_moved() {
-        let outputs = vec![Output {
-            name: "eDP-1".to_owned(),
-            logical: Rect::new(0, 0, 1920, 1080),
-            scale_milli: 1250,
-        }];
+        let outputs = vec![Output::new(
+            "eDP-1".to_owned(),
+            Rect::new(0, 0, 1920, 1080),
+            1250,
+        )];
         let original = Rect::new(100, 100, 900, 700);
         assert_eq!(repair_window(original, &outputs), original);
     }
@@ -392,16 +631,8 @@ mod tests {
     #[test]
     fn removing_an_output_migrates_to_the_nearest_remaining() {
         let two = vec![
-            Output {
-                name: "eDP-1".into(),
-                logical: Rect::new(0, 0, 1920, 1080),
-                scale_milli: 1000,
-            },
-            Output {
-                name: "HDMI-1".into(),
-                logical: Rect::new(1920, 0, 2560, 1440),
-                scale_milli: 1000,
-            },
+            Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000),
+            Output::new("HDMI-1", Rect::new(1920, 0, 2560, 1440), 1000),
         ];
         let on_external = Rect::new(2500, 300, 800, 600);
         assert!(is_recoverable(on_external, &two));
@@ -486,9 +717,9 @@ mod tests {
             prop_assert_eq!((moved.width, moved.height), (window.width, window.height));
             prop_assert!(is_recoverable(moved, &outputs));
 
-            let target = choose_target_output(window, &outputs);
-            if window.width <= target.logical.width && window.height <= target.logical.height {
-                prop_assert_eq!(target.logical.intersection(moved), Some(moved));
+            let area = choose_target_output(window, &outputs).usable();
+            if window.width <= area.width && window.height <= area.height {
+                prop_assert_eq!(area.intersection(moved), Some(moved));
             }
         }
 
@@ -503,7 +734,7 @@ mod tests {
             let placed = scatter_layout(&tagged, &outputs);
             prop_assert_eq!(placed.len(), tagged.len());
             for (_, rect) in &placed {
-                prop_assert!(outputs.iter().any(|output| output.logical.intersection(*rect) == Some(*rect)));
+                prop_assert!(outputs.iter().any(|output| output.usable().intersection(*rect) == Some(*rect)));
             }
         }
 
@@ -513,11 +744,7 @@ mod tests {
             x in -20000i32..20000, y in -20000i32..20000,
             ox in -8000i32..8000, oy in -8000i32..8000,
         ) {
-            let output = Output {
-                name: "o".into(),
-                logical: Rect::new(ox, oy, 1920, 1080),
-                scale_milli: 1000,
-            };
+            let output = Output::new("o", Rect::new(ox, oy, 1920, 1080), 1000);
             let point = Point { x, y };
             let physical = logical_to_physical(point, &output);
             prop_assert_eq!(physical_to_logical(physical, &output), point);
@@ -532,11 +759,7 @@ mod tests {
             ox in -8000i32..8000, oy in -8000i32..8000,
             scale in prop_oneof![Just(1000u32), Just(1250), Just(1500), Just(1750), Just(2000)],
         ) {
-            let output = Output {
-                name: "o".into(),
-                logical: Rect::new(ox, oy, 1920, 1080),
-                scale_milli: scale,
-            };
+            let output = Output::new("o", Rect::new(ox, oy, 1920, 1080), scale);
             let l1 = Point { x, y };
             let p1 = logical_to_physical(l1, &output);
             let l2 = physical_to_logical(p1, &output);
@@ -560,8 +783,8 @@ mod tests {
             let pointer = Point { x: px, y: py };
             let anchor = Point { x: pointer.x - window.x, y: pointer.y - window.y };
 
-            let output_a = Output { name: "a".into(), logical: Rect::new(0, 0, 1920, 1080), scale_milli: scale_a };
-            let output_b = Output { name: "b".into(), logical: Rect::new(1920, 0, 2560, 1440), scale_milli: scale_b };
+            let output_a = Output::new("a", Rect::new(0, 0, 1920, 1080), scale_a);
+            let output_b = Output::new("b", Rect::new(1920, 0, 2560, 1440), scale_b);
 
             // Round-tripping the pointer through either output's physical space and back must
             // not change the logical point at all when it is not itself the value being

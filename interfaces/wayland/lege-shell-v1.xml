@@ -36,6 +36,31 @@
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="layer" type="uint" enum="layer"/>
     </request>
+    <request name="set_exclusive_zone">
+      <description summary="reserve space along one edge of the output a shell surface is on">
+        A dock or panel asks for `size` logical pixels along `edge`, so that ordinary windows are
+        placed beside it rather than beneath it. The compositor recomputes the affected output's
+        work area (`lege_window::work_area_for`) and repairs any window this displaces.
+
+        This is a request, not an instruction. `lege_window::Output::usable` refuses a claim that
+        would swallow the output, or that would leave too little room for a window's recovery
+        band — the shell is a restartable, replaceable process and does not get the last word on
+        whether the user can reach their windows. A refused claim is silently ignored rather than
+        erroring: a shell that asked for too much should still run, just without its reservation.
+
+        `size` of 0 releases a previously reserved zone. Reservations are per surface, so a
+        surface that is destroyed releases its own automatically.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="edge" type="uint" enum="edge"/>
+      <arg name="size" type="uint" summary="logical pixels along that edge; 0 releases"/>
+    </request>
+    <enum name="edge">
+      <entry name="top" value="0"/>
+      <entry name="bottom" value="1"/>
+      <entry name="left" value="2"/>
+      <entry name="right" value="3"/>
+    </enum>
     <!-- Mirrors `lege_window::Layer`'s discriminants exactly (`interfaces/wayland/README.md`). -->
     <enum name="layer">
       <entry name="secure_lock" value="0"/>

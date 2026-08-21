@@ -536,11 +536,7 @@ mod tests {
     }
 
     fn outputs() -> Vec<Output> {
-        vec![Output {
-            name: "eDP-1".into(),
-            logical: Rect::new(0, 0, 1920, 1080),
-            scale_milli: 1000,
-        }]
+        vec![Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)]
     }
 
     #[test]
@@ -619,16 +615,8 @@ mod tests {
     #[test]
     fn output_change_mid_drag_does_not_fight_the_pointer() {
         let two = vec![
-            Output {
-                name: "eDP-1".into(),
-                logical: Rect::new(0, 0, 1920, 1080),
-                scale_milli: 1000,
-            },
-            Output {
-                name: "HDMI-1".into(),
-                logical: Rect::new(1920, 0, 2560, 1440),
-                scale_milli: 1000,
-            },
+            Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000),
+            Output::new("HDMI-1", Rect::new(1920, 0, 2560, 1440), 1000),
         ];
         let mut service = WindowService::new(FakeCache::default(), two.clone());
         let id = service.on_toplevel_mapped(
@@ -666,16 +654,8 @@ mod tests {
     #[test]
     fn output_removal_migrates_windows() {
         let two = vec![
-            Output {
-                name: "eDP-1".into(),
-                logical: Rect::new(0, 0, 1920, 1080),
-                scale_milli: 1000,
-            },
-            Output {
-                name: "HDMI-1".into(),
-                logical: Rect::new(1920, 0, 2560, 1440),
-                scale_milli: 1000,
-            },
+            Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000),
+            Output::new("HDMI-1", Rect::new(1920, 0, 2560, 1440), 1000),
         ];
         let mut service = WindowService::new(FakeCache::default(), two.clone());
         let id = service.on_toplevel_mapped(
@@ -706,11 +686,7 @@ mod tests {
         assert_eq!(service.shelf().len(), 1);
 
         // Topology shrinks while the window sits on the shelf.
-        service.on_outputs_changed(vec![Output {
-            name: "eDP-1".into(),
-            logical: Rect::new(0, 0, 640, 480),
-            scale_milli: 1000,
-        }]);
+        service.on_outputs_changed(vec![Output::new("eDP-1", Rect::new(0, 0, 640, 480), 1000)]);
 
         let restored = service.unshelve(id).unwrap();
         assert!(!service.window(id).unwrap().shelved);
