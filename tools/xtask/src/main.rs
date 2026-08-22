@@ -553,12 +553,18 @@ fn check_packaging(root: &Path) -> Result<()> {
     // reads the same `[package.metadata.deb]` table `cargo deb` reads — never a hand-rolled scan
     // of Cargo.toml that could drift from what cargo-deb actually sees.
     let mut deb_name_to_crate = BTreeMap::new();
+    let mut deb_depends = BTreeMap::new();
     let mut deb_assets = Vec::new();
     let mut maintainerless = Vec::new();
     for package in packages {
         if let Some(deb_name) = package["metadata"]["deb"]["name"].as_str() {
             let crate_name = package["name"].as_str().unwrap_or("?");
             deb_name_to_crate.insert(deb_name.to_owned(), crate_name.to_owned());
+            // cargo-deb's `depends` defaults to `$auto` when the key is absent.
+            let depends = package["metadata"]["deb"]["depends"]
+                .as_str()
+                .unwrap_or("$auto");
+            deb_depends.insert(deb_name.to_owned(), parse_depends_list(depends));
             // Maintainer is mandatory in a binary package's control file. cargo-deb fills it from
             // `[package.metadata.deb] maintainer` or, failing that, the crate's `authors`; with
             // neither it emits a package dpkg itself warns about. Nine of ours were built that
@@ -588,6 +594,11 @@ fn check_packaging(root: &Path) -> Result<()> {
 
     let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
     problems.extend(maintainerless);
+    problems.extend(dependency_drift(
+        &parse_control_depends(&control_text),
+        &deb_depends,
+        &deb_name_to_crate,
+    ));
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
@@ -1034,6 +1045,75 @@ fn parse_control_packages(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `Depends:` of every `debian/control` stanza, keyed by `Package:`, with the substitution
+/// variables (`${shlibs:Depends}`, `${misc:Depends}`) dropped — they are the control-file
+/// spelling of cargo-deb's `$auto`, so neither side keeps them. A stanza with no `Depends:` maps
+/// to the empty set.
+fn parse_control_depends(text: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out = BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Package:") {
+            let name = rest.trim().to_owned();
+            out.entry(name.clone()).or_default();
+            current = Some(name);
+        } else if let Some(rest) = line.strip_prefix("Depends:")
+            && let Some(name) = &current
+        {
+            out.insert(name.clone(), parse_depends_list(rest));
+        }
+    }
+    out
+}
+
+/// One comma-separated dependency list, as either `debian/control` or cargo-deb writes it, as
+/// the set of its entries with `$auto` and `${...}` substitution variables removed. Alternatives
+/// (`a | b`) stay one entry with single spaces around the bar, so the two spellings compare equal.
+fn parse_depends_list(list: &str) -> BTreeSet<String> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty() && *entry != "$auto" && !entry.starts_with("${"))
+        .map(|entry| {
+            entry
+                .split('|')
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
+}
+
+/// Packages whose `debian/control` `Depends:` and `[package.metadata.deb] depends` name
+/// different packages.
+///
+/// The two are written by hand in two files and nothing else ties them together: `debian/rules`
+/// builds from `debian/control`, `cargo deb` builds from the crate table, and a release uses one
+/// or the other. `legeos-hostd` shipped with `policykit-1` in the crate table after the control
+/// file had moved to `polkitd` — the transitional package no longer exists on the 25.10/26.04
+/// base, so the `.deb` could not be configured at all.
+fn dependency_drift(
+    control_depends: &BTreeMap<String, BTreeSet<String>>,
+    deb_depends: &BTreeMap<String, BTreeSet<String>>,
+    deb_name_to_crate: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (deb_name, from_deb) in deb_depends {
+        let Some(from_control) = control_depends.get(deb_name) else {
+            continue; // reported by `packaging_problems`
+        };
+        if from_control != from_deb {
+            let crate_name = deb_name_to_crate.get(deb_name).map_or("?", String::as_str);
+            let only_control: Vec<_> = from_control.difference(from_deb).cloned().collect();
+            let only_deb: Vec<_> = from_deb.difference(from_control).cloned().collect();
+            problems.push(format!(
+                "{deb_name} (crate {crate_name}): Depends differ — only in debian/control: \
+                 {only_control:?}; only in [package.metadata.deb] depends: {only_deb:?}"
+            ));
+        }
+    }
+    problems
+}
+
 /// Filenames accepted as a licence record beside a vendored asset.
 const LICENCE_FILENAMES: &[&str] = &[
     "LICENSE",
@@ -1199,10 +1279,10 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        VendoredAssets, client_interface_names, colliding_destinations,
+        VendoredAssets, client_interface_names, colliding_destinations, dependency_drift,
         manifest_executable_is_provided, metapackage_dependency_problems, packaging_problems,
-        parse_control_packages, seed_problems, server_interface_names, unlicensed_assets,
-        unshipped_unit_binaries,
+        parse_control_depends, parse_control_packages, parse_depends_list, seed_problems,
+        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1373,6 +1453,51 @@ mod extraction_tests {
         let control = vec!["legeos-cli".to_owned(), "legeos-shell".to_owned()];
         let debs = deb_names(&[("legeos-cli", "lege"), ("legeos-shell", "lege-shell")]);
         assert!(packaging_problems(&control, &debs).is_empty());
+    }
+
+    #[test]
+    fn control_depends_parse_per_stanza_without_substitution_variables() {
+        let control = "Package: legeos-hostd\nArchitecture: any\n\
+                       Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd\n\n\
+                       Package: legeos-cli\nDepends: ${shlibs:Depends}, ${misc:Depends}\n\n\
+                       Package: legeos-bare\n";
+        let parsed = parse_control_depends(control);
+        assert_eq!(
+            parsed["legeos-hostd"],
+            BTreeSet::from(["systemd".to_owned(), "apt".to_owned(), "polkitd".to_owned()])
+        );
+        assert!(parsed["legeos-cli"].is_empty());
+        assert!(parsed["legeos-bare"].is_empty());
+        assert_eq!(
+            parse_depends_list("$auto, polkitd|policykit-1 , xwayland"),
+            BTreeSet::from(["polkitd | policykit-1".to_owned(), "xwayland".to_owned()])
+        );
+    }
+
+    #[test]
+    fn check_packaging_goes_red_when_control_and_crate_depends_drift() {
+        // The one that shipped: the crate table still named the transitional policykit-1 after
+        // debian/control had moved to polkitd.
+        let control = BTreeMap::from([(
+            "legeos-hostd".to_owned(),
+            parse_depends_list("systemd, apt, polkitd"),
+        )]);
+        let deb = BTreeMap::from([(
+            "legeos-hostd".to_owned(),
+            parse_depends_list("$auto, systemd, apt, policykit-1"),
+        )]);
+        let names = deb_names(&[("legeos-hostd", "lege-hostd")]);
+        let problems = dependency_drift(&control, &deb, &names);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("legeos-hostd (crate lege-hostd)"));
+        assert!(problems[0].contains("only in debian/control: [\"polkitd\"]"));
+        assert!(problems[0].contains("only in [package.metadata.deb] depends: [\"policykit-1\"]"));
+
+        let deb = BTreeMap::from([(
+            "legeos-hostd".to_owned(),
+            parse_depends_list("$auto, polkitd, apt, systemd"),
+        )]);
+        assert!(dependency_drift(&control, &deb, &names).is_empty());
     }
 
     #[test]

@@ -37,7 +37,7 @@ workspace = true
 name = "legeos-hostd"
 section = "admin"
 priority = "optional"
-depends = "$auto, systemd, apt, policykit-1"
+depends = "$auto, systemd, apt, polkitd"
 assets = [
     ["target/release/lege-hostd", "usr/libexec/lege-hostd", "755"],
     ["../../session/units/system/lege-hostd.service", "usr/lib/systemd/system/lege-hostd.service", "644"],
