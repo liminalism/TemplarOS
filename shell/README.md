@@ -8,6 +8,8 @@ operation it will perform spelled out first; dropping one loose tile on another 
 `Projects1` project, rooted under `~/Projects/<id>`), and every `Projects1` project has a tile whose body
 zooms the field into its interior grid — a view with a breadcrumb back, never a hidden desktop. The dock
 (`surface/dock_screen.rs`) groups by canonical AppId and carries the Home cell that reveals the field.
+Parked-session tiles carry a preview of their window, fetched over the standard capture protocols the
+compositor offers the trusted shell alone (`previews.rs`; `shell.home-field.previews` = off / static / live).
 Every action has a keyboard route (arrows, Enter, Space, Escape, Delete, Ctrl+Z) and everything the field
 shows is `lege-shell --print field`. Never owns state: everything comes from `org.legeos.Session` /
 `org.legeos.Files` and the compositor's `lege_shell_v1`; the field's own layout is kept for the session

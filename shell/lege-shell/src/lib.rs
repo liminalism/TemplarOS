@@ -26,6 +26,7 @@ pub mod format;
 pub mod home_surface;
 pub mod icons;
 pub mod pressure;
+pub mod previews;
 pub mod protocol;
 pub mod settings;
 pub mod surface;

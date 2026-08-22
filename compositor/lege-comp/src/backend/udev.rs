@@ -786,6 +786,16 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     elements.extend(chrome_elements.into_iter().map(UdevRenderElement::Custom));
     elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
 
+    // Previews queued since the last frame, with this device's renderer
+    // (`src/screencopy.rs`'s module doc). Before the output's own frame so a preview never
+    // delays a page flip it could have preceded.
+    crate::screencopy::drain_pending(
+        &mut state.screencopy,
+        &state.windows,
+        &state.clock,
+        renderer,
+    );
+
     let Some(surface) = device.surfaces.get_mut(&crtc) else {
         return false;
     };

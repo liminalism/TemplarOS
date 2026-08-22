@@ -25,7 +25,7 @@ use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState, ProjectInfo};
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
-use crate::settings::{self, HomeFieldSettings};
+use crate::settings::{self, HomeFieldSettings, PreviewMode};
 use crate::surface::dock_screen::{DockAction, DockData, DockScreen};
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::fonts;
@@ -106,7 +106,10 @@ struct ShellApp {
     field_requested: bool,
     apps: Vec<AppId>,
     projects: Vec<ProjectInfo>,
+    /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
+    /// When each window's preview was last requested, for the rate policy.
+    preview_requested: HashMap<lege_window::WindowId, Instant>,
     started: Instant,
 
     drawer_texts: HashMap<Drawer, Vec<String>>,
@@ -146,6 +149,7 @@ impl ShellApp {
             apps: Vec::new(),
             projects: Vec::new(),
             previews: HashMap::new(),
+            preview_requested: HashMap::new(),
             started: Instant::now(),
             drawer_texts: HashMap::new(),
             search_results: None,
@@ -315,12 +319,86 @@ impl ShellApp {
         }
     }
 
+    /// The preview policy (`docs/homefield.md`, "Resource and security implications"): `Off`
+    /// asks for nothing; `Static` asks once per window, and again when it is parked; `Live`
+    /// asks at the preview rate for every session tile. Arrived previews are filed under the
+    /// tile's own identifier. The compositor's own floor of four frames a second per window
+    /// holds whatever this asks.
+    fn refresh_previews(&mut self, toplevels: &[lege_window::ShellToplevel]) {
+        let Some(bridge) = &mut self.bridge else {
+            return;
+        };
+        if self.field_settings.previews == PreviewMode::Off || !bridge.previews_available() {
+            return;
+        }
+        let now = Instant::now();
+        let live_interval =
+            Duration::from_millis(1000 / u64::from(self.field_settings.preview_rate.max(1)));
+        for toplevel in toplevels {
+            let Some(identifier) = bridge.identifier_of(toplevel.window_id).map(str::to_owned)
+            else {
+                continue;
+            };
+            let key = field_model::session_identifier(toplevel, None);
+            let due = match self.field_settings.previews {
+                PreviewMode::Off => false,
+                PreviewMode::Static => {
+                    !self.previews.contains_key(&key)
+                        || (toplevel.shelved
+                            && self
+                                .preview_requested
+                                .get(&toplevel.window_id)
+                                .is_none_or(|at| now.duration_since(*at) > Duration::from_secs(2)))
+                }
+                PreviewMode::Live => self
+                    .preview_requested
+                    .get(&toplevel.window_id)
+                    .is_none_or(|at| now.duration_since(*at) >= live_interval),
+            };
+            if !due {
+                continue;
+            }
+            // A parked window's snapshot is taken once per parking, not every two seconds: the
+            // timestamp moves only when the request went out.
+            if toplevel.shelved
+                && self.field_settings.previews == PreviewMode::Static
+                && self.previews.contains_key(&key)
+                && self.preview_requested.contains_key(&toplevel.window_id)
+            {
+                continue;
+            }
+            match bridge.request_preview(&identifier) {
+                Ok(()) => {
+                    self.preview_requested.insert(toplevel.window_id, now);
+                }
+                Err(error) => tracing::debug!(%error, "preview request skipped"),
+            }
+        }
+        for (identifier, bitmap) in bridge.take_previews() {
+            if let Some(toplevel) = toplevels
+                .iter()
+                .find(|t| bridge.identifier_of(t.window_id) == Some(identifier.as_str()))
+            {
+                self.previews
+                    .insert(field_model::session_identifier(toplevel, None), bitmap);
+            }
+        }
+        let live: std::collections::HashSet<String> = toplevels
+            .iter()
+            .map(|t| field_model::session_identifier(t, None))
+            .collect();
+        self.previews.retain(|key, _| live.contains(key));
+        self.preview_requested
+            .retain(|id, _| toplevels.iter().any(|t| t.window_id == *id));
+    }
+
     fn redraw_home(&mut self) {
         let toplevels = self
             .bridge
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
+        self.refresh_previews(&toplevels);
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
         let Some(home) = &self.home else { return };
         let scale = home.scale;
@@ -821,6 +899,14 @@ impl ApplicationHandler<Wake> for ShellApp {
         if self.exit {
             event_loop.exit();
             return;
+        }
+        if self
+            .bridge
+            .as_ref()
+            .is_some_and(ShellBridge::has_previews_ready)
+            && let Some(home) = &self.home
+        {
+            home.request_redraw();
         }
         // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
         // ghost follows the pointer and a throw's velocity is sampled evenly.

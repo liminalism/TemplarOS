@@ -171,7 +171,17 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
                                 &mut damage_tracker,
                                 [0.05, 0.05, 0.07, 1.0],
                             ) {
-                                Ok(result) => result.damage.is_some(),
+                                Ok(result) => {
+                                    // Previews queued since the last frame, with the renderer
+                                    // this pass just used (`src/screencopy.rs`'s module doc).
+                                    crate::screencopy::drain_pending(
+                                        &mut state.screencopy,
+                                        &state.windows,
+                                        &state.clock,
+                                        renderer,
+                                    );
+                                    result.damage.is_some()
+                                }
                                 Err(error) => {
                                     tracing::warn!(%error, "render_output failed");
                                     false

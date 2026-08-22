@@ -22,11 +22,30 @@ pub const TILE_SIZE_KEY: &str = "shell.home-field.tile-size";
 /// The throw experiment gate (`off` / `full`).
 pub const THROW_KEY: &str = "shell.home-field.throw";
 
+/// `shell.home-field.previews`.
+pub const PREVIEWS_KEY: &str = "shell.home-field.previews";
+/// `shell.home-field.preview-rate`, frames per second.
+pub const PREVIEW_RATE_KEY: &str = "shell.home-field.preview-rate";
+
+/// What a parked-session tile shows of its window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewMode {
+    /// Icon and title only.
+    Off,
+    /// One frame when the window is parked (and one on the first sight of it).
+    Static,
+    /// Refreshed at the preview rate while the tile is visible.
+    Live,
+}
+
 /// The Home Field's own settings, with the schema's defaults when unreadable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HomeFieldSettings {
     pub tile_size: i32,
     pub throw: bool,
+    pub previews: PreviewMode,
+    /// Frames per second for [`PreviewMode::Live`].
+    pub preview_rate: u32,
 }
 
 impl Default for HomeFieldSettings {
@@ -34,6 +53,8 @@ impl Default for HomeFieldSettings {
         Self {
             tile_size: crate::field_model::TILE_SIZE,
             throw: false,
+            previews: PreviewMode::Static,
+            preview_rate: 1,
         }
     }
 }
@@ -67,7 +88,31 @@ pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
         .as_deref()
         .and_then(parse_choice)
         .is_some_and(|choice| choice == "full");
-    HomeFieldSettings { tile_size, throw }
+    let previews = match client
+        .get(PREVIEWS_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_choice)
+        .as_deref()
+    {
+        Some("off") => PreviewMode::Off,
+        Some("live") => PreviewMode::Live,
+        _ => PreviewMode::Static,
+    };
+    let preview_rate = client
+        .get(PREVIEW_RATE_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_int)
+        .map_or(defaults.preview_rate, |rate| rate.clamp(1, 4) as u32);
+    HomeFieldSettings {
+        tile_size,
+        throw,
+        previews,
+        preview_rate,
+    }
 }
 
 /// What the shell needs from `Settings1`, behind a trait so tests never touch a session bus.

@@ -93,6 +93,10 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
         state.window_service.outputs().len()
     );
     println!("  private protocols:    lege_shell_v1, lege_recovery_v1");
+    println!(
+        "  shell-only globals:   ext_foreign_toplevel_image_capture_source_manager_v1, \
+         ext_image_copy_capture_manager_v1"
+    );
 
     if let Some(command) = session_command {
         println!("  running --exec client until it exits");

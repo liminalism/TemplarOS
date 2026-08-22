@@ -142,6 +142,9 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub recovery_protocol: crate::protocols_recovery::RecoveryProtocolState,
     pub session_lock: crate::session_lock::SessionLockState,
     pub foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState,
+    /// Window previews for the Home Field over the standard capture protocols
+    /// (`src/screencopy.rs`): globals, sessions, and the frames queued for the next render pass.
+    pub screencopy: crate::screencopy::ScreencopyState,
     /// Non-`None` while the "show every window" recovery view is active: the scattered layout to
     /// draw and hit-test against instead of `window_service`'s ordinary geometry.
     pub show_all_windows: Option<Vec<(lege_window::WindowId, lege_window::Rect)>>,
@@ -247,6 +250,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             recovery_protocol: crate::protocols_recovery::RecoveryProtocolState::default(),
             session_lock: crate::session_lock::SessionLockState::default(),
             foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
+            screencopy: crate::screencopy::ScreencopyState::new::<B>(dh),
             show_all_windows: None,
             switcher: None,
             chrome: crate::chrome::ChromeState::new(),

@@ -156,11 +156,13 @@ fn synthetic_window_id(id: &ObjectId) -> WindowId {
 /// arrives over the wire — no D-Bus, no rendering state — on purpose: everything this crate does
 /// with the result lives in [`ShellBridge`] instead, which is what stays free of `unsafe`.
 #[derive(Default)]
-struct BridgeState {
+pub struct BridgeState {
     manager: Option<LegeShellManagerV1>,
     toplevels: HashMap<ObjectId, TrackedToplevel>,
     /// `lege_shell_manager_v1.home_revealed`'s last word, whichever side started the reveal.
     home_revealed: bool,
+    /// Window previews over the standard capture protocols (`crate::previews`).
+    pub(crate) previews: crate::previews::PreviewState,
 }
 
 impl Dispatch<WlRegistry, ()> for BridgeState {
@@ -177,10 +179,16 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
             interface,
             version,
         } = event
-            && interface == "lege_shell_manager_v1"
         {
-            let version = version.min(SHELL_PROTOCOL_VERSION);
-            state.manager = Some(registry.bind::<LegeShellManagerV1, _, _>(name, version, qh, ()));
+            if interface == "lege_shell_manager_v1" {
+                let version = version.min(SHELL_PROTOCOL_VERSION);
+                state.manager =
+                    Some(registry.bind::<LegeShellManagerV1, _, _>(name, version, qh, ()));
+            } else {
+                state
+                    .previews
+                    .bind_global(registry, name, &interface, version, qh);
+            }
         }
     }
 }
@@ -289,6 +297,16 @@ impl Dispatch<LegeShellToplevelV1, ()> for BridgeState {
             }
             lege_shell_toplevel_v1::Event::Closed => unreachable!("handled above"),
         }
+    }
+}
+
+impl std::fmt::Debug for BridgeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeState")
+            .field("toplevels", &self.toplevels.len())
+            .field("home_revealed", &self.home_revealed)
+            .field("previews", &self.previews)
+            .finish_non_exhaustive()
     }
 }
 
@@ -541,6 +559,30 @@ impl ShellBridge {
     /// Whether a "go home" reveal is in effect, as last reported by the compositor.
     pub fn home_revealed(&self) -> bool {
         self.state.home_revealed
+    }
+
+    /// Ask for one preview frame of the window with foreign-toplevel `identifier`
+    /// (`crate::previews`). Pacing is the caller's; a request while one is in flight is dropped.
+    pub fn request_preview(&mut self, identifier: &str) -> Result<()> {
+        let qh = self.queue.handle();
+        self.state.previews.request(identifier, &qh)?;
+        self.connection
+            .flush()
+            .context("flushing a preview request")
+    }
+
+    /// Previews that arrived since the last call, keyed by foreign-toplevel identifier.
+    pub fn take_previews(&mut self) -> Vec<(String, pixelkit_raster::Bitmap)> {
+        self.state.previews.take_ready()
+    }
+
+    pub fn has_previews_ready(&self) -> bool {
+        self.state.previews.has_ready()
+    }
+
+    /// Whether the compositor offered the capture globals on this connection.
+    pub fn previews_available(&self) -> bool {
+        self.state.previews.available()
     }
 
     /// The foreign-toplevel identifier for `window_id`, once the compositor has relayed it —

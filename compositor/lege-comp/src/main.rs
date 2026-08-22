@@ -11,6 +11,7 @@ mod keybindings;
 mod protocols;
 mod protocols_recovery;
 mod protocols_shell;
+mod screencopy;
 mod session_command;
 mod session_lock;
 mod shell_sink;

@@ -63,13 +63,19 @@ winit = "0.30"
 # this is also what keeps the two crates' feature sets (and therefore Cargo's unification of them
 # into one compiled `wayland-backend`) aligned rather than accidentally relying on winit having
 # requested it first.
+# The standard capture protocols the Home Field's window previews use (`src/previews.rs`):
+# `ext-image-capture-source-v1` + `ext-image-copy-capture-v1`, plus `ext-foreign-toplevel-list-v1`
+# for the handles those sources are made from. `staging` is where all three live.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# A preview's shm pool is an anonymous file the compositor writes and this process reads back
+# with plain `pread` — no mmap, so no unsafe here.
+tempfile = { workspace = true }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-scanner = "0.31"
 raw-window-handle = "0.6"
 
 [dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true
