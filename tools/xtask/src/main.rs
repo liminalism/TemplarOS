@@ -158,50 +158,71 @@ fn deps_check(root: &Path) -> Result<()> {
             .unwrap_or(id)
             .to_owned()
     };
-    let window = resolve
-        .iter()
-        .find(|node| name_of(node["id"].as_str().unwrap_or_default()) == "lege-window")
-        .context("lege-window not in resolve graph")?;
 
-    // Transitive closure of lege-window's normal dependencies.
-    let mut stack: Vec<String> = window["deps"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|d| d["pkg"].as_str().map(str::to_owned))
-        .collect();
-    let mut seen = BTreeSet::new();
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if let Some(node) = resolve.iter().find(|n| n["id"].as_str() == Some(&id)) {
-            for dep in node["deps"].as_array().unwrap_or(&vec![]) {
-                // dev-dependencies are excluded: only kinds null (normal) or "build".
-                let normal = dep["dep_kinds"]
-                    .as_array()
-                    .is_none_or(|kinds| kinds.iter().any(|k| k["kind"].is_null()));
-                if normal && let Some(pkg) = dep["pkg"].as_str() {
-                    stack.push(pkg.to_owned());
+    // Which crates must stay pure, and what "pure" rules out for each. `lege-window` runs on
+    // the compositor render thread, so no async runtime and no D-Bus; `lege-field` is shared by
+    // the shell and sessiond as plain data and geometry, so the same, plus no toolkit.
+    let rules: [(&str, &[&str]); 2] = [
+        ("lege-window", &["tokio", "zbus", "async-std", "smol"]),
+        (
+            "lege-field",
+            &[
+                "tokio",
+                "zbus",
+                "async-std",
+                "smol",
+                "pixelkit-raster",
+                "pixelkit-text",
+                "pixelkit-ui",
+                "pixelkit-shell",
+                "winit",
+            ],
+        ),
+    ];
+    for (crate_name, banned) in rules {
+        let node = resolve
+            .iter()
+            .find(|node| name_of(node["id"].as_str().unwrap_or_default()) == crate_name)
+            .with_context(|| format!("{crate_name} not in resolve graph"))?;
+
+        // Transitive closure of the crate's normal dependencies.
+        let mut stack: Vec<String> = node["deps"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|d| d["pkg"].as_str().map(str::to_owned))
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(node) = resolve.iter().find(|n| n["id"].as_str() == Some(&id)) {
+                for dep in node["deps"].as_array().unwrap_or(&vec![]) {
+                    // dev-dependencies are excluded: only kinds null (normal) or "build".
+                    let normal = dep["dep_kinds"]
+                        .as_array()
+                        .is_none_or(|kinds| kinds.iter().any(|k| k["kind"].is_null()));
+                    if normal && let Some(pkg) = dep["pkg"].as_str() {
+                        stack.push(pkg.to_owned());
+                    }
                 }
             }
         }
-    }
-    let banned = ["tokio", "zbus", "async-std", "smol"];
-    let offenders: Vec<String> = seen
-        .iter()
-        .map(|id| name_of(id))
-        .filter(|name| banned.contains(&name.as_str()))
-        .collect();
-    if offenders.is_empty() {
+        let offenders: Vec<String> = seen
+            .iter()
+            .map(|id| name_of(id))
+            .filter(|name| banned.contains(&name.as_str()))
+            .collect();
+        if !offenders.is_empty() {
+            bail!("deps-check: {crate_name} depends on {offenders:?}");
+        }
         println!(
-            "deps-check: lege-window is free of async runtimes and D-Bus ({} transitive deps)",
+            "deps-check: {crate_name} is free of async runtimes, D-Bus and toolkits ({} transitive deps)",
             seen.len()
         );
-        Ok(())
-    } else {
-        bail!("deps-check: lege-window depends on {offenders:?}")
     }
+    Ok(())
 }
 
 /// Every zbus interface name in the code has an XML file in `interfaces/dbus/`.

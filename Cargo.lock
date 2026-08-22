@@ -1224,6 +1224,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lege-field"
+version = "0.1.0"
+dependencies = [
+ "lege-types",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lege-filed"
 version = "0.1.0"
 dependencies = [

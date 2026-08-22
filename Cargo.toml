@@ -14,6 +14,7 @@ members = [
     "crates/lege-appd",
     "crates/lege-associationd",
     "crates/lege-window",
+    "crates/lege-field",
     "crates/lege-session-core",
     "crates/lege-state",
     "crates/lege-client",
@@ -50,6 +51,7 @@ lege-types = { path = "crates/lege-types" }
 lege-appd = { path = "crates/lege-appd" }
 lege-associationd = { path = "crates/lege-associationd" }
 lege-window = { path = "crates/lege-window" }
+lege-field = { path = "crates/lege-field" }
 lege-session-core = { path = "crates/lege-session-core" }
 lege-state = { path = "crates/lege-state" }
 lege-client = { path = "crates/lege-client" }

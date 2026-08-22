@@ -48,6 +48,7 @@
 | `lege-session-core` | sessiond | providers, autostart, history, notifications, settings schema, projects, power, location, first-run |
 | `lege-state` | sessiond, filed | SQLite migrations |
 | `lege-window` | lege-comp | geometry invariant (`repair_window ⇒ is_recoverable`, proptest), window records, drag, layers — **no async deps** |
+| `lege-field` | shell, sessiond | the Home Field model: tiles on a bounded grid, ops with exact inverses (undo = apply the inverse), stable local reflow, representation ladder, drag/throw state machine, text form — **no async deps, no toolkit** |
 | `lege-comp-integration` | lege-comp | `IdentityCache` over D-Bus, governor notifier, shell broadcaster |
 | `lege-comp` (bin) | itself | the Smithay compositor: DRM/KMS + winit backends, protocols, render loop (ADR-0012, GPL-3.0) |
 | `lege-client` | shell, apps, portal, cli, comp | proxies + app SDK (checkpoint protocol) |
