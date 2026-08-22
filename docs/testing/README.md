@@ -65,6 +65,9 @@ What to exercise by hand, because no test covers it:
   to `live` for ~1 fps updates on every session tile; `off` for icons only) — check the image is
   the right way up, and that an ordinary client connected to the *public* socket is not offered
   `ext_image_copy_capture_manager_v1` at all (`WAYLAND_DEBUG=1 weston-info` lists the globals).
+  Resize the Downloads tile to two rows (Space, then arrows are move; resize is a later control —
+  for now change `shell.home-field.tile-size`): tall, it shows a cushion treemap of `~/Downloads`
+  with area proportional to bytes; compact, a colour band of its composition.
   Then do the same with the keyboard only: arrows, Enter, Space+arrows+Enter, Delete, Ctrl+Z.
   `lege-shell --print field` must list the same tiles.
 * **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is

@@ -46,6 +46,13 @@ pub enum FieldAction {
     /// A field op the user performed; the caller applies it and keeps the inverse for undo.
     Apply(FieldOp),
     Undo,
+    /// A drawer tile is large enough to show its directory as a treemap and has none at this
+    /// size: the caller scans and rasterizes one of `width`×`height` pixels off-thread.
+    NeedTreemap {
+        drawer: Drawer,
+        width: u32,
+        height: u32,
+    },
 }
 
 /// Everything the screen reads but does not own.
@@ -58,6 +65,11 @@ pub struct FieldData<'a> {
     /// Window previews by session identifier (phase 6; empty until then).
     pub previews: &'a HashMap<String, Bitmap>,
     pub drawer_texts: &'a HashMap<Drawer, Vec<String>>,
+    /// Rasterized cushion treemaps of the standard-path drawers' directories
+    /// (`lege_treemap`), keyed by drawer, at whatever size was last requested.
+    pub treemaps: &'a HashMap<Drawer, Bitmap>,
+    /// Each such drawer's composition: `(0x00RRGGBB, share)` per file category, largest first.
+    pub compositions: &'a HashMap<Drawer, Vec<(u32, f32)>>,
     pub search_results: Option<&'a [String]>,
     pub connected: bool,
     pub home_revealed: bool,
@@ -1039,21 +1051,77 @@ impl FieldScreen {
             }
             TileKind::Widget { widget, .. } => {
                 let small = TextStyle::new(ui.theme.body.face, 12.0);
-                let lines = field_model::widget_drawer(widget)
-                    .and_then(|drawer| data.drawer_texts.get(&drawer))
-                    .map_or(&[][..], Vec::as_slice);
-                let line_height = ui.px(16);
-                let mut y = content.y + ui.px(2);
+                let drawer = field_model::widget_drawer(widget);
                 let inner = content.inset(ui.px(6));
-                ui.painter.push_clip(inner);
-                for line in lines.iter().take(((inner.h) / line_height).max(0) as usize) {
-                    let row = Rect::new(inner.x, y, inner.w, line_height);
-                    ui.label_styled(row, line, small, ui.theme.text_dim, Align::Left);
-                    y += line_height;
-                }
-                ui.painter.pop_clip();
-                if lines.is_empty() {
-                    ui.label_styled(inner, "…", small, ui.theme.text_dim, Align::Left);
+                // A directory drawer tall enough shows its directory as a cushion treemap —
+                // the one place on the field where area means bytes; compact, it shows a
+                // composition band under its lines instead.
+                let treemap_drawer = drawer
+                    .filter(|d| matches!(d, Drawer::Downloads | Drawer::Documents | Drawer::Media));
+                let tall = inner.h >= ui.px(60) && inner.w >= ui.px(60);
+                if let Some(d) = treemap_drawer
+                    && tall
+                {
+                    let wanted = (inner.w.max(1) as u32, inner.h.max(1) as u32);
+                    match data.treemaps.get(&d) {
+                        Some(bitmap) if close_enough(bitmap, wanted) => {
+                            ui.painter.blit(bitmap, inner, ScaleFilter::Bilinear);
+                        }
+                        _ => {
+                            actions.push(FieldAction::NeedTreemap {
+                                drawer: d,
+                                width: wanted.0,
+                                height: wanted.1,
+                            });
+                            ui.label_styled(
+                                inner,
+                                "scanning…",
+                                small,
+                                ui.theme.text_dim,
+                                Align::Left,
+                            );
+                        }
+                    }
+                } else {
+                    let lines = drawer
+                        .and_then(|drawer| data.drawer_texts.get(&drawer))
+                        .map_or(&[][..], Vec::as_slice);
+                    let band = treemap_drawer
+                        .and_then(|d| data.compositions.get(&d))
+                        .filter(|c| !c.is_empty());
+                    let band_height = if band.is_some() { ui.px(6) } else { 0 };
+                    let text_area =
+                        Rect::new(inner.x, inner.y, inner.w, (inner.h - band_height).max(0));
+                    let line_height = ui.px(16);
+                    let mut y = text_area.y;
+                    ui.painter.push_clip(text_area);
+                    for line in lines
+                        .iter()
+                        .take((text_area.h / line_height).max(0) as usize)
+                    {
+                        let row = Rect::new(text_area.x, y, text_area.w, line_height);
+                        ui.label_styled(row, line, small, ui.theme.text_dim, Align::Left);
+                        y += line_height;
+                    }
+                    ui.painter.pop_clip();
+                    if lines.is_empty() {
+                        ui.label_styled(text_area, "…", small, ui.theme.text_dim, Align::Left);
+                    }
+                    if let Some(composition) = band {
+                        let mut x = inner.x;
+                        let bottom = inner.bottom() - band_height;
+                        for (colour, share) in composition {
+                            let w = ((inner.w as f32) * share).round() as i32;
+                            if w <= 0 {
+                                continue;
+                            }
+                            ui.painter.fill_rect(
+                                Rect::new(x, bottom, w.min(inner.right() - x), band_height),
+                                *colour,
+                            );
+                            x += w;
+                        }
+                    }
                 }
             }
             TileKind::Project { .. } => {
@@ -1114,6 +1182,13 @@ impl FieldScreen {
             self.primary_action(tile, data, actions);
         }
     }
+}
+
+/// Whether a cached treemap is near enough to `wanted` to blit rather than rasterize again:
+/// within a quarter in each dimension, so a drag's every pixel of resize does not re-scan.
+fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
+    let near = |have: u32, want: u32| have * 4 >= want * 3 && have * 3 <= want * 4;
+    near(bitmap.width, wanted.0) && near(bitmap.height, wanted.1)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1238,12 +1313,16 @@ mod tests {
             let icons = HashMap::new();
             let previews = HashMap::new();
             let drawer_texts = HashMap::new();
+            let treemaps = HashMap::new();
+            let compositions = HashMap::new();
             let data = FieldData {
                 field: &self.doc,
                 toplevels: &self.toplevels,
                 icons: &icons,
                 previews: &previews,
                 drawer_texts: &drawer_texts,
+                treemaps: &treemaps,
+                compositions: &compositions,
                 search_results: None,
                 connected: true,
                 home_revealed: false,
@@ -1259,7 +1338,12 @@ mod tests {
             );
             let actions = self.screen.draw(&mut ui, Rect::new(0, 0, W, H), &data);
             self.input.end_frame();
+            // Treemap requests are background work the drawer tiles emit every frame until one
+            // arrives; the tests below are about what the user did.
             actions
+                .into_iter()
+                .filter(|action| !matches!(action, FieldAction::NeedTreemap { .. }))
+                .collect()
         }
 
         fn rect_of(&mut self, tile: TileId) -> Rect {

@@ -1397,6 +1397,7 @@ dependencies = [
  "clap",
  "lege-client",
  "lege-field",
+ "lege-treemap",
  "lege-types",
  "lege-window",
  "pixelkit-raster",
@@ -1427,6 +1428,10 @@ dependencies = [
  "rusqlite",
  "tracing",
 ]
+
+[[package]]
+name = "lege-treemap"
+version = "0.1.0"
 
 [[package]]
 name = "lege-types"

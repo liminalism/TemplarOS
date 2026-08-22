@@ -48,6 +48,14 @@ enum DataUpdate {
     Apps(Vec<AppId>),
     Projects(Vec<ProjectInfo>),
     HomeFieldSettings(HomeFieldSettings),
+    /// A drawer directory's treemap and composition, rasterized off-thread.
+    Treemap {
+        drawer: Drawer,
+        bitmap: pixelkit_raster::Bitmap,
+        composition: Vec<(u32, f32)>,
+    },
+    /// Every five minutes: drop the cached treemaps so the next frame asks for fresh ones.
+    TreemapsStale,
     /// The persisted document arrived from `HomeField1` (startup, or after an undo).
     Field(FieldDocument),
     /// `HomeField1` is not reachable: the field stays in-session.
@@ -110,6 +118,10 @@ struct ShellApp {
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
     preview_requested: HashMap<lege_window::WindowId, Instant>,
+    treemaps: HashMap<Drawer, pixelkit_raster::Bitmap>,
+    compositions: HashMap<Drawer, Vec<(u32, f32)>>,
+    /// Drawers with a scan in flight, so one request per drawer at a time.
+    treemap_pending: HashSet<Drawer>,
     started: Instant,
 
     drawer_texts: HashMap<Drawer, Vec<String>>,
@@ -150,6 +162,9 @@ impl ShellApp {
             projects: Vec::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
+            treemaps: HashMap::new(),
+            compositions: HashMap::new(),
+            treemap_pending: HashSet::new(),
             started: Instant::now(),
             drawer_texts: HashMap::new(),
             search_results: None,
@@ -164,7 +179,12 @@ impl ShellApp {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
+            let mut ticks: u32 = 0;
             loop {
+                ticks = ticks.wrapping_add(1);
+                if ticks.is_multiple_of(100) {
+                    let _ = tx.send(DataUpdate::TreemapsStale);
+                }
                 let drawers = crate::data::fetch_all(20).await;
                 let grouping = fetch_grouping().await;
                 let apps = crate::data::fetch_apps().await;
@@ -241,6 +261,16 @@ impl ShellApp {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled = settings.throw;
                 }
+                DataUpdate::Treemap {
+                    drawer,
+                    bitmap,
+                    composition,
+                } => {
+                    self.treemap_pending.remove(&drawer);
+                    self.treemaps.insert(drawer, bitmap);
+                    self.compositions.insert(drawer, composition);
+                }
+                DataUpdate::TreemapsStale => self.treemaps.clear(),
                 DataUpdate::Field(doc) => {
                     self.field = doc;
                     self.field_synced = Some(true);
@@ -424,6 +454,8 @@ impl ShellApp {
             icons: &self.icons,
             previews: &self.previews,
             drawer_texts: &self.drawer_texts,
+            treemaps: &self.treemaps,
+            compositions: &self.compositions,
             search_results,
             connected: self.bridge.is_some(),
             home_revealed,
@@ -485,6 +517,11 @@ impl ShellApp {
                 }
                 Err(error) => tracing::warn!(%error, ?op, "field op refused"),
             },
+            FieldAction::NeedTreemap {
+                drawer,
+                width,
+                height,
+            } => self.spawn_treemap(drawer, width, height),
             FieldAction::Undo => {
                 if self.field_synced == Some(true) {
                     self.spawn_field_undo();
@@ -527,6 +564,26 @@ impl ShellApp {
             {
                 tracing::warn!(%error, %project_id, "Projects1.Create failed");
             }
+        });
+    }
+
+    /// Scan the drawer's first directory (bounded: `lege_treemap::ScanLimits`), lay it out and
+    /// rasterize it at the tile's size, off the event loop. One in flight per drawer.
+    fn spawn_treemap(&mut self, drawer: Drawer, width: u32, height: u32) {
+        if !self.treemap_pending.insert(drawer) {
+            return;
+        }
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        let roots = search_roots(drawer);
+        self.runtime.spawn_blocking(move || {
+            let (bitmap, composition) = rasterize_drawer(&roots, width, height);
+            let _ = tx.send(DataUpdate::Treemap {
+                drawer,
+                bitmap,
+                composition,
+            });
+            let _ = proxy.send_event(Wake);
         });
     }
 
@@ -611,6 +668,63 @@ impl ShellApp {
             DockAction::None => {}
         }
     }
+}
+
+/// The cushion treemap of the first directory in `roots` at `width`×`height`, plus its
+/// composition band. An unreadable or empty directory yields a flat, dim bitmap and no band.
+fn rasterize_drawer(
+    roots: &[String],
+    width: u32,
+    height: u32,
+) -> (pixelkit_raster::Bitmap, Vec<(u32, f32)>) {
+    use lege_treemap::{ColorSettings, CushionConfig, LayoutConfig, ScanLimits};
+    let (width, height) = (width.max(1), height.max(1));
+    let Some(root) = roots.first() else {
+        return (pixelkit_raster::Bitmap::new(width, height), Vec::new());
+    };
+    let entries = lege_treemap::scan(std::path::Path::new(root), ScanLimits::default());
+    let tree = lege_treemap::build_tree(&entries);
+    let colours = ColorSettings::default();
+    let layout = lege_treemap::compute_layout_in_rect(
+        &tree,
+        tree.root,
+        0.0,
+        0.0,
+        width as f32,
+        height as f32,
+        &LayoutConfig::default(),
+    );
+    let pixels = lege_treemap::rasterize_argb(
+        width,
+        height,
+        &layout.rects,
+        &tree,
+        &CushionConfig::default(),
+        &colours,
+    );
+    let weights = &tree.category_weights[tree.root.index()];
+    let total: u64 = weights.iter().sum();
+    let composition = if total == 0 {
+        Vec::new()
+    } else {
+        lege_treemap::colors::top_categories(weights, lege_treemap::CATEGORY_COUNT)
+            .into_iter()
+            .map(|(category, weight)| {
+                (
+                    lege_treemap::colors::category_color(category).to_rgb_u32(),
+                    weight as f32 / total as f32,
+                )
+            })
+            .collect()
+    };
+    (
+        pixelkit_raster::Bitmap {
+            width,
+            height,
+            pixels,
+        },
+        composition,
+    )
 }
 
 async fn fetch_home_field_settings() -> HomeFieldSettings {

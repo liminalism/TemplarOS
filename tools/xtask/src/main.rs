@@ -161,9 +161,26 @@ fn deps_check(root: &Path) -> Result<()> {
 
     // Which crates must stay pure, and what "pure" rules out for each. `lege-window` runs on
     // the compositor render thread, so no async runtime and no D-Bus; `lege-field` is shared by
-    // the shell and sessiond as plain data and geometry, so the same, plus no toolkit.
-    let rules: [(&str, &[&str]); 2] = [
+    // the shell and sessiond as plain data and geometry, so the same, plus no toolkit;
+    // `lege-treemap` is arithmetic rasterized on any thread, so no toolkit and no GPU either.
+    let rules: [(&str, &[&str]); 3] = [
         ("lege-window", &["tokio", "zbus", "async-std", "smol"]),
+        (
+            "lege-treemap",
+            &[
+                "tokio",
+                "zbus",
+                "async-std",
+                "smol",
+                "pixelkit-raster",
+                "pixelkit-text",
+                "pixelkit-ui",
+                "pixelkit-shell",
+                "winit",
+                "wgpu",
+                "vello",
+            ],
+        ),
         (
             "lege-field",
             &[
