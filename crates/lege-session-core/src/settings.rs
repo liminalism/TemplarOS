@@ -145,6 +145,7 @@ pub fn baseline_schema() -> SettingsSchema {
         max: None,
         privileged: false,
     });
+    add_home_field_specs(&mut schema);
     schema.add(SettingSpec {
         key: "resources.mode".into(),
         description: "Resource governor mode".into(),
@@ -182,6 +183,64 @@ pub fn baseline_schema() -> SettingsSchema {
         privileged: true,
     });
     schema
+}
+
+/// The Home Field's keys (`shell.home-field.*`), read by `lege-shell`.
+fn add_home_field_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices, min, max) in [
+        (
+            "shell.home-field.tile-size",
+            "Logical pixels per Home Field grid cell",
+            SettingValue::Int(120),
+            vec![],
+            Some(80),
+            Some(240),
+        ),
+        (
+            "shell.home-field.throw",
+            "The throw experiment: `off` places a tile exactly where it is released; `full` \
+             projects a fast release along its velocity (docs/homefield.md)",
+            SettingValue::Choice("off".into()),
+            vec!["off".into(), "full".into()],
+            None,
+            None,
+        ),
+        (
+            "shell.home-field.previews",
+            "Window previews on parked-session tiles: none, a snapshot on park, or live at the \
+             preview rate",
+            SettingValue::Choice("static".into()),
+            vec!["off".into(), "static".into(), "live".into()],
+            None,
+            None,
+        ),
+        (
+            "shell.home-field.preview-rate",
+            "Frames per second a live preview may update at",
+            SettingValue::Int(1),
+            vec![],
+            Some(1),
+            Some(4),
+        ),
+        (
+            "shell.home-field.reduced-motion",
+            "No zoom or throw animation on the Home Field; the ghost still shows",
+            SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+    ] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min,
+            max,
+            privileged: false,
+        });
+    }
 }
 
 /// Values that override the schema's defaults; absent keys fall back to `spec.default`.

@@ -11,6 +11,7 @@
 │  AppIdentity1  Launcher1          │  │ org.legeos │  │  + lege-comp-integration     │
 │  Associations1 Providers1         │  │   .Files   │  │  + lege-window (one scene,   │
 │  History1 Settings1 Projects1     │  │            │  │    recovery invariant,       │
+│  HomeField1                       │  │            │  │                              │
 │  Power1 Location1 Notifications   │  └────────────┘  │    typed layers)             │
 └───────────────┬──────────────┘                     └──────────┬───────────┘
                 │ signals                                       │

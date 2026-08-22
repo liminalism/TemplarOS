@@ -82,4 +82,27 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
 ",
     ),
+    (
+        "0004-homefield",
+        r"
+        -- The Home Field: one document per output (`lege_field::FieldDocument`, one JSON blob,
+        -- edited as a unit through `lege_field::apply`), and its undo log — the exact inverse of
+        -- every applied op, most recent last, so `HomeField1.Undo` is `apply(inverse)` and
+        -- nothing above this table keeps a second undo model.
+        CREATE TABLE homefield (
+            output     TEXT PRIMARY KEY,
+            revision   INTEGER NOT NULL,
+            json       TEXT NOT NULL,
+            updated_ms INTEGER NOT NULL
+        );
+        CREATE TABLE homefield_undo (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            output       TEXT NOT NULL,
+            revision     INTEGER NOT NULL,
+            inverse_json TEXT NOT NULL,
+            at_ms        INTEGER NOT NULL
+        );
+        CREATE INDEX homefield_undo_output ON homefield_undo (output, id);
+",
+    ),
 ];

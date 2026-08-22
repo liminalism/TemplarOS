@@ -1333,6 +1333,7 @@ name = "lege-session-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "lege-field",
  "lege-state",
  "lege-types",
  "rusqlite",
@@ -1354,6 +1355,7 @@ dependencies = [
  "lege-appd",
  "lege-associationd",
  "lege-client",
+ "lege-field",
  "lege-session-core",
  "lege-state",
  "lege-types",

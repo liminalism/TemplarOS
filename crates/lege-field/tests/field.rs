@@ -388,6 +388,13 @@ fn a_document_round_trips_through_json() {
     let op_json = serde_json::to_string(&op).unwrap();
     let op_back: FieldOp = serde_json::from_str(&op_json).unwrap();
     assert_eq!(op_back, op);
+
+    // Inverses are batches, and batches must survive the wire too — sessiond stores them.
+    let (_, inverse) = apply(&FieldDocument::new("eDP-1", COLS, ROWS), &op).unwrap();
+    assert!(matches!(inverse, FieldOp::Batch { .. }));
+    let inverse_json = serde_json::to_string(&inverse).unwrap();
+    let inverse_back: FieldOp = serde_json::from_str(&inverse_json).unwrap();
+    assert_eq!(inverse_back, inverse);
 }
 
 #[test]

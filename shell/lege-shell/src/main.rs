@@ -189,7 +189,8 @@ async fn render_dock() -> String {
 /// `render_window_shelf`) on a default 16×8 grid, one line per tile.
 async fn render_field() -> String {
     let apps = data::fetch_apps().await;
-    let (cols, rows) = lege_shell::field_model::grid_for(1920, 1080);
+    let (cols, rows) =
+        lege_shell::field_model::grid_for(1920, 1080, lege_shell::field_model::TILE_SIZE);
     let mut doc = lege_field::FieldDocument::new("primary", cols, rows);
     lege_shell::field_model::merge(
         &mut doc,

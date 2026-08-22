@@ -376,6 +376,13 @@ async fn serve_policy_interfaces(
         .context("serving Projects1")?;
     object_server
         .at(
+            names::HOME_FIELD_PATH,
+            apis::homefield::HomeFieldApi::new(services.store.clone(), services.history.clone()),
+        )
+        .await
+        .context("serving HomeField1")?;
+    object_server
+        .at(
             names::POWER_PATH,
             apis::power::PowerApi::new(services.store.clone()),
         )

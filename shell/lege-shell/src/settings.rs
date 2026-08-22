@@ -17,6 +17,58 @@ use lege_window::DockGrouping;
 
 /// The key the dock's grouping policy lives under.
 pub const DOCK_GROUPING_KEY: &str = "shell.dock.grouping";
+/// Logical pixels per Home Field grid cell.
+pub const TILE_SIZE_KEY: &str = "shell.home-field.tile-size";
+/// The throw experiment gate (`off` / `full`).
+pub const THROW_KEY: &str = "shell.home-field.throw";
+
+/// The Home Field's own settings, with the schema's defaults when unreadable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HomeFieldSettings {
+    pub tile_size: i32,
+    pub throw: bool,
+}
+
+impl Default for HomeFieldSettings {
+    fn default() -> Self {
+        Self {
+            tile_size: crate::field_model::TILE_SIZE,
+            throw: false,
+        }
+    }
+}
+
+/// The `value` of a `SettingValue` JSON payload as an integer.
+pub fn parse_int(value_json: &str) -> Option<i64> {
+    let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
+    value.get("value")?.as_i64()
+}
+
+/// The `value` of a `SettingValue` JSON payload as a choice string.
+pub fn parse_choice(value_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
+    Some(value.get("value")?.as_str()?.to_owned())
+}
+
+/// The Home Field's settings, each falling back to its schema default on its own.
+pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
+    let defaults = HomeFieldSettings::default();
+    let tile_size = client
+        .get(TILE_SIZE_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_int)
+        .map_or(defaults.tile_size, |size| size.clamp(40, 400) as i32);
+    let throw = client
+        .get(THROW_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_choice)
+        .is_some_and(|choice| choice == "full");
+    HomeFieldSettings { tile_size, throw }
+}
 
 /// What the shell needs from `Settings1`, behind a trait so tests never touch a session bus.
 #[async_trait]

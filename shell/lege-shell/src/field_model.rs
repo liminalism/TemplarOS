@@ -35,10 +35,12 @@ pub const DRAWER_TILES: [Drawer; 6] = [
     Drawer::Trash,
 ];
 
-/// How many cells a field of `width`×`height` logical pixels has, never fewer than 4×3.
-pub fn grid_for(width: i32, height: i32) -> (u16, u16) {
-    let cols = (width / TILE_SIZE).clamp(4, 64) as u16;
-    let rows = (height / TILE_SIZE).clamp(3, 64) as u16;
+/// How many cells a field of `width`×`height` logical pixels has at `tile_size` pixels a cell,
+/// never fewer than 4×3.
+pub fn grid_for(width: i32, height: i32, tile_size: i32) -> (u16, u16) {
+    let tile = tile_size.max(1);
+    let cols = (width / tile).clamp(4, 64) as u16;
+    let rows = (height / tile).clamp(3, 64) as u16;
     (cols, rows)
 }
 
@@ -320,8 +322,9 @@ mod tests {
 
     #[test]
     fn a_grid_is_never_smaller_than_four_by_three() {
-        assert_eq!(grid_for(1920, 1016), (16, 8));
-        assert_eq!(grid_for(100, 100), (4, 3));
+        assert_eq!(grid_for(1920, 1016, TILE_SIZE), (16, 8));
+        assert_eq!(grid_for(100, 100, TILE_SIZE), (4, 3));
+        assert_eq!(grid_for(1920, 1016, 240), (8, 4));
     }
 
     #[test]

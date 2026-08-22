@@ -6,7 +6,7 @@ bus name.
 
 | Bus name | Bus | Daemon | Interfaces |
 |---|---|---|---|
-| `org.legeos.Session` | session | `lege-sessiond` | `AppIdentity1`, `Launcher1`, `Associations1`, `Providers1`, `Background1`, `History1`, `Settings1`, `Projects1`, `Power1`, `Location1` (also `org.freedesktop.Notifications` when selected as the `notification-server` provider); an *application instance* serves `Checkpoint1` back to sessiond |
+| `org.legeos.Session` | session | `lege-sessiond` | `AppIdentity1`, `Launcher1`, `Associations1`, `Providers1`, `Background1`, `History1`, `Settings1`, `Projects1`, `HomeField1`, `Power1`, `Location1` (also `org.freedesktop.Notifications` when selected as the `notification-server` provider); an *application instance* serves `Checkpoint1` back to sessiond |
 | `org.legeos.Resources` | session | `lege-resourced` | `Resources1` |
 | `org.legeos.Files` | session | `lege-filed` | `Files.Volumes1` (+ `Operations1`, `Recents1`, `Search1` to come) |
 | `org.legeos.Host` | system | `lege-hostd` | `Host.Updates1`, `Host.Deployments1`, `Host.Drivers1`, `Host.Storage1`, `Host.Hardware1` |

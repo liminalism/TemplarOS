@@ -25,7 +25,7 @@ use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState};
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
-use crate::settings;
+use crate::settings::{self, HomeFieldSettings};
 use crate::surface::dock_screen::{DockAction, DockData, DockScreen};
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::fonts;
@@ -46,8 +46,21 @@ enum DataUpdate {
     Drawers(Vec<(Drawer, String)>),
     Grouping(DockGrouping),
     Apps(Vec<AppId>),
-    SearchResults { drawer: Drawer, lines: Vec<String> },
+    HomeFieldSettings(HomeFieldSettings),
+    /// The persisted document arrived from `HomeField1` (startup, or after an undo).
+    Field(FieldDocument),
+    /// `HomeField1` is not reachable: the field stays in-session.
+    FieldUnavailable,
+    SearchResults {
+        drawer: Drawer,
+        lines: Vec<String>,
+    },
 }
+
+/// Which output's document the shell edits. The shell has one Home Surface window today and
+/// no way to learn its output's name through winit; one field per output keyed by name is the
+/// documented next step, and the key already exists so nothing is migrated then.
+const OUTPUT: &str = "primary";
 
 /// Run the graphical surface: the Home Surface and the dock, both real windows. Blocks until the
 /// user closes one of them.
@@ -77,11 +90,19 @@ struct ShellApp {
     field_screen: FieldScreen,
     dock_screen: DockScreen,
 
-    /// The Home Field document: live state merged in on every refresh, the user's own moves
-    /// kept for the session (persisted by sessiond once `HomeField1` exists).
+    /// The Home Field document: `HomeField1`'s persisted one once it has arrived, with live
+    /// state merged in on every refresh. Every op is applied here first (so a drop never waits
+    /// on the bus) and forwarded to sessiond, which applies the same deterministic op.
     field: FieldDocument,
-    /// Inverses of the user's field ops, most recent last — Ctrl+Z applies the last one.
+    /// `Some` once sessiond answered: ops are forwarded, undo is the service's. `None` while
+    /// unknown or unavailable: ops and undo stay in-session.
+    field_synced: Option<bool>,
+    /// Inverses of the user's field ops, most recent last — Ctrl+Z applies the last one when
+    /// `HomeField1` is unavailable.
     undo: Vec<FieldOp>,
+    field_settings: HomeFieldSettings,
+    /// Whether the one-time `HomeField1.Get` has been sent.
+    field_requested: bool,
     apps: Vec<AppId>,
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     started: Instant,
@@ -115,8 +136,11 @@ impl ShellApp {
             theme: Theme::default(),
             field_screen: FieldScreen::default(),
             dock_screen: DockScreen,
-            field: FieldDocument::new("primary", 16, 8),
+            field: FieldDocument::new(OUTPUT, 16, 8),
+            field_synced: None,
             undo: Vec::new(),
+            field_settings: HomeFieldSettings::default(),
+            field_requested: false,
             apps: Vec::new(),
             previews: HashMap::new(),
             started: Instant::now(),
@@ -137,13 +161,47 @@ impl ShellApp {
                 let drawers = crate::data::fetch_all(20).await;
                 let grouping = fetch_grouping().await;
                 let apps = crate::data::fetch_apps().await;
+                let field_settings = fetch_home_field_settings().await;
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
                 let _ = tx.send(DataUpdate::Grouping(grouping));
                 let _ = tx.send(DataUpdate::Apps(apps));
+                let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
+
+    /// Ask `HomeField1` for the persisted document once the grid size is known.
+    fn spawn_field_fetch(&self, cols: u16, rows: u16) {
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let update = match crate::data::fetch_field(OUTPUT, cols, rows).await {
+                Some(doc) => DataUpdate::Field(doc),
+                None => DataUpdate::FieldUnavailable,
+            };
+            let _ = tx.send(update);
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    /// Forward one already-applied op to `HomeField1`.
+    fn spawn_field_apply(&self, op: FieldOp) {
+        self.runtime.spawn(async move {
+            crate::data::apply_field_op(OUTPUT, &op).await;
+        });
+    }
+
+    fn spawn_field_undo(&self) {
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            if let Some(doc) = crate::data::undo_field(OUTPUT).await {
+                let _ = tx.send(DataUpdate::Field(doc));
+                let _ = proxy.send_event(Wake);
             }
         });
     }
@@ -169,6 +227,20 @@ impl ShellApp {
                 }
                 DataUpdate::Grouping(grouping) => self.dock_grouping = grouping,
                 DataUpdate::Apps(apps) => self.apps = apps,
+                DataUpdate::HomeFieldSettings(settings) => {
+                    self.field_settings = settings;
+                    self.field_screen.drag_cfg.throw_enabled = settings.throw;
+                }
+                DataUpdate::Field(doc) => {
+                    self.field = doc;
+                    self.field_synced = Some(true);
+                    self.undo.clear();
+                }
+                DataUpdate::FieldUnavailable => {
+                    if self.field_synced.is_none() {
+                        self.field_synced = Some(false);
+                    }
+                }
                 DataUpdate::SearchResults { drawer, lines } => {
                     self.search_results = Some((drawer, lines));
                 }
@@ -194,10 +266,21 @@ impl ShellApp {
         logical_height: i32,
         toplevels: &[lege_window::ShellToplevel],
     ) {
-        let (cols, rows) = field_model::grid_for(logical_width, logical_height);
+        let (cols, rows) =
+            field_model::grid_for(logical_width, logical_height, self.field_settings.tile_size);
+        if self.field_synced.is_none() && !self.field_requested {
+            self.field_requested = true;
+            self.spawn_field_fetch(cols, rows);
+        }
         if (cols, rows) != (self.field.cols, self.field.rows) {
-            match lege_field::apply(&self.field, &FieldOp::SetGrid { cols, rows }) {
-                Ok((next, _)) => self.field = next,
+            let op = FieldOp::SetGrid { cols, rows };
+            match lege_field::apply(&self.field, &op) {
+                Ok((next, _)) => {
+                    self.field = next;
+                    if self.field_synced == Some(true) {
+                        self.spawn_field_apply(op);
+                    }
+                }
                 Err(error) => tracing::warn!(%error, "resizing the field grid"),
             }
         }
@@ -205,7 +288,10 @@ impl ShellApp {
             apps: &self.apps,
             toplevels,
         };
-        field_model::merge(&mut self.field, &live);
+        let merged = field_model::merge(&mut self.field, &live);
+        if !merged.is_empty() && self.field_synced == Some(true) {
+            self.spawn_field_apply(FieldOp::Batch { ops: merged });
+        }
         field_model::refresh_titles(&mut self.field, &live);
         let keys: Vec<String> = self
             .apps
@@ -300,13 +386,19 @@ impl ShellApp {
             FieldAction::Apply(op) => match lege_field::apply(&self.field, &op) {
                 Ok((next, inverse)) => {
                     self.field = next;
-                    self.undo.push(inverse);
-                    self.undo.truncate(64);
+                    if self.field_synced == Some(true) {
+                        self.spawn_field_apply(op);
+                    } else {
+                        self.undo.push(inverse);
+                        self.undo.truncate(64);
+                    }
                 }
                 Err(error) => tracing::warn!(%error, ?op, "field op refused"),
             },
             FieldAction::Undo => {
-                if let Some(inverse) = self.undo.pop() {
+                if self.field_synced == Some(true) {
+                    self.spawn_field_undo();
+                } else if let Some(inverse) = self.undo.pop() {
                     match lege_field::apply(&self.field, &inverse) {
                         Ok((next, _)) => self.field = next,
                         Err(error) => tracing::warn!(%error, "undo refused"),
@@ -404,6 +496,16 @@ impl ShellApp {
             }
             DockAction::None => {}
         }
+    }
+}
+
+async fn fetch_home_field_settings() -> HomeFieldSettings {
+    match crate::data::session().await {
+        Ok(connection) => match SettingsProxy::new(&connection).await {
+            Ok(proxy) => settings::home_field(&proxy).await,
+            Err(_) => HomeFieldSettings::default(),
+        },
+        Err(_) => HomeFieldSettings::default(),
     }
 }
 

@@ -237,6 +237,32 @@ mod projects {
     }
 }
 
+mod homefield {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.HomeField1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/HomeField"
+    )]
+    pub trait HomeField {
+        /// The document for `output` as JSON (`lege_field::FieldDocument`), created empty at
+        /// `cols`×`rows` if none is stored yet.
+        fn get(&self, output: &str, cols: u16, rows: u16) -> zbus::Result<String>;
+
+        /// Apply one `lege_field::FieldOp` (JSON); returns the new revision.
+        fn apply(&self, output: &str, op_json: &str) -> zbus::Result<u64>;
+
+        /// Undo the most recent op; returns the document afterwards, or `""` if nothing to undo.
+        fn undo(&self, output: &str) -> zbus::Result<String>;
+
+        fn get_revision(&self, output: &str) -> zbus::Result<u64>;
+
+        #[zbus(signal)]
+        fn changed(&self, output: String, revision: u64) -> zbus::Result<()>;
+    }
+}
+
 mod power {
     use zbus::proxy;
 
@@ -277,6 +303,7 @@ pub use app_identity::AppIdentityProxy;
 pub use associations::AssociationsProxy;
 pub use background::BackgroundProxy;
 pub use history::HistoryProxy;
+pub use homefield::HomeFieldProxy;
 pub use launcher::LauncherProxy;
 pub use location::LocationProxy;
 pub use power::PowerProxy;

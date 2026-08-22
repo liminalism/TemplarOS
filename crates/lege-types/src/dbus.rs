@@ -29,6 +29,9 @@ pub mod session {
     pub const PROJECTS_PATH: &str = "/org/legeos/Session/Projects";
     pub const PROJECTS_IFACE: &str = "org.legeos.Projects1";
 
+    pub const HOME_FIELD_PATH: &str = "/org/legeos/Session/HomeField";
+    pub const HOME_FIELD_IFACE: &str = "org.legeos.HomeField1";
+
     pub const POWER_PATH: &str = "/org/legeos/Session/Power";
     pub const POWER_IFACE: &str = "org.legeos.Power1";
 

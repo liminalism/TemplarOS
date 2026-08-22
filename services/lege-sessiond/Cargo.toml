@@ -18,6 +18,7 @@ lege-appd = { workspace = true }
 lege-associationd = { workspace = true }
 lege-client = { workspace = true }
 lege-session-core = { workspace = true }
+lege-field = { workspace = true }
 lege-state = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

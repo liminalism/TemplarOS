@@ -10,8 +10,9 @@
 
 use lege_client::proxies::{
     AppIdentityProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy,
-    ProjectsProxy,
+    HomeFieldProxy, ProjectsProxy,
 };
+use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
 
 use crate::drawers;
@@ -123,6 +124,41 @@ pub async fn fetch_apps() -> Vec<AppId> {
         .into_iter()
         .filter_map(|id| id.parse().ok())
         .collect()
+}
+
+/// `HomeField1.Get`: the persisted field for `output`, created at `cols`×`rows` if new. `None`
+/// when sessiond is absent — the shell then keeps an in-session document instead.
+pub async fn fetch_field(output: &str, cols: u16, rows: u16) -> Option<FieldDocument> {
+    let connection = session().await.ok()?;
+    let proxy = HomeFieldProxy::new(&connection).await.ok()?;
+    let json = proxy.get(output, cols, rows).await.ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// `HomeField1.Apply`: persist one op; the new revision, or `None` when refused or unreachable.
+pub async fn apply_field_op(output: &str, op: &FieldOp) -> Option<u64> {
+    let connection = session().await.ok()?;
+    let proxy = HomeFieldProxy::new(&connection).await.ok()?;
+    let json = serde_json::to_string(op).ok()?;
+    match proxy.apply(output, &json).await {
+        Ok(revision) => Some(revision),
+        Err(error) => {
+            tracing::warn!(%error, "HomeField1.Apply refused");
+            None
+        }
+    }
+}
+
+/// `HomeField1.Undo`: the document after undoing the last op, or `None` if nothing to undo or
+/// the service is unreachable.
+pub async fn undo_field(output: &str) -> Option<FieldDocument> {
+    let connection = session().await.ok()?;
+    let proxy = HomeFieldProxy::new(&connection).await.ok()?;
+    let json = proxy.undo(output).await.ok()?;
+    if json.is_empty() {
+        return None;
+    }
+    serde_json::from_str(&json).ok()
 }
 
 pub async fn fetch_all(limit: u32) -> Vec<(Drawer, String)> {

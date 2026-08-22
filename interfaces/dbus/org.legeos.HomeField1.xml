@@ -1,0 +1,40 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/HomeField.
+     The Home Field's persisted document, one per output (crates/lege-field's FieldDocument as
+     JSON), edited only through lege_field ops so the shell — a restartable view — owns no layout
+     state of its own. Every applied op's exact inverse is kept; Undo applies the last one.
+     Implemented in services/lege-sessiond/src/apis/homefield.rs. -->
+<node>
+  <interface name="org.legeos.HomeField1">
+    <!-- The document for `output`, created empty at `cols`x`rows` if none is stored yet. -->
+    <method name="Get">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="cols" type="q" direction="in"/>
+      <arg name="rows" type="q" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
+    <!-- Apply one `lege_field::FieldOp` (JSON) to `output`'s document; returns the new revision.
+         Refused, and nothing stored, when the op does not apply (FieldError as the message). -->
+    <method name="Apply">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="op_json" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
+    <!-- Apply the inverse of the most recent op; returns the document afterwards, or an empty
+         string when there was nothing to undo. -->
+    <method name="Undo">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
+    <method name="GetRevision">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
+    <!-- The document for `output` changed (an Apply or Undo, from any client). -->
+    <signal name="Changed">
+      <arg name="output" type="s"/>
+      <arg name="revision" type="t"/>
+    </signal>
+  </interface>
+</node>

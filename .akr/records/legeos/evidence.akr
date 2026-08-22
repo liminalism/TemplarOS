@@ -1,6 +1,90 @@
 akr 0.1
 project legeos
 
+record legeos.evidence.home-field-in-text/1 : evidence {
+    title "`lege-shell --print field` renders the same merged document the surface draws (one line per tile, drawer tiles present) with no session bus and no compositor."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "cargo test -p lege-shell print_field"
+    summary """
+        `lege-shell --print field` renders the same merged document the surface draws (one line per tile, drawer tiles present) with no session bus and no compositor.
+        """
+}
+
+record legeos.evidence.home-field-keyboard-complete/1 : evidence {
+    title "field_keyboard_reaches_every_action: arrows focus, Enter opens a drawer / launches an app, Escape closes, Space+arrows+Enter moves a tile (an undoable Move), Ctrl+Z asks for undo, Delete stashes — all against a headless WindowBuffer with synthetic Input."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "cargo test -p lege-shell field_keyboard"
+    summary """
+        field_keyboard_reaches_every_action: arrows focus, Enter opens a drawer / launches an app, Escape closes, Space+arrows+Enter moves a tile (an undoable Move), Ctrl+Z asks for undo, Delete stashes — all against a headless WindowBuffer with synthetic Input.
+        """
+}
+
+record legeos.evidence.home-field-layout-is-stable/1 : evidence {
+    title "lege-field property tests at 1500 cases: no overlap and bounded after any op sequence, placing moves only band-mates, every op's inverse restores the document exactly, placement is deterministic, content changes move zero tiles, cell_at inverts cell_rect. Two real bugs found and fixed on the way (duplicate absorb ids; degenerate cell widths)."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "PROPTEST_CASES=1500 cargo test -p lege-field"
+    summary """
+        lege-field property tests at 1500 cases: no overlap and bounded after any op sequence, placing moves only band-mates, every op's inverse restores the document exactly, placement is deterministic, content changes move zero tiles, cell_at inverts cell_rect. Two real bugs found and fixed on the way (duplicate absorb ids; degenerate cell widths).
+        """
+}
+
+record legeos.evidence.home-field-maximize-fills-work-area/1 : evidence {
+    title "Proptest over arbitrary topologies: set_maximized yields exactly one output's usable() rect and is recoverable; unmaximize restores a recoverable rect of the original size; a maximized window follows its output through hotplug."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "cargo test -p lege-window maximize"
+    summary """
+        Proptest over arbitrary topologies: set_maximized yields exactly one output's usable() rect and is recoverable; unmaximize restores a recoverable rect of the original size; a maximized window follows its output through hotplug.
+        """
+}
+
+record legeos.evidence.home-field-no-new-toolkit-api/1 : evidence {
+    title "fmt, clippy -D warnings, workspace tests, MSRV build, tree-check, deps-check (lege-window and lege-field), check-interfaces/proxies/packaging/assets all pass with ../pixelkit unmodified through phases 1-3."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "just check"
+    summary """
+        fmt, clippy -D warnings, workspace tests, MSRV build, tree-check, deps-check (lege-window and lege-field), check-interfaces/proxies/packaging/assets all pass with ../pixelkit unmodified through phases 1-3.
+        """
+}
+
+record legeos.evidence.home-field-shelved-is-hidden/1 : evidence {
+    title "WindowService::is_visible reports a shelved window hidden and an unshelved one visible; space_sync unmaps hidden windows from Space, topmost_window_at filters on is_visible, collect_bands skips hidden windows."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "cargo test -p lege-window -p lege-comp shelving_hides_and_unshelving_shows"
+    summary """
+        WindowService::is_visible reports a shelved window hidden and an unshelved one visible; space_sync unmaps hidden windows from Space, topmost_window_at filters on is_visible, collect_bands skips hidden windows.
+        """
+}
+
+record legeos.evidence.home-field-windows-cannot-be-lost/1 : evidence {
+    title "Proptest over shelve/unshelve/activate/reveal sequences: a hidden window is hidden only because it is shelved or a reveal is in effect, shelved windows never hold activation; ShowAllWindows unshelves everything and ends a reveal; a reveal changes no record and ends on Activate."
+    state verified
+    result pass
+    method command
+    observed_at git:9aa024a53d71257b91ef1784565c35f9312ebe52
+    command "cargo test -p lege-window hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+    summary """
+        Proptest over shelve/unshelve/activate/reveal sequences: a hidden window is hidden only because it is shelved or a reveal is in effect, shelved windows never hold activation; ShowAllWindows unshelves everything and ends a reveal; a reveal changes no record and ends on Activate.
+        """
+}
+
 record legeos.evidence.m0-adrs-present/1 : evidence {
     title "M0: ADRs 0001-0011 present and mirrored as decision records"
     state verified

@@ -1055,7 +1055,7 @@ mod tests {
 
     impl Harness {
         fn new() -> Self {
-            let (cols, rows) = field_model::grid_for(W, H);
+            let (cols, rows) = field_model::grid_for(W, H, field_model::TILE_SIZE);
             let mut doc = FieldDocument::new("test", cols, rows);
             let apps: Vec<AppId> = vec!["org.legeos.Files".parse().unwrap()];
             let toplevels = vec![

@@ -129,7 +129,9 @@ pub enum FieldOp {
         path: PathBuf,
     },
     /// Several ops as one; inverts to the reversed inverses.
-    Batch(Vec<FieldOp>),
+    Batch {
+        ops: Vec<FieldOp>,
+    },
 }
 
 impl FieldOp {
@@ -151,7 +153,7 @@ impl FieldOp {
             Self::RemoveTray { .. } => "REMOVE TRAY",
             Self::AddReference { .. } => "ADD REFERENCE · files remain in place",
             Self::RemoveReference { .. } => "REMOVE REFERENCE",
-            Self::Batch(_) => "SEVERAL CHANGES",
+            Self::Batch { .. } => "SEVERAL CHANGES",
         }
     }
 }
@@ -245,13 +247,13 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
                 path: path.clone(),
             })
         }
-        FieldOp::Batch(ops) => {
+        FieldOp::Batch { ops } => {
             let mut inverses = Vec::with_capacity(ops.len());
             for op in ops {
                 inverses.push(apply_in_place(doc, op)?);
             }
             inverses.reverse();
-            Ok(FieldOp::Batch(inverses))
+            Ok(FieldOp::Batch { ops: inverses })
         }
     }
 }
@@ -270,10 +272,12 @@ fn place(doc: &mut FieldDocument, tile: &Tile, landing: Landing) -> Result<Field
         doc.insert_container(container_for(tile));
     }
     write_grid(doc, landing.container, &grid);
-    Ok(FieldOp::Batch(vec![
-        FieldOp::Remove { id: tile.id },
-        FieldOp::Layout { set: moved_back },
-    ]))
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Remove { id: tile.id },
+            FieldOp::Layout { set: moved_back },
+        ],
+    })
 }
 
 fn add_tile(
@@ -333,7 +337,7 @@ fn remove(doc: &mut FieldDocument, id: TileId) -> Result<FieldOp, FieldError> {
             set: restore_children,
         });
     }
-    Ok(FieldOp::Batch(inverse))
+    Ok(FieldOp::Batch { ops: inverse })
 }
 
 fn move_tile(doc: &mut FieldDocument, id: TileId, landing: Landing) -> Result<FieldOp, FieldError> {
@@ -430,13 +434,15 @@ fn set_grid(doc: &mut FieldDocument, cols: u16, rows: u16) -> Result<FieldOp, Fi
         }
         set.push((id, before));
     }
-    Ok(FieldOp::Batch(vec![
-        FieldOp::SetGrid {
-            cols: old_cols,
-            rows: old_rows,
-        },
-        FieldOp::Layout { set },
-    ]))
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::SetGrid {
+                cols: old_cols,
+                rows: old_rows,
+            },
+            FieldOp::Layout { set },
+        ],
+    })
 }
 
 fn create_project(
@@ -504,11 +510,13 @@ fn create_project(
         }
     }
     write_grid(doc, Some(project.id), &inner);
-    Ok(FieldOp::Batch(vec![
-        FieldOp::Remove { id: project.id },
-        FieldOp::Layout { set: absorbed_back },
-        FieldOp::Layout { set: moved },
-    ]))
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Remove { id: project.id },
+            FieldOp::Layout { set: absorbed_back },
+            FieldOp::Layout { set: moved },
+        ],
+    })
 }
 
 /// A project's interior grid when it is created: twice its preferred span in each direction, so
