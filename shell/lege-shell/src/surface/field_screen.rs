@@ -53,6 +53,23 @@ pub enum FieldAction {
         width: u32,
         height: u32,
     },
+    /// One pointer drop happened — the throw experiment's measurements
+    /// (`docs/research/throw-spike.md`). Emitted before the `Apply` it led to.
+    DropMetrics(DropMetrics),
+}
+
+/// What one drop measured. Logged by the app only while the experiment is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropMetrics {
+    pub thrown: bool,
+    /// Lift to release: the time-to-target.
+    pub lifted_for_ms: u64,
+    /// The drop named a semantic operation (group, add to project…) rather than placing.
+    pub semantic: bool,
+    /// The same tile was dropped less than three seconds ago: a retry.
+    pub relift: bool,
+    /// The operation's label, for the log.
+    pub op: &'static str,
 }
 
 /// Everything the screen reads but does not own.
@@ -104,6 +121,8 @@ pub struct FieldScreen {
     pub search_focused: bool,
     /// The field's pixel rectangle from the last frame, for tests and hit-testing.
     pub bounds: Rect,
+    /// The last pointer drop, for the experiment's retry measure.
+    last_drop: Option<(TileId, u64)>,
 }
 
 impl Default for FieldScreen {
@@ -119,6 +138,7 @@ impl Default for FieldScreen {
             search: TextFieldState::new(),
             search_focused: false,
             bounds: Rect::new(0, 0, 0, 0),
+            last_drop: None,
         }
     }
 }
@@ -641,9 +661,25 @@ impl FieldScreen {
                 // controls (a session's "park" button) to claim when the tile is painted.
                 self.focus = Some(tile);
             }
-            Some(Release::Drop { tile, tile_at, .. }) => {
+            Some(Release::Drop {
+                tile,
+                tile_at,
+                thrown,
+                lifted_for_ms,
+            }) => {
                 let _ = ui.input.take_click(ui.painter.bounds());
                 if let Some(op) = self.drop_op(doc, tile, tile_at, ui, data) {
+                    let relift = self.last_drop.is_some_and(|(last, at)| {
+                        last == tile && data.now_ms.saturating_sub(at) < 3000
+                    });
+                    self.last_drop = Some((tile, data.now_ms));
+                    actions.push(FieldAction::DropMetrics(DropMetrics {
+                        thrown,
+                        lifted_for_ms,
+                        semantic: !matches!(op, FieldOp::Move { .. }),
+                        relift,
+                        op: op.label(),
+                    }));
                     actions.push(FieldAction::Apply(op));
                 }
             }
@@ -1309,6 +1345,19 @@ mod tests {
         }
 
         fn frame(&mut self) -> Vec<FieldAction> {
+            self.frame_raw()
+                .into_iter()
+                .filter(|action| {
+                    !matches!(
+                        action,
+                        FieldAction::NeedTreemap { .. } | FieldAction::DropMetrics(_)
+                    )
+                })
+                .collect()
+        }
+
+        /// Every action, background requests and experiment bookkeeping included.
+        fn frame_raw(&mut self) -> Vec<FieldAction> {
             self.now += 16;
             let icons = HashMap::new();
             let previews = HashMap::new();
@@ -1338,12 +1387,7 @@ mod tests {
             );
             let actions = self.screen.draw(&mut ui, Rect::new(0, 0, W, H), &data);
             self.input.end_frame();
-            // Treemap requests are background work the drawer tiles emit every frame until one
-            // arrives; the tests below are about what the user did.
             actions
-                .into_iter()
-                .filter(|action| !matches!(action, FieldAction::NeedTreemap { .. }))
-                .collect()
         }
 
         fn rect_of(&mut self, tile: TileId) -> Rect {
@@ -1509,10 +1553,25 @@ mod tests {
         assert!(h.screen.animating());
         let before = h.doc.location(files).unwrap().placement.cell;
         h.input.mouse(MouseButton::Left, false);
-        let actions = h.frame();
-        let [FieldAction::Apply(FieldOp::Move { id, landing })] = actions.as_slice() else {
-            panic!("expected one Move, got {actions:?}");
+        let raw: Vec<FieldAction> = h
+            .frame_raw()
+            .into_iter()
+            .filter(|a| !matches!(a, FieldAction::NeedTreemap { .. }))
+            .collect();
+        let [
+            FieldAction::DropMetrics(metrics),
+            FieldAction::Apply(FieldOp::Move { id, landing }),
+        ] = raw.as_slice()
+        else {
+            panic!("expected the drop's metrics then one Move, got {raw:?}");
         };
+        assert!(!metrics.thrown, "throwing is off by default");
+        assert!(!metrics.semantic, "a move is placement only");
+        assert!(!metrics.relift);
+        assert!(
+            metrics.lifted_for_ms >= 900,
+            "ten 100 ms steps in the air: {metrics:?}"
+        );
         assert_eq!(*id, files);
         assert_eq!(landing.cell, Cell::new(before.col + 3, before.row));
         assert_eq!(h.screen.drag, Drag::Idle);

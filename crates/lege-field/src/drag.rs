@@ -57,12 +57,14 @@ pub enum Drag {
         grab: GrabOffset,
         origin: DragSample,
     },
-    /// Lifted and moving. `velocity` is smoothed, px/s.
+    /// Lifted and moving. `velocity` is smoothed, px/s; `lifted_at_ms` is when the press became
+    /// a lift, so a release can report how long the tile was in the air.
     Lifted {
         tile: TileId,
         grab: GrabOffset,
         pos: DragSample,
         velocity: (f32, f32),
+        lifted_at_ms: u64,
     },
 }
 
@@ -82,11 +84,13 @@ pub enum Release {
     /// A press that never lifted: a click on the tile.
     Click { tile: TileId },
     /// Put the tile down with its top-left at `tile_at` (pointer minus grab offset), after
-    /// projection if it was thrown.
+    /// projection if it was thrown. `lifted_for_ms` is lift-to-release, the throw experiment's
+    /// time-to-target.
     Drop {
         tile: TileId,
         tile_at: (f32, f32),
         thrown: bool,
+        lifted_for_ms: u64,
     },
 }
 
@@ -116,6 +120,7 @@ impl Drag {
                     grab,
                     pos: sample,
                     velocity,
+                    lifted_at_ms: sample.t_ms,
                 };
                 DragEvent::Lifted
             }
@@ -124,6 +129,7 @@ impl Drag {
                 grab,
                 pos,
                 velocity,
+                lifted_at_ms,
             } => {
                 let dt = sample.t_ms.saturating_sub(pos.t_ms);
                 let instant = instantaneous(pos, sample);
@@ -143,6 +149,7 @@ impl Drag {
                     grab,
                     pos: sample,
                     velocity,
+                    lifted_at_ms,
                 };
                 DragEvent::Moved
             }
@@ -221,13 +228,19 @@ impl Drag {
         let result = match *self {
             Drag::Idle => None,
             Drag::Pressed { tile, .. } => Some(Release::Click { tile }),
-            Drag::Lifted { tile, .. } => {
+            Drag::Lifted {
+                tile,
+                pos,
+                lifted_at_ms,
+                ..
+            } => {
                 let thrown = self.would_throw(cfg);
                 let tile_at = self.projected_position(cfg, bounds)?;
                 Some(Release::Drop {
                     tile,
                     tile_at,
                     thrown,
+                    lifted_for_ms: pos.t_ms.saturating_sub(lifted_at_ms),
                 })
             }
         };
@@ -285,7 +298,8 @@ mod tests {
             Some(Release::Drop {
                 tile: TileId(1),
                 tile_at: (121.0, 96.0),
-                thrown: false
+                thrown: false,
+                lifted_for_ms: 1000,
             })
         );
     }

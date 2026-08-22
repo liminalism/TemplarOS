@@ -122,6 +122,8 @@ struct ShellApp {
     compositions: HashMap<Drawer, Vec<(u32, f32)>>,
     /// Drawers with a scan in flight, so one request per drawer at a time.
     treemap_pending: HashSet<Drawer>,
+    /// When the last pointer drop happened, for the experiment's undo-within-5-s measure.
+    last_drop_at: Option<Instant>,
     started: Instant,
 
     drawer_texts: HashMap<Drawer, Vec<String>>,
@@ -165,6 +167,7 @@ impl ShellApp {
             treemaps: HashMap::new(),
             compositions: HashMap::new(),
             treemap_pending: HashSet::new(),
+            last_drop_at: None,
             started: Instant::now(),
             drawer_texts: HashMap::new(),
             search_results: None,
@@ -522,7 +525,29 @@ impl ShellApp {
                 width,
                 height,
             } => self.spawn_treemap(drawer, width, height),
+            FieldAction::DropMetrics(metrics) => {
+                self.last_drop_at = Some(Instant::now());
+                if self.field_settings.throw {
+                    log_experiment(&format!(
+                        "{{\"event\":\"drop\",\"thrown\":{},\"lifted_for_ms\":{},\"semantic\":{},\"relift\":{},\"op\":{:?}}}",
+                        metrics.thrown,
+                        metrics.lifted_for_ms,
+                        metrics.semantic,
+                        metrics.relift,
+                        metrics.op
+                    ));
+                }
+            }
             FieldAction::Undo => {
+                if self.field_settings.throw
+                    && let Some(at) = self.last_drop_at
+                    && at.elapsed() < Duration::from_secs(5)
+                {
+                    log_experiment(&format!(
+                        "{{\"event\":\"undo-after-drop\",\"since_drop_ms\":{}}}",
+                        at.elapsed().as_millis()
+                    ));
+                }
                 if self.field_synced == Some(true) {
                     self.spawn_field_undo();
                 } else if let Some(inverse) = self.undo.pop() {
@@ -725,6 +750,36 @@ fn rasterize_drawer(
         },
         composition,
     )
+}
+
+/// Append one JSON line to the throw experiment's log, `$XDG_STATE_HOME/lege-shell/throw-spike.jsonl`
+/// (`docs/research/throw-spike.md`). Only called while `shell.home-field.throw` is `full`; never
+/// fatal.
+fn log_experiment(line: &str) {
+    use std::io::Write as _;
+    let Some(state_home) = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/state"))
+        })
+    else {
+        return;
+    };
+    let dir = state_home.join("lege-shell");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("throw-spike.jsonl"))
+    else {
+        return;
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let _ = writeln!(file, "{{\"t\":{stamp},{}", &line[1..]);
 }
 
 async fn fetch_home_field_settings() -> HomeFieldSettings {

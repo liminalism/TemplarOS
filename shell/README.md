@@ -12,6 +12,8 @@ Parked-session tiles carry a preview of their window, fetched over the standard 
 compositor offers the trusted shell alone (`previews.rs`; `shell.home-field.previews` = off / static / live).
 A Downloads / Documents / Media tile tall enough shows its directory as a cushion treemap (`crates/lege-treemap`,
 scanned and rasterized off the event loop, refreshed every five minutes); compact, it shows a composition band.
+Throwing — a fast release projecting a tile along its velocity — is an experiment behind
+`shell.home-field.throw`, measured and judged as `docs/research/throw-spike.md` says.
 Every action has a keyboard route (arrows, Enter, Space, Escape, Delete, Ctrl+Z) and everything the field
 shows is `lege-shell --print field`. Never owns state: everything comes from `org.legeos.Session` /
 `org.legeos.Files` and the compositor's `lege_shell_v1`; the field's own layout is kept for the session
