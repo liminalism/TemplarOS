@@ -312,6 +312,16 @@ impl PixelRect {
     }
 }
 
+/// The left edge of column `col` (or top edge of row `row`) on a grid of `count` cells laid
+/// along `extent` pixels from `origin`, with `gap` pixels between cells and around the edge.
+/// Fixed-point pitch — `(extent - gap) / count` in 1/1024ths — so rounding is consistent at
+/// every cell, and [`cell_at`] can invert [`cell_rect`] exactly by asking the same function.
+fn edge(origin: i32, extent: i32, count: u16, gap: i32, index: i32) -> i32 {
+    let count = i64::from(count.max(1));
+    let pitch = (i64::from(extent - gap) * 1024) / count;
+    origin + gap + ((i64::from(index) * pitch) / 1024) as i32
+}
+
 /// The pixel rectangle of a `span`-sized tile at `cell` on a `cols`×`rows` grid filling
 /// `bounds` with `gap` pixels between cells (and around the edge). Cells are equal-sized: the
 /// grid is the field's geometry, and the field is the whole output, so integer rounding only
@@ -324,22 +334,26 @@ pub fn cell_rect(
     span: Span,
     gap: i32,
 ) -> PixelRect {
-    let cols = i32::from(cols.max(1));
-    let rows = i32::from(rows.max(1));
     let gap = gap.max(0);
-    // Fixed-point pitch: the distance from one cell's left edge to the next's, as
-    // `(bounds.w - gap) / cols` in 1/1024ths so rounding is consistent at every column.
-    let pitch_x = (i64::from(bounds.w - gap) * 1024) / i64::from(cols);
-    let pitch_y = (i64::from(bounds.h - gap) * 1024) / i64::from(rows);
-    let left = |col: i32| bounds.x + gap + ((i64::from(col) * pitch_x) / 1024) as i32;
-    let top = |row: i32| bounds.y + gap + ((i64::from(row) * pitch_y) / 1024) as i32;
     let col = i32::from(cell.col);
     let row = i32::from(cell.row);
-    let x = left(col);
-    let y = top(row);
-    let right = left(col + i32::from(span.cols)) - gap;
-    let bottom = top(row + i32::from(span.rows)) - gap;
+    let x = edge(bounds.x, bounds.w, cols, gap, col);
+    let y = edge(bounds.y, bounds.h, rows, gap, row);
+    let right = edge(bounds.x, bounds.w, cols, gap, col + i32::from(span.cols)) - gap;
+    let bottom = edge(bounds.y, bounds.h, rows, gap, row + i32::from(span.rows)) - gap;
     PixelRect::new(x, y, (right - x).max(1), (bottom - y).max(1))
+}
+
+/// The index of the cell whose left/top edge is the last one at or before `position`.
+fn index_at(origin: i32, extent: i32, count: u16, gap: i32, position: i32) -> u16 {
+    let last = i32::from(count.max(1)) - 1;
+    let mut index = 0;
+    // Cells are few (≤ 64 an axis); a scan over the same edge function is exact where a
+    // division would round against it in the degenerate case of cells narrower than the gap.
+    while index < last && edge(origin, extent, count, gap, index + 1) <= position {
+        index += 1;
+    }
+    index as u16
 }
 
 /// The cell under pixel `(x, y)` on the same grid, or `None` outside `bounds`. The exact inverse
@@ -349,17 +363,11 @@ pub fn cell_at(cols: u16, rows: u16, bounds: PixelRect, x: i32, y: i32, gap: i32
     if !bounds.contains(x, y) {
         return None;
     }
-    let cols_i = i32::from(cols.max(1));
-    let rows_i = i32::from(rows.max(1));
     let gap = gap.max(0);
-    let pitch_x = (i64::from(bounds.w - gap) * 1024) / i64::from(cols_i);
-    let pitch_y = (i64::from(bounds.h - gap) * 1024) / i64::from(rows_i);
-    if pitch_x <= 0 || pitch_y <= 0 {
-        return None;
-    }
-    let col = ((i64::from(x - bounds.x - gap) * 1024) / pitch_x).clamp(0, i64::from(cols_i) - 1);
-    let row = ((i64::from(y - bounds.y - gap) * 1024) / pitch_y).clamp(0, i64::from(rows_i) - 1);
-    Some(Cell::new(col as u16, row as u16))
+    Some(Cell::new(
+        index_at(bounds.x, bounds.w, cols, gap, x),
+        index_at(bounds.y, bounds.h, rows, gap, y),
+    ))
 }
 
 /// The pixel rectangle of tile `id` with the field filling `bounds`: its own cell rect at the

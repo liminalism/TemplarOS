@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc fa9a541eff28d1968631b961929fb9c3e9c20e3ba28b2420830508ae372b405c # shrinks to steps = [Place(App { app_id: AppId("org.legeos.Files") }, Landing { container: None, cell: Cell { col: 0, row: 0 } }), Place(App { app_id: AppId("org.legeos.Files") }, Landing { container: None, cell: Cell { col: 0, row: 0 } }), Place(App { app_id: AppId("org.legeos.Files") }, Landing { container: None, cell: Cell { col: 0, row: 0 } }), Remove(1)]
+cc 1b01d35d613d348dc949b641fe41bf0b28251204431550c530754afd65e60468 # shrinks to steps = [Place(App { app_id: AppId("org.legeos.Files") }, Landing { container: None, cell: Cell { col: 0, row: 0 } }), Group(1, 1, Landing { container: None, cell: Cell { col: 0, row: 0 } })]
+cc 7095fdf5fea1f822f38d04a26bfc0c7af3e9e8eb205eb8d5b2ec140f1f17007f # shrinks to cols = 17, rows = 1, x = 0, y = 0, w = 200, h = 200, gap = 10

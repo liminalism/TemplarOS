@@ -454,6 +454,12 @@ fn create_project(
     if landing.container.is_some() {
         return Err(FieldError::NestingTooDeep);
     }
+    // The same tile named twice is absorbed once — recording it twice would make the inverse
+    // put it back and then take it away again.
+    let mut absorb: Vec<TileId> = absorb.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    absorb.retain(|id| seen.insert(*id));
+    let absorb = &absorb;
     for id in absorb {
         let tile = doc.tile(*id).ok_or(FieldError::UnknownTile)?;
         if tile.kind.is_container() {

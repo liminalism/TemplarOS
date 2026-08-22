@@ -9,8 +9,10 @@
 //! `crate::drawers::window_shelf::render` / `crate::dock::render` directly.
 
 use lege_client::proxies::{
-    FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy, ProjectsProxy,
+    AppIdentityProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy,
+    ProjectsProxy,
 };
+use lege_types::AppId;
 
 use crate::drawers;
 use crate::drawers::standard_paths::StandardDrawer;
@@ -105,6 +107,24 @@ async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer
 
 /// Every D-Bus-backed drawer's text in one call, for the Home Surface's background refresh.
 /// `Drawer::WindowShelf` is absent — see the module doc.
+/// Every installed application's canonical id (`AppIdentity1.list_apps`), or none when the
+/// session bus or sessiond is absent — the Home Field then shows only windows and drawers.
+pub async fn fetch_apps() -> Vec<AppId> {
+    let Ok(connection) = session().await else {
+        return Vec::new();
+    };
+    let Ok(proxy) = AppIdentityProxy::new(&connection).await else {
+        return Vec::new();
+    };
+    proxy
+        .list_apps()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|id| id.parse().ok())
+        .collect()
+}
+
 pub async fn fetch_all(limit: u32) -> Vec<(Drawer, String)> {
     let mut out = Vec::with_capacity(Drawer::DEFAULT.len() - 1);
     for drawer in Drawer::DEFAULT {

@@ -31,7 +31,8 @@ struct Cli {
     #[arg(long)]
     list_drawers: bool,
 
-    /// Render one drawer as text and exit. Also accepts `dock` and `pressure`.
+    /// Render one drawer as text and exit. Also accepts `dock`, `pressure` and `field` (the
+    /// Home Field: one line per tile).
     #[arg(long, value_name = "DRAWER")]
     print: Option<String>,
 
@@ -86,6 +87,7 @@ fn print_targets() -> Vec<String> {
         .collect();
     targets.push("dock".to_owned());
     targets.push("pressure".to_owned());
+    targets.push("field".to_owned());
     targets
 }
 
@@ -125,6 +127,9 @@ async fn print_target(target: &str, limit: u32) -> Result<String> {
     }
     if target.eq_ignore_ascii_case("pressure") {
         return Ok(render_pressure_glossary());
+    }
+    if target.eq_ignore_ascii_case("field") {
+        return Ok(render_field().await);
     }
 
     let Some(drawer) = drawer_from_slug(target) else {
@@ -176,6 +181,27 @@ async fn render_dock() -> String {
         "{}\ngrouping: {policy:?}\n(this text command has no lege_shell_v1 connection; run \
          `lege-shell --surface` for a live dock)",
         dock::render(&none, policy)
+    )
+}
+
+/// The Home Field as text: the same document the graphical surface draws, merged from the
+/// installed applications (no windows — this command has no `lege_shell_v1` connection, see
+/// `render_window_shelf`) on a default 16×8 grid, one line per tile.
+async fn render_field() -> String {
+    let apps = data::fetch_apps().await;
+    let (cols, rows) = lege_shell::field_model::grid_for(1920, 1080);
+    let mut doc = lege_field::FieldDocument::new("primary", cols, rows);
+    lege_shell::field_model::merge(
+        &mut doc,
+        &lege_shell::field_model::LiveState {
+            apps: &apps,
+            toplevels: &[],
+        },
+    );
+    format!(
+        "{}(this text command has no lege_shell_v1 connection; windows appear only in \
+         `lege-shell --surface`)",
+        lege_field::text::render(&doc)
     )
 }
 
@@ -231,11 +257,26 @@ mod tests {
     }
 
     #[test]
-    fn print_targets_covers_every_drawer_plus_the_two_extras() {
+    fn print_targets_covers_every_drawer_plus_the_three_extras() {
         let targets = print_targets();
-        assert_eq!(targets.len(), Drawer::DEFAULT.len() + 2);
+        assert_eq!(targets.len(), Drawer::DEFAULT.len() + 3);
         assert!(targets.contains(&"dock".to_owned()));
         assert!(targets.contains(&"pressure".to_owned()));
+        assert!(targets.contains(&"field".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn print_field_renders_the_drawer_tiles_without_a_bus() {
+        let text = print_target("field", 10).await.unwrap();
+        assert!(text.starts_with("field primary  16x9"), "{text}");
+        for drawer in lege_shell::field_model::DRAWER_TILES {
+            assert!(
+                text.contains(drawer.name()),
+                "{} missing from {text}",
+                drawer.name()
+            );
+        }
+        assert!(text.contains("lege_shell_v1"));
     }
 
     #[tokio::test]

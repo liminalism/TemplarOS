@@ -21,6 +21,7 @@
 pub mod data;
 pub mod dock;
 pub mod drawers;
+pub mod field_model;
 pub mod format;
 pub mod home_surface;
 pub mod icons;

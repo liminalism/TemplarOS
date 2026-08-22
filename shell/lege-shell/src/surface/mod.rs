@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod dock_screen;
+pub mod field_screen;
 pub mod fonts;
 pub mod home_screen;
 pub mod window;

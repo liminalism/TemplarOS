@@ -1394,6 +1394,7 @@ dependencies = [
  "async-trait",
  "clap",
  "lege-client",
+ "lege-field",
  "lege-types",
  "lege-window",
  "pixelkit-raster",

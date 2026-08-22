@@ -54,6 +54,14 @@ What to exercise by hand, because no test covers it:
   Every window must disappear behind the Home Surface with nothing else changing; `Escape`, the
   same key again, or clicking a window's entry must bring the exact prior stack back.
 * **Kill `lege-shell` while revealed.** The windows must reappear on their own.
+* On the Home Field (`WAYLAND_DISPLAY=wayland-N-shell lege-shell --surface`): click an application
+  tile's body — it launches; click an open window's tile — it comes to the front (and any reveal
+  ends); press its `park` control — it vanishes from the screen and its tile reads *parked*; click
+  the parked tile — it comes back at its old geometry. Drag a tile by its title band: a ghost shows
+  where it will land before you let go, and only tiles in that row or column make room. Drop a tile
+  onto another and the label reads `NEW PROJECT FROM THESE TWO`. Ctrl+Z reverses each of these.
+  Then do the same with the keyboard only: arrows, Enter, Space+arrows+Enter, Delete, Ctrl+Z.
+  `lege-shell --print field` must list the same tiles.
 * **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is
   the compositor's job, not the shell's.
 

@@ -5,27 +5,30 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pixelkit_raster::{Painter, RasterKernel, Rect};
 use pixelkit_ui::{Theme, Ui};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
-use lege_client::proxies::{FilesSearchProxy, SettingsProxy};
+use lege_client::proxies::{FilesSearchProxy, LauncherProxy, SettingsProxy};
+use lege_field::{FieldDocument, FieldOp};
+use lege_types::AppId;
 use lege_window::{DockGrouping, RevealHome, geometry::Edge};
 
 use crate::dock;
 use crate::drawers::standard_paths::{self, StandardDrawer};
+use crate::field_model::{self, LiveState};
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::settings;
 use crate::surface::dock_screen::{DockAction, DockData, DockScreen};
+use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::fonts;
-use crate::surface::home_screen::{HomeSurfaceAction, HomeSurfaceData, HomeSurfaceScreen};
 use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_key,
 };
@@ -42,6 +45,7 @@ pub struct Wake;
 enum DataUpdate {
     Drawers(Vec<(Drawer, String)>),
     Grouping(DockGrouping),
+    Apps(Vec<AppId>),
     SearchResults { drawer: Drawer, lines: Vec<String> },
 }
 
@@ -70,8 +74,17 @@ struct ShellApp {
     kernel: RasterKernel,
     theme: Theme,
 
-    home_screen: HomeSurfaceScreen,
+    field_screen: FieldScreen,
     dock_screen: DockScreen,
+
+    /// The Home Field document: live state merged in on every refresh, the user's own moves
+    /// kept for the session (persisted by sessiond once `HomeField1` exists).
+    field: FieldDocument,
+    /// Inverses of the user's field ops, most recent last — Ctrl+Z applies the last one.
+    undo: Vec<FieldOp>,
+    apps: Vec<AppId>,
+    previews: HashMap<String, pixelkit_raster::Bitmap>,
+    started: Instant,
 
     drawer_texts: HashMap<Drawer, Vec<String>>,
     search_results: Option<(Drawer, Vec<String>)>,
@@ -100,8 +113,13 @@ impl ShellApp {
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
             theme: Theme::default(),
-            home_screen: HomeSurfaceScreen::default(),
+            field_screen: FieldScreen::default(),
             dock_screen: DockScreen,
+            field: FieldDocument::new("primary", 16, 8),
+            undo: Vec::new(),
+            apps: Vec::new(),
+            previews: HashMap::new(),
+            started: Instant::now(),
             drawer_texts: HashMap::new(),
             search_results: None,
             dock_grouping: DockGrouping::ByApplication,
@@ -118,10 +136,12 @@ impl ShellApp {
             loop {
                 let drawers = crate::data::fetch_all(20).await;
                 let grouping = fetch_grouping().await;
+                let apps = crate::data::fetch_apps().await;
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
                 let _ = tx.send(DataUpdate::Grouping(grouping));
+                let _ = tx.send(DataUpdate::Apps(apps));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -148,6 +168,7 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::Grouping(grouping) => self.dock_grouping = grouping,
+                DataUpdate::Apps(apps) => self.apps = apps,
                 DataUpdate::SearchResults { drawer, lines } => {
                     self.search_results = Some((drawer, lines));
                 }
@@ -165,30 +186,79 @@ impl ShellApp {
         }
     }
 
-    fn redraw_home(&mut self) {
-        let Some(home) = &mut self.home else { return };
-        if !home.prepare() {
-            return;
+    /// Bring the field document up to date with the window's size and the live state before a
+    /// frame: grid size from the logical size, then `field_model::merge`.
+    fn refresh_field(
+        &mut self,
+        logical_width: i32,
+        logical_height: i32,
+        toplevels: &[lege_window::ShellToplevel],
+    ) {
+        let (cols, rows) = field_model::grid_for(logical_width, logical_height);
+        if (cols, rows) != (self.field.cols, self.field.rows) {
+            match lege_field::apply(&self.field, &FieldOp::SetGrid { cols, rows }) {
+                Ok((next, _)) => self.field = next,
+                Err(error) => tracing::warn!(%error, "resizing the field grid"),
+            }
         }
-        let scale = home.scale;
-        let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
+        let live = LiveState {
+            apps: &self.apps,
+            toplevels,
+        };
+        field_model::merge(&mut self.field, &live);
+        field_model::refresh_titles(&mut self.field, &live);
+        let keys: Vec<String> = self
+            .apps
+            .iter()
+            .map(ToString::to_string)
+            .chain(
+                toplevels
+                    .iter()
+                    .filter_map(|t| t.canonical_app_id.as_ref().map(ToString::to_string)),
+            )
+            .collect();
+        for key in keys {
+            self.ensure_icon(&key);
+        }
+    }
+
+    fn redraw_home(&mut self) {
         let toplevels = self
             .bridge
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
+        let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
+        let Some(home) = &self.home else { return };
+        let scale = home.scale;
+        let logical = home
+            .window
+            .inner_size()
+            .to_logical::<f64>(home.window.scale_factor());
+        self.refresh_field(logical.width as i32, logical.height as i32, &toplevels);
+
+        let Some(home) = &mut self.home else { return };
+        if !home.prepare() {
+            return;
+        }
+        let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
         let search_results = self
             .search_results
             .as_ref()
-            .filter(|(drawer, _)| *drawer == self.home_screen.selected)
+            .filter(|(drawer, _)| Some(*drawer) == self.field_screen.expanded)
             .map(|(_, lines)| lines.as_slice());
-        let data = HomeSurfaceData {
+        let data = FieldData {
+            field: &self.field,
+            toplevels: &toplevels,
+            icons: &self.icons,
+            previews: &self.previews,
             drawer_texts: &self.drawer_texts,
             search_results,
-            toplevels: &toplevels,
             connected: self.bridge.is_some(),
+            home_revealed,
+            now_ms: self.started.elapsed().as_millis() as u64,
         };
-        let action = {
+        let actions = {
             let painter = Painter::new(&mut home.buffer);
             let mut ui = Ui::new(
                 painter,
@@ -199,22 +269,79 @@ impl ShellApp {
                 &mut self.kernel,
             );
             let area = Rect::new(0, 0, width, height);
-            self.home_screen.draw(&mut ui, area, &data)
+            self.field_screen.draw(&mut ui, area, &data)
         };
         home.input.end_frame();
         home.present();
 
+        for action in actions {
+            self.perform(action);
+        }
+    }
+
+    fn perform(&mut self, action: FieldAction) {
         match action {
-            HomeSurfaceAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
-            HomeSurfaceAction::RestoreWindow(window_id) => {
-                if let Some(bridge) = &self.bridge
-                    && let Err(error) = bridge.unshelve(window_id)
-                {
-                    tracing::warn!(%error, "unshelve request failed");
+            FieldAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
+            FieldAction::Launch(app_id) => self.spawn_launch(app_id),
+            FieldAction::Activate(window_id) => {
+                self.bridge_call("activate", |bridge| bridge.activate(window_id));
+            }
+            FieldAction::Park(window_id) => {
+                self.bridge_call("shelve", |bridge| bridge.shelve(window_id));
+            }
+            FieldAction::Restore(window_id) => {
+                self.bridge_call("unshelve", |bridge| bridge.unshelve(window_id));
+            }
+            FieldAction::RevealHome => {
+                self.bridge_call("reveal_home", |bridge| {
+                    bridge.reveal_home(RevealHome::Toggle)
+                });
+            }
+            FieldAction::Apply(op) => match lege_field::apply(&self.field, &op) {
+                Ok((next, inverse)) => {
+                    self.field = next;
+                    self.undo.push(inverse);
+                    self.undo.truncate(64);
+                }
+                Err(error) => tracing::warn!(%error, ?op, "field op refused"),
+            },
+            FieldAction::Undo => {
+                if let Some(inverse) = self.undo.pop() {
+                    match lege_field::apply(&self.field, &inverse) {
+                        Ok((next, _)) => self.field = next,
+                        Err(error) => tracing::warn!(%error, "undo refused"),
+                    }
                 }
             }
-            HomeSurfaceAction::None => {}
         }
+    }
+
+    fn bridge_call(&self, what: &str, call: impl FnOnce(&ShellBridge) -> anyhow::Result<()>) {
+        if let Some(bridge) = &self.bridge
+            && let Err(error) = call(bridge)
+        {
+            tracing::warn!(%error, "{what} request failed");
+        }
+    }
+
+    fn spawn_launch(&self, app_id: AppId) {
+        self.runtime.spawn(async move {
+            let connection = match crate::data::session().await {
+                Ok(connection) => connection,
+                Err(message) => {
+                    tracing::warn!(%message, "launch: no session bus");
+                    return;
+                }
+            };
+            match LauncherProxy::new(&connection).await {
+                Ok(proxy) => {
+                    if let Err(error) = proxy.launch(&app_id.to_string(), Vec::new(), "").await {
+                        tracing::warn!(%error, %app_id, "Launcher1.Launch failed");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "Launcher1 unavailable"),
+            }
+        });
     }
 
     fn redraw_dock(&mut self) {
@@ -555,6 +682,19 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.drain_updates();
         if self.exit {
             event_loop.exit();
+            return;
+        }
+        // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
+        // ghost follows the pointer and a throw's velocity is sampled evenly.
+        if self.field_screen.animating() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+            if let Some(home) = &self.home {
+                home.request_redraw();
+            }
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
