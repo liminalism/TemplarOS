@@ -63,13 +63,52 @@ record legeos.evidence.home-field-no-new-toolkit-api/1 : evidence {
 
 record legeos.evidence.home-field-persists-in-sessiond/1 : evidence {
     title "org.legeos.HomeField1 (Get/Apply/Undo/GetRevision/Changed) served by sessiond over migration 0004-homefield; apply bumps the revision and undo restores in one transaction each, a refused op stores nothing, outputs are independent; check-interfaces/check-proxies count 24 interfaces with live servers."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:c446073000000000000000000000000000000000
     command "cargo test -p lege-session-core homefield && cargo test -p lege-sessiond && just check-interfaces"
     summary """
         org.legeos.HomeField1 (Get/Apply/Undo/GetRevision/Changed) served by sessiond over migration 0004-homefield; apply bumps the revision and undo restores in one transaction each, a refused op stores nothing, outputs are independent; check-interfaces/check-proxies count 24 interfaces with live servers.
+        """
+}
+
+record legeos.evidence.home-field-persists-in-sessiond/2 : evidence {
+    title "org.legeos.HomeField1 (Get/Apply/Undo/GetRevision/Changed) served by sessiond over migration 0004-homefield; apply bumps the revision and undo restores in one transaction each, a refused op stores nothing, outputs are independent; check-interfaces/check-proxies count 24 interfaces with live servers."
+    state verified
+    result pass
+    method command
+    observed_at git:c446073ee75327fb1d2ade6325faf624608c2803
+    command """
+        cargo test -p lege-session-core homefield && cargo test -p lege-sessiond && just check-interfaces && tests/integration/run.sh
+        """
+    summary """
+        org.legeos.HomeField1 (Get/Apply/Undo/GetRevision/Changed) served by sessiond over migration 0004-homefield; apply bumps the revision and undo restores in one transaction each, a refused op stores nothing, outputs are independent; check-interfaces/check-proxies count 24 interfaces with live servers; integration smoke passes. (Revision 2 corrects the cited commit: revision 1 carried a truncated hash.)
+        """
+    supersedes [ @legeos.evidence.home-field-persists-in-sessiond/1 ]
+}
+
+record legeos.evidence.home-field-previews-shell-only/1 : evidence {
+    title "lege-comp --check advertises ext_foreign_toplevel_image_capture_source_manager_v1 and ext_image_copy_capture_manager_v1 as shell-only globals (filtered to the trusted-shell connection, no output source); preview sizes keep aspect with the longer side capped at 512 and the per-window rate limiter allows one frame per 250 ms; the shell's capture client compiles against wayland-protocols 0.32 staging and reads frames back with pread. Rendering itself is verified only in a nested session (not yet run)."
+    state verified
+    result pass
+    method command
+    observed_at git:89e618a6787df3d3a9ae36ccda07413455f299f0
+    command "cargo run -p lege-comp -- --check && cargo test -p lege-comp screencopy && cargo test -p lege-shell"
+    summary """
+        lege-comp --check advertises ext_foreign_toplevel_image_capture_source_manager_v1 and ext_image_copy_capture_manager_v1 as shell-only globals (filtered to the trusted-shell connection, no output source); preview sizes keep aspect with the longer side capped at 512 and the per-window rate limiter allows one frame per 250 ms; the shell's capture client compiles against wayland-protocols 0.32 staging and reads frames back with pread. Rendering itself is verified only in a nested session (not yet run).
+        """
+}
+
+record legeos.evidence.home-field-projects-and-zoom/1 : evidence {
+    title "Projects1 projects get add-only tiles at the field's right edge; grouping two loose tiles creates a Projects1 project with a stable tile id; clicking a project zooms into its interior grid where tiles move by pointer and keyboard, Backspace moves one back out, Escape returns; the document is unchanged by zoom."
+    state verified
+    result pass
+    method command
+    observed_at git:89e618a6787df3d3a9ae36ccda07413455f299f0
+    command "cargo test -p lege-shell a_project_zooms_in && cargo test -p lege-shell projects_get_tiles"
+    summary """
+        Projects1 projects get add-only tiles at the field's right edge; grouping two loose tiles creates a Projects1 project with a stable tile id; clicking a project zooms into its interior grid where tiles move by pointer and keyboard, Backspace moves one back out, Escape returns; the document is unchanged by zoom.
         """
 }
 
@@ -85,6 +124,18 @@ record legeos.evidence.home-field-shelved-is-hidden/1 : evidence {
         """
 }
 
+record legeos.evidence.home-field-throw-experiment-instrumented/1 : evidence {
+    title "Throwing is off by default and gated by shell.home-field.throw; projection is closed-form so the ghost equals the landing; every pointer drop reports lift-to-release, thrown, semantic and relift, logged as JSONL only while the experiment is on; docs/research/throw-spike.md fixes the measures and the keep/delete rule."
+    state verified
+    result pass
+    method command
+    observed_at git:89e618a6787df3d3a9ae36ccda07413455f299f0
+    command "cargo test -p lege-field drag && cargo test -p lege-shell dragging_a_tile"
+    summary """
+        Throwing is off by default and gated by shell.home-field.throw; projection is closed-form so the ghost equals the landing; every pointer drop reports lift-to-release, thrown, semantic and relift, logged as JSONL only while the experiment is on; docs/research/throw-spike.md fixes the measures and the keep/delete rule.
+        """
+}
+
 record legeos.evidence.home-field-windows-cannot-be-lost/1 : evidence {
     title "Proptest over shelve/unshelve/activate/reveal sequences: a hidden window is hidden only because it is shelved or a reveal is in effect, shelved windows never hold activation; ShowAllWindows unshelves everything and ends a reveal; a reveal changes no record and ends on Activate."
     state verified
@@ -94,6 +145,18 @@ record legeos.evidence.home-field-windows-cannot-be-lost/1 : evidence {
     command "cargo test -p lege-window hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
     summary """
         Proptest over shelve/unshelve/activate/reveal sequences: a hidden window is hidden only because it is shelved or a reveal is in effect, shelved windows never hold activation; ShowAllWindows unshelves everything and ends a reveal; a reveal changes no record and ends on Activate.
+        """
+}
+
+record legeos.evidence.lege-treemap-lifted-and-pure/1 : evidence {
+    title "crates/lege-treemap (tree arena, squarified layout, category palette, CPU cushion rasterizer, bounded std scanner) passes its 11 tests — byte-proportional areas at top level and nested, file count as tie-breaker only, cushions shade, scan limits hold — with zero dependencies; deps-check guards it."
+    state verified
+    result pass
+    method command
+    observed_at git:89e618a6787df3d3a9ae36ccda07413455f299f0
+    command "cargo test -p lege-treemap && cargo xtask deps-check"
+    summary """
+        crates/lege-treemap (tree arena, squarified layout, category palette, CPU cushion rasterizer, bounded std scanner) passes its 11 tests — byte-proportional areas at top level and nested, file count as tie-breaker only, cushions shade, scan limits hold — with zero dependencies; deps-check guards it.
         """
 }
 

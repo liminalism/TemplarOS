@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:564fb4d126dbde9148595911297139972748056a97bed723618d1dbef1b440f5"
+    source_graph "sha256:e095d19df49f15b4dfd07faa2b9176a32366c6bb0aa511688620cec27ab89511"
 }
 
 source ".akr/project.akr" {
@@ -24,8 +24,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:15ecfabe295fd1fe2dcbd87a02755ac3ff14d472ee04b82d98a258f115425771"
-    records 21
+    hash "sha256:3fe7d5a29733a49878bf89a71c750fcb9e90d8d8339ab98a3e24d5dc7cdc884d"
+    records 34
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -496,6 +496,71 @@ seal @legeos.decision.session-greeter-lock/2 {
 seal @legeos.decision.toolchain-licence-namespace/1 {
     state active
     hash "sha256:8e4144ed893fe28fa2298d1c98066626728dfb655793e9b4352591e5fa25b7d8"
+}
+
+seal @legeos.evidence.home-field-in-text/1 {
+    state verified
+    hash "sha256:0d30c91bb7de942a02bee1e0f7206b760670823d4733f0168a29aa40921aea77"
+}
+
+seal @legeos.evidence.home-field-keyboard-complete/1 {
+    state verified
+    hash "sha256:aeef679acfa52280a36b8f5d5321f63128692b289c4f1346b3e0e1e83e101a39"
+}
+
+seal @legeos.evidence.home-field-layout-is-stable/1 {
+    state verified
+    hash "sha256:d3a88732cfefcd60b84f4377160be507d0f057813e41a5d3a2650271d8c45d23"
+}
+
+seal @legeos.evidence.home-field-maximize-fills-work-area/1 {
+    state verified
+    hash "sha256:ebc8fb8c744fbf8f03c142bb261bb0e229f24b898b9c4d750fcada67bef60604"
+}
+
+seal @legeos.evidence.home-field-no-new-toolkit-api/1 {
+    state verified
+    hash "sha256:2d144184be038b8c51d0ce8e572d80e2531c54e4090fa7ccfb507c720c3450ef"
+}
+
+seal @legeos.evidence.home-field-persists-in-sessiond/1 {
+    state superseded
+    hash "sha256:afe99d15e81561393e17905066e14d1ef9b1bc8ddf2dbffac80128ef3c1b7dc6"
+}
+
+seal @legeos.evidence.home-field-persists-in-sessiond/2 {
+    state verified
+    hash "sha256:f5813d9aff73bb93be396bfe5a46930a0257f0af3b04a5f19fb9b2f907de33f7"
+}
+
+seal @legeos.evidence.home-field-previews-shell-only/1 {
+    state verified
+    hash "sha256:4fa6ce6f6486f3078bc65954d50aca753f108d742d05f8a78e98317c8161d9da"
+}
+
+seal @legeos.evidence.home-field-projects-and-zoom/1 {
+    state verified
+    hash "sha256:3758a6eba14aed047f5b524e7efa6532dfb992f59e1eff78810ec17f55102f87"
+}
+
+seal @legeos.evidence.home-field-shelved-is-hidden/1 {
+    state verified
+    hash "sha256:78aa0790ac30b623305b623a1424ff5e68c65d37f2c53466aae87d6d71d73416"
+}
+
+seal @legeos.evidence.home-field-throw-experiment-instrumented/1 {
+    state verified
+    hash "sha256:fbaa4f43b5a7e712ad223974c8a0471fa5408e9d0dbcb7fccbc81e5564b54097"
+}
+
+seal @legeos.evidence.home-field-windows-cannot-be-lost/1 {
+    state verified
+    hash "sha256:f55a540a49c48031f6edf10aeae56bc9ef2df94abf942e9a86f9a252dd4b7bb5"
+}
+
+seal @legeos.evidence.lege-treemap-lifted-and-pure/1 {
+    state verified
+    hash "sha256:699ce7077473c077cb967d2dd86722f43142354a595325a50fd8bcefb8687e3d"
 }
 
 seal @legeos.evidence.m0-adrs-present/1 {
