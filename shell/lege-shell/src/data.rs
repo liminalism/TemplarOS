@@ -126,6 +126,23 @@ pub async fn fetch_apps() -> Vec<AppId> {
         .collect()
 }
 
+/// `Projects1.List`, or none when sessiond is absent.
+pub async fn fetch_projects() -> Vec<crate::field_model::ProjectInfo> {
+    let Ok(connection) = session().await else {
+        return Vec::new();
+    };
+    let Ok(proxy) = ProjectsProxy::new(&connection).await else {
+        return Vec::new();
+    };
+    proxy
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, name, _root, is_open)| crate::field_model::ProjectInfo { id, name, is_open })
+        .collect()
+}
+
 /// `HomeField1.Get`: the persisted field for `output`, created at `cols`×`rows` if new. `None`
 /// when sessiond is absent — the shell then keeps an in-session document instead.
 pub async fn fetch_field(output: &str, cols: u16, rows: u16) -> Option<FieldDocument> {

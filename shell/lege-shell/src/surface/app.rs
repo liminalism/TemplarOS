@@ -15,14 +15,14 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
-use lege_client::proxies::{FilesSearchProxy, LauncherProxy, SettingsProxy};
+use lege_client::proxies::{FilesSearchProxy, LauncherProxy, ProjectsProxy, SettingsProxy};
 use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
 use lege_window::{DockGrouping, RevealHome, geometry::Edge};
 
 use crate::dock;
 use crate::drawers::standard_paths::{self, StandardDrawer};
-use crate::field_model::{self, LiveState};
+use crate::field_model::{self, LiveState, ProjectInfo};
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::settings::{self, HomeFieldSettings};
@@ -46,6 +46,7 @@ enum DataUpdate {
     Drawers(Vec<(Drawer, String)>),
     Grouping(DockGrouping),
     Apps(Vec<AppId>),
+    Projects(Vec<ProjectInfo>),
     HomeFieldSettings(HomeFieldSettings),
     /// The persisted document arrived from `HomeField1` (startup, or after an undo).
     Field(FieldDocument),
@@ -104,6 +105,7 @@ struct ShellApp {
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
     apps: Vec<AppId>,
+    projects: Vec<ProjectInfo>,
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     started: Instant,
 
@@ -142,6 +144,7 @@ impl ShellApp {
             field_settings: HomeFieldSettings::default(),
             field_requested: false,
             apps: Vec::new(),
+            projects: Vec::new(),
             previews: HashMap::new(),
             started: Instant::now(),
             drawer_texts: HashMap::new(),
@@ -162,11 +165,13 @@ impl ShellApp {
                 let grouping = fetch_grouping().await;
                 let apps = crate::data::fetch_apps().await;
                 let field_settings = fetch_home_field_settings().await;
+                let projects = crate::data::fetch_projects().await;
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
                 let _ = tx.send(DataUpdate::Grouping(grouping));
                 let _ = tx.send(DataUpdate::Apps(apps));
+                let _ = tx.send(DataUpdate::Projects(projects));
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
@@ -227,6 +232,7 @@ impl ShellApp {
                 }
                 DataUpdate::Grouping(grouping) => self.dock_grouping = grouping,
                 DataUpdate::Apps(apps) => self.apps = apps,
+                DataUpdate::Projects(projects) => self.projects = projects,
                 DataUpdate::HomeFieldSettings(settings) => {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled = settings.throw;
@@ -287,6 +293,7 @@ impl ShellApp {
         let live = LiveState {
             apps: &self.apps,
             toplevels,
+            projects: &self.projects,
         };
         let merged = field_model::merge(&mut self.field, &live);
         if !merged.is_empty() && self.field_synced == Some(true) {
@@ -385,6 +392,11 @@ impl ShellApp {
             }
             FieldAction::Apply(op) => match lege_field::apply(&self.field, &op) {
                 Ok((next, inverse)) => {
+                    if let FieldOp::CreateProject { project, .. } = &op
+                        && let lege_field::TileKind::Project { project_id } = &project.kind
+                    {
+                        self.spawn_project_create(project_id.clone(), project.title.clone());
+                    }
                     self.field = next;
                     if self.field_synced == Some(true) {
                         self.spawn_field_apply(op);
@@ -414,6 +426,30 @@ impl ShellApp {
         {
             tracing::warn!(%error, "{what} request failed");
         }
+    }
+
+    /// A project grouped on the field becomes a real `Projects1` project, rooted under
+    /// `~/Projects/<id>` — so what the field shows is a session object, not decoration.
+    fn spawn_project_create(&self, project_id: String, name: String) {
+        self.runtime.spawn(async move {
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = ProjectsProxy::new(&connection).await else {
+                return;
+            };
+            let root = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default()
+                .join("Projects")
+                .join(&project_id);
+            if let Err(error) = proxy
+                .create(&project_id, &name, &root.to_string_lossy())
+                .await
+            {
+                tracing::warn!(%error, %project_id, "Projects1.Create failed");
+            }
+        });
     }
 
     fn spawn_launch(&self, app_id: AppId) {

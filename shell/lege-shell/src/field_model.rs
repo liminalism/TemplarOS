@@ -44,6 +44,14 @@ pub fn grid_for(width: i32, height: i32, tile_size: i32) -> (u16, u16) {
     (cols, rows)
 }
 
+/// One project as `Projects1.List` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectInfo {
+    pub id: String,
+    pub name: String,
+    pub is_open: bool,
+}
+
 /// What the field is merged against.
 #[derive(Debug, Default)]
 pub struct LiveState<'a> {
@@ -51,6 +59,21 @@ pub struct LiveState<'a> {
     pub apps: &'a [AppId],
     /// Every window the compositor reports.
     pub toplevels: &'a [ShellToplevel],
+    /// Every project sessiond knows (`Projects1.List`).
+    pub projects: &'a [ProjectInfo],
+}
+
+/// The tile id a project's tile always has, so a project the field created by grouping and the
+/// same project read back from `Projects1` are one tile, not two.
+pub fn project_tile_id(project_id: &str) -> TileId {
+    tile_id_for(&format!("project:{project_id}"))
+}
+
+/// The size range a project tile read from `Projects1` gets: small enough to sit beside the
+/// applications, never smaller than the 2×2 a container needs; one the user grouped on the
+/// field takes a quadrant instead (`SpanRange::for_kind`).
+pub fn project_spans(cols: u16, rows: u16) -> SpanRange {
+    SpanRange::new(Span::new(2, 2), Span::new(3, 2), Span::new(cols, rows))
 }
 
 /// The widget name a drawer tile carries (`TileKind::Widget::widget`).
@@ -101,6 +124,7 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
     let mut wanted: BTreeSet<TileId> = BTreeSet::new();
     merge_drawers(doc, &mut wanted, &mut applied);
+    merge_projects(doc, live, &mut applied);
     merge_apps(doc, live, &mut wanted, &mut applied);
     merge_sessions(doc, live, &mut wanted, &mut applied);
 
@@ -147,6 +171,41 @@ fn merge_drawers(
         let landing = Landing {
             container: None,
             cell: Cell::new(0, index as u16),
+        };
+        try_apply(doc, FieldOp::Place { tile, landing }, applied);
+    }
+}
+
+/// Projects from the right edge, stacked down. Add-only: a project tile is never removed by a
+/// merge, because a project the field just created may not have reached `Projects1` yet (or
+/// sessiond may be absent), and a tile that vanished and came back would lose its place.
+fn merge_projects(doc: &mut FieldDocument, live: &LiveState<'_>, applied: &mut Vec<FieldOp>) {
+    let spans = project_spans(doc.cols, doc.rows);
+    let col = doc.cols.saturating_sub(spans.preferred.cols);
+    for (index, project) in live.projects.iter().enumerate() {
+        let id = project_tile_id(&project.id);
+        if let Some(tile) = doc.tile_mut(id) {
+            if tile.title != project.name && !project.name.is_empty() {
+                tile.title.clone_from(&project.name);
+            }
+            continue;
+        }
+        let tile = Tile {
+            id,
+            kind: TileKind::Project {
+                project_id: project.id.clone(),
+            },
+            title: if project.name.is_empty() {
+                project.id.clone()
+            } else {
+                project.name.clone()
+            },
+            spans,
+            accent: None,
+        };
+        let landing = Landing {
+            container: None,
+            cell: Cell::new(col, (index as u16) * spans.preferred.rows),
         };
         try_apply(doc, FieldOp::Place { tile, landing }, applied);
     }
@@ -338,6 +397,7 @@ mod tests {
         let live = LiveState {
             apps: &apps,
             toplevels: &windows,
+            projects: &[],
         };
         let ops = merge(&mut doc, &live);
         assert_eq!(ops.len(), DRAWER_TILES.len() + 2 + 2);
@@ -385,6 +445,37 @@ mod tests {
     }
 
     #[test]
+    fn projects_get_tiles_at_the_right_edge_and_are_never_auto_removed() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let projects = vec![ProjectInfo {
+            id: "thesis".into(),
+            name: "Thesis".into(),
+            is_open: false,
+        }];
+        merge(
+            &mut doc,
+            &LiveState {
+                apps: &[],
+                toplevels: &[],
+                projects: &projects,
+            },
+        );
+        let thesis = project_tile_id("thesis");
+        let located = doc.location(thesis).unwrap();
+        assert_eq!(located.placement.cell, Cell::new(13, 0));
+        assert_eq!(located.placement.span, Span::new(3, 2));
+        assert!(
+            doc.container(thesis).is_some(),
+            "a project tile has an interior grid"
+        );
+        assert_eq!(doc.tile(thesis).unwrap().title, "Thesis");
+
+        // Gone from Projects1 (or sessiond absent): the tile stays.
+        merge(&mut doc, &LiveState::default());
+        assert!(doc.tile(thesis).is_some());
+    }
+
+    #[test]
     fn a_closed_window_takes_its_tile_with_it() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         let windows = vec![toplevel(7, None, "x", false)];
@@ -393,6 +484,7 @@ mod tests {
             &LiveState {
                 apps: &[],
                 toplevels: &windows,
+                projects: &[],
             },
         );
         let session = session_tile_for(&doc, &windows[0]).unwrap();
@@ -402,6 +494,7 @@ mod tests {
             &LiveState {
                 apps: &[],
                 toplevels: &[],
+                projects: &[],
             },
         );
         assert_eq!(ops, vec![FieldOp::Remove { id: session }]);
@@ -417,6 +510,7 @@ mod tests {
             &LiveState {
                 apps: &[],
                 toplevels: &windows,
+                projects: &[],
             },
         );
         let located = doc.located.clone();
@@ -426,6 +520,7 @@ mod tests {
             &LiveState {
                 apps: &[],
                 toplevels: &windows,
+                projects: &[],
             },
         );
         let session = session_tile_for(&doc, &windows[0]).unwrap();

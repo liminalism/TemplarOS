@@ -197,6 +197,7 @@ async fn render_field() -> String {
         &lege_shell::field_model::LiveState {
             apps: &apps,
             toplevels: &[],
+            projects: &data::fetch_projects().await,
         },
     );
     format!(

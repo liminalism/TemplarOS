@@ -59,7 +59,9 @@ What to exercise by hand, because no test covers it:
   ends); press its `park` control — it vanishes from the screen and its tile reads *parked*; click
   the parked tile — it comes back at its old geometry. Drag a tile by its title band: a ghost shows
   where it will land before you let go, and only tiles in that row or column make room. Drop a tile
-  onto another and the label reads `NEW PROJECT FROM THESE TWO`. Ctrl+Z reverses each of these.
+  onto another and the label reads `NEW PROJECT FROM THESE TWO`; click the new project's body to zoom
+  into it, move its tiles around inside, Backspace one back out, Escape to return. Ctrl+Z reverses
+  each of these.
   Then do the same with the keyboard only: arrows, Enter, Space+arrows+Enter, Delete, Ctrl+Z.
   `lege-shell --print field` must list the same tiles.
 * **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is

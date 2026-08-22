@@ -18,7 +18,7 @@ use pixelkit_text::{Align, TextStyle};
 use pixelkit_ui::{TextFieldState, Ui};
 
 use lege_field::drag::{Drag, DragConfig, DragSample, GrabOffset, Release};
-use lege_field::focus::{self, Direction};
+use lege_field::focus::Direction;
 use lege_field::{
     Cell, FieldDocument, FieldOp, Landing, Operation, PixelRect, Placement, Span, SpanRange,
     Target, Tile, TileId, TileKind, apply, cell_at, tile_rect,
@@ -83,6 +83,10 @@ pub struct FieldScreen {
     pub keyboard_move: Option<(TileId, Cell)>,
     /// A drawer opened to its full body, over the field.
     pub expanded: Option<Drawer>,
+    /// A project zoomed to fill the field: its interior grid is what is drawn and edited, with
+    /// a breadcrumb back. The document is untouched by zoom — it is a view, never a hidden
+    /// desktop (`docs/homefield.md`, "Do not recreate virtual desktops under another name").
+    pub zoomed: Option<TileId>,
     pub drawer_view: HomeSurfaceScreen,
     pub search: TextFieldState,
     pub search_focused: bool,
@@ -98,6 +102,7 @@ impl Default for FieldScreen {
             focus: None,
             keyboard_move: None,
             expanded: None,
+            zoomed: None,
             drawer_view: HomeSurfaceScreen::default(),
             search: TextFieldState::new(),
             search_focused: false,
@@ -116,9 +121,44 @@ impl FieldScreen {
         self.drag.is_lifted()
     }
 
-    /// The pixel rectangle of `tile` as last drawn.
+    /// The pixel rectangle of `tile` as last drawn: on the top level, its own rect (a child
+    /// inside a project is drawn nested within it, `lege_field::tile_rect`); zoomed into a
+    /// project, only that project's children have rects, laid out on the interior grid.
     pub fn tile_rect(&self, doc: &FieldDocument, tile: TileId, ui: &Ui<'_>) -> Option<Rect> {
-        tile_rect(doc, to_pixel(self.bounds), tile, ui.px(GAP)).map(from_pixel)
+        match self.zoomed {
+            None => tile_rect(doc, to_pixel(self.bounds), tile, ui.px(GAP)).map(from_pixel),
+            Some(project) => {
+                let located = doc.location(tile)?;
+                if located.container != Some(project) {
+                    return None;
+                }
+                let (cols, rows) = doc.grid_size(Some(project))?;
+                Some(from_pixel(lege_field::cell_rect(
+                    cols,
+                    rows,
+                    to_pixel(self.bounds),
+                    located.placement.cell,
+                    located.placement.span,
+                    ui.px(GAP),
+                )))
+            }
+        }
+    }
+
+    /// The grid being drawn and edited: the field, or the zoomed project's interior.
+    fn grid_dims(&self, doc: &FieldDocument) -> (u16, u16) {
+        doc.grid_size(self.zoomed).unwrap_or((doc.cols, doc.rows))
+    }
+
+    /// Every tile on the current grid with its rect, in reading order.
+    fn current_rects(&self, doc: &FieldDocument, ui: &Ui<'_>) -> Vec<(TileId, Rect)> {
+        let mut rects: Vec<(TileId, Rect)> = doc
+            .placements_in(self.zoomed)
+            .into_iter()
+            .filter_map(|(id, _)| self.tile_rect(doc, id, ui).map(|rect| (id, rect)))
+            .collect();
+        rects.sort_by_key(|(_, rect)| (rect.y, rect.x));
+        rects
     }
 
     /// The grab band at the top of a tile's rect.
@@ -138,9 +178,36 @@ impl FieldScreen {
             return actions;
         }
 
-        self.bounds = rest;
         let doc = data.field;
-        if self.focus.is_some_and(|id| doc.location(id).is_none()) {
+        if self.zoomed.is_some_and(|id| doc.container(id).is_none()) {
+            self.zoomed = None;
+        }
+        let rest = if let Some(project) = self.zoomed {
+            let (crumb, body) = rest.split_top(ui.px(CRUMB_HEIGHT));
+            let name = doc
+                .tile(project)
+                .map_or("project", |tile| tile.title.as_str());
+            let style = TextStyle::new(ui.theme.body.face, 13.0);
+            ui.label_styled(
+                crumb.inset(ui.px(6)),
+                &format!(
+                    "HOME  ▸  {}   (Escape returns; Backspace moves a tile back out)",
+                    name.to_uppercase()
+                ),
+                style,
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            ui.painter.stroke_rect(body, ui.px(2), ui.theme.accent_soft);
+            body
+        } else {
+            rest
+        };
+        self.bounds = rest;
+        if self
+            .focus
+            .is_some_and(|id| doc.location(id).is_none_or(|l| l.container != self.zoomed))
+        {
             self.focus = None;
         }
         self.handle_keys(ui, doc, data, &mut actions);
@@ -148,12 +215,7 @@ impl FieldScreen {
 
         let ghost = self.ghost(doc, ui);
         let lifted = self.drag.tile().filter(|_| self.drag.is_lifted());
-        let mut rects: Vec<(TileId, Rect)> = doc
-            .located
-            .iter()
-            .filter_map(|(id, _)| self.tile_rect(doc, *id, ui).map(|rect| (*id, rect)))
-            .collect();
-        rects.sort_by_key(|(_, rect)| (rect.y, rect.x));
+        let rects = self.current_rects(doc, ui);
         for (id, rect) in &rects {
             if Some(*id) == lifted {
                 continue;
@@ -173,10 +235,12 @@ impl FieldScreen {
 
         self.draw_overlays(ui, doc, data, ghost.as_ref(), lifted, &mut actions);
 
-        if doc.located.is_empty() {
+        if rects.is_empty() {
             ui.label(
                 rest.inset(ui.px(12)),
-                if data.connected {
+                if self.zoomed.is_some() {
+                    "Empty project — drop tiles onto its tile on the field to fill it"
+                } else if data.connected {
                     "Home Field — nothing here yet; open an application and it will appear"
                 } else {
                     "Home Field — not connected to the compositor's lege_shell_v1 protocol"
@@ -199,10 +263,11 @@ impl FieldScreen {
         lifted: Option<TileId>,
         actions: &mut Vec<FieldAction>,
     ) {
+        let (cols, rows) = self.grid_dims(doc);
         if let Some(ghost) = ghost {
             let ghost_rect = from_pixel(lege_field::cell_rect(
-                doc.cols,
-                doc.rows,
+                cols,
+                rows,
                 to_pixel(self.bounds),
                 ghost.placement.cell,
                 ghost.placement.span,
@@ -216,8 +281,8 @@ impl FieldScreen {
                     continue;
                 };
                 let preview = from_pixel(lege_field::cell_rect(
-                    doc.cols,
-                    doc.rows,
+                    cols,
+                    rows,
                     to_pixel(self.bounds),
                     to.cell,
                     located.placement.span,
@@ -378,37 +443,11 @@ impl FieldScreen {
         }
         let keys: Vec<KeyInput> = ui.input.keys().to_vec();
         let modifiers = ui.input.modifiers();
-        let bounds = to_pixel(self.bounds);
-        let gap = ui.px(GAP);
+        let (cols, rows) = self.grid_dims(doc);
+        let rects = self.current_rects(doc, ui);
         for key in keys {
             if let Some((tile, cell)) = self.keyboard_move {
-                match key {
-                    KeyInput::Left | KeyInput::Right | KeyInput::Up | KeyInput::Down => {
-                        let cell = match key {
-                            KeyInput::Left => Cell::new(cell.col.saturating_sub(1), cell.row),
-                            KeyInput::Right => {
-                                Cell::new((cell.col + 1).min(doc.cols.saturating_sub(1)), cell.row)
-                            }
-                            KeyInput::Up => Cell::new(cell.col, cell.row.saturating_sub(1)),
-                            _ => {
-                                Cell::new(cell.col, (cell.row + 1).min(doc.rows.saturating_sub(1)))
-                            }
-                        };
-                        self.keyboard_move = Some((tile, cell));
-                    }
-                    KeyInput::Enter => {
-                        self.keyboard_move = None;
-                        actions.push(FieldAction::Apply(FieldOp::Move {
-                            id: tile,
-                            landing: Landing {
-                                container: None,
-                                cell,
-                            },
-                        }));
-                    }
-                    KeyInput::Escape => self.keyboard_move = None,
-                    _ => {}
-                }
+                self.handle_move_key(&key, tile, cell, cols, rows, actions);
                 continue;
             }
             match key {
@@ -420,23 +459,35 @@ impl FieldScreen {
                         _ => Direction::Down,
                     };
                     self.focus = match self.focus {
-                        None => focus::first(doc, bounds, gap),
-                        Some(from) => {
-                            focus::neighbour(doc, bounds, from, direction, gap).or(Some(from))
-                        }
+                        None => first_in(&rects),
+                        Some(from) => neighbour_in(&rects, from, direction).or(Some(from)),
                     };
                 }
                 KeyInput::Tab => {
                     self.focus = self.focus.map_or_else(
-                        || focus::first(doc, bounds, gap),
+                        || first_in(&rects),
                         |from| {
-                            focus::neighbour(doc, bounds, from, Direction::Right, gap)
-                                .or_else(|| {
-                                    focus::neighbour(doc, bounds, from, Direction::Down, gap)
-                                })
+                            neighbour_in(&rects, from, Direction::Right)
+                                .or_else(|| neighbour_in(&rects, from, Direction::Down))
                                 .or(Some(from))
                         },
                     );
+                }
+                KeyInput::Backspace => {
+                    // Inside a project: move the focused tile back out onto the field, next to
+                    // the project.
+                    if let Some(project) = self.zoomed
+                        && let Some(id) = self.focus
+                        && let Some(home) = doc.location(project)
+                    {
+                        actions.push(FieldAction::Apply(FieldOp::Move {
+                            id,
+                            landing: Landing {
+                                container: None,
+                                cell: home.placement.cell,
+                            },
+                        }));
+                    }
                 }
                 KeyInput::Enter => {
                     if let Some(id) = self.focus
@@ -448,7 +499,7 @@ impl FieldScreen {
                 KeyInput::Character(' ') => {
                     if let Some(id) = self.focus
                         && let Some(located) = doc.location(id)
-                        && located.container.is_none()
+                        && located.container == self.zoomed
                     {
                         self.keyboard_move = Some((id, located.placement.cell));
                     }
@@ -461,11 +512,48 @@ impl FieldScreen {
                         actions.push(FieldAction::Apply(FieldOp::Stash { id }));
                     }
                 }
-                KeyInput::Escape => {
-                    self.focus = None;
-                }
+                KeyInput::Escape if self.zoomed.is_some() => self.zoomed = None,
+                KeyInput::Escape => self.focus = None,
                 _ => {}
             }
+        }
+    }
+
+    /// Arrow keys move a keyboard-lifted tile's landing cell; Enter drops it on the current
+    /// grid; Escape puts it back.
+    fn handle_move_key(
+        &mut self,
+        key: &KeyInput,
+        tile: TileId,
+        cell: Cell,
+        cols: u16,
+        rows: u16,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        match *key {
+            KeyInput::Left | KeyInput::Right | KeyInput::Up | KeyInput::Down => {
+                let cell = match key {
+                    KeyInput::Left => Cell::new(cell.col.saturating_sub(1), cell.row),
+                    KeyInput::Right => {
+                        Cell::new((cell.col + 1).min(cols.saturating_sub(1)), cell.row)
+                    }
+                    KeyInput::Up => Cell::new(cell.col, cell.row.saturating_sub(1)),
+                    _ => Cell::new(cell.col, (cell.row + 1).min(rows.saturating_sub(1))),
+                };
+                self.keyboard_move = Some((tile, cell));
+            }
+            KeyInput::Enter => {
+                self.keyboard_move = None;
+                actions.push(FieldAction::Apply(FieldOp::Move {
+                    id: tile,
+                    landing: Landing {
+                        container: self.zoomed,
+                        cell,
+                    },
+                }));
+            }
+            KeyInput::Escape => self.keyboard_move = None,
+            _ => {}
         }
     }
 
@@ -494,12 +582,9 @@ impl FieldScreen {
                 // Topmost tile whose grab band is under the pointer: later in reading order
                 // draws later, so search from the end.
                 let mut hit = None;
-                for (id, _) in doc.located.iter().rev() {
-                    if let Some(rect) = self.tile_rect(doc, *id, ui)
-                        && Self::band(rect, ui).contains(cx, cy)
-                        && doc.location(*id).is_some_and(|l| l.container.is_none())
-                    {
-                        hit = Some((*id, rect));
+                for (id, rect) in self.current_rects(doc, ui).into_iter().rev() {
+                    if Self::band(rect, ui).contains(cx, cy) {
+                        hit = Some((id, rect));
                         break;
                     }
                 }
@@ -564,18 +649,12 @@ impl FieldScreen {
     ) -> Option<Cell> {
         let bounds = to_pixel(self.bounds);
         let gap = ui.px(GAP);
-        let one = lege_field::cell_rect(
-            doc.cols,
-            doc.rows,
-            bounds,
-            Cell::new(0, 0),
-            Span::new(1, 1),
-            gap,
-        );
+        let (cols, rows) = self.grid_dims(doc);
+        let one = lege_field::cell_rect(cols, rows, bounds, Cell::new(0, 0), Span::new(1, 1), gap);
         let _ = tile;
         cell_at(
-            doc.cols,
-            doc.rows,
+            cols,
+            rows,
             bounds,
             tile_at.0 as i32 + one.w / 2,
             tile_at.1 as i32 + one.h / 2,
@@ -583,8 +662,16 @@ impl FieldScreen {
         )
     }
 
-    /// The target under the pointer for the grammar, and the op a drop there performs.
-    fn target_at(doc: &FieldDocument, source: TileId, cell: Cell) -> Target {
+    /// The target under the pointer for the grammar, and the op a drop there performs. Inside a
+    /// zoomed project every drop is placement on its grid: containers are one level deep, so
+    /// there is nothing else a drop there could mean.
+    fn target_at(doc: &FieldDocument, grid: Option<TileId>, source: TileId, cell: Cell) -> Target {
+        if grid.is_some() {
+            return Target::Empty {
+                container: grid,
+                cell,
+            };
+        }
         match doc.tile_at(None, cell).filter(|id| *id != source) {
             Some(id) => match doc.kind_of(id) {
                 Some(TileKind::Project { .. }) => Target::Project { id },
@@ -617,11 +704,10 @@ impl FieldScreen {
             Operation::Stash => FieldOp::Stash { id: source },
             Operation::GroupIntoNewProject { with } => {
                 let target_cell = doc.location(*with)?.placement.cell;
+                let project_id = format!("field-{}", doc.next_tile_id().0);
                 let project = Tile {
-                    id: doc.next_tile_id(),
-                    kind: TileKind::Project {
-                        project_id: format!("field-{}", doc.next_tile_id().0),
-                    },
+                    id: field_model::project_tile_id(&project_id),
+                    kind: TileKind::Project { project_id },
                     title: "New project".to_owned(),
                     spans: SpanRange::for_kind(
                         &TileKind::Project {
@@ -668,12 +754,12 @@ impl FieldScreen {
     ) -> Option<FieldOp> {
         let kind = doc.kind_of(tile)?;
         let cell = self.landing_cell(doc, tile, tile_at, ui)?;
-        let target = Self::target_at(doc, tile, cell);
+        let target = Self::target_at(doc, self.zoomed, tile, cell);
         let operation = lege_field::operation_for(tile, kind, &target)?;
         Self::op_for(doc, tile, &operation).or(Some(FieldOp::Move {
             id: tile,
             landing: Landing {
-                container: None,
+                container: self.zoomed,
                 cell,
             },
         }))
@@ -698,7 +784,7 @@ impl FieldScreen {
             return None;
         };
         let kind = doc.kind_of(tile)?;
-        let target = Self::target_at(doc, tile, cell);
+        let target = Self::target_at(doc, self.zoomed, tile, cell);
         let operation = lege_field::operation_for(tile, kind, &target)?;
         let label = operation.label();
         let label_at = match (&target, label_anchor) {
@@ -710,7 +796,7 @@ impl FieldScreen {
         let op = Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
             id: tile,
             landing: Landing {
-                container: None,
+                container: self.zoomed,
                 cell,
             },
         });
@@ -725,7 +811,7 @@ impl FieldScreen {
             .filter(|(id, _)| *id != tile)
             .filter_map(|(id, before)| {
                 let after = next.location(*id)?;
-                (after.container.is_none() && after.placement != before.placement)
+                (after.container == self.zoomed && after.placement != before.placement)
                     .then_some((*id, after.placement))
             })
             .collect();
@@ -766,10 +852,12 @@ impl FieldScreen {
                     self.drawer_view.scroll = pixelkit_ui::ScrollState::new();
                 }
             }
-            TileKind::Project { .. }
-            | TileKind::Tray { .. }
-            | TileKind::File { .. }
-            | TileKind::System { .. } => {}
+            TileKind::Project { .. } => {
+                self.zoomed = Some(tile.id);
+                self.focus = None;
+                self.keyboard_move = None;
+            }
+            TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {}
         }
     }
 
@@ -969,15 +1057,45 @@ impl FieldScreen {
                 }
             }
             TileKind::Project { .. } => {
-                let small = TextStyle::new(ui.theme.body.face, 12.0);
-                let count = data.field.placements_in(Some(tile.id)).len();
-                ui.label_styled(
-                    content.inset(ui.px(6)),
-                    &format!("{count} item(s)"),
-                    small,
-                    ui.theme.text_dim,
-                    Align::Left,
-                );
+                // Miniature of the interior: each child as a small chip with its title, in the
+                // child grid's own proportions, so the tile reads as what it contains.
+                let small = TextStyle::new(ui.theme.body.face, 11.0);
+                let inner = content.inset(ui.px(6));
+                if let Some(container) = data.field.container(tile.id) {
+                    let children = data.field.placements_in(Some(tile.id));
+                    ui.painter.push_clip(inner);
+                    for (child, placement) in &children {
+                        let chip = from_pixel(lege_field::cell_rect(
+                            container.cols,
+                            container.rows,
+                            to_pixel(inner),
+                            placement.cell,
+                            placement.span,
+                            ui.px(3),
+                        ));
+                        ui.painter
+                            .fill_rounded_rect(chip, ui.px(3), ui.theme.panel_edge);
+                        if let Some(child_tile) = data.field.tile(*child) {
+                            ui.label_styled(
+                                chip.inset(ui.px(3)),
+                                &child_tile.title,
+                                small,
+                                ui.theme.text,
+                                Align::Left,
+                            );
+                        }
+                    }
+                    ui.painter.pop_clip();
+                    if children.is_empty() {
+                        ui.label_styled(
+                            inner,
+                            "empty — drop tiles here",
+                            small,
+                            ui.theme.text_dim,
+                            Align::Left,
+                        );
+                    }
+                }
             }
             TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {
                 let small = TextStyle::new(ui.theme.body.face, 12.0);
@@ -1005,6 +1123,39 @@ struct TileVisual {
     lifted: bool,
     /// Drawn dimmed: a ghost predicts it moving to this cell.
     displaced: Option<Cell>,
+}
+
+/// The first tile in reading order among `rects`.
+fn first_in(rects: &[(TileId, Rect)]) -> Option<TileId> {
+    rects.first().map(|(id, _)| *id)
+}
+
+/// The nearest tile in `direction` from `from`, by centre, weighting the primary axis — the
+/// same rule as `lege_field::focus::neighbour`, over whichever grid is on screen.
+fn neighbour_in(rects: &[(TileId, Rect)], from: TileId, direction: Direction) -> Option<TileId> {
+    let (_, origin) = rects.iter().find(|(id, _)| *id == from)?;
+    let (ox, oy) = (origin.x + origin.w / 2, origin.y + origin.h / 2);
+    let mut best: Option<(i64, TileId)> = None;
+    for (id, rect) in rects {
+        if *id == from {
+            continue;
+        }
+        let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+        let (ahead, aside) = match direction {
+            Direction::Left => (ox - cx, (cy - oy).abs()),
+            Direction::Right => (cx - ox, (cy - oy).abs()),
+            Direction::Up => (oy - cy, (cx - ox).abs()),
+            Direction::Down => (cy - oy, (cx - ox).abs()),
+        };
+        if ahead <= 0 {
+            continue;
+        }
+        let score = i64::from(ahead) + 2 * i64::from(aside);
+        if best.is_none_or(|(s, b)| (score, *id) < (s, b)) {
+            best = Some((score, *id));
+        }
+    }
+    best.map(|(_, id)| id)
 }
 
 fn to_pixel(rect: Rect) -> PixelRect {
@@ -1067,6 +1218,7 @@ mod tests {
                 &LiveState {
                     apps: &apps,
                     toplevels: &toplevels,
+                    projects: &[],
                 },
             );
             Harness {
@@ -1280,6 +1432,79 @@ mod tests {
         assert_eq!(*id, files);
         assert_eq!(landing.cell, Cell::new(before.col + 3, before.row));
         assert_eq!(h.screen.drag, Drag::Idle);
+    }
+
+    #[test]
+    fn a_project_zooms_in_and_its_children_can_be_moved_within_and_back_out() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        let editor = tile_id_for("app:org.example.Editor");
+        let op = FieldOp::CreateProject {
+            project: Tile {
+                id: field_model::project_tile_id("field-1"),
+                kind: TileKind::Project {
+                    project_id: "field-1".into(),
+                },
+                title: "Pair".into(),
+                spans: field_model::project_spans(h.doc.cols, h.doc.rows),
+                accent: None,
+            },
+            landing: Landing {
+                container: None,
+                cell: Cell::new(6, 2),
+            },
+            absorb: vec![files, editor],
+        };
+        h.apply(&[FieldAction::Apply(op)]);
+        let project = field_model::project_tile_id("field-1");
+
+        // Click the project's body: zoomed in, children have rects, the field's tiles do not.
+        let rect = h.rect_of(project);
+        h.click(rect.x + rect.w / 2, rect.bottom() - 10);
+        assert_eq!(h.screen.zoomed, Some(project));
+        h.frame();
+        assert!(h.rect_of(files).w > 0);
+        let inbox = tile_id_for("drawer:Downloads");
+        h.frame();
+        {
+            let ui = Ui::new(
+                Painter::new(&mut h.buffer),
+                &mut h.text,
+                &mut h.input,
+                Theme::default(),
+                Scale::ONE,
+                &mut h.kernel,
+            );
+            assert_eq!(h.screen.tile_rect(&h.doc, inbox, &ui), None);
+        }
+
+        // Keyboard move inside the project stays inside it.
+        h.key(KeyInput::Right);
+        assert_eq!(h.screen.focus, Some(files).or(Some(editor)));
+        let focused = h.screen.focus.unwrap();
+        h.key(KeyInput::Character(' '));
+        h.key(KeyInput::Down);
+        let actions = h.key(KeyInput::Enter);
+        let [FieldAction::Apply(FieldOp::Move { id, landing })] = actions.as_slice() else {
+            panic!("expected a Move, got {actions:?}");
+        };
+        assert_eq!(*id, focused);
+        assert_eq!(landing.container, Some(project));
+        h.apply(&actions);
+        assert_eq!(h.doc.parent_of(focused), Some(project));
+
+        // Backspace moves it back out next to the project; Escape leaves the zoom.
+        h.frame();
+        h.screen.focus = Some(focused);
+        let actions = h.key(KeyInput::Backspace);
+        let [FieldAction::Apply(FieldOp::Move { landing, .. })] = actions.as_slice() else {
+            panic!("expected a Move out, got {actions:?}");
+        };
+        assert_eq!(landing.container, None);
+        h.apply(&actions);
+        assert_eq!(h.doc.parent_of(focused), None);
+        h.key(KeyInput::Escape);
+        assert_eq!(h.screen.zoomed, None);
     }
 
     #[test]
