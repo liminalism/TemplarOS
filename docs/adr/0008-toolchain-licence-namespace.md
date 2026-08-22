@@ -19,3 +19,8 @@ driver, XWayland and protocol quirks, and carries that licence deliberately rath
 about where reference ends and derivation begins. MPL-2.0 combines into a GPL-3.0 work, so
 `lege-comp` links `lege-window` and `lege-comp-integration` unchanged; nothing links back to it,
 so no other crate is affected. `deny.toml` allows GPL-3.0 for this reason.
+
+## Amendment (2026-08-22, ADR-0013)
+"Own code MPL-2.0" is replaced by **AGPL-3.0-only** for the whole repository, `lege-comp`'s
+GPL-3.0-only exception unchanged. Everything else in this ADR (toolchain, MSRV, namespace,
+`deny.toml` allow-list, `cargo xtask copyright`) stands.

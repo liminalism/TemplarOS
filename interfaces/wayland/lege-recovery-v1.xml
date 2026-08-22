@@ -17,7 +17,7 @@
          borderless windows (`WindowService::recovery_affordance`) — pure compositor-side
          rendering, no client is even aware of it. -->
 <protocol name="lege_recovery_v1">
-  <copyright>Copyright 2026 LegeOS contributors. MPL-2.0.</copyright>
+  <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
   <interface name="lege_recovery_manager_v1" version="1">
     <description summary="emergency overlay">
       Only lege-resourced (via sessiond) may request the pressure overlay; the compositor draws it

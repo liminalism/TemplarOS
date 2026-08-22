@@ -59,7 +59,7 @@ Description: LegeOS compositor
  The display server: one continuous scene across every output, typed overlay layers, a
  compositor-owned recovery band on every window, and the geometry invariants that make a window
  impossible to lose. Window-management policy lives in lege-window; this is what drives it.
- Licensed GPL-3.0-only (ADR-0012), unlike the rest of LegeOS.
+ Licensed GPL-3.0-only (ADR-0012); the rest of LegeOS is AGPL-3.0-only (ADR-0013).
 
 Package: legeos-greeter
 Architecture: any

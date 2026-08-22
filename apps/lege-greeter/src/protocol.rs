@@ -8,11 +8,12 @@
 //! whole point is that this greeter carries no authentication machinery of its own, and pulling in
 //! someone else's implementation of the one wire format that stands between a typed password and
 //! the PAM stack is exactly the kind of code this crate should own and test itself, not vendor
-//! sight-unseen. `greetd_ipc` is also GPL-3.0-only, which would entangle this MPL-2.0 crate's
-//! licence (`deny.toml`, ADR-0008) for what is, in the end, four struct definitions and a length
-//! prefix. The shapes here were cross-checked field-for-field against the `greetd_ipc` crate that
-//! happens to be present in the development machine's cargo registry cache
-//! (`greetd_ipc-0.10.3/src/lib.rs`) — read for reference only, never linked — and the framing
+//! sight-unseen. (`greetd_ipc` is GPL-3.0-only; now that this crate is AGPL-3.0-only, ADR-0013,
+//! the two could be combined, but that was never the main reason not to link it — it is, in the
+//! end, four struct definitions and a length prefix.) The shapes here were cross-checked
+//! field-for-field against the `greetd_ipc` crate that happens to be present in the development
+//! machine's cargo registry cache (`greetd_ipc-0.10.3/src/lib.rs`) — read for reference only,
+//! never linked — and the framing
 //! against `man 7 greetd-ipc`'s own hexdump example (see `write_frame_matches_the_manual_pages_hexdump_example`
 //! below).
 //!

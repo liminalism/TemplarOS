@@ -58,8 +58,8 @@ cargo run -p lege-resourced -- --once
 just deb            # cargo-deb packages into target/debian/
 ```
 
-Toolchain: Rust 1.97 for development, MSRV 1.93 (Ubuntu 26.04's rustc). Licence: MPL-2.0 for this
-repository; forks keep their upstream licences.
+Toolchain: Rust 1.97 for development, MSRV 1.93 (Ubuntu 26.04's rustc). Licence: AGPL-3.0-only for this
+repository (`lege-comp` is GPL-3.0-only, ADR-0012); forks keep their upstream licences.
 
 ## Project knowledge
 

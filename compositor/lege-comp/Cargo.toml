@@ -4,7 +4,7 @@ description = "The compositor: Smithay directly (ADR-0012), driven entirely by l
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# The one crate in the workspace not under MPL-2.0 (ADR-0012, ADR-0008): Smithay is MIT, but this
+# The one crate in the workspace not under AGPL-3.0-only (ADR-0012, ADR-0013): Smithay is MIT, but this
 # crate reads cosmic-comp (GPL-3.0-only) freely as an implementation reference for driver,
 # XWayland and protocol quirks, so it carries that licence deliberately. `deny.toml` allows it.
 license = "GPL-3.0-only"

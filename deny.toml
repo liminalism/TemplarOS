@@ -6,13 +6,16 @@ all-features = false
 ignore = []
 
 [licenses]
-# Own code is MPL-2.0 (ADR-0008). Dependencies must be permissive or weak-copyleft.
+# Own code is AGPL-3.0-only (ADR-0013, amending ADR-0008). Dependencies must be permissive or
+# weak-copyleft.
 #
 # GPL-3.0-only is allowed for exactly one crate: `lege-comp` (ADR-0012). The compositor is written
 # against Smithay (MIT) but reads `cosmic-comp` (GPL-3.0-only) as an implementation reference for
-# driver, XWayland and protocol quirks, so it carries that licence deliberately. MPL-2.0 combines
-# into a GPL-3.0 work, so it may link the rest of the workspace unchanged; nothing links it back.
+# driver, XWayland and protocol quirks, so it carries that licence deliberately. GPLv3 §13 and
+# AGPLv3 §13 each permit combining the two, every part keeping its own licence, so `lege-comp`
+# links the rest of the workspace unchanged; nothing links it back.
 allow = [
+    "AGPL-3.0",
     "GPL-3.0",
     "MIT",
     "Apache-2.0",
@@ -20,7 +23,7 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "MPL-2.0",
+    "MPL-2.0", # dependencies only
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",

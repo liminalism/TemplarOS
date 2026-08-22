@@ -15,7 +15,7 @@
   compositor event → `lege-window` / `lege-comp-integration` call.
 
 The compositor binary is built from this workspace like everything else. It is the one crate licensed
-GPL-3.0-only rather than MPL-2.0 (ADR-0012); `cargo deny` allows that for `lege-comp` alone.
+GPL-3.0-only rather than AGPL-3.0-only (ADR-0012, ADR-0013); `cargo deny` allows that for `lege-comp` alone.
 
 ## Running it nested (development)
 

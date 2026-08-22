@@ -1,6 +1,31 @@
 akr 0.1
 project legeos
 
+record legeos.decision.agplv3-own-code/1 : decision {
+    title "D13/ADR-0013 — own code is AGPL-3.0-only; lege-comp stays GPL-3.0-only (§13 combination); Silvaview-rs relicensed identically"
+    state active
+    scope [
+        path "Cargo.toml",
+        path "LICENSE",
+        path "debian/copyright",
+        path "deny.toml",
+        path "docs/adr/0013-agplv3.md",
+        path "interfaces/wayland/**"
+    ]
+    decision """
+        Every first-party crate, interface, document and asset is AGPL-3.0-only (repository-wide LICENSE, workspace license field, deny.toml allow-list, Wayland <copyright> lines, cargo xtask copyright default, full text in DEP-5 debian/copyright because Ubuntu's common-licenses has no AGPL-3). compositor/lege-comp stays GPL-3.0-only for ADR-0012's reason; GPLv3 §13 and AGPLv3 §13 permit the combination with each part keeping its licence. Forks keep upstream licences. Silvaview-rs (the author's SequoiaView port, previously unlicensed) is relicensed AGPL-3.0-only so its pure squarify/colour/cushion modules can be lifted into crates/lege-treemap.
+        """
+    context """
+        The Home Field work lifts code from Silvaview-rs; the author chose to put both projects under AGPL-3.0 rather than keep LegeOS on MPL-2.0 (ADR-0008) and relicense only the lifted modules. One strong copyleft also removes ADR-0012's asymmetry of one crate under a stronger licence than the crates it links.
+        """
+    consequences """
+        cargo deny allows AGPL-3.0 for own code and MPL-2.0 for dependencies only; contributions accepted under AGPL-3.0-only, no CLA; network use must offer source (§13).
+        """
+    depends_on [ @legeos.decision.compositor-on-smithay ]
+    implements [ @legeos.constraint.packaging-and-render-thread ]
+    supersedes [ @legeos.decision.toolchain-licence-namespace ]
+}
+
 record legeos.decision.base-ubuntu-2604-kernel-70/1 : decision {
     title "D1/ADR-0007 — Base is Ubuntu 26.04 LTS 'resolute' with Ubuntu's linux-generic 7.0; mainline 7.2 only as a transaction candidate"
     state active

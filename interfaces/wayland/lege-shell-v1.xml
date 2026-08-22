@@ -4,7 +4,7 @@
      protocol carries the *commands* only the trusted shell connection may issue, and the
      sanitized toplevel data (canonical app id, instance id, verified flag). Draft. -->
 <protocol name="lege_shell_v1">
-  <copyright>Copyright 2026 LegeOS contributors. MPL-2.0.</copyright>
+  <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
   <interface name="lege_shell_manager_v1" version="1">
     <description summary="shell control entry point">

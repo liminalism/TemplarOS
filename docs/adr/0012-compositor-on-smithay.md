@@ -72,8 +72,9 @@ ordinary member of this workspace. It is not a fork and has no upstream tracking
   display, and is not an afterthought.
 * `cosmic-comp` may be **read freely** as an implementation reference for driver, XWayland and
   protocol quirks. Consequently `lege-comp` is licensed **GPL-3.0-only**; every other crate in
-  the workspace stays MPL-2.0 (ADR-0008). MPL-2.0 code may be combined into a GPL-3.0 work, so
-  `lege-comp` may link `lege-window` and `lege-comp-integration` unchanged.
+  the workspace is AGPL-3.0-only (ADR-0013, which replaced ADR-0008's MPL-2.0). GPLv3 §13 and
+  AGPLv3 §13 permit combining the two, each part keeping its own licence, so `lege-comp` may link
+  `lege-window` and `lege-comp-integration` unchanged.
 * No `cosmic-*` crate appears in the dependency graph. `cosmic-comp` and `cosmic-greeter` leave
   `distro/forks/manifest.toml`; the manifest model (ADR-0005) still governs the remaining forks.
 * Compositor-drawn chrome uses `pixelkit-raster` and `pixelkit-text`, which have no dependencies

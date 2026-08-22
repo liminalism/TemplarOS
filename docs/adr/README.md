@@ -9,10 +9,11 @@
 | 0005 | Forks pinned by manifest, not submodules | accepted |
 | 0006 | mkosi images; installer ISO later | accepted |
 | 0007 | Ubuntu 26.04 kernel 7.0 base; mainline 7.2 as transaction candidate | accepted |
-| 0008 | Toolchain, MSRV 1.93, MPL-2.0, `org.legeos` | accepted |
+| 0008 | Toolchain, MSRV 1.93, `org.legeos` (licence superseded by 0013) | accepted |
 | 0009 | Packaging: cargo-deb → vendored source package | accepted |
 | 0010 | systemd session; greetd + cosmic-greeter; compositor-owned lock | accepted |
 | 0011 | Flatpak not snapd; telemetry-free crash handling | accepted |
 | 0012 | Compositor built on Smithay, not forked from cosmic-comp | accepted |
+| 0013 | Own code AGPL-3.0-only; `lege-comp` stays GPL-3.0-only | accepted |
 
 Mirrored as AKR `decision` records (`.akr/`, rendered in `docs/generated/`).

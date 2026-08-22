@@ -1136,7 +1136,7 @@ fn copyright(root: &Path) -> Result<()> {
                 .trim_end_matches("/Cargo.toml")
                 .trim_start_matches(&*root.to_string_lossy())
                 .trim_start_matches('/'),
-            package["license"].as_str().unwrap_or("MPL-2.0")
+            package["license"].as_str().unwrap_or("AGPL-3.0-only")
         );
     }
     // Vendored assets are not crates, so `cargo metadata` never mentions them; without this the
