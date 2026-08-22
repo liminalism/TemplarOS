@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="1">
+  <interface name="lege_shell_manager_v1" version="2">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -55,6 +55,29 @@
       <arg name="edge" type="uint" enum="edge"/>
       <arg name="size" type="uint" summary="logical pixels along that edge; 0 releases"/>
     </request>
+    <request name="reveal_home" since="2">
+      <description summary="go home: hide every client window so the Home Surface shows, or bring them back">
+        A view change only. No window is shelved, moved or deactivated by a reveal
+        (`lege_window::WindowService::set_home_revealed`), so nothing is left to undo when it
+        ends — and it ends on its own when a window is activated, a new window maps, a recovery
+        action runs, or this connection goes away. Also compositor-keybinding-reachable
+        (Ctrl+Alt+H on any keyboard; Super+D where there is a logo key; Escape while revealed).
+        The compositor reports the resulting state through `home_revealed`, whichever side
+        started it.
+      </description>
+      <arg name="reveal" type="uint" enum="reveal"/>
+    </request>
+    <event name="home_revealed" since="2">
+      <description summary="whether a go-home reveal is currently in effect">
+        Sent on bind and after every state change, keyboard-initiated ones included.
+      </description>
+      <arg name="revealed" type="uint"/>
+    </event>
+    <enum name="reveal">
+      <entry name="show" value="0"/>
+      <entry name="hide" value="1"/>
+      <entry name="toggle" value="2"/>
+    </enum>
     <enum name="edge">
       <entry name="top" value="0"/>
       <entry name="bottom" value="1"/>
@@ -74,13 +97,30 @@
     </enum>
   </interface>
 
-  <interface name="lege_shell_toplevel_list_v1" version="1">
+  <interface name="lege_shell_toplevel_list_v1" version="2">
     <event name="toplevel">
       <arg name="id" type="new_id" interface="lege_shell_toplevel_v1"/>
     </event>
   </interface>
 
-  <interface name="lege_shell_toplevel_v1" version="1">
+  <interface name="lege_shell_toplevel_v1" version="2">
+    <!-- The same opaque string `ext_foreign_toplevel_handle_v1.identifier` carries for this
+         window, sent once, before the first `identity`. It is what lets the shell pair a window
+         preview obtained through the standard capture protocols with the window's entry here. -->
+    <event name="identifier" since="2">
+      <arg name="identifier" type="string"/>
+    </event>
+    <!-- The window's rectangle in the one global logical coordinate space, resent whenever it
+         changes. Trusted-shell only, like everything on this protocol. -->
+    <event name="geometry" since="2">
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+    <event name="maximized" since="2">
+      <arg name="maximized" type="uint"/>
+    </event>
     <event name="identity">
       <arg name="canonical_app_id" type="string" allow-null="true"/>
       <arg name="instance_id" type="string" allow-null="true"/>
@@ -108,5 +148,8 @@
     <request name="move_to_visible_area"/>
     <request name="shelve"/>
     <request name="unshelve"/>
+    <request name="set_maximized" since="2">
+      <arg name="maximized" type="uint"/>
+    </request>
   </interface>
 </protocol>

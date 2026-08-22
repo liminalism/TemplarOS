@@ -1,5 +1,17 @@
 [
   {
+    "added_at": "2026-08-22",
+    "availability": "full",
+    "byte_len": 26221,
+    "content_hash": "sha256:1f62a4302d3a546e2664d515b5cabd90db4ce02a60d321e4dc9d76c4774c5795",
+    "id": "homefield-design-advice",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/homefield-design-advice--1f62a430.md",
+    "scope": "shell/**",
+    "title": "Home Field design advice (tiles, projects, trays, parked sessions, throwing)"
+  },
+  {
     "added_at": "2026-08-17",
     "availability": "full",
     "byte_len": 39304,

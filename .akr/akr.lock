@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:792e0201664988ccf7b987bf14c85c050011768c661fe668472826ce63ad7d55"
+    source_graph "sha256:564fb4d126dbde9148595911297139972748056a97bed723618d1dbef1b440f5"
 }
 
 source ".akr/project.akr" {
@@ -39,13 +39,13 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:0dc70b9df1028ece5079f4c839b208500d5a1c0d53bcd08b887eaf677888e8cc"
-    records 3
+    hash "sha256:f3c2ceb7987dd227aa2c9c428f3b8a5bc20a9c6c5bf2f464e83f5cee84eb501b"
+    records 4
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:044326867fd260c39de79d2f15222c3fb65b9b2a4eea1eb65ba8a7e2b228090e"
-    records 7
+    hash "sha256:593ccaa4e7a9c1862cb633bea11bed8e0afa7faaecadd09b5e9d1095972a8df1"
+    records 8
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -366,6 +366,36 @@ resolution @legeos.work.governor-containment/1 {
     hash "sha256:590f00030286e8c6e3fdd6cab172d3189b0ded3fed5cedd3d2d590c8560f1a92"
 }
 
+resolution @legeos.work.home-field/1 {
+    slot depends_on
+    to @legeos.decision.agplv3-own-code/1
+    hash "sha256:873f199bed67fd5ca02508eb3e04bd5c8d762f7666a3f709c49141e25f4715a0"
+}
+
+resolution @legeos.work.home-field/1 {
+    slot depends_on
+    to @legeos.decision.compositor-on-smithay/1
+    hash "sha256:d806a9012d327d5c1608740d2d8c4cb1f174241da3a3f8b4af9428ff69a82dc4"
+}
+
+resolution @legeos.work.home-field/1 {
+    slot implements
+    to @legeos.constraint.packaging-and-render-thread/1
+    hash "sha256:75c85ececd769cd1bcc1193dec2836a3fb74d2cb3b2b27adc1168b9a52b58029"
+}
+
+resolution @legeos.work.home-field/1 {
+    slot implements
+    to @legeos.constraint.services-not-indicators/1
+    hash "sha256:71d7efb170fa8cb87be158a4056e7713a2d3ed3ba304f346a9eb99ef2872aecb"
+}
+
+resolution @legeos.work.home-field/1 {
+    slot part_of
+    to @legeos.milestone.m2-session-runs/1
+    hash "sha256:639f5450a8f9cce829c691faacfa7a92d3c6699ec323ae0130a8991fd0217d4b"
+}
+
 resolution @legeos.work.host-update-transaction/1 {
     slot part_of
     to @legeos.milestone.m1-session-runtime/1
@@ -596,6 +626,11 @@ seal @legeos.observation.transient-unit-launch-converged-independently/2 {
 seal @legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 {
     state verified
     hash "sha256:7969ac4c0b8465fe7d29df31ca334810761b1c9b86393801766c6f88f7b9323d"
+}
+
+seal @legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 {
+    state verified
+    hash "sha256:0522b5015d69ab1b7842d9e5d6c19afb2d85d4acbe8708e969bae380b48d98c4"
 }
 
 seal @legeos.papercut.partitioning-file-ownership-across-five/1 {

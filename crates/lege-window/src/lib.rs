@@ -17,7 +17,9 @@ pub mod layers;
 mod service;
 mod shell;
 
-pub use commands::{ActivationGrant, CommandContext, CommandEffect, CommandError, WindowCommand};
+pub use commands::{
+    ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
+};
 pub use geometry::{
     Output, PhysicalPoint, Point, RecoveryAffordance, Rect, is_recoverable, logical_to_physical,
     move_into_view, physical_to_logical, recovery_affordance, recovery_band, repair_window,

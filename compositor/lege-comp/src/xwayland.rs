@@ -86,6 +86,7 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
             window.title(),
             requested,
         );
+        let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
         self.windows.mark_mapped(surface, window_id);
 
         let repaired = self
@@ -93,11 +94,10 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
             .window(window_id)
             .map_or(requested, |record| record.geometry);
         let _ = window.configure(Some(rect_to_smithay(repaired)));
-        self.space.map_element(
-            Window::new_x11_window(window),
-            (repaired.x, repaired.y),
-            false,
-        );
+        let element = Window::new_x11_window(window);
+        self.windows.track_element(object_id, element.clone());
+        self.space
+            .map_element(element, (repaired.x, repaired.y), false);
         crate::space_sync::sync_after_change(self);
     }
 

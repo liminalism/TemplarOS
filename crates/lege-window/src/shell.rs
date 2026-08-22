@@ -1,7 +1,7 @@
 //! Sanitized toplevel snapshots for the shell: no PIDs, no raw claims — enough to render the
 //! dock, switcher and Window Shelf with no local heuristics (planning doc 02 §7).
 
-use crate::{Layer, WindowId};
+use crate::{Layer, Rect, WindowId};
 use lege_types::{AppId, InstanceId};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,12 @@ pub struct ShellToplevel {
     pub activated: bool,
     pub fullscreen: bool,
     pub shelved: bool,
+    /// Filling its output's work area at the client's request (`xdg_toplevel.set_maximized`).
+    pub maximized: bool,
+    /// The window's on-screen rectangle in the one global logical space. Sent to the trusted
+    /// shell only: the Home Field zooms a tile out of, and a parked window back into, this rect,
+    /// and it sizes preview buffers from it before any capture exists.
+    pub geometry: Rect,
     pub layer: Layer,
 }
 
@@ -58,6 +64,8 @@ mod tests {
             activated: false,
             fullscreen: false,
             shelved: false,
+            maximized: false,
+            geometry: Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
         }
     }

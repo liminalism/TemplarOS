@@ -12,6 +12,7 @@
 
 use lege_window::{ClientKind, Rect, WindowClaims, WindowId, geometry::Exclusive};
 use smithay::{
+    desktop::Window,
     reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{Clock, Monotonic},
 };
@@ -89,6 +90,11 @@ pub struct WindowIndex {
     /// Surfaces with a role but not yet mapped, so repeated pre-content commits don't re-evaluate
     /// anything expensive.
     pending: HashSet<ObjectId>,
+    /// The Smithay `Window` wrapping each toplevel, from the moment it gets a role. This — not
+    /// `Space` — is where commit/configure bookkeeping finds a window, because a shelved or
+    /// reveal-hidden window is *unmapped from `Space`* (`src/space_sync.rs`) yet must keep
+    /// committing: its buffer has to be current the instant it is shown again.
+    elements: HashMap<ObjectId, Window>,
 }
 
 impl WindowIndex {
@@ -101,6 +107,24 @@ impl WindowIndex {
     /// this would ever be called twice for one id).
     pub fn track_pending(&mut self, surface: ObjectId) {
         self.pending.insert(surface);
+    }
+
+    /// Remember the `Window` wrapping `surface` (see the `elements` field's doc). Called where
+    /// the window is created — `new_toplevel`, XWayland's `map_window_request` — before it is
+    /// ever mapped into `Space`.
+    pub fn track_element(&mut self, surface: ObjectId, window: Window) {
+        self.elements.insert(surface, window);
+    }
+
+    /// The `Window` wrapping `surface`, mapped into `Space` or not.
+    pub fn element_for(&self, surface: &ObjectId) -> Option<&Window> {
+        self.elements.get(surface)
+    }
+
+    /// The `Window` wrapping the surface `window_id` was assigned for, mapped into `Space` or not.
+    pub fn element_of(&self, window_id: WindowId) -> Option<&Window> {
+        let surface = self.reverse.get(&window_id)?;
+        self.elements.get(&surface.id())
     }
 
     pub fn is_mapped(&self, surface: &ObjectId) -> bool {
@@ -137,6 +161,7 @@ impl WindowIndex {
 
     pub fn remove(&mut self, surface: &ObjectId) -> Option<WindowId> {
         self.pending.remove(surface);
+        self.elements.remove(surface);
         let window_id = self.mapped.remove(surface)?;
         self.reverse.remove(&window_id);
         Some(window_id)

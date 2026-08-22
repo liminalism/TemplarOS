@@ -57,7 +57,28 @@ pub enum WindowCommand {
     EscapeFullscreenOrModal {
         window_id: Option<WindowId>,
     },
+    /// The compositor-owned recovery view: every window, shelved ones included, scattered
+    /// across the outputs. Ends any "go home" reveal.
     ShowAllWindows,
+    /// `xdg_toplevel.set_maximized` / `unset_maximized`, or the same from the shell.
+    SetMaximized {
+        window_id: WindowId,
+        maximized: bool,
+    },
+    /// "Go home": hide every client window so the shell's Home Surface shows, or bring them
+    /// back. A view change only — see [`WindowService::set_home_revealed`].
+    RevealHome {
+        reveal: RevealHome,
+    },
+}
+
+/// What [`WindowCommand::RevealHome`] should do to the reveal that may or may not be in effect.
+/// `Toggle` is resolved inside `handle_command`, so a keybinding needs no state of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealHome {
+    Show,
+    Hide,
+    Toggle,
 }
 
 /// Time and trust context a command is evaluated under.
@@ -71,13 +92,38 @@ pub struct CommandContext {
 /// What applying a command changed, for the caller to turn into protocol events / configures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandEffect {
-    Activated { window_id: WindowId },
-    Closed { window_id: WindowId },
-    Moved { window_id: WindowId, geometry: Rect },
-    Shelved { window_id: WindowId },
-    Unshelved { window_id: WindowId, geometry: Rect },
-    Escaped { action: EscapeAction },
-    ShowAllWindows { layout: Vec<(WindowId, Rect)> },
+    Activated {
+        window_id: WindowId,
+    },
+    Closed {
+        window_id: WindowId,
+    },
+    Moved {
+        window_id: WindowId,
+        geometry: Rect,
+    },
+    Shelved {
+        window_id: WindowId,
+    },
+    Unshelved {
+        window_id: WindowId,
+        geometry: Rect,
+    },
+    Escaped {
+        action: EscapeAction,
+    },
+    ShowAllWindows {
+        layout: Vec<(WindowId, Rect)>,
+    },
+    /// The geometry to configure the client with. Absent when the window was already in the
+    /// requested state, so nothing needs to be sent.
+    Maximized {
+        window_id: WindowId,
+        geometry: Option<Rect>,
+    },
+    HomeRevealed {
+        revealed: bool,
+    },
 }
 
 /// Why a command was refused.
@@ -165,16 +211,47 @@ impl<I: IdentityCache> WindowService<I> {
                 .map(|action| CommandEffect::Escaped { action })
                 .ok_or(CommandError::NothingToEscape),
             WindowCommand::ShowAllWindows => {
-                // Shelved windows already have a dedicated, visible home (the shelf itself);
-                // scattering them too would contradict "explicit minimisation" by dragging them
-                // back into view without being asked.
+                // "Show every window" means every window. The shelf is a shell surface, and the
+                // shell is a restartable process that may be dead — which is exactly when this
+                // command gets used — so a shelved window that stayed hidden here would be the
+                // one kind of window this recovery view could not recover. Unshelving is an
+                // honest, visible state change the user can undo by shelving again; it is not a
+                // hidden side effect. A reveal ends too: the two views are mutually exclusive.
+                let shelved: Vec<WindowId> = self
+                    .windows()
+                    .filter(|window| window.shelved)
+                    .map(|window| window.id)
+                    .collect();
+                for window_id in shelved {
+                    self.unshelve(window_id);
+                }
+                self.set_home_revealed(false);
                 let windows: Vec<(WindowId, Rect)> = self
                     .windows()
-                    .filter(|window| !window.shelved)
                     .map(|window| (window.id, window.geometry))
                     .collect();
                 let layout = scatter_layout(&windows, self.outputs());
                 Ok(CommandEffect::ShowAllWindows { layout })
+            }
+            WindowCommand::SetMaximized {
+                window_id,
+                maximized,
+            } => {
+                self.window(window_id).ok_or(CommandError::UnknownWindow)?;
+                let geometry = self.set_maximized(window_id, maximized);
+                Ok(CommandEffect::Maximized {
+                    window_id,
+                    geometry,
+                })
+            }
+            WindowCommand::RevealHome { reveal } => {
+                let revealed = match reveal {
+                    RevealHome::Show => true,
+                    RevealHome::Hide => false,
+                    RevealHome::Toggle => !self.home_revealed(),
+                };
+                self.set_home_revealed(revealed);
+                Ok(CommandEffect::HomeRevealed { revealed })
             }
         }
     }
@@ -453,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn show_all_windows_scatters_visible_windows_and_skips_shelved() {
+    fn show_all_windows_unshelves_everything_and_ends_a_reveal() {
         let (mut service, id) = service_with_one_window();
         let shelved = service.on_toplevel_mapped(
             2,
@@ -463,12 +540,148 @@ mod tests {
             Rect::new(0, 0, 100, 100),
         );
         service.shelve(shelved);
+        service.set_home_revealed(true);
 
         let result = service.handle_command(WindowCommand::ShowAllWindows, trusted(0));
         let Ok(CommandEffect::ShowAllWindows { layout }) = result else {
             panic!("expected ShowAllWindows");
         };
-        assert_eq!(layout.len(), 1);
-        assert_eq!(layout[0].0, id);
+        let mut ids: Vec<WindowId> = layout.iter().map(|(id, _)| *id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![id, shelved]);
+        assert!(!service.window(shelved).unwrap().shelved);
+        assert!(!service.home_revealed());
+        for (id, rect) in layout {
+            assert!(
+                crate::is_recoverable(rect, service.outputs()),
+                "{id:?} scattered somewhere unrecoverable: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reveal_home_toggles_shows_and_hides() {
+        let (mut service, id) = service_with_one_window();
+        let toggle = WindowCommand::RevealHome {
+            reveal: RevealHome::Toggle,
+        };
+        assert_eq!(
+            service.handle_command(toggle.clone(), trusted(0)),
+            Ok(CommandEffect::HomeRevealed { revealed: true })
+        );
+        assert!(service.home_revealed());
+        assert!(!service.is_visible(id));
+        assert_eq!(
+            service.handle_command(toggle, trusted(0)),
+            Ok(CommandEffect::HomeRevealed { revealed: false })
+        );
+        assert!(service.is_visible(id));
+
+        assert_eq!(
+            service.handle_command(
+                WindowCommand::RevealHome {
+                    reveal: RevealHome::Show
+                },
+                trusted(0)
+            ),
+            Ok(CommandEffect::HomeRevealed { revealed: true })
+        );
+        assert_eq!(
+            service.handle_command(
+                WindowCommand::RevealHome {
+                    reveal: RevealHome::Hide
+                },
+                trusted(0)
+            ),
+            Ok(CommandEffect::HomeRevealed { revealed: false })
+        );
+    }
+
+    #[test]
+    fn a_reveal_changes_no_window_and_ends_on_activate() {
+        let (mut service, id) = service_with_one_window();
+        let before = service.window(id).unwrap().clone();
+        service
+            .handle_command(
+                WindowCommand::RevealHome {
+                    reveal: RevealHome::Show,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        assert_eq!(
+            service.window(id).unwrap(),
+            &before,
+            "a reveal is a view, not a state"
+        );
+
+        let result = service.handle_command(
+            WindowCommand::Activate {
+                window_id: id,
+                grant: grant(1_000),
+            },
+            trusted(0),
+        );
+        assert_eq!(result, Ok(CommandEffect::Activated { window_id: id }));
+        assert!(
+            !service.home_revealed(),
+            "activating a window ends the reveal"
+        );
+        assert!(service.is_visible(id));
+    }
+
+    #[test]
+    fn maximize_fills_the_usable_area_and_unmaximize_restores() {
+        let (mut service, id) = service_with_one_window();
+        let floating = service.window(id).unwrap().geometry;
+        let result = service.handle_command(
+            WindowCommand::SetMaximized {
+                window_id: id,
+                maximized: true,
+            },
+            trusted(0),
+        );
+        let Ok(CommandEffect::Maximized {
+            geometry: Some(geometry),
+            ..
+        }) = result
+        else {
+            panic!("expected Maximized with a geometry: {result:?}");
+        };
+        assert_eq!(geometry, service.outputs()[0].usable());
+        assert!(service.window(id).unwrap().maximized);
+
+        // Already maximized: nothing to configure.
+        let again = service.handle_command(
+            WindowCommand::SetMaximized {
+                window_id: id,
+                maximized: true,
+            },
+            trusted(0),
+        );
+        assert_eq!(
+            again,
+            Ok(CommandEffect::Maximized {
+                window_id: id,
+                geometry: None
+            })
+        );
+
+        let result = service.handle_command(
+            WindowCommand::SetMaximized {
+                window_id: id,
+                maximized: false,
+            },
+            trusted(0),
+        );
+        let Ok(CommandEffect::Maximized {
+            geometry: Some(geometry),
+            ..
+        }) = result
+        else {
+            panic!("expected Maximized with a geometry: {result:?}");
+        };
+        assert_eq!(geometry, floating);
+        assert!(!service.window(id).unwrap().maximized);
     }
 }

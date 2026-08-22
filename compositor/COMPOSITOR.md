@@ -18,11 +18,16 @@ must call. The seven properties it must uphold are:
 4. **Typed layers** (`lege_window::Layer`) replacing arbitrary always-on-top; `LayerStack` is the sole
    z-order authority — the compositor's own scene-graph stacking must be driven from `WindowService::stacking_order`,
    never maintained independently.
-5. **Recovery** — `lege_recovery_v1` pressure overlay + "show every window" scatter + minimal fallback
-   switcher + fullscreen/modal escape, all bound to fixed key combinations and calling straight into
-   `WindowService`, so all four work without the shell; `ext-session-lock-v1` for the lock screen.
+5. **Recovery** — `lege_recovery_v1` pressure overlay + "show every window" scatter (shelved windows
+   included) + minimal fallback switcher + fullscreen/modal escape + "go home", all bound to fixed key
+   combinations and calling straight into `WindowService`, so all five work without the shell;
+   `ext-session-lock-v1` for the lock screen.
 6. **Private shell protocol** `lege_shell_v1`; the shell is a separate, restartable process.
-7. **Explicit minimisation** to the window shelf.
+7. **Explicit minimisation** to the window shelf — and a shelved window is *gone from the screen*:
+   `WindowService::is_visible` is the one predicate `Space` mirroring (`src/space_sync.rs`), hit-testing
+   and chrome consult, so a hidden window neither renders, takes clicks nor paints a band. "Go home"
+   (`WindowCommand::RevealHome`) hides client windows the same way, as a view flag that changes no
+   window record and ends on activation, a new window, any recovery action or the shell disconnecting.
 
 Property tests for the geometry live in `crates/lege-window`, not here — the policy is testable without a
 compositor, and that is the point of the split.
@@ -56,7 +61,8 @@ over in-memory state, and every `lege-comp-integration` type hands work to a bac
 | A surface (or the shell, through `lege_shell_v1`) requests keyboard focus, and xdg-activation issued a token backed by recent input | Build an `ActivationGrant` (`had_recent_input_evidence` from the xdg-activation token's serial, not assumed; `token` a fresh, unguessable string per grant — `WindowService` enforces single-use per exact token string, so reusing one across unrelated activation requests would falsely collide) and call `WindowService::handle_command(WindowCommand::Activate{..}, CommandContext{trusted_shell, now_monotonic_ns})`; on success, send `xdg_toplevel.configure` with `activated` and call `GovernorNotifier::set_instance_state` for the newly- and previously-activated instances |
 | Surface becomes visible/hidden (occlusion, minimized-to-shelf, workspace-irrelevant since there is only one) | `GovernorNotifier::set_instance_state(instance_id, foreground, visible)`, coalesced by the notifier itself — call it on every change, do not hand-roll debouncing at the call site |
 | `lege_shell_v1` request from the shell connection (`close`, `move_to_visible_area`, `shelve`, `unshelve`, `escape_fullscreen_or_modal`, `show_all_windows`) | `WindowService::handle_command` with `CommandContext{trusted_shell: true, ..}` — **only** the one connection the compositor itself spawned as the shell may set `trusted_shell: true`; every other connection (there is no other way to reach this protocol) is a protocol violation, not a legitimate `false` case |
-| Fixed recovery key combinations (`docs/architecture/accessibility.md`): show every window, escape fullscreen/modal, cycle the fallback switcher | Call `WindowService::handle_command(WindowCommand::ShowAllWindows \| EscapeFullscreenOrModal, CommandContext{trusted_shell: true, ..})` or `WindowService::cycle_focus` directly from the compositor's own keybinding handler — **not** through the wire protocol, and not gated on a shell connection existing at all; this is what makes them work with the shell dead |
+| Fixed recovery key combinations (`docs/architecture/accessibility.md`): show every window, escape fullscreen/modal, cycle the fallback switcher, go home | Call `WindowService::handle_command(WindowCommand::ShowAllWindows \| EscapeFullscreenOrModal \| RevealHome, CommandContext{trusted_shell: true, ..})` or `WindowService::cycle_focus` directly from the compositor's own keybinding handler — **not** through the wire protocol, and not gated on a shell connection existing at all; this is what makes them work with the shell dead. After a reveal starts or ends, `input::refocus_after_reveal` moves the keyboard to the Home Surface or back to the topmost visible window |
+| `xdg_toplevel.set_maximized` / `unset_maximized` | `xdg_shell::apply_maximized` → `WindowService::handle_command(SetMaximized{..})`; the returned geometry (one output's `usable()`, or the repaired floating rect) goes out as the pending size + one configure. `on_outputs_changed` re-derives a maximized window from its output rather than repairing it |
 | Anything that changed toplevel list, shelf contents or stacking order | `lege_comp_integration::snapshot(&service)` then `ShellStateBroadcaster::publish` — never encode/send `lege_shell_v1` events synchronously from the same call site that touched `WindowService` |
 
 `Layer::SecureLock` and `Layer::Recovery` surfaces (the lock screen, the pressure overlay, the recovery

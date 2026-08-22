@@ -22,6 +22,8 @@ pub struct ShellStateSnapshot {
     pub shelf: Vec<ShellToplevel>,
     /// Every window, top-most first, across all layers.
     pub stacking_order: Vec<WindowId>,
+    /// Whether a "go home" reveal is in effect (`WindowService::home_revealed`).
+    pub home_revealed: bool,
 }
 
 /// Build one snapshot from the current `WindowService` state. Called from the render thread
@@ -32,6 +34,7 @@ pub fn snapshot<I: IdentityCache>(service: &WindowService<I>) -> ShellStateSnaps
         toplevels: service.shell_toplevels(),
         shelf: service.shelf(),
         stacking_order: service.stacking_order(),
+        home_revealed: service.home_revealed(),
     }
 }
 
@@ -145,6 +148,7 @@ mod tests {
             toplevels: Vec::new(),
             shelf: Vec::new(),
             stacking_order: Vec::new(),
+            home_revealed: false,
         };
         broadcaster.publish(snap.clone());
 

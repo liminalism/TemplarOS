@@ -46,17 +46,28 @@ What to exercise by hand, because no test covers it:
 * Drag a window mostly off-screen and let go. It must come back reachable.
 * Change the nested window's size, which the compositor sees as an output geometry change. Every
   window must remain recoverable.
+* Minimise a window (its own button, or `xdg_toplevel.set_minimized`). It must vanish entirely —
+  not render, not take clicks where it was — and `Ctrl+Alt+Space` must bring it back.
+* Maximise a window with its own button. It must fill the output minus the dock's reserved strip,
+  never cover the dock, and come back to its old size on unmaximise.
+* With two or three windows open, press `Super+D` (or `Ctrl+Alt+H`, or the dock's **Home** cell).
+  Every window must disappear behind the Home Surface with nothing else changing; `Escape`, the
+  same key again, or clicking a window's entry must bring the exact prior stack back.
+* **Kill `lege-shell` while revealed.** The windows must reappear on their own.
 * **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is
   the compositor's job, not the shell's.
 
 | Keys | What it does | Works with the shell dead |
 |---|---|---|
-| `Ctrl+Alt+Space` | show every window, scattered | yes |
+| `Ctrl+Alt+Space` | show every window, scattered — shelved ones included | yes |
 | `Ctrl+Alt+Escape` | escape a fullscreen or modal window | yes |
 | `Alt+Tab` / `Alt+Shift+Tab` | compositor's fallback switcher | yes |
+| `Ctrl+Alt+H`, `Super+D` | go home: hide every client window behind the Home Surface, or bring them back | yes (shows the bare backdrop) |
+| `Escape` while revealed | ends the reveal | yes |
 
 These call `WindowService` directly rather than going over the wire protocol, which is why they
-keep working when there is no shell to route them through.
+keep working when there is no shell to route them through. A reveal is a view, not a state: it
+shelves nothing and moves nothing, so there is never anything to undo when it ends.
 
 ## 2. Installed packages — the easiest full session
 

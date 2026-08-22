@@ -92,6 +92,96 @@ record legeos.work.governor-containment/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.home-field/1 : work {
+    title "Home Field — the desktop surface: tiles, parked sessions, go-home, stable grid, projects, trays, previews"
+    state proposed
+    scope [
+        path "compositor/**",
+        path "crates/lege-field/**",
+        path "crates/lege-session-core/**",
+        path "crates/lege-treemap/**",
+        path "crates/lege-window/**",
+        path "interfaces/**",
+        path "services/lege-sessiond/**",
+        path "shell/**"
+    ]
+    intent """
+        Replace the drawer-list Home Surface with the Home Field: a bounded field of rectangular tiles (projects, apps / parked sessions, file trays, widgets, system) on the shell's Layer::HomeSurface backdrop. Windows collapse into tiles instead of minimising and expand back out; Super+D / Ctrl+Alt+H / a dock Home button reveal the field temporarily without changing any window's state; dragging a tile onto a target performs a typed, previewed, undoable operation; layout is a stable local grid that never reflows globally, persisted per output by sessiond (org.legeos.HomeField1). Phases: 1 compositor truths (shelved windows actually hidden and not hit-tested, maximize, reveal-home command + keybindings + protocol v2 with identifier/geometry), 2 the pure crates/lege-field model (document, ops with inverses, local reflow, representation ladder, drag/throw state machine), 3 FieldScreen in lege-shell with --print field and full keyboard reach — the named Windows-8 fallback checkpoint — then 4 HomeField1 persistence, 5 projects/trays/zoom, 6 previews over ext-image-copy-capture, 7 lege-treemap (lifted from Silvaview-rs) and budgeted widgets, 8 the throw spike with a keep/delete rule. Plan of record: ~/.claude/plans/for-this-project-i-crispy-shannon.md (author's machine).
+        """
+    note """
+        Decisions taken with the author on 2026-08-22: Super+D is a temporary reveal, not park-all; one field document per output, primary output first; LegeOS and Silvaview-rs relicensed AGPL-3.0-only (D13) so lege-treemap can be lifted. Reveal state is a view flag in WindowService; one lege-field crate is the single model for shell and sessiond, Ctrl+Z is HomeField1.Undo.
+        """
+    acceptance {
+        check field-in-text {
+            statement """
+                lege-shell --print field lists exactly the tiles the graphical field draws, one line per tile.
+                """
+            method command
+            command "cargo test -p lege-shell print_field"
+        }
+        check field-is-keyboard-complete {
+            statement """
+                Every Home Field action reachable by pointer is reachable by keyboard alone (arrows, Enter, Space, Escape, Ctrl+Z).
+                """
+            method command
+            command "cargo test -p lege-shell field_keyboard"
+        }
+        check home-is-always-reachable {
+            statement """
+                Ctrl+Alt+H, Super+D and the dock's Home cell each reveal the Home Surface with every client window hidden; Escape, pressing again, or activating a window brings the exact prior stack back.
+                """
+            method manual
+        }
+        check layout-is-stable {
+            statement """
+                Content, title, state or count changes move zero tiles; an insert displaces only tiles in the affected row, column or container; every field op's inverse restores the document exactly.
+                """
+            method command
+            command "cargo test -p lege-field"
+        }
+        check maximize-fills-work-area {
+            statement """
+                Maximizing fills exactly one output's usable area (never the dock's exclusive zone) and is recoverable for any topology; unmaximize restores the floating geometry.
+                """
+            method command
+            command "cargo test -p lege-window maximize"
+        }
+        check no-new-toolkit-api {
+            statement """
+                just check passes with ../pixelkit unmodified; the Home Field needed no pixelkit API change.
+                """
+            method command
+            command "just check"
+        }
+        check reveal-survives-shell-death {
+            statement """
+                Killing lege-shell while a reveal is in effect ends the reveal: every window reappears without user action.
+                """
+            method manual
+        }
+        check shelved-is-hidden {
+            statement """
+                A shelved (minimised) window is unmapped from the compositor's Space: it neither renders nor receives pointer input, and its recovery band is not painted; unshelving restores it at its repaired geometry.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-comp shelving_hides_and_unshelving_shows"
+        }
+        check windows-cannot-be-lost {
+            statement """
+                No sequence of shelve, reveal-home, activate or maximize leaves a window neither visible nor unshelvable; show-every-window unshelves everything; a reveal changes no window record.
+                """
+            method command
+            command "cargo test -p lege-window hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+        }
+    }
+    depends_on [ @legeos.decision.agplv3-own-code, @legeos.decision.compositor-on-smithay ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+}
+
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
     state completed

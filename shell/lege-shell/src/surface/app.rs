@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
 use lege_client::proxies::{FilesSearchProxy, SettingsProxy};
-use lege_window::{DockGrouping, geometry::Edge};
+use lege_window::{DockGrouping, RevealHome, geometry::Edge};
 
 use crate::dock;
 use crate::drawers::standard_paths::{self, StandardDrawer};
@@ -242,6 +242,7 @@ impl ShellApp {
         let data = DockData {
             entries: &entries,
             icons: &self.icons,
+            home_revealed: self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
         };
         let action = {
             let painter = Painter::new(&mut dock_window.buffer);
@@ -259,11 +260,22 @@ impl ShellApp {
         dock_window.input.end_frame();
         dock_window.present();
 
-        if let DockAction::Activate(window_id) = action
-            && let Some(bridge) = &self.bridge
-            && let Err(error) = bridge.activate(window_id)
-        {
-            tracing::warn!(%error, "activate request failed");
+        match action {
+            DockAction::Activate(window_id) => {
+                if let Some(bridge) = &self.bridge
+                    && let Err(error) = bridge.activate(window_id)
+                {
+                    tracing::warn!(%error, "activate request failed");
+                }
+            }
+            DockAction::RevealHome => {
+                if let Some(bridge) = &self.bridge
+                    && let Err(error) = bridge.reveal_home(RevealHome::Toggle)
+                {
+                    tracing::warn!(%error, "reveal_home request failed");
+                }
+            }
+            DockAction::None => {}
         }
     }
 }

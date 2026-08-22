@@ -10,12 +10,12 @@
 
 use crate::state::{Backend, LegeCompState};
 use crate::window_bridge::{claims_from_wayland, client_kind, now_monotonic_ns};
-use lege_window::Decoration;
+use lege_window::{CommandContext, CommandEffect, Decoration, WindowCommand, WindowId};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     desktop::{
-        PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
+        PopupKind, PopupManager, Window, find_popup_root_surface, get_popup_toplevel_coords,
     },
     input::Seat,
     reexports::{
@@ -71,7 +71,7 @@ impl<B: Backend + 'static> CompositorHandler for LegeCompState<B> {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = window_for_surface(&self.space, &root) {
+            if let Some(window) = window_for_surface(self, &root) {
                 window.on_commit();
             }
         }
@@ -82,13 +82,67 @@ impl<B: Backend + 'static> CompositorHandler for LegeCompState<B> {
     }
 }
 
-/// `Space::elements().find(...)` by root `WlSurface` — the one Smithay-mandated lookup this
-/// module needs `Space` for (surface-tree bookkeeping, not placement; see the module doc).
-fn window_for_surface(space: &Space<Window>, surface: &WlSurface) -> Option<Window> {
-    space
+/// The `Window` wrapping root `WlSurface` `surface` — from `WindowIndex` first, so a window that
+/// is currently *unmapped* from `Space` (shelved, or hidden behind a "go home" reveal;
+/// `src/space_sync.rs`) keeps its commit/configure bookkeeping running while out of sight and
+/// comes back with a current buffer. `Space` is only the fallback for anything the index has not
+/// been told about (surface-tree bookkeeping, not placement; see the module doc).
+fn window_for_surface<B: Backend + 'static>(
+    state: &LegeCompState<B>,
+    surface: &WlSurface,
+) -> Option<Window> {
+    if let Some(window) = state.windows.element_for(&surface.id()) {
+        return Some(window.clone());
+    }
+    state
+        .space
         .elements()
         .find(|window| window.wl_surface().as_deref() == Some(surface))
         .cloned()
+}
+
+/// `xdg_toplevel.set_maximized`/`unset_maximized` (and the same from the shell): let
+/// `WindowService` decide the geometry, then tell the client through its pending state and one
+/// configure. Nothing to send when the window was already in the requested state.
+pub fn apply_maximized<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    window_id: WindowId,
+    maximized: bool,
+) {
+    let ctx = CommandContext {
+        trusted_shell: true,
+        now_monotonic_ns: now_monotonic_ns(&state.clock),
+    };
+    let Ok(CommandEffect::Maximized {
+        geometry: Some(geometry),
+        ..
+    }) = state.window_service.handle_command(
+        WindowCommand::SetMaximized {
+            window_id,
+            maximized,
+        },
+        ctx,
+    )
+    else {
+        return;
+    };
+    if let Some(window) = crate::space_sync::element_for_window(state, window_id)
+        && let Some(toplevel) = window.toplevel()
+    {
+        toplevel.with_pending_state(|pending| {
+            use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+            if maximized {
+                pending.states.set(State::Maximized);
+            } else {
+                pending.states.unset(State::Maximized);
+            }
+            pending.size = Some((geometry.width, geometry.height).into());
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    }
+    crate::space_sync::sync_after_change(state);
 }
 
 fn ensure_initial_popup_configure(popups: &mut PopupManager, surface: &WlSurface) {
@@ -109,7 +163,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
     /// only fires post-map, so the just-mapped title is read here directly from
     /// [`XdgToplevelSurfaceData`] instead of waiting for a redundant first change notification).
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
-        let Some(window) = window_for_surface(&self.space, surface) else {
+        let Some(window) = window_for_surface(self, surface) else {
             return;
         };
         let Some(toplevel) = window.toplevel().cloned() else {
@@ -204,7 +258,9 @@ impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let object_id = surface.wl_surface().id();
         let window = Window::new_wayland_window(surface);
+        self.windows.track_element(object_id, window.clone());
         // Placed off-screen at the origin until `handle_toplevel_commit` maps it through
         // `WindowService::on_toplevel_mapped` and repairs its geometry — nothing reads this
         // location as policy before that point.
@@ -213,7 +269,7 @@ impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let object_id = surface.wl_surface().id();
-        if let Some(window) = window_for_surface(&self.space, surface.wl_surface()) {
+        if let Some(window) = window_for_surface(self, surface.wl_surface()) {
             self.space.unmap_elem(&window);
         }
         if let Some(window_id) = self.windows.remove(&object_id) {
@@ -329,6 +385,18 @@ impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
         }
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
+            apply_maximized(self, window_id, true);
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
+            apply_maximized(self, window_id, false);
+        }
+    }
+
     fn ack_configure(&mut self, _surface: WlSurface, _configure: Configure) {}
 }
 
@@ -337,7 +405,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = window_for_surface(&self.space, &root) else {
+        let Some(window) = window_for_surface(self, &root) else {
             return;
         };
         let Some(output) = self.space.outputs().next() else {

@@ -4,12 +4,11 @@
 //! It should never silently vanish into an icon, another workspace, or an output that is no
 //! longer attached." This module is the consumer of that list.
 //!
-//! **The producer does not exist yet.** The shelf's data arrives over the private
-//! `lege_shell_v1` protocol (`interfaces/wayland/lege-shell-v1.xml`), and no crate in this
-//! workspace implements that wire protocol on either end — the compositor fork and its client
-//! side are a later milestone. So this takes `&[ShellToplevel]` directly, exactly as
-//! [`crate::dock`] does: the model and its rendering are correct and tested now, and wiring the
-//! transport later changes where the vector comes from, not what this does with it.
+//! The shelf's data arrives over the private `lege_shell_v1` protocol
+//! (`interfaces/wayland/lege-shell-v1.xml`; `crate::wayland_bridge` is the client side,
+//! `compositor/lege-comp/src/protocols_shell.rs` the server). This takes `&[ShellToplevel]`
+//! directly, exactly as [`crate::dock`] does, so the model and its rendering are testable against
+//! fixtures with no connection at all.
 //!
 //! One consequence worth stating: the wire protocol carries a `shelf_rank`
 //! ("the Window Shelf's authoritative most-recently-shelved-first sort key", so the shell never
@@ -75,6 +74,8 @@ mod tests {
             activated: false,
             fullscreen: false,
             shelved,
+            maximized: false,
+            geometry: lege_window::Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
         }
     }

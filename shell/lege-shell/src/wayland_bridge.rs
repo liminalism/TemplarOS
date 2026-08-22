@@ -68,7 +68,12 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 
 use lege_types::{AppId, InstanceId};
-use lege_window::{Layer, ShellToplevel, WindowId, geometry::Edge};
+use lege_window::{Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Edge};
+
+/// The highest `lege_shell_v1` version this shell speaks (`interfaces/wayland/lege-shell-v1.xml`).
+/// Bound at the lower of this and what the compositor advertises, so a newer shell against an
+/// older compositor still gets version 1's events rather than a protocol error.
+const SHELL_PROTOCOL_VERSION: u32 = 2;
 
 use crate::protocol::lege_shell_v1::{
     lege_shell_manager_v1::{self, LegeShellManagerV1},
@@ -95,6 +100,10 @@ struct TrackedToplevel {
     activated: bool,
     fullscreen: bool,
     shelved: bool,
+    maximized: bool,
+    geometry: Rect,
+    /// `ext_foreign_toplevel_handle_v1.identifier`, relayed once by the compositor (version 2).
+    identifier: Option<String>,
     layer: Layer,
 }
 
@@ -109,6 +118,9 @@ impl TrackedToplevel {
             activated: false,
             fullscreen: false,
             shelved: false,
+            maximized: false,
+            geometry: Rect::new(0, 0, 0, 0),
+            identifier: None,
             // The `layer` event has not necessarily arrived yet for a window this connection just
             // learned about (see the module doc on `GetToplevelList` below); `Normal` is the
             // least surprising guess and self-corrects the moment any state changes.
@@ -126,6 +138,8 @@ impl TrackedToplevel {
             activated: self.activated,
             fullscreen: self.fullscreen,
             shelved: self.shelved,
+            maximized: self.maximized,
+            geometry: self.geometry,
             layer: self.layer,
         }
     }
@@ -145,6 +159,8 @@ fn synthetic_window_id(id: &ObjectId) -> WindowId {
 struct BridgeState {
     manager: Option<LegeShellManagerV1>,
     toplevels: HashMap<ObjectId, TrackedToplevel>,
+    /// `lege_shell_manager_v1.home_revealed`'s last word, whichever side started the reveal.
+    home_revealed: bool,
 }
 
 impl Dispatch<WlRegistry, ()> for BridgeState {
@@ -157,29 +173,29 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name, interface, ..
+            name,
+            interface,
+            version,
         } = event
             && interface == "lege_shell_manager_v1"
         {
-            // Version 1 is the only version this protocol has ever had
-            // (`interfaces/wayland/lege-shell-v1.xml`); requesting anything higher would be a
-            // client bug, not a compatibility concern.
-            state.manager = Some(registry.bind::<LegeShellManagerV1, _, _>(name, 1, qh, ()));
+            let version = version.min(SHELL_PROTOCOL_VERSION);
+            state.manager = Some(registry.bind::<LegeShellManagerV1, _, _>(name, version, qh, ()));
         }
     }
 }
 
 impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
-    // `lege_shell_manager_v1` has no events at all (`interfaces/wayland/lege-shell-v1.xml`: only
-    // requests and one enum) — nothing to route.
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _proxy: &LegeShellManagerV1,
-        _event: lege_shell_manager_v1::Event,
+        event: lege_shell_manager_v1::Event,
         (): &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        let lege_shell_manager_v1::Event::HomeRevealed { revealed } = event;
+        state.home_revealed = revealed != 0;
     }
 }
 
@@ -257,6 +273,20 @@ impl Dispatch<LegeShellToplevelV1, ()> for BridgeState {
                     tracked.layer = layer_from_wire(layer);
                 }
             }
+            lege_shell_toplevel_v1::Event::Identifier { identifier } => {
+                tracked.identifier = Some(identifier);
+            }
+            lege_shell_toplevel_v1::Event::Geometry {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                tracked.geometry = Rect::new(x, y, width, height);
+            }
+            lege_shell_toplevel_v1::Event::Maximized { maximized } => {
+                tracked.maximized = maximized != 0;
+            }
             lege_shell_toplevel_v1::Event::Closed => unreachable!("handled above"),
         }
     }
@@ -290,6 +320,14 @@ fn layer_from_wire(wire: lege_shell_manager_v1::Layer) -> Layer {
         lege_shell_manager_v1::Layer::AppOnTop => Layer::AppOnTop,
         lege_shell_manager_v1::Layer::Normal => Layer::Normal,
         lege_shell_manager_v1::Layer::HomeSurface => Layer::HomeSurface,
+    }
+}
+
+fn wire_reveal(reveal: RevealHome) -> lege_shell_manager_v1::Reveal {
+    match reveal {
+        RevealHome::Show => lege_shell_manager_v1::Reveal::Show,
+        RevealHome::Hide => lege_shell_manager_v1::Reveal::Hide,
+        RevealHome::Toggle => lege_shell_manager_v1::Reveal::Toggle,
     }
 }
 
@@ -467,6 +505,52 @@ impl ShellBridge {
         };
         toplevel.unshelve();
         self.connection.flush().context("flushing unshelve")
+    }
+
+    /// Park one window: explicit minimisation onto the shelf, the Home Field's "collapse".
+    pub fn shelve(&self, window_id: WindowId) -> Result<()> {
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.shelve();
+        self.connection.flush().context("flushing shelve")
+    }
+
+    /// `xdg_toplevel.set_maximized`'s effect, requested on the window's behalf (version 2).
+    pub fn set_maximized(&self, window_id: WindowId, maximized: bool) -> Result<()> {
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        if toplevel.version() < 2 {
+            bail!("the compositor speaks lege_shell_v1 version 1, which has no set_maximized");
+        }
+        toplevel.set_maximized(u32::from(maximized));
+        self.connection.flush().context("flushing set_maximized")
+    }
+
+    /// "Go home" (version 2): the dock's Home button and the field's own route to the same
+    /// reveal the compositor's Super+D / Ctrl+Alt+H perform.
+    pub fn reveal_home(&self, reveal: RevealHome) -> Result<()> {
+        if self.manager.version() < 2 {
+            bail!("the compositor speaks lege_shell_v1 version 1, which has no reveal_home");
+        }
+        self.manager.reveal_home(wire_reveal(reveal));
+        self.connection.flush().context("flushing reveal_home")
+    }
+
+    /// Whether a "go home" reveal is in effect, as last reported by the compositor.
+    pub fn home_revealed(&self) -> bool {
+        self.state.home_revealed
+    }
+
+    /// The foreign-toplevel identifier for `window_id`, once the compositor has relayed it —
+    /// the key a preview of this window is filed under.
+    pub fn identifier_of(&self, window_id: WindowId) -> Option<&str> {
+        self.state
+            .toplevels
+            .iter()
+            .find(|(id, _)| synthetic_window_id(id) == window_id)
+            .and_then(|(_, tracked)| tracked.identifier.as_deref())
     }
 
     fn wrap_surface(&self, window: &winit::window::Window) -> Result<WlSurface> {

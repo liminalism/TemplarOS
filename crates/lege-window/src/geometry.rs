@@ -467,7 +467,7 @@ fn div_round(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-fn choose_target_output(window: Rect, outputs: &[Output]) -> &Output {
+pub(crate) fn choose_target_output(window: Rect, outputs: &[Output]) -> &Output {
     let most_intersection = outputs
         .iter()
         .max_by_key(|output| window.intersection_area(output.logical))

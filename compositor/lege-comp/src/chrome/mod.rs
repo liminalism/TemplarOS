@@ -459,7 +459,7 @@ fn collect_bands(
 ) {
     let mut live = std::collections::HashSet::new();
     for window in window_service.windows() {
-        if window.shelved {
+        if !window_service.is_visible(window.id) {
             continue;
         }
         let Some(affordance) = window_service.recovery_affordance(window.id) else {

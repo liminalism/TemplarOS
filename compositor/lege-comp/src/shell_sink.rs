@@ -39,8 +39,10 @@ pub fn install<B: Backend + 'static>(
     loop_handle
         .insert_source(rx, |event, (), state: &mut LegeCompState<B>| {
             if let Event::Msg(snapshot) = event {
-                crate::protocols_shell::sync_toplevels(state, &snapshot);
+                // Foreign handles first: `sync_toplevels` relays each window's
+                // `ext_foreign_toplevel_handle_v1.identifier`, which only exists once its handle does.
                 crate::foreign_toplevel::sync(state);
+                crate::protocols_shell::sync_toplevels(state, &snapshot);
             }
         })
         .expect("inserting the shell-state channel source");

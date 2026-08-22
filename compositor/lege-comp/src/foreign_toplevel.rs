@@ -14,6 +14,23 @@ use std::collections::HashMap;
 #[derive(Debug, Default)]
 pub struct ForeignToplevelState {
     handles: HashMap<WindowId, ForeignToplevelHandle>,
+    /// Each handle's `ext_foreign_toplevel_handle_v1.identifier`, which `lege_shell_v1` relays so
+    /// the shell can pair a capture of a window (obtained through the standard protocols, which
+    /// name windows by this identifier) with the window's `lege_shell_toplevel_v1`.
+    identifiers: HashMap<WindowId, String>,
+}
+
+impl ForeignToplevelState {
+    pub fn identifier_for(&self, window_id: WindowId) -> Option<&str> {
+        self.identifiers.get(&window_id).map(String::as_str)
+    }
+
+    pub fn window_for_identifier(&self, identifier: &str) -> Option<WindowId> {
+        self.identifiers
+            .iter()
+            .find(|(_, candidate)| candidate.as_str() == identifier)
+            .map(|(window_id, _)| *window_id)
+    }
 }
 
 impl<B: Backend + 'static> ForeignToplevelListHandler for LegeCompState<B> {
@@ -53,6 +70,11 @@ pub fn sync<B: Backend + 'static>(state: &mut LegeCompState<B>) {
                     .foreign_toplevel_list_state
                     .new_toplevel::<LegeCompState<B>>(title.clone(), app_id.clone())
             });
+        state
+            .foreign_toplevels
+            .identifiers
+            .entry(window_id)
+            .or_insert_with(|| handle.identifier());
         handle.send_title(&title);
         handle.send_app_id(&app_id);
         handle.send_done();
@@ -66,4 +88,8 @@ pub fn sync<B: Backend + 'static>(state: &mut LegeCompState<B>) {
             false
         }
     });
+    state
+        .foreign_toplevels
+        .identifiers
+        .retain(|window_id, _| live_ids.contains(window_id));
 }

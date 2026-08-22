@@ -258,7 +258,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
     /// Kept beside [`LegeCompState::new`] for the same reason: both backends must advertise both.
     pub fn create_private_globals(dh: &DisplayHandle) {
         dh.create_global::<Self, crate::protocols::lege_shell_v1::lege_shell_manager_v1::LegeShellManagerV1, _>(
-            1,
+            crate::protocols_shell::SHELL_PROTOCOL_VERSION,
             crate::protocols_shell::ShellManagerGlobalData,
         );
         dh.create_global::<Self, crate::protocols::lege_recovery_v1::lege_recovery_manager_v1::LegeRecoveryManagerV1, _>(

@@ -4,10 +4,11 @@
 //! and of `lege_shell_v1`'s global visibility (`src/protocols_shell.rs`). No request over any
 //! protocol can grant trust; only accepting a connection on this socket can.
 //!
-//! `lege-shell` (`shell/lege-shell`) has no Wayland client code yet this milestone (it is a
-//! `--print`-only CLI today — see its own module doc) — nothing spawns it from here. The socket is
-//! still opened and its name logged, so a `lege-shell` build that grows a real Wayland surface can
-//! be pointed at it (`WAYLAND_DISPLAY=<name>`) without any change on this side.
+//! Nothing spawns `lege-shell` from here: the socket is opened and its name logged, and
+//! `lege-shell --surface` is pointed at it (`WAYLAND_DISPLAY=<name>`; `shell/lege-shell/src/wayland_bridge.rs`
+//! is the client side). When that connection goes away — the shell crashed, or was killed on
+//! purpose — `protocols_shell`'s manager `destroyed` hook ends any "go home" reveal it left
+//! behind, so its death never changes what the user can reach.
 
 use crate::state::{Backend, ClientState, LegeCompState};
 use smithay::wayland::socket::ListeningSocketSource;

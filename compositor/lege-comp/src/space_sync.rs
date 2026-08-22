@@ -11,7 +11,25 @@
 
 use crate::state::{Backend, LegeCompState};
 use lege_window::{Rect, WindowId};
+use smithay::desktop::Window;
 use smithay::wayland::seat::WaylandFocus;
+
+/// The Smithay `Window` for `window_id`: the index first (`WindowIndex::element_of`, which knows
+/// hidden windows too), then `Space` for anything mapped before the index learned about it.
+pub fn element_for_window<B: Backend + 'static>(
+    state: &LegeCompState<B>,
+    window_id: WindowId,
+) -> Option<Window> {
+    if let Some(window) = state.windows.element_of(window_id) {
+        return Some(window.clone());
+    }
+    let surface = state.windows.surface_for(window_id)?;
+    state
+        .space
+        .elements()
+        .find(|w| w.wl_surface().as_deref() == Some(surface))
+        .cloned()
+}
 
 /// After a drag-motion event: move the dragged window's `Space` element to `geometry` (applied
 /// as-is, matching COMPOSITOR.md's drag row — no repair, no stacking change, no broadcast, since
@@ -21,15 +39,7 @@ pub fn apply_dragged_geometry<B: Backend + 'static>(
     window_id: WindowId,
     geometry: Rect,
 ) {
-    let Some(surface) = state.windows.surface_for(window_id).cloned() else {
-        return;
-    };
-    let Some(window) = state
-        .space
-        .elements()
-        .find(|w| w.wl_surface().as_deref() == Some(&surface))
-        .cloned()
-    else {
+    let Some(window) = element_for_window(state, window_id) else {
         return;
     };
     state
@@ -68,32 +78,35 @@ pub fn on_window_destroyed<B: Backend + 'static>(
     sync_after_change(state);
 }
 
-/// Re-mirror every live window's geometry and stacking order into `Space`, re-enrich the
-/// governor, and broadcast a fresh sanitized snapshot to the shell and our own toplevel protocol
-/// objects. Idempotent and cheap enough to call after any `WindowService`-mutating handler.
+/// Re-mirror every live window's geometry, visibility and stacking order into `Space`, re-enrich
+/// the governor, and broadcast a fresh sanitized snapshot to the shell and our own toplevel
+/// protocol objects. Idempotent and cheap enough to call after any `WindowService`-mutating
+/// handler.
+///
+/// Visibility is `WindowService::is_visible`'s verdict and nothing else: a window it says is
+/// hidden (shelved, or a client window behind a "go home" reveal) is *unmapped* from `Space`, so
+/// it neither renders nor receives pointer input — `Space` is the render/hit-test mirror, and a
+/// window that is in it is on screen. The governor is told `visible = !shelved`, deliberately not
+/// the same predicate: a reveal is a momentary view, and must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut LegeCompState<B>) {
     // Bottom-to-top so each `raise_element` call leaves the most-recently-processed (i.e.
     // topmost, per `stacking_order`'s top-first contract) window on top of `Space`'s own order.
     for window_id in state.window_service.stacking_order().into_iter().rev() {
-        let Some(surface) = state.windows.surface_for(window_id).cloned() else {
-            continue;
-        };
         let Some(record) = state.window_service.window(window_id) else {
             continue;
         };
         let geometry = record.geometry;
-        let Some(window) = state
-            .space
-            .elements()
-            .find(|w| w.wl_surface().as_deref() == Some(&surface))
-            .cloned()
-        else {
+        let Some(window) = element_for_window(state, window_id) else {
             continue;
         };
-        state
-            .space
-            .map_element(window.clone(), (geometry.x, geometry.y), false);
-        state.space.raise_element(&window, false);
+        if state.window_service.is_visible(window_id) {
+            state
+                .space
+                .map_element(window.clone(), (geometry.x, geometry.y), false);
+            state.space.raise_element(&window, false);
+        } else {
+            state.space.unmap_elem(&window);
+        }
     }
 
     for record in state.window_service.windows() {

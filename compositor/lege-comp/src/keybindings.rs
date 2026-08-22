@@ -10,7 +10,7 @@
 //! the combination performs.
 
 use crate::state::{Backend, LegeCompState};
-use lege_window::{CommandContext, WindowCommand};
+use lege_window::{CommandContext, CommandEffect, RevealHome, WindowCommand};
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
 /// One compositor-reserved recovery action, independent of whether a shell is connected.
@@ -24,19 +24,36 @@ pub enum RecoveryAction {
     CycleFocusForward,
     /// `WindowService::cycle_focus(current, forward: false)`.
     CycleFocusBackward,
+    /// "Go home": toggle the reveal that hides every client window behind the Home Surface
+    /// (`WindowCommand::RevealHome`).
+    RevealHome,
 }
 
-/// Which [`RecoveryAction`], if any, `keysym` held with exactly `modifiers` performs. Chosen to
-/// need no logo/"super" key (not present on every keyboard, and this table must work on any
-/// keyboard by design) and to collide with nothing an ordinary application binds:
+/// Which [`RecoveryAction`], if any, `keysym` held with exactly `modifiers` performs while a
+/// "go home" reveal is (`home_revealed`) or is not in effect. Every recovery action has a
+/// binding that needs no logo/"super" key (not present on every keyboard, and this table must
+/// work on any keyboard by design), colliding with nothing an ordinary application binds;
+/// Super+D is an *additional* convenience for keyboards that have the key, the one arm here that
+/// requires it rather than refusing it:
 ///
-/// | Combination           | Action                    |
+/// | Combination            | Action                    |
 /// |------------------------|---------------------------|
 /// | Ctrl+Alt+Escape        | escape fullscreen/modal   |
 /// | Ctrl+Alt+Space         | show every window         |
 /// | Alt+Tab                | cycle switcher forward    |
-/// | Alt+Shift+Tab           | cycle switcher backward   |
-pub fn recovery_action(modifiers: ModifiersState, keysym: Keysym) -> Option<RecoveryAction> {
+/// | Alt+Shift+Tab          | cycle switcher backward   |
+/// | Ctrl+Alt+H             | go home (toggle reveal)   |
+/// | Super+D                | go home (toggle reveal)   |
+/// | Escape, while revealed | go home (ends the reveal) |
+///
+/// Plain Escape is reserved *only* while a reveal is in effect — the Home Surface is then the
+/// only thing on screen, and every other key still reaches it — never otherwise, since
+/// applications use it constantly.
+pub fn recovery_action(
+    modifiers: ModifiersState,
+    keysym: Keysym,
+    home_revealed: bool,
+) -> Option<RecoveryAction> {
     let raw = keysym.raw();
     if modifiers.ctrl && modifiers.alt && !modifiers.shift && !modifiers.logo {
         if raw == keysyms::KEY_Escape {
@@ -45,6 +62,9 @@ pub fn recovery_action(modifiers: ModifiersState, keysym: Keysym) -> Option<Reco
         if raw == keysyms::KEY_space {
             return Some(RecoveryAction::ShowAllWindows);
         }
+        if raw == keysyms::KEY_h || raw == keysyms::KEY_H {
+            return Some(RecoveryAction::RevealHome);
+        }
     }
     if modifiers.alt && !modifiers.ctrl && !modifiers.logo && raw == keysyms::KEY_Tab {
         return Some(if modifiers.shift {
@@ -52,6 +72,23 @@ pub fn recovery_action(modifiers: ModifiersState, keysym: Keysym) -> Option<Reco
         } else {
             RecoveryAction::CycleFocusForward
         });
+    }
+    if modifiers.logo
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.shift
+        && (raw == keysyms::KEY_d || raw == keysyms::KEY_D)
+    {
+        return Some(RecoveryAction::RevealHome);
+    }
+    if home_revealed
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.logo
+        && raw == keysyms::KEY_Escape
+    {
+        return Some(RecoveryAction::RevealHome);
     }
     None
 }
@@ -115,6 +152,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 }
                 crate::space_sync::sync_after_change(self);
             }
+            RecoveryAction::RevealHome => self.reveal_home(RevealHome::Toggle),
             RecoveryAction::EscapeFullscreenOrModal => {
                 if let Ok(lege_window::CommandEffect::Escaped { action }) =
                     self.window_service.handle_command(
@@ -159,6 +197,31 @@ impl<B: Backend + 'static> LegeCompState<B> {
             }
         }
     }
+
+    /// "Go home" from any of its three routes — the keybindings above, the shell's
+    /// `lege_shell_manager_v1.reveal_home`, or the dock's Home button behind it. The command is
+    /// `WindowService`'s; what is left here is the compositor-side consequence: the
+    /// "show every window" scatter and the switcher HUD cannot coexist with a reveal, the
+    /// `Space` mirror must follow the new visibility, and the keyboard must go where the user
+    /// can see (`crate::input::refocus_after_reveal`).
+    pub(crate) fn reveal_home(&mut self, reveal: RevealHome) {
+        let ctx = CommandContext {
+            trusted_shell: true,
+            now_monotonic_ns: crate::window_bridge::now_monotonic_ns(&self.clock),
+        };
+        let Ok(CommandEffect::HomeRevealed { revealed }) = self
+            .window_service
+            .handle_command(WindowCommand::RevealHome { reveal }, ctx)
+        else {
+            return;
+        };
+        if revealed {
+            self.show_all_windows = None;
+            self.switcher = None;
+        }
+        crate::space_sync::sync_after_change(self);
+        crate::input::refocus_after_reveal(self, revealed);
+    }
 }
 
 #[cfg(test)]
@@ -174,10 +237,21 @@ mod tests {
         }
     }
 
+    fn logo() -> ModifiersState {
+        ModifiersState {
+            logo: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn ctrl_alt_escape_escapes_fullscreen_or_modal() {
         assert_eq!(
-            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_Escape)),
+            recovery_action(
+                mods(true, true, false),
+                Keysym::new(keysyms::KEY_Escape),
+                false
+            ),
             Some(RecoveryAction::EscapeFullscreenOrModal)
         );
     }
@@ -185,7 +259,11 @@ mod tests {
     #[test]
     fn ctrl_alt_space_shows_every_window() {
         assert_eq!(
-            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_space)),
+            recovery_action(
+                mods(true, true, false),
+                Keysym::new(keysyms::KEY_space),
+                false
+            ),
             Some(RecoveryAction::ShowAllWindows)
         );
     }
@@ -193,12 +271,82 @@ mod tests {
     #[test]
     fn alt_tab_cycles_forward_and_shift_reverses_it() {
         assert_eq!(
-            recovery_action(mods(false, true, false), Keysym::new(keysyms::KEY_Tab)),
+            recovery_action(
+                mods(false, true, false),
+                Keysym::new(keysyms::KEY_Tab),
+                false
+            ),
             Some(RecoveryAction::CycleFocusForward)
         );
         assert_eq!(
-            recovery_action(mods(false, true, true), Keysym::new(keysyms::KEY_Tab)),
+            recovery_action(
+                mods(false, true, true),
+                Keysym::new(keysyms::KEY_Tab),
+                false
+            ),
             Some(RecoveryAction::CycleFocusBackward)
+        );
+    }
+
+    #[test]
+    fn ctrl_alt_h_goes_home_on_any_keyboard() {
+        assert_eq!(
+            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_h), false),
+            Some(RecoveryAction::RevealHome)
+        );
+        assert_eq!(
+            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_H), true),
+            Some(RecoveryAction::RevealHome)
+        );
+    }
+
+    #[test]
+    fn super_d_goes_home_and_is_the_only_logo_binding() {
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_d), false),
+            Some(RecoveryAction::RevealHome)
+        );
+        // The logo key never changes the meaning of the any-keyboard combinations, and no other
+        // logo chord is reserved.
+        let with_logo = ModifiersState {
+            ctrl: true,
+            alt: true,
+            logo: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            recovery_action(with_logo, Keysym::new(keysyms::KEY_space), false),
+            None
+        );
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_a), false),
+            None
+        );
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_Escape), false),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_escape_ends_a_reveal_and_is_otherwise_free() {
+        let none = mods(false, false, false);
+        assert_eq!(
+            recovery_action(none, Keysym::new(keysyms::KEY_Escape), true),
+            Some(RecoveryAction::RevealHome)
+        );
+        assert_eq!(
+            recovery_action(none, Keysym::new(keysyms::KEY_Escape), false),
+            None
+        );
+        // Only bare Escape: a modified Escape while revealed is not stolen either.
+        assert_eq!(
+            recovery_action(
+                mods(false, false, true),
+                Keysym::new(keysyms::KEY_Escape),
+                true
+            ),
+            None
         );
     }
 
@@ -263,15 +411,23 @@ mod tests {
     #[test]
     fn plain_escape_and_unrelated_combinations_are_not_reserved() {
         assert_eq!(
-            recovery_action(mods(false, false, false), Keysym::new(keysyms::KEY_Escape)),
+            recovery_action(
+                mods(false, false, false),
+                Keysym::new(keysyms::KEY_Escape),
+                false
+            ),
             None
         );
         assert_eq!(
-            recovery_action(mods(true, false, false), Keysym::new(keysyms::KEY_Escape)),
+            recovery_action(
+                mods(true, false, false),
+                Keysym::new(keysyms::KEY_Escape),
+                false
+            ),
             None
         );
         assert_eq!(
-            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_a)),
+            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_a), false),
             None
         );
     }

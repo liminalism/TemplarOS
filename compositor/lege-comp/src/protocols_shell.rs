@@ -18,7 +18,7 @@ use crate::state::{Backend, LegeCompState, client_is_trusted_shell};
 use crate::window_bridge::now_monotonic_ns;
 use lege_comp_integration::ShellStateSnapshot;
 use lege_window::{
-    ActivationGrant, CommandContext, Layer, WindowCommand, WindowId,
+    ActivationGrant, CommandContext, Layer, RevealHome, WindowCommand, WindowId,
     geometry::{Edge, Exclusive},
 };
 use smithay::reexports::wayland_server::{
@@ -27,13 +27,24 @@ use smithay::reexports::wayland_server::{
     protocol::wl_surface::WlSurface,
 };
 use smithay::wayland::{Dispatch2, GlobalDispatch2};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// The protocol version this compositor implements (`interfaces/wayland/lege-shell-v1.xml`).
+/// Both peers ship from this repository, so a version bump is a pair of edits, not a
+/// compatibility matrix — but every `since="2"` event below is still guarded on the bound
+/// object's version rather than assumed.
+pub const SHELL_PROTOCOL_VERSION: u32 = 2;
 
 /// Bookkeeping for currently-bound `lege_shell_v1` objects.
 #[derive(Debug, Default)]
 pub struct ShellProtocolState {
+    /// Every bound manager: where `home_revealed` is reported, and whose destruction — the shell
+    /// disconnecting — ends a reveal so a dead shell never leaves the user facing a blank backdrop.
+    pub managers: Vec<LegeShellManagerV1>,
     pub toplevel_lists: Vec<LegeShellToplevelListV1>,
     pub toplevel_objects: HashMap<WindowId, LegeShellToplevelV1>,
+    /// Toplevel objects that have had their `identifier` event, which is sent exactly once.
+    pub identified: HashSet<WindowId>,
     /// One entry per surface with a live `set_layer_surface` claim.
     pub layer_surfaces: HashMap<ObjectId, (WlSurface, lege_window::Layer)>,
     /// One entry per surface with a live (non-zero) `set_exclusive_zone` claim: which output it
@@ -51,13 +62,17 @@ impl<B: Backend + 'static> GlobalDispatch2<LegeShellManagerV1, LegeCompState<B>>
 {
     fn bind(
         &self,
-        _state: &mut LegeCompState<B>,
+        state: &mut LegeCompState<B>,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: New<LegeShellManagerV1>,
         data_init: &mut DataInit<'_, LegeCompState<B>>,
     ) {
-        data_init.init(resource, ());
+        let manager = data_init.init(resource, ());
+        if manager.version() >= 2 {
+            manager.home_revealed(u32::from(state.window_service.home_revealed()));
+        }
+        state.shell_protocol.managers.push(manager);
     }
 
     fn can_view(&self, client: &Client) -> bool {
@@ -125,6 +140,35 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
             } => {
                 handle_set_exclusive_zone(state, &surface, edge, size);
             }
+            lege_shell_manager_v1::Request::RevealHome { reveal } => {
+                if let WEnum::Value(reveal) = reveal {
+                    let reveal = match reveal {
+                        lege_shell_manager_v1::Reveal::Show => RevealHome::Show,
+                        lege_shell_manager_v1::Reveal::Hide => RevealHome::Hide,
+                        lege_shell_manager_v1::Reveal::Toggle => RevealHome::Toggle,
+                    };
+                    state.reveal_home(reveal);
+                }
+            }
+        }
+    }
+
+    /// The manager going away is the shell going away (it is bound once, for the process's
+    /// lifetime). A reveal it may have left behind ends here, so the windows come back without
+    /// anyone having to press anything — the shell is a restartable process, and its death is
+    /// not allowed to change what the user can reach.
+    fn destroyed(
+        &self,
+        state: &mut LegeCompState<B>,
+        _client: ClientId,
+        resource: &LegeShellManagerV1,
+    ) {
+        state
+            .shell_protocol
+            .managers
+            .retain(|manager| manager != resource);
+        if state.shell_protocol.managers.is_empty() && state.window_service.home_revealed() {
+            state.reveal_home(RevealHome::Hide);
         }
     }
 }
@@ -308,6 +352,9 @@ impl<B: Backend + 'static> Dispatch2<LegeShellToplevelV1, LegeCompState<B>> for 
                     crate::space_sync::sync_after_change(state);
                 }
             }
+            lege_shell_toplevel_v1::Request::SetMaximized { maximized } => {
+                crate::xdg_shell::apply_maximized(state, window_id, maximized != 0);
+            }
         }
     }
 
@@ -322,6 +369,30 @@ impl<B: Backend + 'static> Dispatch2<LegeShellToplevelV1, LegeCompState<B>> for 
             .toplevel_objects
             .retain(|_, object| object != resource);
     }
+}
+
+/// Everything a version-2 `lege_shell_toplevel_v1` carries beyond version 1: the foreign-toplevel
+/// identifier (once), the geometry and the maximized flag. A no-op on a version-1 object.
+fn send_v2_toplevel_events<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    object: &LegeShellToplevelV1,
+    toplevel: &lege_window::ShellToplevel,
+) {
+    if object.version() < 2 {
+        return;
+    }
+    if !state
+        .shell_protocol
+        .identified
+        .contains(&toplevel.window_id)
+        && let Some(identifier) = state.foreign_toplevels.identifier_for(toplevel.window_id)
+    {
+        object.identifier(identifier.to_owned());
+        state.shell_protocol.identified.insert(toplevel.window_id);
+    }
+    let geometry = toplevel.geometry;
+    object.geometry(geometry.x, geometry.y, geometry.width, geometry.height);
+    object.maximized(u32::from(toplevel.maximized));
 }
 
 fn send_new_toplevel<B: Backend + 'static>(
@@ -394,6 +465,7 @@ pub fn sync_toplevels<B: Backend + 'static>(
             shelf_rank,
         );
         object.layer(wire_layer(toplevel.layer));
+        send_v2_toplevel_events(state, &object, toplevel);
     }
 
     state
@@ -407,6 +479,16 @@ pub fn sync_toplevels<B: Backend + 'static>(
                 false
             }
         });
+    state
+        .shell_protocol
+        .identified
+        .retain(|window_id| live.contains(window_id));
+
+    for manager in &state.shell_protocol.managers {
+        if manager.version() >= 2 {
+            manager.home_revealed(u32::from(snapshot.home_revealed));
+        }
+    }
 }
 
 /// `lege_window::Layer`'s wire mapping is fixed by `lege-shell-v1.xml`'s `layer` enum

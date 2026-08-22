@@ -2,7 +2,10 @@
 //! and the fullscreen/modal escape route.
 
 use crate::{
-    geometry::{Output, Point, RecoveryAffordance, Rect, recovery_affordance, repair_window},
+    geometry::{
+        Output, Point, RecoveryAffordance, Rect, choose_target_output, recovery_affordance,
+        repair_window,
+    },
     layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition},
     shell::ShellToplevel,
 };
@@ -80,6 +83,13 @@ pub struct WindowRecord {
     pub shelved: bool,
     /// Set when `shelved`; orders the shelf most-recently-shelved first.
     shelf_rank: Option<u64>,
+    /// Filling its output's work area (`xdg_toplevel.set_maximized`). Geometry is re-derived
+    /// from the output on every topology change while this holds, so a maximized window follows
+    /// its output's usable area rather than being repaired as if it were floating.
+    pub maximized: bool,
+    /// The geometry to return to on unmaximize — what the window had before
+    /// [`WindowService::set_maximized`] grew it.
+    pub restore_geometry: Option<Rect>,
 }
 
 /// Why one command was refused by the compositor before it could touch [`WindowService`] state.
@@ -110,6 +120,12 @@ pub struct WindowService<I> {
     /// expiry so they can be pruned once they could not be replayed anyway. See
     /// `try_spend_activation_token`.
     spent_activation_tokens: HashMap<String, u64>,
+    /// "Go home" (`WindowCommand::RevealHome`): while set, every window on `Layer::Normal` /
+    /// `Layer::AppOnTop` is hidden so the shell's `Layer::HomeSurface` backdrop shows through.
+    /// A *view* flag only — no record's geometry, `shelved` or `activated` changes because of it,
+    /// and the governor is never told about it — so a shell that dies mid-reveal, or a stray
+    /// press, can never leave a window anywhere but exactly where it was.
+    home_revealed: bool,
 }
 
 impl<I: IdentityCache> WindowService<I> {
@@ -123,6 +139,7 @@ impl<I: IdentityCache> WindowService<I> {
             drag: None,
             layers: LayerStack::new(),
             spent_activation_tokens: HashMap::new(),
+            home_revealed: false,
         }
     }
 
@@ -178,8 +195,13 @@ impl<I: IdentityCache> WindowService<I> {
                 decoration: Decoration::ServerSide,
                 shelved: false,
                 shelf_rank: None,
+                maximized: false,
+                restore_geometry: None,
             },
         );
+        // A window the user just opened must be seen: a reveal that hid everything ends the
+        // moment something new arrives, rather than hiding the new window too.
+        self.home_revealed = false;
 
         // `Layer::Normal` is reachable by every `ClientKind` (its minimum trust is the lowest
         // there is), so this cannot fail today — but it must not be able to abort the render
@@ -259,12 +281,74 @@ impl<I: IdentityCache> WindowService<I> {
             if Some(window.id) == dragging {
                 continue;
             }
-            let repaired = repair_window(window.geometry, &self.outputs);
+            let repaired = if window.maximized {
+                // A maximized window is not floating: it fills whichever output is now closest
+                // to where it was, rather than being nudged until its band is visible.
+                maximized_geometry(window.geometry, &self.outputs)
+            } else {
+                repair_window(window.geometry, &self.outputs)
+            };
             if repaired != window.geometry {
                 window.geometry = repaired;
                 changed.push((window.id, repaired));
             }
         }
+        changed
+    }
+
+    /// `xdg_toplevel.set_maximized` / `unset_maximized`: fill the usable area of the window's
+    /// output, remembering the floating geometry to return to. Returns the geometry to
+    /// configure, or `None` for an unknown window or a no-op (already in the requested state).
+    /// Both results are recoverable by construction: an output's usable area always has room for
+    /// a recovery band (`Output::usable`), and the restore path goes through `repair_window`.
+    pub fn set_maximized(&mut self, window_id: WindowId, maximized: bool) -> Option<Rect> {
+        let outputs = &self.outputs;
+        let window = self.windows.get_mut(&window_id)?;
+        if window.maximized == maximized {
+            return None;
+        }
+        window.maximized = maximized;
+        if maximized {
+            window.restore_geometry = Some(window.geometry);
+            window.geometry = maximized_geometry(window.geometry, outputs);
+        } else {
+            let restore = window.restore_geometry.take().unwrap_or(window.geometry);
+            window.geometry = repair_window(restore, outputs);
+        }
+        Some(window.geometry)
+    }
+
+    /// Whether the compositor should render and hit-test `window_id` at all: not shelved, and
+    /// not a client window hidden behind a "go home" reveal. Shell surfaces (`Layer::HomeSurface`
+    /// and the overlay layers) are never hidden by a reveal — they are what it reveals. The one
+    /// predicate `space_sync`, the hit-test and the chrome all consult, so the three cannot
+    /// disagree about what is on screen. Unknown windows are not visible.
+    pub fn is_visible(&self, window_id: WindowId) -> bool {
+        let Some(window) = self.windows.get(&window_id) else {
+            return false;
+        };
+        if window.shelved {
+            return false;
+        }
+        if self.home_revealed {
+            return !matches!(
+                self.layer_of(window_id),
+                Some(Layer::Normal | Layer::AppOnTop)
+            );
+        }
+        true
+    }
+
+    /// Whether a "go home" reveal is in effect (`WindowCommand::RevealHome`).
+    pub fn home_revealed(&self) -> bool {
+        self.home_revealed
+    }
+
+    /// Start or end a "go home" reveal. Returns whether anything changed. Purely a view flag —
+    /// see the field's doc: nothing about any window is touched.
+    pub fn set_home_revealed(&mut self, revealed: bool) -> bool {
+        let changed = self.home_revealed != revealed;
+        self.home_revealed = revealed;
         changed
     }
 
@@ -392,6 +476,9 @@ impl<I: IdentityCache> WindowService<I> {
             window.activated = window.id == window_id;
         }
         self.layers.raise(window_id);
+        // Activating a window (a click on its tile from the Home Field, say) is the user asking
+        // for it: a reveal that was hiding it ends here, for free, with nothing else to undo.
+        self.home_revealed = false;
         true
     }
 
@@ -509,9 +596,21 @@ impl<I: IdentityCache> WindowService<I> {
             activated: window.activated,
             fullscreen: window.fullscreen,
             shelved: window.shelved,
+            maximized: window.maximized,
+            geometry: window.geometry,
             layer: self.layer_of(window.id).unwrap_or(Layer::Normal),
         }
     }
+}
+
+/// Where a maximized window goes: the usable area of the output nearest `current`. Always
+/// recoverable, because `Output::usable` refuses a work area too small for a recovery band. With
+/// no outputs at all there is nothing to fill, and the window is left as it is.
+fn maximized_geometry(current: Rect, outputs: &[Output]) -> Rect {
+    if outputs.is_empty() {
+        return current;
+    }
+    choose_target_output(current, outputs).usable()
 }
 
 #[cfg(test)]
@@ -885,8 +984,157 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shelving_hides_and_unshelving_shows() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let id = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(10, 10, 400, 300),
+        );
+        assert!(service.is_visible(id));
+        assert!(service.shelve(id));
+        assert!(!service.is_visible(id));
+        assert!(service.unshelve(id).is_some());
+        assert!(service.is_visible(id));
+        assert!(
+            !service.is_visible(WindowId(999)),
+            "unknown windows are not visible"
+        );
+    }
+
+    #[test]
+    fn a_reveal_hides_client_windows_but_never_shell_surfaces() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let app = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(10, 10, 400, 300),
+        );
+        let home = service.on_toplevel_mapped(
+            2,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "Home Surface".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
+            .unwrap();
+        let on_top = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(50, 50, 100, 100),
+        );
+        service
+            .set_layer(on_top, Layer::AppOnTop, ClientKind::Application)
+            .unwrap();
+
+        assert!(service.set_home_revealed(true));
+        assert!(!service.set_home_revealed(true), "no change reported twice");
+        assert!(!service.is_visible(app));
+        assert!(!service.is_visible(on_top));
+        assert!(
+            service.is_visible(home),
+            "the Home Surface is what a reveal reveals"
+        );
+
+        // A new window ends the reveal: the user must be able to see what just opened.
+        let fresh = service.on_toplevel_mapped(
+            4,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(0, 0, 100, 100),
+        );
+        assert!(!service.home_revealed());
+        assert!(service.is_visible(fresh));
+        assert!(service.is_visible(app));
+    }
+
+    #[test]
+    fn a_maximized_window_follows_its_output_through_hotplug() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let id = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(100, 100, 400, 300),
+        );
+        assert_eq!(
+            service.set_maximized(id, true),
+            Some(Rect::new(0, 0, 1920, 1080))
+        );
+        let smaller = vec![Output::new("eDP-1", Rect::new(0, 0, 1280, 720), 1000)];
+        let changed = service.on_outputs_changed(smaller);
+        assert_eq!(changed, vec![(id, Rect::new(0, 0, 1280, 720))]);
+        assert!(service.window(id).unwrap().maximized);
+        assert_eq!(
+            service.set_maximized(id, false),
+            Some(Rect::new(100, 100, 400, 300))
+        );
+        assert_eq!(service.set_maximized(id, false), None, "already floating");
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(300))]
+
+        /// Maximizing fills exactly one output's usable area — which `Output::usable` guarantees
+        /// has room for a recovery band — and unmaximizing lands somewhere recoverable too, for
+        /// any topology and any starting rectangle.
+        #[test]
+        fn maximize_and_unmaximize_are_always_recoverable(
+            topology in crate::test_support::arb_topology(),
+            window in arb_window(),
+        ) {
+            let mut service = WindowService::new(FakeCache::default(), topology.clone());
+            let id = service.on_toplevel_mapped(1, ClientKind::Application, WindowClaims::default(), String::new(), window);
+            let maximized = service.set_maximized(id, true).expect("first maximize always changes state");
+            prop_assert!(crate::is_recoverable(maximized, service.outputs()));
+            prop_assert!(topology.iter().any(|output| output.usable() == maximized));
+            let restored = service.set_maximized(id, false).expect("unmaximize always changes state");
+            prop_assert!(crate::is_recoverable(restored, service.outputs()));
+            prop_assert_eq!(restored.width, window.width);
+            prop_assert_eq!(restored.height, window.height);
+        }
+
+        /// A reveal is a view: whatever sequence of reveals, shelves and activations happens, a
+        /// hidden window is hidden because it is shelved or because a reveal is in effect —
+        /// never because its record was changed — and shelved windows never hold activation.
+        #[test]
+        fn hidden_windows_are_explained_by_shelf_or_reveal_alone(
+            steps in proptest::collection::vec(0u8..5, 1..30),
+        ) {
+            let mut service = WindowService::new(FakeCache::default(), outputs());
+            let a = service.on_toplevel_mapped(1, ClientKind::Application, WindowClaims::default(), String::new(), Rect::new(0, 0, 300, 200));
+            let b = service.on_toplevel_mapped(2, ClientKind::Application, WindowClaims::default(), String::new(), Rect::new(50, 50, 300, 200));
+            for step in steps {
+                match step {
+                    0 => { service.shelve(a); }
+                    1 => { service.unshelve(a); }
+                    2 => { service.activate(b); }
+                    3 => { service.set_home_revealed(true); }
+                    _ => { service.set_home_revealed(false); }
+                }
+                for id in [a, b] {
+                    let record = service.window(id).unwrap();
+                    prop_assert_eq!(
+                        service.is_visible(id),
+                        !record.shelved && !service.home_revealed(),
+                    );
+                    if record.shelved {
+                        prop_assert!(!record.activated);
+                    }
+                }
+            }
+        }
 
         /// Across an arbitrary hotplug sequence (outputs connecting and disconnecting in turn),
         /// a mapped window stays recoverable after every step, and replaying the identical

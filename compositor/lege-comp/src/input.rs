@@ -111,6 +111,39 @@ pub fn activate_window<B: Backend + 'static>(state: &mut LegeCompState<B>, windo
     crate::space_sync::sync_after_change(state);
 }
 
+/// Keyboard focus after a "go home" reveal started (`revealed`) or ended. Starting one hands the
+/// keyboard to the shell's `Layer::HomeSurface` window, so the Home Field's own keyboard path
+/// works while every client window is hidden; ending one activates the topmost client window
+/// that is visible again, so typing never lands in a window nobody can see.
+pub fn refocus_after_reveal<B: Backend + 'static>(state: &mut LegeCompState<B>, revealed: bool) {
+    if revealed {
+        let home = state
+            .window_service
+            .stacking_order()
+            .into_iter()
+            .find(|id| state.window_service.layer_of(*id) == Some(lege_window::Layer::HomeSurface));
+        let surface = home.and_then(|id| state.windows.surface_for(id).cloned());
+        if let Some(keyboard) = state.seat.get_keyboard() {
+            keyboard.set_focus(state, surface, SERIAL_COUNTER.next_serial());
+        }
+        return;
+    }
+    let top = state
+        .window_service
+        .stacking_order()
+        .into_iter()
+        .find(|id| {
+            state.window_service.is_visible(*id)
+                && matches!(
+                    state.window_service.layer_of(*id),
+                    Some(lege_window::Layer::Normal | lege_window::Layer::AppOnTop)
+                )
+        });
+    if let Some(window_id) = top {
+        activate_window(state, window_id);
+    }
+}
+
 /// Start a recovery-band (or client-initiated `xdg_toplevel.move`) drag: `begin_drag` and install
 /// [`DragGrab`]. `pointer_global` is already logical — see the module doc.
 pub fn start_drag<B: Backend + 'static>(
@@ -353,6 +386,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             return;
         }
 
+        let home_revealed = self.window_service.home_revealed();
         let action = keyboard.input::<crate::keybindings::RecoveryAction, _>(
             self,
             event.key_code(),
@@ -363,7 +397,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 if event.state() != smithay::backend::input::KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                match crate::keybindings::recovery_action(*modifiers, handle.modified_sym()) {
+                match crate::keybindings::recovery_action(
+                    *modifiers,
+                    handle.modified_sym(),
+                    home_revealed,
+                ) {
                     Some(action) => FilterResult::Intercept(action),
                     None => FilterResult::Forward,
                 }
@@ -511,9 +549,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
     /// client content that happens to be drawn there, e.g. a borderless window).
     fn topmost_window_at(&self, pos: LegePoint) -> Option<WindowId> {
         self.window_service.stacking_order().into_iter().find(|id| {
-            self.window_service
-                .window(*id)
-                .is_some_and(|record| rect_contains(record.geometry, pos))
+            self.window_service.is_visible(*id)
+                && self
+                    .window_service
+                    .window(*id)
+                    .is_some_and(|record| rect_contains(record.geometry, pos))
         })
     }
 
