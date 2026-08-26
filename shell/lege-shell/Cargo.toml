@@ -33,6 +33,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
 
+# `--render`: the Home Field written to a PNG with no compositor and no display
+# (src/surface/offscreen.rs). The encoder only; nothing here decodes images.
+png = { workspace = true }
+
 # The graphical Home Surface (src/surface/**): pixelkit is this project's toolkit
 # (declared in the root workspace manifest; see that file's comment on why it is a path
 # dependency for now).

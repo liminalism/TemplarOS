@@ -119,6 +119,25 @@ start_sessiond() {
         || echo "  warning: org.legeos.Session did not appear; see $(logfile sessiond)" >&2
 }
 
+# The file service backs six of the eight drawers. Without it Home renders "service unavailable"
+# in every one of them, which is honest but tells you nothing about how the drawers actually look.
+start_filed() {
+    if alive filed; then
+        echo "filed already running"
+        return 0
+    fi
+    if [ ! -x "$bin/lege-filed" ]; then
+        echo "  no $bin/lege-filed — drawers will read \"service unavailable\"" >&2
+        return 0
+    fi
+    echo "starting filed"
+    nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
+        "$bin/lege-filed" \
+        >"$(logfile filed)" 2>&1 &
+    echo $! >"$(pidfile filed)"
+    sleep 0.5
+}
+
 start_shell() {
     stop_one shell
     [ -x "$bin/lege-shell" ] || { echo "missing $bin/lege-shell" >&2; return 1; }
@@ -133,7 +152,8 @@ start_shell() {
 
 case "${1:-start}" in
 start)
-    start_comp && start_sessiond && start_shell && echo "nested session up — logs in $run"
+    start_comp && start_sessiond && start_filed && start_shell \
+        && echo "nested session up — logs in $run"
     ;;
 shell)
     # The hot-swap loop: rebuild only the shell and restart it against the live compositor.
@@ -148,18 +168,18 @@ apps)
     "$bin/lege" app list 2>/dev/null | head -40
     ;;
 logs)
-    for name in comp sessiond shell; do
+    for name in comp sessiond filed shell; do
         echo "===== $name"
         tail -n "${2:-25}" "$(logfile "$name")" 2>/dev/null || echo "(no log)"
     done
     ;;
 stop)
-    for name in shell sessiond comp; do stop_one "$name"; done
+    for name in shell filed sessiond comp; do stop_one "$name"; done
     clear_stale_sockets
     echo "nested session stopped"
     ;;
 status)
-    for name in comp sessiond shell; do
+    for name in comp sessiond filed shell; do
         printf '%-10s %s\n' "$name" "$(alive "$name" && echo running || echo stopped)"
     done
     ;;

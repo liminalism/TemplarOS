@@ -1014,6 +1014,12 @@ fn network_control_app(apps: &[crate::app_search::AppEntry]) -> Option<AppId> {
         .map(|app| app.id.clone())
 }
 
+/// The information row's clock, as of now. Shared with `surface::offscreen`, which draws the same
+/// field without a running shell.
+pub fn clock_label_now() -> String {
+    local_clock_label(std::time::SystemTime::now())
+}
+
 #[allow(unsafe_code)]
 fn local_clock_label(now: std::time::SystemTime) -> String {
     let seconds = now

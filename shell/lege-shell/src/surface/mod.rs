@@ -13,6 +13,7 @@ pub mod field_screen;
 pub mod file_browser;
 pub mod fonts;
 pub mod home_screen;
+pub mod offscreen;
 pub mod widgets;
 pub mod window;
 

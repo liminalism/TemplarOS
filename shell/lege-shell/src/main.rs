@@ -14,9 +14,10 @@
 //! A drawer whose service is not running prints one clear line saying so. The shell is the last
 //! thing that should panic when a daemon is missing.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use lege_window::ShellToplevel;
+use std::path::PathBuf;
 
 use lege_shell::{data, drawers, home_surface::Drawer, pressure};
 
@@ -36,6 +37,18 @@ struct Cli {
     /// How many entries to show in the drawers that are lists.
     #[arg(long, default_value_t = 20)]
     limit: u32,
+
+    /// Draw the Home Field to a PNG and exit — no compositor, no display, nothing on screen.
+    ///
+    /// The visual counterpart to `--print field`: between them, no question about how Home looks
+    /// requires ending someone's session to answer. Windows cannot appear (there is no compositor
+    /// to have any), but every service-backed part is live if its service is answering.
+    #[arg(long, value_name = "PATH")]
+    render: Option<PathBuf>,
+
+    /// Size for `--render`, as WIDTHxHEIGHT in logical pixels.
+    #[arg(long, value_name = "WxH", default_value = "1600x1000")]
+    size: String,
 
     /// Open the graphical Home Surface. Needs a Wayland compositor; for the private
     /// `lege_shell_v1` protocol (live Window Shelf, Home reveal and layer placement)
@@ -60,6 +73,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(path) = &cli.render {
+        let (width, height) = parse_size(&cli.size)?;
+        lege_shell::surface::offscreen::render_field(path, width, height).await?;
+        println!("{}", path.display());
+        return Ok(());
+    }
     if let Some(target) = &cli.print {
         println!("{}", print_target(target, cli.limit).await?);
         return Ok(());
@@ -78,6 +97,23 @@ async fn main() -> Result<()> {
          <drawer>/--list-drawers for the text form"
     );
     Ok(())
+}
+
+/// `WIDTHxHEIGHT`, the one format `--size` accepts.
+fn parse_size(text: &str) -> Result<(u32, u32)> {
+    let (width, height) = text
+        .split_once(['x', 'X'])
+        .with_context(|| format!("--size wants WIDTHxHEIGHT, got {text:?}"))?;
+    Ok((
+        width
+            .trim()
+            .parse()
+            .with_context(|| format!("width in {text:?}"))?,
+        height
+            .trim()
+            .parse()
+            .with_context(|| format!("height in {text:?}"))?,
+    ))
 }
 
 /// Every value `--print` accepts, for the error message when one is misspelled.
