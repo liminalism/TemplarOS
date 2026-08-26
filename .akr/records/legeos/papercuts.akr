@@ -163,6 +163,17 @@ record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercu
     created_at 2026-08-24
 }
 
+record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut {
+    title "Every reported Home Field failure — slow/lossy typing, a dead…"
+    state verified
+    statement """
+        Every reported Home Field failure — slow/lossy typing, a dead shutdown button, no logout — was present in a tree where cargo test, clippy -D warnings and all seven xtask checks passed. The workspace gates cover model and layout arithmetic and cannot see the input thread, the rung a control lands on, or an interface that was never registered. Work that adds a user-facing surface should not be recorded as done on workspace evidence alone; the hands-on check needs to gate the commit, not trail it.
+        """
+    observed_at git:e19b3524f6dacae9152e4d6b94a6d9891edee4f4
+    author "claude"
+    created_at 2026-08-26
+}
+
 record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut {
     title "Inspecting freshly built cargo-deb archives with tar paths prefixed by…"
     state verified
@@ -343,6 +354,17 @@ record legeos.papercut.the-first-targeted-build-caught-an-incorrect/1 : papercut
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-installed-legeos-set-on-the-development/1 : papercut {
+    title "The installed LegeOS set on the development machine was mixed-age: ten…"
+    state verified
+    statement """
+        The installed LegeOS set on the development machine was mixed-age: ten of thirteen packages more than a day older than lege-shell, so an Aug-25 shell was calling Session.Lifecycle1 and current lege_shell_v1 requests against an Aug-22 sessiond and an Aug-23 compositor. Every symptom is silent and reads as an application bug. scripts/reinstall-legeos-desktop.sh apparently did not rebuild everything, or was run with --skip-build; `lege doctor`'s new package-ages check now catches the state, but the script itself should be re-examined.
+        """
+    observed_at git:e19b3524f6dacae9152e4d6b94a6d9891edee4f4
+    author "claude"
+    created_at 2026-08-26
 }
 
 record legeos.papercut.the-lege-field-integration-proptest-reported/1 : papercut {

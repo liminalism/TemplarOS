@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:3f97f53f362c42c380ca1060603e4cc365a3d0a817388db9cb97e484bc5da785"
+    source_graph "sha256:f18ca35d15affb0d909cf0ffd365a23672ea9990f9cac476d12bcb93496bf131"
 }
 
 source ".akr/project.akr" {
@@ -34,13 +34,13 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:700d0b31fc95fa588f05f8e98c688902eeaf99d6b0ffb32e768a2d577f0b8f47"
-    records 3
+    hash "sha256:01141dca0f14f1137654faecfbf3ba8b8886babe98986096e2ab50feb6551f42"
+    records 4
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:23ad3ebd5511b564f1c87f535a791072ad81949c01a4808f797fcf015836a936"
-    records 41
+    hash "sha256:544bf16f4dd11d77dbdd679ce2f324076e46b0c49e70baf22604aabbfecac166"
+    records 43
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -339,6 +339,12 @@ resolution @legeos.milestone.m2-session-runs/1 {
     slot depends_on
     to @legeos.decision.compositor-on-smithay/1
     hash "sha256:d806a9012d327d5c1608740d2d8c4cb1f174241da3a3f8b4af9428ff69a82dc4"
+}
+
+resolution @legeos.observation.home-hands-on-failures-diagnosed/1 {
+    slot derived_from
+    to @legeos.work.home-widget-foundations/2
+    hash "sha256:b67d31bc6ac64df448bd7b70f16a5cfa8d7260ba96d6dba54bbd446e8e5a26e3"
 }
 
 resolution @legeos.question.home-field-default-density/1 {
@@ -1185,6 +1191,11 @@ seal @legeos.observation.hardware-home-loads-but-file-panes-empty/1 {
     hash "sha256:512d9be49107bd78da2033670f468e442fa550fbd7cfe3f3d72a6c9d1128d25a"
 }
 
+seal @legeos.observation.home-hands-on-failures-diagnosed/1 {
+    state verified
+    hash "sha256:3c10a87128c6d9559c3ffcbe1ba51b6870d8491952a15fb1f8f8b0ee81f36902"
+}
+
 seal @legeos.observation.transient-unit-launch-converged-independently/1 {
     state superseded
     hash "sha256:b3c40c8de1d8a94802d9eff2bc0c17bda9f507e1067fe7bae3d5f0948d0d5a95"
@@ -1265,6 +1276,11 @@ seal @legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 {
     hash "sha256:a7232a2f8094a09672acace5333dd31c46ae055b1728687a03c79bd56ce7464e"
 }
 
+seal @legeos.papercut.every-reported-home-field-failure-slow-lossy/1 {
+    state verified
+    hash "sha256:092a2aff00c614aaa2836aebcf8be9f05c550dffec140fde89c0e0970f596d5d"
+}
+
 seal @legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 {
     state verified
     hash "sha256:99688cfefdd56144fadfed5ef4e4a057e1d0871cbdd76dbfc30a8aedbb38a1ac"
@@ -1343,6 +1359,11 @@ seal @legeos.papercut.the-first-package-content-spot-check-assumed/1 {
 seal @legeos.papercut.the-first-targeted-build-caught-an-incorrect/1 {
     state verified
     hash "sha256:5564fa1fde98ba0095deae6b344901f7c1f4da7dd43a24300688e19ae85a9be9"
+}
+
+seal @legeos.papercut.the-installed-legeos-set-on-the-development/1 {
+    state verified
+    hash "sha256:2d8767c3cf8a4886e1c07c16b2d8f5ac04ce4ff4eb1218486f6585ec27e5de4d"
 }
 
 seal @legeos.papercut.the-lege-field-integration-proptest-reported/1 {

@@ -21,6 +21,36 @@ record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observati
     ]
 }
 
+record legeos.observation.home-hands-on-failures-diagnosed/1 : observation {
+    title "Why the Home Field failed at a real desktop: four typing defects, an inverted rung rule, an unregistered interface and a mixed-age install"
+    state verified
+    scope [
+        path "apps/lege-greeter/**",
+        path "compositor/lege-comp/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    statement """
+        A desktop tester reported that typing was slow and error-prone, that there was no logout control, and that the shutdown control was always visible and did nothing. Every cause was located and none was a regression; all were present in a workspace-green tree.
+
+        Typing, four independent defects. (1) Both winit surfaces translated a key press with `.chars().next()`, but `Key::Character` carries a `SmolStr` because a dead-key or compose commit with no precomposed form arrives as base letter plus combining mark in one event — the remainder was dropped silently (shell/lege-shell/src/surface/window.rs:125 and the identical copy in apps/lege-greeter/src/surface/window.rs, where the field is a password). (2) The compositor asked for `XkbConfig::default()` — empty rules/model/layout/variant and `options: None` — so no configured layout was honoured and no Compose key existed (compositor/lege-comp/src/state.rs:205). (3) `ensure_launcher_icons` ran on the winit event-loop thread on every redraw, and every accepted key requests a redraw: each miss read .desktop files across every XDG_DATA_DIRS entry, stat-ed a candidate per size bucket per extension per theme directory, then decoded a PNG or rasterized an SVG at 128x128, between a key press and the frame showing its character (shell/lege-shell/src/surface/app.rs:501, shell/lege-shell/src/icons.rs:241-367). (4) Full repaint and full-buffer present per keystroke with no damage tracking, which sets the latency floor the third defect then exceeds. `pixelkit_shell::Input` holds `keys` as a Vec, so no key is dropped by queueing.
+
+        Power controls. The session widget declared `session.lock` and `session.poweroff` at `Representation::Small` and `session.logout` at `Wide` (shell/lege-shell/src/surface/widgets/mod.rs:102-108), while a system tile is created at its floor span and stays there (shell/lege-shell/src/field_model.rs:227) — so on every real desktop the destructive action was the one that could not be hidden and the safe one was behind a resize the default density makes inert. Separately, `Session.Lifecycle1` was registered only if the system-bus connection had succeeded at sessiond startup, with no retry, unlike `Location1` two lines above (services/lege-sessiond/src/main.rs:388-409, 552-564): losing that race removed every power control for the whole session. Every failure path in the shell's `spawn_lifecycle` was a `tracing::error!` and nothing on screen, and `draw_region_strip` never consulted logind's Can* verdicts, so a control known to be refused was drawn identically to a working one.
+
+        Install coherence. The installed set was mixed-age: ten of thirteen LegeOS packages were more than a day older than lege-shell, so a 2026-08-25 shell was calling interfaces and protocol requests that the 2026-08-22 sessiond and 2026-08-23 compositor predate.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    method manual
+    watches [
+        "shell/lege-shell/src/surface/window.rs",
+        "shell/lege-shell/src/surface/app.rs",
+        "shell/lege-shell/src/surface/widgets/mod.rs",
+        "compositor/lege-comp/src/state.rs",
+        "services/lege-sessiond/src/main.rs"
+    ]
+    derived_from [ @legeos.work.home-widget-foundations ]
+}
+
 record legeos.observation.transient-unit-launch-converged-independently/1 : observation {
     title "Omarchy launches applications into transient systemd units too, then identifies windows by self-declared app_id anyway"
     state superseded
