@@ -44,6 +44,13 @@ cargo run -p lege-resourced -- --once
 cargo run -p lege-comp -- --check           # construct the compositor, report, exit (no display)
 cargo run -p lege-comp -- --backend winit   # nested compositor; udev is the default on a bare TTY
 tests/integration/run.sh                    # smoke: builds, then invokes the built binaries
+
+# Working on the shell without logging out of a working desktop:
+scripts/nested-session.sh start             # compositor + sessiond + filed + shell, nested
+scripts/nested-session.sh shell             # rebuild and restart just the shell (500ms hot swap)
+scripts/nested-session.sh launch <app-id>   # exercise the real launch chain
+scripts/nested-session.sh logs              # every process's output, in files
+cargo run -p lege-shell -- --render out.png # the Home Field as a PNG, no compositor needed
 just deb                                    # cargo-deb packages into target/debian/
 scripts/reinstall-legeos-desktop.sh         # build + reinstall + reload the desktop packages on this host
 ```
@@ -98,6 +105,12 @@ a Debian package.
   sibling repos change deps; refresh with `cargo +1.97.1 update --workspace --offline`.
 - **Forks are never vendored.** Add to `distro/forks/manifest.toml`, keep `upstream` and
   `legeos` branches (`just forks-fetch`).
+- **The compositor is the one thing that cannot be hot-swapped.** `lege-comp.service` is
+  `Restart=no` by design (a crash disconnects every client, so there is nothing to restart
+  into); everything above it restarts in about half a second. Compositor changes need a
+  logout, so prefer `scripts/nested-session.sh` while iterating.
+- **Two shell tests describe the no-service path** and skip when `org.legeos.Session` is
+  answering — which is what running the nested session does. A skip there is not a failure.
 - **`lege doctor` reports design mismatches on a non-LegeOS dev host** (os-release ID,
   MIME handler comparison). A non-zero exit there is not necessarily a real fault.
 - Commits: one concern each; reference the ADR when a decision changes; log friction with
