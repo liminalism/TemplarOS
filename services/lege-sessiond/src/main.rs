@@ -388,25 +388,21 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Power1")?;
-    // Lifecycle needs the system bus to reach logind. Without one the session still runs; the
-    // power controls simply report that they cannot act, which is the honest degraded state and
-    // much better than sessiond refusing to start.
-    if let Some(system) = system_connection.clone() {
-        object_server
-            .at(
-                names::LIFECYCLE_PATH,
-                apis::lifecycle::LifecycleApi::new(std::sync::Arc::new(
-                    apis::lifecycle::SystemLogind::new(system),
-                )),
-            )
-            .await
-            .context("serving Session.Lifecycle1")?;
-    } else {
-        tracing::warn!(
-            "no system bus: Session.Lifecycle1 is not served, so logout/reboot/poweroff/suspend \
-             are unavailable this session"
-        );
-    }
+    // Lifecycle needs the system bus to reach logind, and is served whether or not one was
+    // reachable at startup: `SystemLogind` retries lazily, the way `Location1` does. Making the
+    // registration conditional is what made "the shutdown button does nothing" possible — a
+    // session that lost that one race had no power controls at all and said so only in a startup
+    // warning. An interface that answers "the system bus is unreachable" can be reported to the
+    // user; an absent one cannot.
+    object_server
+        .at(
+            names::LIFECYCLE_PATH,
+            apis::lifecycle::LifecycleApi::new(std::sync::Arc::new(
+                apis::lifecycle::SystemLogind::new(system_connection.clone()),
+            )),
+        )
+        .await
+        .context("serving Session.Lifecycle1")?;
     object_server
         .at(
             names::LOCATION_PATH,

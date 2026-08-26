@@ -46,21 +46,49 @@ impl Action {
 }
 
 /// The real thing: `org.freedesktop.login1.Manager` on the system bus.
+///
+/// The connection is held as an `Option` and retried lazily, exactly as `apis::location` does,
+/// and for a reason learned the hard way. The first version took a live connection, so
+/// `Lifecycle1` was registered only `if let Some(system) = system_connection` — one attempt, made
+/// while the session was still coming up. Lose that race and the interface was never served *for
+/// the whole session*: every power control became a permanent no-op, the only trace was a startup
+/// `warn!`, and from the user's chair the shutdown button simply did nothing. An interface that
+/// exists and reports "the system bus is unreachable" is strictly better than one that is absent,
+/// because the absent one cannot explain itself.
 #[derive(Debug)]
 pub struct SystemLogind {
-    connection: zbus::Connection,
+    /// `Some` once a system-bus connection has succeeded at least once; zbus connections are
+    /// cheap to clone and reconnect on demand.
+    connection: parking_lot::Mutex<Option<zbus::Connection>>,
 }
 
 impl SystemLogind {
-    pub fn new(connection: zbus::Connection) -> SystemLogind {
-        SystemLogind { connection }
+    pub fn new(connection: Option<zbus::Connection>) -> SystemLogind {
+        SystemLogind {
+            connection: parking_lot::Mutex::new(connection),
+        }
+    }
+
+    /// The system-bus connection, connecting (or reconnecting) lazily on demand.
+    async fn connection(&self) -> Result<zbus::Connection> {
+        if let Some(connection) = self.connection.lock().clone() {
+            return Ok(connection);
+        }
+        let connection = zbus::connection::Builder::system()
+            .context("preparing a system bus connection")?
+            .build()
+            .await
+            .context("connecting to the system bus to reach logind")?;
+        *self.connection.lock() = Some(connection.clone());
+        Ok(connection)
     }
 
     async fn call<B>(&self, method: &str, body: &B) -> Result<zbus::Message>
     where
         B: serde::ser::Serialize + zbus::zvariant::DynamicType,
     {
-        self.connection
+        self.connection()
+            .await?
             .call_method(
                 Some("org.freedesktop.login1"),
                 "/org/freedesktop/login1",

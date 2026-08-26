@@ -11,13 +11,19 @@
 
 use super::{Check, Context, Finding, Outcome, Severity, exists, finding};
 use lege_types::{AppManifest, ProviderRole};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 pub fn all() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(OsRelease),
         Box::new(SessionUnitsPresent),
         Box::new(UnitBinariesPresent),
+        Box::new(PackageAgesConsistent),
         Box::new(CompositorUsable),
         Box::new(ProtectedUnitsHaveResourceControl),
         Box::new(NvidiaFlavourConsistent),
@@ -137,6 +143,203 @@ fn exec_start_binaries(unit: &str) -> Vec<String> {
         .filter(|binary| binary.starts_with('/'))
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Every package `scripts/reinstall-legeos-desktop.sh` installs, keyed by its dpkg name. This has
+/// to be an explicit set rather than "everything starting with `legeos-`" or "everything the
+/// reinstall script's package list happens to mention": `legeos-nvidia-open` and
+/// `legeos-nvidia-proprietary` also carry that prefix and are flavour packages with nothing to do
+/// with build skew, and `lege-files` breaks the naming pattern entirely.
+const LEGEOS_PACKAGES: [&str; 13] = [
+    "legeos-sessiond",
+    "legeos-resourced",
+    "legeos-filed",
+    "legeos-hostd",
+    "legeos-boot-health",
+    "legeos-session",
+    "legeos-comp",
+    "legeos-greeter",
+    "legeos-shell",
+    "legeos-settings",
+    "legeos-portal",
+    "legeos-cli",
+    "lege-files",
+];
+
+/// How far apart two LegeOS packages' build dates are allowed to be before that is a fault rather
+/// than the ordinary spread of a single build run.
+const MAX_BUILD_SKEW: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A mixed-age LegeOS install: some packages rebuilt, some left over from an earlier run of
+/// `scripts/reinstall-legeos-desktop.sh`.
+///
+/// Version numbers cannot catch this — every LegeOS package is `0.1.0-1` throughout development,
+/// so two packages agreeing on version proves nothing about whether they were built together. What
+/// does prove it is the mtime cargo-deb stamps on each package's binary at build time: packages
+/// built in the same run land within moments of each other, and packages left over from a prior
+/// run sit however many days behind. This is not a theoretical failure mode — a real install on
+/// this project's own development host had `lege-shell` four days newer than `lege`, with
+/// `lege-comp` and `lege-sessiond` in between, because a partial reinstall had only rebuilt some of
+/// the packages. The newer shell went on to call D-Bus interfaces and Wayland requests the older
+/// sessiond and compositor did not yet serve, and every failure that followed looked like an
+/// application bug rather than what it actually was: an install that never finished.
+///
+/// A source checkout has none of these packages installed at all, which is not a broken install —
+/// it is not an install — so that case is `Skipped`, not `Fail`.
+struct PackageAgesConsistent;
+impl Check for PackageAgesConsistent {
+    fn id(&self) -> &'static str {
+        "package-ages"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn run(&self, context: &Context) -> Finding {
+        let status_path = context.path("/var/lib/dpkg/status");
+        let Ok(status_text) = fs::read_to_string(&status_path) else {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no dpkg status to check",
+                status_path.display().to_string(),
+            );
+        };
+        let installed = installed_legeos_packages(&status_text);
+        if installed.is_empty() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no LegeOS packages installed — a source checkout, not an install",
+                "",
+            );
+        }
+
+        let dated: Vec<(&str, SystemTime)> = installed
+            .into_iter()
+            .filter_map(|package| {
+                let binary = primary_binary(context, package)?;
+                let modified = fs::metadata(&binary).ok()?.modified().ok()?;
+                Some((package, modified))
+            })
+            .collect();
+        // Fewer than two dated binaries means there is nothing to compare — a missing binary is
+        // `unit-binaries`' or `app-manifests`' fault to report, not this check's.
+        let Some(&(newest_package, newest)) = dated.iter().max_by_key(|(_, time)| *time) else {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no dated LegeOS package binaries to compare",
+                "",
+            );
+        };
+
+        let mut lagging: Vec<(&str, SystemTime)> = dated
+            .iter()
+            .copied()
+            .filter(|(package, time)| {
+                *package != newest_package
+                    && newest
+                        .duration_since(*time)
+                        .is_ok_and(|behind| behind > MAX_BUILD_SKEW)
+            })
+            .collect();
+        if lagging.is_empty() {
+            return finding(
+                self,
+                Outcome::Pass,
+                format!(
+                    "{} LegeOS package(s) installed, all built within a day of each other",
+                    dated.len()
+                ),
+                "",
+            );
+        }
+        lagging.sort_by_key(|(_, time)| *time);
+        let detail = format!(
+            "{} — newest is {newest_package} ({}); re-run scripts/reinstall-legeos-desktop.sh to \
+             rebuild the rest",
+            lagging
+                .iter()
+                .map(|(package, time)| format!("{package} ({})", format_date(*time)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_date(newest),
+        );
+        finding(
+            self,
+            Outcome::Fail,
+            format!(
+                "mixed-age LegeOS install: {} of {} package(s) are more than a day older than the \
+                 newest",
+                lagging.len(),
+                dated.len()
+            ),
+            detail,
+        )
+    }
+}
+
+/// Every package in [`LEGEOS_PACKAGES`] that `status_text` (a dpkg `status` file) marks as
+/// installed.
+fn installed_legeos_packages(status_text: &str) -> Vec<&'static str> {
+    status_text
+        .split("\n\n")
+        .filter_map(|stanza| {
+            let name = stanza
+                .lines()
+                .find_map(|line| line.strip_prefix("Package: "))?;
+            let installed = stanza
+                .lines()
+                .any(|line| line.starts_with("Status:") && line.contains("installed"));
+            if !installed {
+                return None;
+            }
+            LEGEOS_PACKAGES.iter().copied().find(|known| *known == name)
+        })
+        .collect()
+}
+
+/// The one binary `package`'s dpkg file list names under `/usr/bin` or `/usr/libexec` — read from
+/// `<root>/var/lib/dpkg/info/<package>.list` rather than a hardcoded table, so a binary that moves
+/// or is renamed is picked up without anyone remembering to update this file. `legeos-filed` lists
+/// two (`lege-filed` and the `lege-preview-codecs` helper); a dpkg file list is always sorted, so
+/// the package's own namesake binary sorts first and is what cargo-deb actually stamped as the
+/// build artefact.
+fn primary_binary(context: &Context, package: &str) -> Option<PathBuf> {
+    let list_path = context.path(&format!("/var/lib/dpkg/info/{package}.list"));
+    let text = fs::read_to_string(list_path).ok()?;
+    let entry = text
+        .lines()
+        .find(|line| line.starts_with("/usr/bin/") || line.starts_with("/usr/libexec/"))?;
+    Some(context.path(entry))
+}
+
+/// `YYYY-MM-DD` for a `SystemTime`, day granularity being all a 24-hour skew threshold can
+/// meaningfully report. Computed with Howard Hinnant's public-domain `civil_from_days` rather than
+/// pulling in a date-and-time crate: nothing else in this workspace needs one, and a doctor check
+/// printing a build date is not reason enough to add one.
+fn format_date(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let (year, month, day) = civil_from_days(secs.div_euclid(86400));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Days since the Unix epoch to a proleptic-Gregorian (year, month, day). See
+/// <https://howardhinnant.github.io/date_algorithms.html#civil_from_days>.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    (year, month, day)
 }
 
 /// The compositor can actually start: its binary, its private protocol definitions, and XWayland.
@@ -1022,6 +1225,111 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// Register `package` as installed under `root`: a dpkg status stanza, a file list naming
+    /// `binary` (an absolute path, e.g. `/usr/bin/lege-comp`), and the binary itself stamped with
+    /// `unix_secs` as its mtime — the thing cargo-deb actually stamps at build time and the thing
+    /// [`PackageAgesConsistent`] reads.
+    fn install_package(root: &Path, package: &str, binary: &str, unix_secs: u64) {
+        use std::fmt::Write as _;
+        let status_path = root.join("var/lib/dpkg/status");
+        fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+        let mut status = fs::read_to_string(&status_path).unwrap_or_default();
+        write!(
+            status,
+            "Package: {package}\nStatus: install ok installed\nVersion: 0.1.0-1\n\n"
+        )
+        .unwrap();
+        fs::write(&status_path, status).unwrap();
+
+        let list_path = root
+            .join("var/lib/dpkg/info")
+            .join(format!("{package}.list"));
+        fs::create_dir_all(list_path.parent().unwrap()).unwrap();
+        fs::write(&list_path, format!("{binary}\n")).unwrap();
+
+        let binary_path = root.join(binary.trim_start_matches('/'));
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, "").unwrap();
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&binary_path)
+            .unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(unix_secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn package_ages_consistent_skips_a_source_checkout_with_no_legeos_packages() {
+        let root = fixture_root("package-ages-none");
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        assert_eq!(
+            PackageAgesConsistent.run(&context).outcome,
+            Outcome::Skipped
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_ages_consistent_passes_a_set_built_together() {
+        let root = fixture_root("package-ages-agreeing");
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let base = 1_787_616_000; // 2026-08-25T00:00:00Z
+        install_package(&root, "legeos-comp", "/usr/bin/lege-comp", base);
+        install_package(&root, "legeos-cli", "/usr/bin/lege", base + 60);
+        install_package(
+            &root,
+            "legeos-sessiond",
+            "/usr/libexec/lege-sessiond",
+            base + 120,
+        );
+        assert_eq!(PackageAgesConsistent.run(&context).outcome, Outcome::Pass);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_ages_consistent_fails_and_names_a_package_built_three_days_earlier() {
+        let root = fixture_root("package-ages-skewed");
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let newest = 1_787_616_000; // 2026-08-25T00:00:00Z
+        let three_days_earlier = newest - 3 * 24 * 60 * 60; // 2026-08-22T00:00:00Z
+        install_package(&root, "legeos-shell", "/usr/bin/lege-shell", newest);
+        install_package(&root, "legeos-cli", "/usr/bin/lege", three_days_earlier);
+        let finding = PackageAgesConsistent.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail);
+        assert!(finding.detail.contains("legeos-cli (2026-08-22)"));
+        assert!(
+            finding
+                .detail
+                .contains("newest is legeos-shell (2026-08-25)")
+        );
+        assert!(finding.detail.contains("reinstall-legeos-desktop.sh"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn format_date_matches_known_calendar_dates() {
+        let cases: [(u64, &str); 3] = [
+            (0, "1970-01-01"),
+            (951_782_400, "2000-02-29"),
+            (1_787_616_000, "2026-08-25"),
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(
+                format_date(UNIX_EPOCH + Duration::from_secs(secs)),
+                expected
+            );
+        }
     }
 
     fn manifest(id: &str, executable: &str) -> String {
