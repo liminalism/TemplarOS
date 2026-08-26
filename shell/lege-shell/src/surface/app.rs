@@ -21,6 +21,7 @@ use lege_client::proxies::{
 };
 use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
+use lege_types::action;
 use lege_window::RevealHome;
 
 use crate::drawers::standard_paths::{self, StandardDrawer};
@@ -34,7 +35,7 @@ use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::file_browser::FileBrowserData;
 use crate::surface::fonts;
 use crate::surface::window::{
-    HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_key,
+    HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
 };
 use crate::wayland_bridge::ShellBridge;
 
@@ -56,6 +57,12 @@ enum DataUpdate {
     /// One widget's refreshed content. Content only: by the field's own rule this moves nothing.
     Widget(String, crate::surface::widgets::WidgetSnapshot),
     HomeFieldSettings(HomeFieldSettings),
+    /// Something the user asked for did not happen, in words meant for them. Shown in the field's
+    /// notice strip, the same place a successful operation reports itself.
+    Notice(String),
+    /// One application's icon, resolved and decoded off-thread. `None` when nothing was found —
+    /// the attempt is already recorded, so the receiver simply has nothing to file.
+    Icon(String, Option<pixelkit_raster::Bitmap>),
     /// A drawer directory's treemap and composition, rasterized off-thread.
     Treemap {
         drawer: Drawer,
@@ -95,7 +102,7 @@ const OUTPUT: &str = "primary";
 /// plus what a scroll would reveal, and nowhere near the whole inventory.
 const LAUNCHER_ICON_LOOKAHEAD: usize = 24;
 
-/// How many *new* icons one frame may resolve. See `ShellApp::ensure_launcher_icons`.
+/// How many *new* icon resolutions one frame may start. See `ShellApp::ensure_launcher_icons`.
 const ICON_BUDGET_PER_FRAME: usize = 6;
 
 /// Run the graphical Home Surface. Blocks until the user closes it.
@@ -361,6 +368,15 @@ impl ShellApp {
                     self.treemaps.insert(drawer, bitmap);
                     self.compositions.insert(drawer, composition);
                 }
+                DataUpdate::Notice(text) => {
+                    let now_ms = self.started.elapsed().as_millis() as u64;
+                    self.field_screen.report(text, now_ms);
+                }
+                DataUpdate::Icon(key, bitmap) => {
+                    if let Some(bitmap) = bitmap {
+                        self.icons.insert(key, bitmap);
+                    }
+                }
                 DataUpdate::TreemapsStale => self.treemaps.clear(),
                 DataUpdate::Field(doc) => {
                     self.field = doc;
@@ -424,6 +440,17 @@ impl ShellApp {
     /// Resolve one application's icon, once. `hints` is what the registry said about it (the
     /// `Icon=` value and the real `.desktop` file id); without them the lookup can only guess the
     /// file name back out of the canonical id, which for an imported application usually fails.
+    /// Ask for one application's icon, off the event loop.
+    ///
+    /// Resolving an icon is not cheap and it is not bounded: it reads `.desktop` files across
+    /// every `XDG_DATA_DIRS` entry, stats a candidate path per size bucket per extension per theme
+    /// directory, and then decodes a PNG or rasterizes an SVG (`crate::icons`). Doing that on this
+    /// thread means doing it *between a key press and the frame that shows the character*, because
+    /// every accepted key asks for a redraw and every redraw calls through here — which is exactly
+    /// how typing in the search bar came to feel slow, since each new character brings new rows,
+    /// and new rows are new icons. So this only records that the attempt was made and hands the
+    /// work to a blocking thread, the same shape `spawn_treemap` already uses; the bitmap arrives
+    /// as a `DataUpdate` and a `Wake` asks for the frame that draws it.
     fn ensure_icon(&mut self, key: &str) {
         if key.is_empty() || self.icons.contains_key(key) || self.icon_attempted.contains(key) {
             return;
@@ -435,15 +462,23 @@ impl ShellApp {
             .filter(|id| !id.is_empty())
             .into_iter()
             .collect();
-        let hints = icons::IconHints {
-            icon: entry
-                .map(|entry| entry.icon.as_str())
-                .filter(|icon| !icon.is_empty()),
-            desktop_file_ids: &desktop_file_ids,
-        };
-        if let Some(bitmap) = icons::load_app_icon_hinted(key, hints, &SystemIconRoots) {
-            self.icons.insert(key.to_owned(), bitmap);
-        }
+        let icon = entry
+            .map(|entry| entry.icon.clone())
+            .filter(|icon| !icon.is_empty());
+        let key = key.to_owned();
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn_blocking(move || {
+            let hints = icons::IconHints {
+                icon: icon.as_deref(),
+                desktop_file_ids: &desktop_file_ids,
+            };
+            let bitmap = icons::load_app_icon_hinted(&key, hints, &SystemIconRoots);
+            // A miss is sent too: `icon_attempted` already recorded it, so the receiver has
+            // nothing to do, but sending unconditionally keeps the two sides symmetric.
+            let _ = tx.send(DataUpdate::Icon(key, bitmap));
+            let _ = proxy.send_event(Wake);
+        });
     }
 
     /// Bring the field document up to date with the window's size and the live state before a
@@ -491,13 +526,14 @@ impl ShellApp {
         self.ensure_launcher_icons();
     }
 
-    /// Resolve icons for the launcher's currently visible rows, a few per frame.
+    /// Ask for icons for the launcher's currently visible rows, a few per frame.
     ///
-    /// The list is every installed application — hundreds of rows on a stock system — and each
-    /// miss is a directory walk plus, for an SVG, a rasterization. Doing them all at once would
-    /// stall the frame that first shows the widget, so this takes a small bite each time and asks
-    /// for another frame while there is more to do: the list fills in over a second or two
-    /// instead of arriving late all at once.
+    /// The list is every installed application — hundreds of rows on a stock system. The work
+    /// itself no longer happens here (`ensure_icon` hands it to a blocking thread), so the budget
+    /// is no longer protecting the frame from a stall; it now bounds how many resolutions are
+    /// *started* at once, so a query that suddenly matches everything does not put three hundred
+    /// jobs on the pool for rows nobody will look at. Each arrival wakes the loop, so the list
+    /// still fills in over a second or two without this asking for a frame itself.
     fn ensure_launcher_icons(&mut self) {
         let query = self.field_screen.search.text().to_owned();
         let wanted: Vec<String> = crate::app_search::search(&self.apps, &query)
@@ -512,9 +548,6 @@ impl ShellApp {
         }
         for key in wanted {
             self.ensure_icon(&key);
-        }
-        if let Some(home) = &self.home {
-            home.request_redraw();
         }
     }
 
@@ -886,21 +919,40 @@ impl ShellApp {
         }
     }
 
-    /// Call one `Lifecycle1` method off the event loop, reporting a refusal rather than letting
-    /// it vanish — "shut down did nothing and said nothing" is the worst outcome here.
+    /// Call one `Lifecycle1` method off the event loop, reporting a refusal **on screen** rather
+    /// than letting it vanish.
+    ///
+    /// This function's first version said in its own comment that "shut down did nothing and said
+    /// nothing" was the worst outcome here, and then did exactly that: every failure path was a
+    /// `tracing::error!` and nothing else, so a session daemon that never registered `Lifecycle1`,
+    /// a logind that refused, and a click that missed were indistinguishable from the user's
+    /// chair. Each one now names itself in the field's notice strip. The wording says what did not
+    /// happen and who did not answer, because "failed" alone tells a person nothing they can act
+    /// on.
     fn spawn_lifecycle(&self, id: &'static str) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        let label = action::action(id).map_or(id, |declared| declared.label);
         self.runtime.spawn(async move {
+            let report = |text: String| {
+                tracing::error!(action = %id, "{text}");
+                let _ = tx.send(DataUpdate::Notice(text));
+                let _ = proxy_wake.send_event(Wake);
+            };
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
                 Err(message) => {
-                    tracing::error!(%message, action = %id, "no session bus");
+                    report(format!("{label} unavailable — no session bus ({message})"));
                     return;
                 }
             };
             let proxy = match LifecycleProxy::new(&connection).await {
                 Ok(proxy) => proxy,
                 Err(error) => {
-                    tracing::error!(%error, action = %id, "Lifecycle1 unavailable");
+                    report(format!(
+                        "{label} unavailable — the session service is not offering Lifecycle1 \
+                         ({error})"
+                    ));
                     return;
                 }
             };
@@ -916,7 +968,7 @@ impl ShellApp {
                 }
             };
             if let Err(error) = result {
-                tracing::error!(%error, action = %id, "Lifecycle1 refused");
+                report(format!("{label} refused — {error}"));
             }
         });
     }
@@ -1287,8 +1339,11 @@ impl ApplicationHandler<Wake> for ShellApp {
                 if !key_pressed(event.state) {
                     return;
                 }
-                if let Some(key) = translate_key(&event.logical_key, event.text.as_deref()) {
-                    hosted.input.key(key);
+                let keys = translate_keys(&event.logical_key, event.text.as_deref());
+                if !keys.is_empty() {
+                    for key in keys {
+                        hosted.input.key(key);
+                    }
                     hosted.request_redraw();
                 }
             }

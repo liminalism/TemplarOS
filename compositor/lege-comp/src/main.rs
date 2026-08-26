@@ -9,6 +9,7 @@ mod foreign_toplevel;
 mod handlers;
 mod input;
 mod keybindings;
+mod keymap;
 mod protocols;
 mod protocols_recovery;
 mod protocols_shell;

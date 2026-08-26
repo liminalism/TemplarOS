@@ -24,7 +24,7 @@
 //!
 //! One real, small gap this leaves: `Shell`'s winit-key-to-`KeyInput` translation (`translate`),
 //! its mouse-button mapping and its wheel-delta normalisation are private module functions, not
-//! part of the public surface the README advertises — so [`translate_key`]/[`translate_button`]/
+//! part of the public surface the README advertises — so [`translate_keys`]/[`translate_button`]/
 //! [`scroll_pixels`] below are copies, not reuse. They are small and mechanical (no logic beyond a
 //! `match`), but a genuine gap worth reporting: nothing about needing raw window-handle access
 //! explains why *this* part had to be duplicated too.
@@ -101,7 +101,32 @@ impl HostedWindow {
 
 /// Winit's logical key to this crate's input vocabulary. A copy of
 /// `pixelkit_shell::shell`'s private `translate` — see the module doc.
-pub fn translate_key(logical: &Key, text: Option<&str>) -> Option<KeyInput> {
+///
+/// **A key press can be more than one character.** `Key::Character` carries a `SmolStr`, not a
+/// `char`, because one press can commit several scalars at once: a dead key or a compose sequence
+/// whose result has no precomposed form arrives as a base letter followed by a combining mark, in
+/// a single event. Keeping only the first of those silently drops the accent and leaves the field
+/// with no way to know anything went missing — so this returns every scalar the press produced,
+/// and the caller queues one [`KeyInput`] per scalar. `Input` holds `keys` as a `Vec` and a text
+/// field consumes all of them in the frame that follows, so several in one press cost nothing.
+pub fn translate_keys(logical: &Key, text: Option<&str>) -> Vec<KeyInput> {
+    if let Some(named) = translate_named(logical) {
+        return vec![named];
+    }
+    let characters = match logical {
+        Key::Character(characters) => Some(characters.as_str()),
+        _ => text,
+    };
+    characters
+        .unwrap_or_default()
+        .chars()
+        .map(KeyInput::Character)
+        .collect()
+}
+
+/// The named keys, which are always exactly one [`KeyInput`]. Split out so [`translate_keys`] can
+/// answer "was this a named key at all?" without duplicating the table.
+fn translate_named(logical: &Key) -> Option<KeyInput> {
     match logical {
         Key::Named(NamedKey::Enter) => Some(KeyInput::Enter),
         Key::Named(NamedKey::Escape) => Some(KeyInput::Escape),
@@ -122,10 +147,7 @@ pub fn translate_key(logical: &Key, text: Option<&str>) -> Option<KeyInput> {
         Key::Named(NamedKey::F4) => Some(KeyInput::Function(4)),
         Key::Named(NamedKey::F5) => Some(KeyInput::Function(5)),
         Key::Named(NamedKey::F12) => Some(KeyInput::Function(12)),
-        Key::Character(characters) => characters.chars().next().map(KeyInput::Character),
-        _ => text
-            .and_then(|text| text.chars().next())
-            .map(KeyInput::Character),
+        _ => None,
     }
 }
 
@@ -168,17 +190,47 @@ mod tests {
     #[test]
     fn escape_translates_rather_than_being_swallowed() {
         assert_eq!(
-            translate_key(&Key::Named(NamedKey::Escape), None),
-            Some(KeyInput::Escape)
+            translate_keys(&Key::Named(NamedKey::Escape), None),
+            vec![KeyInput::Escape]
         );
     }
 
     #[test]
     fn a_character_key_translates() {
         assert_eq!(
-            translate_key(&Key::Character(SmolStr::new("q")), Some("q")),
-            Some(KeyInput::Character('q'))
+            translate_keys(&Key::Character(SmolStr::new("q")), Some("q")),
+            vec![KeyInput::Character('q')]
         );
+    }
+
+    /// A dead-key or compose commit with no precomposed form arrives as several scalars in one
+    /// press. Every one of them must reach the field: keeping only the first is how an accent
+    /// disappears without anything reporting that it did.
+    #[test]
+    fn a_multi_scalar_press_keeps_every_scalar() {
+        assert_eq!(
+            translate_keys(
+                &Key::Character(SmolStr::new("e\u{0301}")),
+                Some("e\u{0301}")
+            ),
+            vec![KeyInput::Character('e'), KeyInput::Character('\u{0301}')]
+        );
+    }
+
+    /// Some layouts report no logical key but do report committed text; that route must carry
+    /// every scalar too, not just the first.
+    #[test]
+    fn text_without_a_character_key_keeps_every_scalar() {
+        assert_eq!(
+            translate_keys(&Key::Named(NamedKey::Alt), Some("a\u{0308}")),
+            vec![KeyInput::Character('a'), KeyInput::Character('\u{0308}')]
+        );
+    }
+
+    /// A modifier press on its own commits nothing — it must not produce a phantom character.
+    #[test]
+    fn a_press_that_commits_nothing_produces_nothing() {
+        assert!(translate_keys(&Key::Named(NamedKey::Shift), None).is_empty());
     }
 
     #[test]

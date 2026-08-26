@@ -89,7 +89,29 @@ impl HostedWindow {
 /// `shell/lege-shell/src/surface/window.rs`'s identical function (itself a copy of
 /// `pixelkit_shell::shell`'s private `translate`; see that file's doc for why it cannot be reused
 /// instead of copied).
-pub fn translate_key(logical: &Key, text: Option<&str>) -> Option<KeyInput> {
+///
+/// **A key press can be more than one character**, and here that matters more than anywhere else:
+/// this is where a password is typed, and a password with an accent in it that silently loses the
+/// accent is an unexplainable failed login. `Key::Character` carries a `SmolStr` because a dead
+/// key or compose sequence with no precomposed form commits a base letter and a combining mark in
+/// one event; every scalar is returned and the caller queues one [`KeyInput`] for each.
+pub fn translate_keys(logical: &Key, text: Option<&str>) -> Vec<KeyInput> {
+    if let Some(named) = translate_named(logical) {
+        return vec![named];
+    }
+    let characters = match logical {
+        Key::Character(characters) => Some(characters.as_str()),
+        _ => text,
+    };
+    characters
+        .unwrap_or_default()
+        .chars()
+        .map(KeyInput::Character)
+        .collect()
+}
+
+/// The named keys, which are always exactly one [`KeyInput`].
+fn translate_named(logical: &Key) -> Option<KeyInput> {
     match logical {
         Key::Named(NamedKey::Enter) => Some(KeyInput::Enter),
         Key::Named(NamedKey::Escape) => Some(KeyInput::Escape),
@@ -110,10 +132,7 @@ pub fn translate_key(logical: &Key, text: Option<&str>) -> Option<KeyInput> {
         Key::Named(NamedKey::F4) => Some(KeyInput::Function(4)),
         Key::Named(NamedKey::F5) => Some(KeyInput::Function(5)),
         Key::Named(NamedKey::F12) => Some(KeyInput::Function(12)),
-        Key::Character(characters) => characters.chars().next().map(KeyInput::Character),
-        _ => text
-            .and_then(|text| text.chars().next())
-            .map(KeyInput::Character),
+        _ => None,
     }
 }
 
@@ -156,25 +175,43 @@ mod tests {
     #[test]
     fn tab_translates_for_focus_cycling() {
         assert_eq!(
-            translate_key(&Key::Named(NamedKey::Tab), None),
-            Some(KeyInput::Tab)
+            translate_keys(&Key::Named(NamedKey::Tab), None),
+            vec![KeyInput::Tab]
         );
     }
 
     #[test]
     fn escape_translates_rather_than_being_swallowed() {
         assert_eq!(
-            translate_key(&Key::Named(NamedKey::Escape), None),
-            Some(KeyInput::Escape)
+            translate_keys(&Key::Named(NamedKey::Escape), None),
+            vec![KeyInput::Escape]
         );
     }
 
     #[test]
     fn a_character_key_translates() {
         assert_eq!(
-            translate_key(&Key::Character(SmolStr::new("q")), Some("q")),
-            Some(KeyInput::Character('q'))
+            translate_keys(&Key::Character(SmolStr::new("q")), Some("q")),
+            vec![KeyInput::Character('q')]
         );
+    }
+
+    /// A password may contain an accented character that the layout commits as two scalars.
+    /// Dropping the second is a login that fails for no visible reason.
+    #[test]
+    fn a_multi_scalar_press_keeps_every_scalar() {
+        assert_eq!(
+            translate_keys(
+                &Key::Character(SmolStr::new("e\u{0301}")),
+                Some("e\u{0301}")
+            ),
+            vec![KeyInput::Character('e'), KeyInput::Character('\u{0301}')]
+        );
+    }
+
+    #[test]
+    fn a_press_that_commits_nothing_produces_nothing() {
+        assert!(translate_keys(&Key::Named(NamedKey::Shift), None).is_empty());
     }
 
     #[test]

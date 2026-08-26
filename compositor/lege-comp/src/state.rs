@@ -202,7 +202,18 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
         let mut seat_state: SeatState<Self> = SeatState::new();
         let mut seat = seat_state.new_wl_seat(dh, seat_name);
-        seat.add_keyboard(smithay::input::keyboard::XkbConfig::default(), 200, 25)
+        // Not `XkbConfig::default()`: that is a bare US layout with no Compose key for anyone who
+        // has not set `XKB_DEFAULT_*` by hand, and getting the wrong characters out of a text
+        // field looks like a broken field, not a missing setting. See `crate::keymap`.
+        let keymap = crate::keymap::XkbSource::resolve();
+        tracing::info!(
+            origin = keymap.origin,
+            layout = %keymap.layout,
+            variant = %keymap.variant,
+            options = keymap.options.as_deref().unwrap_or("(default)"),
+            "keyboard layout"
+        );
+        seat.add_keyboard(keymap.config(), 200, 25)
             .map_err(|error| anyhow::anyhow!("adding keyboard to seat: {error}"))?;
         seat.add_pointer();
 

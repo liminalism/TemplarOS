@@ -45,6 +45,14 @@ pub struct WidgetSnapshot {
     /// rather than showing a plausible zero — the same honesty the Network drawer already
     /// practises (`crate::drawers::network`).
     pub available: bool,
+    /// Action ids the service has said it cannot perform right now — logind refusing a shutdown
+    /// by policy, say. Their regions are drawn dimmed and do not take a click.
+    ///
+    /// The service already knew this and the widget already displayed it *in prose*, in a detail
+    /// line no smaller rung even shows. A button that is known to be refused and is nevertheless
+    /// drawn exactly like a working one is a promise the shell cannot keep, so the knowledge has
+    /// to reach the region and not just the paragraph beside it.
+    pub refused: Vec<String>,
 }
 
 impl WidgetSnapshot {
@@ -54,7 +62,13 @@ impl WidgetSnapshot {
             headline: reason.into(),
             detail: Vec::new(),
             available: false,
+            refused: Vec::new(),
         }
+    }
+
+    /// Whether `action` is one the service has said it cannot perform.
+    pub fn refuses(&self, action: &str) -> bool {
+        self.refused.iter().any(|refused| refused == action)
     }
 }
 
@@ -99,12 +113,20 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
     WidgetDescriptor {
         id: "session",
         title: "Session",
+        // Which two survive to the floor is the whole design of this tile, and the first attempt
+        // had it backwards: Lock and *Shut down*. A session tile is created at its floor and stays
+        // there until someone resizes it, so on every real desktop that meant the destructive
+        // action was the one that could never be hidden, while Log out — the thing a person
+        // actually reaches for several times a day — was behind a resize that the default field
+        // density makes inert (`@legeos.question.home-field-default-density`). Lock and Log out
+        // are the two that survive; ending the machine is a rung further in, and confirmed
+        // (`ActionDecl::confirm`) on top of that.
         regions: &[
             WidgetRegion::new("session.lock", Representation::Small),
+            WidgetRegion::new("session.logout", Representation::Small),
             WidgetRegion::new("session.suspend", Representation::Wide),
-            WidgetRegion::new("session.logout", Representation::Wide),
             WidgetRegion::new("session.reboot", Representation::Large),
-            WidgetRegion::new("session.poweroff", Representation::Small),
+            WidgetRegion::new("session.poweroff", Representation::Large),
         ],
     },
     WidgetDescriptor {
@@ -142,11 +164,14 @@ pub fn regions_at(
 ///
 /// A fixed proportion rather than a fixed height, so the controls stay in the same relative
 /// place as a tile grows — the spatial-memory rule applied inside one tile.
+/// The region strip's height in logical pixels, before it is clamped to half the content.
+const REGION_STRIP_HEIGHT: i32 = 30;
+
 fn split_regions(content: Rect, ui: &Ui<'_>, count: usize) -> (Rect, Option<Rect>) {
     if count == 0 {
         return (content, None);
     }
-    let strip = ui.px(30).min(content.h / 2).max(0);
+    let strip = ui.px(REGION_STRIP_HEIGHT).min(content.h / 2).max(0);
     if strip <= 0 {
         return (content, None);
     }
@@ -184,7 +209,10 @@ pub fn draw(
     rung: Representation,
     confirming: Option<&'static str>,
 ) -> Option<&'static ActionDecl> {
-    let (body, chosen) = draw_region_strip(ui, content, widget, rung, confirming);
+    // No snapshot yet means nothing is *known* to be refused — the controls stay live rather than
+    // greying out while the first fetch is still in flight.
+    let refused = snapshot.map_or(&[][..], |snapshot| &snapshot.refused);
+    let (body, chosen) = draw_region_strip(ui, content, widget, rung, confirming, refused);
     draw_snapshot(ui, body, snapshot, rung);
     chosen
 }
@@ -201,6 +229,8 @@ pub fn draw_region_strip(
     widget: &'static WidgetDescriptor,
     rung: Representation,
     confirming: Option<&'static str>,
+    // Action ids the backing service has said it cannot perform (`WidgetSnapshot::refused`).
+    refused: &[String],
 ) -> (Rect, Option<&'static ActionDecl>) {
     let offered = regions_at(widget, rung);
     let (body, strip) = split_regions(content, ui, offered.len());
@@ -218,17 +248,24 @@ pub fn draw_region_strip(
         }
         let armed = confirming == Some(declaration.id);
         let hovered = ui.input.hovering(rect);
-        let (fill, ink) = match (armed, declaration.confirm) {
-            (true, _) => (design::DANGER, 0x00ff_ffff),
-            (false, true) if hovered => (design::DANGER_SOFT, design::DANGER),
-            (false, _) if hovered => (design::ACCENT_SOFT, design::ACCENT),
-            (false, true) => (design::SHELL_LOW, design::DANGER),
-            (false, false) => (design::SHELL_LOW, design::TEXT),
+        // A refused region still appears — removing it would leave a person wondering where the
+        // control went — but it is visibly inert and does not respond to hover or to a click.
+        let refused = refused.iter().any(|id| id == declaration.id);
+        let (fill, ink) = match (refused, armed, declaration.confirm) {
+            (true, _, _) => (design::SHELL_LOW, design::TEXT_DIM),
+            (false, true, _) => (design::DANGER, 0x00ff_ffff),
+            (false, false, true) if hovered => (design::DANGER_SOFT, design::DANGER),
+            (false, false, _) if hovered => (design::ACCENT_SOFT, design::ACCENT),
+            (false, false, true) => (design::SHELL_LOW, design::DANGER),
+            (false, false, false) => (design::SHELL_LOW, design::TEXT),
         };
         ui.painter
             .fill_rounded_rect(rect, ui.px(design::CHIP_RADIUS), fill);
         let label = if armed { "CONFIRM" } else { declaration.label };
         ui.label_styled(rect, label, design::state_style(ui), ink, Align::Centre);
+        if refused {
+            continue;
+        }
         if ui.input.take_click(rect) {
             chosen = Some(declaration);
         }
@@ -319,13 +356,29 @@ mod tests {
             session.regions.len(),
             "the largest rung offers everything"
         );
-        // Whatever else is dropped, the two a person reaches for must survive to the floor.
+        // Whatever else is dropped, the two a person reaches for must survive to the floor —
+        // and they are the safe two.
         let names: Vec<&str> = regions_at(session, Representation::Small)
             .iter()
             .map(|region| region.action)
             .collect();
         assert!(names.contains(&"session.lock"));
-        assert!(names.contains(&"session.poweroff"));
+        assert!(names.contains(&"session.logout"));
+    }
+
+    /// The floor is what every session tile shows until someone resizes it, so nothing that ends
+    /// the machine may appear there. Getting this backwards is what put a working Shut down button
+    /// on every desktop with no Log out beside it.
+    #[test]
+    fn nothing_that_ends_the_machine_is_reachable_at_the_floor() {
+        let session = descriptor("session").expect("the session widget exists");
+        for region in regions_at(session, Representation::Small) {
+            assert!(
+                !matches!(region.action, "session.poweroff" | "session.reboot"),
+                "{} must not be offered at the floor rung",
+                region.action
+            );
+        }
     }
 
     #[test]
@@ -350,5 +403,80 @@ mod tests {
         let snapshot = WidgetSnapshot::unavailable("Session — no service");
         assert!(!snapshot.available);
         assert!(snapshot.headline.contains("no service"));
+    }
+
+    /// logind saying "no" reaches the button, not only the paragraph beside it: a region the
+    /// service has refused is drawn inert and a click on it is not taken. Drawing it dimmed while
+    /// still firing would be the worst of both — it would look broken *and* act.
+    #[test]
+    fn a_refused_region_does_not_take_a_click() {
+        let session = descriptor("session").expect("the session widget exists");
+        let content = Rect::new(0, 0, 400, 300);
+        let refused = vec!["session.poweroff".to_owned()];
+
+        // At `Scale::ONE` a logical pixel is a device pixel, so the strip's geometry is what
+        // `split_regions`/`region_rect` compute from `content` alone — no Ui needed to find where
+        // to click, only to draw.
+        let offered = regions_at(session, Representation::Large);
+        let region_centre = |target: &str| {
+            let index = offered
+                .iter()
+                .position(|region| region.action == target)
+                .expect("the target region is offered at this rung");
+            // `split_regions`' own arithmetic at `Scale::ONE`, where a logical pixel is a
+            // device pixel and the strip is not clamped by this content's height.
+            let strip = Rect::new(
+                content.x,
+                content.bottom() - REGION_STRIP_HEIGHT,
+                content.w,
+                REGION_STRIP_HEIGHT,
+            );
+            let rect = region_rect(strip, index, offered.len());
+            (rect.x + rect.w / 2, rect.y + rect.h / 2)
+        };
+
+        let chosen = |refused: &[String], target: &str| {
+            let (x, y) = region_centre(target);
+            let mut buffer = pixelkit_raster::WindowBuffer::new(400, 300);
+            let mut text = pixelkit_text::TextCache::new(crate::surface::fonts::set());
+            let mut kernel = pixelkit_raster::RasterKernel::new();
+            let mut input = pixelkit_shell::Input::new();
+            input.cursor_moved(x as f32, y as f32);
+            input.mouse(pixelkit_shell::MouseButton::Left, true);
+            let mut ui = Ui::new(
+                pixelkit_raster::Painter::new(&mut buffer),
+                &mut text,
+                &mut input,
+                design::theme(),
+                pixelkit_shell::Scale::ONE,
+                &mut kernel,
+            );
+            draw_region_strip(
+                &mut ui,
+                content,
+                session,
+                Representation::Large,
+                None,
+                refused,
+            )
+            .1
+            .map(|declaration| declaration.id)
+        };
+
+        assert_eq!(
+            chosen(&[], "session.poweroff"),
+            Some("session.poweroff"),
+            "an unrefused region still fires"
+        );
+        assert_eq!(
+            chosen(&refused, "session.poweroff"),
+            None,
+            "a refused region must not fire"
+        );
+        assert_eq!(
+            chosen(&refused, "session.logout"),
+            Some("session.logout"),
+            "refusing one region leaves its neighbours working"
+        );
     }
 }

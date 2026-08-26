@@ -26,7 +26,7 @@ use crate::screen::{GreeterAction, GreeterData, GreeterScreen};
 use crate::sessions::{SessionEntry, SessionKind};
 use crate::surface::fonts;
 use crate::surface::window::{
-    HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_key,
+    HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
 };
 
 /// Run the greeter surface: connect to greetd, discover the available sessions, open the
@@ -257,8 +257,11 @@ impl ApplicationHandler for GreeterApp {
                 if !key_pressed(event.state) {
                     return;
                 }
-                if let Some(key) = translate_key(&event.logical_key, event.text.as_deref()) {
-                    window.input.key(key);
+                let keys = translate_keys(&event.logical_key, event.text.as_deref());
+                if !keys.is_empty() {
+                    for key in keys {
+                        window.input.key(key);
+                    }
                     window.request_redraw();
                 }
             }

@@ -208,6 +208,9 @@ impl Default for FieldScreen {
 
 const CRUMB_HEIGHT: i32 = 30;
 const NOTICE_LIFETIME_MS: u64 = 4_000;
+/// A failure stays up longer than a confirmation: it is the only account of what happened, and a
+/// person who looks up a moment late has missed it for good.
+const FAILURE_NOTICE_LIFETIME_MS: u64 = 8_000;
 /// Logical-pixel side of the resize grip's square.
 const GRIP_SIZE: i32 = 18;
 
@@ -223,6 +226,20 @@ impl FieldScreen {
         self.notice = Some(Notice {
             text: operation.label().to_owned(),
             expires_at_ms: now_ms.saturating_add(NOTICE_LIFETIME_MS),
+        });
+    }
+
+    /// Report that something the user asked for did not happen.
+    ///
+    /// The same strip as [`Self::confirm`], and deliberately so — a person watches one place to
+    /// learn what came of a click. It stays up longer than a confirmation because a failure is
+    /// worth reading twice, and unlike a confirmation it is the *only* evidence: the alternative,
+    /// which is what the shell did until now, is a `tracing::error!` in a journal nobody is
+    /// tailing and a button that appears to do nothing at all.
+    pub fn report(&mut self, text: impl Into<String>, now_ms: u64) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            expires_at_ms: now_ms.saturating_add(FAILURE_NOTICE_LIFETIME_MS),
         });
     }
 

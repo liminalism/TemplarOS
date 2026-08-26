@@ -68,7 +68,8 @@ pub fn draw(
     rung: Representation,
     confirming: Option<&'static str>,
 ) -> LauncherOutcome {
-    let (body, region_action) = super::draw_region_strip(ui, content, widget, rung, confirming);
+    let (body, region_action) =
+        super::draw_region_strip(ui, content, widget, rung, confirming, &[]);
     if let Some(declaration) = region_action {
         return LauncherOutcome::Action(declaration);
     }

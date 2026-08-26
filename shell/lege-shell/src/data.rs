@@ -212,11 +212,12 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
         return WidgetSnapshot::unavailable("Session — Lifecycle1 unavailable");
     };
     let mut detail = Vec::new();
+    let mut refused = Vec::new();
     let mut reachable = false;
-    for (label, verdict) in [
-        ("Shut down", proxy.can_power_off().await),
-        ("Restart", proxy.can_reboot().await),
-        ("Suspend", proxy.can_suspend().await),
+    for (label, action, verdict) in [
+        ("Shut down", "session.poweroff", proxy.can_power_off().await),
+        ("Restart", "session.reboot", proxy.can_reboot().await),
+        ("Suspend", "session.suspend", proxy.can_suspend().await),
     ] {
         match verdict {
             Ok(verdict) => {
@@ -229,6 +230,11 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
                     "challenge" => "needs authentication",
                     other => other,
                 };
+                // Only a settled no. "challenge" means logind would authenticate the user, which
+                // is a working control with a step in front of it, not a refused one.
+                if matches!(verdict.as_str(), "no" | "na") {
+                    refused.push(action.to_owned());
+                }
                 detail.push(format!("{label} — {meaning}"));
             }
             Err(error) => tracing::debug!(%error, %label, "Lifecycle1 query failed"),
@@ -242,6 +248,7 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
         headline: user,
         detail,
         available: true,
+        refused,
     }
 }
 
