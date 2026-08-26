@@ -356,6 +356,17 @@ record legeos.papercut.the-first-targeted-build-caught-an-incorrect/1 : papercut
     created_at 2026-08-23
 }
 
+record legeos.papercut.the-home-field-s-own-reflow-focus-ops-tests-are/1 : papercut {
+    title "The Home Field's own reflow/focus/ops tests are thorough, but nothing…"
+    state verified
+    statement """
+        The Home Field's own reflow/focus/ops tests are thorough, but nothing in the shell exercises a widget's declared regions through a real Ui with input — the field_screen harness always passes an empty widget map. So the session tile's rung assignment and its click routing had no coverage at all, and the inverted rung rule (Shut down at the floor, Log out hidden) was invisible to the suite. Teaching the harness to carry WidgetSnapshots would let every widget's controls be tested where they are actually drawn.
+        """
+    observed_at git:1d8611042a47c81297b8a2a3db2a2ff977f8a8cc
+    author "claude"
+    created_at 2026-08-26
+}
+
 record legeos.papercut.the-installed-legeos-set-on-the-development/1 : papercut {
     title "The installed LegeOS set on the development machine was mixed-age: ten…"
     state verified

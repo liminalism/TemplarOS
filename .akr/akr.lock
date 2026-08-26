@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:f18ca35d15affb0d909cf0ffd365a23672ea9990f9cac476d12bcb93496bf131"
+    source_graph "sha256:39e6c8d901f6d3f75b6f59c1d3ad3606dd0b76d431e5274533fe6b3e19c3daec"
 }
 
 source ".akr/project.akr" {
@@ -39,8 +39,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:544bf16f4dd11d77dbdd679ce2f324076e46b0c49e70baf22604aabbfecac166"
-    records 43
+    hash "sha256:c2943b187bc65c08c85b0ac85c2294fe58e7e72b90818c2418cb1398d3c92ed8"
+    records 44
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -1359,6 +1359,11 @@ seal @legeos.papercut.the-first-package-content-spot-check-assumed/1 {
 seal @legeos.papercut.the-first-targeted-build-caught-an-incorrect/1 {
     state verified
     hash "sha256:5564fa1fde98ba0095deae6b344901f7c1f4da7dd43a24300688e19ae85a9be9"
+}
+
+seal @legeos.papercut.the-home-field-s-own-reflow-focus-ops-tests-are/1 {
+    state verified
+    hash "sha256:9acb10acfe6736e75e88ab469f3872ec2d5030e0b947b6eccb3564f2b68e7b60"
 }
 
 seal @legeos.papercut.the-installed-legeos-set-on-the-development/1 {
