@@ -27,6 +27,10 @@ pub struct DesktopEntry {
     pub try_exec: Option<String>,
     pub icon: Option<String>,
     pub mime_types: Vec<String>,
+    /// `Categories=`, verbatim. Read by launchers; LegeOS itself attaches no meaning to them.
+    pub categories: Vec<String>,
+    /// `Keywords=`: the search terms the application suggests for itself.
+    pub keywords: Vec<String>,
     pub startup_wm_class: Option<String>,
     pub no_display: bool,
     pub hidden: bool,
@@ -77,6 +81,10 @@ pub fn parse(text: &str) -> Option<DesktopEntry> {
             "TryExec" => entry.try_exec = Some(value.to_owned()),
             "Icon" => entry.icon = Some(unescape(value)),
             "MimeType" => entry.mime_types = split_list(value),
+            "Categories" => entry.categories = split_escaped_list(value),
+            // Keywords is a localestring list; the unlocalized form is the only one read, the
+            // same rule the `key.contains('[')` skip above applies to every other key.
+            "Keywords" => entry.keywords = split_escaped_list(value),
             "StartupWMClass" => entry.startup_wm_class = Some(value.to_owned()),
             "NoDisplay" => entry.no_display = is_true(value),
             "Hidden" => entry.hidden = is_true(value),
@@ -103,6 +111,32 @@ fn split_list(value: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(str::to_owned)
+        .collect()
+}
+
+/// Split a `;`-separated list whose entries may carry the spec's backslash escapes, then unescape
+/// each one. Unlike [`split_list`] this splits *before* unescaping, so an entry containing a
+/// literal `\;` stays one entry rather than silently becoming two — which for `Keywords=` is the
+/// difference between one search term and two nonsense ones.
+fn split_escaped_list(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' if chars.peek() == Some(&';') => {
+                chars.next();
+                current.push(';');
+            }
+            ';' => parts.push(std::mem::take(&mut current)),
+            other => current.push(other),
+        }
+    }
+    parts.push(current);
+    parts
+        .into_iter()
+        .map(|part| unescape(part.trim()))
+        .filter(|part| !part.is_empty())
         .collect()
 }
 
@@ -391,6 +425,10 @@ pub struct DerivedManifest {
 /// unlike `NoDisplay`, which only hides it from menus and does not affect import), entries with
 /// no `Exec=`, and entries whose executable does not resolve (including a `TryExec=` gate that
 /// fails, exactly as the spec intends it: "don't offer this even though the file exists").
+///
+/// `NoDisplay` is *recorded* rather than acted on here ([`AppManifest::no_display`]): the entry
+/// must still import, because a MIME association may resolve to it and the launcher must still
+/// be able to start it — it is only the offered-in-a-list step that honours the flag.
 pub fn derive_manifest(
     entry: &DesktopEntry,
     desktop_id: &str,
@@ -447,6 +485,13 @@ pub fn derive_manifest(
         mime_types: entry.mime_types.iter().cloned().collect(),
         resource_class: ResourceClass::Normal,
         supports_checkpoint: false,
+        // These four were parsed and thrown away before: an `AppIdentity1` consumer had no way
+        // to draw an icon, group by category, match a keyword, or tell a helper entry from an
+        // application a person means to launch.
+        icon: entry.icon.clone(),
+        categories: entry.categories.iter().cloned().collect(),
+        keywords: entry.keywords.iter().cloned().collect(),
+        no_display: entry.no_display,
     };
     Some(DerivedManifest {
         manifest,
@@ -480,6 +525,8 @@ Name=Lege Viewer
 Exec=lege-viewer --reader %f
 TryExec=lege-viewer
 MimeType=application/pdf;image/tiff;
+Categories=Graphics;Viewer;
+Keywords=pdf;document;reader;
 StartupWMClass=lege-viewer
 Icon=lege-viewer
 ";
@@ -575,7 +622,39 @@ Icon=lege-viewer
 
         let mut no_display = parse(VIEWER).unwrap();
         no_display.no_display = true;
-        assert!(derive_manifest(&no_display, "org.legeos.Viewer.desktop", &resolver).is_some());
+        let derived = derive_manifest(&no_display, "org.legeos.Viewer.desktop", &resolver).unwrap();
+        assert!(
+            derived.manifest.no_display,
+            "the entry imports, but the manifest must remember it is not to be offered"
+        );
+    }
+
+    #[test]
+    fn the_launcher_fields_survive_the_derivation_instead_of_being_parsed_and_dropped() {
+        let resolver = StaticResolver {
+            programs: HashMap::from([("lege-viewer", "/usr/bin/lege-viewer")]),
+            flatpaks: HashMap::new(),
+        };
+        let entry = parse(VIEWER).unwrap();
+        assert_eq!(entry.categories, vec!["Graphics", "Viewer"]);
+        assert_eq!(entry.keywords, vec!["pdf", "document", "reader"]);
+
+        let manifest = derive_manifest(&entry, "org.legeos.Viewer.desktop", &resolver)
+            .unwrap()
+            .manifest;
+        assert_eq!(manifest.icon.as_deref(), Some("lege-viewer"));
+        assert!(manifest.categories.contains("Graphics"));
+        assert!(manifest.keywords.contains("reader"));
+        assert!(!manifest.no_display);
+    }
+
+    #[test]
+    fn escaped_keyword_separators_split_on_the_real_semicolons_only() {
+        // The spec escapes a literal semicolon inside a list entry as `\;`; unescaping before
+        // the split would turn one keyword into two.
+        let entry =
+            parse("[Desktop Entry]\nType=Application\nName=X\nKeywords=a\\sb;c\\;d;\n").unwrap();
+        assert_eq!(entry.keywords, vec!["a b", "c;d"]);
     }
 
     #[test]

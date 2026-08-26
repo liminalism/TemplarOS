@@ -18,10 +18,11 @@
 // own connection has no safe API for it).
 #![deny(unsafe_code)]
 
+pub mod app_search;
 pub mod data;
-pub mod dock;
 pub mod drawers;
 pub mod field_model;
+pub mod file_browser;
 pub mod format;
 pub mod home_surface;
 pub mod icons;

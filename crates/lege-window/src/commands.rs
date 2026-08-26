@@ -219,7 +219,7 @@ impl<I: IdentityCache> WindowService<I> {
                 // hidden side effect. A reveal ends too: the two views are mutually exclusive.
                 let shelved: Vec<WindowId> = self
                     .windows()
-                    .filter(|window| window.shelved)
+                    .filter(|window| self.is_client_window(window.id) && window.shelved)
                     .map(|window| window.id)
                     .collect();
                 for window_id in shelved {
@@ -228,6 +228,7 @@ impl<I: IdentityCache> WindowService<I> {
                 self.set_home_revealed(false);
                 let windows: Vec<(WindowId, Rect)> = self
                     .windows()
+                    .filter(|window| self.is_client_window(window.id))
                     .map(|window| (window.id, window.geometry))
                     .collect();
                 let layout = scatter_layout(&windows, self.outputs());
@@ -295,7 +296,7 @@ impl<I: IdentityCache> WindowService<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientKind, Output, WindowClaims};
+    use crate::{ClientKind, Layer, Output, WindowClaims};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -540,6 +541,16 @@ mod tests {
             Rect::new(0, 0, 100, 100),
         );
         service.shelve(shelved);
+        let home = service.on_toplevel_mapped(
+            3,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "Home Surface".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
+            .unwrap();
         service.set_home_revealed(true);
 
         let result = service.handle_command(WindowCommand::ShowAllWindows, trusted(0));
@@ -549,6 +560,7 @@ mod tests {
         let mut ids: Vec<WindowId> = layout.iter().map(|(id, _)| *id).collect();
         ids.sort();
         assert_eq!(ids, vec![id, shelved]);
+        assert!(!layout.iter().any(|(id, _)| *id == home));
         assert!(!service.window(shelved).unwrap().shelved);
         assert!(!service.home_revealed());
         for (id, rect) in layout {

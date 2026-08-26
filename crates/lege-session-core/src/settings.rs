@@ -191,7 +191,7 @@ fn add_home_field_specs(schema: &mut SettingsSchema) {
         (
             "shell.home-field.tile-size",
             "Logical pixels per Home Field grid cell",
-            SettingValue::Int(120),
+            SettingValue::Int(104),
             vec![],
             Some(80),
             Some(240),

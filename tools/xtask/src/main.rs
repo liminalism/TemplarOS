@@ -31,8 +31,256 @@ enum Command {
     /// Every vendored asset (a font, an icon set — anything not built from source in this
     /// repository) carries its own licence file, so `debian/copyright` can account for it.
     CheckAssets,
+    /// Every `ActionDecl` with a `cli_verb` names a real `lege` subcommand, every action a shell
+    /// surface performs is declared, and every action with a chord also has a pointer route.
+    CheckActions,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
     Copyright,
+}
+
+/// How a shell surface declares that an action is reachable by pointer. Each is a literal
+/// constructor with the action id as its first string argument, so a route is a thing that
+/// exists in the source rather than a claim in a comment.
+///
+/// Adding a needle here is how a *new kind* of surface (a titlebar button, a dock menu) starts
+/// counting; adding a row to one of those tables is how an individual action gets its route.
+const POINTER_ROUTE_NEEDLES: &[&str] = &[
+    // `crate::surface::field_screen`: a region that performs an action directly.
+    "FieldAction::RunAction(\"",
+    // `crate::surface::widgets`: a clickable region declared on a system tile.
+    "WidgetRegion::new(\"",
+    // `crate::surface::context_menu`: a row on the field's secondary-click menu.
+    "MenuItem::new(\"",
+];
+
+/// Declared actions that carry a chord and, for now, legitimately have no pointer route.
+///
+/// **This list is meant to stay empty.** It exists so that adding a chord for something genuinely
+/// not yet placeable on a surface fails loudly *here*, with a written reason, instead of quietly
+/// re-creating the keyboard-only set this check was written to eliminate. Each entry is
+/// `(action id, why)` and every one of them is a bug with a date on it.
+const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[];
+
+/// Every declared action's `cli_verb` reaches a real `lege` subcommand, every action id a shell
+/// surface performs is declared, and every action with an accelerator also has a pointer route.
+///
+/// The point of one declaration driving three surfaces is that they cannot drift; nothing
+/// enforces that at the type level, because the CLI's verbs are `clap` variants and the shell's
+/// are string ids. This is the check that notices. It reads sources rather than running anything,
+/// so it works in CI with no bus and no display.
+///
+/// The third rule is the manifest's own (`lege_types::action`'s module doc: "a chord is an
+/// accelerator, never the only route... a chord with no pointer path is a bug"), and until this
+/// check existed it was aspirational: eight actions were reachable from a keyboard and nowhere
+/// else, and nothing said so.
+fn check_actions(root: &Path) -> Result<()> {
+    let manifest = std::fs::read_to_string(root.join("crates/lege-types/src/action.rs"))
+        .context("reading the action manifest")?;
+    let cli =
+        std::fs::read_to_string(root.join("cli/lege/src/main.rs")).context("reading lege's CLI")?;
+
+    // `cli_verb: Some("session poweroff")` -> the subcommand path it claims.
+    let mut verbs = Vec::new();
+    for line in manifest.lines() {
+        let Some(rest) = line.trim().strip_prefix("cli_verb: Some(\"") else {
+            continue;
+        };
+        let Some(verb) = rest.split('"').next() else {
+            continue;
+        };
+        verbs.push(verb.to_owned());
+    }
+
+    let mut missing = Vec::new();
+    for verb in &verbs {
+        // "session poweroff" needs a `Session` command with a `Poweroff` subcommand variant.
+        let mut words = verb.split_whitespace();
+        let (Some(group), Some(leaf)) = (words.next(), words.next()) else {
+            missing.push(format!("{verb} (not a two-word verb)"));
+            continue;
+        };
+        let group_variant = capitalise(group);
+        let leaf_variant = capitalise(leaf);
+        if !cli.contains(&format!("Command::{group_variant} ")) {
+            missing.push(format!("{verb} (no `lege {group}`)"));
+        } else if !cli.contains(&format!("{group_variant}Command::{leaf_variant}")) {
+            missing.push(format!("{verb} (no `{leaf}` under `lege {group}`)"));
+        }
+    }
+
+    // Every id a shell surface names must exist in the manifest, and every id with a chord must
+    // be named by at least one of them.
+    let routes = pointer_routes(root)?;
+    let mut undeclared = Vec::new();
+    for (id, wheres) in &routes {
+        if !manifest.contains(&format!("id: \"{id}\"")) {
+            undeclared.push(format!("{id} (in {})", wheres.join(", ")));
+        }
+    }
+
+    let declared = declared_actions(&manifest);
+    if declared.len() < 5 {
+        bail!(
+            "check-actions: only {} action declaration(s) parsed out of the manifest — its shape \
+             must have changed, and this check is no longer reading it",
+            declared.len()
+        );
+    }
+    let exempt: BTreeMap<&str, &str> = CHORD_WITHOUT_POINTER_ROUTE.iter().copied().collect();
+    let with_a_route: BTreeSet<&str> = routes.keys().map(String::as_str).collect();
+    let (keyboard_only, stale_exemptions) = chord_route_problems(&declared, &with_a_route, &exempt);
+
+    if !missing.is_empty()
+        || !undeclared.is_empty()
+        || !keyboard_only.is_empty()
+        || !stale_exemptions.is_empty()
+    {
+        for entry in &missing {
+            eprintln!("check-actions: declared CLI verb has no subcommand: {entry}");
+        }
+        for entry in &undeclared {
+            eprintln!("check-actions: surface performs an undeclared action: {entry}");
+        }
+        for id in &keyboard_only {
+            eprintln!(
+                "check-actions: {id} has a chord and no pointer route — a chord is an \
+                 accelerator, never the only route. Give it a menu row \
+                 (shell/lege-shell/src/surface/context_menu.rs) or a region, or add it to \
+                 CHORD_WITHOUT_POINTER_ROUTE with a reason."
+            );
+        }
+        for id in &stale_exemptions {
+            eprintln!(
+                "check-actions: {id} is on CHORD_WITHOUT_POINTER_ROUTE but no longer needs to be \
+                 — remove the exemption."
+            );
+        }
+        bail!(
+            "{} unreachable verb(s), {} undeclared action(s), {} keyboard-only action(s), {} \
+             stale exemption(s)",
+            missing.len(),
+            undeclared.len(),
+            keyboard_only.len(),
+            stale_exemptions.len()
+        );
+    }
+    let with_chords = declared.iter().filter(|(_, chord)| *chord).count();
+    println!(
+        "check-actions: {} CLI verb(s) all reach a subcommand; {} action(s) named by a surface are \
+         all declared; {with_chords} action(s) with a chord all have a pointer route ({} exempt)",
+        verbs.len(),
+        routes.len(),
+        exempt.len(),
+    );
+    Ok(())
+}
+
+/// The chord/pointer rule itself, as a pure function over what was parsed: the actions that have
+/// an accelerator and no pointer route, and the exemptions that are no longer earning their
+/// place. Separated from [`check_actions`]'s I/O so the rule can be tested without a repository.
+fn chord_route_problems(
+    declared: &[(String, bool)],
+    routed: &BTreeSet<&str>,
+    exempt: &BTreeMap<&str, &str>,
+) -> (Vec<String>, Vec<String>) {
+    let mut keyboard_only = Vec::new();
+    let mut stale = Vec::new();
+    for (id, has_chord) in declared {
+        let has_route = routed.contains(id.as_str());
+        let is_exempt = exempt.contains_key(id.as_str());
+        if *has_chord && !has_route && !is_exempt {
+            keyboard_only.push(id.clone());
+        }
+        // An exemption is a promise that there is no route yet and a chord that needs one. Both
+        // halves are checked, so neither a route appearing nor a chord going away can leave a
+        // permission to be keyboard-only lying around.
+        if is_exempt && (has_route || !*has_chord) {
+            stale.push(id.clone());
+        }
+    }
+    for id in exempt.keys() {
+        if !declared.iter().any(|(declared_id, _)| declared_id == id) {
+            stale.push((*id).to_owned());
+        }
+    }
+    (keyboard_only, stale)
+}
+
+/// `(action id, has at least one chord)` for every `ActionDecl` in the manifest source.
+///
+/// A line scanner rather than a link against `lege_types`: this check must be able to report that
+/// the manifest is wrong even when the workspace does not build, which is exactly the state a
+/// half-finished action leaves it in.
+fn declared_actions(manifest: &str) -> Vec<(String, bool)> {
+    let mut actions: Vec<(String, bool)> = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("id: \"") {
+            if let Some(id) = rest.split('"').next() {
+                actions.push((id.to_owned(), false));
+            }
+        } else if trimmed.starts_with("chords: &[")
+            && trimmed != "chords: &[],"
+            && let Some(last) = actions.last_mut()
+        {
+            // Either `chords: &[Chord::…],` on one line or `chords: &[` opening a list.
+            last.1 = true;
+        }
+    }
+    actions
+}
+
+/// Every action id a shell surface offers to a pointer, and the files that offer it.
+///
+/// Test modules are excluded — a test that asserts an action fires is not a route to it, and
+/// counting one would let a real route be deleted without this check noticing. The cut is made
+/// at the first `#[cfg(test)]` in a file, which is where this repository always puts them.
+fn pointer_routes(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut routes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for path in rust_sources(&root.join("shell/lege-shell/src")) {
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let source = source.split("\n#[cfg(test)]").next().unwrap_or_default();
+        let shown = relative(root, &path);
+        for needle in POINTER_ROUTE_NEEDLES {
+            for (index, _) in source.match_indices(needle) {
+                let Some(id) = source[index + needle.len()..].split('"').next() else {
+                    continue;
+                };
+                let entry = routes.entry(id.to_owned()).or_default();
+                if !entry.contains(&shown) {
+                    entry.push(shown.clone());
+                }
+            }
+        }
+    }
+    Ok(routes)
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_sources(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+fn capitalise(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Directories that must exist, each with a README.md.
@@ -90,6 +338,7 @@ fn main() -> Result<()> {
         Command::CheckPackaging => check_packaging(&root),
         Command::CheckProxies => check_proxies(&root),
         Command::CheckAssets => check_assets(&root),
+        Command::CheckActions => check_actions(&root),
         Command::Copyright => copyright(&root),
     }
 }
@@ -641,7 +890,7 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// `cargo deb` will never produce. Reverse: a crate whose deb name matches no stanza builds a
 /// `.deb` nothing installs — the same typo, caught from the other side.
 /// Whether some package provides a manifest's executable: installed by a package here, or named
-/// by a fork whose file list this repository cannot see.
+/// by a remaining fork whose file list this repository cannot see.
 fn manifest_executable_is_provided(
     executable: &str,
     installed: &BTreeSet<String>,
@@ -661,10 +910,10 @@ fn manifest_executable_is_provided(
 /// registered PDF handler and every PDF would have failed to open — against a system whose fourth
 /// stated claim is that file opening is predictable.
 ///
-/// An executable is provided if some package here installs it, or if its name is a fork's package
-/// (`/usr/bin/lege-files` comes from the cosmic-files fork, whose file list is not visible from
-/// this repository). A curated manifest for a third-party application the user has not installed
-/// is a runtime observation, not a build error — `lege doctor` warns about those.
+/// An executable is provided if some package here installs it, or if its name is a remaining
+/// fork's package. `lege-files` is first-party and therefore takes the ordinary installed-file
+/// path through this check. A curated manifest for a third-party application the user has not
+/// installed is a runtime observation, not a build error — `lege doctor` warns about those.
 fn dangling_manifest_executables(
     root: &Path,
     installed: &BTreeSet<String>,
@@ -1279,12 +1528,76 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        VendoredAssets, client_interface_names, colliding_destinations, dependency_drift,
-        manifest_executable_is_provided, metapackage_dependency_problems, packaging_problems,
-        parse_control_depends, parse_control_packages, parse_depends_list, seed_problems,
-        server_interface_names, unlicensed_assets, unshipped_unit_binaries,
+        VendoredAssets, chord_route_problems, client_interface_names, colliding_destinations,
+        declared_actions, dependency_drift, manifest_executable_is_provided,
+        metapackage_dependency_problems, packaging_problems, parse_control_depends,
+        parse_control_packages, parse_depends_list, seed_problems, server_interface_names,
+        unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
+
+    const MANIFEST_SHAPE: &str = r#"
+        ActionDecl {
+            id: "home.reveal",
+            chords: &[
+                Chord::bare(Key::LogoTap),
+                Chord::new(Modifiers::CTRL_ALT, Key::Character('h')),
+            ],
+        },
+        ActionDecl {
+            id: "field.undo",
+            chords: &[Chord::new(Modifiers::CTRL, Key::Character('z'))],
+        },
+        ActionDecl {
+            id: "session.lock",
+            chords: &[],
+        },
+    "#;
+
+    #[test]
+    fn the_manifest_scanner_sees_one_line_and_multi_line_chord_lists() {
+        assert_eq!(
+            declared_actions(MANIFEST_SHAPE),
+            vec![
+                ("home.reveal".to_owned(), true),
+                ("field.undo".to_owned(), true),
+                ("session.lock".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_action_with_a_chord_and_no_pointer_route_is_reported() {
+        let declared = declared_actions(MANIFEST_SHAPE);
+        let routed = BTreeSet::from(["home.reveal"]);
+        let (keyboard_only, stale) = chord_route_problems(&declared, &routed, &BTreeMap::new());
+        assert_eq!(keyboard_only, vec!["field.undo".to_owned()]);
+        assert!(stale.is_empty());
+        // An action with no chord at all is not required to have one: `session.lock` reaches the
+        // user through `lege session lock` and a widget region, and neither is this rule's
+        // business.
+        assert!(!keyboard_only.contains(&"session.lock".to_owned()));
+    }
+
+    #[test]
+    fn an_exemption_silences_the_rule_and_expires_the_moment_it_is_not_needed() {
+        let declared = declared_actions(MANIFEST_SHAPE);
+        let exempt = BTreeMap::from([("field.undo", "no surface for it yet")]);
+        let (keyboard_only, stale) =
+            chord_route_problems(&declared, &BTreeSet::from(["home.reveal"]), &exempt);
+        assert!(keyboard_only.is_empty());
+        assert!(stale.is_empty());
+
+        // The route arrives: the exemption is now a lie and must go.
+        let routed = BTreeSet::from(["home.reveal", "field.undo"]);
+        let (_, stale) = chord_route_problems(&declared, &routed, &exempt);
+        assert_eq!(stale, vec!["field.undo".to_owned()]);
+
+        // So must an exemption for an action nobody declares any more.
+        let ghost = BTreeMap::from([("field.vanished", "removed last week")]);
+        let (_, stale) = chord_route_problems(&declared, &routed, &ghost);
+        assert_eq!(stale, vec!["field.vanished".to_owned()]);
+    }
 
     #[test]
     fn vendored_assets_without_a_licence_are_reported() {

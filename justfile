@@ -39,14 +39,18 @@ check-interfaces:
     cargo run -q -p xtask -- check-proxies
     cargo run -q -p xtask -- check-packaging
     cargo run -q -p xtask -- check-assets
+    cargo run -q -p xtask -- check-actions
 
 # `lege doctor` against this machine
 doctor *ARGS:
     cargo run -q -p lege -- doctor {{ARGS}}
 
 # Stage-1 packages via cargo-deb (target/debian/)
-deb:
-    for p in lege-sessiond lege-resourced lege-filed lege-hostd lege-boot-health lege-session lege-comp lege-greeter lege-shell lege-settings xdg-desktop-portal-lege lege; do cargo deb -p "$p" -q; done
+preview-codecs:
+    ./scripts/build-preview-codecs.sh
+
+deb: preview-codecs
+    for p in lege-sessiond lege-resourced lege-filed lege-hostd lege-boot-health lege-session lege-comp lege-greeter lege-shell lege-settings lege-files xdg-desktop-portal-lege lege; do cargo deb -p "$p" -q; done
     ls -1 target/debian/*.deb
 
 # Vendor dependencies for the offline archive build (debian/rules)

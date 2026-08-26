@@ -1,16 +1,13 @@
 //! The Home Surface screen: drawer navigation, a search field, and the drawer's content — the
 //! graphical front end over `crate::drawers`/`crate::data`'s already-tested models.
 //!
-//! Nine of the ten drawers (everything but the Window Shelf) show the exact lines
-//! `lege-shell --print <drawer>` prints: this crate's business logic already turns a live D-Bus
-//! answer into readable, column-aligned text, and re-deriving a bespoke table layout per drawer
-//! shape (ten different ones) would be new surface, new bugs and no more honest than drawing the
-//! same tested lines in a scrolling panel with real navigation, a real search field and a real
-//! scrollbar around them. The Window Shelf is the one drawer this screen renders structurally
-//! rather than as text, because it is the one the plan requires an action on ("can restore one",
-//! `docs/planning/01-initial-shape.md` §1) — a line of text has no button.
+//! Downloads, Documents, Media and Drives expand into the structured `Files.Browse1` browser:
+//! places and mounted volumes are selectable, folders navigate in place, and files open through
+//! the association/launcher brokers. The Window Shelf is structural too, because its entries
+//! restore live windows. The remaining service drawers retain the exact tested lines
+//! `lege-shell --print <drawer>` prints inside a scrolling view.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use pixelkit_raster::Rect;
 use pixelkit_shell::KeyInput;
@@ -20,7 +17,9 @@ use pixelkit_ui::{ScrollState, TextFieldState, Ui};
 use lege_window::{ShellToplevel, WindowId};
 
 use crate::drawers::window_shelf;
+use crate::file_browser;
 use crate::home_surface::Drawer;
+use crate::surface::file_browser::{FileBrowserAction, FileBrowserData, FileBrowserScreen};
 
 /// The three drawers `Files.Search1` can search — see [`Drawer`]'s doc: each is a standard XDG
 /// path plus its saved queries, which is exactly what a query root should be.
@@ -39,22 +38,29 @@ pub enum HomeSurfaceAction {
     },
     /// The Window Shelf's Restore button was clicked for this window.
     RestoreWindow(WindowId),
+    /// Ask `Files.Browse1` for one directory. The view never reads it itself.
+    BrowseDirectory {
+        drawer: Drawer,
+        path: PathBuf,
+        show_hidden: bool,
+    },
+    /// Resolve through Associations1 and launch through Launcher1.
+    OpenFile(PathBuf),
 }
 
 /// Everything the screen reads but does not own — refreshed by [`crate::surface::app`] from
 /// `crate::data`'s background fetch and the live `lege_shell_v1` connection.
 #[derive(Debug)]
 pub struct HomeSurfaceData<'a> {
-    /// Every D-Bus-backed drawer's already-rendered text, split into lines. Absent for a drawer
+    /// Non-browser D-Bus drawers' already-rendered text, split into lines. Absent for a drawer
     /// whose first fetch has not landed yet.
     pub drawer_texts: &'a HashMap<Drawer, Vec<String>>,
-    /// Lines from the last `Files.Search1` search, if the selected drawer has one active.
-    pub search_results: Option<&'a [String]>,
     /// Every window the live connection knows about, for the Window Shelf.
     pub toplevels: &'a [ShellToplevel],
     /// Whether the trusted-shell connection is up at all — the Window Shelf explains itself
     /// differently when it is not (see [`HomeSurfaceScreen::draw`]'s empty-state text).
     pub connected: bool,
+    pub browser: &'a FileBrowserData<'a>,
 }
 
 #[derive(Debug)]
@@ -63,6 +69,7 @@ pub struct HomeSurfaceScreen {
     pub search: TextFieldState,
     pub search_focused: bool,
     pub scroll: ScrollState,
+    pub browser: FileBrowserScreen,
 }
 
 impl Default for HomeSurfaceScreen {
@@ -72,6 +79,7 @@ impl Default for HomeSurfaceScreen {
             search: TextFieldState::new(),
             search_focused: false,
             scroll: ScrollState::new(),
+            browser: FileBrowserScreen::default(),
         }
     }
 }
@@ -118,21 +126,39 @@ impl HomeSurfaceScreen {
             false,
         );
 
-        if self.selected == Drawer::WindowShelf {
+        let content_action = if self.selected == Drawer::WindowShelf {
             self.draw_window_shelf(ui, content_area, data)
+        } else if file_browser::is_file_drawer(self.selected) {
+            match self.browser.draw(
+                ui,
+                content_area,
+                self.selected,
+                data.browser,
+                !self.search_focused,
+            ) {
+                Some(FileBrowserAction::Browse {
+                    drawer,
+                    path,
+                    show_hidden,
+                }) => HomeSurfaceAction::BrowseDirectory {
+                    drawer,
+                    path,
+                    show_hidden,
+                },
+                Some(FileBrowserAction::Open(path)) => HomeSurfaceAction::OpenFile(path),
+                None => HomeSurfaceAction::None,
+            }
         } else {
             self.draw_text_drawer(ui, content_area, data);
-            if enter_pressed
-                && SEARCHABLE.contains(&self.selected)
-                && !self.search.text().is_empty()
-            {
-                HomeSurfaceAction::RunSearch {
-                    drawer: self.selected,
-                    query: self.search.text().to_owned(),
-                }
-            } else {
-                HomeSurfaceAction::None
+            HomeSurfaceAction::None
+        };
+        if enter_pressed && SEARCHABLE.contains(&self.selected) && !self.search.text().is_empty() {
+            HomeSurfaceAction::RunSearch {
+                drawer: self.selected,
+                query: self.search.text().to_owned(),
             }
+        } else {
+            content_action
         }
     }
 
@@ -164,6 +190,7 @@ impl HomeSurfaceScreen {
             if ui.input.take_click(row) && !active {
                 self.selected = drawer;
                 self.scroll = ScrollState::new();
+                self.search = TextFieldState::new();
                 self.search_focused = false;
             }
         }
@@ -172,11 +199,6 @@ impl HomeSurfaceScreen {
     /// The lines this drawer shows right now: a live search's results if one is active, else the
     /// drawer's own already-fetched text — one line per already-tested record.
     fn current_lines<'a>(&self, data: &'a HomeSurfaceData<'a>) -> &'a [String] {
-        if let Some(results) = data.search_results
-            && SEARCHABLE.contains(&self.selected)
-        {
-            return results;
-        }
         data.drawer_texts
             .get(&self.selected)
             .map_or(&[] as &[String], Vec::as_slice)

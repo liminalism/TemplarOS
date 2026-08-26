@@ -1,5 +1,5 @@
 [Unit]
-Description=LegeOS file service (mounts, transactional operations, recents, search)
+Description=LegeOS file service (browsing, previews, mounts, transactions, recents, search)
 Documentation=https://legeos.org/docs/files
 PartOf=legeos-session.target
 After=lege-sessiond.service

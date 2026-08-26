@@ -380,6 +380,10 @@ pub(crate) mod tests {
                     mime_types: mimes.iter().map(|m| (*m).to_owned()).collect(),
                     resource_class: ResourceClass::Normal,
                     supports_checkpoint: false,
+                    icon: None,
+                    categories: std::collections::BTreeSet::default(),
+                    keywords: std::collections::BTreeSet::default(),
+                    no_display: false,
                 };
                 catalog
                     .0

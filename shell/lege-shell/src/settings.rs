@@ -26,6 +26,8 @@ pub const THROW_KEY: &str = "shell.home-field.throw";
 pub const PREVIEWS_KEY: &str = "shell.home-field.previews";
 /// `shell.home-field.preview-rate`, frames per second.
 pub const PREVIEW_RATE_KEY: &str = "shell.home-field.preview-rate";
+/// `shell.home-field.reduced-motion`.
+pub const REDUCED_MOTION_KEY: &str = "shell.home-field.reduced-motion";
 
 /// What a parked-session tile shows of its window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +48,8 @@ pub struct HomeFieldSettings {
     pub previews: PreviewMode,
     /// Frames per second for [`PreviewMode::Live`].
     pub preview_rate: u32,
+    /// Keep the design's state changes but remove projected/expanding motion.
+    pub reduced_motion: bool,
 }
 
 impl Default for HomeFieldSettings {
@@ -55,6 +59,7 @@ impl Default for HomeFieldSettings {
             throw: false,
             previews: PreviewMode::Static,
             preview_rate: 1,
+            reduced_motion: false,
         }
     }
 }
@@ -69,6 +74,12 @@ pub fn parse_int(value_json: &str) -> Option<i64> {
 pub fn parse_choice(value_json: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
     Some(value.get("value")?.as_str()?.to_owned())
+}
+
+/// The `value` of a `SettingValue` JSON payload as a boolean.
+pub fn parse_bool(value_json: &str) -> Option<bool> {
+    let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
+    value.get("value")?.as_bool()
 }
 
 /// The Home Field's settings, each falling back to its schema default on its own.
@@ -107,11 +118,19 @@ pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
         .as_deref()
         .and_then(parse_int)
         .map_or(defaults.preview_rate, |rate| rate.clamp(1, 4) as u32);
+    let reduced_motion = client
+        .get(REDUCED_MOTION_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_bool)
+        .unwrap_or(defaults.reduced_motion);
     HomeFieldSettings {
         tile_size,
         throw,
         previews,
         preview_rate,
+        reduced_motion,
     }
 }
 
@@ -189,6 +208,12 @@ mod tests {
         );
         assert_eq!(parse_dock_grouping("not json"), None);
         assert_eq!(parse_dock_grouping(r#"{"type":"bool","value":true}"#), None);
+    }
+
+    #[test]
+    fn reduced_motion_uses_the_typed_boolean_payload() {
+        assert_eq!(parse_bool(r#"{"type":"bool","value":true}"#), Some(true));
+        assert_eq!(parse_bool(r#"{"type":"choice","value":"true"}"#), None);
     }
 
     #[tokio::test]

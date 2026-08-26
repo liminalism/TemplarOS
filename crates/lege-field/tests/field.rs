@@ -259,6 +259,291 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// A resize relocates nothing.
+    ///
+    /// This is the resize counterpart of `placing_moves_only_band_mates`, and it is deliberately
+    /// *stronger* than that rule rather than a relaxation of it. A drop may evict a band-mate to
+    /// any free cell on the grid; a resize may not move anything at all. What a neighbour may do
+    /// is give up the cells the growth needs — and even then only from the edge facing the
+    /// growth, so its far edge stays exactly where the user last put it and its new rectangle is
+    /// a subset of its old one. Everything not overlapping the growth rectangle is untouched,
+    /// full stop.
+    #[test]
+    fn resizing_yields_span_and_never_relocates(
+        steps in proptest::collection::vec(step(), 1..12),
+        target in 1u64..40,
+        span in (1u16..7, 1u16..5),
+    ) {
+        let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+        for step in &steps {
+            if let Ok((next, _)) = apply(&doc, &to_op(&doc, step)) {
+                doc = next;
+            }
+        }
+        let id = TileId(target);
+        let Some(before) = doc.location(id) else { return Ok(()); };
+        let op = FieldOp::Resize { id, span: Span::new(span.0, span.1) };
+        let Ok((after, inverse)) = apply(&doc, &op) else { return Ok(()); };
+        check_invariants(&after)?;
+
+        let placed = after.location(id).expect("a resized tile keeps its place");
+        prop_assert_eq!(placed.placement.cell, before.placement.cell, "the resized tile moved");
+        prop_assert_eq!(placed.container, before.container);
+        let growth = Placement::new(before.placement.cell, placed.placement.span);
+
+        for (other, was) in &doc.located {
+            if *other == id {
+                continue;
+            }
+            let now = after.location(*other);
+            if now == Some(*was) {
+                continue;
+            }
+            // The only tiles allowed to differ are the ones the growth actually reached, on the
+            // same grid, and only by yielding.
+            prop_assert_eq!(was.container, before.container, "{:?} changed on another grid", other);
+            prop_assert!(
+                was.placement.overlaps(growth),
+                "{:?} changed without being overlapped by the growth {:?}", other, growth
+            );
+            let now = now.expect("a yielding tile is never unplaced").placement;
+            prop_assert_eq!(
+                (now.right(), now.bottom()),
+                (was.placement.right(), was.placement.bottom()),
+                "{:?} did not keep its far edge", other
+            );
+            prop_assert!(
+                now.cell.col >= was.placement.cell.col && now.cell.row >= was.placement.cell.row,
+                "{:?} grew instead of yielding", other
+            );
+            let floor = doc.tile(*other).expect("a located tile exists").spans.min;
+            prop_assert!(
+                now.span.cols >= floor.cols && now.span.rows >= floor.rows,
+                "{:?} was pushed below its minimum {:?}", other, floor
+            );
+        }
+
+        // And the whole thing still undoes exactly — neighbours' spans included, which is the
+        // property that makes `Layout` sufficient as the inverse.
+        let (back, _) = apply(&after, &inverse).expect("an inverse always applies");
+        prop_assert_eq!(back, doc);
+    }
+
+    /// The clamp never overshoots the request and never turns a growth into a shrink: whatever
+    /// span comes out lies between where the tile was and where the user asked it to go.
+    #[test]
+    fn resizing_clamps_between_the_current_span_and_the_request(
+        steps in proptest::collection::vec(step(), 1..12),
+        target in 1u64..40,
+        span in (1u16..7, 1u16..5),
+    ) {
+        let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+        for step in &steps {
+            if let Ok((next, _)) = apply(&doc, &to_op(&doc, step)) {
+                doc = next;
+            }
+        }
+        let id = TileId(target);
+        let Some(before) = doc.location(id) else { return Ok(()); };
+        let requested = Span::new(span.0, span.1);
+        let Ok((after, _)) = apply(&doc, &FieldOp::Resize { id, span: requested }) else {
+            return Ok(());
+        };
+        let was = before.placement.span;
+        let now = after.location(id).expect("still placed").placement.span;
+        for (now, was, requested, axis) in [
+            (now.cols, was.cols, requested.cols, "cols"),
+            (now.rows, was.rows, requested.rows, "rows"),
+        ] {
+            prop_assert!(
+                now >= was.min(requested) && now <= was.max(requested),
+                "{axis}: {now} is not between the current {was} and the requested {requested}"
+            );
+        }
+    }
+}
+
+/// A tile with spans stated outright, so a resize test says what it is testing instead of
+/// depending on one kind's class floors staying where they are today.
+fn sized(id: u64, min: Span, preferred: Span, max: Span) -> Tile {
+    Tile {
+        id: TileId(id),
+        title: format!("tile {id}"),
+        spans: SpanRange::new(min, preferred, max),
+        accent: None,
+        kind: TileKind::Tray { tray_id: TrayId(1) },
+    }
+}
+
+/// Two tiles of `preferred` size placed at columns 0 and `preferred.cols`, row 0.
+fn side_by_side(min: Span, preferred: Span, max: Span) -> FieldDocument {
+    let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+    for (id, col) in [(1u64, 0u16), (2, preferred.cols)] {
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: sized(id, min, preferred, max),
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(col, 0),
+                },
+            },
+        )
+        .unwrap()
+        .0;
+    }
+    doc
+}
+
+#[test]
+fn growing_into_free_space_disturbs_nothing() {
+    // The user's rule: while the field has room, a resize is nobody else's business.
+    let one = Span::new(1, 1);
+    let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+    for (id, col) in [(1u64, 0u16), (2, 5)] {
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: sized(id, one, one, Span::new(4, 4)),
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(col, 0),
+                },
+            },
+        )
+        .unwrap()
+        .0;
+    }
+    let far = doc.location(TileId(2)).unwrap();
+    let (grown, _) = apply(
+        &doc,
+        &FieldOp::Resize {
+            id: TileId(1),
+            span: Span::new(3, 3),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        grown.location(TileId(1)).unwrap().placement.span,
+        Span::new(3, 3),
+        "there was room, so the request is granted whole"
+    );
+    assert_eq!(
+        grown.location(TileId(2)),
+        Some(far),
+        "the far tile never moved"
+    );
+}
+
+#[test]
+fn a_neighbour_yields_from_the_edge_facing_the_growth_and_undoes() {
+    // Two 2x2 tiles side by side, each able to shrink to 1 wide. Growing the left one rightwards
+    // must narrow the right one against its own right edge — not shove it somewhere else.
+    let doc = side_by_side(Span::new(1, 1), Span::new(2, 2), Span::new(4, 4));
+    assert_eq!(
+        doc.location(TileId(2)).unwrap().placement,
+        Placement::new(Cell::new(2, 0), Span::new(2, 2))
+    );
+
+    let (after, undo) = apply(
+        &doc,
+        &FieldOp::Resize {
+            id: TileId(1),
+            span: Span::new(3, 2),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        after.location(TileId(1)).unwrap().placement,
+        Placement::new(Cell::new(0, 0), Span::new(3, 2))
+    );
+    let yielded = after.location(TileId(2)).unwrap().placement;
+    assert_eq!(
+        yielded,
+        Placement::new(Cell::new(3, 0), Span::new(1, 2)),
+        "the neighbour keeps its right edge at column 4 and gives up the column it lost"
+    );
+    assert_eq!(yielded.right(), 4, "the far edge is exactly where it was");
+
+    // Ctrl+Z restores both tiles' sizes, not just their positions.
+    assert_eq!(apply(&after, &undo).unwrap().0, doc);
+}
+
+#[test]
+fn a_neighbour_at_its_floor_clamps_the_drag_instead_of_being_evicted() {
+    // Both tiles are already at their 2x2 minimum. The right-hand one can give up nothing, so
+    // the growth stops rather than squashing it further or pushing it away.
+    let two = Span::new(2, 2);
+    let doc = side_by_side(two, two, Span::new(4, 4));
+    let before_neighbour = doc.location(TileId(2)).unwrap();
+    let (after, _) = apply(
+        &doc,
+        &FieldOp::Resize {
+            id: TileId(1),
+            span: Span::new(4, 2),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        after.location(TileId(1)).unwrap().placement.span,
+        Span::new(2, 2),
+        "growing to 4 would take the 2x2 neighbour under its floor, so the drag clamps"
+    );
+    assert_eq!(
+        after.location(TileId(2)),
+        Some(before_neighbour),
+        "a clamped resize leaves the neighbour completely alone"
+    );
+}
+
+#[test]
+fn no_tile_but_a_project_may_cover_the_whole_field() {
+    let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+    doc = apply(
+        &doc,
+        &FieldOp::Place {
+            tile: tile(
+                1,
+                TileKind::Widget {
+                    widget: "launcher".into(),
+                    scope: None,
+                },
+            ),
+            landing: Landing {
+                container: None,
+                cell: Cell::new(0, 0),
+            },
+        },
+    )
+    .unwrap()
+    .0;
+    assert_eq!(
+        apply(
+            &doc,
+            &FieldOp::Resize {
+                id: TileId(1),
+                span: Span::new(COLS, ROWS),
+            },
+        ),
+        Err(FieldError::BadSpan),
+        "a widget may not become the whole screen"
+    );
+    // …but it may grow, which it could not before: its ceiling used to equal its preferred size.
+    assert!(
+        apply(
+            &doc,
+            &FieldOp::Resize {
+                id: TileId(1),
+                span: Span::new(6, 5),
+            },
+        )
+        .is_ok()
+    );
+}
+
 #[test]
 fn a_removed_projects_children_go_to_the_shelf_and_come_back_on_undo() {
     let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
@@ -285,7 +570,7 @@ fn a_removed_projects_children_go_to_the_shelf_and_come_back_on_undo() {
     assert_eq!(grouped.parent_of(TileId(2)), Some(TileId(3)));
     assert_eq!(
         grouped.location(TileId(3)).unwrap().placement.span,
-        Span::new(COLS / 2, ROWS / 2),
+        Span::new((COLS / 2).max(4), (ROWS / 2).max(4)),
         "a new project is one quadrant"
     );
 
@@ -317,7 +602,9 @@ fn shrinking_the_grid_keeps_every_tile_reachable_and_undoes() {
     for (id, located) in &small.located {
         assert!(located.placement.fits(4, 3), "{id:?} at {located:?}");
     }
-    assert_eq!(small.located.len(), 3, "room remained for all three");
+    assert_eq!(small.located.len(), 1, "one 3×2 system instrument fits");
+    assert_eq!(small.shelved().count(), 2, "the others remain on the shelf");
+    assert_eq!(small.tiles.len(), 3, "shrinking never loses an instrument");
     assert_eq!(apply(&small, &undo).unwrap().0, doc);
 }
 

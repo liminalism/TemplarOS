@@ -13,8 +13,15 @@ Before=lege-shell.service
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/lege-comp
+# A display-manager session is always the hardware compositor.  Never infer this from the user
+# manager's inherited DISPLAY/WAYLAND_DISPLAY: that manager can survive logout and retain the
+# previous desktop's environment.  The stable socket name is also the contract used by
+# lege-session (ordinary clients) and lege-shell.service (the private trusted-shell connection).
+ExecStart=/usr/bin/lege-comp --backend udev --socket-name legeos-0
 Restart=no
+# A compositor that cannot finish DRM/input/event-loop initialization must give control back to
+# the display manager instead of holding the VT on a black frame forever.
+TimeoutStartSec=15s
 Slice=session.slice
 # Session-critical protection (planning doc 01 §5): the user must always be able to move the
 # pointer, switch windows, reach the recovery overlay and a terminal.

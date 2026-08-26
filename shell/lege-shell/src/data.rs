@@ -1,22 +1,21 @@
-//! Fetching every D-Bus-backed drawer's already-formatted text, shared between `--print` (the
-//! binary) and the Home Surface's background refresh loop (`surface::data`).
+//! Fetching Home's D-Bus data: compact drawer text, structured directory snapshots and brokered
+//! file opening, shared between `--print` and the graphical Home Surface.
 //!
-//! This is exactly the dispatch `main.rs` had before the graphical surface existed — moved here,
-//! unchanged in behaviour, so the GUI does not have to either duplicate it or shell out to the
-//! text renderer as a subprocess. `Drawer::WindowShelf` is deliberately not handled here: its data
-//! comes from the live `lege_shell_v1` connection (`crate::wayland_bridge`), not a D-Bus session,
-//! and the two callers of this module already have their own toplevel snapshot to hand to
-//! `crate::drawers::window_shelf::render` / `crate::dock::render` directly.
+//! `Drawer::WindowShelf` is deliberately not handled here: its data comes from the live
+//! `lege_shell_v1` connection (`crate::wayland_bridge`), not a D-Bus session, and the callers
+//! already have their own toplevel snapshot.
 
 use lege_client::proxies::{
-    AppIdentityProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy,
-    HomeFieldProxy, ProjectsProxy,
+    AppIdentityProxy, AssociationsProxy, FilesBrowseProxy, FilesOperationsProxy, FilesRecentsProxy,
+    FilesSearchProxy, FilesVolumesProxy, HomeFieldProxy, LauncherProxy, LifecycleProxy,
+    ProjectsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
-use lege_types::AppId;
+use std::fmt::Write as _;
 
 use crate::drawers;
 use crate::drawers::standard_paths::StandardDrawer;
+use crate::file_browser::{BrowserRoot, BrowserSources, DirectoryListing, RootKind};
 use crate::home_surface::Drawer;
 
 /// Connect to the session bus, or explain why not in one line.
@@ -98,32 +97,152 @@ async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer
         );
     };
     let user_dirs = drawers::standard_paths::read_user_dirs(&home);
-    match FilesSearchProxy::new(connection).await {
-        Ok(proxy) => drawers::standard_paths::render(&proxy, standard, &home, user_dirs.as_deref())
+    let search = match FilesSearchProxy::new(connection).await {
+        Ok(proxy) => proxy,
+        Err(error) => return unavailable(standard.title(), &error.into()),
+    };
+    let mut rendered =
+        match drawers::standard_paths::render(&search, standard, &home, user_dirs.as_deref()).await
+        {
+            Ok(rendered) => rendered,
+            Err(error) => return unavailable(standard.title(), &error),
+        };
+    let browse = match FilesBrowseProxy::new(connection).await {
+        Ok(proxy) => proxy,
+        Err(error) => return unavailable(standard.title(), &error.into()),
+    };
+    let parsed_user_dirs = user_dirs
+        .as_deref()
+        .map(|text| drawers::standard_paths::parse_user_dirs(text, &home))
+        .unwrap_or_default();
+    for directory in drawers::standard_paths::directories_for(standard, &parsed_user_dirs, &home) {
+        let json = match browse
+            .list_directory(&directory.to_string_lossy(), false, 12)
             .await
-            .unwrap_or_else(|error| unavailable(standard.title(), &error)),
-        Err(error) => unavailable(standard.title(), &error.into()),
+        {
+            Ok(json) => json,
+            Err(error) => {
+                write!(
+                    &mut rendered,
+                    "\n  could not read {}: {error}",
+                    directory.display()
+                )
+                .expect("writing to a String cannot fail");
+                continue;
+            }
+        };
+        let listing: DirectoryListing = match serde_json::from_str(&json) {
+            Ok(listing) => listing,
+            Err(error) => {
+                write!(
+                    &mut rendered,
+                    "\n  malformed directory data for {}: {error}",
+                    directory.display()
+                )
+                .expect("writing to a String cannot fail");
+                continue;
+            }
+        };
+        if listing.entries.is_empty() {
+            rendered.push_str("\n  (empty)");
+        }
+        for entry in listing.entries {
+            write!(
+                &mut rendered,
+                "\n  {:<7} {:<12} {}",
+                if entry.is_dir() { "folder" } else { "file" },
+                if entry.is_dir() {
+                    "—".to_owned()
+                } else {
+                    crate::format::bytes(entry.size_bytes)
+                },
+                entry.name
+            )
+            .expect("writing to a String cannot fail");
+        }
+        if listing.truncated {
+            write!(&mut rendered, "\n  … more than {} entries", listing.limit)
+                .expect("writing to a String cannot fail");
+        }
     }
+    rendered
 }
 
 /// Every D-Bus-backed drawer's text in one call, for the Home Surface's background refresh.
 /// `Drawer::WindowShelf` is absent — see the module doc.
-/// Every installed application's canonical id (`AppIdentity1.list_apps`), or none when the
-/// session bus or sessiond is absent — the Home Field then shows only windows and drawers.
-pub async fn fetch_apps() -> Vec<AppId> {
+/// Every installed application with what a launcher needs to offer it
+/// (`AppIdentity1.ListApplications`).
+///
+/// `None` — not an empty list — when the session bus or sessiond is absent, because the two mean
+/// opposite things to the person looking at the launcher: "nothing is installed" versus "I cannot
+/// see what is installed". The widget says which.
+pub async fn fetch_apps() -> Option<Vec<crate::app_search::AppEntry>> {
+    let connection = session().await.ok()?;
+    let proxy = AppIdentityProxy::new(&connection).await.ok()?;
+    let rows = proxy.list_applications().await.ok()?;
+    Some(
+        rows.into_iter()
+            .filter_map(|row| {
+                let (id, name, desktop_file_id, icon, categories, keywords, no_display) = row;
+                Some(crate::app_search::AppEntry {
+                    id: id.parse().ok()?,
+                    name,
+                    desktop_file_id,
+                    icon,
+                    categories,
+                    keywords,
+                    no_display,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The Session widget's content: whether this machine will actually log out, restart, shut down
+/// or suspend, asked of `Lifecycle1` (which asks logind).
+///
+/// A widget that cannot reach the service says so rather than offering controls that fail on
+/// click — see `crate::surface::widgets`.
+pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
     let Ok(connection) = session().await else {
-        return Vec::new();
+        return WidgetSnapshot::unavailable("Session — no session bus");
     };
-    let Ok(proxy) = AppIdentityProxy::new(&connection).await else {
-        return Vec::new();
+    let Ok(proxy) = LifecycleProxy::new(&connection).await else {
+        return WidgetSnapshot::unavailable("Session — Lifecycle1 unavailable");
     };
-    proxy
-        .list_apps()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|id| id.parse().ok())
-        .collect()
+    let mut detail = Vec::new();
+    let mut reachable = false;
+    for (label, verdict) in [
+        ("Shut down", proxy.can_power_off().await),
+        ("Restart", proxy.can_reboot().await),
+        ("Suspend", proxy.can_suspend().await),
+    ] {
+        match verdict {
+            Ok(verdict) => {
+                reachable = true;
+                // logind's own vocabulary, kept distinct: "challenge" is not "no".
+                let meaning = match verdict.as_str() {
+                    "yes" => "ready",
+                    "no" => "refused by policy",
+                    "na" => "not supported",
+                    "challenge" => "needs authentication",
+                    other => other,
+                };
+                detail.push(format!("{label} — {meaning}"));
+            }
+            Err(error) => tracing::debug!(%error, %label, "Lifecycle1 query failed"),
+        }
+    }
+    if !reachable {
+        return WidgetSnapshot::unavailable("Session — logind unreachable");
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| "signed in".to_owned());
+    WidgetSnapshot {
+        headline: user,
+        detail,
+        available: true,
+    }
 }
 
 /// `Projects1.List`, or none when sessiond is absent.
@@ -189,9 +308,285 @@ pub async fn fetch_all(limit: u32) -> Vec<(Drawer, String)> {
     out
 }
 
+/// The same XDG places and mounted volumes the standalone manager renders. `Files.Browse1`
+/// owns the source list; Home only maps its structured roots onto drawer starting points.
+pub async fn fetch_browser_sources() -> BrowserSources {
+    let fallback = local_browser_sources();
+    let Ok(connection) = session().await else {
+        return fallback;
+    };
+    let Ok(proxy) = FilesBrowseProxy::new(&connection).await else {
+        return fallback;
+    };
+    let Ok(json) = proxy.roots().await else {
+        return fallback;
+    };
+    let Ok(shared) = serde_json::from_str::<lege_client::files::BrowserSources>(&json) else {
+        return fallback;
+    };
+    let mut sources = BrowserSources::default();
+    let home = drawers::standard_paths::home_dir();
+    let mut drive_start: Option<std::path::PathBuf> = None;
+    let mut drive_depth = 0;
+    for root in shared.roots {
+        if root.kind == lege_client::files::RootKind::Drive
+            && home
+                .as_ref()
+                .is_some_and(|home| home.starts_with(&root.path))
+        {
+            let depth = root.path.components().count();
+            if depth >= drive_depth {
+                drive_depth = depth;
+                drive_start = Some(root.path.clone());
+            }
+        }
+        match root.key.as_str() {
+            "downloads" => {
+                sources.starts.insert(Drawer::Downloads, root.path.clone());
+            }
+            "documents" => {
+                sources.starts.insert(Drawer::Documents, root.path.clone());
+            }
+            "pictures" => {
+                sources.starts.insert(Drawer::Media, root.path.clone());
+            }
+            _ => {}
+        }
+        let detail = root.volume.as_ref().map_or_else(
+            || {
+                if root.available {
+                    "Standard folder".to_owned()
+                } else {
+                    "Not present".to_owned()
+                }
+            },
+            |volume| {
+                format!(
+                    "{} free of {} · {}{}",
+                    crate::format::bytes(volume.free_bytes),
+                    crate::format::bytes(volume.total_bytes),
+                    volume.fs_type,
+                    if volume.read_only {
+                        " · read-only"
+                    } else {
+                        ""
+                    }
+                )
+            },
+        );
+        sources.roots.push(BrowserRoot {
+            label: root.label,
+            path: root.path,
+            detail,
+            kind: match root.kind {
+                lege_client::files::RootKind::Place => RootKind::Place,
+                lege_client::files::RootKind::Drive => RootKind::Drive,
+            },
+        });
+    }
+    if drive_start.is_none() {
+        drive_start = sources
+            .roots
+            .iter()
+            .find(|root| root.kind == RootKind::Drive)
+            .map(|root| root.path.clone());
+    }
+    if let Some(start) = drive_start {
+        sources.starts.insert(Drawer::Drives, start);
+    }
+    sources
+}
+
+fn local_browser_sources() -> BrowserSources {
+    let Some(home) = drawers::standard_paths::home_dir() else {
+        return BrowserSources::default();
+    };
+    let user_dirs = drawers::standard_paths::read_user_dirs(&home)
+        .map(|text| drawers::standard_paths::parse_user_dirs(&text, &home))
+        .unwrap_or_default();
+    let downloads =
+        drawers::standard_paths::directories_for(StandardDrawer::Downloads, &user_dirs, &home);
+    let documents =
+        drawers::standard_paths::directories_for(StandardDrawer::Documents, &user_dirs, &home);
+    let media = drawers::standard_paths::directories_for(StandardDrawer::Media, &user_dirs, &home);
+    let mut sources = BrowserSources::default();
+    sources.roots.push(BrowserRoot {
+        label: "Home".to_owned(),
+        path: home,
+        detail: "Personal files".to_owned(),
+        kind: RootKind::Place,
+    });
+    add_place(&mut sources, Drawer::Downloads, "Downloads", &downloads);
+    add_place(&mut sources, Drawer::Documents, "Documents", &documents);
+    for (index, path) in media.iter().enumerate() {
+        let label = ["Pictures", "Music", "Videos"]
+            .get(index)
+            .copied()
+            .unwrap_or("Media");
+        sources.roots.push(BrowserRoot {
+            label: label.to_owned(),
+            path: path.clone(),
+            detail: "Media folder".to_owned(),
+            kind: RootKind::Place,
+        });
+    }
+    if let Some(path) = media.first() {
+        sources.starts.insert(Drawer::Media, path.clone());
+    }
+    sources
+}
+
+fn add_place(
+    sources: &mut BrowserSources,
+    drawer: Drawer,
+    label: &str,
+    paths: &[std::path::PathBuf],
+) {
+    if let Some(path) = paths.first() {
+        sources.starts.insert(drawer, path.clone());
+    }
+    for path in paths {
+        sources.roots.push(BrowserRoot {
+            label: label.to_owned(),
+            path: path.clone(),
+            detail: "Standard folder".to_owned(),
+            kind: RootKind::Place,
+        });
+    }
+}
+
+/// Ask `lege-filed` for one real directory snapshot.
+pub async fn browse_directory(
+    path: &std::path::Path,
+    show_hidden: bool,
+) -> Result<DirectoryListing, String> {
+    let connection = session().await?;
+    let proxy = FilesBrowseProxy::new(&connection)
+        .await
+        .map_err(|error| format!("file service unavailable: {error}"))?;
+    let json = proxy
+        .list_directory(&path.to_string_lossy(), show_hidden, 500)
+        .await
+        .map_err(|error| format!("could not list {}: {error}", path.display()))?;
+    serde_json::from_str(&json)
+        .map_err(|error| format!("malformed directory data for {}: {error}", path.display()))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenFileResult {
+    pub app_id: String,
+    pub mime: String,
+    pub instance: String,
+}
+
+#[async_trait::async_trait]
+pub trait BrowserAssociations: Send + Sync {
+    async fn resolve_file(&self, path: &str) -> Result<(String, String, String), String>;
+}
+
+#[async_trait::async_trait]
+impl BrowserAssociations for AssociationsProxy<'_> {
+    async fn resolve_file(&self, path: &str) -> Result<(String, String, String), String> {
+        self.resolve_file(path, "")
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[async_trait::async_trait]
+pub trait BrowserLauncher: Send + Sync {
+    async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String>;
+}
+
+#[async_trait::async_trait]
+impl BrowserLauncher for LauncherProxy<'_> {
+    async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String> {
+        self.launch(app_id, arguments, "")
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Resolve first, launch second. An empty association is a visible result, never permission to
+/// bypass the broker with `xdg-open` or a shell command.
+pub async fn brokered_file_open(
+    associations: &impl BrowserAssociations,
+    launcher: &impl BrowserLauncher,
+    path: &std::path::Path,
+) -> Result<OpenFileResult, String> {
+    let target = path.to_string_lossy().into_owned();
+    let (app_id, mime, reason) = associations
+        .resolve_file(&target)
+        .await
+        .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
+    if app_id.is_empty() {
+        return Err(format!(
+            "No application is associated with {} ({}; {reason})",
+            path.display(),
+            if mime.is_empty() {
+                "unknown type"
+            } else {
+                &mime
+            }
+        ));
+    }
+    let instance = launcher
+        .launch(&app_id, vec![target])
+        .await
+        .map_err(|error| format!("could not open {} with {app_id}: {error}", path.display()))?;
+    Ok(OpenFileResult {
+        app_id,
+        mime,
+        instance,
+    })
+}
+
+pub async fn open_file(path: &std::path::Path) -> Result<OpenFileResult, String> {
+    let connection = session().await?;
+    let associations = AssociationsProxy::new(&connection)
+        .await
+        .map_err(|error| format!("association service unavailable: {error}"))?;
+    let launcher = LauncherProxy::new(&connection)
+        .await
+        .map_err(|error| format!("launcher unavailable: {error}"))?;
+    let result = brokered_file_open(&associations, &launcher, path).await?;
+    if let Ok(recents) = FilesRecentsProxy::new(&connection).await {
+        let _ = recents
+            .record(
+                &path.to_string_lossy(),
+                &result.app_id,
+                "opened",
+                &result.mime,
+            )
+            .await;
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct FakeAssociations((String, String, String));
+
+    #[async_trait::async_trait]
+    impl BrowserAssociations for FakeAssociations {
+        async fn resolve_file(&self, _path: &str) -> Result<(String, String, String), String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeLauncher(Mutex<Vec<(String, Vec<String>)>>);
+
+    #[async_trait::async_trait]
+    impl BrowserLauncher for FakeLauncher {
+        async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String> {
+            self.0.lock().unwrap().push((app_id.to_owned(), arguments));
+            Ok("instance-1".to_owned())
+        }
+    }
 
     #[tokio::test]
     async fn the_bus_free_drawer_renders_without_any_session_bus() {
@@ -218,5 +613,51 @@ mod tests {
         let all = fetch_all(5).await;
         assert_eq!(all.len(), Drawer::DEFAULT.len() - 1);
         assert!(!all.iter().any(|(drawer, _)| *drawer == Drawer::WindowShelf));
+    }
+
+    #[tokio::test]
+    async fn brokered_file_open_resolves_then_launches_the_canonical_app() {
+        let associations = FakeAssociations((
+            "org.example.Reader".into(),
+            "application/pdf".into(),
+            "global-mime-default".into(),
+        ));
+        let launcher = FakeLauncher::default();
+        let result = brokered_file_open(
+            &associations,
+            &launcher,
+            std::path::Path::new("/home/test/paper.pdf"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.app_id, "org.example.Reader");
+        assert_eq!(result.instance, "instance-1");
+        assert_eq!(
+            *launcher.0.lock().unwrap(),
+            vec![(
+                "org.example.Reader".into(),
+                vec!["/home/test/paper.pdf".into()]
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn brokered_file_open_never_bypasses_an_unresolved_association() {
+        let associations = FakeAssociations((
+            String::new(),
+            "application/x-unknown".into(),
+            "ask-user".into(),
+        ));
+        let launcher = FakeLauncher::default();
+        let error = brokered_file_open(
+            &associations,
+            &launcher,
+            std::path::Path::new("/home/test/unknown.bin"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("No application is associated"));
+        assert!(error.contains("ask-user"));
+        assert!(launcher.0.lock().unwrap().is_empty());
     }
 }

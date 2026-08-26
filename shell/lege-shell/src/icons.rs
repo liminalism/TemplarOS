@@ -10,16 +10,35 @@
 //!   this same crate already made this call once (duplicating `cli/lege`'s byte/timestamp
 //!   formatting rather than sharing a crate for four lines of arithmetic); the same reasoning
 //!   applies here, for a still-smaller parser.
-//! * **Implement the freedesktop icon theme specification.** No index.theme parsing, no theme
-//!   inheritance, no scalable/SVG icons (`pixelkit-raster::png` only decodes PNG — see the
-//!   milestone report for what that costs in practice against a stock hicolor theme, which ships
-//!   mostly SVGs). This walks the conventional `hicolor` size buckets and `pixmaps` directly. A
+//! * **Implement the freedesktop icon theme specification.** No index.theme parsing and no theme
+//!   inheritance: this walks the conventional `hicolor` size buckets and `pixmaps` directly. A
 //!   name that resolves to nothing yields `None`, and callers draw a placeholder — never a panic,
 //!   never a stale icon.
+//!
+//! Two things it *does* do, both of which it did not before the launcher needed them:
+//!
+//! * **SVG.** A stock hicolor theme ships mostly SVGs, so a PNG-only lookup resolved almost
+//!   nothing on a real installation. Scalable icons are rasterized through `resvg` at
+//!   [`SVG_RENDER_SIZE`] and preferred over raster buckets, because one vector re-rendered is
+//!   sharper than a 32px PNG stretched.
+//! * **Canonical ids that are not file names.** An imported application's canonical id is
+//!   `desktop-import.<sanitised desktop file id>` (`lege_appd::desktop_entry::derive_app_id`), so
+//!   looking for a file literally named `{app_id}.desktop` could never match one — every icon on
+//!   the field was a placeholder for exactly the applications a person actually has installed.
+//!   [`desktop_file_candidates`] undoes that namespacing, and a caller holding the manifest can
+//!   pass the real `primary_desktop_file_id`/`aliases.desktop_file_ids` (and the `Icon=` value
+//!   itself) through [`IconHints`] instead of relying on the guess.
 
 use std::path::{Path, PathBuf};
 
 use pixelkit_raster::Bitmap;
+
+/// The prefix `lege_appd::desktop_entry::derive_app_id` puts on an imported application's id.
+const IMPORT_PREFIX: &str = "desktop-import.";
+
+/// The square an SVG icon is rasterized into. Matches the largest raster bucket searched, so a
+/// scalable and a PNG icon reach the drawing code at the same scale.
+pub const SVG_RENDER_SIZE: u32 = 128;
 
 /// The `.desktop` `[Desktop Entry]` fields this module reads. A trimmed-down mirror of
 /// `lege_appd::desktop_entry::DesktopEntry` — see the module doc for why this does not depend on
@@ -130,67 +149,239 @@ impl IconRoots for SystemIconRoots {
     }
 }
 
-/// Size buckets tried, largest first — a dock or a drawer row would rather down-sample a 128px
-/// icon than up-sample a 16px one into a blur.
-const SIZE_BUCKETS: &[&str] = &["128x128", "64x64", "48x48", "32x32", "scalable"];
+/// Size buckets tried, in order. `scalable` leads because an SVG is re-rendered at the size we
+/// want rather than resampled; after it, largest raster first — a tile would rather down-sample a
+/// 128px icon than up-sample a 16px one into a blur.
+const SIZE_BUCKETS: &[&str] = &["scalable", "256x256", "128x128", "64x64", "48x48", "32x32"];
 
-/// Find `{app_id}.desktop` under `roots.desktop_dirs()` and parse its `Icon=` value, without
-/// touching the filesystem at all if `app_id` is empty.
-pub fn desktop_icon_name(app_id: &str, roots: &impl IconRoots) -> Option<String> {
+/// File extensions tried within one bucket, in order of preference.
+const ICON_EXTENSIONS: &[&str] = &["svg", "png"];
+
+/// What the caller already knows about an application, so the lookup does not have to guess it
+/// back out of the canonical id. Every field is optional; an empty [`IconHints`] reproduces the
+/// name-only search.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IconHints<'a> {
+    /// The manifest's `Icon=` value. When present, no `.desktop` file is read at all.
+    pub icon: Option<&'a str>,
+    /// Known `.desktop` file ids for this application (`primary_desktop_file_id` first, then
+    /// `aliases.desktop_file_ids`), with or without the `.desktop` suffix.
+    pub desktop_file_ids: &'a [String],
+}
+
+/// The `.desktop` file names worth trying for a canonical application id, most likely first.
+///
+/// A native manifest's id *is* the desktop file's base name (`org.legeos.Files` →
+/// `org.legeos.Files.desktop`). An imported one is not: `derive_app_id` namespaces the whole
+/// desktop file id — including its `.desktop` suffix — under `desktop-import.`, so
+/// `desktop-import.firefox.desktop` is the file `firefox.desktop` and never
+/// `desktop-import.firefox.desktop.desktop`, which is what the old lookup asked for.
+///
+/// The namespacing also replaces every character outside `[A-Za-z0-9.\-_]` with `-`, which is not
+/// reversible; a desktop file whose id contained such a character is simply not found this way,
+/// and that is what [`IconHints::desktop_file_ids`] is for.
+pub fn desktop_file_candidates(app_id: &str) -> Vec<String> {
     if app_id.is_empty() {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    let mut push = |name: String| {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    };
+    if let Some(imported) = app_id.strip_prefix(IMPORT_PREFIX)
+        && !imported.is_empty()
+    {
+        push(with_desktop_suffix(imported));
+    }
+    push(with_desktop_suffix(app_id));
+    names
+}
+
+fn with_desktop_suffix(id: &str) -> String {
+    if id.ends_with(".desktop") {
+        id.to_owned()
+    } else {
+        format!("{id}.desktop")
+    }
+}
+
+/// Find a `.desktop` file for `app_id` under `roots.desktop_dirs()` and parse its `Icon=` value,
+/// without touching the filesystem at all if `app_id` is empty.
+pub fn desktop_icon_name(app_id: &str, roots: &impl IconRoots) -> Option<String> {
+    desktop_icon_name_hinted(app_id, IconHints::default(), roots)
+}
+
+/// [`desktop_icon_name`], preferring the caller's own knowledge: an `Icon=` value it already
+/// holds short-circuits the search entirely, and the desktop file ids it names are tried before
+/// the ones guessed from `app_id`.
+pub fn desktop_icon_name_hinted(
+    app_id: &str,
+    hints: IconHints<'_>,
+    roots: &impl IconRoots,
+) -> Option<String> {
+    if let Some(icon) = hints.icon.filter(|icon| !icon.is_empty()) {
+        return Some(icon.to_owned());
+    }
+    let mut names: Vec<String> = hints
+        .desktop_file_ids
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| with_desktop_suffix(id))
+        .collect();
+    for guess in desktop_file_candidates(app_id) {
+        if !names.contains(&guess) {
+            names.push(guess);
+        }
+    }
+    if names.is_empty() {
         return None;
     }
     for dir in roots.desktop_dirs() {
-        let path = dir.join(format!("{app_id}.desktop"));
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Some(entry) = parse_desktop_entry(&text)
-        {
-            return entry.icon;
+        for name in &names {
+            let path = dir.join(name);
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Some(entry) = parse_desktop_entry(&text)
+                && let Some(icon) = entry.icon
+            {
+                return Some(icon);
+            }
         }
     }
     None
 }
 
-/// Resolve an icon name (or, per the desktop entry spec, an already-absolute path) to a `.png`
-/// file. `None` when nothing matches — SVG-only themes are the common case this returns `None`
-/// for; see the module doc.
+/// Resolve an icon name (or, per the desktop entry spec, an already-absolute path) to a `.png` or
+/// `.svg` file. `None` when nothing matches.
 pub fn resolve_icon_path(icon: &str, roots: &impl IconRoots) -> Option<PathBuf> {
+    if icon.is_empty() {
+        return None;
+    }
     let candidate = Path::new(icon);
     if candidate.is_absolute() {
-        return candidate
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-            .then(|| candidate.to_path_buf());
+        return decodable(candidate).then(|| candidate.to_path_buf());
     }
+    // An `Icon=` value is specified to be a bare name, but entries in the wild write
+    // `firefox.png`; strip a known extension so the bucket search does not look for
+    // `firefox.png.svg`.
+    let stem = match candidate.extension() {
+        Some(extension)
+            if ICON_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known)) =>
+        {
+            candidate.file_stem()?.to_string_lossy().into_owned()
+        }
+        _ => icon.to_owned(),
+    };
     for theme_dir in roots.theme_dirs() {
         for size in SIZE_BUCKETS {
-            let path = theme_dir
-                .join(size)
-                .join("apps")
-                .join(format!("{icon}.png"));
+            for extension in ICON_EXTENSIONS {
+                let path = theme_dir
+                    .join(size)
+                    .join("apps")
+                    .join(format!("{stem}.{extension}"));
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    for pixmap_dir in roots.pixmap_dirs() {
+        for extension in ICON_EXTENSIONS {
+            let path = pixmap_dir.join(format!("{stem}.{extension}"));
             if path.is_file() {
                 return Some(path);
             }
         }
     }
-    for pixmap_dir in roots.pixmap_dirs() {
-        let path = pixmap_dir.join(format!("{icon}.png"));
-        if path.is_file() {
-            return Some(path);
-        }
-    }
     None
 }
 
-/// The whole lookup, `AppId` string to decoded bitmap: find the `.desktop` file, read its
-/// `Icon=`, resolve that to a PNG, decode it. `None` at any step (no `.desktop` file, no `Icon=`
-/// key, no PNG matching that name, or a PNG this decoder cannot read) yields `None` rather than an
-/// error — an icon is always optional, never something a drawer refuses to render over.
-pub fn load_app_icon(app_id: &str, roots: &impl IconRoots) -> Option<Bitmap> {
-    let icon_name = desktop_icon_name(app_id, roots)?;
-    let path = resolve_icon_path(&icon_name, roots)?;
+fn decodable(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        ICON_EXTENSIONS
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+    })
+}
+
+/// Decode whatever `path` holds, by extension. `None` for anything unreadable or undecodable —
+/// an icon is always optional, never something a surface refuses to render over.
+pub fn decode_icon_file(path: &Path) -> Option<Bitmap> {
     let bytes = std::fs::read(path).ok()?;
-    pixelkit_raster::png::decode(&bytes).ok()
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    {
+        rasterize_svg(&bytes, SVG_RENDER_SIZE)
+    } else {
+        pixelkit_raster::png::decode(&bytes).ok()
+    }
+}
+
+/// Rasterize an SVG into a `size`-square bitmap, letterboxed and centred so a non-square icon
+/// keeps its aspect ratio rather than being stretched.
+///
+/// Text inside an icon is not drawn: `resvg` is linked without its font stack (see this crate's
+/// `Cargo.toml`). Icons that are typography are rare and the alternative is a font database in a
+/// shell that must restart quickly.
+pub fn rasterize_svg(bytes: &[u8], size: u32) -> Option<Bitmap> {
+    if size == 0 {
+        return None;
+    }
+    let options = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(bytes, &options).ok()?;
+    let source = tree.size();
+    let (width, height) = (source.width(), source.height());
+    if !(width.is_finite() && height.is_finite()) || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let scale = (size as f32 / width).min(size as f32 / height);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
+    let transform = resvg::tiny_skia::Transform::from_translate(
+        (size as f32 - width * scale) / 2.0,
+        (size as f32 - height * scale) / 2.0,
+    )
+    .pre_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // tiny-skia paints premultiplied RGBA; `Bitmap` is straight-alpha `0xAARRGGBB`.
+    let pixels = pixmap
+        .pixels()
+        .iter()
+        .map(|pixel| {
+            let colour = pixel.demultiply();
+            (u32::from(colour.alpha()) << 24)
+                | (u32::from(colour.red()) << 16)
+                | (u32::from(colour.green()) << 8)
+                | u32::from(colour.blue())
+        })
+        .collect();
+    Some(Bitmap {
+        width: size,
+        height: size,
+        pixels,
+    })
+}
+
+/// The whole lookup, `AppId` string to decoded bitmap: find the `.desktop` file, read its
+/// `Icon=`, resolve that to a PNG or SVG, decode it. `None` at any step yields `None` rather than
+/// an error.
+pub fn load_app_icon(app_id: &str, roots: &impl IconRoots) -> Option<Bitmap> {
+    load_app_icon_hinted(app_id, IconHints::default(), roots)
+}
+
+/// [`load_app_icon`] for a caller that already holds the application's manifest data.
+pub fn load_app_icon_hinted(
+    app_id: &str,
+    hints: IconHints<'_>,
+    roots: &impl IconRoots,
+) -> Option<Bitmap> {
+    let icon_name = desktop_icon_name_hinted(app_id, hints, roots)?;
+    let path = resolve_icon_path(&icon_name, roots)?;
+    decode_icon_file(&path)
 }
 
 #[cfg(test)]
@@ -312,11 +503,19 @@ mod tests {
     }
 
     #[test]
-    fn an_absolute_non_png_value_is_rejected_rather_than_handed_to_the_png_decoder() {
+    fn an_absolute_svg_value_resolves_now_that_there_is_a_rasterizer_for_it() {
         let (_dir, roots) = fixture();
         let svg = roots.pixmaps.join("vector.svg");
         fs::write(&svg, b"<svg/>").unwrap();
-        assert_eq!(resolve_icon_path(svg.to_str().unwrap(), &roots), None);
+        assert_eq!(resolve_icon_path(svg.to_str().unwrap(), &roots), Some(svg));
+    }
+
+    #[test]
+    fn an_absolute_value_this_decoder_cannot_read_is_rejected_rather_than_attempted() {
+        let (_dir, roots) = fixture();
+        let xpm = roots.pixmaps.join("legacy.xpm");
+        fs::write(&xpm, b"/* XPM */").unwrap();
+        assert_eq!(resolve_icon_path(xpm.to_str().unwrap(), &roots), None);
     }
 
     #[test]
@@ -346,5 +545,119 @@ mod tests {
     fn an_app_with_no_desktop_file_at_all_loads_no_icon() {
         let (_dir, roots) = fixture();
         assert_eq!(load_app_icon("org.legeos.Nowhere", &roots), None);
+    }
+
+    #[test]
+    fn an_imported_app_ids_desktop_file_is_found_under_its_real_name() {
+        // The regression this whole module existed to have and did not: `desktop-import.` ids
+        // are what the registry hands the shell for every application it did not ship itself.
+        let (_dir, roots) = fixture();
+        fs::write(
+            roots.desktop.join("firefox.desktop"),
+            "[Desktop Entry]\nName=Firefox\nIcon=firefox\n",
+        )
+        .unwrap();
+        assert_eq!(
+            desktop_icon_name("desktop-import.firefox.desktop", &roots).as_deref(),
+            Some("firefox"),
+        );
+    }
+
+    #[test]
+    fn desktop_file_candidates_cover_both_shapes_of_canonical_id_and_nothing_else() {
+        assert_eq!(
+            desktop_file_candidates("desktop-import.firefox.desktop"),
+            ["firefox.desktop", "desktop-import.firefox.desktop"],
+        );
+        assert_eq!(
+            desktop_file_candidates("org.legeos.Files"),
+            ["org.legeos.Files.desktop"],
+        );
+        assert!(desktop_file_candidates("").is_empty());
+    }
+
+    #[test]
+    fn a_known_icon_name_short_circuits_the_desktop_file_search_entirely() {
+        let (_dir, roots) = fixture();
+        // No `.desktop` file exists, and none is needed: the manifest already said `Icon=`.
+        let hints = IconHints {
+            icon: Some("editor-icon"),
+            ..IconHints::default()
+        };
+        assert_eq!(
+            desktop_icon_name_hinted("desktop-import.weird name.desktop", hints, &roots).as_deref(),
+            Some("editor-icon"),
+        );
+    }
+
+    #[test]
+    fn a_known_desktop_file_id_beats_a_guess_that_the_sanitiser_made_unreversible() {
+        let (_dir, roots) = fixture();
+        // `derive_app_id` turned the space into `-`, so no guess can find this file.
+        fs::write(
+            roots.desktop.join("odd name.desktop"),
+            "[Desktop Entry]\nName=Odd\nIcon=odd-icon\n",
+        )
+        .unwrap();
+        let ids = ["odd name.desktop".to_owned()];
+        let hints = IconHints {
+            desktop_file_ids: &ids,
+            ..IconHints::default()
+        };
+        assert_eq!(
+            desktop_icon_name_hinted("desktop-import.odd-name.desktop", hints, &roots).as_deref(),
+            Some("odd-icon"),
+        );
+    }
+
+    #[test]
+    fn a_scalable_icon_is_preferred_over_a_raster_bucket_and_rasterizes() {
+        let (_dir, roots) = fixture();
+        fs::create_dir_all(roots.theme.join("scalable/apps")).unwrap();
+        fs::create_dir_all(roots.theme.join("128x128/apps")).unwrap();
+        fs::write(roots.theme.join("128x128/apps/editor.png"), b"not a png").unwrap();
+        fs::write(
+            roots.theme.join("scalable/apps/editor.svg"),
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#ff0000"/></svg>"##,
+        )
+        .unwrap();
+        let path = resolve_icon_path("editor", &roots).unwrap();
+        assert!(path.ends_with("scalable/apps/editor.svg"), "{path:?}");
+
+        let bitmap = decode_icon_file(&path).unwrap();
+        assert_eq!(
+            (bitmap.width, bitmap.height),
+            (SVG_RENDER_SIZE, SVG_RENDER_SIZE)
+        );
+        // Opaque red, straight alpha, in the middle of a square icon.
+        let middle = bitmap.pixel(SVG_RENDER_SIZE / 2, SVG_RENDER_SIZE / 2);
+        assert_eq!(middle, 0xffff_0000, "got {middle:#010x}");
+    }
+
+    #[test]
+    fn a_non_square_svg_keeps_its_aspect_ratio_instead_of_stretching() {
+        let bitmap = rasterize_svg(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16"><rect width="32" height="16" fill="#0000ff"/></svg>"##,
+            32,
+        )
+        .unwrap();
+        assert_eq!((bitmap.width, bitmap.height), (32, 32));
+        // The drawing fills the width and is letterboxed top and bottom.
+        assert_eq!(bitmap.pixel(16, 16), 0xff00_00ff);
+        assert_eq!(bitmap.pixel(16, 1) >> 24, 0, "the top band must stay clear");
+    }
+
+    #[test]
+    fn a_file_that_is_not_svg_at_all_yields_none_rather_than_a_panic() {
+        assert_eq!(rasterize_svg(b"certainly not markup", 32), None);
+    }
+
+    #[test]
+    fn an_icon_name_written_with_its_extension_still_finds_the_bucket_file() {
+        let (_dir, roots) = fixture();
+        fs::create_dir_all(roots.theme.join("48x48/apps")).unwrap();
+        fs::write(roots.theme.join("48x48/apps/editor.png"), b"x").unwrap();
+        let path = resolve_icon_path("editor.png", &roots).unwrap();
+        assert!(path.ends_with("48x48/apps/editor.png"), "{path:?}");
     }
 }

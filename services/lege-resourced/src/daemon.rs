@@ -614,13 +614,16 @@ fn current_uid() -> u32 {
     }
 }
 
-/// Keep the governor's own pages resident: it must act while everything else is thrashing
-/// (ADR-0002). Failure (for example a tight `RLIMIT_MEMLOCK`) is logged, not fatal.
+/// Keep the governor's already-allocated pages resident: it must act while everything else is
+/// thrashing (ADR-0002). `MCL_FUTURE` is deliberately excluded. With a finite `LimitMEMLOCK`,
+/// successfully enabling it turns an ordinary later allocation into `ENOMEM`, which Rust's
+/// allocator handles by aborting the process — exactly the opposite of keeping the governor
+/// alive. Failure (for example a tight `RLIMIT_MEMLOCK`) is logged, not fatal.
 pub fn lock_memory() {
     // SAFETY: mlockall only takes flags; failure is reported through its return value and is
     // non-fatal — the process continues without locked memory.
     #[allow(unsafe_code)]
-    let result = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+    let result = unsafe { libc::mlockall(libc::MCL_CURRENT) };
     if result != 0 {
         tracing::debug!("mlockall unavailable; continuing without locked memory");
     }
@@ -631,6 +634,14 @@ mod tests {
     use super::*;
     use lege_types::{AppId, unit};
     use std::fs;
+
+    #[test]
+    fn locking_current_pages_does_not_poison_future_allocations() {
+        lock_memory();
+        let allocation = vec![0x5a_u8; 128 * 1024];
+        assert_eq!(allocation.len(), 128 * 1024);
+        assert_eq!(allocation[0], 0x5a);
+    }
 
     struct Fixture {
         dir: PathBuf,

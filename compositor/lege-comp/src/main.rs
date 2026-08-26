@@ -4,6 +4,7 @@
 
 mod backend;
 mod chrome;
+mod cursor;
 mod foreign_toplevel;
 mod handlers;
 mod input;
@@ -58,6 +59,11 @@ struct Cli {
     /// a Wayland/X11 session) — overridable either way ([`default_backend`]).
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
+
+    /// Exact public Wayland socket name. The installed session uses `legeos-0`; direct and
+    /// nested development runs omit this and receive the first available `wayland-N` name.
+    #[arg(long, value_name = "NAME")]
+    socket_name: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -80,8 +86,8 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!(?backend, "starting lege-comp");
     let exit_code = match backend {
-        BackendKind::Winit => backend::winit::run(exec.as_deref()),
-        BackendKind::Udev => backend::udev::run(exec.as_deref()),
+        BackendKind::Winit => backend::winit::run(exec.as_deref(), cli.socket_name.as_deref()),
+        BackendKind::Udev => backend::udev::run(exec.as_deref(), cli.socket_name.as_deref()),
     }?;
     // The --exec child's exit code is this process's, so whatever started us sees what happened to
     // the thing it actually asked for.
@@ -91,6 +97,19 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Complete systemd's `Type=notify` start once a backend has presented its first frame. Failure is
+/// expected outside the installed unit (there is no `NOTIFY_SOCKET`) and is not fatal.
+fn notify_ready_once(already_notified: &mut bool) {
+    if *already_notified {
+        return;
+    }
+    if let Err(error) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+        tracing::debug!(%error, "sd_notify READY failed (not running under systemd?)");
+    }
+    *already_notified = true;
+    tracing::info!("first frame presented; compositor is ready");
+}
+
 /// Nested (winit) whenever we can already see a host compositor/X server to nest inside;
 /// otherwise assume we are the session compositor and want real hardware.
 fn default_backend() -> BackendKind {
@@ -98,5 +117,64 @@ fn default_backend() -> BackendKind {
         BackendKind::Winit
     } else {
         BackendKind::Udev
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_graphical_backend_notifies_only_after_a_frame_reaches_the_display() {
+        for source in [
+            include_str!("backend/udev.rs"),
+            include_str!("backend/winit.rs"),
+        ] {
+            assert_eq!(source.matches("crate::notify_ready_once(").count(), 1);
+            assert!(!source.contains("insert_idle(|_| crate::notify_ready"));
+        }
+        let udev = include_str!("backend/udev.rs");
+        let submitted = udev
+            .find("frame_submitted()")
+            .expect("hardware backend observes completed scanout");
+        let udev_notify = udev[submitted..]
+            .find("crate::notify_ready_once(")
+            .expect("hardware backend notifies after completed scanout");
+        assert!(udev_notify > 0);
+
+        let winit = include_str!("backend/winit.rs");
+        let submitted = winit
+            .find("graphics.submit(")
+            .expect("nested backend submits a host frame");
+        let winit_notify = winit[submitted..]
+            .find("crate::notify_ready_once(")
+            .expect("nested backend notifies after host-frame submission");
+        assert!(winit_notify > 0);
+    }
+
+    #[test]
+    fn every_graphical_backend_flushes_clients_after_dispatch() {
+        for source in [
+            include_str!("backend/udev.rs"),
+            include_str!("backend/winit.rs"),
+        ] {
+            let run = source
+                .find("event_loop.run(None")
+                .expect("backend enters calloop");
+            let flush = source[run..]
+                .find("flush_clients()")
+                .expect("backend flushes queued Wayland replies after dispatch");
+            assert!(flush > 0);
+        }
+        assert!(include_str!("backend/udev.rs").contains("window.send_frame("));
+    }
+
+    #[test]
+    fn mapping_consumes_the_trusted_shell_surface_claims() {
+        let mapping = include_str!("xdg_shell.rs");
+        assert!(mapping.contains(
+            "crate::protocols_shell::apply_surface_claims(self, surface, window_id, requested)"
+        ));
+        let protocol = include_str!("protocols_shell.rs");
+        assert!(protocol.contains("shell_surface_placement(layer, exclusive, &output, requested)"));
+        assert!(protocol.contains("pending.size = Some((geometry.width, geometry.height).into())"));
     }
 }

@@ -243,6 +243,10 @@ mod tests {
             mime_types: BTreeSet::new(),
             resource_class: ResourceClass::Interactive,
             supports_checkpoint: false,
+            icon: None,
+            categories: BTreeSet::new(),
+            keywords: BTreeSet::new(),
+            no_display: false,
         }
     }
 

@@ -118,23 +118,30 @@ impl SpanRange {
         }
     }
 
-    /// The default range for a kind, on a field `cols` wide and `rows` tall. A project's
-    /// preferred size is one quadrant: "throw things into a quadrant and a workspace forms".
+    /// The default range for a kind, on a field `cols` wide and `rows` tall. These are the Home
+    /// Field class floors, not generic layout guesses: a file is one thing, a folder is many,
+    /// and a widget is an instrument. A project's preferred size remains one quadrant.
     pub fn for_kind(kind: &TileKind, cols: u16, rows: u16) -> Self {
         match kind {
             TileKind::Project { .. } => Self::new(
-                Span::new(2, 2),
-                Span::new((cols / 2).max(2), (rows / 2).max(2)),
+                Span::new(4, 4),
+                Span::new((cols / 2).max(4), (rows / 2).max(4)),
                 Span::new(cols, rows),
             ),
-            TileKind::App { .. } | TileKind::File { .. } | TileKind::System { .. } => {
-                Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2))
-            }
+            TileKind::App { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
+            TileKind::File { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 1)),
             TileKind::ParkedSession { .. } => {
-                Self::new(Span::new(1, 1), Span::new(2, 1), Span::new(4, 3))
+                Self::new(Span::new(2, 1), Span::new(4, 2), Span::new(8, 4))
             }
-            TileKind::Tray { .. } => Self::new(Span::new(1, 1), Span::new(2, 2), Span::new(6, 4)),
-            TileKind::Widget { .. } => Self::new(Span::new(1, 1), Span::new(2, 1), Span::new(4, 4)),
+            TileKind::Tray { .. } => Self::new(Span::new(2, 2), Span::new(3, 3), Span::new(6, 4)),
+            // A widget is an instrument, and some of them (a launcher, a notification list) are
+            // only useful large — so the ceiling is well above the preferred size rather than
+            // equal to it, which is what used to make widgets the one kind that could shrink but
+            // never grow. It stays a fixed, generous cap rather than scaling with the field:
+            // nothing in the widget system may approach filling the screen, because a tile that
+            // covers everything is a maximised window wearing a tile's clothes.
+            TileKind::Widget { .. } => Self::new(Span::new(2, 2), Span::new(4, 4), Span::new(8, 6)),
+            TileKind::System { .. } => Self::new(Span::new(3, 2), Span::new(4, 2), Span::new(7, 4)),
         }
     }
 
@@ -183,28 +190,48 @@ impl Representation {
         let cells = span.cells();
         match kind {
             TileKind::Project { .. } => match cells {
-                0..=3 => Self::Small,
-                4..=11 => Self::Wide,
+                0..=15 => Self::Small,
+                16..=35 => Self::Wide,
                 _ => Self::Large,
             },
             TileKind::Tray { .. } | TileKind::Widget { .. } => {
-                if cells == 1 {
-                    Self::Micro
-                } else if span.rows == 1 {
-                    Self::Wide
-                } else if cells <= 3 {
+                if cells <= 4 {
                     Self::Small
+                } else if cells <= 8 {
+                    Self::Wide
                 } else {
                     Self::Large
                 }
             }
             TileKind::ParkedSession { .. } => match cells {
-                1 => Self::Micro,
-                2..=3 => Self::Wide,
+                0..=3 => Self::Wide,
                 _ => Self::Large,
             },
-            TileKind::App { .. } | TileKind::File { .. } | TileKind::System { .. } => {
-                if cells == 1 { Self::Micro } else { Self::Small }
+            TileKind::App { .. } => {
+                if cells == 1 {
+                    Self::Micro
+                } else {
+                    Self::Small
+                }
+            }
+            TileKind::File { .. } => {
+                if cells == 1 {
+                    Self::Micro
+                } else {
+                    Self::Wide
+                }
+            }
+            TileKind::System { .. } => {
+                // Three rungs, not two: a system tile's controls are declared per rung
+                // (`lege-shell`'s widget contract), and jumping straight from its 3x2 floor to
+                // everything-at-once left the middle sizes with nothing to say.
+                if cells <= 6 {
+                    Self::Small
+                } else if cells <= 12 {
+                    Self::Wide
+                } else {
+                    Self::Large
+                }
             }
         }
     }
@@ -228,8 +255,67 @@ mod tests {
         let range = SpanRange::for_kind(&kind, 12, 8);
         assert_eq!(range.preferred, Span::new(6, 4));
         assert_eq!(range.max, Span::new(12, 8));
-        assert!(range.accepts(Span::new(2, 2)));
-        assert!(!range.accepts(Span::new(1, 1)));
+        assert!(range.accepts(Span::new(4, 4)));
+        assert!(!range.accepts(Span::new(3, 4)));
+    }
+
+    #[test]
+    fn object_class_size_floors_match_the_home_field_language() {
+        let field = (24, 13);
+        let cases = [
+            (
+                TileKind::File { path: "x".into() },
+                Span::new(1, 1),
+                Span::new(2, 1),
+            ),
+            (
+                TileKind::Tray { tray_id: TrayId(1) },
+                Span::new(2, 2),
+                Span::new(6, 4),
+            ),
+            (
+                TileKind::Widget {
+                    widget: "calendar".into(),
+                    scope: None,
+                },
+                Span::new(2, 2),
+                Span::new(8, 6),
+            ),
+            (
+                TileKind::App {
+                    app_id: "org.legeos.Files".parse().unwrap(),
+                },
+                Span::new(1, 1),
+                Span::new(2, 2),
+            ),
+            (
+                TileKind::ParkedSession {
+                    app_id: None,
+                    identifier: "window:1".into(),
+                },
+                Span::new(2, 1),
+                Span::new(8, 4),
+            ),
+            (
+                TileKind::Project {
+                    project_id: "p".into(),
+                },
+                Span::new(4, 4),
+                Span::new(24, 13),
+            ),
+            (
+                TileKind::System {
+                    probe: "drives".into(),
+                },
+                Span::new(3, 2),
+                Span::new(7, 4),
+            ),
+        ];
+        for (kind, min, max) in cases {
+            let range = SpanRange::for_kind(&kind, field.0, field.1);
+            assert_eq!(range.min, min, "minimum for {kind:?}");
+            assert_eq!(range.max, max, "maximum for {kind:?}");
+        }
     }
 
     #[test]

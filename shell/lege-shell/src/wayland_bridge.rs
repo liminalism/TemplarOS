@@ -546,8 +546,33 @@ impl ShellBridge {
         self.connection.flush().context("flushing set_maximized")
     }
 
-    /// "Go home" (version 2): the dock's Home button and the field's own route to the same
-    /// reveal the compositor's Super+D / Ctrl+Alt+H perform.
+    /// The compositor's "show every window" recovery view, from the shell's own UI rather than
+    /// from `Ctrl+Alt+Space` (`window.show-all` in the action manifest). The compositor computes
+    /// the scatter itself and does not consult this connection for it — the request exists
+    /// precisely so the chord is not the only way in.
+    pub fn show_all_windows(&self) -> Result<()> {
+        self.manager.show_all_windows();
+        self.connection.flush().context("flushing show_all_windows")
+    }
+
+    /// `window.escape-fullscreen` by pointer. `window_id` of `None` targets whichever window
+    /// currently holds activation, exactly as `Ctrl+Alt+Escape` does.
+    pub fn escape_fullscreen_or_modal(&self, window_id: Option<WindowId>) -> Result<()> {
+        let toplevel = match window_id {
+            None => None,
+            Some(window_id) => match self.toplevel_object(window_id) {
+                Some(toplevel) => Some(toplevel.clone()),
+                None => bail!("no such window on this connection: {window_id:?}"),
+            },
+        };
+        self.manager.escape_fullscreen_or_modal(toplevel.as_ref());
+        self.connection
+            .flush()
+            .context("flushing escape_fullscreen_or_modal")
+    }
+
+    /// "Go home" (version 2): the field's HOME button reaches the same reveal as a bare Super
+    /// tap and the compositor's Ctrl+Alt+H / Super+D fallbacks.
     pub fn reveal_home(&self, reveal: RevealHome) -> Result<()> {
         if self.manager.version() < 2 {
             bail!("the compositor speaks lege_shell_v1 version 1, which has no reveal_home");

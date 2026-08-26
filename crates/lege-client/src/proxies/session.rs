@@ -35,6 +35,18 @@ mod background {
 mod app_identity {
     use zbus::proxy;
 
+    /// `(app_id, display_name, desktop_file_id, icon, categories, keywords, no_display)` —
+    /// the wire shape of `AppIdentity1.ListApplications`.
+    pub type ApplicationRow = (
+        String,
+        String,
+        String,
+        String,
+        Vec<String>,
+        Vec<String>,
+        bool,
+    );
+
     #[proxy(
         interface = "org.legeos.AppIdentity1",
         default_service = "org.legeos.Session",
@@ -53,6 +65,9 @@ mod app_identity {
         fn list_instances(&self) -> zbus::Result<Vec<(String, String, String, String)>>;
 
         fn list_apps(&self) -> zbus::Result<Vec<String>>;
+
+        /// One [`ApplicationRow`] per installed manifest.
+        fn list_applications(&self) -> zbus::Result<Vec<ApplicationRow>>;
     }
 }
 
@@ -280,6 +295,38 @@ mod power {
     }
 }
 
+mod lifecycle {
+    use zbus::proxy;
+
+    /// `org.legeos.Session.Lifecycle1` — ending, suspending and locking the session.
+    ///
+    /// The `Can*` methods return logind's own `"yes" | "no" | "na" | "challenge"` rather than a
+    /// boolean, so a caller can tell "this machine cannot" from "this would need
+    /// authentication".
+    #[proxy(
+        interface = "org.legeos.Session.Lifecycle1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Lifecycle"
+    )]
+    pub trait Lifecycle {
+        fn logout(&self) -> zbus::Result<()>;
+
+        fn reboot(&self) -> zbus::Result<()>;
+
+        fn power_off(&self) -> zbus::Result<()>;
+
+        fn suspend(&self) -> zbus::Result<()>;
+
+        fn lock(&self) -> zbus::Result<()>;
+
+        fn can_reboot(&self) -> zbus::Result<String>;
+
+        fn can_power_off(&self) -> zbus::Result<String>;
+
+        fn can_suspend(&self) -> zbus::Result<String>;
+    }
+}
+
 mod location {
     use zbus::proxy;
 
@@ -305,6 +352,7 @@ pub use background::BackgroundProxy;
 pub use history::HistoryProxy;
 pub use homefield::HomeFieldProxy;
 pub use launcher::LauncherProxy;
+pub use lifecycle::LifecycleProxy;
 pub use location::LocationProxy;
 pub use power::PowerProxy;
 pub use projects::ProjectsProxy;

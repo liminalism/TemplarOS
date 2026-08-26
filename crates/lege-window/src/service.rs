@@ -3,8 +3,8 @@
 
 use crate::{
     geometry::{
-        Output, Point, RecoveryAffordance, Rect, choose_target_output, recovery_affordance,
-        repair_window,
+        Output, Point, RecoveryAffordance, Rect, ResizeEdges, choose_target_output,
+        recovery_affordance, repair_window, resize_grip, resize_rect,
     },
     layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition},
     shell::ShellToplevel,
@@ -106,6 +106,19 @@ struct DragState {
     anchor_in_window: Point,
 }
 
+/// An interactive resize in flight. Unlike a drag, this remembers where the window *started*
+/// rather than tracking a delta frame by frame: every update is recomputed from the original
+/// rectangle and the total pointer displacement, so a pointer that runs past the minimum size
+/// and comes back reproduces the size it had on the way out instead of drifting by however much
+/// the clamp swallowed.
+#[derive(Clone, Copy, Debug)]
+struct ResizeState {
+    window_id: WindowId,
+    edges: ResizeEdges,
+    origin: Rect,
+    pointer_origin: Point,
+}
+
 /// The single-scene window service.
 #[derive(Debug)]
 pub struct WindowService<I> {
@@ -115,6 +128,7 @@ pub struct WindowService<I> {
     next_window_id: u64,
     next_shelf_rank: u64,
     drag: Option<DragState>,
+    resize: Option<ResizeState>,
     layers: LayerStack<WindowId>,
     /// Activation-grant tokens already consumed by a successful `Activate`, keyed to their
     /// expiry so they can be pruned once they could not be replayed anyway. See
@@ -137,6 +151,7 @@ impl<I: IdentityCache> WindowService<I> {
             next_window_id: 1,
             next_shelf_rank: 0,
             drag: None,
+            resize: None,
             layers: LayerStack::new(),
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
@@ -266,19 +281,27 @@ impl<I: IdentityCache> WindowService<I> {
         if self.drag.is_some_and(|drag| drag.window_id == window_id) {
             self.drag = None;
         }
+        if self
+            .resize
+            .is_some_and(|resize| resize.window_id == window_id)
+        {
+            self.resize = None;
+        }
     }
 
     /// Outputs changed (hotplug, scale, resume). Every window is re-validated except the one
-    /// currently being dragged: repairing it here would fight the user's pointer and be
-    /// overwritten by the very next `update_drag` anyway, so that invariant is instead enforced
-    /// once, in `finish_drag`. The returned list is what must be re-configured on the clients.
+    /// currently being dragged or resized: repairing it here would fight the user's pointer and
+    /// be overwritten by the very next `update_drag`/`update_resize` anyway, so that invariant is
+    /// instead enforced once, in `finish_drag`/`finish_resize`. The returned list is what must be
+    /// re-configured on the clients.
     pub fn on_outputs_changed(&mut self, outputs: Vec<Output>) -> Vec<(WindowId, Rect)> {
         self.outputs = outputs;
         let dragging = self.drag.map(|drag| drag.window_id);
+        let resizing = self.resize.map(|resize| resize.window_id);
 
         let mut changed = Vec::new();
         for window in self.windows.values_mut() {
-            if Some(window.id) == dragging {
+            if Some(window.id) == dragging || Some(window.id) == resizing {
                 continue;
             }
             let repaired = if window.maximized {
@@ -353,6 +376,11 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     pub fn begin_drag(&mut self, window_id: WindowId, pointer_global: Point) -> bool {
+        // One pointer, one gesture: a move started while a resize is in flight would leave two
+        // states both rewriting the same geometry from different anchors.
+        if self.resize.is_some() {
+            return false;
+        }
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
@@ -387,6 +415,85 @@ impl<I: IdentityCache> WindowService<I> {
 
     pub fn is_dragging(&self, window_id: WindowId) -> bool {
         self.drag.is_some_and(|drag| drag.window_id == window_id)
+    }
+
+    /// Begin an interactive resize of `window_id` from `pointer_global`, dragging `edges`.
+    ///
+    /// Refused — `false`, and nothing started — for an unknown window, for a resize that names
+    /// no edge, while a move of any window is in flight, and for a maximized window: a maximized
+    /// window's geometry is re-derived from its output on every topology change
+    /// ([`Self::on_outputs_changed`]), so a size dragged onto it would be silently discarded the
+    /// next time anything about the outputs moved. Unmaximize first, which is a route the user
+    /// already has.
+    pub fn begin_resize(
+        &mut self,
+        window_id: WindowId,
+        pointer_global: Point,
+        edges: ResizeEdges,
+    ) -> bool {
+        if edges.is_empty() || self.drag.is_some() {
+            return false;
+        }
+        let Some(window) = self.windows.get(&window_id) else {
+            return false;
+        };
+        if window.maximized {
+            return false;
+        }
+        self.resize = Some(ResizeState {
+            window_id,
+            edges,
+            origin: window.geometry,
+            pointer_origin: pointer_global,
+        });
+        true
+    }
+
+    /// The size the window should now have, from the pointer's total displacement since
+    /// [`begin_resize`](Self::begin_resize). Clamped to the minimum by
+    /// [`resize_rect`](crate::geometry::resize_rect); never repaired mid-gesture, for the same
+    /// reason [`update_drag`](Self::update_drag) is not.
+    pub fn update_resize(&mut self, pointer_global: Point) -> Option<(WindowId, Rect)> {
+        let resize = self.resize?;
+        let dx = pointer_global.x.saturating_sub(resize.pointer_origin.x);
+        let dy = pointer_global.y.saturating_sub(resize.pointer_origin.y);
+        let geometry = resize_rect(resize.origin, resize.edges, dx, dy);
+        let window = self.windows.get_mut(&resize.window_id)?;
+        window.geometry = geometry;
+        Some((window.id, geometry))
+    }
+
+    /// Resize ended: the recovery invariant is enforced once, at the end, exactly as it is for a
+    /// move. A resize that dragged a top or left edge *does* move the window, so this is not a
+    /// formality — a window grown upward past the top of its output is repaired back down.
+    pub fn finish_resize(&mut self) -> Option<(WindowId, Rect)> {
+        let resize = self.resize.take()?;
+        let window = self.windows.get_mut(&resize.window_id)?;
+        window.geometry = repair_window(window.geometry, &self.outputs);
+        Some((window.id, window.geometry))
+    }
+
+    pub fn is_resizing(&self, window_id: WindowId) -> bool {
+        self.resize
+            .is_some_and(|resize| resize.window_id == window_id)
+    }
+
+    /// The compositor-owned resize grip for `window_id`
+    /// ([`resize_grip`](crate::geometry::resize_grip)) — the pointer route to a resize for a
+    /// window that draws no frame of its own and so never sends `xdg_toplevel.resize`.
+    ///
+    /// `None` for anything that must not be resized this way: a non-client window (shell chrome,
+    /// the Home Surface), a maximized one (see [`begin_resize`](Self::begin_resize)), a
+    /// fullscreen one, and one too short to hold a grip clear of its band.
+    pub fn resize_grip(&self, window_id: WindowId) -> Option<Rect> {
+        if !self.is_client_window(window_id) {
+            return None;
+        }
+        let window = self.windows.get(&window_id)?;
+        if window.maximized || window.fullscreen || window.shelved {
+            return None;
+        }
+        resize_grip(window.geometry)
     }
 
     /// Move `window_id` to the visible Window Shelf: a hidden window cannot sensibly hold
@@ -426,7 +533,11 @@ impl<I: IdentityCache> WindowService<I> {
     /// Shelved windows, most-recently-shelved first — the order the Window Shelf / Recent
     /// drawer renders them in.
     pub fn shelf(&self) -> Vec<ShellToplevel> {
-        let mut shelved: Vec<&WindowRecord> = self.windows.values().filter(|w| w.shelved).collect();
+        let mut shelved: Vec<&WindowRecord> = self
+            .windows
+            .values()
+            .filter(|window| self.is_client_window(window.id) && window.shelved)
+            .collect();
         shelved.sort_by_key(|window| std::cmp::Reverse(window.shelf_rank.unwrap_or(0)));
         shelved
             .into_iter()
@@ -532,6 +643,9 @@ impl<I: IdentityCache> WindowService<I> {
     /// The compositor's grab affordance for `window_id`: the recovery band, and whether the
     /// compositor must paint a temporary tab over it (client-side-decorated / borderless).
     pub fn recovery_affordance(&self, window_id: WindowId) -> Option<RecoveryAffordance> {
+        if !self.is_client_window(window_id) {
+            return None;
+        }
         let window = self.windows.get(&window_id)?;
         Some(recovery_affordance(
             window.geometry,
@@ -548,7 +662,10 @@ impl<I: IdentityCache> WindowService<I> {
             .layers
             .order()
             .into_iter()
-            .filter(|id| self.windows.get(id).is_some_and(|window| !window.shelved))
+            .filter(|id| {
+                self.is_client_window(*id)
+                    && self.windows.get(id).is_some_and(|window| !window.shelved)
+            })
             .collect();
         if order.is_empty() {
             return None;
@@ -575,11 +692,24 @@ impl<I: IdentityCache> WindowService<I> {
         self.windows.values()
     }
 
-    /// Sanitized view for the shell (dock, switcher, window shelf): no PIDs, no raw claims.
+    /// Whether `window_id` belongs to the normal application workspace. Trusted-shell dialogs
+    /// may deliberately live here too; the distinction is the layer, not which process mapped
+    /// it. Shell chrome, notifications, system modals and the Home Surface are excluded.
+    pub fn is_client_window(&self, window_id: WindowId) -> bool {
+        matches!(
+            self.layer_of(window_id),
+            Some(Layer::Normal | Layer::AppOnTop)
+        )
+    }
+
+    /// Sanitized application-window view for the shell (dock, switcher, window shelf): no PIDs,
+    /// no raw claims, and no shell-owned surfaces. Feeding the Home Surface or dock back into this
+    /// list would make the shell create session tiles and recursive previews of its own windows.
     pub fn shell_toplevels(&self) -> Vec<ShellToplevel> {
         let mut list: Vec<ShellToplevel> = self
             .windows
             .values()
+            .filter(|window| self.is_client_window(window.id))
             .map(|window| self.to_shell_toplevel(window))
             .collect();
         list.sort_by_key(|toplevel| toplevel.window_id);
@@ -692,6 +822,130 @@ mod tests {
             service.window(id).unwrap().geometry,
             service.outputs()
         ));
+    }
+
+    fn one_window(geometry: Rect) -> (WindowService<FakeCache>, WindowId) {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let id = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            geometry,
+        );
+        (service, id)
+    }
+
+    #[test]
+    fn resizing_the_bottom_right_corner_grows_the_window_and_repairs_at_the_end() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert!(service.begin_resize(
+            id,
+            Point { x: 500, y: 400 },
+            crate::ResizeEdges::BOTTOM_RIGHT
+        ));
+        assert!(service.is_resizing(id));
+        let (_, during) = service.update_resize(Point { x: 700, y: 550 }).unwrap();
+        assert_eq!(during, Rect::new(100, 100, 600, 450));
+        let (_, after) = service.finish_resize().unwrap();
+        assert!(crate::is_recoverable(after, service.outputs()));
+        assert!(!service.is_resizing(id));
+        assert_eq!(service.update_resize(Point { x: 0, y: 0 }), None);
+    }
+
+    /// The reason the gesture remembers its origin rather than accumulating deltas: a pointer
+    /// pushed well past the minimum and brought back must retrace the sizes it passed through,
+    /// not be left however much smaller the clamp swallowed on the way out.
+    #[test]
+    fn a_resize_past_the_minimum_and_back_returns_to_the_size_the_pointer_names() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.begin_resize(
+            id,
+            Point { x: 500, y: 400 },
+            crate::ResizeEdges::BOTTOM_RIGHT,
+        );
+        let (_, squashed) = service.update_resize(Point { x: -9000, y: -9000 }).unwrap();
+        assert_eq!(
+            (squashed.width, squashed.height),
+            (
+                crate::geometry::MIN_WINDOW_WIDTH,
+                crate::geometry::MIN_WINDOW_HEIGHT
+            )
+        );
+        let (_, back) = service.update_resize(Point { x: 700, y: 550 }).unwrap();
+        assert_eq!(back, Rect::new(100, 100, 600, 450));
+    }
+
+    #[test]
+    fn one_pointer_runs_one_gesture() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.begin_resize(
+            id,
+            Point { x: 500, y: 400 },
+            crate::ResizeEdges::BOTTOM_RIGHT,
+        );
+        assert!(
+            !service.begin_drag(id, Point { x: 150, y: 110 }),
+            "a move must not start on top of a live resize"
+        );
+        service.finish_resize();
+        assert!(service.begin_drag(id, Point { x: 150, y: 110 }));
+        assert!(
+            !service.begin_resize(
+                id,
+                Point { x: 500, y: 400 },
+                crate::ResizeEdges::BOTTOM_RIGHT
+            ),
+            "and a resize must not start on top of a live move"
+        );
+    }
+
+    #[test]
+    fn a_resize_is_refused_where_it_could_not_be_honoured() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert!(
+            !service.begin_resize(id, Point { x: 0, y: 0 }, crate::ResizeEdges::default()),
+            "an `xdg_toplevel.resize` naming no edge asks for nothing"
+        );
+        assert!(!service.begin_resize(
+            WindowId(9999),
+            Point { x: 0, y: 0 },
+            crate::ResizeEdges::BOTTOM_RIGHT
+        ));
+        // A maximized window's geometry is re-derived from its output; a dragged size would be
+        // thrown away the next time anything about the topology moved.
+        service.set_maximized(id, true);
+        assert!(!service.begin_resize(id, Point { x: 0, y: 0 }, crate::ResizeEdges::BOTTOM_RIGHT));
+        assert_eq!(service.resize_grip(id), None);
+    }
+
+    #[test]
+    fn the_grip_is_offered_for_a_client_window_and_nothing_else() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert_eq!(
+            service.resize_grip(id),
+            crate::resize_grip(Rect::new(100, 100, 400, 300))
+        );
+        service.set_fullscreen(id, true);
+        assert_eq!(service.resize_grip(id), None, "fullscreen has no corner");
+        service.set_fullscreen(id, false);
+        service.shelve(id);
+        assert_eq!(service.resize_grip(id), None, "nor does a parked window");
+        assert_eq!(service.resize_grip(WindowId(9999)), None);
+    }
+
+    #[test]
+    fn destroying_a_window_mid_resize_leaves_nothing_behind() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.begin_resize(
+            id,
+            Point { x: 500, y: 400 },
+            crate::ResizeEdges::BOTTOM_RIGHT,
+        );
+        service.on_toplevel_destroyed(id);
+        assert!(!service.is_resizing(id));
+        assert_eq!(service.update_resize(Point { x: 0, y: 0 }), None);
+        assert_eq!(service.finish_resize(), None);
     }
 
     #[test]
@@ -1056,6 +1310,38 @@ mod tests {
         assert!(!service.home_revealed());
         assert!(service.is_visible(fresh));
         assert!(service.is_visible(app));
+    }
+
+    #[test]
+    fn shell_window_lists_never_feed_shell_surfaces_back_to_the_shell() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let app = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "Editor".into(),
+            Rect::new(10, 10, 400, 300),
+        );
+        let home = service.on_toplevel_mapped(
+            2,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "Home Surface".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
+            .unwrap();
+
+        assert_eq!(service.cycle_focus(None, true), Some(app));
+        assert!(service.recovery_affordance(home).is_none());
+
+        let listed: Vec<WindowId> = service
+            .shell_toplevels()
+            .into_iter()
+            .map(|window| window.window_id)
+            .collect();
+        assert_eq!(listed, vec![app]);
     }
 
     #[test]

@@ -217,6 +217,175 @@ pub fn find_placement(
     Err(FieldError::NoRoom)
 }
 
+/// Every span between `current` and `requested` inclusive, nearest the request first. `current`
+/// is always a member, which is what makes the clamp search below total: the status quo always
+/// works, so a resize degrades to "nothing happened" rather than failing.
+///
+/// Ordering is total and deterministic — nearest the request, then larger, then by column and
+/// row — because the drag ghost runs this same search a frame before the real drop and the two
+/// must agree (the `placement_is_deterministic` property).
+fn resize_steps(current: Span, requested: Span) -> Vec<Span> {
+    let (low_cols, high_cols) = (
+        current.cols.min(requested.cols),
+        current.cols.max(requested.cols),
+    );
+    let (low_rows, high_rows) = (
+        current.rows.min(requested.rows),
+        current.rows.max(requested.rows),
+    );
+    let mut steps = Vec::new();
+    for cols in low_cols..=high_cols {
+        for rows in low_rows..=high_rows {
+            steps.push(Span::new(cols, rows));
+        }
+    }
+    steps.sort_by_key(|span| {
+        (
+            u32::from(span.cols.abs_diff(requested.cols))
+                + u32::from(span.rows.abs_diff(requested.rows)),
+            std::cmp::Reverse(span.cells()),
+            span.cols,
+            span.rows,
+        )
+    });
+    steps
+}
+
+/// How `from` gives up the cells `target` now needs, or `None` if it cannot.
+///
+/// A yielding tile is pushed on the edge facing the growth and **keeps its opposite edge
+/// exactly where it was** — grow a tile rightwards and its right-hand neighbour becomes
+/// narrower against its own right edge; it does not slide away across the field. The new
+/// rectangle is therefore always a subset of the old one, which is what guarantees a yield can
+/// never create a fresh overlap somewhere else.
+///
+/// `prefer_horizontal` is the axis the resize actually grew along, so a downward drag narrows
+/// nothing sideways when it could just as well shorten the tile below.
+fn yielded_placement(
+    from: Placement,
+    target: Placement,
+    min: Span,
+    prefer_horizontal: bool,
+) -> Option<Placement> {
+    // The near edge moves to the target's far edge; `from.right() > target.right()` is what
+    // guarantees at least one column survives, so `Span::new`'s zero-clamp is never load-bearing.
+    let horizontal = (from.right() > target.right() && from.cell.col < target.right())
+        .then(|| {
+            Placement::new(
+                Cell::new(target.right(), from.cell.row),
+                Span::new(from.right() - target.right(), from.span.rows),
+            )
+        })
+        .filter(|placement| placement.span.cols >= min.cols);
+    let vertical = (from.bottom() > target.bottom() && from.cell.row < target.bottom())
+        .then(|| {
+            Placement::new(
+                Cell::new(from.cell.col, target.bottom()),
+                Span::new(from.span.cols, from.bottom() - target.bottom()),
+            )
+        })
+        .filter(|placement| placement.span.rows >= min.rows);
+
+    if prefer_horizontal {
+        horizontal.or(vertical)
+    } else {
+        vertical.or(horizontal)
+    }
+}
+
+/// Every tile overlapping `target` yielding to it, or `None` when even one of them cannot.
+fn yields_for(
+    grid: &Grid,
+    ranges: &[(TileId, SpanRange)],
+    id: TileId,
+    current: Placement,
+    target: Placement,
+) -> Option<Vec<(TileId, Placement, Placement)>> {
+    let mut overlapping: Vec<(TileId, Placement)> = grid
+        .places
+        .iter()
+        .filter(|(tile, placement)| *tile != id && placement.overlaps(target))
+        .copied()
+        .collect();
+    // Top-left first, so the result does not depend on `places`' insertion order.
+    overlapping.sort_by_key(|(_, placement)| (placement.cell.row, placement.cell.col));
+
+    let prefer_horizontal = target.span.cols > current.span.cols;
+    let mut yielded = Vec::with_capacity(overlapping.len());
+    for (neighbour, from) in overlapping {
+        let min = ranges
+            .iter()
+            .find(|(tile, _)| *tile == neighbour)
+            // Fail closed. A neighbour with no declared range is treated as already at its
+            // floor, so a caller that supplied an incomplete `ranges` can only ever refuse a
+            // resize — never invent room that the document does not have.
+            .map_or(from.span, |(_, range)| range.min);
+        yielded.push((
+            neighbour,
+            from,
+            yielded_placement(from, target, min, prefer_horizontal)?,
+        ));
+    }
+    Some(yielded)
+}
+
+/// Resize `id` in place, letting the tiles it grows into **give up span rather than move**.
+///
+/// This is the one reflow that never relocates anything. [`find_placement`] answers "where does
+/// this tile go", and its second pass evicts whoever is in the way to the nearest free cell;
+/// that is right for a drop, and wrong for a resize, where the neighbour jumping to the far side
+/// of the field is exactly the loss of spatial memory `docs/homefield.md` warns about. Here the
+/// resized tile keeps its cell, every neighbour keeps its far edge, and a request that would
+/// take some neighbour below its `min` is **clamped to the largest span that fits** instead of
+/// being refused or paid for by an eviction.
+///
+/// `ranges` supplies each tile's [`SpanRange`] because a [`Grid`] carries placements only; it
+/// should cover every tile in `grid.places` (see [`yields_for`] for what happens when it does
+/// not). Growth is anchored at the tile's top-left, so a span that would leave the grid is
+/// simply not achievable and the clamp finds a smaller one.
+pub fn find_resize(
+    grid: &Grid,
+    ranges: &[(TileId, SpanRange)],
+    id: TileId,
+    requested: Span,
+) -> Result<Reflow, FieldError> {
+    let current = grid
+        .places
+        .iter()
+        .find(|(tile, _)| *tile == id)
+        .map(|(_, placement)| *placement)
+        .ok_or(FieldError::UnknownTile)?;
+
+    for span in resize_steps(current.span, requested) {
+        let target = Placement::new(current.cell, span);
+        if !target.fits(grid.cols, grid.rows) {
+            continue;
+        }
+        let Some(moved) = yields_for(grid, ranges, id, current, target) else {
+            continue;
+        };
+        let relocation_distance = moved
+            .iter()
+            .map(|(_, from, to)| from.cell.distance(to.cell))
+            .sum();
+        return Ok(Reflow {
+            placed: target,
+            cost: LayoutCost {
+                displaced: moved.len() as u32,
+                landing_distance: 0,
+                aspect_distortion: u32::from(span.cols.abs_diff(requested.cols))
+                    + u32::from(span.rows.abs_diff(requested.rows)),
+                relocation_distance,
+            },
+            moved,
+        });
+    }
+    // Unreachable in practice: `resize_steps` always contains the current span, which fits and
+    // overlaps nobody. Kept as an error rather than an `unwrap` so a future caller that passes a
+    // placement inconsistent with the grid gets a refusal, not a panic.
+    Err(FieldError::NoRoom)
+}
+
 /// The free placement of `from`'s span nearest `from`, preferring cells in the band of `band`
 /// (the landing rectangle) so displaced tiles stay near where they were; anywhere on the grid
 /// failing that. Ties go to the top-left.
@@ -263,8 +432,13 @@ pub fn tidy(grid: &Grid) -> Vec<(TileId, Placement, Placement)> {
                 }
             }
         }
-        // A tile that cannot be packed anywhere keeps its place: tidy never loses a tile.
-        let to = destination.unwrap_or(from);
+        // First-fit can fragment a grid even though the original arrangement fit. A partial
+        // tidy must not put a later tile back on top of an earlier packed one, so the entire
+        // command becomes a no-op if any tile cannot be packed. Tidy never loses or overlaps a
+        // tile; the user's stable layout is the safe fallback.
+        let Some(to) = destination else {
+            return Vec::new();
+        };
         packed.set(id, to);
         if to != from {
             moved.push((id, from, to));

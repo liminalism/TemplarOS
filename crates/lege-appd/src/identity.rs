@@ -205,6 +205,10 @@ mod tests {
             mime_types: std::collections::BTreeSet::default(),
             resource_class: ResourceClass::Normal,
             supports_checkpoint: false,
+            icon: None,
+            categories: std::collections::BTreeSet::default(),
+            keywords: std::collections::BTreeSet::default(),
+            no_display: false,
         }
     }
 

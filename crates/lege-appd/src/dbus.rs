@@ -10,6 +10,21 @@ use lege_types::{AppCatalog, AppId, WindowClaims};
 use std::sync::Arc;
 use zbus::fdo;
 
+/// One row of [`IdentityApi::list_applications`]:
+/// `(app_id, display_name, desktop_file_id, icon, categories, keywords, no_display)`.
+///
+/// Named rather than written inline so the signature stays one readable line in the source, the
+/// XML and the client proxy alike.
+pub type ApplicationRow = (
+    String,
+    String,
+    String,
+    String,
+    Vec<String>,
+    Vec<String>,
+    bool,
+);
+
 /// `org.legeos.AppIdentity1`
 #[derive(Debug)]
 pub struct IdentityApi {
@@ -84,6 +99,36 @@ impl IdentityApi {
             .collect();
         ids.sort();
         ids
+    }
+
+    /// Every installed manifest as
+    /// `(app_id, display_name, desktop_file_id, icon, categories, keywords, no_display)`.
+    ///
+    /// [`list_apps`](Self::list_apps) returns bare IDs, which is enough to launch something a
+    /// caller already knows about and useless for offering a person a choice: a launcher needs
+    /// the name to show, the icon to draw, the terms to match, and whether the entry is meant to
+    /// be offered at all. `no_display` is reported rather than filtered here because the same
+    /// listing answers "what is installed" (`lege app list`) as well as "what may I offer" — the
+    /// caller building a menu is the one that drops those rows.
+    async fn list_applications(&self) -> Vec<ApplicationRow> {
+        let mut rows: Vec<_> = self
+            .registry
+            .manifests()
+            .into_iter()
+            .map(|manifest| {
+                (
+                    manifest.id.to_string(),
+                    manifest.display_name.clone(),
+                    manifest.primary_desktop_file_id.clone(),
+                    manifest.icon.clone().unwrap_or_default(),
+                    manifest.categories.iter().cloned().collect(),
+                    manifest.keywords.iter().cloned().collect(),
+                    manifest.no_display,
+                )
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
     }
 }
 

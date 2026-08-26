@@ -10,7 +10,7 @@
 //! its silhouette; a raised shadow only while a tile is lifted; one activity border for a live
 //! window; the pending operation spelled out in text before release.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use pixelkit_raster::{Bitmap, Rect, ScaleFilter};
 use pixelkit_shell::KeyInput;
@@ -20,15 +20,19 @@ use pixelkit_ui::{TextFieldState, Ui};
 use lege_field::drag::{Drag, DragConfig, DragSample, GrabOffset, Release};
 use lege_field::focus::Direction;
 use lege_field::{
-    Cell, FieldDocument, FieldOp, Landing, Operation, PixelRect, Placement, Span, SpanRange,
-    Target, Tile, TileId, TileKind, apply, cell_at, tile_rect,
+    Cell, FieldDocument, FieldOp, Landing, Operation, PixelRect, Placement, Representation, Span,
+    SpanRange, Target, Tile, TileId, TileKind, apply, cell_at, tile_rect,
 };
 use lege_types::AppId;
 use lege_window::{ShellToplevel, WindowId};
 
 use crate::field_model::{self, GAP};
 use crate::home_surface::Drawer;
+use crate::surface::context_menu::{Chosen, ContextMenu, MenuTarget};
+use crate::surface::design::{self, Elevation};
+use crate::surface::file_browser::FileBrowserData;
 use crate::surface::home_screen::{HomeSurfaceAction, HomeSurfaceData, HomeSurfaceScreen};
+use crate::surface::widgets::{self, WidgetSnapshot};
 
 /// What the screen asks its caller to do. Everything that touches a service or the compositor
 /// comes out here; nothing in this module performs it.
@@ -42,6 +46,23 @@ pub enum FieldAction {
     Activate(WindowId),
     Park(WindowId),
     Restore(WindowId),
+    BrowseDirectory {
+        drawer: Drawer,
+        path: PathBuf,
+        show_hidden: bool,
+    },
+    OpenFile(PathBuf),
+    /// Perform one declared action (`lege_types::action::MANIFEST`). This is how every widget
+    /// region, and every menu row, reaches a capability: the tile names an action id and the
+    /// host decides what performing it means, so a new control never needs a new variant here.
+    RunAction(&'static str),
+    /// The same, for an action that needs to name *which* window it applies to — everything the
+    /// context menu offers over a session tile. One declaration, two routes: this is the pointer
+    /// half of what the compositor's reserved chords do from the keyboard.
+    RunWindowAction {
+        id: &'static str,
+        window: WindowId,
+    },
     RevealHome,
     /// A field op the user performed; the caller applies it and keeps the inverse for undo.
     Apply(FieldOp),
@@ -87,9 +108,25 @@ pub struct FieldData<'a> {
     pub treemaps: &'a HashMap<Drawer, Bitmap>,
     /// Each such drawer's composition: `(0x00RRGGBB, share)` per file category, largest first.
     pub compositions: &'a HashMap<Drawer, Vec<(u32, f32)>>,
-    pub search_results: Option<&'a [String]>,
+    pub browser: &'a FileBrowserData<'a>,
     pub connected: bool,
     pub home_revealed: bool,
+    /// Whether the nm-tray2 application manifest is installed and launchable.
+    pub network_control_available: bool,
+    /// Every installed application (`AppIdentity1.ListApplications`): the launcher widget's list
+    /// and what the search bar filters. Empty is ambiguous on its own, hence `apps_available`.
+    pub apps: &'a [crate::app_search::AppEntry],
+    /// Whether the application registry answered. A launcher that cannot reach it says so rather
+    /// than showing an empty list, which reads as "nothing is installed".
+    pub apps_available: bool,
+    /// Each widget's current content, keyed by `TileKind::System`'s probe. Absent means the
+    /// first fetch has not landed; see `crate::surface::widgets` for why a widget that cannot
+    /// reach its service reports that rather than showing a zero.
+    pub widgets: &'a HashMap<String, WidgetSnapshot>,
+    /// Preformatted local date/time supplied by the shell host.
+    pub clock_label: &'a str,
+    /// Preserve state marks but suppress the lifted tile's expansion/projection motion.
+    pub reduced_motion: bool,
     /// Monotonic milliseconds, for the drag's velocity.
     pub now_ms: u64,
 }
@@ -103,6 +140,12 @@ struct Ghost {
     label_at: Option<Rect>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Notice {
+    text: String,
+    expires_at_ms: u64,
+}
+
 #[derive(Debug)]
 pub struct FieldScreen {
     pub drag: Drag,
@@ -110,6 +153,12 @@ pub struct FieldScreen {
     pub focus: Option<TileId>,
     /// Space on a focused tile: it is lifted by keyboard, and the arrows move this landing.
     pub keyboard_move: Option<(TileId, Cell)>,
+    /// A pointer resize in progress: the tile, and the span the pointer is currently asking
+    /// for. What the field would actually do with that request is not stored — it is dry-run
+    /// through `lege_field::apply` every frame, so the preview cannot drift from the drop.
+    pub resize: Option<(TileId, Span)>,
+    /// `r` on a focused tile: resized by keyboard, arrows growing and shrinking the request.
+    pub keyboard_resize: Option<(TileId, Span)>,
     /// A drawer opened to its full body, over the field.
     pub expanded: Option<Drawer>,
     /// A project zoomed to fill the field: its interior grid is what is drawn and edited, with
@@ -123,6 +172,15 @@ pub struct FieldScreen {
     pub bounds: Rect,
     /// The last pointer drop, for the experiment's retry measure.
     last_drop: Option<(TileId, u64)>,
+    /// The released frame: one plain-language confirmation with its undo route.
+    notice: Option<Notice>,
+    /// A destructive widget region awaiting its second press. Cleared whenever the pointer
+    /// leaves the field or Escape is pressed, so an armed Shut down never survives to catch a
+    /// later, unrelated click.
+    confirming: Option<&'static str>,
+    /// The secondary-click menu (`crate::surface::context_menu`): the pointer route to the
+    /// window and field actions that otherwise had only a chord.
+    pub menu: ContextMenu,
 }
 
 impl Default for FieldScreen {
@@ -132,6 +190,8 @@ impl Default for FieldScreen {
             drag_cfg: DragConfig::default(),
             focus: None,
             keyboard_move: None,
+            resize: None,
+            keyboard_resize: None,
             expanded: None,
             zoomed: None,
             drawer_view: HomeSurfaceScreen::default(),
@@ -139,18 +199,31 @@ impl Default for FieldScreen {
             search_focused: false,
             bounds: Rect::new(0, 0, 0, 0),
             last_drop: None,
+            notice: None,
+            confirming: None,
+            menu: ContextMenu::default(),
         }
     }
 }
 
-const SEARCH_HEIGHT: i32 = 36;
-const BAND_HEIGHT: i32 = 22;
 const CRUMB_HEIGHT: i32 = 30;
+const NOTICE_LIFETIME_MS: u64 = 4_000;
+/// Logical-pixel side of the resize grip's square.
+const GRIP_SIZE: i32 = 18;
 
 impl FieldScreen {
     /// Whether the caller should keep redrawing on a timer: only while something is lifted.
     pub fn animating(&self) -> bool {
         self.drag.is_lifted()
+    }
+
+    /// Confirm one applied operation. The caller invokes this only after `lege_field::apply`
+    /// succeeds, so the notice never promises a change that was refused.
+    pub fn confirm(&mut self, operation: &FieldOp, now_ms: u64) {
+        self.notice = Some(Notice {
+            text: operation.label().to_owned(),
+            expires_at_ms: now_ms.saturating_add(NOTICE_LIFETIME_MS),
+        });
     }
 
     /// The pixel rectangle of `tile` as last drawn: on the top level, its own rect (a child
@@ -194,19 +267,106 @@ impl FieldScreen {
     }
 
     /// The grab band at the top of a tile's rect.
+    /// The resize grip: the tile's bottom-right corner. Growth is anchored at the top-left, so
+    /// this is the one corner that can express the whole gesture — and it is the corner furthest
+    /// from [`band`](Self::band), the move strip, so the two can never be grabbed by accident.
+    pub fn grip(rect: Rect, ui: &Ui<'_>) -> Rect {
+        let size = ui
+            .px(GRIP_SIZE)
+            .min((rect.w / 3).max(1))
+            .min((rect.h / 3).max(1));
+        Rect::new(
+            rect.right() - size,
+            rect.bottom() - size,
+            size.max(1),
+            size.max(1),
+        )
+    }
+
+    /// Whether this tile can be resized at all. A tile whose floor is its ceiling has no grip:
+    /// showing one that refuses every drag would be a lie.
+    fn resizable(tile: &Tile) -> bool {
+        tile.spans.min != tile.spans.max
+    }
+
+    /// The span the pointer at `(x, y)` is asking a tile anchored at its current cell to become,
+    /// clamped to the tile's own declared range. `None` when the pointer is off the grid.
+    fn span_under_pointer(
+        &self,
+        doc: &FieldDocument,
+        ui: &Ui<'_>,
+        tile: TileId,
+        x: i32,
+        y: i32,
+    ) -> Option<Span> {
+        let located = doc.location(tile)?;
+        let spans = doc.tile(tile)?.spans;
+        let (cols, rows) = self.grid_dims(doc);
+        let cell = cell_at(cols, rows, to_pixel(self.bounds), x, y, ui.px(GAP))?;
+        let origin = located.placement.cell;
+        let wanted = Span::new(
+            cell.col.saturating_sub(origin.col).saturating_add(1),
+            cell.row.saturating_sub(origin.row).saturating_add(1),
+        );
+        Some(wanted.clamp(spans.min, spans.max))
+    }
+
+    /// The document as it would be if the pending resize were released now.
+    ///
+    /// This runs the *real* op rather than reimplementing the rules, so what the ghost promises
+    /// and what the drop delivers cannot disagree — including the clamp, which shows up here as
+    /// a preview that simply stops growing while the pointer keeps moving.
+    fn resize_preview(doc: &FieldDocument, tile: TileId, span: Span) -> Option<FieldDocument> {
+        apply(doc, &FieldOp::Resize { id: tile, span })
+            .ok()
+            .map(|(next, _)| next)
+    }
+
+    /// The screen rectangle of an arbitrary placement on the grid currently being edited.
+    fn rect_of(&self, doc: &FieldDocument, placement: Placement, ui: &Ui<'_>) -> Rect {
+        let (cols, rows) = self.grid_dims(doc);
+        from_pixel(lege_field::cell_rect(
+            cols,
+            rows,
+            to_pixel(self.bounds),
+            placement.cell,
+            placement.span,
+            ui.px(GAP),
+        ))
+    }
+
     pub fn band(rect: Rect, ui: &Ui<'_>) -> Rect {
-        rect.split_top(ui.px(BAND_HEIGHT).min(rect.h)).0
+        rect.split_top(ui.px(design::GRAB_BAND_HEIGHT).min(rect.h))
+            .0
     }
 
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) -> Vec<FieldAction> {
         ui.painter.fill_rect(area, ui.theme.background);
         let mut actions = Vec::new();
 
-        let (bar, rest) = area.inset(ui.px(8)).split_top(ui.px(SEARCH_HEIGHT));
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| data.now_ms >= notice.expires_at_ms)
+        {
+            self.notice = None;
+        }
+
+        let (bar, below_bar) = area
+            .inset(ui.px(design::FIELD_INSET))
+            .split_top(ui.px(design::TOP_BAR_HEIGHT));
         self.draw_search_bar(ui, bar, data, &mut actions);
+        let gap = ui.px(design::TOP_BAR_GAP).min(below_bar.h);
+        let rest = Rect::new(
+            below_bar.x,
+            below_bar.y + gap,
+            below_bar.w,
+            (below_bar.h - gap).max(0),
+        );
 
         if let Some(drawer) = self.expanded {
             self.draw_expanded(ui, rest, drawer, data, &mut actions);
+            self.draw_notice(ui, rest);
             return actions;
         }
 
@@ -242,8 +402,11 @@ impl FieldScreen {
         {
             self.focus = None;
         }
-        self.handle_keys(ui, doc, data, &mut actions);
-        self.handle_pointer(ui, doc, data, &mut actions);
+        if !self.handle_menu(ui, doc, data, rest, &mut actions) {
+            self.handle_keys(ui, doc, data, &mut actions);
+            self.handle_pointer(ui, doc, data, &mut actions);
+            self.open_menu_on_secondary_click(ui, doc, data, rest);
+        }
 
         let ghost = self.ghost(doc, ui);
         let lifted = self.drag.tile().filter(|_| self.drag.is_lifted());
@@ -266,6 +429,9 @@ impl FieldScreen {
         }
 
         self.draw_overlays(ui, doc, data, ghost.as_ref(), lifted, &mut actions);
+        self.draw_resize_preview(ui, doc);
+        self.draw_notice(ui, rest);
+        self.menu.paint(ui, rest);
 
         if rects.is_empty() {
             ui.label(
@@ -284,6 +450,75 @@ impl FieldScreen {
         actions
     }
 
+    /// The pending resize, dry-run and drawn: where the tile would end up, and which neighbours
+    /// would give up how much to let it.
+    ///
+    /// The clamp needs no special case here. When the request outruns what the neighbours can
+    /// give, `lege_field::apply` returns the largest span that works, the ghost stops growing,
+    /// and the pointer visibly runs ahead of it — which is the whole feedback the user needs to
+    /// know they have hit the limit rather than that the drag has broken.
+    fn draw_resize_preview(&self, ui: &mut Ui<'_>, doc: &FieldDocument) {
+        let Some((tile, span)) = self.resize.or(self.keyboard_resize) else {
+            return;
+        };
+        let Some(preview) = Self::resize_preview(doc, tile, span) else {
+            return;
+        };
+        for (id, was) in &doc.located {
+            let Some(now) = preview.location(*id) else {
+                continue;
+            };
+            if now == *was || was.container != self.zoomed {
+                continue;
+            }
+            let rect = self.rect_of(doc, now.placement, ui);
+            if *id == tile {
+                ui.painter.blend_rect(rect, design::ACCENT, 30);
+                design::dashed_rect(ui, rect, design::ACCENT);
+            } else {
+                // A yielding neighbour: shown at the size it would become, so the cost of the
+                // growth is visible before it is paid for.
+                ui.painter.blend_rect(rect, design::GROUND, 100);
+                design::dashed_rect(ui, rect, design::EDGE_STRONG);
+            }
+        }
+    }
+
+    fn draw_notice(&self, ui: &mut Ui<'_>, area: Rect) {
+        let Some(notice) = &self.notice else {
+            return;
+        };
+        let width = ui.px(430).min((area.w - ui.px(24)).max(0));
+        if width <= 0 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.w - width) / 2,
+            area.bottom() - ui.px(54),
+            width,
+            ui.px(42),
+        );
+        ui.painter
+            .shadow_rect(rect, ui.px(4), ui.px(6), design::TEXT, 80);
+        ui.painter
+            .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::TEXT);
+        let (undo, message) = rect.split_right(ui.px(82));
+        ui.label_styled(
+            message.inset(ui.px(12)),
+            &notice.text,
+            design::title_style(ui),
+            0x00f2_f4f6,
+            Align::Left,
+        );
+        ui.label_styled(
+            undo.inset(ui.px(8)),
+            "CTRL+Z",
+            TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
+            0x009a_a4ad,
+            Align::Centre,
+        );
+    }
+
     /// The ghost (where a lifted tile would land, who would move, the pending operation's
     /// label) and the lifted tile itself, drawn over everything else.
     fn draw_overlays(
@@ -296,6 +531,13 @@ impl FieldScreen {
         actions: &mut Vec<FieldAction>,
     ) {
         let (cols, rows) = self.grid_dims(doc);
+        if let Some(id) = lifted
+            && let Some(origin) = self.tile_rect(doc, id, ui)
+        {
+            ui.painter
+                .fill_rounded_rect(origin, ui.px(design::TILE_RADIUS), design::RECESSED);
+            design::dashed_rect(ui, origin, design::RECESSED_EDGE);
+        }
         if let Some(ghost) = ghost {
             let ghost_rect = from_pixel(lege_field::cell_rect(
                 cols,
@@ -305,9 +547,8 @@ impl FieldScreen {
                 ghost.placement.span,
                 ui.px(GAP),
             ));
-            ui.painter
-                .stroke_rect(ghost_rect, ui.px(2), ui.theme.accent);
-            ui.painter.blend_rect(ghost_rect, ui.theme.accent, 40);
+            ui.painter.blend_rect(ghost_rect, design::ACCENT, 24);
+            design::dashed_rect(ui, ghost_rect, design::ACCENT);
             for (id, to) in &ghost.moved {
                 let Some(located) = doc.location(*id) else {
                     continue;
@@ -320,19 +561,17 @@ impl FieldScreen {
                     located.placement.span,
                     ui.px(GAP),
                 ));
-                ui.painter
-                    .stroke_rect(preview, ui.px(1), ui.theme.accent_soft);
+                ui.painter.blend_rect(preview, design::GROUND, 110);
+                design::dashed_rect(ui, preview, design::EDGE_STRONG);
             }
             if let (Some(label), Some(at)) = (ghost.label, ghost.label_at) {
-                let style = TextStyle::new(ui.theme.body.face, 12.0);
-                ui.pill(
-                    at,
-                    label,
-                    style,
-                    ui.theme.text,
-                    ui.theme.selection,
-                    ui.theme.accent,
-                    true,
+                ui.painter.fill_rect(at, design::ACCENT);
+                ui.label_styled(
+                    at.inset(ui.px(8)),
+                    &label.to_uppercase(),
+                    TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
+                    0x00ff_ffff,
+                    Align::Left,
                 );
             }
         }
@@ -340,7 +579,13 @@ impl FieldScreen {
         if let (Some(id), Some((x, y))) = (lifted, self.drag.tile_position())
             && let (Some(tile), Some(rect)) = (doc.tile(id), self.tile_rect(doc, id, ui))
         {
-            let raised = Rect::new(x as i32, y as i32, rect.w, rect.h);
+            let swell = if data.reduced_motion { 0 } else { ui.px(2) };
+            let raised = Rect::new(
+                x as i32 - swell,
+                y as i32 - swell,
+                rect.w + swell * 2,
+                rect.h + swell * 2,
+            );
             let visual = TileVisual {
                 hovered: false,
                 focused: false,
@@ -358,17 +603,28 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
-        let (home, search_area) = bar.split_left(ui.px(80));
-        let home_fill = if data.home_revealed {
-            ui.theme.selection
-        } else if ui.input.hovering(home) {
-            ui.theme.hover
-        } else {
-            ui.theme.panel_alt
-        };
-        ui.painter
-            .fill_rounded_rect(home, ui.theme.corner_radius, home_fill);
-        ui.label(home, "Home", ui.theme.text, Align::Centre);
+        let gap = ui.px(design::TOP_BAR_GAP);
+        let (home, after_home) = bar.split_left(ui.px(design::HOME_WIDTH));
+        if ui.input.hovering(home) {
+            ui.painter
+                .shadow_rect(home, ui.px(2), ui.px(3), design::TEXT, 55);
+        }
+        ui.painter.fill_rounded_rect(
+            home,
+            ui.px(design::TILE_RADIUS),
+            if data.home_revealed {
+                design::ACCENT
+            } else {
+                design::TEXT
+            },
+        );
+        ui.label_styled(
+            home,
+            "HOME",
+            TextStyle::tracked(ui.theme.body.face, 13.0, 0.14),
+            0x00f2_f4f6,
+            Align::Centre,
+        );
         if ui.input.take_click(home) {
             if self.expanded.is_some() {
                 self.expanded = None;
@@ -376,12 +632,29 @@ impl FieldScreen {
                 actions.push(FieldAction::RevealHome);
             }
         }
-        let search_area = Rect::new(
-            search_area.x + ui.px(8),
-            search_area.y,
-            (search_area.w - ui.px(8)).max(0),
-            search_area.h,
+
+        let after_home = Rect::new(
+            after_home.x + gap,
+            after_home.y,
+            (after_home.w - gap).max(0),
+            after_home.h,
         );
+        let status_width = if after_home.w >= ui.px(820) {
+            (after_home.w / 3).clamp(ui.px(300), ui.px(520))
+        } else {
+            0
+        };
+        let (status, search_and_gap) = after_home.split_right(status_width);
+        let search_area = if status_width == 0 {
+            search_and_gap
+        } else {
+            Rect::new(
+                search_and_gap.x,
+                search_and_gap.y,
+                (search_and_gap.w - gap).max(0),
+                search_and_gap.h,
+            )
+        };
         let enter = self.search_focused && ui.input.keys().contains(&KeyInput::Enter);
         if ui.input.take_click(search_area) {
             self.search_focused = true;
@@ -392,28 +665,129 @@ impl FieldScreen {
                 Drawer::Downloads | Drawer::Documents | Drawer::Media
             )
         });
-        let placeholder = if searchable {
-            "Search this drawer (Enter to search)"
+        // On the field itself the bar searches applications: it filters the launcher widget as
+        // the user types, and Enter launches the best match. It said "Search files, applications
+        // and projects" and did nothing at all unless a searchable drawer happened to be open.
+        let placeholder = if let Some(drawer) = self.expanded.filter(|_| searchable) {
+            format!("Search {}", drawer.name())
+        } else if self.expanded.is_some() {
+            "Search files, applications and projects".to_owned()
         } else {
-            "Search — open Downloads, Documents or Media to search it"
+            // The launcher tile carries the running count of what the query matches; this line
+            // only has to say what typing here does.
+            "Search applications — Enter launches the best match".to_owned()
         };
+        let previous_theme = ui.theme;
+        ui.theme.background = design::SHELL;
+        ui.theme.padding = 14;
         ui.text_field(
             &mut self.search,
-            search_area.inset(ui.px(4)),
-            placeholder,
+            search_area,
+            &placeholder,
             self.search_focused,
             false,
         );
-        if enter
-            && searchable
-            && !self.search.text().is_empty()
-            && let Some(drawer) = self.expanded
-        {
+        ui.theme = previous_theme;
+
+        if status_width > 0 {
+            Self::draw_information_row(ui, status, data, actions);
+        }
+        if !enter || self.search.text().trim().is_empty() {
+            return;
+        }
+        if searchable && let Some(drawer) = self.expanded {
             actions.push(FieldAction::RunSearch {
                 drawer,
                 query: self.search.text().to_owned(),
             });
+        } else if self.expanded.is_none() {
+            // On the field, Enter launches. The `launcher.launch` action declares this
+            // capability; the app id it needs is the query's best match, which is why it travels
+            // as `Launch` rather than as a payload-free `RunAction`.
+            if let Some(entry) = crate::app_search::best(data.apps, self.search.text()) {
+                actions.push(FieldAction::Launch(entry.id.clone()));
+                self.search.set_text("");
+            }
         }
+    }
+
+    fn draw_information_row(
+        ui: &mut Ui<'_>,
+        status: Rect,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        design::shell(ui, status, design::RECESSED, design::EDGE, Elevation::Rest);
+        let network_width = ui.px(106).min(status.w / 3);
+        let clock_width = ui.px(150).min(status.w / 2);
+        let (network, after_network) = status.split_left(network_width);
+        let (clock, activity) = after_network.split_right(clock_width);
+
+        if data.network_control_available && ui.input.hovering(network) {
+            ui.painter.fill_rect(network.inset(1), design::ACCENT_SOFT);
+        }
+        // The label comes from the action manifest, not from a string here, so the row and the
+        // cheat sheet cannot end up calling the same capability two different things.
+        let network_action = lege_types::action::action("network.open-control");
+        let network_label = network_action.map_or("NETWORK", |declaration| declaration.label);
+        let network_label = if data.network_control_available {
+            network_label.to_uppercase()
+        } else {
+            format!("{} —", network_label.to_uppercase())
+        };
+        ui.label_styled(
+            network.inset(ui.px(8)),
+            &network_label,
+            design::state_style(ui),
+            if data.network_control_available {
+                design::ACCENT
+            } else {
+                design::TEXT_DIM
+            },
+            Align::Centre,
+        );
+        if data.network_control_available && ui.input.take_click(network) {
+            actions.push(FieldAction::RunAction("network.open-control"));
+        }
+        ui.painter.fill_rect(
+            Rect::new(
+                network.right(),
+                status.y + ui.px(9),
+                1,
+                status.h - ui.px(18),
+            ),
+            design::EDGE,
+        );
+
+        let live = data
+            .toplevels
+            .iter()
+            .filter(|window| !window.shelved)
+            .count();
+        let parked = data.toplevels.len().saturating_sub(live);
+        let summary = if activity.w >= ui.px(170) {
+            format!("{live} LIVE    {parked} PARKED")
+        } else {
+            format!("{live}L  {parked}P")
+        };
+        ui.label_styled(
+            activity.inset(ui.px(8)),
+            &summary,
+            design::state_style(ui),
+            design::TEXT_DIM,
+            Align::Centre,
+        );
+        ui.painter.fill_rect(
+            Rect::new(clock.x, status.y + ui.px(9), 1, status.h - ui.px(18)),
+            design::EDGE,
+        );
+        ui.label_styled(
+            clock.inset(ui.px(8)),
+            data.clock_label,
+            design::state_style(ui),
+            design::TEXT,
+            Align::Centre,
+        );
     }
 
     fn draw_expanded(
@@ -443,9 +817,9 @@ impl FieldScreen {
         self.drawer_view.selected = drawer;
         let inner = HomeSurfaceData {
             drawer_texts: data.drawer_texts,
-            search_results: data.search_results,
             toplevels: data.toplevels,
             connected: data.connected,
+            browser: data.browser,
         };
         match self.drawer_view.draw(ui, body, &inner) {
             HomeSurfaceAction::RunSearch { drawer, query } => {
@@ -454,6 +828,16 @@ impl FieldScreen {
             HomeSurfaceAction::RestoreWindow(window_id) => {
                 actions.push(FieldAction::Restore(window_id));
             }
+            HomeSurfaceAction::BrowseDirectory {
+                drawer,
+                path,
+                show_hidden,
+            } => actions.push(FieldAction::BrowseDirectory {
+                drawer,
+                path,
+                show_hidden,
+            }),
+            HomeSurfaceAction::OpenFile(path) => actions.push(FieldAction::OpenFile(path)),
             HomeSurfaceAction::None => {}
         }
         // The rail inside the drawer view may have switched drawers; follow it.
@@ -480,6 +864,10 @@ impl FieldScreen {
         for key in keys {
             if let Some((tile, cell)) = self.keyboard_move {
                 self.handle_move_key(&key, tile, cell, cols, rows, actions);
+                continue;
+            }
+            if let Some((tile, span)) = self.keyboard_resize {
+                self.handle_resize_key(&key, doc, tile, span, actions);
                 continue;
             }
             match key {
@@ -539,11 +927,24 @@ impl FieldScreen {
                 KeyInput::Character('z' | 'Z') if modifiers.control => {
                     actions.push(FieldAction::Undo);
                 }
+                // The pointer's grip, by keyboard: `field.resize` in the action manifest. Every
+                // field gesture has to be reachable both ways, so resize cannot be the one that
+                // is pointer-only.
+                KeyInput::Character('r' | 'R') if !modifiers.control => {
+                    if let Some(id) = self.focus
+                        && let Some(located) = doc.location(id)
+                        && located.container == self.zoomed
+                        && doc.tile(id).is_some_and(Self::resizable)
+                    {
+                        self.keyboard_resize = Some((id, located.placement.span));
+                    }
+                }
                 KeyInput::Delete => {
                     if let Some(id) = self.focus {
                         actions.push(FieldAction::Apply(FieldOp::Stash { id }));
                     }
                 }
+                KeyInput::Escape if self.confirming.is_some() => self.confirming = None,
                 KeyInput::Escape if self.zoomed.is_some() => self.zoomed = None,
                 KeyInput::Escape => self.focus = None,
                 _ => {}
@@ -589,6 +990,38 @@ impl FieldScreen {
         }
     }
 
+    /// Arrows grow and shrink a keyboard-resized tile's request; Enter asks for it, Escape
+    /// abandons it. The request is clamped to the tile's own range here, and to what the field
+    /// can actually give when it is applied.
+    fn handle_resize_key(
+        &mut self,
+        key: &KeyInput,
+        doc: &FieldDocument,
+        tile: TileId,
+        span: Span,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let range = doc.tile(tile).map(|tile| tile.spans);
+        match *key {
+            KeyInput::Left | KeyInput::Right | KeyInput::Up | KeyInput::Down => {
+                let wanted = match key {
+                    KeyInput::Left => Span::new(span.cols.saturating_sub(1), span.rows),
+                    KeyInput::Right => Span::new(span.cols.saturating_add(1), span.rows),
+                    KeyInput::Up => Span::new(span.cols, span.rows.saturating_sub(1)),
+                    _ => Span::new(span.cols, span.rows.saturating_add(1)),
+                };
+                let wanted = range.map_or(wanted, |range| wanted.clamp(range.min, range.max));
+                self.keyboard_resize = Some((tile, wanted));
+            }
+            KeyInput::Enter => {
+                self.keyboard_resize = None;
+                actions.push(FieldAction::Apply(FieldOp::Resize { id: tile, span }));
+            }
+            KeyInput::Escape => self.keyboard_resize = None,
+            _ => {}
+        }
+    }
+
     fn handle_pointer(
         &mut self,
         ui: &mut Ui<'_>,
@@ -602,8 +1035,23 @@ impl FieldScreen {
             if self.drag != Drag::Idle {
                 self.finish_drag(ui, doc, data, actions);
             }
+            self.finish_resize(ui, doc, actions);
             return;
         };
+
+        // A resize owns the pointer for as long as it is held: it is started from a corner the
+        // move band cannot reach, so there is never a question of which gesture this is.
+        if let Some((tile, _)) = self.resize {
+            if held {
+                if let Some(span) = self.span_under_pointer(doc, ui, tile, cx, cy) {
+                    self.resize = Some((tile, span));
+                }
+            } else {
+                self.finish_resize(ui, doc, actions);
+            }
+            return;
+        }
+
         let sample = DragSample {
             x: cx as f32,
             y: cy as f32,
@@ -612,7 +1060,21 @@ impl FieldScreen {
         match (self.drag, held) {
             (Drag::Idle, true) => {
                 // Topmost tile whose grab band is under the pointer: later in reading order
-                // draws later, so search from the end.
+                // draws later, so search from the end. The grip is checked first for the same
+                // reason, so a tile drawn later cannot have its corner stolen by one beneath it.
+                for (id, rect) in self.current_rects(doc, ui).into_iter().rev() {
+                    let resizable = doc.tile(id).is_some_and(Self::resizable);
+                    if resizable && Self::grip(rect, ui).contains(cx, cy) {
+                        let span = doc
+                            .location(id)
+                            .map_or_else(|| Span::new(1, 1), |located| located.placement.span);
+                        self.resize = Some((id, span));
+                        self.focus = Some(id);
+                        self.keyboard_move = None;
+                        self.keyboard_resize = None;
+                        return;
+                    }
+                }
                 let mut hit = None;
                 for (id, rect) in self.current_rects(doc, ui).into_iter().rev() {
                     if Self::band(rect, ui).contains(cx, cy) {
@@ -637,6 +1099,154 @@ impl FieldScreen {
                 self.drag.sample(sample, &self.drag_cfg);
             }
             (_, false) => self.finish_drag(ui, doc, data, actions),
+        }
+    }
+
+    /// Give this frame's input to the context menu, and report whether it owns the frame.
+    ///
+    /// The menu is drawn over the tiles, so it has to take the input *before* they are painted:
+    /// `pixelkit_shell::Input` gives a press to whoever claims it first, and the tile underneath
+    /// would otherwise get every click aimed at a menu row. While the menu is up it owns the
+    /// keyboard and the pointer both — a menu that let the field keep acting behind it would fire
+    /// two things per press.
+    fn handle_menu(
+        &mut self,
+        ui: &mut Ui<'_>,
+        doc: &FieldDocument,
+        data: &FieldData<'_>,
+        area: Rect,
+        actions: &mut Vec<FieldAction>,
+    ) -> bool {
+        if let Some(chosen) = self.menu.update(ui, area) {
+            self.run_menu_choice(chosen, doc, data, actions);
+        }
+        self.menu.is_open()
+    }
+
+    /// Secondary-click anywhere on the field opens the context menu
+    /// (`crate::surface::context_menu`). Over a tile it is that tile's menu — and, when the tile
+    /// stands for a live window, that window's; over bare ground it is the field's own, which is
+    /// still the only pointer route to `field.undo` and `window.show-all`.
+    fn open_menu_on_secondary_click(
+        &mut self,
+        ui: &mut Ui<'_>,
+        doc: &FieldDocument,
+        data: &FieldData<'_>,
+        area: Rect,
+    ) {
+        if !ui.input.take_context_click(area) {
+            return;
+        }
+        let Some((cx, cy)) = ui.input.cursor() else {
+            return;
+        };
+        // Topmost first, matching every other hit test on this screen.
+        let tile = self
+            .current_rects(doc, ui)
+            .into_iter()
+            .rev()
+            .find(|(_, rect)| rect.contains(cx, cy))
+            .map(|(id, _)| id);
+        let window = tile
+            .and_then(|id| field_model::window_for_tile(data.field, id, data.toplevels))
+            .map(|window| window.window_id);
+        if let Some(id) = tile {
+            self.focus = Some(id);
+        }
+        self.menu.open_at((cx, cy), MenuTarget { tile, window });
+    }
+
+    /// Turn one menu row into the same thing its chord does.
+    ///
+    /// Every arm here is the pointer half of a route the keyboard already had — except
+    /// `window.close`, which had neither. The four navigation actions are computed from the
+    /// shell's own toplevel list rather than asked of the compositor: `lege_shell_v1` has no
+    /// request for them, deliberately, because they are reserved chords that must keep working
+    /// with this process dead (`compositor/lege-comp/src/keybindings.rs`). Activating the window
+    /// the same rule picks reaches the same place by the route the shell does have.
+    fn run_menu_choice(
+        &mut self,
+        chosen: Chosen,
+        doc: &FieldDocument,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let window = chosen.target.window;
+        let tile = chosen.target.tile;
+        match chosen.action {
+            "field.undo" => actions.push(FieldAction::Undo),
+            "field.stash" => {
+                if let Some(id) = tile {
+                    actions.push(FieldAction::Apply(FieldOp::Stash { id }));
+                }
+            }
+            "field.move" => {
+                if let Some(id) = tile
+                    && let Some(located) = doc.location(id)
+                    && located.container == self.zoomed
+                {
+                    self.keyboard_move = Some((id, located.placement.cell));
+                }
+            }
+            "field.resize" => {
+                if let Some(id) = tile
+                    && let Some(located) = doc.location(id)
+                    && located.container == self.zoomed
+                    && doc.tile(id).is_some_and(Self::resizable)
+                {
+                    self.keyboard_resize = Some((id, located.placement.span));
+                }
+            }
+            "home.reveal" => actions.push(FieldAction::RevealHome),
+            "window.park" => {
+                if let Some(window) = window {
+                    actions.push(FieldAction::Park(window));
+                }
+            }
+            "window.cycle-forward" | "window.cycle-backward" => {
+                if let Some(next) = cycle_from(data.toplevels, window, chosen.action) {
+                    actions.push(FieldAction::Activate(next));
+                }
+            }
+            "window.group-next" | "window.group-previous" => {
+                if let Some(from) = window
+                    && let Some(next) = group_step(data.toplevels, from, chosen.action)
+                {
+                    actions.push(FieldAction::Activate(next));
+                }
+            }
+            "window.escape-fullscreen" | "window.close" => {
+                if let Some(window) = window {
+                    actions.push(FieldAction::RunWindowAction {
+                        id: chosen.action,
+                        window,
+                    });
+                }
+            }
+            id => actions.push(FieldAction::RunAction(id)),
+        }
+    }
+
+    /// End a pointer resize, asking for the span the pointer last named. The field clamps it;
+    /// an op that changes nothing is simply not emitted, so releasing without having moved
+    /// leaves no undo entry behind.
+    fn finish_resize(
+        &mut self,
+        ui: &mut Ui<'_>,
+        doc: &FieldDocument,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let Some((tile, span)) = self.resize.take() else {
+            return;
+        };
+        // The press that started the grip drag is still pending as a click; swallow it so the
+        // release does not also open the tile (`paint_tile`'s content click).
+        let _ = ui.input.take_click(ui.painter.bounds());
+        let unchanged = doc
+            .location(tile)
+            .is_some_and(|located| located.placement.span == span);
+        if !unchanged {
+            actions.push(FieldAction::Apply(FieldOp::Resize { id: tile, span }));
         }
     }
 
@@ -815,8 +1425,8 @@ impl FieldScreen {
 
     /// The ghost for the current lift (pointer or keyboard): a dry run of the drop.
     fn ghost(&self, doc: &FieldDocument, ui: &Ui<'_>) -> Option<Ghost> {
-        let (tile, cell, label_anchor) = if let Some((tile, cell)) = self.keyboard_move {
-            (tile, cell, None)
+        let (tile, cell) = if let Some((tile, cell)) = self.keyboard_move {
+            (tile, cell)
         } else if self.drag.is_lifted() {
             let tile = self.drag.tile()?;
             let pixel_bounds = (
@@ -827,7 +1437,7 @@ impl FieldScreen {
             );
             let at = self.drag.projected_position(&self.drag_cfg, pixel_bounds)?;
             let cell = self.landing_cell(doc, tile, at, ui)?;
-            (tile, cell, Some(cell))
+            (tile, cell)
         } else {
             return None;
         };
@@ -835,10 +1445,10 @@ impl FieldScreen {
         let target = Self::target_at(doc, self.zoomed, tile, cell);
         let operation = lege_field::operation_for(tile, kind, &target)?;
         let label = operation.label();
-        let label_at = match (&target, label_anchor) {
-            (Target::Tile { id, .. } | Target::Project { id }, Some(_)) => self
+        let label_at = match &target {
+            Target::Tile { id, .. } | Target::Project { id } => self
                 .tile_rect(doc, *id, ui)
-                .map(|rect| Rect::new(rect.x, rect.y, rect.w, ui.px(22).min(rect.h))),
+                .map(|rect| Rect::new(rect.x, rect.y, rect.w, ui.px(26).min(rect.h))),
             _ => None,
         };
         let op = Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
@@ -919,7 +1529,6 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
-        let radius = ui.theme.corner_radius as f32;
         let window = match tile.kind {
             TileKind::ParkedSession { .. } => {
                 field_model::window_for_tile(data.field, tile.id, data.toplevels)
@@ -934,68 +1543,130 @@ impl FieldScreen {
                 .count(),
             _ => 0,
         };
-
-        if visual.lifted {
-            ui.painter
-                .shadow_rect(rect, ui.px(6), ui.px(10), 0x0000_0000, 120);
-        }
-        let fill = match &tile.kind {
-            TileKind::Project { .. } => ui.theme.accent_soft,
-            TileKind::ParkedSession { .. } => {
-                if window.is_some_and(|w| w.shelved) {
-                    ui.theme.panel_alt
-                } else {
-                    ui.theme.panel
-                }
+        let (fill, edge) = match &tile.kind {
+            TileKind::Project { .. } => (design::ACCENT_SOFT, design::PROJECT_EDGE),
+            TileKind::ParkedSession { .. } => (design::SHELL, design::EDGE_STRONG),
+            TileKind::System { .. } => (design::SYSTEM_SHELL, design::EDGE_STRONG),
+            TileKind::Widget { widget, .. }
+                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+            {
+                (design::SYSTEM_SHELL, design::EDGE_STRONG)
             }
-            TileKind::Widget { .. } | TileKind::System { .. } => ui.theme.panel_alt,
-            TileKind::App { .. } | TileKind::Tray { .. } | TileKind::File { .. } => ui.theme.panel,
+            TileKind::App { .. }
+            | TileKind::Tray { .. }
+            | TileKind::Widget { .. }
+            | TileKind::File { .. } => (design::SHELL, design::EDGE),
         };
-        let fill = if visual.hovered && !visual.lifted {
-            ui.theme.hover
+        let elevation = if visual.lifted {
+            Elevation::Lifted
+        } else if visual.hovered {
+            Elevation::Hover
         } else {
-            fill
+            Elevation::Rest
         };
-        ui.painter
-            .fill_rounded_rect_aa(ui.kernel, rect, radius, fill, 255);
-        let edge = match window {
-            Some(w) if !w.shelved => ui.theme.good,
-            _ if visual.focused => ui.theme.accent,
-            _ => ui.theme.panel_edge,
+        design::shell(ui, rect, fill, edge, elevation);
+
+        let widget_composition = match &tile.kind {
+            TileKind::Widget { widget, .. } => field_model::widget_drawer(widget)
+                .and_then(|drawer| data.compositions.get(&drawer))
+                .filter(|composition| !composition.is_empty())
+                .map(Vec::as_slice),
+            _ => None,
         };
-        ui.painter.stroke_rect(
-            rect,
-            if visual.focused || window.is_some_and(|w| !w.shelved) {
-                ui.px(2)
-            } else {
-                ui.scale.hairline()
-            },
-            edge,
-        );
-        if let Some(cell) = visual.displaced {
-            let _ = cell;
-            ui.painter.blend_rect(rect, ui.theme.background, 90);
+        let tray_composition = match &tile.kind {
+            TileKind::Tray { tray_id } => data
+                .field
+                .tray(*tray_id)
+                .map(|tray| composition_for_paths(&tray.entries)),
+            _ => None,
+        };
+        if let Some(composition) = widget_composition.or(tray_composition.as_deref()) {
+            draw_composition_band(ui, rect, composition);
         }
 
         let band = Self::band(rect, ui);
-        let band_style = TextStyle::new(ui.theme.body.face, 13.0);
+        let child_count = data.field.placements_in(Some(tile.id)).len();
+        let controls_width = match &tile.kind {
+            TileKind::ParkedSession { .. } if window.is_some_and(|window| !window.shelved) => 64,
+            TileKind::App { .. } if running > 0 => 32,
+            TileKind::Project { .. } if child_count > 0 => 64,
+            _ => 0,
+        };
         // `split_right` hands back the right strip first.
-        let (band_controls, title_area) = band.split_right(ui.px(44).min(band.w / 2));
+        let (band_controls, title_area) = band.split_right(ui.px(controls_width).min(band.w / 2));
+        let display_title = match &tile.kind {
+            TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
+            TileKind::System { .. } => tile.title.to_uppercase(),
+            TileKind::Widget { widget, .. }
+                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+            {
+                tile.title.to_uppercase()
+            }
+            _ => tile.title.clone(),
+        };
+        let title_style = match &tile.kind {
+            TileKind::Project { .. } | TileKind::System { .. } => design::system_label_style(ui),
+            TileKind::Widget { widget, .. }
+                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+            {
+                design::system_label_style(ui)
+            }
+            _ => design::title_style(ui),
+        };
+        let left_mark = match &tile.kind {
+            TileKind::File { .. } => design::FILE_SPINE_WIDTH,
+            TileKind::ParkedSession { .. } if window.is_some_and(|window| !window.shelved) => {
+                design::ACTIVITY_EDGE_WIDTH
+            }
+            _ => 0,
+        };
+        let title_area = Rect::new(
+            title_area.x + ui.px(left_mark + 12),
+            title_area.y,
+            (title_area.w - ui.px(left_mark + 18)).max(0),
+            title_area.h,
+        );
         ui.label_styled(
-            title_area.inset(ui.px(6)),
-            &tile.title,
-            band_style,
-            ui.theme.text,
+            title_area,
+            &display_title,
+            title_style,
+            if matches!(&tile.kind, TileKind::Project { .. }) {
+                design::ACCENT
+            } else {
+                design::TEXT
+            },
             Align::Left,
         );
+        match &tile.kind {
+            TileKind::App { .. } if running > 0 => {
+                let badge = band_controls.inset(ui.px(6));
+                ui.badge(
+                    badge,
+                    &running.to_string(),
+                    design::TEXT,
+                    design::ACTIVITY_SOFT,
+                    design::ACTIVITY,
+                );
+            }
+            TileKind::Project { .. } if child_count > 0 => {
+                ui.label_styled(
+                    band_controls.inset(ui.px(6)),
+                    &format!("{child_count} tiles"),
+                    design::state_style(ui),
+                    design::ACCENT,
+                    Align::Right,
+                );
+            }
+            _ => {}
+        }
         let content = Rect::new(rect.x, band.bottom(), rect.w, (rect.h - band.h).max(0));
 
         match &tile.kind {
             TileKind::App { app_id } => {
                 let size = ui
-                    .px(40)
-                    .min(content.w - ui.px(8))
-                    .min(content.h - ui.px(8))
+                    .px(72)
+                    .min(content.w - ui.px(16))
+                    .min(content.h - ui.px(16))
                     .max(8);
                 let icon = Rect::new(
                     content.x + (content.w - size) / 2,
@@ -1009,7 +1680,7 @@ impl FieldScreen {
                     ui.painter.fill_rounded_rect_aa(
                         ui.kernel,
                         icon,
-                        radius,
+                        ui.px(design::TILE_RADIUS) as f32,
                         ui.theme.accent_soft,
                         255,
                     );
@@ -1022,26 +1693,21 @@ impl FieldScreen {
                         .to_string();
                     ui.label(icon, &initial, ui.theme.accent, Align::Centre);
                 }
-                if running > 0 {
-                    let badge = Rect::new(
-                        rect.right() - ui.px(22),
-                        rect.y + ui.px(4),
-                        ui.px(18),
-                        ui.px(16),
-                    );
-                    ui.badge(
-                        badge,
-                        &running.to_string(),
-                        ui.theme.text,
-                        ui.theme.good_soft,
-                        ui.theme.good,
-                    );
-                }
             }
             TileKind::ParkedSession { app_id, identifier } => {
-                let inner = content.inset(ui.px(6));
+                let inner = content.inset(ui.px(12));
+                ui.painter.fill_rounded_rect_aa(
+                    ui.kernel,
+                    inner,
+                    ui.px(design::WELL_RADIUS) as f32,
+                    0x00ff_ffff,
+                    255,
+                );
+                ui.painter
+                    .stroke_rect(inner, ui.scale.hairline(), design::EDGE);
                 if let Some(preview) = data.previews.get(identifier) {
-                    ui.painter.blit(preview, inner, ScaleFilter::Bilinear);
+                    ui.painter
+                        .blit(preview, inner.inset(ui.px(1)), ScaleFilter::Bilinear);
                 } else if let Some(bitmap) = app_id
                     .as_ref()
                     .and_then(|id| data.icons.get(&id.to_string()))
@@ -1061,43 +1727,69 @@ impl FieldScreen {
                     Some(_) => "open",
                     None => "closed",
                 };
-                let small = TextStyle::new(ui.theme.body.face, 11.0);
+                let small = design::state_style(ui);
                 let state_area = Rect::new(inner.x, inner.bottom() - ui.px(16), inner.w, ui.px(16));
-                ui.label_styled(state_area, state, small, ui.theme.text_dim, Align::Right);
+                ui.label_styled(
+                    state_area.inset(ui.px(4)),
+                    state,
+                    small,
+                    design::TEXT_DIM,
+                    Align::Right,
+                );
                 if let Some(w) = window
                     && !w.shelved
                     && band_controls.w >= ui.px(30)
                 {
-                    let park = band_controls.inset(ui.px(3));
+                    let park = band_controls.inset(ui.px(6));
                     let hovered = ui.input.hovering(park);
                     ui.painter.fill_rounded_rect(
                         park,
-                        ui.theme.corner_radius,
+                        ui.px(design::CHIP_RADIUS),
                         if hovered {
-                            ui.theme.selection
+                            design::ACCENT_SOFT
                         } else {
-                            ui.theme.panel_edge
+                            design::SHELL
                         },
                     );
-                    ui.label_styled(park, "park", small, ui.theme.text, Align::Centre);
+                    ui.painter
+                        .stroke_rect(park, ui.scale.hairline(), design::EDGE_STRONG);
+                    ui.label_styled(
+                        park,
+                        "PARK",
+                        TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+                        design::TEXT_DIM,
+                        Align::Centre,
+                    );
                     if ui.input.take_click(park) {
                         actions.push(FieldAction::Park(w.window_id));
                     }
                 }
             }
             TileKind::Widget { widget, .. } => {
-                let small = TextStyle::new(ui.theme.body.face, 12.0);
+                let small = design::measurement_style(ui);
                 let drawer = field_model::widget_drawer(widget);
-                let inner = content.inset(ui.px(6));
+                let inner = content.inset(ui.px(12));
                 // A directory drawer tall enough shows its directory as a cushion treemap —
                 // the one place on the field where area means bytes; compact, it shows a
-                // composition band under its lines instead.
+                // composition band across the shell's top edge instead.
                 let treemap_drawer = drawer
                     .filter(|d| matches!(d, Drawer::Downloads | Drawer::Documents | Drawer::Media));
-                let tall = inner.h >= ui.px(60) && inner.w >= ui.px(60);
+                let representation = representation_of(data.field, tile);
+                let tall = matches!(representation, Representation::Large | Representation::Full)
+                    && inner.h >= ui.px(60)
+                    && inner.w >= ui.px(60);
                 if let Some(d) = treemap_drawer
                     && tall
                 {
+                    ui.painter.fill_rounded_rect_aa(
+                        ui.kernel,
+                        inner,
+                        ui.px(design::WELL_RADIUS) as f32,
+                        0x00ff_ffff,
+                        255,
+                    );
+                    ui.painter
+                        .stroke_rect(inner, ui.scale.hairline(), design::EDGE);
                     let wanted = (inner.w.max(1) as u32, inner.h.max(1) as u32);
                     match data.treemaps.get(&d) {
                         Some(bitmap) if close_enough(bitmap, wanted) => {
@@ -1113,7 +1805,7 @@ impl FieldScreen {
                                 inner,
                                 "scanning…",
                                 small,
-                                ui.theme.text_dim,
+                                design::TEXT_DIM,
                                 Align::Left,
                             );
                         }
@@ -1122,12 +1814,7 @@ impl FieldScreen {
                     let lines = drawer
                         .and_then(|drawer| data.drawer_texts.get(&drawer))
                         .map_or(&[][..], Vec::as_slice);
-                    let band = treemap_drawer
-                        .and_then(|d| data.compositions.get(&d))
-                        .filter(|c| !c.is_empty());
-                    let band_height = if band.is_some() { ui.px(6) } else { 0 };
-                    let text_area =
-                        Rect::new(inner.x, inner.y, inner.w, (inner.h - band_height).max(0));
+                    let text_area = inner;
                     let line_height = ui.px(16);
                     let mut y = text_area.y;
                     ui.painter.push_clip(text_area);
@@ -1136,35 +1823,20 @@ impl FieldScreen {
                         .take((text_area.h / line_height).max(0) as usize)
                     {
                         let row = Rect::new(text_area.x, y, text_area.w, line_height);
-                        ui.label_styled(row, line, small, ui.theme.text_dim, Align::Left);
+                        ui.label_styled(row, line, small, design::TEXT_DIM, Align::Left);
                         y += line_height;
                     }
                     ui.painter.pop_clip();
                     if lines.is_empty() {
-                        ui.label_styled(text_area, "…", small, ui.theme.text_dim, Align::Left);
-                    }
-                    if let Some(composition) = band {
-                        let mut x = inner.x;
-                        let bottom = inner.bottom() - band_height;
-                        for (colour, share) in composition {
-                            let w = ((inner.w as f32) * share).round() as i32;
-                            if w <= 0 {
-                                continue;
-                            }
-                            ui.painter.fill_rect(
-                                Rect::new(x, bottom, w.min(inner.right() - x), band_height),
-                                *colour,
-                            );
-                            x += w;
-                        }
+                        ui.label_styled(text_area, "…", small, design::TEXT_DIM, Align::Left);
                     }
                 }
             }
             TileKind::Project { .. } => {
                 // Miniature of the interior: each child as a small chip with its title, in the
                 // child grid's own proportions, so the tile reads as what it contains.
-                let small = TextStyle::new(ui.theme.body.face, 11.0);
-                let inner = content.inset(ui.px(6));
+                let small = design::state_style(ui);
+                let inner = content.inset(ui.px(12));
                 if let Some(container) = data.field.container(tile.id) {
                     let children = data.field.placements_in(Some(tile.id));
                     ui.painter.push_clip(inner);
@@ -1178,13 +1850,15 @@ impl FieldScreen {
                             ui.px(3),
                         ));
                         ui.painter
-                            .fill_rounded_rect(chip, ui.px(3), ui.theme.panel_edge);
+                            .fill_rounded_rect(chip, ui.px(design::CHIP_RADIUS), 0x00ff_ffff);
+                        ui.painter
+                            .stroke_rect(chip, ui.scale.hairline(), design::PROJECT_EDGE);
                         if let Some(child_tile) = data.field.tile(*child) {
                             ui.label_styled(
                                 chip.inset(ui.px(3)),
                                 &child_tile.title,
                                 small,
-                                ui.theme.text,
+                                design::TEXT,
                                 Align::Left,
                             );
                         }
@@ -1195,27 +1869,327 @@ impl FieldScreen {
                             inner,
                             "empty — drop tiles here",
                             small,
-                            ui.theme.text_dim,
+                            design::TEXT_DIM,
                             Align::Left,
                         );
                     }
                 }
             }
-            TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {
-                let small = TextStyle::new(ui.theme.body.face, 12.0);
+            TileKind::Tray { tray_id } => {
+                let inner = content.inset(ui.px(12));
+                let entries = data
+                    .field
+                    .tray(*tray_id)
+                    .map_or(&[][..], |tray| tray.entries.as_slice());
+                let line_height = ui.px(16);
+                ui.painter.push_clip(inner);
+                for (index, path) in entries
+                    .iter()
+                    .take((inner.h / line_height).max(0) as usize)
+                    .enumerate()
+                {
+                    let row = Rect::new(
+                        inner.x,
+                        inner.y + index as i32 * line_height,
+                        inner.w,
+                        line_height,
+                    );
+                    let name = path
+                        .file_name()
+                        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+                    ui.label_styled(
+                        row,
+                        &name,
+                        design::measurement_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
+                    );
+                }
+                ui.painter.pop_clip();
+                if entries.is_empty() {
+                    ui.label_styled(
+                        inner,
+                        "empty tray — add references here",
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
+                    );
+                }
+            }
+            TileKind::File { path } => {
+                let inner = content.inset(ui.px(12));
+                let extension = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map_or_else(|| "FILE".to_owned(), str::to_uppercase);
+                let chip_width = ui.px(48).min(inner.w);
+                let (chip, detail) = inner.split_right(chip_width);
                 ui.label_styled(
-                    content.inset(ui.px(6)),
-                    tile.kind.name(),
-                    small,
-                    ui.theme.text_dim,
+                    detail,
+                    &path
+                        .parent()
+                        .map_or_else(String::new, |parent| parent.to_string_lossy().into_owned()),
+                    design::state_style(ui),
+                    design::TEXT_DIM,
                     Align::Left,
                 );
+                ui.painter.fill_rounded_rect(
+                    chip.inset(ui.px(3)),
+                    ui.px(design::CHIP_RADIUS),
+                    design::SHELL_LOW,
+                );
+                ui.painter
+                    .stroke_rect(chip.inset(ui.px(3)), ui.scale.hairline(), design::EDGE);
+                ui.label_styled(
+                    chip.inset(ui.px(5)),
+                    &extension,
+                    design::state_style(ui),
+                    design::TEXT_DIM,
+                    Align::Centre,
+                );
+                ui.painter.fill_rect(
+                    Rect::new(
+                        rect.x,
+                        rect.y,
+                        ui.px(design::FILE_SPINE_WIDTH).min(rect.w),
+                        rect.h,
+                    ),
+                    file_category_colour(path),
+                );
+            }
+            TileKind::System { probe } => {
+                // Every system tile draws through the widget contract, so a control cannot exist
+                // on a tile without also existing in the action manifest, the cheat sheet and
+                // `lege`. An unknown probe says so rather than rendering an empty shell.
+                if let Some(widget) = widgets::descriptor(probe) {
+                    let rung = representation_of(data.field, tile);
+                    // The launcher's body is rows rather than a headline, so it draws itself; its
+                    // region strip and its rung rules are still the contract's (see
+                    // `widgets::launcher`). Every other widget goes through the one painter.
+                    let chosen = if widget.id == "launcher" {
+                        // Owned so the borrow of the search field ends before the outcome is
+                        // acted on; the query is a handful of characters.
+                        let query = self.search.text().to_owned();
+                        let launcher = widgets::launcher::LauncherData {
+                            entries: data.apps,
+                            query: &query,
+                            icons: data.icons,
+                            available: data.apps_available,
+                        };
+                        let outcome = widgets::launcher::draw(
+                            ui,
+                            content,
+                            widget,
+                            &launcher,
+                            rung,
+                            self.confirming,
+                        );
+                        match outcome {
+                            widgets::launcher::LauncherOutcome::None => None,
+                            widgets::launcher::LauncherOutcome::Launch(app_id) => {
+                                self.confirming = None;
+                                actions.push(FieldAction::Launch(app_id));
+                                None
+                            }
+                            widgets::launcher::LauncherOutcome::Action(declaration) => {
+                                Some(declaration)
+                            }
+                        }
+                    } else {
+                        widgets::draw(
+                            ui,
+                            content,
+                            widget,
+                            data.widgets.get(probe.as_str()),
+                            rung,
+                            self.confirming,
+                        )
+                    };
+                    if let Some(chosen) = chosen {
+                        // A destructive action arms on the first press and fires on the
+                        // second; anything else goes straight through.
+                        if chosen.confirm && self.confirming != Some(chosen.id) {
+                            self.confirming = Some(chosen.id);
+                        } else {
+                            self.confirming = None;
+                            actions.push(FieldAction::RunAction(chosen.id));
+                        }
+                    }
+                } else {
+                    ui.label_styled(
+                        content.inset(ui.px(12)),
+                        &format!("{probe} — no such widget"),
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
+                    );
+                }
             }
         }
 
-        if !visual.lifted && ui.input.take_click(content) {
+        if window.is_some_and(|window| !window.shelved) {
+            ui.painter.fill_rect(
+                Rect::new(
+                    rect.x,
+                    rect.y,
+                    ui.px(design::ACTIVITY_EDGE_WIDTH).min(rect.w),
+                    rect.h,
+                ),
+                design::ACTIVITY,
+            );
+        }
+        if visual.displaced.is_some() {
+            ui.painter.blend_rect(rect, design::GROUND, 115);
+        }
+        if visual.focused && !visual.lifted {
+            design::focus_ring(ui, rect);
+        }
+
+        // The grip, drawn only once the tile is under the pointer or focused: a corner mark on
+        // every tile all the time would be the kind of permanent chrome this field does without.
+        let grip = Self::grip(rect, ui);
+        let resizing = self.resize.is_some_and(|(id, _)| id == tile.id)
+            || self.keyboard_resize.is_some_and(|(id, _)| id == tile.id);
+        let on_grip =
+            !visual.lifted && Self::resizable(tile) && (ui.input.hovering(grip) || resizing);
+        if !visual.lifted && Self::resizable(tile) && (visual.hovered || visual.focused || resizing)
+        {
+            let thickness = ui.px(2).max(1);
+            let colour = if on_grip {
+                design::ACCENT
+            } else {
+                design::EDGE_STRONG
+            };
+            ui.painter.fill_rect(
+                Rect::new(grip.x, grip.bottom() - thickness, grip.w, thickness),
+                colour,
+            );
+            ui.painter.fill_rect(
+                Rect::new(grip.right() - thickness, grip.y, thickness, grip.h),
+                colour,
+            );
+        }
+
+        // A press on the grip is a resize, never an open.
+        if !visual.lifted && !on_grip && ui.input.take_click(content) {
             self.focus = Some(tile.id);
             self.primary_action(tile, data, actions);
+        }
+    }
+}
+
+/// `window.cycle-forward` / `window.cycle-backward` from the shell's side.
+///
+/// The compositor's own cycle walks its stacking order, which this process is never told; the
+/// shell walks its toplevel list in `window_id` order instead. Both step through the same set of
+/// live windows in a stable, reversible order, which is all the action promises — nobody can see
+/// two different orders at once, because only one of the two routes is being used at a time.
+/// Parked windows are skipped: they are reached through the shelf, not the switcher.
+fn cycle_from(
+    toplevels: &[ShellToplevel],
+    current: Option<WindowId>,
+    action: &str,
+) -> Option<WindowId> {
+    let mut order: Vec<WindowId> = toplevels
+        .iter()
+        .filter(|window| !window.shelved)
+        .map(|window| window.window_id)
+        .collect();
+    order.sort_unstable();
+    if order.is_empty() {
+        return None;
+    }
+    let Some(at) = current.and_then(|id| order.iter().position(|candidate| *candidate == id))
+    else {
+        return Some(order[0]);
+    };
+    let len = order.len();
+    let next = if action == "window.cycle-forward" {
+        (at + 1) % len
+    } else {
+        (at + len - 1) % len
+    };
+    Some(order[next])
+}
+
+/// `window.group-next` / `window.group-previous` from the shell's side: the same spatial rule the
+/// compositor's chords use (`lege_window::geometry::contiguous_window`, two hops), run over the
+/// geometry the shell already receives on every toplevel. One implementation of the rule, two
+/// callers — the shell does not get its own idea of what a group is.
+fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Option<WindowId> {
+    /// Kept in step with `compositor/lege-comp/src/keybindings.rs`'s `GROUP_HOPS`.
+    const GROUP_HOPS: u8 = 2;
+    let windows: Vec<(WindowId, lege_window::Rect)> = toplevels
+        .iter()
+        .filter(|window| !window.shelved)
+        .map(|window| (window.window_id, window.geometry))
+        .collect();
+    let direction = if action == "window.group-next" {
+        lege_window::geometry::Direction::Right
+    } else {
+        lege_window::geometry::Direction::Left
+    };
+    lege_window::geometry::contiguous_window(&windows, from, direction, GROUP_HOPS)
+}
+
+fn representation_of(doc: &FieldDocument, tile: &Tile) -> Representation {
+    let span = doc
+        .location(tile.id)
+        .map_or(tile.spans.preferred, |located| located.placement.span);
+    Representation::for_span(&tile.kind, span)
+}
+
+fn file_category_colour(path: &std::path::Path) -> u32 {
+    let category = lege_treemap::classify_path(path).category;
+    lege_treemap::colors::category_color(category).to_rgb_u32()
+}
+
+fn composition_for_paths(paths: &[std::path::PathBuf]) -> Vec<(u32, f32)> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let mut counts = [0_u32; lege_treemap::CATEGORY_COUNT];
+    for path in paths {
+        let category = lege_treemap::classify_path(path).category;
+        counts[lege_treemap::tree::extensions::category_index(category)] += 1;
+    }
+    let mut categories: Vec<_> = lege_treemap::tree::extensions::CATEGORY_ORDER
+        .into_iter()
+        .filter_map(|category| {
+            let count = counts[lege_treemap::tree::extensions::category_index(category)];
+            (count > 0).then_some((category, count))
+        })
+        .collect();
+    categories.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    let total = paths.len() as f32;
+    categories
+        .into_iter()
+        .map(|(category, count)| {
+            (
+                lege_treemap::colors::category_color(category).to_rgb_u32(),
+                count as f32 / total,
+            )
+        })
+        .collect()
+}
+
+fn draw_composition_band(ui: &mut Ui<'_>, rect: Rect, composition: &[(u32, f32)]) {
+    let height = ui.px(design::COMPOSITION_BAND_HEIGHT).min(rect.h);
+    if height <= 0 || composition.is_empty() {
+        return;
+    }
+    let mut x = rect.x;
+    for (index, (colour, share)) in composition.iter().enumerate() {
+        let remaining = (rect.right() - x).max(0);
+        let width = if index + 1 == composition.len() {
+            remaining
+        } else {
+            ((rect.w as f32 * share).round() as i32).clamp(0, remaining)
+        };
+        if width > 0 {
+            ui.painter
+                .fill_rect(Rect::new(x, rect.y, width, height), *colour);
+            x += width;
         }
     }
 }
@@ -1283,7 +2257,6 @@ mod tests {
     use crate::field_model::{LiveState, merge, tile_id_for};
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
-    use pixelkit_ui::Theme;
 
     const W: i32 = 1200;
     const H: i32 = 800;
@@ -1304,10 +2277,23 @@ mod tests {
         }
     }
 
+    fn app_entry(id: &str, name: &str) -> crate::app_search::AppEntry {
+        crate::app_search::AppEntry {
+            id: id.parse().unwrap(),
+            name: name.to_owned(),
+            desktop_file_id: String::new(),
+            icon: String::new(),
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            no_display: false,
+        }
+    }
+
     struct Harness {
         screen: FieldScreen,
         doc: FieldDocument,
         toplevels: Vec<ShellToplevel>,
+        apps: Vec<crate::app_search::AppEntry>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
         buffer: WindowBuffer,
@@ -1319,7 +2305,6 @@ mod tests {
         fn new() -> Self {
             let (cols, rows) = field_model::grid_for(W, H, field_model::TILE_SIZE);
             let mut doc = FieldDocument::new("test", cols, rows);
-            let apps: Vec<AppId> = vec!["org.legeos.Files".parse().unwrap()];
             let toplevels = vec![
                 toplevel(1, "org.legeos.Files", false),
                 toplevel(2, "org.example.Editor", true),
@@ -1327,7 +2312,6 @@ mod tests {
             merge(
                 &mut doc,
                 &LiveState {
-                    apps: &apps,
                     toplevels: &toplevels,
                     projects: &[],
                 },
@@ -1336,6 +2320,13 @@ mod tests {
                 screen: FieldScreen::default(),
                 doc,
                 toplevels,
+                apps: vec![
+                    app_entry("org.legeos.Files", "Files"),
+                    app_entry(
+                        "desktop-import.gimp.desktop",
+                        "GNU Image Manipulation Program",
+                    ),
+                ],
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, H as u32),
@@ -1364,6 +2355,18 @@ mod tests {
             let drawer_texts = HashMap::new();
             let treemaps = HashMap::new();
             let compositions = HashMap::new();
+            let widgets = HashMap::new();
+            let browser_sources = crate::file_browser::BrowserSources::default();
+            let browser = FileBrowserData {
+                sources: &browser_sources,
+                listing: None,
+                pending: None,
+                error: None,
+                status: None,
+                search_query: None,
+                search_entries: None,
+                search_error: None,
+            };
             let data = FieldData {
                 field: &self.doc,
                 toplevels: &self.toplevels,
@@ -1372,16 +2375,22 @@ mod tests {
                 drawer_texts: &drawer_texts,
                 treemaps: &treemaps,
                 compositions: &compositions,
-                search_results: None,
+                browser: &browser,
                 connected: true,
                 home_revealed: false,
+                network_control_available: true,
+                apps: &self.apps,
+                apps_available: true,
+                widgets: &widgets,
+                clock_label: "SUN 24 AUG 18:43",
+                reduced_motion: false,
                 now_ms: self.now,
             };
             let mut ui = Ui::new(
                 Painter::new(&mut self.buffer),
                 &mut self.text,
                 &mut self.input,
-                Theme::default(),
+                design::theme(),
                 Scale::ONE,
                 &mut self.kernel,
             );
@@ -1397,7 +2406,7 @@ mod tests {
                 Painter::new(&mut self.buffer),
                 &mut self.text,
                 &mut self.input,
-                Theme::default(),
+                design::theme(),
                 Scale::ONE,
                 &mut self.kernel,
             );
@@ -1428,6 +2437,57 @@ mod tests {
     }
 
     #[test]
+    fn field_chrome_uses_the_design_system_geometry() {
+        let mut h = Harness::new();
+        h.frame();
+
+        assert_eq!(
+            h.screen.bounds,
+            Rect::new(
+                design::FIELD_INSET,
+                design::FIELD_INSET + design::TOP_BAR_HEIGHT + design::TOP_BAR_GAP,
+                W - design::FIELD_INSET * 2,
+                H - design::FIELD_INSET * 2 - design::TOP_BAR_HEIGHT - design::TOP_BAR_GAP,
+            )
+        );
+
+        let files = tile_id_for("app:org.legeos.Files");
+        let rect = h.rect_of(files);
+        let ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            design::theme(),
+            Scale::ONE,
+            &mut h.kernel,
+        );
+        assert_eq!(FieldScreen::band(rect, &ui).h, design::GRAB_BAND_HEIGHT);
+    }
+
+    #[test]
+    fn successful_field_operations_get_a_bounded_undo_notice() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        h.screen.confirm(&FieldOp::Stash { id: files }, h.now);
+
+        let notice = h.screen.notice.as_ref().expect("confirmation is visible");
+        assert_eq!(notice.expires_at_ms, NOTICE_LIFETIME_MS);
+        assert_eq!(notice.text, "STASH ON SHELF");
+
+        h.now = NOTICE_LIFETIME_MS - 17;
+        h.frame();
+        assert!(
+            h.screen.notice.is_some(),
+            "notice remains before four seconds"
+        );
+        h.frame();
+        assert!(
+            h.screen.notice.is_none(),
+            "notice expires after four seconds"
+        );
+    }
+
+    #[test]
     fn clicking_an_app_tile_launches_it_and_a_session_tile_restores_or_activates() {
         let mut h = Harness::new();
         let files = tile_id_for("app:org.legeos.Files");
@@ -1447,6 +2507,68 @@ mod tests {
         let rect = h.rect_of(open);
         let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
         assert_eq!(actions, vec![FieldAction::Activate(WindowId(1))]);
+    }
+
+    /// The `y` of the launcher widget's first application row, from the same constants the
+    /// painter uses: grab band, the widget body's inset, the summary line, and half a row.
+    fn launcher_first_row_y(rect: Rect) -> i32 {
+        rect.y + design::GRAB_BAND_HEIGHT + 8 + 16 + 14
+    }
+
+    #[test]
+    fn clicking_a_row_on_the_launcher_widget_launches_that_application() {
+        let mut h = Harness::new();
+        let launcher = tile_id_for("system:launcher");
+        let rect = h.rect_of(launcher);
+        // With no query the list is alphabetical, so Files is the first row.
+        let actions = h.click(rect.x + rect.w / 2, launcher_first_row_y(rect));
+        assert_eq!(
+            actions,
+            vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())],
+        );
+    }
+
+    #[test]
+    fn typing_in_the_search_bar_filters_the_launcher_and_enter_launches_the_best_match() {
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        h.screen.search.set_text("image");
+        h.frame();
+
+        // The filter reached the widget: its first row is now the only match, not Files.
+        let rect = h.rect_of(tile_id_for("system:launcher"));
+        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
+        let actions = h.click(rect.x + rect.w / 2, launcher_first_row_y(rect));
+        assert_eq!(actions, vec![FieldAction::Launch(gimp.clone())]);
+
+        // …and Enter on the field launches it without touching the tile at all — the repair to
+        // a search bar that said "Search files, applications and projects" and did nothing.
+        h.screen.search.set_text("image");
+        let actions = h.key(KeyInput::Enter);
+        assert_eq!(actions, vec![FieldAction::Launch(gimp)]);
+        assert!(
+            h.screen.search.text().is_empty(),
+            "a launched query is cleared, so the next keystroke starts a new search"
+        );
+    }
+
+    #[test]
+    fn enter_with_a_query_that_matches_nothing_launches_nothing() {
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        h.screen.search.set_text("no such application");
+        assert_eq!(h.key(KeyInput::Enter), Vec::new());
+        assert_eq!(h.screen.search.text(), "no such application");
+    }
+
+    #[test]
+    fn the_launchers_declared_regions_reach_the_search_bar_and_are_declared_actions() {
+        let mut h = Harness::new();
+        let rect = h.rect_of(tile_id_for("system:launcher"));
+        // The region strip is the bottom band of the tile; at this size one region is offered.
+        let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 12);
+        assert_eq!(actions, vec![FieldAction::RunAction("launcher.search")]);
+        assert!(lege_types::action::action("launcher.search").is_some());
     }
 
     #[test]
@@ -1577,9 +2699,330 @@ mod tests {
         assert_eq!(h.screen.drag, Drag::Idle);
     }
 
+    /// The drawer tiles are the widgets a person actually grabs, so the grip is tested on one.
+    fn downloads_tile() -> TileId {
+        tile_id_for("drawer:Downloads")
+    }
+
+    /// A field of widgets placed exactly where the test wants them, so a resize test is about
+    /// the gesture rather than about whichever drawers happen to be adjacent today.
+    fn doc_with(cols: u16, rows: u16, tiles: &[(u64, Cell, SpanRange)]) -> FieldDocument {
+        let mut doc = FieldDocument::new("test", cols, rows);
+        for (id, cell, spans) in tiles {
+            let tile = Tile {
+                id: TileId(*id),
+                kind: TileKind::Widget {
+                    widget: "probe".into(),
+                    scope: None,
+                },
+                title: format!("t{id}"),
+                spans: *spans,
+                accent: None,
+            };
+            doc = apply(
+                &doc,
+                &FieldOp::Place {
+                    tile,
+                    landing: Landing {
+                        container: None,
+                        cell: *cell,
+                    },
+                },
+            )
+            .expect("the test's own placement fits")
+            .0;
+        }
+        doc
+    }
+
+    /// The pixel centre of one grid cell, for aiming a resize drag at an exact span.
+    fn cell_centre(h: &FieldScreen, doc: &FieldDocument, cell: Cell) -> (i32, i32) {
+        let rect = from_pixel(lege_field::cell_rect(
+            doc.cols,
+            doc.rows,
+            to_pixel(h.bounds),
+            cell,
+            Span::new(1, 1),
+            GAP,
+        ));
+        (rect.x + rect.w / 2, rect.y + rect.h / 2)
+    }
+
+    fn grip_of(h: &mut Harness, tile: TileId) -> Rect {
+        let rect = h.rect_of(tile);
+        let ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            design::theme(),
+            Scale::ONE,
+            &mut h.kernel,
+        );
+        FieldScreen::grip(rect, &ui)
+    }
+
+    #[test]
+    fn dragging_a_tiles_corner_resizes_it_without_moving_it() {
+        let mut h = Harness::new();
+        h.frame();
+        let range = SpanRange::new(Span::new(1, 1), Span::new(2, 2), Span::new(4, 4));
+        h.doc = doc_with(
+            h.doc.cols,
+            h.doc.rows,
+            &[(1, Cell::new(0, 0), range), (2, Cell::new(6, 0), range)],
+        );
+        let subject = TileId(1);
+        let rect = h.rect_of(subject);
+        let before = h.doc.location(subject).unwrap().placement;
+
+        let grip = grip_of(&mut h, subject);
+        assert!(
+            grip.contains(rect.right() - 2, rect.bottom() - 2),
+            "the grip is the bottom-right corner"
+        );
+
+        h.input
+            .cursor_moved((grip.x + 2) as f32, (grip.y + 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert_eq!(
+            h.screen.resize.map(|(id, _)| id),
+            Some(subject),
+            "pressing the corner starts a resize, not a move"
+        );
+        assert_eq!(
+            h.screen.drag,
+            Drag::Idle,
+            "the move gesture stays out of it"
+        );
+
+        // Aim at cell (2,2): a tile anchored at (0,0) reaching that cell is 3x3.
+        let (x, y) = cell_centre(&h.screen, &h.doc, Cell::new(2, 2));
+        h.input.cursor_moved(x as f32, y as f32);
+        h.frame();
+        assert_eq!(h.screen.resize, Some((subject, Span::new(3, 3))));
+
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        let [FieldAction::Apply(FieldOp::Resize { id, span })] = actions.as_slice() else {
+            panic!("expected one Resize, got {actions:?}");
+        };
+        assert_eq!((*id, *span), (subject, Span::new(3, 3)));
+        assert!(h.screen.resize.is_none());
+
+        h.apply(&actions);
+        let after = h.doc.location(subject).unwrap().placement;
+        assert_eq!(after.cell, before.cell, "a resize never moves the tile");
+        assert_eq!(after.span, Span::new(3, 3), "there was room, so it grew");
+    }
+
+    #[test]
+    fn growing_into_a_neighbour_narrows_it_against_its_far_edge() {
+        let mut h = Harness::new();
+        h.frame();
+        let range = SpanRange::new(Span::new(1, 1), Span::new(2, 2), Span::new(4, 4));
+        h.doc = doc_with(
+            h.doc.cols,
+            h.doc.rows,
+            &[(1, Cell::new(0, 0), range), (2, Cell::new(2, 0), range)],
+        );
+        let (subject, neighbour) = (TileId(1), TileId(2));
+        let before = h.doc.location(neighbour).unwrap().placement;
+        assert_eq!(before.right(), 4);
+
+        let grip = grip_of(&mut h, subject);
+        h.input
+            .cursor_moved((grip.x + 2) as f32, (grip.y + 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        let (x, y) = cell_centre(&h.screen, &h.doc, Cell::new(2, 1));
+        h.input.cursor_moved(x as f32, y as f32);
+        h.frame();
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        h.apply(&actions);
+
+        let after = h.doc.location(neighbour).unwrap().placement;
+        assert_eq!(
+            after.right(),
+            before.right(),
+            "the neighbour kept its far edge"
+        );
+        assert_eq!(after.span.cols, before.span.cols - 1, "it gave up a column");
+        assert_eq!(
+            h.doc.location(subject).unwrap().placement.span,
+            Span::new(3, 2)
+        );
+    }
+
+    #[test]
+    fn a_block_of_minimum_size_widgets_clamps_instead_of_evicting_anyone() {
+        // This is the default Home Field: eight drawers packed two-across at the 2x2 widget
+        // floor, so none of them has anything to give. Growing one must stop, not shove a
+        // neighbour across the field — and it must not leave a no-op undo entry behind either.
+        let mut h = Harness::new();
+        let downloads = downloads_tile();
+        let recent = tile_id_for("drawer:Recent");
+        let before_neighbour = h.doc.location(recent).map(|l| l.placement);
+
+        let grip = grip_of(&mut h, downloads);
+        h.input
+            .cursor_moved((grip.x + 2) as f32, (grip.y + 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        let (x, y) = cell_centre(&h.screen, &h.doc, Cell::new(3, 3));
+        h.input.cursor_moved(x as f32, y as f32);
+        h.frame();
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        let before = h.doc.location(downloads).unwrap().placement;
+        h.apply(&actions);
+
+        assert_eq!(
+            h.doc.location(downloads).unwrap().placement,
+            before,
+            "packed at their floor, the drawers cannot make room"
+        );
+        assert_eq!(
+            h.doc.location(recent).map(|l| l.placement),
+            before_neighbour,
+            "and nobody was evicted to pretend otherwise"
+        );
+    }
+
+    #[test]
+    fn releasing_the_grip_without_moving_changes_nothing() {
+        let mut h = Harness::new();
+        let downloads = downloads_tile();
+        let grip = grip_of(&mut h, downloads);
+
+        h.input
+            .cursor_moved((grip.x + 2) as f32, (grip.y + 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        assert!(
+            actions.is_empty(),
+            "a resize to the size it already is leaves no undo entry: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn pressing_the_grip_does_not_also_open_the_tile() {
+        // The corner sits inside the tile body, which is the click target that expands a drawer.
+        let mut h = Harness::new();
+        let downloads = downloads_tile();
+        let grip = grip_of(&mut h, downloads);
+        h.click(grip.x + 2, grip.y + 2);
+        assert!(
+            h.screen.expanded.is_none(),
+            "the drawer must not have opened from a grip press"
+        );
+    }
+
+    #[test]
+    fn the_grip_never_overlaps_the_move_band() {
+        let mut h = Harness::new();
+        let downloads = downloads_tile();
+        let rect = h.rect_of(downloads);
+        let ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            design::theme(),
+            Scale::ONE,
+            &mut h.kernel,
+        );
+        let (band, grip) = (FieldScreen::band(rect, &ui), FieldScreen::grip(rect, &ui));
+        assert!(
+            grip.y >= band.bottom(),
+            "one gesture would shadow the other: band {band:?}, grip {grip:?}"
+        );
+    }
+
+    #[test]
+    fn the_keyboard_resizes_a_tile_and_escape_abandons_it() {
+        let mut h = Harness::new();
+        let downloads = downloads_tile();
+        h.frame();
+        h.screen.focus = Some(downloads);
+        let before = h.doc.location(downloads).unwrap().placement.span;
+
+        h.key(KeyInput::Character('r'));
+        assert_eq!(
+            h.screen.keyboard_resize,
+            Some((downloads, before)),
+            "`r` starts from the size the tile already is"
+        );
+        h.key(KeyInput::Right);
+        assert_eq!(
+            h.screen.keyboard_resize,
+            Some((downloads, Span::new(before.cols + 1, before.rows)))
+        );
+        h.key(KeyInput::Escape);
+        assert!(h.screen.keyboard_resize.is_none());
+
+        // …and Enter commits instead.
+        h.key(KeyInput::Character('r'));
+        h.key(KeyInput::Down);
+        let actions = h.key(KeyInput::Enter);
+        let [FieldAction::Apply(FieldOp::Resize { id, span })] = actions.as_slice() else {
+            panic!("expected one Resize, got {actions:?}");
+        };
+        assert_eq!(*id, downloads);
+        assert_eq!(*span, Span::new(before.cols, before.rows + 1));
+    }
+
+    #[test]
+    fn a_tile_that_cannot_change_size_offers_no_grip() {
+        let mut h = Harness::new();
+        h.frame();
+        // App tiles run from 1x1 to 2x2, drawers from 2x2 up; a fixed-span tile has neither.
+        let fixed = Tile {
+            id: TileId(9_999),
+            kind: TileKind::System {
+                probe: "fixed".into(),
+            },
+            title: "fixed".into(),
+            spans: SpanRange::fixed(Span::new(2, 2)),
+            accent: None,
+        };
+        assert!(!FieldScreen::resizable(&fixed));
+        let growable = Tile {
+            spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(4, 4)),
+            ..fixed
+        };
+        assert!(FieldScreen::resizable(&growable));
+    }
+
+    #[test]
+    fn clicking_the_home_information_rows_network_widget_opens_nm_tray() {
+        let mut h = Harness::new();
+        h.frame();
+        // At 1200 logical pixels the right-hand information row begins around x=834; its first
+        // 106 pixels are the NETWORK control. Click its centre, independent of text glyph bounds.
+        h.input.cursor_moved(875.0, 32.0);
+        h.input.mouse(MouseButton::Left, true);
+        h.input.mouse(MouseButton::Left, false);
+        assert_eq!(
+            h.frame(),
+            vec![FieldAction::RunAction("network.open-control")]
+        );
+    }
+
     #[test]
     fn a_project_zooms_in_and_its_children_can_be_moved_within_and_back_out() {
         let mut h = Harness::new();
+        // This is a test about zooming into a project, not about how much of a 11×7 field Home's
+        // own furniture claims: the system widgets are stashed so the hand-built project below
+        // has a quadrant to land in on the small test grid.
+        for probe in field_model::SYSTEM_WIDGETS {
+            let id = tile_id_for(&format!("system:{probe}"));
+            h.doc = apply(&h.doc, &FieldOp::Stash { id })
+                .expect("stash applies")
+                .0;
+        }
         let files = tile_id_for("app:org.legeos.Files");
         let editor = tile_id_for("app:org.example.Editor");
         let op = FieldOp::CreateProject {
@@ -1614,7 +3057,7 @@ mod tests {
                 Painter::new(&mut h.buffer),
                 &mut h.text,
                 &mut h.input,
-                Theme::default(),
+                design::theme(),
                 Scale::ONE,
                 &mut h.kernel,
             );
@@ -1676,5 +3119,197 @@ mod tests {
         h.apply(&actions);
         assert_eq!(h.doc.parent_of(files), h.doc.parent_of(editor));
         assert!(h.doc.parent_of(files).is_some());
+    }
+
+    // ---- the context menu ---------------------------------------------------------------
+
+    impl Harness {
+        fn secondary_click(&mut self, x: i32, y: i32) -> Vec<FieldAction> {
+            self.input.cursor_moved(x as f32, y as f32);
+            self.input.mouse(MouseButton::Right, true);
+            self.frame()
+        }
+
+        /// The rectangle of the menu's `index`-th row, asked of the menu itself so a test aims
+        /// at exactly what will be drawn.
+        fn menu_row(&mut self, index: usize) -> Rect {
+            self.frame();
+            let ui = Ui::new(
+                Painter::new(&mut self.buffer),
+                &mut self.text,
+                &mut self.input,
+                design::theme(),
+                Scale::ONE,
+                &mut self.kernel,
+            );
+            self.screen
+                .menu
+                .row(&ui, self.screen.bounds, index)
+                .expect("the menu is open and has that row")
+        }
+    }
+
+    /// Secondary-click was translated into the input layer and consumed by nothing: right-click
+    /// did nothing anywhere on the field. Now it opens the menu, and over a live window's tile
+    /// that menu carries the window rows.
+    #[test]
+    fn secondary_click_over_a_session_tile_opens_that_windows_menu() {
+        let mut h = Harness::new();
+        let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let rect = h.rect_of(open);
+        h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
+
+        let target = h.screen.menu.target().expect("the menu opened");
+        assert_eq!(target.tile, Some(open));
+        assert_eq!(target.window, Some(WindowId(1)));
+        let ids: Vec<&str> = target.rows().iter().map(|row| row.action).collect();
+        assert!(ids.contains(&"window.close"));
+        assert!(ids.contains(&"window.cycle-forward"));
+        assert!(ids.contains(&"field.undo"));
+    }
+
+    #[test]
+    fn secondary_click_on_bare_field_offers_the_field_rows_and_nothing_window_shaped() {
+        let mut h = Harness::new();
+        h.frame();
+        let bounds = h.screen.bounds;
+        h.secondary_click(bounds.right() - 4, bounds.bottom() - 4);
+        let target = h.screen.menu.target().expect("the menu opened");
+        assert_eq!(target.window, None);
+        let ids: Vec<&str> = target.rows().iter().map(|row| row.action).collect();
+        assert!(ids.contains(&"field.undo"));
+        assert!(ids.contains(&"window.show-all"));
+        assert!(!ids.contains(&"window.close"));
+    }
+
+    /// The manifest declares `window.close` with `confirm: true` because a window may hold
+    /// unsaved work and the compositor cannot know. One press arms; only the second closes.
+    #[test]
+    fn closing_a_window_from_the_menu_takes_two_presses() {
+        let mut h = Harness::new();
+        let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let rect = h.rect_of(open);
+        h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
+
+        let rows = h.screen.menu.target().unwrap().rows().len();
+        let close_at = rows - 1;
+        assert_eq!(
+            h.screen.menu.target().unwrap().rows()[close_at].action,
+            "window.close"
+        );
+        let row = h.menu_row(close_at);
+
+        let first = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        assert!(
+            !first
+                .iter()
+                .any(|action| matches!(action, FieldAction::RunWindowAction { .. })),
+            "the first press must only arm the row: {first:?}"
+        );
+        assert!(
+            h.screen.menu.is_open(),
+            "and the menu must stay up to say so"
+        );
+
+        let second = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        assert_eq!(
+            second,
+            vec![FieldAction::RunWindowAction {
+                id: "window.close",
+                window: WindowId(1),
+            }]
+        );
+        assert!(!h.screen.menu.is_open(), "and then it closes");
+    }
+
+    #[test]
+    fn a_menu_row_reaches_the_same_thing_its_chord_does() {
+        let mut h = Harness::new();
+        h.frame();
+        let bounds = h.screen.bounds;
+        h.secondary_click(bounds.right() - 4, bounds.bottom() - 4);
+        let rows: Vec<&'static str> = h
+            .screen
+            .menu
+            .target()
+            .unwrap()
+            .rows()
+            .iter()
+            .map(|row| row.action)
+            .collect();
+        let undo_at = rows.iter().position(|id| *id == "field.undo").unwrap();
+        let row = h.menu_row(undo_at);
+        let actions = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        // Exactly what Ctrl+Z produces (`field_keyboard_reaches_every_action`).
+        assert_eq!(actions, vec![FieldAction::Undo]);
+    }
+
+    #[test]
+    fn escape_dismisses_the_menu_and_the_field_does_not_also_act_on_that_press() {
+        let mut h = Harness::new();
+        let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let rect = h.rect_of(open);
+        h.screen.focus = Some(open);
+        h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
+        assert!(h.screen.menu.is_open());
+
+        let actions = h.key(KeyInput::Escape);
+        assert!(!h.screen.menu.is_open());
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(
+            h.screen.focus,
+            Some(open),
+            "the Escape belonged to the menu, not to the field's own focus"
+        );
+    }
+
+    /// A click outside the menu dismisses it and is swallowed: dismissing is a gesture of its
+    /// own, and must not also open whatever the menu was covering.
+    #[test]
+    fn clicking_away_dismisses_the_menu_without_activating_anything_underneath() {
+        let mut h = Harness::new();
+        let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let rect = h.rect_of(open);
+        h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
+        assert!(h.screen.menu.is_open());
+
+        let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 8);
+        assert!(!h.screen.menu.is_open());
+        assert!(actions.is_empty(), "{actions:?}");
+    }
+
+    #[test]
+    fn the_menus_navigation_rows_pick_a_real_window() {
+        let toplevels = vec![
+            toplevel(1, "org.legeos.Files", false),
+            toplevel(3, "org.example.Other", false),
+        ];
+        assert_eq!(
+            cycle_from(&toplevels, Some(WindowId(1)), "window.cycle-forward"),
+            Some(WindowId(3))
+        );
+        assert_eq!(
+            cycle_from(&toplevels, Some(WindowId(1)), "window.cycle-backward"),
+            Some(WindowId(3)),
+            "two windows wrap to each other in both directions"
+        );
+        assert_eq!(
+            cycle_from(&toplevels, None, "window.cycle-forward"),
+            Some(WindowId(1))
+        );
+        // A parked window is reached through the shelf, never the switcher.
+        let parked = vec![toplevel(1, "org.legeos.Files", true)];
+        assert_eq!(cycle_from(&parked, None, "window.cycle-forward"), None);
+
+        let mut side_by_side = toplevels.clone();
+        side_by_side[1].geometry = lege_window::Rect::new(700, 0, 640, 480);
+        assert_eq!(
+            group_step(&side_by_side, WindowId(1), "window.group-next"),
+            Some(WindowId(3))
+        );
+        assert_eq!(
+            group_step(&side_by_side, WindowId(3), "window.group-previous"),
+            Some(WindowId(1))
+        );
     }
 }

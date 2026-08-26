@@ -6,6 +6,7 @@
 pub mod background;
 pub mod history;
 pub mod homefield;
+pub mod lifecycle;
 pub mod location;
 pub mod notifications;
 pub mod power;

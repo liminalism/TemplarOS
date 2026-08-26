@@ -84,6 +84,7 @@ use std::{collections::HashMap, time::Duration};
 // rather than `///`) generates `UdevRenderElement` and its `RenderElement<GlesRenderer>` impl.
 smithay::backend::renderer::element::render_elements! {
     UdevRenderElement<=GlesRenderer>;
+    Cursor=crate::cursor::CursorRenderElement,
     Custom=MemoryRenderBufferRenderElement<GlesRenderer>,
     Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
 }
@@ -134,6 +135,9 @@ struct DeviceData {
 pub struct UdevBackendData {
     session: LibSeatSession,
     devices: HashMap<DrmNode, DeviceData>,
+    /// Software-composited cursor for the DRM path. The nested backend gets a host cursor;
+    /// hardware scanout does not, so this upload cache belongs to the hardware backend.
+    cursor_renderer: crate::cursor::CursorRenderer,
     primary_gpu: DrmNode,
     /// `primary_gpu.node_with_type(NodeType::Primary)`'s `dev_id()`, resolved once at startup —
     /// what every udev `Added`/device-list entry's own dev_id is compared against in
@@ -148,6 +152,10 @@ pub struct UdevBackendData {
     /// a stray timer firing mid-pause is a harmless no-op rather than a failed DRM ioctl retried
     /// in a hot loop.
     paused: bool,
+    /// `Type=notify` readiness is emitted exactly once, after DRM reports the first queued frame
+    /// submitted. A listening socket or initialized CRTC alone does not prove that pixels reached
+    /// the display.
+    ready_notified: bool,
 }
 
 impl Backend for UdevBackendData {
@@ -167,7 +175,7 @@ type State = LegeCompState<UdevBackendData>;
 // backend entry point takes (`anvil`, `smallvil`) — the alternative is threading a dozen
 // half-constructed pieces through several helper functions, which reads worse, not better.
 #[allow(clippy::too_many_lines)]
-pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
+pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
@@ -206,17 +214,20 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
-    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle())?;
+    let socket_name =
+        crate::state::init_wayland_listener(display, &event_loop.handle(), requested_socket_name)?;
     tracing::info!(socket = %socket_name, "wayland socket ready");
 
     let mut state = State::new(
         UdevBackendData {
             session: session.clone(),
             devices: HashMap::new(),
+            cursor_renderer: crate::cursor::CursorRenderer::default(),
             primary_gpu: primary_gpu_path,
             primary_card_dev_id,
             dmabuf_global: None,
             paused: false,
+            ready_notified: false,
         },
         &session.seat(),
         &dh,
@@ -313,13 +324,25 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     tracing::info!(gpu = %state.backend_data.primary_gpu, "primary GPU selected");
     if state.backend_data.devices.is_empty() {
         tracing::warn!(
-            "no primary-GPU DRM device came up at startup — the compositor will hold the seat \
-             with no display until one appears (hotplug) or the process is stopped"
+            "no primary-GPU DRM device came up at startup — waiting for hotplug without declaring \
+             readiness; the service startup timeout will end the session if no frame is presented"
         );
     }
     state.start_xwayland(&event_loop.handle());
 
-    event_loop.run(None, &mut state, |_| {})?;
+    // READY is sent from `on_vblank`, after DRM confirms the first queued frame was submitted.
+    // Until then systemd keeps dependants stopped and enforces the unit's startup timeout.
+    tracing::info!("compositor initialization complete; waiting for first presented frame");
+    event_loop.run(None, &mut state, |state| {
+        // Dispatch only queues protocol events.  Without a flush here, a client doing its first
+        // registry/configure round trip waits forever even though its requests were handled —
+        // precisely the black-session failure seen on the hardware backend.
+        state.space.refresh();
+        state.popups.cleanup();
+        if let Err(error) = state.display_handle.flush_clients() {
+            tracing::warn!(%error, "flushing Wayland clients after dispatch");
+        }
+    })?;
     Ok(session_command.map_or(0, |command| command.shut_down()))
 }
 
@@ -710,14 +733,18 @@ fn remove_device(state: &mut State, node: DrmNode) {
 /// immediately renders and queues the next one — this is what paces redraws to the display's real
 /// refresh rate instead of a fixed-interval timer (module doc).
 fn on_vblank(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
-    if let Some(surface) = state
+    let submitted = state
         .backend_data
         .devices
         .get(&node)
         .and_then(|device| device.surfaces.get(&crtc))
-        && let Err(error) = surface.drm_output.frame_submitted()
-    {
-        tracing::warn!(%error, ?crtc, "failed to mark drm frame submitted");
+        .map(|surface| surface.drm_output.frame_submitted());
+    match submitted {
+        Some(Ok(_)) => crate::notify_ready_once(&mut state.backend_data.ready_notified),
+        Some(Err(error)) => {
+            tracing::warn!(%error, ?crtc, "failed to mark drm frame submitted");
+        }
+        None => return,
     }
     render_surface(state, node, crtc);
 }
@@ -738,7 +765,21 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
 
-    if render_and_queue(state, node, crtc, &output) {
+    let retry = render_and_queue(state, node, crtc, &output);
+
+    // A client which committed a frame is entitled to its next wl_surface.frame callback once
+    // that output has been rendered.  Without this, animated or data-refreshed shell surfaces
+    // paint once and then stop scheduling frames on real hardware.
+    for window in state.space.elements() {
+        window.send_frame(
+            &output,
+            state.start_time.elapsed(),
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+    }
+
+    if retry {
         schedule_retry(state, node, crtc);
     }
 }
@@ -748,10 +789,25 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
 /// retry: true on any failure or a damage-free frame (nothing queued, so no page-flip completion
 /// will come to drive the next attempt), false once a flip is queued.
 fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output: &Output) -> bool {
-    let Some(device) = state.backend_data.devices.get_mut(&node) else {
+    let backend = &mut state.backend_data;
+    let Some(device) = backend.devices.get_mut(&node) else {
         return false;
     };
     let renderer = &mut device.renderer;
+
+    let cursor_elements = state
+        .seat
+        .get_pointer()
+        .zip(state.space.output_geometry(output))
+        .map_or_else(Vec::new, |(pointer, geometry)| {
+            backend.cursor_renderer.elements(
+                renderer,
+                &mut state.cursor_status,
+                pointer.current_location(),
+                geometry,
+                smithay::utils::Scale::from(output.current_scale().fractional_scale()),
+            )
+        });
 
     // `state.chrome`/`state.space`/`state.window_service`/... are fields of `state` disjoint
     // from `state.backend_data` (which `device`/`renderer` above borrow from) — Rust's borrow
@@ -782,7 +838,8 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         };
 
     let mut elements: Vec<UdevRenderElement> =
-        Vec::with_capacity(chrome_elements.len() + space_elements.len());
+        Vec::with_capacity(cursor_elements.len() + chrome_elements.len() + space_elements.len());
+    elements.extend(cursor_elements.into_iter().map(UdevRenderElement::Cursor));
     elements.extend(chrome_elements.into_iter().map(UdevRenderElement::Custom));
     elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
 

@@ -9,6 +9,7 @@ pub mod files;
 pub mod format;
 pub mod history;
 pub mod humanize;
+pub mod lifecycle;
 pub mod open;
 pub mod power;
 pub mod project;

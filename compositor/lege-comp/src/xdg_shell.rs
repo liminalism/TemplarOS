@@ -145,6 +145,34 @@ pub fn apply_maximized<B: Backend + 'static>(
     crate::space_sync::sync_after_change(state);
 }
 
+/// `xdg_toplevel.resize_edge` in this repository's own vocabulary
+/// ([`lege_window::ResizeEdges`]). The protocol enum is a set of corner names rather than flags,
+/// so this is a table and not arithmetic; anything unrecognised (the enum is `non_exhaustive`,
+/// and `none` is a legal value that asks for nothing) becomes the empty set, which
+/// `WindowService::begin_resize` refuses.
+fn resize_edges(
+    edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+) -> lege_window::ResizeEdges {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as Wire;
+    let (left, right, top, bottom) = match edges {
+        Wire::Top => (false, false, true, false),
+        Wire::Bottom => (false, false, false, true),
+        Wire::Left => (true, false, false, false),
+        Wire::Right => (false, true, false, false),
+        Wire::TopLeft => (true, false, true, false),
+        Wire::TopRight => (false, true, true, false),
+        Wire::BottomLeft => (true, false, false, true),
+        Wire::BottomRight => (false, true, false, true),
+        _ => (false, false, false, false),
+    };
+    lege_window::ResizeEdges {
+        left,
+        right,
+        top,
+        bottom,
+    }
+}
+
 fn ensure_initial_popup_configure(popups: &mut PopupManager, surface: &WlSurface) {
     if let Some(popup) = popups.find_popup(surface)
         && let PopupKind::Xdg(ref xdg) = popup
@@ -234,6 +262,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             requested,
         );
         self.windows.mark_mapped(surface.clone(), window_id);
+        crate::protocols_shell::apply_surface_claims(self, surface, window_id, requested);
 
         let repaired = self
             .window_service
@@ -245,6 +274,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             ?window_id,
             requested = ?requested,
             geometry = ?repaired,
+            layer = ?self.window_service.layer_of(window_id),
             recoverable = lege_window::is_recoverable(repaired, self.window_service.outputs()),
             "toplevel mapped"
         );
@@ -330,18 +360,24 @@ impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
         crate::input::start_drag(self, &seat, serial, window_id);
     }
 
+    /// `xdg_toplevel.resize`: the client's own resize border was dragged. The gesture itself is
+    /// the compositor's to run — the client only says which edges the user grabbed — so this
+    /// installs the same [`crate::input::start_resize`] grab the compositor's own corner grip
+    /// uses, and `WindowService` stays the one authority for the resulting geometry.
     fn resize_request(
         &mut self,
-        _surface: ToplevelSurface,
-        _seat: wl_seat::WlSeat,
-        _serial: Serial,
-        _edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+        surface: ToplevelSurface,
+        seat: wl_seat::WlSeat,
+        serial: Serial,
+        edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     ) {
-        // Interactive resize is not part of the geometry contract COMPOSITOR.md specifies
-        // (`WindowService` has no resize policy — only placement/recovery), so client-requested
-        // interactive resize is intentionally not wired to a grab this milestone; the client's
-        // own resize handles (server- or client-side) still work through ordinary
-        // `xdg_toplevel.set_window_geometry` + configure round-trips.
+        let Some(seat) = Seat::from_resource(&seat) else {
+            return;
+        };
+        let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) else {
+            return;
+        };
+        crate::input::start_resize(self, &seat, serial, window_id, resize_edges(edges));
     }
 
     fn fullscreen_request(
@@ -432,6 +468,13 @@ impl<B: Backend + 'static> XdgDecorationHandler for LegeCompState<B> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         // We have no server-side chrome renderer yet (`src/chrome.rs`'s module doc), so
         // client-side is the only mode that actually produces a usable title bar today.
+        //
+        // That is not the same as a window being unmanageable when the client draws nothing: the
+        // compositor owns a recovery band and a resize grip over every window regardless of this
+        // mode (`lege_window::geometry::recovery_band`/`resize_grip`, painted by
+        // `chrome::collect_bands`/`collect_grips`, hit-tested in `input.rs`), which is what makes
+        // an XWayland or borderless window movable and resizable without server-side decorations
+        // existing at all. Closing it is the shell's route (`lege_shell_toplevel_v1.close`).
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ClientSide);
         });

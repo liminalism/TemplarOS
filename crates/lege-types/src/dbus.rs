@@ -35,6 +35,9 @@ pub mod session {
     pub const POWER_PATH: &str = "/org/legeos/Session/Power";
     pub const POWER_IFACE: &str = "org.legeos.Power1";
 
+    pub const LIFECYCLE_PATH: &str = "/org/legeos/Session/Lifecycle";
+    pub const LIFECYCLE_IFACE: &str = "org.legeos.Session.Lifecycle1";
+
     pub const LOCATION_PATH: &str = "/org/legeos/Session/Location";
     pub const LOCATION_IFACE: &str = "org.legeos.Location1";
 
@@ -54,6 +57,7 @@ pub mod files {
     pub const BUS_NAME: &str = "org.legeos.Files";
     pub const ROOT_PATH: &str = "/org/legeos/Files";
     pub const VOLUMES_IFACE: &str = "org.legeos.Files.Volumes1";
+    pub const PREVIEWS_IFACE: &str = "org.legeos.Files.Previews1";
     pub const OPERATIONS_IFACE: &str = "org.legeos.Files.Operations1";
     pub const RECENTS_IFACE: &str = "org.legeos.Files.Recents1";
     pub const SEARCH_IFACE: &str = "org.legeos.Files.Search1";

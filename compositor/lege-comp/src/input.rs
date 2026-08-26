@@ -13,8 +13,9 @@ use crate::state::{Backend, LegeCompState};
 use lege_window::{Point as LegePoint, WindowId};
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
+        InputBackend, InputEvent, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        PointerMotionEvent,
     },
     desktop::WindowSurfaceType,
     input::{
@@ -32,7 +33,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState,
         wayland_server::{Resource, protocol::wl_surface::WlSurface},
     },
-    utils::{Logical, Point, SERIAL_COUNTER, Serial},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
         seat::WaylandFocus,
         selection::{
@@ -144,13 +145,55 @@ pub fn refocus_after_reveal<B: Backend + 'static>(state: &mut LegeCompState<B>, 
     }
 }
 
+/// Focus the Home surface when it is the only usable desktop, or while a reveal explicitly owns
+/// the screen. Initial shell mapping otherwise leaves the seat with no keyboard target, which
+/// makes a correctly rendered Home Field look completely inert.
+pub fn focus_home_if_needed<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    surface: &WlSurface,
+) {
+    let has_visible_client =
+        state.window_service.stacking_order().into_iter().any(|id| {
+            state.window_service.is_client_window(id) && state.window_service.is_visible(id)
+        });
+    if (state.window_service.home_revealed() || !has_visible_client)
+        && let Some(keyboard) = state.seat.get_keyboard()
+    {
+        keyboard.set_focus(state, Some(surface.clone()), SERIAL_COUNTER.next_serial());
+    }
+}
+
 /// Start a recovery-band (or client-initiated `xdg_toplevel.move`) drag: `begin_drag` and install
-/// [`DragGrab`]. `pointer_global` is already logical — see the module doc.
+/// a [`WindowGestureGrab`]. `pointer_global` is already logical — see the module doc.
 pub fn start_drag<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     seat: &Seat<LegeCompState<B>>,
     serial: Serial,
     window_id: WindowId,
+) {
+    start_gesture(state, seat, serial, window_id, Gesture::Move);
+}
+
+/// Start an interactive resize dragging `edges`: `begin_resize` and install a
+/// [`WindowGestureGrab`]. Reached from `xdg_toplevel.resize` and its XWayland equivalent (a
+/// client-drawn resize border), and from a press on the compositor's own grip
+/// (`lege_window::resize_grip`) for a window that draws no border of its own.
+pub fn start_resize<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    seat: &Seat<LegeCompState<B>>,
+    serial: Serial,
+    window_id: WindowId,
+    edges: lege_window::ResizeEdges,
+) {
+    start_gesture(state, seat, serial, window_id, Gesture::Resize { edges });
+}
+
+fn start_gesture<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    seat: &Seat<LegeCompState<B>>,
+    serial: Serial,
+    window_id: WindowId,
+    gesture: Gesture,
 ) {
     let Some(pointer) = seat.get_pointer() else {
         return;
@@ -162,12 +205,21 @@ pub fn start_drag<B: Backend + 'static>(
         return;
     };
     let pointer_global = to_lege_point(pointer.current_location());
-    if !state.window_service.begin_drag(window_id, pointer_global) {
+    let started = match gesture {
+        Gesture::Move => state.window_service.begin_drag(window_id, pointer_global),
+        Gesture::Resize { edges } => {
+            state
+                .window_service
+                .begin_resize(window_id, pointer_global, edges)
+        }
+    };
+    if !started {
         return;
     }
-    let grab = DragGrab {
+    let grab = WindowGestureGrab {
         start_data,
         window_id,
+        gesture,
     };
     pointer.set_grab(state, grab, serial, Focus::Clear);
 }
@@ -182,17 +234,38 @@ fn to_lege_point(point: Point<f64, Logical>) -> LegePoint {
     }
 }
 
-/// The interactive-move grab. Every event but `motion`/`button` is forwarded to Smithay's default
-/// handling unchanged — a drag has no opinion about scroll wheels or gestures — matching the shape
-/// every Smithay compositor's move grab takes (`anvil`, `smallvil`, `cosmic-comp`). `motion` and
-/// `button` are the two rows COMPOSITOR.md specifies: `update_drag` applied as-is, never clamped,
-/// and `finish_drag` on release.
-pub struct DragGrab<B: Backend + 'static> {
-    start_data: PointerGrabStartData<LegeCompState<B>>,
-    window_id: WindowId,
+/// Which gesture one [`WindowGestureGrab`] is running. The two differ only in which
+/// `WindowService` pair they drive and how the result reaches the client — a move changes where
+/// `Space` puts the window, a resize also has to be configured onto the client — so they share
+/// one grab rather than two near-identical copies of Smithay's forwarding boilerplate.
+#[derive(Clone, Copy, Debug)]
+enum Gesture {
+    Move,
+    Resize { edges: lege_window::ResizeEdges },
 }
 
-impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for DragGrab<B> {
+/// The interactive move/resize grab. Every event but `motion`/`button` is forwarded to Smithay's
+/// default handling unchanged — a drag has no opinion about scroll wheels or gestures — matching
+/// the shape every Smithay compositor's move grab takes (`anvil`, `smallvil`, `cosmic-comp`).
+/// `motion` and `button` are the two rows COMPOSITOR.md specifies: the pointer's position applied
+/// as-is, never clamped, and the invariant enforced once at release.
+pub struct WindowGestureGrab<B: Backend + 'static> {
+    start_data: PointerGrabStartData<LegeCompState<B>>,
+    window_id: WindowId,
+    gesture: Gesture,
+}
+
+impl<B: Backend + 'static> std::fmt::Debug for WindowGestureGrab<B> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WindowGestureGrab")
+            .field("window_id", &self.window_id)
+            .field("gesture", &self.gesture)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B> {
     fn motion(
         &mut self,
         data: &mut LegeCompState<B>,
@@ -203,11 +276,18 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for DragGrab<B> {
         // While the grab is active, no client has pointer focus.
         handle.motion(data, None, event);
 
-        if let Some((_, geometry)) = data
-            .window_service
-            .update_drag(to_lege_point(event.location))
-        {
-            crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+        let pointer = to_lege_point(event.location);
+        match self.gesture {
+            Gesture::Move => {
+                if let Some((_, geometry)) = data.window_service.update_drag(pointer) {
+                    crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+                }
+            }
+            Gesture::Resize { .. } => {
+                if let Some((_, geometry)) = data.window_service.update_resize(pointer) {
+                    crate::space_sync::apply_resized_geometry(data, self.window_id, geometry, true);
+                }
+            }
         }
     }
 
@@ -230,8 +310,24 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for DragGrab<B> {
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
-            if let Some((_, geometry)) = data.window_service.finish_drag() {
-                crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+            match self.gesture {
+                Gesture::Move => {
+                    if let Some((_, geometry)) = data.window_service.finish_drag() {
+                        crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+                    }
+                }
+                Gesture::Resize { .. } => {
+                    if let Some((_, geometry)) = data.window_service.finish_resize() {
+                        // `still_resizing: false` clears `xdg_toplevel.state.resizing`, which is
+                        // how a client knows to stop throttling its own relayout and settle.
+                        crate::space_sync::apply_resized_geometry(
+                            data,
+                            self.window_id,
+                            geometry,
+                            false,
+                        );
+                    }
+                }
             }
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
@@ -337,11 +433,14 @@ impl<B: Backend + 'static> LegeCompState<B> {
     ) {
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(&event),
+            InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(&event),
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 self.on_pointer_motion_absolute::<I>(&event, output_name);
             }
             InputEvent::PointerButton { event, .. } => self.on_pointer_button::<I>(&event),
             InputEvent::PointerAxis { event, .. } => self.on_pointer_axis::<I>(&event),
+            InputEvent::DeviceAdded { device } => log_input_device::<I>("added", &device),
+            InputEvent::DeviceRemoved { device } => log_input_device::<I>("removed", &device),
             _ => {}
         }
     }
@@ -387,28 +486,36 @@ impl<B: Backend + 'static> LegeCompState<B> {
         }
 
         let home_revealed = self.window_service.home_revealed();
-        let action = keyboard.input::<crate::keybindings::RecoveryAction, _>(
+        let action = keyboard.input::<Option<crate::keybindings::RecoveryAction>, _>(
             self,
             event.key_code(),
             event.state(),
             serial,
             time,
-            |_, modifiers, handle| {
+            |state, modifiers, handle| {
+                let keysym = handle.modified_sym();
+                match state.super_tap.update(event.state(), keysym) {
+                    crate::keybindings::SuperTapDecision::Intercept => {
+                        return FilterResult::Intercept(None);
+                    }
+                    crate::keybindings::SuperTapDecision::ToggleHome => {
+                        return FilterResult::Intercept(Some(
+                            crate::keybindings::RecoveryAction::RevealHome,
+                        ));
+                    }
+                    crate::keybindings::SuperTapDecision::Forward => {}
+                }
                 if event.state() != smithay::backend::input::KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                match crate::keybindings::recovery_action(
-                    *modifiers,
-                    handle.modified_sym(),
-                    home_revealed,
-                ) {
-                    Some(action) => FilterResult::Intercept(action),
+                match crate::keybindings::recovery_action(*modifiers, keysym, home_revealed) {
+                    Some(action) => FilterResult::Intercept(Some(action)),
                     None => FilterResult::Forward,
                 }
             },
         );
 
-        if let Some(action) = action {
+        if let Some(Some(action)) = action {
             // The fallback switcher HUD (`chrome::SwitcherState`) stays up only until something
             // else happens — any reserved action other than another cycle step clears it here;
             // `run_recovery_action` itself repopulates it for a cycle step.
@@ -425,6 +532,41 @@ impl<B: Backend + 'static> LegeCompState<B> {
         } else {
             self.switcher = None;
         }
+    }
+
+    fn on_pointer_motion<I: InputBackend>(&mut self, event: &I::PointerMotionEvent) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let current = pointer.current_location();
+        let current_under = self.surface_under(current);
+        pointer.relative_motion(
+            self,
+            current_under,
+            &RelativeMotionEvent {
+                delta: event.delta(),
+                delta_unaccel: event.delta_unaccel(),
+                utime: event.time(),
+            },
+        );
+
+        let outputs: Vec<Rectangle<i32, Logical>> = self
+            .space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .collect();
+        let position = clamp_to_outputs(current + event.delta(), &outputs);
+        let under = self.surface_under(position);
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: position,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: event.time_msec(),
+            },
+        );
+        pointer.frame(self);
     }
 
     /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
@@ -497,7 +639,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             // A click means the user is doing something else — the fallback switcher HUD
             // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
             self.switcher = None;
-            self.handle_press_for_focus_or_drag(pointer.current_location(), serial);
+            self.handle_press_for_focus_or_drag(pointer.current_location(), serial, button);
         }
 
         pointer.button(
@@ -557,18 +699,48 @@ impl<B: Backend + 'static> LegeCompState<B> {
         })
     }
 
-    fn handle_press_for_focus_or_drag(&mut self, location: Point<f64, Logical>, serial: Serial) {
+    fn handle_press_for_focus_or_drag(
+        &mut self,
+        location: Point<f64, Logical>,
+        serial: Serial,
+        button: u32,
+    ) {
         if self.session_lock.locked {
             return;
         }
         let pos = to_lege_point(location);
-        if let Some(window_id) = self.topmost_window_at(pos)
-            && let Some(affordance) = self.window_service.recovery_affordance(window_id)
-            && rect_contains(affordance.band, pos)
+        // The compositor's own two affordances, checked before the client sees the press: the
+        // band moves the window, the corner grip resizes it. Both are compositor-owned screen
+        // area by the same argument (`topmost_window_at`'s doc) — without them a window whose
+        // client draws no frame, which is most XWayland windows, could be neither moved nor
+        // resized by anyone.
+        //
+        // Primary button only. Both grabs end on `BTN_LEFT`'s release (`WindowGestureGrab`), so a
+        // right- or middle-press that started one would install a grab nothing the user does with
+        // that button could ever end.
+        if button == BTN_LEFT
+            && let Some(window_id) = self.topmost_window_at(pos)
         {
-            let seat = self.seat.clone();
-            start_drag(self, &seat, serial, window_id);
-            return;
+            if let Some(grip) = self.window_service.resize_grip(window_id)
+                && rect_contains(grip, pos)
+            {
+                let seat = self.seat.clone();
+                start_resize(
+                    self,
+                    &seat,
+                    serial,
+                    window_id,
+                    lege_window::ResizeEdges::BOTTOM_RIGHT,
+                );
+                return;
+            }
+            if let Some(affordance) = self.window_service.recovery_affordance(window_id)
+                && rect_contains(affordance.band, pos)
+            {
+                let seat = self.seat.clone();
+                start_drag(self, &seat, serial, window_id);
+                return;
+            }
         }
 
         if let Some((window, _)) = self
@@ -580,7 +752,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 return;
             };
             if let Some(window_id) = self.windows.window_id_for(&surface.id()) {
-                activate_window(self, window_id);
+                if self.window_service.is_client_window(window_id) {
+                    activate_window(self, window_id);
+                } else if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.set_focus(self, Some(surface), serial);
+                }
             }
         } else if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
@@ -640,6 +816,90 @@ impl<B: Backend + 'static> LegeCompState<B> {
     }
 }
 
+fn log_input_device<I: InputBackend>(event: &str, device: &I::Device) {
+    tracing::info!(
+        event,
+        name = %device.name(),
+        id = %device.id(),
+        keyboard = device.has_capability(DeviceCapability::Keyboard),
+        pointer = device.has_capability(DeviceCapability::Pointer),
+        touch = device.has_capability(DeviceCapability::Touch),
+        gesture = device.has_capability(DeviceCapability::Gesture),
+        "input device"
+    );
+}
+
+/// Keep a relative pointer on the nearest real output, including negative-origin layouts.
+fn clamp_to_outputs(
+    position: Point<f64, Logical>,
+    outputs: &[Rectangle<i32, Logical>],
+) -> Point<f64, Logical> {
+    if outputs
+        .iter()
+        .any(|geometry| geometry.to_f64().contains(position))
+    {
+        return position;
+    }
+    outputs
+        .iter()
+        .map(|geometry| {
+            let left = f64::from(geometry.loc.x);
+            let top = f64::from(geometry.loc.y);
+            let right = f64::from(geometry.loc.x + geometry.size.w).max(left + 1.0) - 1.0;
+            let bottom = f64::from(geometry.loc.y + geometry.size.h).max(top + 1.0) - 1.0;
+            let clamped =
+                Point::from((position.x.clamp(left, right), position.y.clamp(top, bottom)));
+            let dx = clamped.x - position.x;
+            let dy = clamped.y - position.y;
+            (dx * dx + dy * dy, clamped)
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map_or(position, |(_, clamped)| clamped)
+}
+
 fn rect_contains(rect: lege_window::Rect, point: LegePoint) -> bool {
     point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::utils::Size;
+
+    fn output(x: i32, y: i32, width: i32, height: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((width, height)))
+    }
+
+    #[test]
+    fn relative_pointer_positions_inside_an_output_are_unchanged() {
+        let position = Point::from((42.5, 18.25));
+        assert_eq!(
+            clamp_to_outputs(position, &[output(0, 0, 100, 100)]),
+            position
+        );
+    }
+
+    #[test]
+    fn relative_pointer_clamping_handles_negative_origin_outputs() {
+        let outputs = [output(-200, -100, 100, 100), output(0, 0, 100, 100)];
+        assert_eq!(
+            clamp_to_outputs(Point::from((-250.0, -50.0)), &outputs),
+            Point::from((-200.0, -50.0))
+        );
+    }
+
+    #[test]
+    fn relative_pointer_clamping_chooses_the_nearest_output_across_a_gap() {
+        let outputs = [output(0, 0, 100, 100), output(200, 0, 100, 100)];
+        assert_eq!(
+            clamp_to_outputs(Point::from((180.0, 50.0)), &outputs),
+            Point::from((200.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn no_outputs_leaves_the_relative_pointer_position_unchanged() {
+        let position = Point::from((-12.0, 300.0));
+        assert_eq!(clamp_to_outputs(position, &[]), position);
+    }
 }

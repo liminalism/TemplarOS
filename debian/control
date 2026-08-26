@@ -26,10 +26,11 @@ Description: LegeOS resource governor
 
 Package: legeos-filed
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, udisks2
+Depends: ${shlibs:Depends}, ${misc:Depends}, ffmpeg, systemd, udisks2
 Description: LegeOS file service
- Transactional file operations with journal and undo, storage information and reserve, recents,
- last-used directories and search behind the file manager, Home Surface and file-chooser portal.
+ Structured browsing and bounded native-codec previews, transactional file operations with
+ journal and undo, storage information and reserve, recents, last-used directories and search
+ behind the file manager, Home Surface and file-chooser portal.
 
 Package: legeos-hostd
 Architecture: any
@@ -71,15 +72,22 @@ Description: LegeOS greeter
 
 Package: legeos-shell
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
+Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed
 Description: LegeOS shell
- Restartable shell: Home Surface drawers, panel/dock, launcher, window shelf, notification renderer.
+ Restartable shell: Home Field, integrated file browser, panel/dock, launcher and window overview.
 
 Package: legeos-settings
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
 Description: LegeOS Settings
  Settings over the typed schema, providers, background applications, associations and history.
+
+Package: lege-files
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed, wl-clipboard
+Description: LegeOS standalone file manager
+ Pixelkit file manager over the LegeOS browsing, storage, journalled-operation, association and
+ launcher services. Closing the window never interrupts an accepted copy or move.
 
 Package: legeos-portal
 Architecture: any

@@ -1,6 +1,6 @@
 [package]
 name = "lege-shell"
-description = "LegeOS restartable shell: the Home Surface and dock as a model over the services, rendered as a real pixelkit surface (--surface) and as text (--print/--list-drawers)"
+description = "LegeOS restartable shell: the Home Field, integrated file browser and window overview"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -25,6 +25,7 @@ lege-treemap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -32,7 +33,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
 
-# The graphical Home Surface + dock (src/surface/**): pixelkit is this project's toolkit
+# The graphical Home Surface (src/surface/**): pixelkit is this project's toolkit
 # (declared in the root workspace manifest; see that file's comment on why it is a path
 # dependency for now).
 pixelkit-raster = { workspace = true }
@@ -71,6 +72,15 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # A preview's shm pool is an anonymous file the compositor writes and this process reads back
 # with plain `pread` — no mmap, so no unsafe here.
 tempfile = { workspace = true }
+# Application icons. A stock hicolor theme is overwhelmingly SVG, so a PNG-only icon lookup
+# resolves almost nothing on a real installation and the launcher would be a list of grey
+# placeholders. `pixelkit-raster` decodes PNG and nothing else, and the workspace has no SVG
+# parser at all (`tiny-skia` is in the lock file only as `sctk-adwaita`'s window-decoration
+# rasterizer — a back end, with no notion of SVG). `default-features = false` drops resvg's text
+# stack (`usvg/text`, `system-fonts`, `memmap-fonts`) and its raster-image codecs: an application
+# icon that needs a font shaper or an embedded JPEG to draw is not a case worth linking a font
+# database into a restartable shell for, and without them this is a geometry rasterizer.
+resvg = { version = "0.45", default-features = false }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-scanner = "0.31"
@@ -85,5 +95,5 @@ workspace = true
 name = "legeos-shell"
 section = "x11"
 priority = "optional"
-depends = "$auto, legeos-sessiond"
+depends = "$auto, legeos-sessiond, legeos-filed"
 assets = [["target/release/lege-shell", "usr/bin/lege-shell", "755"]]

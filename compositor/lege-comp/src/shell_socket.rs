@@ -30,6 +30,7 @@ pub fn install<B: Backend + 'static>(
         .loop_handle
         .clone()
         .insert_source(source, |client_stream, (), state: &mut LegeCompState<B>| {
+            tracing::info!("accepted trusted-shell Wayland connection");
             let client_state = ClientState {
                 trusted_shell: true,
                 ..ClientState::default()

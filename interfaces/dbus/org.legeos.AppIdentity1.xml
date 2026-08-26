@@ -23,5 +23,13 @@
     <method name="ListApps">
       <arg name="app_ids" type="as" direction="out"/>
     </method>
+    <!-- What a launcher needs and ListApps cannot give: the name to show, the desktop file id
+         and icon name to draw with, the terms to match, and whether the entry is meant to be
+         offered at all. `no_display` mirrors the desktop entry's NoDisplay= — reported, not
+         filtered, so this one listing answers both "what is installed" and "what may I offer".
+         (app_id, display_name, desktop_file_id, icon, categories, keywords, no_display) -->
+    <method name="ListApplications">
+      <arg name="applications" type="a(ssssasasb)" direction="out"/>
+    </method>
   </interface>
 </node>

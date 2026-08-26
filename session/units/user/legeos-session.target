@@ -1,9 +1,13 @@
 [Unit]
 Description=LegeOS graphical session
 Documentation=https://legeos.org/docs/session
-Requires=basic.target
-Wants=lege-comp.service lege-sessiond.service lege-resourced.service lege-filed.service lege-shell.service
+Requires=basic.target lege-comp.service
+# If the compositor fails during startup or exits later, the graphical session is over.  This
+# makes `systemctl start --wait legeos-session.target` return to the display manager instead of
+# leaving a greeter freeze or a black VT behind.
+BindsTo=lege-comp.service
+Wants=lege-sessiond.service lege-resourced.service lege-filed.service lege-shell.service
 # The generic XDG autostart runner is masked by lege-session; sessiond arbitrates autostart
 # (one selected provider per exclusive role) and launches approved entries with identity + cgroups.
 Conflicts=xdg-desktop-autostart.target
-After=basic.target
+After=basic.target lege-comp.service

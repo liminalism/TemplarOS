@@ -1,12 +1,10 @@
-//! `lege-shell` — everything decorative, restartable without terminating applications.
+//! `lege-shell` — the restartable Home surface and its headless views.
 //!
-//! The Home Surface and the dock are a **model over the services** (`lege_shell::drawers`,
-//! `lege_shell::dock`) with two renderers over it: a text one (`--print <drawer>`,
+//! The Home Surface is a **model over the services** (`lege_shell::drawers`) with two renderers
+//! over it: a text one (`--print <drawer>`,
 //! `--list-drawers`) and a graphical one (`--surface`, `lege_shell::surface`). Every drawer is a
 //! live view of an `org.legeos.*` interface rather than state the shell keeps for itself (planning
-//! doc 01 §1), the dock groups by canonical `AppId` through `lege_window::shell` so it needs no
-//! local `WM_CLASS` heuristics, and the pressure overlay's wording is a pure function of one
-//! `Resources1` signal.
+//! doc 01 §1), and the pressure overlay's wording is a pure function of one `Resources1` signal.
 //!
 //! The text renderer is not a fallback the graphical one obsoletes: `--print`/`--list-drawers`
 //! stay, unconditionally, as `docs/architecture/accessibility.md`'s "everything the shell shows is
@@ -18,10 +16,9 @@
 
 use anyhow::Result;
 use clap::Parser;
-use lege_client::proxies::SettingsProxy;
 use lege_window::ShellToplevel;
 
-use lege_shell::{data, dock, drawers, home_surface::Drawer, pressure, settings};
+use lege_shell::{data, drawers, home_surface::Drawer, pressure};
 
 /// LegeOS shell.
 #[derive(Debug, Parser)]
@@ -31,7 +28,7 @@ struct Cli {
     #[arg(long)]
     list_drawers: bool,
 
-    /// Render one drawer as text and exit. Also accepts `dock`, `pressure` and `field` (the
+    /// Render one drawer as text and exit. Also accepts `pressure` and `field` (the
     /// Home Field: one line per tile).
     #[arg(long, value_name = "DRAWER")]
     print: Option<String>,
@@ -40,13 +37,13 @@ struct Cli {
     #[arg(long, default_value_t = 20)]
     limit: u32,
 
-    /// Open the graphical Home Surface and dock. Needs a Wayland compositor; for the private
-    /// `lege_shell_v1` protocol (live Window Shelf and dock contents, layer/exclusive-zone
-    /// placement) `WAYLAND_DISPLAY` must name the compositor's trusted-shell socket
+    /// Open the graphical Home Surface. Needs a Wayland compositor; for the private
+    /// `lege_shell_v1` protocol (live Window Shelf, Home reveal and layer placement)
+    /// `WAYLAND_DISPLAY` must name the compositor's trusted-shell socket
     /// (`compositor/lege-comp/src/shell_socket.rs`'s `<main socket>-shell`), not the ordinary one
     /// — without that, the surface still opens and still shows every D-Bus-backed drawer, just
-    /// with an empty dock and Window Shelf, the same graceful degradation every other drawer
-    /// already has for its own service being absent.
+    /// with an empty Window Shelf and no live window actions, the same graceful degradation every
+    /// other drawer already has for its own service being absent.
     #[arg(long)]
     surface: bool,
 }
@@ -69,11 +66,15 @@ async fn main() -> Result<()> {
     }
 
     if cli.surface {
+        tracing::info!(
+            wayland_display = ?std::env::var_os("WAYLAND_DISPLAY"),
+            "starting graphical shell; connecting to Wayland"
+        );
         return lege_shell::surface::run();
     }
 
     tracing::info!(
-        "lege-shell: pass --surface for the graphical Home Surface and dock, or --print \
+        "lege-shell: pass --surface for the graphical Home Surface, or --print \
          <drawer>/--list-drawers for the text form"
     );
     Ok(())
@@ -85,7 +86,6 @@ fn print_targets() -> Vec<String> {
         .iter()
         .map(|drawer| slug(*drawer).to_owned())
         .collect();
-    targets.push("dock".to_owned());
     targets.push("pressure".to_owned());
     targets.push("field".to_owned());
     targets
@@ -122,9 +122,6 @@ fn drawer_from_slug(target: &str) -> Option<Drawer> {
 /// Render one `--print` target, degrading to a readable line per drawer when its service is not
 /// reachable rather than failing the whole command.
 async fn print_target(target: &str, limit: u32) -> Result<String> {
-    if target.eq_ignore_ascii_case("dock") {
-        return Ok(render_dock().await);
-    }
     if target.eq_ignore_ascii_case("pressure") {
         return Ok(render_pressure_glossary());
     }
@@ -166,36 +163,16 @@ fn render_window_shelf() -> String {
     )
 }
 
-/// The dock, grouped by whatever `shell.dock.grouping` says. Same caveat as the Window Shelf:
-/// no Wayland connection here means no toplevel list, so this renders the empty dock and says why.
-async fn render_dock() -> String {
-    let policy = match data::session().await {
-        Ok(connection) => match SettingsProxy::new(&connection).await {
-            Ok(proxy) => settings::dock_grouping(&proxy).await,
-            Err(_) => lege_window::DockGrouping::ByApplication,
-        },
-        Err(_) => lege_window::DockGrouping::ByApplication,
-    };
-    let none: [ShellToplevel; 0] = [];
-    format!(
-        "{}\ngrouping: {policy:?}\n(this text command has no lege_shell_v1 connection; run \
-         `lege-shell --surface` for a live dock)",
-        dock::render(&none, policy)
-    )
-}
-
 /// The Home Field as text: the same document the graphical surface draws, merged from the
 /// installed applications (no windows — this command has no `lege_shell_v1` connection, see
 /// `render_window_shelf`) on a default 16×8 grid, one line per tile.
 async fn render_field() -> String {
-    let apps = data::fetch_apps().await;
     let (cols, rows) =
         lege_shell::field_model::grid_for(1920, 1080, lege_shell::field_model::TILE_SIZE);
     let mut doc = lege_field::FieldDocument::new("primary", cols, rows);
     lege_shell::field_model::merge(
         &mut doc,
         &lege_shell::field_model::LiveState {
-            apps: &apps,
             toplevels: &[],
             projects: &data::fetch_projects().await,
         },
@@ -259,10 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn print_targets_covers_every_drawer_plus_the_three_extras() {
+    fn print_targets_covers_every_drawer_plus_the_two_extras() {
         let targets = print_targets();
-        assert_eq!(targets.len(), Drawer::DEFAULT.len() + 3);
-        assert!(targets.contains(&"dock".to_owned()));
+        assert_eq!(targets.len(), Drawer::DEFAULT.len() + 2);
+        assert!(!targets.contains(&"dock".to_owned()));
         assert!(targets.contains(&"pressure".to_owned()));
         assert!(targets.contains(&"field".to_owned()));
     }
@@ -270,7 +247,7 @@ mod tests {
     #[tokio::test]
     async fn print_field_renders_the_drawer_tiles_without_a_bus() {
         let text = print_target("field", 10).await.unwrap();
-        assert!(text.starts_with("field primary  16x9"), "{text}");
+        assert!(text.starts_with("field primary  18x10"), "{text}");
         for drawer in lege_shell::field_model::DRAWER_TILES {
             assert!(
                 text.contains(drawer.name()),

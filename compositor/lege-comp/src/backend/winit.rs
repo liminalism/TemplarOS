@@ -41,7 +41,7 @@ type State = LegeCompState<WinitBackendData>;
 /// Runs the compositor nested inside the current session until the winit window closes.
 // See `src/backend/udev.rs::run`'s identical `#[allow]` for why this stays one function.
 #[allow(clippy::too_many_lines)]
-pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
+pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
@@ -59,7 +59,8 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
-    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle())?;
+    let socket_name =
+        crate::state::init_wayland_listener(display, &event_loop.handle(), requested_socket_name)?;
     // Not exported into this process's own environment: `std::env::set_var` would only affect
     // children this process itself spawns, which winit never does, and mutating process-wide
     // environment state is `unsafe` since Rust 2024 for good reason (races with any other thread
@@ -118,6 +119,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
 
     let output_for_loop = output.clone();
     let mut damage_tracker = OutputDamageTracker::from_output(&output_for_loop);
+    let mut ready_notified = false;
     event_loop
         .handle()
         .insert_source(
@@ -193,10 +195,21 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
                             false
                         }
                     };
-                    if rendered {
+                    let presented = if rendered {
                         let full_damage =
                             smithay::utils::Rectangle::from_size(graphics.window_size());
-                        let _ = graphics.submit(Some(&[full_damage]));
+                        match graphics.submit(Some(&[full_damage])) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to submit winit frame");
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    if presented {
+                        crate::notify_ready_once(&mut ready_notified);
                     }
 
                     state.space.elements().for_each(|window| {
@@ -207,9 +220,6 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
                             |_, _| Some(output_for_loop.clone()),
                         );
                     });
-                    state.space.refresh();
-                    state.popups.cleanup();
-                    let _ = state.display_handle.flush_clients();
                     graphics.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {
@@ -220,6 +230,17 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
         )
         .map_err(|error| anyhow::anyhow!("inserting winit event source: {error}"))?;
 
-    event_loop.run(None, &mut state, |_| {})?;
+    // READY is sent by the redraw callback after the first host-frame submission. Until then a
+    // Type=notify unit remains in startup and its dependants cannot race an unpainted backend.
+    tracing::info!("compositor initialization complete; waiting for first presented frame");
+    event_loop.run(None, &mut state, |state| {
+        // Flush after every dispatch, not only after a host-window redraw: registry/configure
+        // round trips must complete even while the nested output has no visual damage.
+        state.space.refresh();
+        state.popups.cleanup();
+        if let Err(error) = state.display_handle.flush_clients() {
+            tracing::warn!(%error, "flushing Wayland clients after dispatch");
+        }
+    })?;
     Ok(session_command.map_or(0, |command| command.shut_down()))
 }

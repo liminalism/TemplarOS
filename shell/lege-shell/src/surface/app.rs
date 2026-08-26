@@ -1,9 +1,10 @@
-//! Wiring: one `winit::application::ApplicationHandler` hosting the Home Surface and the dock,
-//! the trusted-shell protocol connection both declare their layer through, and the background
-//! D-Bus refresh loop that keeps their content live. See `window.rs`'s module doc for why this
-//! crate drives winit itself rather than `pixelkit_shell::run_app`.
+//! Wiring: one `winit::application::ApplicationHandler` hosting the Home Surface, the
+//! trusted-shell protocol connection that declares its layer, and the background D-Bus refresh
+//! loop that keeps its content live. See `window.rs`'s module doc for why this crate drives winit
+//! itself rather than `pixelkit_shell::run_app`.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -15,19 +16,22 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
-use lege_client::proxies::{FilesSearchProxy, LauncherProxy, ProjectsProxy, SettingsProxy};
+use lege_client::proxies::{
+    FilesSearchProxy, LauncherProxy, LifecycleProxy, ProjectsProxy, SettingsProxy,
+};
 use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
-use lege_window::{DockGrouping, RevealHome, geometry::Edge};
+use lege_window::RevealHome;
 
-use crate::dock;
 use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState, ProjectInfo};
+use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind};
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::settings::{self, HomeFieldSettings, PreviewMode};
-use crate::surface::dock_screen::{DockAction, DockData, DockScreen};
+use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
+use crate::surface::file_browser::FileBrowserData;
 use crate::surface::fonts;
 use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_key,
@@ -44,9 +48,13 @@ pub struct Wake;
 
 enum DataUpdate {
     Drawers(Vec<(Drawer, String)>),
-    Grouping(DockGrouping),
-    Apps(Vec<AppId>),
+    /// Every installed application, with the metadata a launcher needs
+    /// (`AppIdentity1.ListApplications`). `None` when the registry did not answer, which the
+    /// launcher widget reports rather than drawing an empty list.
+    Apps(Option<Vec<crate::app_search::AppEntry>>),
     Projects(Vec<ProjectInfo>),
+    /// One widget's refreshed content. Content only: by the field's own rule this moves nothing.
+    Widget(String, crate::surface::widgets::WidgetSnapshot),
     HomeFieldSettings(HomeFieldSettings),
     /// A drawer directory's treemap and composition, rasterized off-thread.
     Treemap {
@@ -62,7 +70,19 @@ enum DataUpdate {
     FieldUnavailable,
     SearchResults {
         drawer: Drawer,
-        lines: Vec<String>,
+        query: String,
+        result: Result<Vec<BrowseEntry>, String>,
+    },
+    BrowserSources(BrowserSources),
+    BrowserListing {
+        drawer: Drawer,
+        show_hidden: bool,
+        path: PathBuf,
+        result: Result<DirectoryListing, String>,
+    },
+    FileOpened {
+        path: PathBuf,
+        result: Result<crate::data::OpenFileResult, String>,
     },
 }
 
@@ -71,8 +91,14 @@ enum DataUpdate {
 /// documented next step, and the key already exists so nothing is migrated then.
 const OUTPUT: &str = "primary";
 
-/// Run the graphical surface: the Home Surface and the dock, both real windows. Blocks until the
-/// user closes one of them.
+/// How many of the launcher's ranked rows are worth an icon: enough to cover the largest tile
+/// plus what a scroll would reveal, and nowhere near the whole inventory.
+const LAUNCHER_ICON_LOOKAHEAD: usize = 24;
+
+/// How many *new* icons one frame may resolve. See `ShellApp::ensure_launcher_icons`.
+const ICON_BUDGET_PER_FRAME: usize = 6;
+
+/// Run the graphical Home Surface. Blocks until the user closes it.
 pub fn run() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
@@ -90,14 +116,12 @@ struct ShellApp {
 
     bridge: Option<ShellBridge>,
     home: Option<HostedWindow>,
-    dock: Option<HostedWindow>,
 
     text: pixelkit_text::TextCache,
     kernel: RasterKernel,
     theme: Theme,
 
     field_screen: FieldScreen,
-    dock_screen: DockScreen,
 
     /// The Home Field document: `HomeField1`'s persisted one once it has arrived, with live
     /// state merged in on every refresh. Every op is applied here first (so a drop never waits
@@ -112,12 +136,16 @@ struct ShellApp {
     field_settings: HomeFieldSettings,
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
-    apps: Vec<AppId>,
+    apps: Vec<crate::app_search::AppEntry>,
+    /// Whether the last `ListApplications` succeeded.
+    apps_available: bool,
     projects: Vec<ProjectInfo>,
     /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
     preview_requested: HashMap<lege_window::WindowId, Instant>,
+    /// Each widget's latest content, keyed by `TileKind::System`'s probe.
+    widgets: HashMap<String, crate::surface::widgets::WidgetSnapshot>,
     treemaps: HashMap<Drawer, pixelkit_raster::Bitmap>,
     compositions: HashMap<Drawer, Vec<(u32, f32)>>,
     /// Drawers with a scan in flight, so one request per drawer at a time.
@@ -127,8 +155,12 @@ struct ShellApp {
     started: Instant,
 
     drawer_texts: HashMap<Drawer, Vec<String>>,
-    search_results: Option<(Drawer, Vec<String>)>,
-    dock_grouping: DockGrouping,
+    search_results: Option<(Drawer, String, Result<Vec<BrowseEntry>, String>)>,
+    browser_sources: BrowserSources,
+    browser_listing: Option<(Drawer, bool, DirectoryListing)>,
+    browser_pending: Option<(Drawer, bool, PathBuf)>,
+    browser_error: Option<(Drawer, PathBuf, String)>,
+    browser_status: Option<String>,
     icons: HashMap<String, pixelkit_raster::Bitmap>,
     icon_attempted: HashSet<String>,
 
@@ -149,21 +181,21 @@ impl ShellApp {
             wake_proxy,
             bridge: None,
             home: None,
-            dock: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
-            theme: Theme::default(),
+            theme: design::theme(),
             field_screen: FieldScreen::default(),
-            dock_screen: DockScreen,
             field: FieldDocument::new(OUTPUT, 16, 8),
             field_synced: None,
             undo: Vec::new(),
             field_settings: HomeFieldSettings::default(),
             field_requested: false,
             apps: Vec::new(),
+            apps_available: false,
             projects: Vec::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
+            widgets: HashMap::new(),
             treemaps: HashMap::new(),
             compositions: HashMap::new(),
             treemap_pending: HashSet::new(),
@@ -171,7 +203,11 @@ impl ShellApp {
             started: Instant::now(),
             drawer_texts: HashMap::new(),
             search_results: None,
-            dock_grouping: DockGrouping::ByApplication,
+            browser_sources: BrowserSources::default(),
+            browser_listing: None,
+            browser_pending: None,
+            browser_error: None,
+            browser_status: None,
             icons: HashMap::new(),
             icon_attempted: HashSet::new(),
             exit: false,
@@ -189,17 +225,19 @@ impl ShellApp {
                     let _ = tx.send(DataUpdate::TreemapsStale);
                 }
                 let drawers = crate::data::fetch_all(20).await;
-                let grouping = fetch_grouping().await;
                 let apps = crate::data::fetch_apps().await;
                 let field_settings = fetch_home_field_settings().await;
                 let projects = crate::data::fetch_projects().await;
+                let browser_sources = crate::data::fetch_browser_sources().await;
+                let session_widget = crate::data::fetch_session_widget().await;
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
-                let _ = tx.send(DataUpdate::Grouping(grouping));
                 let _ = tx.send(DataUpdate::Apps(apps));
                 let _ = tx.send(DataUpdate::Projects(projects));
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
+                let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
+                let _ = tx.send(DataUpdate::Widget("session".to_owned(), session_widget));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -242,8 +280,47 @@ impl ShellApp {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
-            let lines = run_search(drawer, &query).await;
-            let _ = tx.send(DataUpdate::SearchResults { drawer, lines });
+            let result = run_search(drawer, &query).await;
+            let _ = tx.send(DataUpdate::SearchResults {
+                drawer,
+                query,
+                result,
+            });
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    fn spawn_browse(&mut self, drawer: Drawer, path: PathBuf, show_hidden: bool) {
+        if self.browser_pending.as_ref().is_some_and(
+            |(pending_drawer, pending_hidden, pending_path)| {
+                (*pending_drawer, *pending_hidden, pending_path) == (drawer, show_hidden, &path)
+            },
+        ) {
+            return;
+        }
+        self.browser_pending = Some((drawer, show_hidden, path.clone()));
+        self.browser_error = None;
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = crate::data::browse_directory(&path, show_hidden).await;
+            let _ = tx.send(DataUpdate::BrowserListing {
+                drawer,
+                show_hidden,
+                path,
+                result,
+            });
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    fn spawn_open_file(&mut self, path: PathBuf) {
+        self.browser_status = Some(format!("Opening {}…", path.display()));
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = crate::data::open_file(&path).await;
+            let _ = tx.send(DataUpdate::FileOpened { path, result });
             let _ = proxy.send_event(Wake);
         });
     }
@@ -257,12 +334,23 @@ impl ShellApp {
                             .insert(drawer, text.lines().map(str::to_owned).collect());
                     }
                 }
-                DataUpdate::Grouping(grouping) => self.dock_grouping = grouping,
-                DataUpdate::Apps(apps) => self.apps = apps,
+                DataUpdate::Apps(apps) => match apps {
+                    Some(apps) => {
+                        self.apps = apps;
+                        self.apps_available = true;
+                    }
+                    // Keep the last good inventory rather than blanking the launcher on one
+                    // failed poll; the flag is what the widget reports.
+                    None => self.apps_available = false,
+                },
                 DataUpdate::Projects(projects) => self.projects = projects,
+                DataUpdate::Widget(id, snapshot) => {
+                    self.widgets.insert(id, snapshot);
+                }
                 DataUpdate::HomeFieldSettings(settings) => {
                     self.field_settings = settings;
-                    self.field_screen.drag_cfg.throw_enabled = settings.throw;
+                    self.field_screen.drag_cfg.throw_enabled =
+                        settings.throw && !settings.reduced_motion;
                 }
                 DataUpdate::Treemap {
                     drawer,
@@ -284,19 +372,76 @@ impl ShellApp {
                         self.field_synced = Some(false);
                     }
                 }
-                DataUpdate::SearchResults { drawer, lines } => {
-                    self.search_results = Some((drawer, lines));
+                DataUpdate::SearchResults {
+                    drawer,
+                    query,
+                    result,
+                } => {
+                    self.search_results = Some((drawer, query, result));
+                }
+                DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
+                DataUpdate::BrowserListing {
+                    drawer,
+                    show_hidden,
+                    path,
+                    result,
+                } => {
+                    let is_current = self.browser_pending.as_ref().is_some_and(
+                        |(pending_drawer, pending_hidden, pending_path)| {
+                            (*pending_drawer, *pending_hidden, pending_path)
+                                == (drawer, show_hidden, &path)
+                        },
+                    );
+                    if !is_current {
+                        continue;
+                    }
+                    self.browser_pending = None;
+                    match result {
+                        Ok(listing) => {
+                            self.browser_listing = Some((drawer, show_hidden, listing));
+                            self.browser_error = None;
+                        }
+                        Err(error) => {
+                            self.browser_error = Some((drawer, path, error));
+                        }
+                    }
+                }
+                DataUpdate::FileOpened { path, result } => {
+                    self.browser_status = Some(match result {
+                        Ok(opened) => format!(
+                            "Opened {} with {} · instance {}",
+                            path.display(),
+                            opened.app_id,
+                            opened.instance
+                        ),
+                        Err(error) => error,
+                    });
                 }
             }
         }
     }
 
+    /// Resolve one application's icon, once. `hints` is what the registry said about it (the
+    /// `Icon=` value and the real `.desktop` file id); without them the lookup can only guess the
+    /// file name back out of the canonical id, which for an imported application usually fails.
     fn ensure_icon(&mut self, key: &str) {
         if key.is_empty() || self.icons.contains_key(key) || self.icon_attempted.contains(key) {
             return;
         }
         self.icon_attempted.insert(key.to_owned());
-        if let Some(bitmap) = icons::load_app_icon(key, &SystemIconRoots) {
+        let entry = self.apps.iter().find(|entry| entry.id.as_str() == key);
+        let desktop_file_ids: Vec<String> = entry
+            .map(|entry| entry.desktop_file_id.clone())
+            .filter(|id| !id.is_empty())
+            .into_iter()
+            .collect();
+        let hints = icons::IconHints {
+            icon: entry
+                .map(|entry| entry.icon.as_str())
+                .filter(|icon| !icon.is_empty()),
+            desktop_file_ids: &desktop_file_ids,
+        };
+        if let Some(bitmap) = icons::load_app_icon_hinted(key, hints, &SystemIconRoots) {
             self.icons.insert(key.to_owned(), bitmap);
         }
     }
@@ -328,7 +473,6 @@ impl ShellApp {
             }
         }
         let live = LiveState {
-            apps: &self.apps,
             toplevels,
             projects: &self.projects,
         };
@@ -337,18 +481,40 @@ impl ShellApp {
             self.spawn_field_apply(FieldOp::Batch { ops: merged });
         }
         field_model::refresh_titles(&mut self.field, &live);
-        let keys: Vec<String> = self
-            .apps
+        let keys: Vec<String> = toplevels
             .iter()
-            .map(ToString::to_string)
-            .chain(
-                toplevels
-                    .iter()
-                    .filter_map(|t| t.canonical_app_id.as_ref().map(ToString::to_string)),
-            )
+            .filter_map(|t| t.canonical_app_id.as_ref().map(ToString::to_string))
             .collect();
         for key in keys {
             self.ensure_icon(&key);
+        }
+        self.ensure_launcher_icons();
+    }
+
+    /// Resolve icons for the launcher's currently visible rows, a few per frame.
+    ///
+    /// The list is every installed application — hundreds of rows on a stock system — and each
+    /// miss is a directory walk plus, for an SVG, a rasterization. Doing them all at once would
+    /// stall the frame that first shows the widget, so this takes a small bite each time and asks
+    /// for another frame while there is more to do: the list fills in over a second or two
+    /// instead of arriving late all at once.
+    fn ensure_launcher_icons(&mut self) {
+        let query = self.field_screen.search.text().to_owned();
+        let wanted: Vec<String> = crate::app_search::search(&self.apps, &query)
+            .into_iter()
+            .take(LAUNCHER_ICON_LOOKAHEAD)
+            .map(|row| row.entry.id.as_str().to_owned())
+            .filter(|key| !self.icons.contains_key(key) && !self.icon_attempted.contains(key))
+            .take(ICON_BUDGET_PER_FRAME)
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        for key in wanted {
+            self.ensure_icon(&key);
+        }
+        if let Some(home) = &self.home {
+            home.request_redraw();
         }
     }
 
@@ -440,17 +606,44 @@ impl ShellApp {
             .inner_size()
             .to_logical::<f64>(home.window.scale_factor());
         self.refresh_field(logical.width as i32, logical.height as i32, &toplevels);
+        let network_control_available = network_control_app(&self.apps).is_some();
+        let clock_label = local_clock_label(std::time::SystemTime::now());
 
         let Some(home) = &mut self.home else { return };
         if !home.prepare() {
             return;
         }
         let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
-        let search_results = self
-            .search_results
-            .as_ref()
-            .filter(|(drawer, _)| Some(*drawer) == self.field_screen.expanded)
-            .map(|(_, lines)| lines.as_slice());
+        let active_search = self.search_results.as_ref().filter(|(drawer, query, _)| {
+            Some(*drawer) == self.field_screen.expanded
+                && query == self.field_screen.drawer_view.search.text()
+        });
+        let search_query = active_search.map(|(_, query, _)| query.as_str());
+        let search_entries = active_search
+            .and_then(|(_, _, result)| result.as_ref().ok())
+            .map(Vec::as_slice);
+        let search_error = active_search
+            .and_then(|(_, _, result)| result.as_ref().err())
+            .map(String::as_str);
+        let browser_data = FileBrowserData {
+            sources: &self.browser_sources,
+            listing: self
+                .browser_listing
+                .as_ref()
+                .map(|(drawer, hidden, listing)| (*drawer, *hidden, listing)),
+            pending: self
+                .browser_pending
+                .as_ref()
+                .map(|(drawer, hidden, path)| (*drawer, *hidden, path.as_path())),
+            error: self
+                .browser_error
+                .as_ref()
+                .map(|(drawer, path, error)| (*drawer, path.as_path(), error.as_str())),
+            status: self.browser_status.as_deref(),
+            search_query,
+            search_entries,
+            search_error,
+        };
         let data = FieldData {
             field: &self.field,
             toplevels: &toplevels,
@@ -459,9 +652,15 @@ impl ShellApp {
             drawer_texts: &self.drawer_texts,
             treemaps: &self.treemaps,
             compositions: &self.compositions,
-            search_results,
+            browser: &browser_data,
             connected: self.bridge.is_some(),
             home_revealed,
+            network_control_available,
+            apps: &self.apps,
+            apps_available: self.apps_available,
+            widgets: &self.widgets,
+            clock_label: &clock_label,
+            reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
         };
         let actions = {
@@ -498,6 +697,19 @@ impl ShellApp {
             FieldAction::Restore(window_id) => {
                 self.bridge_call("unshelve", |bridge| bridge.unshelve(window_id));
             }
+            FieldAction::BrowseDirectory {
+                drawer,
+                path,
+                show_hidden,
+            } => {
+                self.search_results = None;
+                self.field_screen.drawer_view.search = pixelkit_ui::TextFieldState::new();
+                self.field_screen.drawer_view.search_focused = false;
+                self.spawn_browse(drawer, path, show_hidden);
+            }
+            FieldAction::OpenFile(path) => self.spawn_open_file(path),
+            FieldAction::RunAction(id) => self.perform_declared(id),
+            FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             FieldAction::RevealHome => {
                 self.bridge_call("reveal_home", |bridge| {
                     bridge.reveal_home(RevealHome::Toggle)
@@ -511,6 +723,8 @@ impl ShellApp {
                         self.spawn_project_create(project_id.clone(), project.title.clone());
                     }
                     self.field = next;
+                    self.field_screen
+                        .confirm(&op, self.started.elapsed().as_millis() as u64);
                     if self.field_synced == Some(true) {
                         self.spawn_field_apply(op);
                     } else {
@@ -527,7 +741,7 @@ impl ShellApp {
             } => self.spawn_treemap(drawer, width, height),
             FieldAction::DropMetrics(metrics) => {
                 self.last_drop_at = Some(Instant::now());
-                if self.field_settings.throw {
+                if self.field_settings.throw && !self.field_settings.reduced_motion {
                     log_experiment(&format!(
                         "{{\"event\":\"drop\",\"thrown\":{},\"lifted_for_ms\":{},\"semantic\":{},\"relift\":{},\"op\":{:?}}}",
                         metrics.thrown,
@@ -613,6 +827,109 @@ impl ShellApp {
     }
 
     fn spawn_launch(&self, app_id: AppId) {
+        self.spawn_launch_with_args(app_id, Vec::new());
+    }
+
+    /// Perform one declared action (`lege_types::action::MANIFEST`).
+    ///
+    /// This is the single place an action id becomes a thing that happens, so every surface —
+    /// a widget region, the information row, a future menu — reaches a capability the same way
+    /// and none of them needs its own idea of what an action means. An id with no route yet is
+    /// logged rather than silently dropped: a region wired to nothing should be noisy.
+    fn perform_declared(&mut self, id: &'static str) {
+        match id {
+            "network.open-control" => self.spawn_network_control(),
+            // Two view-state actions: they change what the field's own search bar is doing, so
+            // there is no service behind them — but they are still declared, still reachable by
+            // pointer, and still routed through this one place like everything else.
+            "launcher.search" => self.field_screen.search_focused = true,
+            "launcher.show-all" => {
+                self.field_screen.search.set_text("");
+                self.field_screen.search_focused = false;
+            }
+            "session.logout" | "session.reboot" | "session.poweroff" | "session.suspend"
+            | "session.lock" => self.spawn_lifecycle(id),
+            "window.show-all" => {
+                self.bridge_call("show_all_windows", ShellBridge::show_all_windows);
+            }
+            "window.escape-fullscreen" => {
+                self.bridge_call("escape_fullscreen_or_modal", |bridge| {
+                    bridge.escape_fullscreen_or_modal(None)
+                });
+            }
+            other => tracing::warn!(action = %other, "no route for this action yet"),
+        }
+    }
+
+    /// Perform one declared action against a named window — the context menu's rows over a
+    /// session tile (`crate::surface::context_menu`).
+    ///
+    /// Separate from [`Self::perform_declared`] because these need a `WindowId` and that one has
+    /// nowhere to get it: an action reachable both with and without a target is routed by whether
+    /// the surface had one, not by two different ids. `window.close` is the reason this exists at
+    /// all — it was declared, and reachable from nothing.
+    fn perform_on_window(&self, id: &'static str, window: lege_window::WindowId) {
+        match id {
+            // The confirmation happened in the menu (`ActionDecl::confirm`); by the time it
+            // reaches here the user has pressed twice and this is simply the request.
+            "window.close" => self.bridge_call("close", |bridge| bridge.close(window)),
+            "window.park" => self.bridge_call("shelve", |bridge| bridge.shelve(window)),
+            "window.escape-fullscreen" => {
+                self.bridge_call("escape_fullscreen_or_modal", |bridge| {
+                    bridge.escape_fullscreen_or_modal(Some(window))
+                });
+            }
+            "window.show-all" => {
+                self.bridge_call("show_all_windows", ShellBridge::show_all_windows);
+            }
+            other => tracing::warn!(action = %other, "no window route for this action yet"),
+        }
+    }
+
+    /// Call one `Lifecycle1` method off the event loop, reporting a refusal rather than letting
+    /// it vanish — "shut down did nothing and said nothing" is the worst outcome here.
+    fn spawn_lifecycle(&self, id: &'static str) {
+        self.runtime.spawn(async move {
+            let connection = match crate::data::session().await {
+                Ok(connection) => connection,
+                Err(message) => {
+                    tracing::error!(%message, action = %id, "no session bus");
+                    return;
+                }
+            };
+            let proxy = match LifecycleProxy::new(&connection).await {
+                Ok(proxy) => proxy,
+                Err(error) => {
+                    tracing::error!(%error, action = %id, "Lifecycle1 unavailable");
+                    return;
+                }
+            };
+            let result = match id {
+                "session.logout" => proxy.logout().await,
+                "session.reboot" => proxy.reboot().await,
+                "session.poweroff" => proxy.power_off().await,
+                "session.suspend" => proxy.suspend().await,
+                "session.lock" => proxy.lock().await,
+                other => {
+                    tracing::warn!(action = %other, "not a Lifecycle1 action");
+                    return;
+                }
+            };
+            if let Err(error) = result {
+                tracing::error!(%error, action = %id, "Lifecycle1 refused");
+            }
+        });
+    }
+
+    fn spawn_network_control(&self) {
+        let Some(app_id) = network_control_app(&self.apps) else {
+            tracing::warn!("nm-tray2 is not installed in the application registry");
+            return;
+        };
+        self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
+    }
+
+    fn spawn_launch_with_args(&self, app_id: AppId, arguments: Vec<String>) {
         self.runtime.spawn(async move {
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
@@ -623,7 +940,7 @@ impl ShellApp {
             };
             match LauncherProxy::new(&connection).await {
                 Ok(proxy) => {
-                    if let Err(error) = proxy.launch(&app_id.to_string(), Vec::new(), "").await {
+                    if let Err(error) = proxy.launch(&app_id.to_string(), arguments, "").await {
                         tracing::warn!(%error, %app_id, "Launcher1.Launch failed");
                     }
                 }
@@ -631,68 +948,59 @@ impl ShellApp {
             }
         });
     }
+}
 
-    fn redraw_dock(&mut self) {
-        let toplevels = self
-            .bridge
-            .as_ref()
-            .map(ShellBridge::toplevels)
-            .unwrap_or_default();
-        let entries = dock::group(&toplevels, self.dock_grouping);
-        for entry in &entries {
-            self.ensure_icon(&entry.key);
-        }
+fn network_control_app(apps: &[crate::app_search::AppEntry]) -> Option<AppId> {
+    apps.iter()
+        .find(|app| app.id.as_str() == "org.legeos.NetworkTray")
+        .or_else(|| {
+            apps.iter().find(|app| {
+                let id = app.id.as_str().to_ascii_lowercase();
+                id.ends_with("nm-tray.desktop") && !id.contains("autostart")
+            })
+        })
+        .map(|app| app.id.clone())
+}
 
-        let Some(dock_window) = &mut self.dock else {
-            return;
-        };
-        if !dock_window.prepare() {
-            return;
-        }
-        let scale = dock_window.scale;
-        let (width, height) = (
-            dock_window.buffer.width as i32,
-            dock_window.buffer.height as i32,
-        );
-        let data = DockData {
-            entries: &entries,
-            icons: &self.icons,
-            home_revealed: self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
-        };
-        let action = {
-            let painter = Painter::new(&mut dock_window.buffer);
-            let mut ui = Ui::new(
-                painter,
-                &mut self.text,
-                &mut dock_window.input,
-                self.theme,
-                scale,
-                &mut self.kernel,
-            );
-            let area = Rect::new(0, 0, width, height);
-            self.dock_screen.draw(&mut ui, area, &data)
-        };
-        dock_window.input.end_frame();
-        dock_window.present();
-
-        match action {
-            DockAction::Activate(window_id) => {
-                if let Some(bridge) = &self.bridge
-                    && let Err(error) = bridge.activate(window_id)
-                {
-                    tracing::warn!(%error, "activate request failed");
-                }
-            }
-            DockAction::RevealHome => {
-                if let Some(bridge) = &self.bridge
-                    && let Err(error) = bridge.reveal_home(RevealHome::Toggle)
-                {
-                    tracing::warn!(%error, "reveal_home request failed");
-                }
-            }
-            DockAction::None => {}
-        }
+#[allow(unsafe_code)]
+fn local_clock_label(now: std::time::SystemTime) -> String {
+    let seconds = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs()) as libc::time_t;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for this call, and `local` is read only after
+    // `localtime_r` reports success. `localtime_r` does not retain either pointer.
+    let result = unsafe { libc::localtime_r(&raw const seconds, local.as_mut_ptr()) };
+    if result.is_null() {
+        return "TIME UNAVAILABLE".to_owned();
     }
+    // SAFETY: the successful `localtime_r` call initialized the whole `libc::tm` value.
+    let local = unsafe { local.assume_init() };
+    format_clock_fields(
+        local.tm_wday,
+        local.tm_mday,
+        local.tm_mon,
+        local.tm_hour,
+        local.tm_min,
+    )
+}
+
+fn format_clock_fields(weekday: i32, day: i32, month: i32, hour: i32, minute: i32) -> String {
+    const WEEKDAYS: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const MONTHS: [&str; 12] = [
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    ];
+    let weekday = usize::try_from(weekday)
+        .ok()
+        .and_then(|index| WEEKDAYS.get(index))
+        .copied()
+        .unwrap_or("---");
+    let month = usize::try_from(month)
+        .ok()
+        .and_then(|index| MONTHS.get(index))
+        .copied()
+        .unwrap_or("---");
+    format!("{weekday} {day:02} {month} {hour:02}:{minute:02}")
 }
 
 /// The cushion treemap of the first directory in `roots` at `width`×`height`, plus its
@@ -792,23 +1100,11 @@ async fn fetch_home_field_settings() -> HomeFieldSettings {
     }
 }
 
-async fn fetch_grouping() -> DockGrouping {
-    match crate::data::session().await {
-        Ok(connection) => match SettingsProxy::new(&connection).await {
-            Ok(proxy) => settings::dock_grouping(&proxy).await,
-            Err(_) => DockGrouping::ByApplication,
-        },
-        Err(_) => DockGrouping::ByApplication,
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct SearchEntry {
     path: std::path::PathBuf,
-    #[allow(dead_code)]
     is_dir: bool,
     size_bytes: u64,
-    #[allow(dead_code)]
     mtime_ms: i64,
     #[allow(dead_code)]
     mime: Option<String>,
@@ -835,40 +1131,48 @@ fn search_roots(drawer: Drawer) -> Vec<String> {
         .collect()
 }
 
-async fn run_search(drawer: Drawer, query: &str) -> Vec<String> {
+async fn run_search(drawer: Drawer, query: &str) -> Result<Vec<BrowseEntry>, String> {
     let connection = match crate::data::session().await {
         Ok(connection) => connection,
-        Err(message) => return vec![format!("Search — {message}")],
+        Err(message) => return Err(format!("Search — {message}")),
     };
     let proxy = match FilesSearchProxy::new(&connection).await {
         Ok(proxy) => proxy,
-        Err(error) => return vec![format!("Search — service unavailable: {error}")],
+        Err(error) => return Err(format!("Search — service unavailable: {error}")),
     };
     let roots = search_roots(drawer);
     match proxy.search(query, roots, 50).await {
         Ok(json) => parse_hits(&json),
-        Err(error) => vec![format!("Search — service unavailable: {error}")],
+        Err(error) => Err(format!("Search — service unavailable: {error}")),
     }
 }
 
-/// Parse `Files.Search1.Search`'s `[[entry, rank], ...]` payload into display lines.
-fn parse_hits(json: &str) -> Vec<String> {
-    let hits: Vec<(SearchEntry, String)> = match serde_json::from_str(json) {
-        Ok(hits) => hits,
-        Err(error) => return vec![format!("Search — malformed response: {error}")],
-    };
-    if hits.is_empty() {
-        return vec!["No matches".to_owned()];
-    }
-    hits.into_iter()
-        .map(|(entry, rank)| {
-            format!(
-                "{rank:<10} {:<12} {}",
-                crate::format::bytes(entry.size_bytes),
-                entry.path.display(),
-            )
+/// Parse `Files.Search1.Search` into the same actionable rows as directory browsing.
+fn parse_hits(json: &str) -> Result<Vec<BrowseEntry>, String> {
+    let hits: Vec<(SearchEntry, String)> = serde_json::from_str(json)
+        .map_err(|error| format!("Search — malformed response: {error}"))?;
+    Ok(hits
+        .into_iter()
+        .map(|(entry, _rank)| {
+            let name = entry.path.file_name().map_or_else(
+                || entry.path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            BrowseEntry {
+                hidden: name.starts_with('.'),
+                path: entry.path,
+                name,
+                kind: if entry.is_dir {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
+                is_symlink: false,
+                size_bytes: entry.size_bytes,
+                mtime_ms: entry.mtime_ms,
+            }
         })
-        .collect()
+        .collect())
 }
 
 impl ApplicationHandler<Wake> for ShellApp {
@@ -877,32 +1181,27 @@ impl ApplicationHandler<Wake> for ShellApp {
             return;
         }
 
+        // Wayland deliberately has no "primary" output, so `primary_monitor()` is commonly None
+        // even though the compositor has already advertised a real output. Use the first monitor
+        // as the fallback and request its logical size up front. Otherwise winit's 800×600 default
+        // can seed and persist a tiny Home Field before the compositor's full-output configure
+        // arrives one round trip later.
+        let output_size = event_loop
+            .primary_monitor()
+            .or_else(|| event_loop.available_monitors().next())
+            .map_or_else(
+                || LogicalSize::new(800.0, 600.0),
+                |monitor| monitor.size().to_logical::<f64>(monitor.scale_factor()),
+            );
         let home_window = match event_loop.create_window(
             Window::default_attributes()
                 .with_title("Home Surface")
+                .with_inner_size(output_size)
                 .with_fullscreen(Some(Fullscreen::Borderless(None))),
         ) {
             Ok(window) => std::sync::Arc::new(window),
             Err(error) => {
                 tracing::error!(%error, "creating the Home Surface window");
-                self.exit = true;
-                event_loop.exit();
-                return;
-            }
-        };
-
-        let dock_width = event_loop.primary_monitor().map_or(900.0, |monitor| {
-            f64::from(monitor.size().width) / monitor.scale_factor()
-        });
-        let dock_window = match event_loop.create_window(
-            Window::default_attributes()
-                .with_title("Dock")
-                .with_inner_size(LogicalSize::new(dock_width, 64.0))
-                .with_resizable(false),
-        ) {
-            Ok(window) => std::sync::Arc::new(window),
-            Err(error) => {
-                tracing::error!(%error, "creating the dock window");
                 self.exit = true;
                 event_loop.exit();
                 return;
@@ -916,24 +1215,13 @@ impl ApplicationHandler<Wake> for ShellApp {
                     Ok(()) => tracing::info!("Home Surface declared onto Layer::HomeSurface"),
                     Err(error) => tracing::warn!(%error, "declaring the Home Surface layer"),
                 }
-                match bridge.set_layer(&dock_window, lege_window::Layer::ShellOverlay) {
-                    Ok(()) => tracing::info!("dock declared onto Layer::ShellOverlay"),
-                    Err(error) => tracing::warn!(%error, "declaring the dock layer"),
-                }
-                match bridge.set_exclusive_zone(&dock_window, Edge::Bottom, 64) {
-                    Ok(()) => {
-                        tracing::info!("dock reserved a 64px exclusive zone at the bottom edge");
-                    }
-                    Err(error) => tracing::warn!(%error, "reserving the dock's exclusive zone"),
-                }
                 self.bridge = Some(bridge);
             }
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "lege_shell_v1 unavailable; the dock and Window Shelf will show no live \
-                     windows until this process is connected to the compositor's trusted-shell \
-                     socket"
+                    "lege_shell_v1 unavailable; the Window Shelf will show no live windows until \
+                     this process is connected to the compositor's trusted-shell socket"
                 );
             }
         }
@@ -945,20 +1233,9 @@ impl ApplicationHandler<Wake> for ShellApp {
                 None
             }
         };
-        self.dock = match HostedWindow::new(dock_window) {
-            Ok(hosted) => Some(hosted),
-            Err(error) => {
-                tracing::error!(%error, "creating the dock presenter");
-                None
-            }
-        };
-
         self.spawn_refresh_loop();
         if let Some(home) = &self.home {
             home.request_redraw();
-        }
-        if let Some(dock) = &self.dock {
-            dock.request_redraw();
         }
     }
 
@@ -966,9 +1243,6 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.drain_updates();
         if let Some(home) = &self.home {
             home.request_redraw();
-        }
-        if let Some(dock) = &self.dock {
-            dock.request_redraw();
         }
     }
 
@@ -982,11 +1256,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             .home
             .as_ref()
             .is_some_and(|home| home.window.id() == window_id);
-        let is_dock = self
-            .dock
-            .as_ref()
-            .is_some_and(|dock| dock.window.id() == window_id);
-        if !is_home && !is_dock {
+        if !is_home {
             return;
         }
 
@@ -997,22 +1267,15 @@ impl ApplicationHandler<Wake> for ShellApp {
                 return;
             }
             WindowEvent::RedrawRequested => {
-                if is_home {
-                    self.redraw_home();
-                } else {
-                    self.redraw_dock();
-                }
+                self.redraw_home();
                 return;
             }
             _ => {}
         }
 
-        let hosted = if is_home {
-            &mut self.home
-        } else {
-            &mut self.dock
+        let Some(hosted) = &mut self.home else {
+            return;
         };
-        let Some(hosted) = hosted else { return };
         match event {
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
@@ -1089,5 +1352,44 @@ impl ApplicationHandler<Wake> for ShellApp {
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_entry(id: &str) -> crate::app_search::AppEntry {
+        crate::app_search::AppEntry {
+            id: id.parse().unwrap(),
+            name: id.to_owned(),
+            desktop_file_id: String::new(),
+            icon: String::new(),
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            no_display: false,
+        }
+    }
+
+    #[test]
+    fn network_control_prefers_the_native_id_and_falls_back_to_the_imported_desktop() {
+        let imported = app_entry("desktop-import.nm-tray.desktop");
+        let native = app_entry("org.legeos.NetworkTray");
+        let autostart = app_entry("desktop-import.nm-tray-autostart.desktop");
+        assert_eq!(
+            network_control_app(&[imported.clone(), native.clone()]),
+            Some(native.id)
+        );
+        assert_eq!(
+            network_control_app(&[autostart, imported.clone()]),
+            Some(imported.id)
+        );
+        assert_eq!(network_control_app(&[]), None);
+    }
+
+    #[test]
+    fn information_row_clock_has_stable_local_date_and_time_formatting() {
+        assert_eq!(format_clock_fields(1, 24, 7, 8, 5), "MON 24 AUG 08:05");
+        assert_eq!(format_clock_fields(99, 1, 99, 0, 0), "--- 01 --- 00:00");
     }
 }

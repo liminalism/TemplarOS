@@ -121,6 +121,9 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub seat: Seat<Self>,
     pub seat_name: String,
     pub cursor_status: CursorImageStatus,
+    /// A bare Super press is a tap gesture: it is armed on Super-down, cancelled when any
+    /// other key participates in a chord, and toggles Home only on the final Super-up.
+    pub super_tap: crate::keybindings::SuperTapTracker,
 
     /// Rendering/hit-testing mirror of `window_service`, kept in sync by
     /// `src/space_sync.rs::sync_space` after every call that can change geometry or stacking —
@@ -236,6 +239,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             seat,
             seat_name: seat_name.to_owned(),
             cursor_status: CursorImageStatus::default_named(),
+            super_tap: crate::keybindings::SuperTapTracker::default(),
 
             space: Space::default(),
             popups: PopupManager::default(),
@@ -281,11 +285,15 @@ smithay::delegate_dispatch2!(@<B: Backend + 'static> LegeCompState<B>);
 pub fn init_wayland_listener<B: Backend + 'static>(
     display: smithay::reexports::wayland_server::Display<LegeCompState<B>>,
     loop_handle: &LoopHandle<'static, LegeCompState<B>>,
+    requested_name: Option<&str>,
 ) -> anyhow::Result<String> {
     use smithay::reexports::calloop::{Interest, Mode as CalloopMode, generic::Generic};
     use smithay::wayland::socket::ListeningSocketSource;
 
-    let socket_source = ListeningSocketSource::new_auto()?;
+    let socket_source = match requested_name {
+        Some(name) => ListeningSocketSource::with_name(name)?,
+        None => ListeningSocketSource::new_auto()?,
+    };
     let socket_name = socket_source.socket_name().to_string_lossy().into_owned();
 
     loop_handle

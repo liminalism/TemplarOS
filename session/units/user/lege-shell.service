@@ -7,7 +7,10 @@ Requisite=lege-comp.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/lege-shell
+# Ordinary applications inherit WAYLAND_DISPLAY=legeos-0 from lege-session.  The shell alone
+# connects to the compositor's second socket, which is what grants its private protocol access.
+Environment=WAYLAND_DISPLAY=legeos-0-shell
+ExecStart=/usr/bin/lege-shell --surface
 # Everything decorative restarts without terminating applications.
 Restart=always
 RestartSec=500ms

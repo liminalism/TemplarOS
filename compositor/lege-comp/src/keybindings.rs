@@ -11,7 +11,10 @@
 
 use crate::state::{Backend, LegeCompState};
 use lege_window::{CommandContext, CommandEffect, RevealHome, WindowCommand};
-use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
+use smithay::{
+    backend::input::KeyState,
+    input::keyboard::{Keysym, ModifiersState, keysyms},
+};
 
 /// One compositor-reserved recovery action, independent of whether a shell is connected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,7 +30,15 @@ pub enum RecoveryAction {
     /// "Go home": toggle the reveal that hides every client window behind the Home Surface
     /// (`WindowCommand::RevealHome`).
     RevealHome,
+    /// Move to the next window of this contiguous group, spatially
+    /// (`geometry::contiguous_window`).
+    GroupNext,
+    GroupPrevious,
 }
+
+/// How many spatial steps make one contiguous group. A first rule rather than a settled one —
+/// it lives here, at the call site, so changing it touches nothing in `lege-window`.
+const GROUP_HOPS: u8 = 2;
 
 /// Which [`RecoveryAction`], if any, `keysym` held with exactly `modifiers` performs while a
 /// "go home" reveal is (`home_revealed`) or is not in effect. Every recovery action has a
@@ -42,8 +53,10 @@ pub enum RecoveryAction {
 /// | Ctrl+Alt+Space         | show every window         |
 /// | Alt+Tab                | cycle switcher forward    |
 /// | Alt+Shift+Tab          | cycle switcher backward   |
+/// | Super+Left / Super+Right | previous/next in group  |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
-/// | Super+D                | go home (toggle reveal)   |
+/// | Super (tap)            | go home (toggle reveal)   |
+/// | Super+D                | go home (legacy shortcut) |
 /// | Escape, while revealed | go home (ends the reveal) |
 ///
 /// Plain Escape is reserved *only* while a reveal is in effect — the Home Surface is then the
@@ -73,13 +86,16 @@ pub fn recovery_action(
             RecoveryAction::CycleFocusForward
         });
     }
-    if modifiers.logo
-        && !modifiers.ctrl
-        && !modifiers.alt
-        && !modifiers.shift
-        && (raw == keysyms::KEY_d || raw == keysyms::KEY_D)
-    {
-        return Some(RecoveryAction::RevealHome);
+    if modifiers.logo && !modifiers.ctrl && !modifiers.alt && !modifiers.shift {
+        if raw == keysyms::KEY_d || raw == keysyms::KEY_D {
+            return Some(RecoveryAction::RevealHome);
+        }
+        if raw == keysyms::KEY_Left {
+            return Some(RecoveryAction::GroupPrevious);
+        }
+        if raw == keysyms::KEY_Right {
+            return Some(RecoveryAction::GroupNext);
+        }
     }
     if home_revealed
         && !modifiers.ctrl
@@ -91,6 +107,73 @@ pub fn recovery_action(
         return Some(RecoveryAction::RevealHome);
     }
     None
+}
+
+/// Whether this is either physical Super/logo key. The input handler uses this to implement a
+/// release-time tap: a lone Super toggles Home, while Super held as part of a future chord does
+/// not fire the tap action.
+pub fn is_super_key(keysym: Keysym) -> bool {
+    matches!(keysym.raw(), keysyms::KEY_Super_L | keysyms::KEY_Super_R)
+}
+
+/// Result of feeding one keyboard transition into [`SuperTapTracker`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuperTapDecision {
+    /// This transition is unrelated to the bare-Super gesture and follows the normal key path.
+    Forward,
+    /// Consume a Super transition, but do not toggle Home yet.
+    Intercept,
+    /// The last held Super key was released without any other key participating.
+    ToggleHome,
+}
+
+/// Tracks a bare-Super tap without mistaking Super chords (or two held Super keys) for taps.
+///
+/// Both physical logo keys are tracked independently. Pressing any non-Super key while either is
+/// down cancels the gesture; releasing the final Super then remains intercepted but does nothing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SuperTapTracker {
+    left_down: bool,
+    right_down: bool,
+    armed: bool,
+}
+
+impl SuperTapTracker {
+    pub fn update(&mut self, state: KeyState, keysym: Keysym) -> SuperTapDecision {
+        if !is_super_key(keysym) {
+            if state == KeyState::Pressed && (self.left_down || self.right_down) {
+                self.armed = false;
+            }
+            return SuperTapDecision::Forward;
+        }
+        let left = keysym.raw() == keysyms::KEY_Super_L;
+
+        match state {
+            KeyState::Pressed => {
+                if !self.left_down && !self.right_down {
+                    self.armed = true;
+                }
+                if left {
+                    self.left_down = true;
+                } else {
+                    self.right_down = true;
+                }
+                SuperTapDecision::Intercept
+            }
+            KeyState::Released => {
+                if left {
+                    self.left_down = false;
+                } else {
+                    self.right_down = false;
+                }
+                if !self.left_down && !self.right_down && std::mem::take(&mut self.armed) {
+                    SuperTapDecision::ToggleHome
+                } else {
+                    SuperTapDecision::Intercept
+                }
+            }
+        }
+    }
 }
 
 /// Keyboard navigation for the pressure overlay's four buttons
@@ -164,6 +247,39 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::space_sync::sync_after_change(self);
                 }
             }
+            RecoveryAction::GroupNext | RecoveryAction::GroupPrevious => {
+                let direction = if matches!(action, RecoveryAction::GroupNext) {
+                    lege_window::geometry::Direction::Right
+                } else {
+                    lege_window::geometry::Direction::Left
+                };
+                // Only windows a person can actually see and reach: shelved ones are parked on
+                // Home by definition, and a spatial step onto something invisible would be a
+                // window vanishing under the user's hands.
+                let windows: Vec<(lege_window::WindowId, lege_window::Rect)> = self
+                    .window_service
+                    .windows()
+                    .filter(|window| {
+                        self.window_service.is_client_window(window.id) && !window.shelved
+                    })
+                    .map(|window| (window.id, window.geometry))
+                    .collect();
+                let current = windows
+                    .iter()
+                    .find(|(id, _)| {
+                        self.window_service
+                            .window(*id)
+                            .is_some_and(|window| window.activated)
+                    })
+                    .map(|(id, _)| *id);
+                if let Some(current) = current
+                    && let Some(next) = lege_window::geometry::contiguous_window(
+                        &windows, current, direction, GROUP_HOPS,
+                    )
+                {
+                    crate::input::activate_window(self, next);
+                }
+            }
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
                 let current = self
                     .window_service
@@ -185,7 +301,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
                         .filter_map(|id| {
                             self.window_service
                                 .window(id)
-                                .filter(|window| !window.shelved)
+                                .filter(|window| {
+                                    self.window_service.is_client_window(id) && !window.shelved
+                                })
                                 .map(|window| (id, window.title.clone()))
                         })
                         .collect();
@@ -198,9 +316,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
         }
     }
 
-    /// "Go home" from any of its three routes — the keybindings above, the shell's
-    /// `lege_shell_manager_v1.reveal_home`, or the dock's Home button behind it. The command is
-    /// `WindowService`'s; what is left here is the compositor-side consequence: the
+    /// "Go home" from either route — the keybindings above or the shell's
+    /// `lege_shell_manager_v1.reveal_home`. The command is `WindowService`'s; what is left here
+    /// is the compositor-side consequence: the
     /// "show every window" scatter and the switcher HUD cannot coexist with a reveal, the
     /// `Space` mirror must follow the new visibility, and the keyboard must go where the user
     /// can see (`crate::input::refocus_after_reveal`).
@@ -329,6 +447,55 @@ mod tests {
     }
 
     #[test]
+    fn both_super_keys_are_recognised_for_the_bare_tap() {
+        assert!(is_super_key(Keysym::new(keysyms::KEY_Super_L)));
+        assert!(is_super_key(Keysym::new(keysyms::KEY_Super_R)));
+        assert!(!is_super_key(Keysym::new(keysyms::KEY_Control_L)));
+    }
+
+    #[test]
+    fn a_bare_super_press_toggles_only_on_release() {
+        let mut tap = SuperTapTracker::default();
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L)),
+            SuperTapDecision::Intercept
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            SuperTapDecision::ToggleHome
+        );
+    }
+
+    #[test]
+    fn a_super_chord_cancels_the_tap_without_leaking_super_releases() {
+        let mut tap = SuperTapTracker::default();
+        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_d)),
+            SuperTapDecision::Forward
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            SuperTapDecision::Intercept
+        );
+    }
+
+    #[test]
+    fn two_held_super_keys_toggle_once_when_the_last_one_is_released() {
+        let mut tap = SuperTapTracker::default();
+        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
+        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_R));
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            SuperTapDecision::Intercept
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_R)),
+            SuperTapDecision::ToggleHome
+        );
+    }
+
+    #[test]
     fn plain_escape_ends_a_reveal_and_is_otherwise_free() {
         let none = mods(false, false, false);
         assert_eq!(
@@ -405,6 +572,136 @@ mod tests {
         assert_eq!(
             overlay_action(mods(false, false, false), Keysym::new(keysyms::KEY_Escape)),
             None
+        );
+    }
+
+    /// Every chord this compositor reserves is also *declared* in `lege_types::action`, and the
+    /// two agree.
+    ///
+    /// The compositor deliberately does not read the manifest at run time. These bindings exist
+    /// to keep working when the shell — and the whole session bus — is dead, which is the entire
+    /// reason `recovery_action` is a fixed table of keysyms with no lookup in it. What the
+    /// manifest gives is a *description* of the same facts, so the menu and the cheat sheet can
+    /// show a person what `Ctrl+Alt+Space` does without a second, hand-maintained copy that
+    /// quietly drifts. This test is the seam that keeps the description true.
+    #[test]
+    fn the_reserved_chords_match_what_the_action_manifest_declares() {
+        use lege_types::action::{self, Chord, Key};
+
+        /// The keysym and modifier state a declared chord stands for.
+        fn resolve(chord: Chord) -> Option<(ModifiersState, Keysym)> {
+            let raw = match chord.key {
+                Key::Escape => keysyms::KEY_Escape,
+                Key::Space => keysyms::KEY_space,
+                Key::Tab => keysyms::KEY_Tab,
+                Key::Left => keysyms::KEY_Left,
+                Key::Right => keysyms::KEY_Right,
+                Key::Character('h') => keysyms::KEY_h,
+                Key::Character('d') => keysyms::KEY_d,
+                // Not a combination the keysym table can answer: the bare tap is a gesture,
+                // tracked by `SuperTapTracker`, and the rest belong to the shell.
+                _ => return None,
+            };
+            let modifiers = ModifiersState {
+                ctrl: chord.modifiers.ctrl,
+                alt: chord.modifiers.alt,
+                shift: chord.modifiers.shift,
+                logo: chord.modifiers.logo,
+                ..Default::default()
+            };
+            Some((modifiers, Keysym::new(raw)))
+        }
+
+        // Which manifest action each compositor-side recovery action is the dispatch for.
+        let expected = [
+            (RecoveryAction::ShowAllWindows, "window.show-all"),
+            (
+                RecoveryAction::EscapeFullscreenOrModal,
+                "window.escape-fullscreen",
+            ),
+            (RecoveryAction::CycleFocusForward, "window.cycle-forward"),
+            (RecoveryAction::CycleFocusBackward, "window.cycle-backward"),
+            (RecoveryAction::RevealHome, "home.reveal"),
+            (RecoveryAction::GroupNext, "window.group-next"),
+            (RecoveryAction::GroupPrevious, "window.group-previous"),
+        ];
+        for (action, id) in expected {
+            let declaration = action::action(id).unwrap_or_else(|| panic!("{id} is not declared"));
+            let mut checked = 0;
+            for chord in declaration.chords {
+                let Some((modifiers, keysym)) = resolve(*chord) else {
+                    continue;
+                };
+                assert_eq!(
+                    recovery_action(modifiers, keysym, false),
+                    Some(action),
+                    "the manifest says {chord} performs {id}, but the compositor disagrees"
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "no chord of {id} was checkable");
+        }
+
+        // The bare Super tap is declared as Home's primary route and must stay a gesture, not a
+        // combination — `SuperTapTracker` owns it, and `recovery_action` must not claim it.
+        assert!(
+            action::action("home.reveal")
+                .is_some_and(|home| home.chords.contains(&Chord::bare(Key::LogoTap))),
+            "the primary route to Home is undeclared"
+        );
+        assert_eq!(
+            recovery_action(
+                mods(false, false, false),
+                Keysym::new(keysyms::KEY_h),
+                false
+            ),
+            None,
+            "an unmodified key is never reserved"
+        );
+    }
+
+    #[test]
+    fn super_arrows_step_through_a_contiguous_group_and_compose_with_the_bare_tap() {
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_Right), false),
+            Some(RecoveryAction::GroupNext)
+        );
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_Left), false),
+            Some(RecoveryAction::GroupPrevious)
+        );
+        // Without the logo key these are ordinary arrows and must stay so.
+        assert_eq!(
+            recovery_action(
+                mods(false, false, false),
+                Keysym::new(keysyms::KEY_Right),
+                false
+            ),
+            None
+        );
+        // And a modified Super+Arrow is not ours either.
+        let logo_shift = ModifiersState {
+            logo: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            recovery_action(logo_shift, Keysym::new(keysyms::KEY_Right), false),
+            None
+        );
+
+        // The arrow arriving while Super is held cancels the bare-Super tap, so releasing Super
+        // afterwards does not also toggle Home — the same mechanism `Super+D` already relies on.
+        let mut tap = SuperTapTracker::default();
+        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Right)),
+            SuperTapDecision::Forward
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            SuperTapDecision::Intercept,
+            "a Super+Arrow chord must not fall through to a Home toggle"
         );
     }
 

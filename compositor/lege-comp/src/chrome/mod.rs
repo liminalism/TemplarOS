@@ -60,6 +60,7 @@ pub struct ChromeState {
     fonts: Option<ChromeFonts>,
     scratch: pixelkit_raster::WindowBuffer,
     bands: HashMap<WindowId, CachedWidget>,
+    grips: HashMap<WindowId, CachedWidget>,
     pressure: CachedWidget,
     lock: CachedWidget,
     scatter_cards: HashMap<WindowId, CachedWidget>,
@@ -98,6 +99,7 @@ impl ChromeState {
             fonts,
             scratch: pixelkit_raster::WindowBuffer::new(1, 1),
             bands: HashMap::new(),
+            grips: HashMap::new(),
             pressure: CachedWidget::new(),
             lock: CachedWidget::new(),
             scatter_cards: HashMap::new(),
@@ -208,6 +210,15 @@ pub fn collect_elements(
     }
 
     collect_bands(
+        chrome,
+        inputs.window_service,
+        output_rect,
+        output_scale,
+        renderer,
+        &mut elements,
+    );
+
+    collect_grips(
         chrome,
         inputs.window_service,
         output_rect,
@@ -507,6 +518,58 @@ fn collect_bands(
         }
     }
     chrome.bands.retain(|id, _| live.contains(id));
+}
+
+/// Every visible window's compositor-owned resize grip
+/// (`lege_window::WindowService::resize_grip`), drawn for the same reason the recovery band is:
+/// a window whose client draws no frame — most XWayland windows, anything borderless — would
+/// otherwise have no pointer route to a resize at all, and an affordance nobody can see is not
+/// one. The service decides which windows have a grip (not maximized, not fullscreen, tall
+/// enough); this only paints what it is told.
+fn collect_grips(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    output_rect: Rect,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let mut live = std::collections::HashSet::new();
+    for window in window_service.windows() {
+        if !window_service.is_visible(window.id) {
+            continue;
+        }
+        let Some(grip) = window_service.resize_grip(window.id) else {
+            continue;
+        };
+        if output_rect.intersection(grip).is_none() {
+            continue;
+        }
+        live.insert(window.id);
+        // Nothing about a grip varies with the window but its size, and `ensure` already keys on
+        // that: the cache key is a constant.
+        let key = WidgetKey::new("resize-grip", paint::RECOVERY_BAND_COLOR);
+        let location = to_physical(
+            grip,
+            Point::from((output_rect.x, output_rect.y)),
+            output_scale,
+        );
+        let widget = chrome.grips.entry(window.id).or_default();
+        if let Some(element) = widget.ensure(
+            key,
+            (grip.width, grip.height),
+            output_scale,
+            location,
+            &mut chrome.scratch,
+            renderer,
+            move |painter, pixel_w, pixel_h| {
+                paint::resize_grip(painter, pixel_w, pixel_h, scale_factor(pixel_w, grip.width));
+            },
+        ) {
+            elements.push(element);
+        }
+    }
+    chrome.grips.retain(|id, _| live.contains(id));
 }
 
 /// The real per-axis scale a widget's buffer was actually rasterised at (`pixel_w / logical_w`),

@@ -7,7 +7,7 @@
 //! inverse is made of. [`FieldOp::Batch`] composes, and inverts to the reversed inverses.
 
 use crate::field::{Cell, Container, FieldDocument, Landing, Located, Placement, Tray};
-use crate::reflow::{Grid, apply_reflow, find_placement, tidy};
+use crate::reflow::{Grid, apply_reflow, find_placement, find_resize, tidy};
 use crate::tile::{Span, SpanRange, Tile, TileId, TrayId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -369,13 +369,27 @@ fn resize(doc: &mut FieldDocument, id: TileId, span: Span) -> Result<FieldOp, Fi
         return Err(FieldError::BadSpan);
     }
     let before = doc.location(id).ok_or(FieldError::NotFree)?;
+    let (grid_cols, grid_rows) = doc
+        .grid_size(before.container)
+        .ok_or(FieldError::UnknownTile)?;
+    // Nothing in the widget system may fill its whole grid. A tile that covers everything is a
+    // maximised window wearing a tile's clothes, and the field stops being a field. Only a
+    // container may, because a project's full-field state is the zoom *view* — a different
+    // mechanism that leaves the document alone (`docs/homefield.md`, "Do not recreate virtual
+    // desktops under another name").
+    if !tile.kind.is_container() && span.cols >= grid_cols && span.rows >= grid_rows {
+        return Err(FieldError::BadSpan);
+    }
     let mut grid = grid_of(doc, before.container)?;
-    let reflow = find_placement(
-        &grid,
-        &SpanRange::fixed(span),
-        before.placement.cell,
-        Some(id),
-    )?;
+    let ranges: Vec<(TileId, SpanRange)> = grid
+        .places
+        .iter()
+        .filter_map(|(placed, _)| doc.tile(*placed).map(|tile| (*placed, tile.spans)))
+        .collect();
+    let reflow = find_resize(&grid, &ranges, id, span)?;
+    // `reflow.moved` records each yielding neighbour's *whole prior placement*, span included,
+    // and `moved_back` turns those into `Layout` entries — so the inverse restores neighbours'
+    // sizes as exactly as it restores their positions, with no new op and no format change.
     let mut set = moved_back(before.container, &reflow.moved);
     set.push((id, Some(before)));
     apply_reflow(&mut grid, id, &reflow);
@@ -510,11 +524,14 @@ fn create_project(
         }
     }
     write_grid(doc, Some(project.id), &inner);
+    // Restore absorbed and displaced tiles atomically. Their original and post-reflow
+    // rectangles can cross: two separate Layout ops could try to restore an absorbed tile into
+    // a rectangle still occupied by a displaced tile and reject a valid inverse as NotFree.
+    absorbed_back.extend(moved);
     Ok(FieldOp::Batch {
         ops: vec![
             FieldOp::Remove { id: project.id },
             FieldOp::Layout { set: absorbed_back },
-            FieldOp::Layout { set: moved },
         ],
     })
 }

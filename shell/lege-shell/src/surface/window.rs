@@ -5,24 +5,21 @@
 //! `pixelkit_shell::shell::Shell` (the type `run_app` builds and drives) owns exactly one
 //! `winit::window::Window`, and never hands it — or the `ActiveEventLoop` that created it — to the
 //! `PixelApp` it hosts; every `PixelApp` method (`render`, `attach`, `tick`, `on_key`, …) receives
-//! only a pixel buffer, a [`Waker`](pixelkit_shell::Waker), or nothing at all. Two things this
-//! crate needs are therefore unreachable through that API:
+//! only a pixel buffer, a [`Waker`](pixelkit_shell::Waker), or nothing at all. The thing this
+//! crate needs is therefore unreachable through that API:
 //!
 //! 1. **The window's raw platform handle.** `crate::wayland_bridge::ShellBridge` has to call
 //!    `raw_window_handle::HasWindowHandle`/`HasDisplayHandle` on the actual `winit::window::Window`
 //!    to reach `lege_shell_v1` — there is no other way to a `wl_surface`/`wl_display` pointer, and
 //!    `run_app` never exposes one.
-//! 2. **More than one window.** `Shell`'s window field is `Option<Arc<Window>>`, singular; the
-//!    Home Surface and the dock are two independent layers (`Layer::HomeSurface` vs
-//!    `Layer::ShellOverlay`) and therefore two separate `wl_surface`s.
 //!
-//! Neither is fixable by a caller — both are private fields of a type this crate does not own,
-//! and the fix is "don't use `run_app`", not a workaround inside it. What *is* reusable, because
+//! That is not fixable by a caller — it is a private field of a type this crate does not own, and
+//! the fix is "don't use `run_app`", not a workaround inside it. What *is* reusable, because
 //! `pixelkit-shell`'s README lists them as independently public pieces rather than baking them
 //! into `Shell`, is everything below `run_app` in the stack: [`SoftbufferPresenter`], [`Input`],
 //! [`Scale`], [`FrameTimer`], and the `KeyInput`/`Modifiers`/`MouseButton` vocabulary. This module
-//! is the thin `ApplicationHandler` that wires those pieces to winit directly, hosting as many
-//! windows as this crate needs and handing each one's `&Window` to whoever asks — the same shape
+//! is the thin `ApplicationHandler` that wires those pieces to winit directly, hosting the Home
+//! window and handing its `&Window` to whoever asks — the same shape
 //! `pixelkit_shell::shell::Shell` has internally, just not private.
 //!
 //! One real, small gap this leaves: `Shell`'s winit-key-to-`KeyInput` translation (`translate`),

@@ -108,6 +108,13 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// End, suspend or lock this session.
+    Session {
+        #[command(subcommand)]
+        command: Option<SessionCommand>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Integration checks (runtime, image root, or hardware matrix).
     Doctor {
         /// Check an unpacked image root instead of `/`.
@@ -321,6 +328,19 @@ enum PowerCommand {
     Reset { source: String },
 }
 
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// What this machine will and will not do (the default).
+    Status,
+    /// End this session.
+    Logout,
+    Reboot,
+    Poweroff,
+    Suspend,
+    /// Lock the screen. Not yet implemented — see `Lifecycle1.Lock`.
+    Lock,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     if let Err(error) = run().await {
@@ -352,18 +372,25 @@ async fn run() -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&findings)?);
             } else {
+                let mut abbreviated = false;
                 for finding in &findings {
+                    let detail = doctor::abbreviate(&finding.detail);
+                    abbreviated |= detail != finding.detail;
                     println!(
                         "{:<8} {:<20} {}{}",
                         format!("{:?}", finding.outcome).to_lowercase(),
                         finding.id,
                         finding.summary,
-                        if finding.detail.is_empty() {
+                        if detail.is_empty() {
                             String::new()
                         } else {
-                            format!(" — {}", finding.detail)
+                            format!(" — {detail}")
                         }
                     );
+                }
+                println!("\n{}", doctor::summarise(&findings));
+                if abbreviated {
+                    println!("(detail shortened; `lege doctor --json` prints it in full)");
                 }
             }
             std::process::exit(doctor::exit_code(&findings));
@@ -400,6 +427,65 @@ async fn run() -> Result<()> {
         }
         Command::Power { command, json } => {
             power_command(command.unwrap_or(PowerCommand::Get { source: None }), json).await
+        }
+        Command::Session { command, json } => {
+            session_command(command.unwrap_or(SessionCommand::Status), json).await
+        }
+    }
+}
+
+async fn session_command(command: SessionCommand, json: bool) -> Result<()> {
+    use lege::lifecycle::{Action, LifecycleClient};
+    let connection = bus::session().await?;
+    let proxy = lege_client::proxies::LifecycleProxy::new(&connection).await?;
+    match command {
+        SessionCommand::Status => {
+            let mut verdicts = Vec::new();
+            for action in Action::ALL {
+                verdicts.push((action, LifecycleClient::can(&proxy, action).await?));
+            }
+            let rendered = lege::lifecycle::render_status(&verdicts);
+            let structured: Vec<_> = verdicts
+                .iter()
+                .map(|(action, verdict)| (action.as_str(), verdict.clone()))
+                .collect();
+            emit(json, &structured, &rendered)
+        }
+        SessionCommand::Logout => {
+            LifecycleClient::logout(&proxy).await?;
+            emit(
+                json,
+                &serde_json::json!({"session": "logout"}),
+                "logging out",
+            )
+        }
+        SessionCommand::Reboot => {
+            LifecycleClient::reboot(&proxy).await?;
+            emit(
+                json,
+                &serde_json::json!({"session": "reboot"}),
+                "restarting",
+            )
+        }
+        SessionCommand::Poweroff => {
+            LifecycleClient::power_off(&proxy).await?;
+            emit(
+                json,
+                &serde_json::json!({"session": "poweroff"}),
+                "shutting down",
+            )
+        }
+        SessionCommand::Suspend => {
+            LifecycleClient::suspend(&proxy).await?;
+            emit(
+                json,
+                &serde_json::json!({"session": "suspend"}),
+                "suspending",
+            )
+        }
+        SessionCommand::Lock => {
+            LifecycleClient::lock(&proxy).await?;
+            emit(json, &serde_json::json!({"session": "lock"}), "locked")
         }
     }
 }

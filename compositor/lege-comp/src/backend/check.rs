@@ -54,7 +54,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
-    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle())?;
+    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle(), None)?;
 
     let mut state = State::new(
         CheckBackendData,
@@ -169,7 +169,7 @@ mod tests {
             let shell_sink = crate::shell_sink::install(&event_loop.handle());
             let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
             let socket_name =
-                crate::state::init_wayland_listener(display, &event_loop.handle()).unwrap();
+                crate::state::init_wayland_listener(display, &event_loop.handle(), None).unwrap();
             let mut state = State::new(
                 CheckBackendData,
                 SEAT_NAME,

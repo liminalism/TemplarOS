@@ -160,14 +160,44 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
         }
     }
 
+    /// `_NET_WM_MOVERESIZE` with a resize direction: the X11 counterpart of
+    /// `xdg_toplevel.resize`, and the same compositor-run grab
+    /// (`XdgShellHandler::resize_request`). The X11 enum names a corner rather than a set of
+    /// edges, so it is translated the same way the Wayland one is.
     fn resize_request(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        window: X11Surface,
         _button: u32,
-        _resize_edge: ResizeEdge,
+        resize_edge: ResizeEdge,
     ) {
-        // Scoped out identically to `XdgShellHandler::resize_request` — see that method's comment.
+        let Some(window_id) = self.window_id_of(&window) else {
+            return;
+        };
+        let (left, right, top, bottom) = match resize_edge {
+            ResizeEdge::Top => (false, false, true, false),
+            ResizeEdge::Bottom => (false, false, false, true),
+            ResizeEdge::Left => (true, false, false, false),
+            ResizeEdge::Right => (false, true, false, false),
+            ResizeEdge::TopLeft => (true, false, true, false),
+            ResizeEdge::TopRight => (false, true, true, false),
+            ResizeEdge::BottomLeft => (true, false, false, true),
+            ResizeEdge::BottomRight => (false, true, false, true),
+        };
+        let seat = self.seat.clone();
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        crate::input::start_resize(
+            self,
+            &seat,
+            serial,
+            window_id,
+            lege_window::ResizeEdges {
+                left,
+                right,
+                top,
+                bottom,
+            },
+        );
     }
 
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {

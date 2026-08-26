@@ -316,6 +316,95 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
     }
 }
 
+/// Side of the compositor-owned resize grip's square, in logical pixels. Deliberately the same
+/// order of size as [`RECOVERY_BAND_HEIGHT`]: the two are the compositor's whole management
+/// vocabulary for a window that draws no frame of its own, and a grip smaller than the band it
+/// pairs with would be the harder of the two to hit.
+pub const RESIZE_GRIP_SIZE: i32 = 24;
+
+/// The smallest a window may be resized to. Not an arbitrary floor: it is exactly the size at
+/// which the recovery band is still grabbable ([`MIN_RECOVERY_WIDTH`]) *and* there is still room
+/// for the resize grip underneath it ([`RECOVERY_BAND_HEIGHT`] + [`RESIZE_GRIP_SIZE`]). A window
+/// shrunk to this size can therefore still be moved and still be grown again, which is the
+/// property that makes an interactive resize safe to offer at all.
+pub const MIN_WINDOW_WIDTH: i32 = MIN_RECOVERY_WIDTH;
+/// See [`MIN_WINDOW_WIDTH`].
+pub const MIN_WINDOW_HEIGHT: i32 = RECOVERY_BAND_HEIGHT + RESIZE_GRIP_SIZE;
+
+/// The compositor-owned corner through which any window can be resized, whoever draws its frame
+/// — the resize counterpart to [`recovery_band`]. Placed at the bottom-right, never overlapping
+/// the band, so a press can only ever mean one of the two gestures.
+///
+/// `None` when the window is too short for a grip to fit below its band. That cannot happen to a
+/// window this module resized ([`MIN_WINDOW_HEIGHT`] leaves exactly enough room); it can happen
+/// to one a client sized itself, and the honest answer there is to offer no grip rather than one
+/// that steals the band.
+pub fn resize_grip(window: Rect) -> Option<Rect> {
+    let width = RESIZE_GRIP_SIZE.min(window.width);
+    let height = RESIZE_GRIP_SIZE.min(window.height.saturating_sub(RECOVERY_BAND_HEIGHT));
+    (width > 0 && height > 0).then(|| Rect {
+        x: window.right().saturating_sub(width),
+        y: window.bottom().saturating_sub(height),
+        width,
+        height,
+    })
+}
+
+/// Which edges an interactive resize moves. Held as four flags rather than a bitmask so a
+/// corner is expressible without a table of sixteen names, and so this crate never has to
+/// depend on the protocol enum the compositor translates from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ResizeEdges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl ResizeEdges {
+    /// The corner the compositor's own grip drives.
+    pub const BOTTOM_RIGHT: ResizeEdges = ResizeEdges {
+        left: false,
+        right: true,
+        top: false,
+        bottom: true,
+    };
+
+    /// Whether this names no edge at all — `xdg_toplevel.resize` permits `none`, which asks for
+    /// a resize that could not change anything.
+    pub fn is_empty(self) -> bool {
+        !(self.left || self.right || self.top || self.bottom)
+    }
+}
+
+/// `origin` resized by a pointer that has moved `(dx, dy)` since the grab began.
+///
+/// The edges that are *not* being dragged do not move: growing leftwards anchors the right edge
+/// and moves the origin, which is what makes a resize feel like a resize rather than a move.
+/// Every result is at least [`MIN_WINDOW_WIDTH`] × [`MIN_WINDOW_HEIGHT`]; a pointer that runs
+/// past that simply stops having an effect, the same clamp-rather-than-refuse rule the field's
+/// tiles follow.
+pub fn resize_rect(origin: Rect, edges: ResizeEdges, dx: i32, dy: i32) -> Rect {
+    let mut resized = origin;
+    if edges.right {
+        resized.width = origin.width.saturating_add(dx).max(MIN_WINDOW_WIDTH);
+    }
+    if edges.left {
+        let width = origin.width.saturating_sub(dx).max(MIN_WINDOW_WIDTH);
+        resized.x = origin.right().saturating_sub(width);
+        resized.width = width;
+    }
+    if edges.bottom {
+        resized.height = origin.height.saturating_add(dy).max(MIN_WINDOW_HEIGHT);
+    }
+    if edges.top {
+        let height = origin.height.saturating_sub(dy).max(MIN_WINDOW_HEIGHT);
+        resized.y = origin.bottom().saturating_sub(height);
+        resized.height = height;
+    }
+    resized
+}
+
 /// Reposition `window` to be as fully visible as possible on the nearest active output. Unlike
 /// [`repair_window`], this does not settle for the minimal recovery band: when the window fits
 /// within the target output it ends up entirely on-screen. Size is always preserved. Used by
@@ -393,6 +482,85 @@ pub fn scatter_layout<Id: Copy>(windows: &[(Id, Rect)], outputs: &[Output]) -> V
     }
 
     placed
+}
+
+/// Which way a spatial step goes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The window nearest `from` in `direction`, by centre, weighting the primary axis so one
+/// straight ahead beats a nearer one off to the side.
+pub fn nearest_window<Id: Copy + Ord>(
+    windows: &[(Id, Rect)],
+    from: Id,
+    direction: Direction,
+) -> Option<Id> {
+    let (_, origin) = windows.iter().find(|(id, _)| *id == from)?;
+    let (ox, oy) = (origin.x + origin.width / 2, origin.y + origin.height / 2);
+    let mut best: Option<(i64, Id)> = None;
+    for (id, rect) in windows {
+        if *id == from {
+            continue;
+        }
+        let (cx, cy) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
+        let (ahead, aside) = match direction {
+            Direction::Left => (ox - cx, (cy - oy).abs()),
+            Direction::Right => (cx - ox, (cy - oy).abs()),
+            Direction::Up => (oy - cy, (cx - ox).abs()),
+            Direction::Down => (cy - oy, (cx - ox).abs()),
+        };
+        if ahead <= 0 {
+            continue;
+        }
+        let score = i64::from(ahead) + 2 * i64::from(aside);
+        if best.is_none_or(|(s, b)| (score, *id) < (s, b)) {
+            best = Some((score, *id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// The window `hops` contiguous steps from `from` in `direction`.
+///
+/// This is what `Super+Left`/`Super+Right` move between: the windows of one contiguous group,
+/// where "contiguous" is `hops` spatial steps and the next group begins after that.
+///
+/// It is computed here, from window geometry, rather than from the Home Field's tile layout, and
+/// that choice is load-bearing in three ways. It keeps the chord working with `lege-shell` dead,
+/// like every other compositor-reserved binding. It needs no round trip to the shell and no wire
+/// protocol change. And it stays inside the compositor's own remit — `docs/homefield.md` gives
+/// the shell the tiles and the compositor the windows, and this reasons only about windows.
+///
+/// Nothing is stored. The relation is recomputed per keypress and discarded, so no window
+/// becomes *related* to another by sitting next to it — the proximity rule `docs/homefield.md`
+/// sets out ("do not infer hidden meaning from proximity") is about meaning, and this changes
+/// none: it decides where a keypress goes and nothing else.
+///
+/// Stops at the edge, returning the furthest window actually reached, so the chord does nothing
+/// at a boundary rather than wrapping to the far side of the screen.
+pub fn contiguous_window<Id: Copy + Ord>(
+    windows: &[(Id, Rect)],
+    from: Id,
+    direction: Direction,
+    hops: u8,
+) -> Option<Id> {
+    let mut current = from;
+    let mut reached = None;
+    for _ in 0..hops {
+        match nearest_window(windows, current, direction) {
+            Some(next) => {
+                current = next;
+                reached = Some(next);
+            }
+            None => break,
+        }
+    }
+    reached
 }
 
 /// A point in one output's own physical pixel space (its framebuffer), as opposed to the
@@ -505,6 +673,61 @@ fn clamp(value: i32, minimum: i32, maximum: i32) -> i32 {
         minimum
     } else {
         value.clamp(minimum, maximum)
+    }
+}
+
+#[cfg(test)]
+mod contiguous_tests {
+    use super::*;
+
+    /// Four windows in a row, 100 wide with 20 between them.
+    fn row() -> Vec<(u8, Rect)> {
+        (0..4u8)
+            .map(|i| (i + 1, Rect::new(i32::from(i) * 120, 0, 100, 80)))
+            .collect()
+    }
+
+    #[test]
+    fn one_hop_reaches_the_next_window_along() {
+        let row = row();
+        assert_eq!(nearest_window(&row, 1, Direction::Right), Some(2));
+        assert_eq!(nearest_window(&row, 3, Direction::Left), Some(2));
+        assert_eq!(nearest_window(&row, 1, Direction::Left), None);
+    }
+
+    #[test]
+    fn two_hops_is_the_group_rule_and_the_edge_stops_it() {
+        let row = row();
+        assert_eq!(contiguous_window(&row, 1, Direction::Right, 2), Some(3));
+        // Past the end it reports the furthest it got, never wrapping around.
+        assert_eq!(contiguous_window(&row, 3, Direction::Right, 2), Some(4));
+        assert_eq!(contiguous_window(&row, 4, Direction::Right, 2), None);
+        // Zero hops does nothing at all rather than returning the window you are on.
+        assert_eq!(contiguous_window(&row, 1, Direction::Right, 0), None);
+    }
+
+    #[test]
+    fn a_window_straight_ahead_beats_a_nearer_one_off_to_the_side() {
+        let windows = [
+            (1u8, Rect::new(0, 0, 100, 80)),
+            // Slightly nearer by raw distance, but well off the axis.
+            (2, Rect::new(90, 300, 100, 80)),
+            (3, Rect::new(200, 0, 100, 80)),
+        ];
+        assert_eq!(nearest_window(&windows, 1, Direction::Right), Some(3));
+    }
+
+    #[test]
+    fn the_relation_is_symmetric_enough_to_navigate_back() {
+        let row = row();
+        let there = contiguous_window(&row, 1, Direction::Right, 1).unwrap();
+        assert_eq!(contiguous_window(&row, there, Direction::Left, 1), Some(1));
+    }
+
+    #[test]
+    fn an_unknown_window_is_not_a_panic() {
+        assert_eq!(nearest_window(&row(), 99, Direction::Right), None);
+        assert_eq!(contiguous_window::<u8>(&[], 1, Direction::Right, 2), None);
     }
 }
 
@@ -797,6 +1020,88 @@ mod tests {
     fn no_outputs_leaves_geometry_alone() {
         let w = Rect::new(-500, -500, 100, 100);
         assert_eq!(repair_window(w, &[]), w);
+    }
+
+    #[test]
+    fn the_grip_sits_in_the_corner_and_never_reaches_the_recovery_band() {
+        let window = Rect::new(100, 200, 800, 600);
+        let grip = resize_grip(window).expect("a large window has a grip");
+        assert_eq!(
+            grip,
+            Rect::new(
+                900 - RESIZE_GRIP_SIZE,
+                800 - RESIZE_GRIP_SIZE,
+                RESIZE_GRIP_SIZE,
+                RESIZE_GRIP_SIZE
+            )
+        );
+        assert!(
+            grip.intersection(recovery_band(window)).is_none(),
+            "the move band and the resize grip must never be the same pixel"
+        );
+    }
+
+    #[test]
+    fn a_window_at_the_minimum_size_still_has_both_a_band_and_a_grip() {
+        // The property that makes shrinking safe: it is always undoable by pointer.
+        let window = Rect::new(0, 0, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+        let grip = resize_grip(window).expect("the minimum size still affords a grip");
+        assert_eq!(grip.height, RESIZE_GRIP_SIZE);
+        assert!(grip.intersection(recovery_band(window)).is_none());
+    }
+
+    #[test]
+    fn a_window_shorter_than_its_own_band_offers_no_grip_rather_than_stealing_it() {
+        assert_eq!(
+            resize_grip(Rect::new(0, 0, 400, RECOVERY_BAND_HEIGHT)),
+            None
+        );
+        assert_eq!(resize_grip(Rect::new(0, 0, 0, 0)), None);
+    }
+
+    #[test]
+    fn dragging_the_bottom_right_corner_grows_without_moving_the_origin() {
+        let origin = Rect::new(10, 20, 400, 300);
+        let grown = resize_rect(origin, ResizeEdges::BOTTOM_RIGHT, 50, 40);
+        assert_eq!(grown, Rect::new(10, 20, 450, 340));
+    }
+
+    #[test]
+    fn dragging_a_left_or_top_edge_anchors_the_opposite_one() {
+        let origin = Rect::new(100, 100, 400, 300);
+        let edges = ResizeEdges {
+            left: true,
+            top: true,
+            ..ResizeEdges::default()
+        };
+        let resized = resize_rect(origin, edges, -50, -30);
+        assert_eq!(resized, Rect::new(50, 70, 450, 330));
+        assert_eq!(resized.right(), origin.right());
+        assert_eq!(resized.bottom(), origin.bottom());
+    }
+
+    #[test]
+    fn a_resize_clamps_at_the_minimum_instead_of_inverting_the_window() {
+        let origin = Rect::new(0, 0, 400, 300);
+        let squashed = resize_rect(origin, ResizeEdges::BOTTOM_RIGHT, -10_000, -10_000);
+        assert_eq!(squashed.width, MIN_WINDOW_WIDTH);
+        assert_eq!(squashed.height, MIN_WINDOW_HEIGHT);
+        // Clamping from the left keeps the anchored edge exactly where it was.
+        let edges = ResizeEdges {
+            left: true,
+            ..ResizeEdges::default()
+        };
+        let squashed = resize_rect(origin, edges, 10_000, 0);
+        assert_eq!(squashed.width, MIN_WINDOW_WIDTH);
+        assert_eq!(squashed.right(), origin.right());
+    }
+
+    #[test]
+    fn naming_no_edge_changes_nothing() {
+        let origin = Rect::new(1, 2, 300, 200);
+        assert!(ResizeEdges::default().is_empty());
+        assert!(!ResizeEdges::BOTTOM_RIGHT.is_empty());
+        assert_eq!(resize_rect(origin, ResizeEdges::default(), 99, 99), origin);
     }
 
     use crate::test_support::{arb_output, arb_window, load_topology};

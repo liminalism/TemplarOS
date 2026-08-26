@@ -162,6 +162,27 @@ pub struct AppManifest {
     /// Whether the application implements the checkpoint protocol (see [`crate::checkpoint`]).
     #[serde(default)]
     pub supports_checkpoint: bool,
+
+    /// The `Icon=` value: an icon-theme name (`firefox`) or an absolute path. Carried here so a
+    /// launcher does not have to re-find and re-parse the `.desktop` file the registry already
+    /// read — and so an application with no desktop file at all can still declare one.
+    #[serde(default)]
+    pub icon: Option<String>,
+
+    /// freedesktop `Categories=` (`Network`, `WebBrowser`, …). Not a taxonomy LegeOS enforces:
+    /// they exist so a launcher can match "browser" against something.
+    #[serde(default)]
+    pub categories: BTreeSet<String>,
+
+    /// freedesktop `Keywords=`: the search terms the application itself suggests.
+    #[serde(default)]
+    pub keywords: BTreeSet<String>,
+
+    /// `NoDisplay=true`: installed, launchable and resolvable by MIME association, but not to be
+    /// *offered* in a launcher or menu. Helpers, MIME shims and autostart shells set it, and a
+    /// launcher listing that ignores it drowns in entries no person ever means to click.
+    #[serde(default)]
+    pub no_display: bool,
 }
 
 /// What a client *claims* about itself. Claims are checked, never trusted.
@@ -253,6 +274,10 @@ mod tests {
             mime_types: ["application/pdf".to_owned(), "image/*".to_owned()].into(),
             resource_class: ResourceClass::Interactive,
             supports_checkpoint: true,
+            icon: Some("lege-viewer".into()),
+            categories: ["Graphics".to_owned(), "Viewer".to_owned()].into(),
+            keywords: ["pdf".to_owned()].into(),
+            no_display: false,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -261,6 +286,24 @@ mod tests {
         assert!(back.supports_mime("image/tiff"));
         assert!(back.supports_mime("application/pdf"));
         assert!(!back.supports_mime("text/plain"));
+    }
+
+    #[test]
+    fn a_manifest_written_before_the_launcher_fields_existed_still_reads() {
+        // The registry persists manifests as JSON; an installed system upgraded into these
+        // fields must not fail to parse its own store.
+        let json = r#"{
+            "id": "org.legeos.Viewer",
+            "display_name": "Lege Viewer",
+            "primary_desktop_file_id": "org.legeos.Viewer.desktop",
+            "executable": "/usr/bin/lege-viewer",
+            "resource_class": "Interactive"
+        }"#;
+        let manifest: AppManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.icon, None);
+        assert!(manifest.categories.is_empty());
+        assert!(manifest.keywords.is_empty());
+        assert!(!manifest.no_display, "absent NoDisplay means displayable");
     }
 
     #[test]
@@ -277,6 +320,10 @@ mod tests {
             mime_types: BTreeSet::new(),
             resource_class: ResourceClass::Normal,
             supports_checkpoint: false,
+            icon: None,
+            categories: BTreeSet::new(),
+            keywords: BTreeSet::new(),
+            no_display: false,
         };
 
         let claims = WindowClaims {

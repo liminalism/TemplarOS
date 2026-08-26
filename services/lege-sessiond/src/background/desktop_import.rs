@@ -157,6 +157,10 @@ mod tests {
             mime_types: std::collections::BTreeSet::default(),
             resource_class: ResourceClass::Interactive,
             supports_checkpoint: false,
+            icon: None,
+            categories: std::collections::BTreeSet::default(),
+            keywords: std::collections::BTreeSet::default(),
+            no_display: false,
         });
 
         let store = Store::in_memory().unwrap();

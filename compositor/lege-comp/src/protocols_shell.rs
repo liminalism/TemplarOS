@@ -18,8 +18,8 @@ use crate::state::{Backend, LegeCompState, client_is_trusted_shell};
 use crate::window_bridge::now_monotonic_ns;
 use lege_comp_integration::ShellStateSnapshot;
 use lege_window::{
-    ActivationGrant, CommandContext, Layer, RevealHome, WindowCommand, WindowId,
-    geometry::{Edge, Exclusive},
+    ActivationGrant, ClientKind, CommandContext, Layer, Rect, RevealHome, WindowCommand, WindowId,
+    geometry::{Edge, Exclusive, shell_surface_placement},
 };
 use smithay::reexports::wayland_server::{
     Client, DataInit, DisplayHandle, New, Resource, WEnum,
@@ -129,7 +129,8 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
                         state
                             .shell_protocol
                             .layer_surfaces
-                            .insert(surface.id(), (surface, layer));
+                            .insert(surface.id(), (surface.clone(), layer));
+                        apply_surface_claims_if_mapped(state, &surface);
                     }
                 }
             }
@@ -238,6 +239,103 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
         );
     }
     crate::backend::recompute_outputs(state);
+    apply_surface_claims_if_mapped(state, surface);
+}
+
+/// Apply the trusted shell's claims once the corresponding xdg-toplevel exists in
+/// `WindowService`. The protocol requests normally arrive before the first buffer/map commit, so
+/// storing them is not enough: mapping must consume them and configure the client to the claimed
+/// output geometry. This also handles a claim changed after mapping.
+pub fn apply_surface_claims<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    surface: &WlSurface,
+    window_id: WindowId,
+    requested: Rect,
+) {
+    let object_id = surface.id();
+    let claimed_layer = state
+        .shell_protocol
+        .layer_surfaces
+        .get(&object_id)
+        .map(|(_, layer)| *layer);
+    let exclusive_claim = state
+        .shell_protocol
+        .exclusive_zones
+        .get(&object_id)
+        .cloned();
+    if claimed_layer.is_none() && exclusive_claim.is_none() {
+        return;
+    }
+
+    let layer = claimed_layer
+        .or_else(|| state.window_service.layer_of(window_id))
+        .unwrap_or(Layer::Normal);
+    if let Err(error) = state
+        .window_service
+        .set_layer(window_id, layer, ClientKind::TrustedShell)
+    {
+        tracing::warn!(%error, ?window_id, ?layer, "rejecting trusted-shell layer claim");
+        return;
+    }
+
+    let preferred_output = exclusive_claim.as_ref().map(|(name, _)| name.as_str());
+    let output = state
+        .window_service
+        .outputs()
+        .iter()
+        .find(|output| preferred_output.is_some_and(|name| output.name == name))
+        .or_else(|| state.window_service.outputs().first())
+        .cloned();
+    let Some(output) = output else {
+        tracing::warn!(
+            ?window_id,
+            ?layer,
+            "shell claim has no output to place it on"
+        );
+        return;
+    };
+    let exclusive = exclusive_claim.map(|(_, claim)| claim);
+    let geometry = shell_surface_placement(layer, exclusive, &output, requested);
+    state.window_service.set_geometry(window_id, geometry);
+
+    if let Some(window) = state.windows.element_of(window_id)
+        && let Some(toplevel) = window.toplevel()
+    {
+        toplevel.with_pending_state(|pending| {
+            pending.size = Some((geometry.width, geometry.height).into());
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    }
+    tracing::info!(
+        ?window_id,
+        ?layer,
+        ?geometry,
+        output = %output.name,
+        "trusted-shell surface claim applied"
+    );
+    crate::space_sync::sync_after_change(state);
+    if layer == Layer::HomeSurface {
+        crate::input::focus_home_if_needed(state, surface);
+    }
+}
+
+fn apply_surface_claims_if_mapped<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    surface: &WlSurface,
+) {
+    let Some(window_id) = state.windows.window_id_for(&surface.id()) else {
+        return;
+    };
+    let Some(requested) = state
+        .window_service
+        .window(window_id)
+        .map(|record| record.geometry)
+    else {
+        return;
+    };
+    apply_surface_claims(state, surface, window_id, requested);
 }
 
 /// A shell surface with a live layer/exclusive-zone claim was destroyed: release both — the

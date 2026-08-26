@@ -92,6 +92,38 @@ pub fn recovery_band(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
+/// A window's compositor-owned resize grip (`lege_window::geometry::resize_grip`): the corner
+/// counterpart to [`recovery_band`], drawn as three stepped diagonal rules — the one shape a
+/// resize corner has meant on every desktop for thirty years, and legible at 24 logical pixels
+/// with no font involved at all.
+///
+/// Opaque like every other chrome widget, and for the same reason: the client may be drawing
+/// anything underneath, and an affordance that only shows up over dark content is not an
+/// affordance.
+pub fn resize_grip(painter: &mut Painter<'_>, pixel_w: i32, pixel_h: i32, scale: f32) {
+    let area = canvas(pixel_w, pixel_h);
+    painter.fill_rect(area, RECOVERY_BAND_COLOR);
+
+    let ink = layout::text_ink_for(RECOVERY_BAND_COLOR);
+    let block = (2.0 * scale).round().max(1.0) as i32;
+    let spacing = ((5.0 * scale).round() as i32).max(block + 1);
+    // Three rules parallel to the corner's diagonal, each a staircase of `block`-sized squares:
+    // `Painter` fills rectangles, so a diagonal is drawn rather than stroked. Rule `r` runs from
+    // `spacing * r` in from the corner along the bottom edge up to the same distance along the
+    // right edge.
+    for rule in 1..=3 {
+        let reach = spacing * rule;
+        if reach >= area.w || reach >= area.h {
+            break;
+        }
+        for step in 0..(reach / block) {
+            let x = area.right() - reach + step * block;
+            let y = area.bottom() - block - step * block;
+            painter.fill_rect(PxRect::new(x, y, block, block), ink);
+        }
+    }
+}
+
 /// The pressure overlay (`lege_recovery_v1.show_pressure_overlay`): the message, the offending
 /// application if named, and the four choices as buttons — the selected one visually distinct so
 /// keyboard navigation (`src/input.rs`) is visible without a pointer. `buttons` are already in

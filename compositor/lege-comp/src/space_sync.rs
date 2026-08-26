@@ -47,6 +47,55 @@ pub fn apply_dragged_geometry<B: Backend + 'static>(
         .map_element(window, (geometry.x, geometry.y), false);
 }
 
+/// After a resize-motion event: give `window_id` the size `WindowService` just computed.
+///
+/// Unlike a move, this cannot go through `Space` alone — `Space` mirrors *where* a window is and
+/// never how big it is, so the size has to be configured onto the client itself, on whichever of
+/// the two shells it speaks. `still_resizing` sets or clears `xdg_toplevel.state.resizing`, which
+/// is how a Wayland client knows whether to keep throttling its own relayout or settle; X11 has
+/// no equivalent, so there it only decides nothing.
+pub fn apply_resized_geometry<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    window_id: WindowId,
+    geometry: Rect,
+    still_resizing: bool,
+) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
+    use smithay::utils::{Point, Rectangle, Size};
+
+    let Some(window) = element_for_window(state, window_id) else {
+        return;
+    };
+    let size = (geometry.width.max(1), geometry.height.max(1));
+    // Cloned out of the element before `map_element` takes ownership of it below; the two shells
+    // are mutually exclusive (`Window::toplevel`/`Window::x11_surface`), so this is one match
+    // spelled as two lookups because `WindowSurface` itself is not `Clone`.
+    if let Some(toplevel) = window.toplevel().cloned() {
+        toplevel.with_pending_state(|pending| {
+            if still_resizing {
+                pending.states.set(XdgState::Resizing);
+            } else {
+                pending.states.unset(XdgState::Resizing);
+            }
+            pending.size = Some(size.into());
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    } else if let Some(surface) = window.x11_surface().cloned() {
+        // An X11 client is told position and size in one request; there is no separate "pending
+        // state" to accumulate, and a refusal (the window is already gone) is not something this
+        // path can do anything about.
+        let _ = surface.configure(Some(Rectangle::new(
+            Point::from((geometry.x, geometry.y)),
+            Size::from(size),
+        )));
+    }
+    state
+        .space
+        .map_element(window, (geometry.x, geometry.y), false);
+}
+
 /// `on_toplevel_destroyed` plus the identity/governor cleanup COMPOSITOR.md's destroy row
 /// specifies, then a full resync.
 pub fn on_window_destroyed<B: Backend + 'static>(
