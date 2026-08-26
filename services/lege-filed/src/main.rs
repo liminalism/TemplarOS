@@ -8,7 +8,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use lege_filed::{
     ExecutorConfig, SqliteJournal,
-    dbus::{ActionsApi, FileService, OperationsApi, RecentsApi, SearchApi, VolumesApi},
+    dbus::{
+        ActionsApi, BrowseApi, FileService, OperationsApi, PreviewsApi, RecentsApi, SearchApi,
+        VolumesApi,
+    },
     lastdir::LastDirectoryStore,
     recents::Recents,
     search::Index,
@@ -41,6 +44,7 @@ struct Cli {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -113,6 +117,13 @@ async fn main() -> Result<()> {
                 reserve_percent: cli.reserve_percent,
             },
         )?
+        .serve_at(
+            names::ROOT_PATH,
+            BrowseApi {
+                reserve_percent: cli.reserve_percent,
+            },
+        )?
+        .serve_at(names::ROOT_PATH, PreviewsApi)?
         .serve_at(names::ROOT_PATH, OperationsApi(service.clone()))?
         .serve_at(names::ROOT_PATH, RecentsApi(service.clone()))?
         .serve_at(names::ROOT_PATH, SearchApi(service.clone()))?
@@ -124,15 +135,18 @@ async fn main() -> Result<()> {
 
     // Indexing walks the home directory, so it happens after the bus name is claimed: clients
     // must not wait on it.
-    let roots = if cli.index_roots.is_empty() {
-        vec![home]
-    } else {
-        cli.index_roots.clone()
-    };
+    let roots = startup_index_roots(&service.index, &home, &cli.index_roots);
     let indexer = service.clone();
     tokio::task::spawn_blocking(move || {
         for root in roots {
+            let max_entries = indexer.index.max_entries;
             match indexer.index.index_root(&root) {
+                Ok(count) if count == max_entries => tracing::warn!(
+                    root = %root.display(),
+                    entries = count,
+                    max_entries,
+                    "index admission limit reached; narrower explicit --index-root values avoid truncation"
+                ),
                 Ok(count) => tracing::info!(root = %root.display(), entries = count, "indexed"),
                 Err(error) => {
                     tracing::warn!(root = %root.display(), %error, "could not index");
@@ -144,6 +158,27 @@ async fn main() -> Result<()> {
     tracing::info!(name = names::BUS_NAME, "lege-filed ready");
     pending::<()>().await;
     Ok(())
+}
+
+fn startup_index_roots(
+    index: &Index,
+    home: &std::path::Path,
+    explicit: &[PathBuf],
+) -> Vec<PathBuf> {
+    if !explicit.is_empty() {
+        return explicit.to_vec();
+    }
+    match index.roots() {
+        Ok(indexed) if indexed.iter().any(|root| root == home) => {
+            tracing::info!(root = %home.display(), "reusing existing startup index");
+            Vec::new()
+        }
+        Ok(_) => vec![home.to_path_buf()],
+        Err(error) => {
+            tracing::warn!(%error, "could not inspect existing search roots; rebuilding default root");
+            vec![home.to_path_buf()]
+        }
+    }
 }
 
 fn human(bytes: u64) -> String {
@@ -158,5 +193,23 @@ fn human(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_default_index_is_reused_but_an_explicit_root_is_refreshed() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::new(lege_state::Store::in_memory().unwrap());
+        index.index_root(dir.path()).unwrap();
+
+        assert!(startup_index_roots(&index, dir.path(), &[]).is_empty());
+        assert_eq!(
+            startup_index_roots(&index, dir.path(), &[dir.path().to_path_buf()]),
+            vec![dir.path().to_path_buf()]
+        );
     }
 }

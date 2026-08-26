@@ -12,5 +12,6 @@
   },
   "mime_types": ["inode/directory"],
   "resource_class": "Interactive",
-  "supports_checkpoint": true
+  "supports_checkpoint": false,
+  "provides": [{"role": "file-manager", "priority": 100}]
 }

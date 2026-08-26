@@ -12,10 +12,12 @@
 //! produces the step list — so every conflict rule, every same-device fast path and every
 //! ordering guarantee is unit-testable without a filesystem.
 
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    os::unix::ffi::OsStrExt,
+    path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
 
@@ -106,6 +108,120 @@ impl OperationKind {
             Self::Delete { paths } => format!("Delete {} permanently", names(paths)),
         }
     }
+}
+
+/// Refuse malformed or dangerous requests before they enter the durable journal.
+///
+/// The service is the policy boundary: a correct GUI validates early for good feedback, but any
+/// process on the session bus can call Operations1 directly. In particular, a rename is one
+/// filename component, roots cannot be removed, and a directory cannot be copied into itself.
+pub fn validate(kind: &OperationKind) -> Result<()> {
+    match kind {
+        OperationKind::Copy {
+            sources,
+            destination_dir,
+        }
+        | OperationKind::Move {
+            sources,
+            destination_dir,
+        } => {
+            require_nonempty(sources, "source")?;
+            require_absolute(destination_dir, "destination directory")?;
+            if !destination_dir.is_dir() {
+                bail!(
+                    "destination is not a directory: {}",
+                    destination_dir.display()
+                );
+            }
+            let destination =
+                std::fs::canonicalize(destination_dir).unwrap_or_else(|_| destination_dir.clone());
+            let mut unique = BTreeSet::new();
+            for source in sources {
+                require_existing_removable(source, "source")?;
+                if !unique.insert(source) {
+                    bail!("duplicate source: {}", source.display());
+                }
+                if source.is_dir() {
+                    let source = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+                    if destination.starts_with(&source) {
+                        bail!(
+                            "destination {} is inside source directory {}",
+                            destination_dir.display(),
+                            source.display()
+                        );
+                    }
+                }
+            }
+        }
+        OperationKind::Rename { path, new_name } => {
+            require_existing_removable(path, "rename source")?;
+            if !valid_name(new_name) {
+                bail!("new name must be one filename component");
+            }
+            if path
+                .file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new(new_name))
+            {
+                bail!("new name is unchanged");
+            }
+        }
+        OperationKind::Trash { paths } | OperationKind::Delete { paths } => {
+            require_nonempty(paths, "path")?;
+            let mut unique = BTreeSet::new();
+            for path in paths {
+                require_existing_removable(path, "path")?;
+                if !unique.insert(path) {
+                    bail!("duplicate path: {}", path.display());
+                }
+            }
+        }
+        OperationKind::RestoreFromTrash { paths } => {
+            // These are the original paths recorded by the trash journal and are normally absent.
+            require_nonempty(paths, "path")?;
+            for path in paths {
+                require_removable_path(path, "restore path")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_nonempty(paths: &[PathBuf], noun: &str) -> Result<()> {
+    if paths.is_empty() {
+        bail!("at least one {noun} is required");
+    }
+    Ok(())
+}
+
+fn require_absolute(path: &Path, noun: &str) -> Result<()> {
+    if !path.is_absolute() {
+        bail!("{noun} must be absolute: {}", path.display());
+    }
+    Ok(())
+}
+
+fn require_removable_path(path: &Path, noun: &str) -> Result<()> {
+    require_absolute(path, noun)?;
+    if path.parent().is_none() {
+        bail!("refusing to operate on filesystem root: {}", path.display());
+    }
+    Ok(())
+}
+
+fn require_existing_removable(path: &Path, noun: &str) -> Result<()> {
+    require_removable_path(path, noun)?;
+    path.symlink_metadata()
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("{noun} {} is unavailable: {error}", path.display()))
+}
+
+fn valid_name(name: &str) -> bool {
+    if name.is_empty() || name.as_bytes().contains(&0) {
+        return false;
+    }
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(component)) if !component.as_bytes().is_empty())
+        && components.next().is_none()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -763,6 +879,77 @@ mod tests {
         assert_eq!(operation.total_bytes, 10);
         assert_eq!(operation.total_items, 1);
         assert!(operation.kind.reversible());
+    }
+
+    #[test]
+    fn operation_validation_rejects_traversal_roots_and_self_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let child = source.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let file = source.join("one.txt");
+        std::fs::write(&file, b"one").unwrap();
+
+        let traversal = OperationKind::Rename {
+            path: file.clone(),
+            new_name: "../escape".into(),
+        };
+        assert!(
+            validate(&traversal)
+                .unwrap_err()
+                .to_string()
+                .contains("component")
+        );
+
+        let recursive = OperationKind::Copy {
+            sources: vec![source],
+            destination_dir: child,
+        };
+        assert!(
+            validate(&recursive)
+                .unwrap_err()
+                .to_string()
+                .contains("inside source")
+        );
+
+        let root = OperationKind::Delete {
+            paths: vec![PathBuf::from("/")],
+        };
+        assert!(
+            validate(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("filesystem root")
+        );
+    }
+
+    #[test]
+    fn operation_validation_accepts_normal_copy_rename_and_trash_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("one.txt");
+        let destination = temp.path().join("destination");
+        std::fs::write(&source, b"one").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(
+            validate(&OperationKind::Copy {
+                sources: vec![source.clone()],
+                destination_dir: destination,
+            })
+            .is_ok()
+        );
+        assert!(
+            validate(&OperationKind::Rename {
+                path: source.clone(),
+                new_name: "two.txt".into(),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate(&OperationKind::Trash {
+                paths: vec![source]
+            })
+            .is_ok()
+        );
     }
 
     #[test]

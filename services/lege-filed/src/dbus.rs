@@ -1,7 +1,7 @@
 //! The D-Bus face of the file service: `org.legeos.Files`.
 //!
-//! Four interfaces at one object path, one per thing a client actually wants — volumes and the
-//! reserve, journalled operations, recents and last-used directories, and search. The file
+//! Interfaces at one object path, one per thing a client actually wants — browsing, volumes and
+//! the reserve, journalled operations, recents and last-used directories, and search. The file
 //! manager, the Home Surface and the file-chooser portal are all clients of exactly these, so
 //! they cannot hold different opinions about the same question.
 //!
@@ -10,10 +10,12 @@
 
 use crate::{
     actions::{self, PathForm},
+    browse,
     execute::{self, Cancel, ExecutorConfig},
     journal::Journal,
     lastdir::{LastDirectoryStore, OperationType},
     operations::{self, Operation, OperationId, OperationKind, OperationState, Options},
+    preview,
     recents::{RecentAction, Recents},
     search::{Index, SavedQuery},
     storage,
@@ -84,8 +86,12 @@ impl FileService {
         options: Options,
         app_id: Option<&AppId>,
     ) -> anyhow::Result<OperationId> {
+        operations::validate(&kind)?;
         let id = OperationId::new();
         let surveyed = operations::survey(&sources_of(&kind), destination_of(&kind));
+        if !surveyed.errors.is_empty() {
+            anyhow::bail!("could not survey operation: {}", surveyed.errors.join("; "));
+        }
         let operation = operations::plan(id, kind, &surveyed, options);
         self.journal.put(&operation, app_id)?;
 
@@ -251,6 +257,73 @@ impl VolumesApi {
                 .unwrap_or_else(|| "ok".to_owned()),
             json(&volume)?,
         ))
+    }
+}
+
+/// `org.legeos.Files.Browse1` — immediate, bounded directory snapshots. The blocking directory
+/// read stays off the async executor, just like file operations do.
+#[derive(Debug)]
+pub struct BrowseApi {
+    pub reserve_percent: u64,
+}
+
+#[zbus::interface(name = "org.legeos.Files.Browse1")]
+impl BrowseApi {
+    /// XDG places and every user-visible mounted drive, with volume data attached to drives.
+    async fn roots(&self) -> fdo::Result<String> {
+        let reserve_percent = self.reserve_percent;
+        let sources = tokio::task::spawn_blocking(move || browse::sources(reserve_percent))
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
+        json(&sources)
+    }
+
+    async fn list_directory(
+        &self,
+        directory: &str,
+        show_hidden: bool,
+        limit: u32,
+    ) -> fdo::Result<String> {
+        let directory = PathBuf::from(directory);
+        let listing = tokio::task::spawn_blocking(move || {
+            browse::list_directory(&directory, show_hidden, limit as usize)
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
+        json(&listing)
+    }
+
+    /// One metadata record, with symlink-safe recursive totals for a real directory.
+    async fn inspect(&self, path: &str) -> fdo::Result<String> {
+        let path = PathBuf::from(path);
+        let info = tokio::task::spawn_blocking(move || browse::inspect(&path))
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
+        json(&info)
+    }
+}
+
+/// `org.legeos.Files.Previews1` — bounded thumbnails rendered away from GUI and D-Bus threads.
+#[derive(Debug, Default)]
+pub struct PreviewsApi;
+
+#[zbus::interface(name = "org.legeos.Files.Previews1")]
+impl PreviewsApi {
+    /// Return `(PreviewMetadata JSON, PNG bytes)`. Unsupported file types return two empty
+    /// values; supported but malformed files and unavailable helpers are explicit errors.
+    async fn render(&self, path: &str, max_edge: u32) -> fdo::Result<(String, Vec<u8>)> {
+        let path = PathBuf::from(path);
+        let rendered = tokio::task::spawn_blocking(move || preview::render(&path, max_edge))
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
+        match rendered {
+            Some(rendered) => Ok((json(&rendered.metadata)?, rendered.png)),
+            None => Ok((String::new(), Vec::new())),
+        }
     }
 }
 

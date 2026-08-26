@@ -10,7 +10,9 @@
   <interface name="org.legeos.Files.Operations1">
 
     <!-- kind_json is an OperationKind: copy | move | rename | trash | restore-from-trash |
-         delete. options_json is an Options (conflict: fail|skip|replace|keep-both,
+         delete. Absolute paths, one-component rename names, non-root removal and
+         copy/move-not-into-self are validated by the service before journalling.
+         options_json is an Options (conflict: fail|skip|replace|keep-both,
          verify: size|checksum, override_reserve); an empty string means the defaults.
          Returns immediately with the operation ID; watch Progress and Finished. -->
     <method name="Start">

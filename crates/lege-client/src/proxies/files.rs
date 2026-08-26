@@ -8,6 +8,37 @@
 use zbus::proxy;
 
 #[proxy(
+    interface = "org.legeos.Files.Browse1",
+    default_service = "org.legeos.Files",
+    default_path = "/org/legeos/Files"
+)]
+pub trait FilesBrowse {
+    /// A `BrowserSources` JSON snapshot: XDG places and service-approved drives.
+    fn roots(&self) -> zbus::Result<String>;
+
+    /// A `DirectoryListing` JSON snapshot: immediate children, folder-first natural order.
+    fn list_directory(
+        &self,
+        directory: &str,
+        show_hidden: bool,
+        limit: u32,
+    ) -> zbus::Result<String>;
+
+    /// `FileInfo` JSON for a properties pane, including recursive totals for real directories.
+    fn inspect(&self, path: &str) -> zbus::Result<String>;
+}
+
+#[proxy(
+    interface = "org.legeos.Files.Previews1",
+    default_service = "org.legeos.Files",
+    default_path = "/org/legeos/Files"
+)]
+pub trait FilesPreviews {
+    /// `(PreviewMetadata JSON, bounded PNG bytes)`; both are empty for unsupported files.
+    fn render(&self, path: &str, max_edge: u32) -> zbus::Result<(String, Vec<u8>)>;
+}
+
+#[proxy(
     interface = "org.legeos.Files.Volumes1",
     default_service = "org.legeos.Files",
     default_path = "/org/legeos/Files"

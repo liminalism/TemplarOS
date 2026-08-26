@@ -74,6 +74,8 @@ pub struct Index {
     pub skip_names: Vec<String>,
     /// Depth cap, so a pathological tree cannot make indexing unbounded.
     pub max_depth: usize,
+    /// Entry cap, so a broad tree cannot make indexing unbounded even when it is shallow.
+    pub max_entries: usize,
 }
 
 impl Index {
@@ -95,6 +97,7 @@ impl Index {
             .map(|name| (*name).to_owned())
             .collect(),
             max_depth: 24,
+            max_entries: 50_000,
         }
     }
 
@@ -116,18 +119,26 @@ impl Index {
                    (path, root, name_fold, is_dir, size_bytes, mtime_ms, mime)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
             )?;
-            walk(root, 0, self.max_depth, &self.skip_names, &mut |entry| {
-                statement.execute(rusqlite::params![
-                    entry.path.to_string_lossy(),
-                    key,
-                    fold(&file_name(&entry.path)),
-                    i64::from(entry.is_dir),
-                    entry.size_bytes as i64,
-                    entry.mtime_ms,
-                ])?;
-                count += 1;
-                Ok(())
-            })?;
+            let mut remaining = self.max_entries;
+            walk(
+                root,
+                0,
+                self.max_depth,
+                &mut remaining,
+                &self.skip_names,
+                &mut |entry| {
+                    statement.execute(rusqlite::params![
+                        entry.path.to_string_lossy(),
+                        key,
+                        fold(&file_name(&entry.path)),
+                        i64::from(entry.is_dir),
+                        entry.size_bytes as i64,
+                        entry.mtime_ms,
+                    ])?;
+                    count += 1;
+                    Ok(())
+                },
+            )?;
             Ok(count)
         })
     }
@@ -238,9 +249,13 @@ fn walk(
     path: &Path,
     depth: usize,
     max_depth: usize,
+    remaining: &mut usize,
     skip: &[String],
     visit: &mut impl FnMut(&Entry) -> Result<()>,
 ) -> Result<()> {
+    if *remaining == 0 {
+        return Ok(());
+    }
     let Ok(metadata) = path.symlink_metadata() else {
         return Ok(());
     };
@@ -258,6 +273,7 @@ fn walk(
             .map_or(0, |elapsed| elapsed.as_millis() as i64),
         mime: None,
     })?;
+    *remaining -= 1;
 
     if !is_dir || depth >= max_depth {
         return Ok(());
@@ -272,7 +288,10 @@ fn walk(
         .collect();
     children.sort();
     for child in children {
-        walk(&child, depth + 1, max_depth, skip, visit)?;
+        if *remaining == 0 {
+            break;
+        }
+        walk(&child, depth + 1, max_depth, remaining, skip, visit)?;
     }
     Ok(())
 }
@@ -413,6 +432,18 @@ mod tests {
     }
 
     #[test]
+    fn callers_can_detect_an_existing_root_without_reindexing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("kept.txt"), b"old").unwrap();
+        let index = Index::new(Store::in_memory().unwrap());
+        index.index_root(dir.path()).unwrap();
+
+        assert!(index.roots().unwrap().contains(&dir.path().to_path_buf()));
+        std::fs::write(dir.path().join("new.txt"), b"new").unwrap();
+        assert!(index.search("new.txt", &[], 10).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_depth_cap_bounds_indexing() {
         let dir = tempfile::tempdir().unwrap();
         let mut deep = dir.path().to_path_buf();
@@ -430,5 +461,18 @@ mod tests {
         index.max_depth = 24;
         index.index_root(dir.path()).unwrap();
         assert_eq!(index.search("buried", &[], 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_entry_cap_bounds_broad_indexing() {
+        let dir = tempfile::tempdir().unwrap();
+        for child in 0..20 {
+            std::fs::write(dir.path().join(format!("file-{child}")), b"x").unwrap();
+        }
+        let mut index = Index::new(Store::in_memory().unwrap());
+        index.max_entries = 5;
+
+        assert_eq!(index.index_root(dir.path()).unwrap(), 5);
+        assert_eq!(index.search("file-", &[], 100).unwrap().len(), 4);
     }
 }

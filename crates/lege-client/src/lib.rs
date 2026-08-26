@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod files;
 pub mod proxies;
 pub mod sdk;
 

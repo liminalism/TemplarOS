@@ -31,6 +31,7 @@ members = [
     "shell/lege-shell",
     "apps/lege-settings",
     "apps/lege-greeter",
+    "apps/lege-files",
     "portals/xdg-desktop-portal-lege",
     "cli/lege",
     "tools/xtask",
@@ -66,8 +67,10 @@ lege = { path = "cli/lege" }
 # external
 anyhow = "1"
 async-trait = "0.1"
+bpg-decode = { path = "../bpg-rs/crates/bpg-decode", features = ["rayon"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
 libc = "0.2"
 parking_lot = "0.12"
 # The shell's toolkit and the compositor's own chrome renderer, from the user's pixelkit
@@ -84,6 +87,7 @@ pixelkit-text = { path = "../pixelkit/crates/pixelkit-text" }
 pixelkit-ui = { path = "../pixelkit/crates/pixelkit-ui" }
 pixelkit-shell = { path = "../pixelkit/crates/pixelkit-shell" }
 proptest = "1"
+png = "0.17"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sd-notify = "0.5"
 serde = { version = "1", features = ["derive"] }
