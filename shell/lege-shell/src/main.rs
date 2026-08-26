@@ -289,8 +289,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_service_backed_drawer_degrades_to_one_readable_line_with_no_bus() {
-        // These tests run with no session bus. Every one of these drawers must therefore produce
-        // a sentence rather than panicking, hanging, or printing a zbus debug dump.
+        // These tests describe the no-service path, which can only be observed when no service is
+        // answering. A developer running the session — installed, or nested via
+        // `.agent/scratch/nested-session.sh` — has a live `org.legeos.Session` and gets real
+        // content here, which is the service working rather than a regression. See
+        // `crate::data`'s `a_session_daemon_is_answering` for the same guard.
+        if lege_shell::data::a_session_daemon_is_answering().await {
+            eprintln!(
+                "skipped: org.legeos.Session is answering on this bus, so the no-service path \
+                 cannot be observed here"
+            );
+            return;
+        }
+        // Every one of these drawers must produce a sentence rather than panicking, hanging, or
+        // printing a zbus debug dump.
         for target in ["recent", "drives", "operations", "trash", "projects"] {
             let text = print_target(target, 5).await.unwrap();
             assert!(

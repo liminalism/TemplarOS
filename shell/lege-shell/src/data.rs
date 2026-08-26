@@ -25,6 +25,26 @@ pub async fn session() -> Result<zbus::Connection, String> {
         .map_err(|error| format!("service unavailable: no session bus ({error})"))
 }
 
+/// Whether a LegeOS session daemon is answering on this machine's session bus.
+///
+/// Only tests ask this, and they ask because they describe what a drawer prints when *nothing*
+/// answers — which can only be observed when nothing does. A developer running the session,
+/// installed or nested via `.agent/scratch/nested-session.sh`, has a live `org.legeos.Session`, and
+/// those drawers then return real content. That is the service working, not a regression, and
+/// failing the build over it sends the next person hunting a bug that is not there.
+pub async fn a_session_daemon_is_answering() -> bool {
+    let Ok(connection) = session().await else {
+        return false;
+    };
+    let Ok(proxy) = zbus::fdo::DBusProxy::new(&connection).await else {
+        return false;
+    };
+    proxy
+        .name_has_owner("org.legeos.Session".try_into().expect("a valid bus name"))
+        .await
+        .unwrap_or(false)
+}
+
 /// `service unavailable: <why>` — the single line a drawer prints instead of its contents.
 pub fn unavailable(what: &str, error: &anyhow::Error) -> String {
     format!("{what} — service unavailable: {error:#}")
@@ -603,6 +623,13 @@ mod tests {
 
     #[tokio::test]
     async fn every_bus_backed_drawer_degrades_readably_with_no_bus() {
+        if a_session_daemon_is_answering().await {
+            eprintln!(
+                "skipped: org.legeos.Session is answering on this bus, so the no-service path \
+                 cannot be observed here"
+            );
+            return;
+        }
         for drawer in Drawer::DEFAULT {
             if matches!(drawer, Drawer::Network | Drawer::WindowShelf) {
                 continue;

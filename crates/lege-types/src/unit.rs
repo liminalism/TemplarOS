@@ -10,6 +10,17 @@ use std::path::Path;
 /// Prefix shared by every LegeOS-launched application unit.
 pub const UNIT_PREFIX: &str = "app-legeos-";
 
+/// The user target that *is* the graphical session: compositor, shell and daemons are all
+/// `PartOf=` it, and `lege-session` blocks on it for the session's whole life.
+///
+/// Stopping it is how the session ends. `lege-session` waits on this target, so when it goes down
+/// that process returns, runs its cleanup and exits — and the display manager, which is waiting on
+/// *that* process, shows its greeter again. Ending the session any other way (asking logind to
+/// terminate the whole scope, say) kills the display manager's own helper along with everything
+/// else, which it reports as a crash rather than a logout, and then nothing brings the greeter
+/// back: the user is left looking at a blank VT.
+pub const SESSION_TARGET: &str = "legeos-session.target";
+
 /// Build the transient unit name for one launch.
 pub fn unit_name(app: &AppId, instance: InstanceId) -> String {
     format!(

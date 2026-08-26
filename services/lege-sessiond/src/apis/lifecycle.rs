@@ -11,6 +11,7 @@
 use crate::apis::failed;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use lege_types::unit;
 use std::sync::Arc;
 use zbus::fdo;
 
@@ -137,21 +138,86 @@ impl Logind for SystemLogind {
     }
 }
 
+/// Ending *this* session, as distinct from acting on the machine.
+#[async_trait]
+pub trait SessionEnd: Send + Sync + std::fmt::Debug {
+    /// Stop [`unit::SESSION_TARGET`] on the user manager.
+    async fn stop_session_target(&self) -> Result<()>;
+}
+
+/// The real thing: `org.freedesktop.systemd1.Manager.StopUnit` on the **session** bus.
+#[derive(Debug)]
+pub struct UserManagerSession {
+    connection: zbus::Connection,
+}
+
+impl UserManagerSession {
+    pub fn new(connection: zbus::Connection) -> UserManagerSession {
+        UserManagerSession { connection }
+    }
+}
+
+#[async_trait]
+impl SessionEnd for UserManagerSession {
+    async fn stop_session_target(&self) -> Result<()> {
+        // "replace" rather than "fail": a logout must not be refused because some other job is
+        // already queued against the target.
+        self.connection
+            .call_method(
+                Some("org.freedesktop.systemd1"),
+                "/org/freedesktop/systemd1",
+                Some("org.freedesktop.systemd1.Manager"),
+                "StopUnit",
+                &(unit::SESSION_TARGET, "replace"),
+            )
+            .await
+            .with_context(|| format!("StopUnit({})", unit::SESSION_TARGET))?;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct LifecycleApi {
     logind: Arc<dyn Logind>,
+    session: Arc<dyn SessionEnd>,
 }
 
 impl LifecycleApi {
-    pub fn new(logind: Arc<dyn Logind>) -> LifecycleApi {
-        LifecycleApi { logind }
+    pub fn new(logind: Arc<dyn Logind>, session: Arc<dyn SessionEnd>) -> LifecycleApi {
+        LifecycleApi { logind, session }
     }
 }
 
 #[zbus::interface(name = "org.legeos.Session.Lifecycle1")]
 impl LifecycleApi {
+    /// End this session by stopping its target, not by terminating its logind session.
+    ///
+    /// The difference is what the display manager sees. `lege-session` is blocked on
+    /// `systemctl --user start --wait legeos-session.target` for the session's whole life, and the
+    /// display manager is in turn waiting on `lege-session`. Stop the target and that chain unwinds
+    /// in order: the target goes down, `lege-session` returns, runs its cleanup and exits, and the
+    /// display manager — seeing its child exit normally — shows its greeter again.
+    ///
+    /// Asking logind to terminate the session instead sends SIGTERM to everything in the scope *at
+    /// once*, including the display manager's own session helper. SDDM reported that as
+    /// `sddm-helper ... crashed (exit code 1)` and never started a new greeter, which left a blank
+    /// VT and a blinking cursor with no way back except the power button. That is what this method
+    /// used to do.
+    ///
+    /// logind stays as the fallback: if the manager will not stop the target, ending the session
+    /// abruptly is still better than a Log out button that does nothing.
     async fn logout(&self) -> fdo::Result<()> {
-        self.logind.terminate_session().await.map_err(failed)
+        match self.session.stop_session_target().await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "stopping {} failed; falling back to logind",
+                    unit::SESSION_TARGET
+                );
+                self.logind.terminate_session().await.map_err(failed)
+            }
+        }
     }
 
     async fn reboot(&self) -> fdo::Result<()> {
@@ -233,22 +299,64 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct FakeSession {
+        stops: Mutex<usize>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl SessionEnd for FakeSession {
+        async fn stop_session_target(&self) -> Result<()> {
+            *self.stops.lock().unwrap() += 1;
+            if self.fail {
+                return Err(anyhow!("no user manager"));
+            }
+            Ok(())
+        }
+    }
+
     fn api(fake: Arc<FakeLogind>) -> LifecycleApi {
-        LifecycleApi::new(fake)
+        LifecycleApi::new(fake, Arc::new(FakeSession::default()))
+    }
+
+    fn api_with(fake: Arc<FakeLogind>, session: Arc<FakeSession>) -> LifecycleApi {
+        LifecycleApi::new(fake, session)
     }
 
     #[tokio::test]
     async fn each_verb_reaches_exactly_one_logind_call() {
         let fake = Arc::new(FakeLogind::default());
-        let api = api(Arc::clone(&fake));
+        let session = Arc::new(FakeSession::default());
+        let api = api_with(Arc::clone(&fake), Arc::clone(&session));
         api.logout().await.unwrap();
         api.reboot().await.unwrap();
         api.power_off().await.unwrap();
         api.suspend().await.unwrap();
+        // Logout is not a logind call at all: it stops the session target, so the display manager
+        // sees its own child exit cleanly and shows the greeter.
+        assert_eq!(*session.stops.lock().unwrap(), 1);
         assert_eq!(
             *fake.calls.lock().unwrap(),
-            ["terminate", "reboot", "power_off", "suspend"]
+            ["reboot", "power_off", "suspend"]
         );
+    }
+
+    /// A Log out button that does nothing is worse than one that ends the session abruptly, so a
+    /// manager that will not stop the target still falls through to logind.
+    #[tokio::test]
+    async fn logout_falls_back_to_logind_when_the_target_will_not_stop() {
+        let fake = Arc::new(FakeLogind::default());
+        let session = Arc::new(FakeSession {
+            fail: true,
+            ..FakeSession::default()
+        });
+        api_with(Arc::clone(&fake), Arc::clone(&session))
+            .logout()
+            .await
+            .unwrap();
+        assert_eq!(*session.stops.lock().unwrap(), 1);
+        assert_eq!(*fake.calls.lock().unwrap(), ["terminate"]);
     }
 
     #[tokio::test]

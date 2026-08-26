@@ -116,8 +116,18 @@ async fn launch_via_systemd_run(
         .arg("--property=TasksAccounting=yes")
         // Whole-application termination if the kernel OOM killer ever fires inside the group.
         .arg("--property=OOMPolicy=kill")
+        // See `systemd1::transient_unit_properties` for why both of these are set rather than
+        // inherited: an application that dies on startup must leave a record.
+        .arg("--property=StandardOutput=journal")
+        .arg("--property=StandardError=journal")
         .arg(format!("--setenv={}={instance_id}", env::INSTANCE_ID))
         .arg(format!("--setenv={}={}", env::APP_ID, manifest.id));
+
+    // Which desktop this application joins is stated here, not left to the systemd user manager's
+    // global environment — `systemd1::SESSION_ENVIRONMENT` has the full reasoning.
+    for assignment in crate::systemd1::session_environment() {
+        command.arg(format!("--setenv={assignment}"));
+    }
 
     if let Some(token) = activation_token {
         command.arg(format!("--setenv=XDG_ACTIVATION_TOKEN={token}"));

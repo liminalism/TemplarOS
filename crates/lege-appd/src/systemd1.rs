@@ -30,14 +30,54 @@ fn owned(value: impl Into<Value<'static>>) -> OwnedValue {
         .expect("scalar and array zvariant values always convert to OwnedValue")
 }
 
+/// The variables that decide *which desktop* a launched application joins, in the order a
+/// launcher should pass them on.
+///
+/// These are read from the launching daemon's own environment and stated explicitly on every
+/// transient unit, rather than left to the systemd user manager's global environment block. The
+/// manager is one per user and outlives any single session — `session/lege-session` says so in its
+/// own comment, "a user manager can survive logout" — so its `WAYLAND_DISPLAY` is a single mutable
+/// global shared with every other desktop that user logs into. Relying on it means an application
+/// launched from LegeOS can be handed the socket of a session that ended hours ago, connect to
+/// nothing, and exit without a window or a word. That is not hypothetical: it is what happened on
+/// the first hands-on run, twenty times in a row, with the journal recording nothing but twenty
+/// successful starts.
+///
+/// `sessiond` knows its own display because the session started it. Saying so per launch makes the
+/// answer local, correct for a nested or development session as much as an installed one, and
+/// impossible for another desktop to change underneath.
+pub const SESSION_ENVIRONMENT: &[&str] = &[
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+];
+
+/// [`SESSION_ENVIRONMENT`] as `NAME=value`, read from this process. Absent and empty variables are
+/// skipped: passing `WAYLAND_DISPLAY=` would be worse than passing nothing, because it overrides
+/// the manager's value with one that cannot work.
+pub fn session_environment() -> Vec<String> {
+    SESSION_ENVIRONMENT
+        .iter()
+        .filter_map(|name| {
+            let value = std::env::var(name).ok()?;
+            (!value.is_empty()).then(|| format!("{name}={value}"))
+        })
+        .collect()
+}
+
 /// Build the `StartTransientUnit` property list for one launch. Never runs `Exec=` (or anything
 /// else) through a shell: `ExecStart` is `(executable, argv, ignore_failure)` with the resolved
 /// executable as argv\[0\] and the caller's arguments appended verbatim.
+///
+/// `session_environment` is [`session_environment()`] in the daemon and an explicit list in tests.
 pub fn transient_unit_properties(
     manifest: &AppManifest,
     instance_id: InstanceId,
     arguments: &[String],
     activation_token: Option<&str>,
+    session_environment: &[String],
 ) -> Vec<(String, OwnedValue)> {
     let executable = manifest.executable.to_string_lossy().into_owned();
     let mut argv = vec![executable.clone()];
@@ -47,6 +87,7 @@ pub fn transient_unit_properties(
         format!("{}={}", env::INSTANCE_ID, instance_id),
         format!("{}={}", env::APP_ID, manifest.id),
     ];
+    environment.extend(session_environment.iter().cloned());
     if let Some(token) = activation_token {
         environment.push(format!("XDG_ACTIVATION_TOKEN={token}"));
     }
@@ -59,6 +100,11 @@ pub fn transient_unit_properties(
         ("TasksAccounting".to_owned(), owned(true)),
         // Whole-application termination if the kernel OOM killer ever fires inside the group.
         ("OOMPolicy".to_owned(), owned("kill".to_owned())),
+        // An application that dies on startup must be able to say why. Without these the unit
+        // inherits the manager's stdio, and a launch that failed instantly left no record at all
+        // anywhere — which is exactly how a broken launch came to look like an unresponsive click.
+        ("StandardOutput".to_owned(), owned("journal".to_owned())),
+        ("StandardError".to_owned(), owned("journal".to_owned())),
         ("Environment".to_owned(), owned(environment)),
         (
             "ExecStart".to_owned(),
@@ -82,7 +128,13 @@ pub async fn start_transient_unit(
     let manager = ManagerProxy::new(connection)
         .await
         .context("connecting to org.freedesktop.systemd1.Manager")?;
-    let properties = transient_unit_properties(manifest, instance_id, arguments, activation_token);
+    let properties = transient_unit_properties(
+        manifest,
+        instance_id,
+        arguments,
+        activation_token,
+        &session_environment(),
+    );
     manager
         .start_transient_unit(unit_name.clone(), "fail".to_owned(), properties, Vec::new())
         .await
@@ -250,6 +302,26 @@ mod tests {
         }
     }
 
+    /// An unset or empty variable is passed as nothing at all. `WAYLAND_DISPLAY=` would be worse
+    /// than silence: it overrides whatever the manager holds with a value that cannot connect.
+    #[test]
+    fn an_absent_display_is_omitted_rather_than_passed_empty() {
+        let instance_id = InstanceId::new();
+        let properties =
+            transient_unit_properties(&manifest(), instance_id, &[], None, &Vec::new());
+        let environment = properties
+            .iter()
+            .find(|(name, _)| name == "Environment")
+            .map(|(_, value)| Vec::<String>::try_from(value.clone()).unwrap())
+            .unwrap();
+        assert!(
+            !environment
+                .iter()
+                .any(|entry| entry.starts_with("WAYLAND_DISPLAY")),
+            "{environment:?}"
+        );
+    }
+
     #[test]
     fn transient_unit_properties_never_go_through_a_shell() {
         let instance_id = InstanceId::new();
@@ -258,6 +330,7 @@ mod tests {
             instance_id,
             &["/tmp/report.pdf".to_owned()],
             Some("activation-token"),
+            &["WAYLAND_DISPLAY=legeos-0".to_owned()],
         );
         let by_name = |key: &str| {
             properties
@@ -280,6 +353,16 @@ mod tests {
         let environment = Vec::<String>::try_from(by_name("Environment").unwrap()).unwrap();
         assert!(environment.contains(&format!("{}={instance_id}", env::INSTANCE_ID)));
         assert!(environment.contains(&"XDG_ACTIVATION_TOKEN=activation-token".to_owned()));
+        // The launched application is *told* which compositor to join. Leaving this to the systemd
+        // user manager's global environment is what sent twenty terminals to a socket belonging to
+        // a session that had already ended.
+        assert!(environment.contains(&"WAYLAND_DISPLAY=legeos-0".to_owned()));
+
+        // A launch that dies immediately must leave something behind to read.
+        assert_eq!(
+            String::try_from(by_name("StandardError").unwrap()).unwrap(),
+            "journal"
+        );
 
         let exec_start = by_name("ExecStart").unwrap();
         let entries = Vec::<(String, Vec<String>, bool)>::try_from(exec_start).unwrap();

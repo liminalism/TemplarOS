@@ -397,9 +397,14 @@ async fn serve_policy_interfaces(
     object_server
         .at(
             names::LIFECYCLE_PATH,
-            apis::lifecycle::LifecycleApi::new(std::sync::Arc::new(
-                apis::lifecycle::SystemLogind::new(system_connection.clone()),
-            )),
+            apis::lifecycle::LifecycleApi::new(
+                std::sync::Arc::new(apis::lifecycle::SystemLogind::new(
+                    system_connection.clone(),
+                )),
+                // Logout goes through the *session* bus manager, which is this connection: ending
+                // the session target is what lets the display manager see a clean exit.
+                std::sync::Arc::new(apis::lifecycle::UserManagerSession::new(connection.clone())),
+            ),
         )
         .await
         .context("serving Session.Lifecycle1")?;
