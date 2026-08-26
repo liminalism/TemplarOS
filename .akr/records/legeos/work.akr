@@ -14,7 +14,7 @@ record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
         LegeOS already commits to every capability being reachable from the CLI, the portal, the shell and Settings (M1 evidence m1-clients-reachable; docs/architecture/accessibility.md: "everything the shell shows is available through lege too"). Today that is a discipline maintained by hand across four implementations, and nothing prevents them drifting. Omarchy demonstrates the mechanism that makes it structural: one declaration — `o.bind(chord, human_label, action)` — is simultaneously the keybinding, the row in a mouse-navigable menu tree, and the entry in a cheat sheet generated from the same table, so the documentation cannot fall out of date with the behaviour because it is not a separate artefact. Adopt the pattern: an action manifest (id, human label, optional chord, CLI verb, availability predicate) living in a service crate rather than the shell, with the shell's menu, the discoverability surface and `lege`'s subcommand table all rendered from it. The manifest belonging to a service rather than the shell is what keeps it consistent with services-not-indicators: the shell renders the manifest, it does not own it.
         """
     note """
-        Not M2. What can happen during M2 is that the dock and Home Surface are built to read rows from a declaration rather than hard-coding them, because retrofitting that later is much more expensive than designing it in — so the cost of deferring the manifest is low only if M2's shell surfaces are written data-driven from the start.
+        Not M2. What can happen during M2 is that the Home Surface and its information/action rows are built to read rows from a declaration rather than hard-coding them, because retrofitting that later is much more expensive than designing it in — so the cost of deferring the manifest is low only if M2's shell surfaces are written data-driven from the start.
 
         The keyboard layer is strictly additive, and this is a decision, not an accident of scheduling. Every action must have a mouse or menu path that is not second-class — not a smaller target, not fewer capabilities, not discoverable only by first reading a shortcut list. A chord is an accelerator recorded alongside the menu entry in the same manifest, never the only route to a capability. Omarchy's own navigation manual claims "EVERYTHING happens via the keyboard", and its top-bar manual, documenting full click-and-scroll parity on every widget, contradicts it: read carefully, Omarchy is keyboard-primary with first-class mouse parity, which is the position worth copying rather than the slogan. This is consistent with LegeOS's existing accessibility invariants rather than a change to them.
 
@@ -63,6 +63,411 @@ record legeos.work.consumers-cli-portal-shell/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.display-manager-session-startup-reliability/1 : work {
+    title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
+    state superseded
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "services/lege-filed/**",
+        path "services/lege-resourced/**",
+        path "session/**",
+        path "tests/**"
+    ]
+    intent """
+        Repair the installed-session contract exposed by the 2026-08-22 SDDM attempts: eliminate inherited-display backend selection, make compositor readiness real, start the graphical shell on its trusted socket, end the session when the compositor cannot run, and prevent auxiliary services from exhausting resources during login.
+        """
+    acceptance {
+        check aux-services-bounded {
+            statement """
+                The resource governor no longer self-aborts after mlockall and the file service's default startup indexing has an explicit finite admission bound exercised by tests.
+                """
+            method command
+            command "cargo test -p lege-resourced -p lege-filed"
+        }
+        check installed-login {
+            statement """
+                After rebuilding and installing the packages, selecting LegeOS in SDDM reaches the graphical Home Surface instead of freezing the greeter or leaving a black screen.
+                """
+            method manual
+        }
+        check startup-contract {
+            statement """
+                Automated session/unit tests prove the installed entry forces the hardware backend, publishes deterministic public and trusted-shell sockets, waits for actual compositor readiness, starts lege-shell --surface, and tears down the target if the compositor exits.
+                """
+            method command
+            command "cargo test -p lege-session -p lege-comp && cargo run -q -p xtask -- check-packaging"
+        }
+    }
+    implements [ @legeos.decision.session-greeter-lock/2 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+}
+
+record legeos.work.display-manager-session-startup-reliability/2 : work {
+    title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
+    state superseded
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "services/lege-filed/**",
+        path "services/lege-resourced/**",
+        path "session/**",
+        path "tests/**"
+    ]
+    intent """
+        Repair the installed-session contract exposed by the 2026-08-22 SDDM attempts: eliminate inherited-display backend selection, make compositor readiness real, start the graphical shell on its trusted socket, end the session when the compositor cannot run, and prevent auxiliary services from exhausting resources during login.
+        """
+    note """
+        Automated work-tree verification on 2026-08-23 passes: full workspace tests, workspace clippy, integration smoke, all six structural checks, package build/content inspection, nested compositor plus trusted-shell graphical smoke, and a transient systemd Type=notify readiness smoke. Corrected .debs are in target/debian. The installed-login acceptance remains open until the author reinstalls, reloads the user manager, and selects LegeOS in SDDM.
+        """
+    acceptance {
+        check aux-services-bounded {
+            statement """
+                The resource governor no longer self-aborts after mlockall and the file service's default startup indexing has an explicit finite admission bound exercised by tests.
+                """
+            method command
+            command "cargo test -p lege-resourced -p lege-filed"
+        }
+        check installed-login {
+            statement """
+                After rebuilding and installing the packages, selecting LegeOS in SDDM reaches the graphical Home Surface instead of freezing the greeter or leaving a black screen.
+                """
+            method manual
+        }
+        check startup-contract {
+            statement """
+                Automated session/unit tests prove the installed entry forces the hardware backend, publishes deterministic public and trusted-shell sockets, waits for actual compositor readiness, starts lege-shell --surface, and tears down the target if the compositor exits.
+                """
+            method command
+            command "cargo test -p lege-session -p lege-comp && cargo run -q -p xtask -- check-packaging"
+        }
+    }
+    implements [ @legeos.decision.session-greeter-lock/2 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.display-manager-session-startup-reliability/1 ]
+}
+
+record legeos.work.display-manager-session-startup-reliability/3 : work {
+    title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
+    state superseded
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "services/lege-filed/**",
+        path "services/lege-resourced/**",
+        path "session/**",
+        path "tests/**"
+    ]
+    intent """
+        Repair the installed-session contract exposed by the 2026-08-22 SDDM attempts: eliminate inherited-display backend selection, make compositor readiness real, start the graphical shell on its trusted socket, end the session when the compositor cannot run, and prevent auxiliary services from exhausting resources during login.
+        """
+    note """
+        Automated work-tree verification on 2026-08-23 passes: full workspace tests and clippy, integration smoke, all six structural checks, package build/content inspection, nested compositor plus trusted-shell graphical smoke, and a transient systemd Type=notify readiness smoke. Corrected .debs are in target/debian. The failed run left a 510 MiB session.db containing the old 1.5-million-entry index; filed now reuses existing default roots rather than rebuilding them at login, while new/explicit indexing is capped at 50,000 entries. The installed-login acceptance remains open until the author reinstalls, reloads the user manager, and selects LegeOS in SDDM.
+        """
+    acceptance {
+        check aux-services-bounded {
+            statement """
+                The resource governor no longer self-aborts after mlockall and the file service's default startup indexing has an explicit finite admission bound exercised by tests.
+                """
+            method command
+            command "cargo test -p lege-resourced -p lege-filed"
+        }
+        check installed-login {
+            statement """
+                After rebuilding and installing the packages, selecting LegeOS in SDDM reaches the graphical Home Surface instead of freezing the greeter or leaving a black screen.
+                """
+            method manual
+        }
+        check startup-contract {
+            statement """
+                Automated session/unit tests prove the installed entry forces the hardware backend, publishes deterministic public and trusted-shell sockets, waits for actual compositor readiness, starts lege-shell --surface, and tears down the target if the compositor exits.
+                """
+            method command
+            command "cargo test -p lege-session -p lege-comp && cargo run -q -p xtask -- check-packaging"
+        }
+    }
+    implements [ @legeos.decision.session-greeter-lock/2 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.display-manager-session-startup-reliability/2 ]
+}
+
+record legeos.work.display-manager-session-startup-reliability/4 : work {
+    title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
+    state completed
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "services/lege-filed/**",
+        path "services/lege-resourced/**",
+        path "session/**",
+        path "tests/**"
+    ]
+    intent """
+        Repair the installed-session contract exposed by the 2026-08-22 SDDM attempts: eliminate inherited-display backend selection, make compositor readiness real, start the graphical shell on its trusted socket, end the session when the compositor cannot run, and prevent auxiliary services from exhausting resources during login.
+        """
+    note """
+        The 2026-08-23 installed-package retest reached the hardware compositor on both attempts: udev was forced, deterministic public/private sockets opened, the 2560x1600 eDP-2 output lit, resourced stayed healthy, and filed reused its existing index. The black screen remained because the udev backend never flushed queued Wayland replies, so lege-shell blocked in its initial registry/configure round trips and emitted no application-stage logs; it also never sent hardware frame callbacks. Readiness was additionally emitted before DRM/output/XWayland setup and before calloop began dispatching. The work tree now flushes clients after every graphical-backend dispatch, sends udev frame callbacks after output rendering, emits READY from inside calloop after the initial render path, imposes TimeoutStartSec=15s, and logs the shell connection stages. A live Type=notify nested smoke reduced the shell handshake from 5.4 seconds to 11 milliseconds and reached both Home Surface and dock declarations. Targeted tests (167), clippy, integration smoke, systemd verification, package checks, and rebuilt package-content inspection pass; corrected .debs are in target/debian. Installed-login remains open for one more SDDM retest with these rebuilt packages.
+        """
+    acceptance {
+        check aux-services-bounded {
+            statement """
+                The resource governor no longer self-aborts after mlockall and the file service's default startup indexing has an explicit finite admission bound exercised by tests.
+                """
+            method command
+            command "cargo test -p lege-resourced -p lege-filed"
+            verified_by [ @legeos.evidence.refinement-checks-20260824/1 ]
+        }
+        check installed-login {
+            statement """
+                After rebuilding and installing the packages, selecting LegeOS in SDDM reaches the graphical Home Surface instead of freezing the greeter or leaving a black screen.
+                """
+            method manual
+            verified_by [ @legeos.evidence.installed-home-visible-20260824/1 ]
+        }
+        check startup-contract {
+            statement """
+                Automated session/unit tests prove the installed entry forces the hardware backend, publishes deterministic public and trusted-shell sockets, waits for actual compositor readiness, starts lege-shell --surface, and tears down the target if the compositor exits.
+                """
+            method command
+            command "cargo test -p lege-session -p lege-comp && cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.refinement-integration-smoke-20260824/1 ]
+        }
+    }
+    implements [ @legeos.decision.session-greeter-lock/2 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.display-manager-session-startup-reliability/3 ]
+}
+
+record legeos.work.file-previews-copy-path-and-folder-properties/1 : work {
+    title "Files follow-up — advanced previews, real Copy Path, and recursive folder properties"
+    state superseded
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "services/lege-filed/**",
+        path "session/units/user/lege-filed.service"
+    ]
+    intent """
+        Extend the completed first-party Files manager with selected-file previews for HEIC/HEIF, JPEG XL and the first page of PDF documents, plus ordinary raster formats. Preview decoding is service-owned, bounded by dimensions/source/output/timeout limits, runs off the D-Bus executor, prefers the user's installed JPXL helper when available, and uses packaged helper fallbacks so LegeOS keeps its Rust 1.93 MSRV and independent source packaging. Add a visible Copy Path action that obtains the as-shown path from Files.Actions1 and places it on the real Wayland clipboard without a shell. Make Properties an explicit visible action and have filed compute symlink-safe recursive folder file count and total logical/allocated size, reporting partial scans honestly.
+        """
+    acceptance {
+        check advanced-previews {
+            statement """
+                HEIC/HEIF, JPEG XL, PDF first-page and ordinary raster paths route through bounded service-owned preview helpers and valid bounded PNG output is accepted.
+                """
+            method command
+            command "cargo test -p lege-filed preview"
+        }
+        check copy-path {
+            statement """
+                A visible Copy Path button and Ctrl+Shift+C route obtain the as-shown selection path from Files.Actions1 and write it to a real clipboard sink without shell interpolation.
+                """
+            method command
+            command "cargo test -p lege-files copy_path"
+        }
+        check folder-properties {
+            statement """
+                Properties is a visible explicit action and a selected folder reports recursive regular-file count plus logical and allocated totals without following symlinks, marking unreadable subtrees incomplete.
+                """
+            method command
+            command "cargo test -p lege-filed folder_properties && cargo test -p lege-files properties"
+        }
+        check installable {
+            statement """
+                The helper and clipboard runtime dependencies remain synchronized between cargo-deb and the Debian source package, and the refreshed package builds.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files && cargo deb -q -p lege-filed"
+        }
+        check preview-surface {
+            statement """
+                The standalone manager requests previews stale-safely and paints the selected file's decoded thumbnail in the properties rail without blocking rendering.
+                """
+            method command
+            command "cargo test -p lege-files preview"
+        }
+        check workspace-quality {
+            statement """
+                Formatting, strict workspace Clippy, the complete test suite, integration smoke and structural checks remain green.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && tests/integration/run.sh && just tree-check && just deps-check && just check-interfaces"
+        }
+    }
+    depends_on [ @legeos.work.standalone-file-manager/3 ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread/1,
+        @legeos.constraint.services-not-indicators/1
+    ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    acknowledged true
+}
+
+record legeos.work.file-previews-copy-path-and-folder-properties/2 : work {
+    title "Files follow-up — native-codec previews, real Copy Path, and recursive folder properties"
+    state superseded
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "justfile",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "session/units/user/lege-filed.service"
+    ]
+    intent """
+        Extend the completed first-party Files manager with selected-file previews for BPG, HEIC/HEIF, JPEG XL, the first page of PDF documents, and ordinary raster formats. Use the user's pure-Rust bpg-rs decoder, JPXL codec, image-viewer decode/downscale design, and Lege PDF renderer; do not route through ImageMagick, ffmpeg, or Poppler. Preview work remains service-owned, bounded by dimensions/source/output/timeout limits, and off the D-Bus executor. Keep JPXL and the Lege renderer behind bounded companion-process seams because those sibling workspaces declare Rust 1.97 while LegeOS's archive MSRV remains 1.93; package their binaries for the installed service rather than weakening that platform constraint. Add a visible Copy Path action that obtains the as-shown path from Files.Actions1 and places it on the real Wayland clipboard without a shell. Make Properties an explicit visible action and have filed compute symlink-safe recursive folder file count and total logical/allocated size, reporting partial scans honestly.
+        """
+    acceptance {
+        check advanced-previews {
+            statement """
+                BPG and HEIC/HEIF use bpg-rs, JPEG XL uses JPXL, PDF first pages use the Lege renderer, and ordinary rasters use the adapted image-viewer path; every result is bounded and no ImageMagick, ffmpeg, or Poppler route remains.
+                """
+            method command
+            command "cargo test -p lege-filed preview"
+        }
+        check copy-path {
+            statement """
+                A visible Copy Path button and Ctrl+Shift+C route obtain the as-shown selection path from Files.Actions1 and write it to a real clipboard sink without shell interpolation.
+                """
+            method command
+            command "cargo test -p lege-files copy_path"
+        }
+        check folder-properties {
+            statement """
+                Properties is a visible explicit action and a selected folder reports recursive regular-file count plus logical and allocated totals without following symlinks, marking unreadable subtrees incomplete.
+                """
+            method command
+            command "cargo test -p lege-filed folder_properties && cargo test -p lege-files properties"
+        }
+        check installable {
+            statement """
+                The installed legeos-filed package carries the pinned JPXL and Lege PDF companion renderers, has no ImageMagick/ffmpeg/Poppler runtime dependency, and the refreshed Files packages build.
+                """
+            method command
+            command "just preview-codecs && cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files && cargo deb -q -p lege-filed"
+        }
+        check preview-surface {
+            statement """
+                The standalone manager requests previews stale-safely and paints the selected file's decoded thumbnail in the properties rail without blocking rendering.
+                """
+            method command
+            command "cargo test -p lege-files preview"
+        }
+        check workspace-quality {
+            statement """
+                Formatting, strict workspace Clippy, the complete test suite, integration smoke and structural checks remain green.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && tests/integration/run.sh && just tree-check && just deps-check && just check-interfaces"
+        }
+    }
+    depends_on [ @legeos.work.standalone-file-manager/3 ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread/1,
+        @legeos.constraint.services-not-indicators/1
+    ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.file-previews-copy-path-and-folder-properties/1 ]
+    acknowledged true
+}
+
+record legeos.work.file-previews-copy-path-and-folder-properties/3 : work {
+    title "Files follow-up — native-codec still/PDF previews, 3%-seek video previews, Copy Path, and recursive properties"
+    state completed
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "justfile",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "session/units/user/lege-filed.service"
+    ]
+    intent """
+        Extend the completed first-party Files manager with selected-file previews for BPG, HEIC/HEIF, JPEG XL, the first page of PDF documents, ordinary raster formats, and common videos. Use the user's pure-Rust bpg-rs decoder, JPXL codec, image-viewer decode/downscale design, and Lege PDF renderer for still/PDF content; do not route those formats through ImageMagick or Poppler. Use ffprobe plus ffmpeg only for video and select the frame at 3 percent of the media duration. Preview work remains service-owned, bounded by dimensions/source/output/timeout limits, and off the D-Bus executor. Keep JPXL and the Lege renderer behind a bounded companion-process seam because those sibling workspaces declare Rust 1.97 while LegeOS's archive MSRV remains 1.93; package that binary for the installed service rather than weakening the platform constraint. Add a visible Copy Path action that obtains the as-shown path from Files.Actions1 and places it on the real Wayland clipboard without a shell. Make Properties an explicit visible action and have filed compute symlink-safe recursive folder file count and total logical/allocated size, reporting partial scans honestly.
+        """
+    acceptance {
+        check advanced-previews {
+            statement """
+                BPG and HEIC use bpg-rs, JPEG XL uses JPXL, PDFs use the Lege renderer, and ordinary rasters use image-rs without ImageMagick or Poppler routes.
+                """
+            method command
+            command "cargo test -p lege-filed preview"
+            verified_by [ @legeos.evidence.file-preview-live-fixtures-20260824/1 ]
+        }
+        check copy-path {
+            statement """
+                The visible Copy Path action requests the as-shown service path and writes it to the real Wayland clipboard.
+                """
+            method command
+            command "cargo test -p lege-files copy_path"
+            verified_by [ @legeos.evidence.file-copy-path-20260824/1 ]
+        }
+        check folder-properties {
+            statement """
+                Explicit Properties reports recursive file count and total folder size without following symlinks, and the UI labels partial results.
+                """
+            method command
+            command "cargo test -p lege-filed folder_properties && cargo test -p lege-files properties"
+            verified_by [ @legeos.evidence.file-folder-properties-20260824/1 ]
+        }
+        check installable {
+            statement """
+                The native preview companion is reproducibly staged and both Files packages retain valid install metadata and runtime dependencies.
+                """
+            method command
+            command "just preview-codecs && cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files && cargo deb -q -p lege-filed"
+            verified_by [ @legeos.evidence.file-preview-packaging-20260824/1 ]
+        }
+        check preview-surface {
+            statement """
+                The standalone manager requests previews without blocking and paints stale-safe results in its selected-item inspector.
+                """
+            method command
+            command "cargo test -p lege-files preview"
+            verified_by [ @legeos.evidence.file-preview-surface-20260824/1 ]
+        }
+        check video-previews {
+            statement """
+                Common video files are rendered by ffmpeg at 3 percent of their ffprobe-reported duration and produce bounded previews.
+                """
+            method command
+            command "cargo test -p lege-filed video_preview"
+            verified_by [ @legeos.evidence.file-video-preview-three-percent-20260824/1 ]
+        }
+        check workspace-quality {
+            statement """
+                Formatting, linting, workspace tests, integration checks, interfaces, dependencies, MSRV, and structural checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p lege-comp-integration && cargo run -q -p xtask -- tree-check && cargo run -q -p xtask -- deps-check && cargo run -q -p xtask -- check-interfaces && cargo +1.93 check --workspace"
+            verified_by [ @legeos.evidence.file-preview-workspace-quality-20260824/1 ]
+        }
+    }
+    depends_on [ @legeos.work.standalone-file-manager/3 ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread/1,
+        @legeos.constraint.services-not-indicators/1
+    ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.file-previews-copy-path-and-folder-properties/2 ]
+    acknowledged true
+}
+
 record legeos.work.filed-transactions/1 : work {
     title "The file service: journalled transactions, trash, storage reserve, recents, search"
     state completed
@@ -93,7 +498,7 @@ record legeos.work.governor-containment/1 : work {
 }
 
 record legeos.work.home-field/1 : work {
-    title "Home Field — the desktop surface: tiles, parked sessions, go-home, stable grid, projects, trays, previews"
+    title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
     state proposed
     scope [
         path "compositor/**",
@@ -106,7 +511,7 @@ record legeos.work.home-field/1 : work {
         path "shell/**"
     ]
     intent """
-        Replace the drawer-list Home Surface with the Home Field: a bounded field of rectangular tiles (projects, apps / parked sessions, file trays, widgets, system) on the shell's Layer::HomeSurface backdrop. Windows collapse into tiles instead of minimising and expand back out; Super+D / Ctrl+Alt+H / a dock Home button reveal the field temporarily without changing any window's state; dragging a tile onto a target performs a typed, previewed, undoable operation; layout is a stable local grid that never reflows globally, persisted per output by sessiond (org.legeos.HomeField1). Phases: 1 compositor truths (shelved windows actually hidden and not hit-tested, maximize, reveal-home command + keybindings + protocol v2 with identifier/geometry), 2 the pure crates/lege-field model (document, ops with inverses, local reflow, representation ladder, drag/throw state machine), 3 FieldScreen in lege-shell with --print field and full keyboard reach — the named Windows-8 fallback checkpoint — then 4 HomeField1 persistence, 5 projects/trays/zoom, 6 previews over ext-image-copy-capture, 7 lege-treemap (lifted from Silvaview-rs) and budgeted widgets, 8 the throw spike with a keep/delete rule. Plan of record: ~/.claude/plans/for-this-project-i-crispy-shannon.md (author's machine).
+        Replace the drawer-list Home Surface with the Home Field: a bounded, taskbar-free field of rectangular tiles (projects, active apps / parked sessions, file trays, widgets, system) on the shell's Layer::HomeSurface backdrop. Installed-but-idle desktop entries remain searchable instead of automatically covering the field. Windows collapse into tiles instead of minimising and expand back out; a bare Super tap is the primary temporary Home toggle, with Ctrl+Alt+H and Super+D retained as fallbacks, and the reveal changes no window state. A standard information row on Home begins with local date/time, live/parked counts, and the selected network-status provider, using nm-tray2 for network control. Dragging a tile onto a target performs a typed, previewed, undoable operation; layout is a stable local grid that never reflows globally, persisted per output by sessiond (org.legeos.HomeField1). Phases: 1 compositor truths (shelved windows actually hidden and not hit-tested, maximize, reveal-home command + keybindings + protocol v2 with identifier/geometry), 2 the pure crates/lege-field model (document, ops with inverses, local reflow, representation ladder, drag/throw state machine), 3 FieldScreen in lege-shell with --print field and full keyboard reach, 4 HomeField1 persistence, 5 projects/trays/zoom, 6 previews over ext-image-copy-capture, 7 lege-treemap and budgeted widgets, 8 the throw spike with a keep/delete rule. Plan of record: ~/.claude/plans/for-this-project-i-crispy-shannon.md (author's machine).
         """
     note """
         Decisions taken with the author on 2026-08-22: Super+D is a temporary reveal, not park-all; one field document per output, primary output first; LegeOS and Silvaview-rs relicensed AGPL-3.0-only (D13) so lege-treemap can be lifted. Reveal state is a view flag in WindowService; one lege-field crate is the single model for shell and sessiond, Ctrl+Z is HomeField1.Undo.
@@ -128,7 +533,7 @@ record legeos.work.home-field/1 : work {
         }
         check home-is-always-reachable {
             statement """
-                Ctrl+Alt+H, Super+D and the dock's Home cell each reveal the Home Surface with every client window hidden; Escape, pressing again, or activating a window brings the exact prior stack back.
+                A bare Super tap is the primary Home toggle; Ctrl+Alt+H, Super+D and Home's own button reach the same taskbar-free reveal with every client window hidden, and Escape, pressing again, or activating a window restores the exact prior stack.
                 """
             method manual
         }
@@ -141,7 +546,7 @@ record legeos.work.home-field/1 : work {
         }
         check maximize-fills-work-area {
             statement """
-                Maximizing fills exactly one output's usable area (never the dock's exclusive zone) and is recoverable for any topology; unmaximize restores the floating geometry.
+                Maximizing fills exactly one output's usable area, with no built-in taskbar reservation, and remains recoverable for any topology; unmaximize restores the floating geometry.
                 """
             method command
             command "cargo test -p lege-window maximize"
@@ -182,6 +587,450 @@ record legeos.work.home-field/1 : work {
     part_of [ @legeos.milestone.m2-session-runs ]
 }
 
+record legeos.work.home-field-settings-gui/1 : work {
+    title "A Home Field page in lege-settings — five shell.home-field.* keys are CLI-only today"
+    state proposed
+    scope [ path "apps/lege-settings/**", path "crates/lege-session-core/src/settings.rs" ]
+    intent """
+        The settings schema declares five Home Field keys that lege-shell reads — shell.home-field.tile-size, .throw, .previews, .preview-rate and .reduced-motion (add_home_field_specs in crates/lege-session-core/src/settings.rs) — but apps/lege-settings has no Home Field page: its pages are associations, background, hardware, history, providers and resources, and the app is deliberately a model plus text renderer for now. The only route to tune the field is the `lege settings` CLI verb, which fails the field's own standard that no capability may be chord- or CLI-only. The work is a Home Field section in lege-settings driven by the schema (descriptions, defaults, choices and min/max are already declared there), so every shell.home-field.* key is adjustable from the GUI while the settings service stays the single policy owner.
+        """
+    note """
+        Recorded as the settings-GUI gap from the Home Field gap audit. Schema-driven is the point: the page should render whatever add_home_field_specs declares, so a sixth key needs no GUI change.
+        """
+    depends_on [ @legeos.constraint.services-not-indicators ]
+    part_of [ @legeos.work.home-widgets ]
+}
+
+record legeos.work.home-file-surface/1 : work {
+    title "Home file surface — real drive-backed contents, clickable navigation and brokered file opening"
+    state superseded
+    scope [
+        path "crates/lege-client/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Replace Home's text-only folder and drive panes with a bounded structured browser backed by lege-filed. Expanded file panes show actual entries from XDG folders and user-visible mounted volumes, directory rows navigate by pointer and keyboard, file rows resolve and launch through Associations1 and Launcher1, and Home remains the taskbar-free open-window/process overview reached by a bare Super tap. Use the existing Silvaview-derived treemap code for space composition only; its size-descending treemap ordering is not the list-view policy.
+        """
+    note """
+        This is the immediately usable integrated Home file surface. The unpinned COSMIC Files fork remains the eventual full standalone manager for rename/copy/property workflows; this pass must not make Home depend on that absent binary.
+        """
+    acceptance {
+        check brokered-file-opening {
+            statement """
+                Home opens a selected file only by resolving Associations1 then launching the returned canonical AppId through Launcher1, and reports an unresolved association without bypassing policy.
+                """
+            method command
+            command "cargo test -p lege-shell brokered_file_open"
+        }
+        check clickable-file-panes {
+            statement """
+                Expanded Home folder and drive panes render actual service entries; pointer and keyboard activation navigate directories and request file opening, with back/up and drive-root navigation.
+                """
+            method command
+            command "cargo test -p lege-shell file_browser"
+        }
+        check home-window-overview-preserved {
+            statement """
+                Every compositor toplevel remains represented on Home and the bare-Super tap/reveal path remains the taskbar-free route to see all open windows at once.
+                """
+            method command
+            command "cargo test -p lege-shell field_model && cargo test -p lege-comp keybindings::tests"
+        }
+        check structured-directory-data {
+            statement """
+                lege-filed exposes bounded structured directory entries with deterministic folder-first natural-name ordering, including hidden/symlink/type/size/mtime metadata and clear errors.
+                """
+            method command
+            command "cargo test -p lege-filed browse"
+        }
+        check workspace-verifies {
+            statement """
+                Formatting, warnings-denied clippy, workspace tests and interface consistency checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo xtask check-interfaces"
+        }
+    }
+    implements [ @legeos.constraint.services-not-indicators/1 ]
+    part_of [ @legeos.work.home-field/1 ]
+    supported_by [ @legeos.observation.hardware-home-loads-but-file-panes-empty/1 ]
+}
+
+record legeos.work.home-file-surface/2 : work {
+    title "Home file surface — real drive-backed contents, clickable navigation and brokered file opening"
+    state completed
+    scope [
+        path "crates/lege-client/**",
+        path "crates/lege-field/**",
+        path "debian/control",
+        path "docs/architecture/files.md",
+        path "docs/homefield.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "services/lege-filed/**",
+        path "session/units/user/lege-filed.service",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Replace Home's text-only folder and drive panes with a bounded structured browser backed by lege-filed. Expanded file panes show actual entries from XDG folders and user-visible mounted volumes, directory rows navigate by pointer and keyboard, file rows resolve and launch through Associations1 and Launcher1, and Home remains the taskbar-free open-window/process overview reached by a bare Super tap. Use the existing Silvaview-derived treemap code for space composition only; its size-descending treemap ordering is not the list-view policy.
+        """
+    note """
+        This is the immediately usable integrated Home file surface. The unpinned COSMIC Files fork remains the eventual full standalone manager for rename/copy/property workflows; this pass must not make Home depend on that absent binary.
+        """
+    acceptance {
+        check brokered-file-opening {
+            statement """
+                Home opens a selected file only by resolving Associations1 then launching the returned canonical AppId through Launcher1, and reports an unresolved association without bypassing policy.
+                """
+            method command
+            command "cargo test -p lege-shell brokered_file_open"
+            verified_by [ @legeos.evidence.home-file-brokered-open-20260824/1 ]
+        }
+        check clickable-file-panes {
+            statement """
+                Expanded Home folder and drive panes render actual service entries; pointer and keyboard activation navigate directories and request file opening, with back/up and drive-root navigation.
+                """
+            method command
+            command "cargo test -p lege-shell file_browser"
+            verified_by [ @legeos.evidence.home-file-clickable-panes-20260824/1 ]
+        }
+        check home-window-overview-preserved {
+            statement """
+                Every compositor toplevel remains represented on Home and the bare-Super tap/reveal path remains the taskbar-free route to see all open windows at once.
+                """
+            method command
+            command "cargo test -p lege-shell field_model && cargo test -p lege-comp keybindings::tests"
+            verified_by [ @legeos.evidence.home-file-window-overview-20260824/1 ]
+        }
+        check structured-directory-data {
+            statement """
+                lege-filed exposes bounded structured directory entries with deterministic folder-first natural-name ordering, including hidden/symlink/type/size/mtime metadata and clear errors.
+                """
+            method command
+            command "cargo test -p lege-filed browse"
+            verified_by [ @legeos.evidence.home-file-structured-browse-20260824/1 ]
+        }
+        check workspace-verifies {
+            statement """
+                Formatting, warnings-denied clippy, workspace tests and interface consistency checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.home-file-workspace-20260824/1 ]
+        }
+    }
+    implements [ @legeos.constraint.services-not-indicators/1 ]
+    part_of [ @legeos.work.home-field/1 ]
+    supersedes [ @legeos.work.home-file-surface/1 ]
+    supported_by [ @legeos.observation.hardware-home-loads-but-file-panes-empty/1 ]
+}
+
+record legeos.work.home-input-and-refinement/1 : work {
+    title "Home refinement — hardware input and cursor, bare-Super toggle, no taskbar, clean tiles and information row"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Make the installed Home session directly usable on hardware: process libinput relative pointer motion, render a visible DRM cursor, focus the initial Home surface for keyboard input, and use a bare Super tap as the primary taskbar-free Home toggle. Remove the graphical dock and its exclusive bottom zone, limit automatic app tiles to active applications, preserve meaningful imported desktop names, and add a standard Home information row with local clock, live/parked counts, and nm-tray2 network control.
+        """
+    note """
+        The 2026-08-23 installed journal proved the session did not crash and libinput enumerated the machine's event devices; the omissions were in compositor dispatch/rendering. The user's nm-tray2 source at /mnt/Samsung980_1TB/Rust-projects/not-rust-projects/nm-tray-2 now exposes --popup and a session-bus forwarding slot, but that external build must be installed alongside the refreshed LegeOS packages. All automated and nested visual checks pass; real-hardware mouse, cursor and keyboard validation remains open for the next installed-session retest.
+        """
+    acceptance {
+        check bare-super-toggle {
+            statement """
+                A lone Super press toggles Home on release, a Super chord cancels the tap, and holding both Super keys never double-toggles.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests"
+            verified_by [ @legeos.evidence.refinement-checks-20260824/1 ]
+        }
+        check clean-home-tiles {
+            statement """
+                Installed-but-idle desktop files do not auto-fill Home, imported IDs never render every title as 'desktop', and active application/session tiles remain.
+                """
+            method command
+            command "cargo test -p lege-shell field_model"
+            verified_by [
+                @legeos.evidence.refinement-checks-20260824/1,
+                @legeos.evidence.taskbar-free-home-visual-20260824/1
+            ]
+        }
+        check hardware-input {
+            statement """
+                With the refreshed packages installed on the laptop, moving the mouse/touchpad moves a visible cursor, clicks reach Home controls, and keyboard navigation reaches the focused Home surface.
+                """
+            method manual
+        }
+        check information-row {
+            statement """
+                Home shows a standard top information row with local date/time, live/parked counts, and a network control state.
+                """
+            method observation
+            verified_by [ @legeos.evidence.taskbar-free-home-visual-20260824/1 ]
+        }
+        check installable-packages {
+            statement """
+                Fresh Debian packages contain the refined compositor and shell and the complete 12-package set builds.
+                """
+            method command
+            command "just deb"
+            verified_by [ @legeos.evidence.refinement-debian-packages-20260824/1 ]
+        }
+        check nm-tray2-control {
+            statement """
+                When nm-tray2 is installed, the Home network control launches it with --popup; an already-running instance receives the popup request over the session bus instead of duplicating.
+                """
+            method command
+            command "cargo test -p lege-shell network_control && cmake --build /mnt/Samsung980_1TB/Rust-projects/not-rust-projects/nm-tray-2/build --parallel 2"
+            verified_by [
+                @legeos.evidence.nm-tray2-popup-build-20260824/1,
+                @legeos.evidence.refinement-checks-20260824/1
+            ]
+        }
+        check taskbar-free-home {
+            statement """
+                The shell maps one full-screen Home surface and no graphical dock/ShellOverlay or exclusive bottom zone.
+                """
+            method observation
+            verified_by [ @legeos.evidence.taskbar-free-home-visual-20260824/1 ]
+        }
+    }
+    part_of [ @legeos.work.home-field ]
+}
+
+record legeos.work.home-widget-foundations/1 : work {
+    title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
+    state superseded
+    scope [
+        path "cli/lege/src/lifecycle.rs",
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-field/**",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/dbus/org.legeos.Session.Lifecycle1.xml",
+        path "services/lege-sessiond/src/apis/lifecycle.rs",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        The Home Field was a dead end for a desktop tester: no way to launch anything, no logout/restart/shutdown, no way to close a window, and a search bar that does nothing outside an expanded drawer. The decision is that every missing capability arrives as a widget on the one screen rather than as a panel or tray, consistent with M2's taskbar-free commitment. This item builds only the foundation those widgets stand on, in four parts. (1) A resize that lets adjacent tiles give up span instead of being evicted: reflow::find_resize, where a yielding neighbour keeps its far edge and the request is clamped to the largest span every neighbour can absorb. (2) The widget contract over TileKind::System, which was a designed-for slot nothing constructed: a descriptor declares what shows at each representation rung and which regions are clickable, and each region names an action rather than coding a behaviour. (3) An action manifest in lege-types, so one declaration drives the shell's labels, the keyboard accelerator and the lege verb. (4) org.legeos.Session.Lifecycle1 on sessiond forwarding to logind, built as the one worked example of the service-interface pattern every future widget follows.
+        """
+    note """
+        The individual widgets — launcher, volume, brightness, battery, notifications, tray — are deliberately out of scope and planned separately against this foundation.
+
+        Three findings worth carrying forward. First, no new op or inverse machinery was needed for neighbour yielding: Placement already carries a span, Located wraps it, and Layout restores it, so moved_back captures a neighbour's prior size for free and the document format is unchanged. Second, the default drawer block is packed at the 2x2 widget floor, so no drawer on the default field can grow — correct under the clamp rule the user chose, but it makes the resize gesture look inert on first use and is a defaults decision still to be made. Third, Super+Left/Right was implemented in the compositor over window geometry (lege_window::geometry::contiguous_window) rather than over the shell's tile layout as first planned: it needs no wire-protocol bump, keeps working with the shell dead like every other reserved chord, and stays inside the compositor's own remit since it reasons only about windows.
+
+        Lock is declared in Lifecycle1 and returns NotSupported. The compositor implements ext-session-lock-v1 in full but nothing drives it; making Lock real means giving sessiond a Wayland lock-manager client, which is its own work item.
+        """
+    depends_on [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+}
+
+record legeos.work.home-widget-foundations/2 : work {
+    title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
+    state active
+    scope [
+        path "cli/lege/src/lifecycle.rs",
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-field/**",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/dbus/org.legeos.Session.Lifecycle1.xml",
+        path "services/lege-sessiond/src/apis/lifecycle.rs",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        The Home Field was a dead end for a desktop tester: no way to launch anything, no logout/restart/shutdown, no way to close a window, and a search bar that does nothing outside an expanded drawer. The decision is that every missing capability arrives as a widget on the one screen rather than as a panel or tray, consistent with M2's taskbar-free commitment. This item builds only the foundation those widgets stand on, in four parts. (1) A resize that lets adjacent tiles give up span instead of being evicted: reflow::find_resize, where a yielding neighbour keeps its far edge and the request is clamped to the largest span every neighbour can absorb. (2) The widget contract over TileKind::System, which was a designed-for slot nothing constructed: a descriptor declares what shows at each representation rung and which regions are clickable, and each region names an action rather than coding a behaviour. (3) An action manifest in lege-types, so one declaration drives the shell's labels, the keyboard accelerator and the lege verb. (4) org.legeos.Session.Lifecycle1 on sessiond forwarding to logind, built as the one worked example of the service-interface pattern every future widget follows.
+        """
+    note """
+        STATUS FOR A HANDOFF: all four parts are implemented, tested and lint-clean, and the ledger's evidence covers everything except `hands-on-at-a-real-desktop`, which is the one outstanding check. Nothing here needs rewriting; the next step is to run it on a real desktop and then complete this record. Follow-on work is @legeos.work.home-widgets and its children.
+
+        The individual widgets — launcher, volume, brightness, battery, notifications, tray — are deliberately out of scope here and planned separately against this foundation.
+
+        Decisions the user made that shaped the design, and that a successor should not quietly reverse. Contiguity is navigation-only: it scopes which window a chord moves to, is recomputed per keypress and never persisted, which is what keeps it compatible with homefield.md's rule that adjacency must not imply a relationship. A resize that outruns its neighbours clamps rather than evicting or cascading. Session power actuation lives in sessiond over logind, not in lege-hostd, so shutting down your own laptop needs no administrator prompt and ADR-0003's scope for the privileged daemon is untouched.
+
+        Three findings worth carrying forward. First, no new op or inverse machinery was needed for neighbour yielding: Placement already carries a span, Located wraps it, and Layout restores it, so moved_back captures a neighbour's prior size for free and the document format is unchanged — this is why the change is as small as it is. Second, the default drawer block is packed at the 2x2 widget floor, so no drawer on the default field can grow; correct under the clamp rule, but it makes the gesture look inert on first use — see @legeos.question.home-field-default-density. Third, Super+Left/Right was implemented in the compositor over window geometry (lege_window::geometry::contiguous_window) rather than over the shell's tile layout as first planned: it needs no wire-protocol bump, keeps working with the shell dead like every other reserved chord, and stays inside the compositor's remit since it reasons only about windows.
+
+        Lock is declared in Lifecycle1 and returns NotSupported. The compositor implements ext-session-lock-v1 in full but nothing drives it; see @legeos.work.session-lock-client.
+        """
+    acceptance {
+        check hands-on-at-a-real-desktop {
+            statement """
+                At a real desktop: drag a tile's corner into free space and nothing else moves; drag it into a neighbour and the neighbour narrows in place without jumping; keep dragging and the ghost visibly stops while the pointer runs on; Ctrl+Z restores both sizes. The Session widget's Shut down arms on the first click and fires on the second. Super+Left/Right steps between windows, and still cycles by stacking order with lege-shell killed.
+                """
+            method manual
+        }
+        check invariants-unmodified {
+            statement """
+                lege-field's four pre-existing properties — ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates, placement_is_deterministic, content_changes_move_nothing — still pass with no edit to them. Editing one to accommodate the resize would mean the design is wrong.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check no-maximize-in-the-widget-system {
+            statement """
+                No non-container tile can be resized to cover its whole grid; widgets can nonetheless grow, which before this work they could not do at all.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check one-declaration-three-surfaces {
+            statement """
+                Every action a shell surface performs is declared in lege_types::action, every declared CLI verb reaches a real lege subcommand, and the compositor's fixed recovery chords agree with what the manifest says they do without the compositor reading the manifest at run time.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions && cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check resize-inverts-exactly {
+            statement """
+                Undo restores every affected tile's size as well as its position, with no new op and no change to DOCUMENT_VERSION.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check resize-yields-not-evicts {
+            statement """
+                Growing a tile into a neighbour narrows that neighbour against its own far edge; nothing is relocated, and a request past what neighbours can give is clamped to the largest achievable span rather than refused or paid for by an eviction.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check session-can-be-ended {
+            statement """
+                org.legeos.Session.Lifecycle1 forwards logout/reboot/poweroff/suspend to logind behind a testable seam, the Session widget offers them with a confirm step, `lege session` reaches the same verbs, and the interface XML ships in legeos-sessiond.
+                """
+            method command
+            command "cargo test -p lege-sessiond -p lege && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check shell-still-runs {
+            statement """
+                Nested, the shell connects to lege_shell_v1, declares Layer::HomeSurface and renders the new draw paths without error or panic.
+                """
+            method manual
+            verified_by [ @legeos.evidence.widget-foundations-nested-run-20260825 ]
+        }
+        check widget-contract-is-data-driven {
+            statement """
+                A TileKind::System tile renders through a declared descriptor: what it shows per representation rung, and which regions are clickable. Region hit-testing is generic, with no per-widget arm in the painter.
+                """
+            method command
+            command "cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+    }
+    depends_on [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.home-widget-foundations/1 ]
+}
+
+record legeos.work.home-widget-launcher/1 : work {
+    title "Launcher widget — make a cold session able to open its first application"
+    state active
+    scope [
+        path "crates/lege-appd/src/dbus.rs",
+        path "crates/lege-appd/src/desktop_entry.rs",
+        path "crates/lege-types/src/app.rs",
+        path "shell/lege-shell/src/icons.rs",
+        path "shell/lege-shell/src/surface/widgets/**"
+    ]
+    intent """
+        A launcher widget that lists installed applications, filters as the user types, and launches through Launcher1. This is the single most load-bearing gap: without it a freshly booted session cannot open anything at all, because application tiles are derived from windows that already exist (field_model::merge_apps) and are removed when the last one closes. The inventory is already in the shell — AppIdentity1.ListApps is fetched every three seconds into ShellApp::apps and its only consumer today is a grep for nm-tray — and Launcher1.Launch already works and is already called for the network control and for opening files. The widget itself is small; the prerequisites below are not.
+        """
+    note """
+        STATUS FOR A HANDOFF: implemented, tested and lint-clean; see @legeos.evidence.home-widget-launcher-20260825. All three prerequisites landed: AppManifest carries icon/categories/keywords/NoDisplay with serde defaults so pre-upgrade manifests still parse; NoDisplay is recorded not filtered (the entry must import so MIME associations resolve, listings exclude it client-side); a new AppIdentity1.ListApplications returns the full rows. icons.rs now reverses the desktop-import namespacing via IconHints{icon, desktop_file_ids} and rasterizes SVG through resvg 0.45 (default-features off — no font stack, licences checked against deny.toml's allow-list by reading cargo metadata since cargo-deny is not installed here). app_search is a pure module with a total sort key so redraws cannot reshuffle. The launcher is the second WidgetDescriptor over TileKind::System; system_landing now places the two system widgets in opposite bottom corners. The field search bar is live on the home screen: typing filters the launcher, Enter launches the best match.
+
+        The one outstanding check is hands-on at a real desktop, same as the foundations record; complete this after that run.
+
+        FOR A SUCCESSOR: (1) `lege app list` still uses ListApps and shows bare ids — ListApplications is there if the CLI wants names and NoDisplay filtering. (2) SVG icons that are pure typography render shapes only (resvg font stack is off). (3) desktop_file_candidates cannot reverse derive_app_id's sanitiser for ids with characters outside [A-Za-z0-9.-_]; the shell always passes IconHints from the registry so this only bites a caller that does not. (4) No index.theme parsing or theme inheritance yet — only hicolor and /usr/share/pixmaps are walked. (5) The zoom test now stashes system tiles first; the real signal underneath is that eight drawers plus two system widgets crowd a small field — see @legeos.question.home-field-default-density.
+        """
+    part_of [ @legeos.work.home-widgets ]
+    verified_by [ @legeos.evidence.home-widget-launcher-20260825 ]
+}
+
+record legeos.work.home-widget-notifications/1 : work {
+    title "Notification widget, and the read-back path sessiond does not yet offer"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-state/src/migrations/session.rs",
+        path "services/lege-sessiond/src/apis/notifications.rs",
+        path "shell/lege-shell/src/surface/widgets/**"
+    ]
+    intent """
+        Render notifications. sessiond hosts org.freedesktop.Notifications, attributes each notification to an AppId and files it in searchable history, and docs/architecture/history.md states plainly that "the shell renders" — but the shell contains no notification rendering whatsoever. Any application that posts a notification today gets a successful D-Bus reply and the user sees nothing at all.
+        """
+    note """
+        The blocking gap is that the shell has no way to read notifications back. The notifications_active table is write-only from the shell's point of view: NotificationsApi has no List or GetActive method, so the only read path is History1.Recent, which returns every kind of history event mixed together, cannot filter by kind server-side, and carries no still-active flag. On top of that, Notify receives app_icon, the urgency and category hints, and expire_timeout, and discards all of them — the module's own comment names these as legitimate future additions "once the shell renders notifications", which is now. So the first task is extending the service, not drawing anything.
+
+        A notification arriving must never move a tile. homefield.md is explicit that geometry changes only through explicit user action, monitor reconfiguration or a layout command, and names a notification arriving as an example of what must not disturb the field; the widget contract already routes snapshots as content-only for this reason, and the content_changes_move_nothing property guards it.
+        """
+    part_of [ @legeos.work.home-widgets ]
+}
+
+record legeos.work.home-widget-status-instruments/1 : work {
+    title "Volume, brightness and battery widgets, and the services they need — none of which exist yet"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "interfaces/dbus/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/src/surface/widgets/**"
+    ]
+    intent """
+        Volume, brightness and battery as widgets, each backed by a service interface following the Lifecycle1 pattern. All three are absent from the whole repository, not merely from the shell: there is no audio client of any kind (no PipeWire, PulseAudio or ALSA code — the only mentions are cgroup protections naming the pipewire and wireplumber units so the resource governor never kills them), no backlight code, and no battery reading. crates/lege-hwdetect is GPU detection only. So each of these is a service to write first and a widget second, which is the order services-not-indicators requires anyway.
+        """
+    note """
+        org.legeos.Power1's module doc claims the domain is "idle, lid, brightness and battery via logind/upower", and none of that integration exists: Power1 is eighty-five lines of get/set/reset over a stored PowerProfile, and nothing anywhere reads its dim_after, screen_off_after, lock_after or suspend_after durations and acts on them. There is no idle watcher, no ext-idle-notify-v1, no lid handling. So a second, honest piece of scope sits next to the widgets: either make Power1's policy real or narrow its documentation to what it does. A battery widget that reports charge while the machine never dims or suspends would be a strange thing to ship.
+
+        ProviderRole::PowerManager exists and no application fills it. Related risk already flagged during the foundations work: the shell's power routing calls org.legeos.Session directly, so if a third-party power manager is ever selected through Providers1 the one-provider-per-role model is silently bypassed. Decide the routing rule before, not after, more power surfaces exist.
+        """
+    depends_on [ @legeos.constraint.services-not-indicators ]
+    part_of [ @legeos.work.home-widgets ]
+}
+
+record legeos.work.home-widgets/1 : work {
+    title "Home Field widgets — every missing desktop capability as a tile on the one screen"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-appd/**",
+        path "crates/lege-types/**",
+        path "interfaces/dbus/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        A gap review of the Home Field against what any desktop of the last twenty years offers found that a cold session gives the user eight drawer tiles and the message "open an application and it will appear", with no way to open one. Application tiles are derived only from windows that are already running and are removed when the last one closes, so the launcher route is circular. There is no logout, restart, shutdown, suspend or lock; no way to close a window; no volume, brightness or battery; no notification rendering despite sessiond hosting the notification server; no context menus; and the field's own search bar does nothing outside an expanded drawer. The decision is that each of these arrives as a widget on the single screen — information first, sub-clickable, opening a window only as a deliberate second step — rather than as a panel, a dock or a tray, which is consistent with M2's taskbar-free commitment and with homefield.md's rule that the launcher is inventory and the home screen is working memory. @legeos.work.home-widget-foundations built the framework; this item is the umbrella for the widgets themselves and for the window controls that are still missing.
+        """
+    note """
+        Each child is independently landable against the finished foundation. Read @legeos.work.home-widget-foundations' note first: it records the constraints the user set (clamp rather than evict, navigation-only contiguity, session power over logind) which apply to every child here.
+
+        Two rules from the foundation govern all of this work. The shell renders and forwards; policy lives in a service behind a D-Bus interface, so each widget needs a backing interface before it needs pixels — Lifecycle1 is the worked example to copy. And every capability must be declared once in lege_types::action, which is what puts it in the widget's regions, the cheat sheet and `lege` together; `cargo run -p xtask -- check-actions` fails the build when a surface performs an action nobody declared.
+        """
+    depends_on [
+        @legeos.constraint.services-not-indicators,
+        @legeos.work.home-widget-foundations
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+}
+
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
     state completed
@@ -199,6 +1048,26 @@ record legeos.work.host-update-transaction/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.session-lock-client/1 : work {
+    title "Drive the compositor's ext-session-lock-v1 so Lifecycle1.Lock stops returning NotSupported"
+    state proposed
+    scope [
+        path "compositor/lege-comp/src/session_lock.rs",
+        path "crates/lege-types/src/provider.rs",
+        path "services/lege-sessiond/src/apis/lifecycle.rs"
+    ]
+    intent """
+        Make locking the session actually lock it. The compositor implements ext-session-lock-v1 in full (compositor/lege-comp/src/session_lock.rs) and ADR-0010 makes the lock screen compositor-owned, "one provider by construction". What has never existed is anything that drives it: no client calls lock(), so there is no lock surface and no lock. Lifecycle1.Lock is declared with the interface shape settled and returns NotSupported rather than reporting a success it did not achieve. Making it real means giving lege-sessiond a Wayland lock-manager client, which is a substantial piece of work and was scoped out of the foundations deliberately rather than overlooked.
+        """
+    note """
+        Two known limitations to resolve or record while doing this. The compositor's own module doc states that input isolation while locked is only partial: src/input.rs refuses recovery keybindings and window drags while locked, but ordinary pointer and keyboard events are still routed by Smithay's normal focus resolution, which does not yet exclude ordinary windows. A hostile client cannot unlock the session through that gap — only unlock() clears the flag — but a sighted user could in principle still interact with content behind the lock surface. Tightening hit-testing to resolve only lock surfaces while locked is named there as the follow-up and belongs with this work.
+
+        Second, ProviderRole::LockScreen exists in the exclusive-role enum and no application declares it. Decide whether sessiond claims that role or whether the compositor-owned lock makes the role vacuous, because one-provider-per-role is a live constraint and leaving a role permanently unfilled is a fact worth recording either way.
+        """
+    depends_on [ @legeos.decision.compositor-on-smithay ]
+    part_of [ @legeos.work.home-widgets ]
+}
+
 record legeos.work.sessiond-persistence-and-launch/1 : work {
     title "The session daemon: one state store, StartTransientUnit launching, desktop-entry import, the full domain surface"
     state completed
@@ -213,4 +1082,261 @@ record legeos.work.sessiond-persistence-and-launch/1 : work {
         Wire lege-sessiond to the one state store so every domain survives a restart (associations, provider selections and declarations, autostart approvals, settings values and their change log, projects, history, live instances re-derived from ListUnitsByPatterns app-legeos-*); replace the systemd-run launcher with a direct StartTransientUnit D-Bus transaction so launch and unit registration are one step and the documented registration race disappears; derive manifests from installed desktop entries with Exec field codes parsed into an argument vector; detect MIME types from shared-mime-info globs and bounded content sniffing so a detected type genuinely beats an extension; and serve the remaining domains — the full Associations surface with Explain, Settings, History with Undo, Providers, Projects, Power, Location, and org.freedesktop.Notifications recorded as history events — plus the autostart runner, the checkpoint relay and coredump ingestion.
         """
     part_of [ @legeos.milestone.m1-session-runtime ]
+}
+
+record legeos.work.standalone-file-manager/1 : work {
+    title "Standalone Files — service-backed browsing, operations and properties in an installable manager"
+    state superseded
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "session/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Build `lege-files` as a first-party Pixelkit application and Debian package. It opens a real XDG folder, shows service-provided places and mounted drives with space state, lists immediate children in the filed-owned folder-first natural order, supports mouse and keyboard selection/navigation/history, and opens files only through Associations1 and Launcher1. Selection workflows provide rename, copy/cut/paste, trash, undo and a persistent properties/storage inspector; filesystem mutations run only through journalled Files.Operations1. Add any bounded Browse1 metadata/root methods needed by both Home and the standalone manager, validate unsafe operation requests in the service, wire the desktop file, app manifest, source package, seeds, cargo-deb build and reinstall helper, and cover the state/contract/package paths with tests.
+        """
+    acceptance {
+        check brokered-open {
+            statement """
+                Opening a non-directory resolves it through Associations1 and launches it through Launcher1; the manager never executes an association or file path itself.
+                """
+            method command
+            command "cargo test -p lege-files brokered_open"
+        }
+        check installable-manager {
+            statement """
+                The workspace and source-package metadata install /usr/bin/lege-files and its desktop entry, all packaging checks pass, and cargo-deb produces the package included by the desktop seed and reinstall helper.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files"
+        }
+        check keyboard-pointer-parity {
+            statement """
+                Every primary row/toolbar operation is reachable by pointer and by keyboard accelerators, with safe modal confirmation for name-changing actions and trash remaining undoable.
+                """
+            method command
+            command "cargo test -p lege-files interaction"
+        }
+        check operations-and-properties {
+            statement """
+                Rename, copy, cut/move, paste, trash and undo serialize to the journalled Operations1 contract, unsafe path/name requests are refused by filed, operation progress is visible, and selection properties include filesystem metadata plus containing-volume state.
+                """
+            method command
+            command "cargo test -p lege-files -p lege-filed operation"
+        }
+        check real-browsing {
+            statement """
+                The standalone manager renders service-backed XDG places, relevant mounted drives with capacity state, and real bounded directory entries; navigation, history, hidden-file toggle, selection and stale-response handling are covered.
+                """
+            method command
+            command "cargo test -p lege-files browser"
+        }
+        check workspace-quality {
+            statement """
+                Formatting, warnings-denied clippy, the full workspace tests and interface/proxy/asset/packaging structural checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- tree-check deps-check check-interfaces check-proxies check-packaging check-assets"
+        }
+    }
+    depends_on [ @legeos.decision.forks-by-manifest ]
+    implements [
+        @legeos.constraint.identity-and-launch-safety,
+        @legeos.constraint.one-provider-per-role,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    acknowledged true
+}
+
+record legeos.work.standalone-file-manager/2 : work {
+    title "Standalone Files — service-backed browsing, operations and properties in an installable manager"
+    state superseded
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "session/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Build `lege-files` as a first-party Pixelkit application and Debian package. It opens a real XDG folder, shows service-provided places and mounted drives with space state, lists immediate children in the filed-owned folder-first natural order, supports mouse and keyboard selection/navigation/history, and opens files only through Associations1 and Launcher1. Selection workflows provide rename, copy/cut/paste, trash, undo and a persistent properties/storage inspector; filesystem mutations run only through journalled Files.Operations1. Add any bounded Browse1 metadata/root methods needed by both Home and the standalone manager, validate unsafe operation requests in the service, wire the desktop file, app manifest, source package, seeds, cargo-deb build and reinstall helper, and cover the state/contract/package paths with tests.
+        """
+    acceptance {
+        check brokered-open {
+            statement """
+                Opening a file goes through Associations1, Launcher1 and Recents rather than spawning an application directly.
+                """
+            method command
+            command "cargo test -p lege-files brokered_open"
+        }
+        check installable-manager {
+            statement """
+                The first-party manager has a valid desktop entry, application manifest, source package, Debian package and reinstall path.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files"
+        }
+        check keyboard-pointer-parity {
+            statement """
+                Every visible file-manager action is reachable by both pointer and keyboard, including navigation, selection and dialogs.
+                """
+            method command
+            command "cargo test -p lege-files interaction"
+        }
+        check operations-and-properties {
+            statement """
+                Rename, copy/cut/paste, trash, undo, progress and the persistent properties/storage view use the filed-owned service contracts.
+                """
+            method command
+            command "cargo test -p lege-files -p lege-filed operation"
+        }
+        check real-browsing {
+            statement """
+                The standalone manager renders a real service-provided folder listing, XDG places and mounted drives, with pointer selection and folder-first natural ordering.
+                """
+            method command
+            command "cargo test -p lege-files browser"
+        }
+        check workspace-quality {
+            statement """
+                Formatting, strict linting, the full workspace tests and structural interface/dependency checks all pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && just tree-check && just deps-check && just check-interfaces"
+        }
+    }
+    depends_on [ @legeos.decision.forks-by-manifest ]
+    implements [
+        @legeos.constraint.identity-and-launch-safety,
+        @legeos.constraint.one-provider-per-role,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.standalone-file-manager/1 ]
+    acknowledged true
+}
+
+record legeos.work.standalone-file-manager/3 : work {
+    title "Standalone Files — service-backed browsing, operations and properties in an installable manager"
+    state completed
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "session/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Build `lege-files` as a first-party Pixelkit application and Debian package. It opens a real XDG folder, shows service-provided places and mounted drives with space state, lists immediate children in the filed-owned folder-first natural order, supports mouse and keyboard selection/navigation/history, and opens files only through Associations1 and Launcher1. Selection workflows provide rename, copy/cut/paste, trash, undo and a persistent properties/storage inspector; filesystem mutations run only through journalled Files.Operations1. Add any bounded Browse1 metadata/root methods needed by both Home and the standalone manager, validate unsafe operation requests in the service, wire the desktop file, app manifest, source package, seeds, cargo-deb build and reinstall helper, and cover the state/contract/package paths with tests.
+        """
+    acceptance {
+        check brokered-open {
+            statement """
+                Opening a file goes through Associations1, Launcher1 and Recents rather than spawning an application directly.
+                """
+            method command
+            command "cargo test -p lege-files brokered_open"
+            verified_by [ @legeos.evidence.standalone-files-brokered-open-20260824/1 ]
+        }
+        check installable-manager {
+            statement """
+                The first-party manager has a valid desktop entry, application manifest, source package, Debian package and reinstall path.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files"
+            verified_by [ @legeos.evidence.standalone-files-packaging-20260824/1 ]
+        }
+        check keyboard-pointer-parity {
+            statement """
+                Every visible file-manager action is reachable by both pointer and keyboard, including navigation, selection and dialogs.
+                """
+            method command
+            command "cargo test -p lege-files interaction"
+            verified_by [ @legeos.evidence.standalone-files-interaction-20260824/1 ]
+        }
+        check operations-and-properties {
+            statement """
+                Rename, copy/cut/paste, trash, undo, progress and the persistent properties/storage view use the filed-owned service contracts.
+                """
+            method command
+            command "cargo test -p lege-files -p lege-filed operation && cargo test -p lege-filed properties"
+            verified_by [ @legeos.evidence.standalone-files-ops-properties-20260824/1 ]
+        }
+        check real-browsing {
+            statement """
+                The standalone manager renders a real service-provided folder listing, XDG places and mounted drives, with pointer selection and folder-first natural ordering.
+                """
+            method command
+            command "cargo test -p lege-files browser"
+            verified_by [ @legeos.evidence.standalone-files-browser-20260824/1 ]
+        }
+        check workspace-quality {
+            statement """
+                Formatting, strict linting, the full workspace tests and structural interface/dependency checks all pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && just tree-check && just deps-check && just check-interfaces"
+            verified_by [ @legeos.evidence.standalone-files-workspace-20260824/1 ]
+        }
+    }
+    depends_on [ @legeos.decision.forks-by-manifest ]
+    implements [
+        @legeos.constraint.identity-and-launch-safety,
+        @legeos.constraint.one-provider-per-role,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.standalone-file-manager/2 ]
+    acknowledged true
+}
+
+record legeos.work.window-controls-and-mouse-parity/1 : work {
+    title "Window close and resize, and a pointer path for every action that today has only a chord"
+    state active
+    scope [
+        path "compositor/lege-comp/src/input.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/src/surface/field_screen.rs",
+        path "shell/lege-shell/src/wayland_bridge.rs"
+    ]
+    intent """
+        Give the user a way to close and resize a window, and give every declared action a mouse route. `window.close` is declared in the action manifest and reachable from nothing: lege_shell_toplevel_v1.close exists in the protocol and ShellBridge::close exists in the shell with zero callers, so a window with no client-side decorations — most XWayland clients, xterm, SDL applications — cannot be closed by the user at all. Interactive resize is a deliberate no-op in xdg_shell.rs::resize_request, and decoration mode is forced to ClientSide unconditionally, so such a window can never be resized either. Separately, thirteen declared actions are reachable only by keyboard; the action manifest's own rule is that a chord is an accelerator recorded alongside a menu entry and never the only route to a capability, so those need a pointer or menu path.
+        """
+    note """
+        STATUS FOR A HANDOFF: implemented, tested and lint-clean; see @legeos.evidence.window-controls-20260825. All four steps landed, including interactive resize. check-actions now enforces the pointer-route rule: a declared action with a chord and no pointer route in shell/lege-shell/src (needles: FieldAction::RunAction, WidgetRegion::new, MenuItem::new; test modules excluded) fails the build; exemptions are (id, reason) pairs that self-expire when stale, and the list is empty. window.close goes through a new secondary-click context menu with a two-step confirm per its confirm:true. Interactive resize works on both routes: xdg_toplevel.resize / X11 _NET_WM_MOVERESIZE for clients with frames, and a painted compositor-owned bottom-right grip for no-CSD windows; minimum window size is derived so a minimum-size window still has both a grabbable band and a grip. Decoration forcing is untouched — no server-side decorations were built; band+grip is what makes a no-CSD window manageable. A latent grab bug was fixed along the way: band grabs are now primary-button-only (a right-press previously installed a grab only a left release could end).
+
+        The one outstanding check is hands-on at a real desktop, same as the foundations record; complete this after that run.
+
+        FOR A SUCCESSOR: (1) window.maximize is not in the manifest and ShellBridge::set_maximized is still uncalled — closing that is one declaration, one MenuScope::Window row and one perform_on_window arm. (2) The close confirm UI lives in the shell by design, so a no-CSD window cannot be closed while the shell is dead — only moved, resized and escaped. (3) begin_resize refuses maximized windows (their geometry is re-derived on every topology change); unmaximize first. (4) The shell's cycle order is window_id, the compositor's is stacking order — same set, different order, only one route in use at a time. (5) Menu cycle/group entries are computed shell-side reusing lege_window::geometry::contiguous_window, so the group rule has one implementation.
+        """
+    part_of [ @legeos.work.home-widgets ]
+    verified_by [ @legeos.evidence.window-controls-20260825 ]
 }

@@ -431,6 +431,12 @@ Your current distro work already spans the Files application, file portal, appli
 
 # Recommended first implementation
 
+The current prototype makes bare Super reveal this bounded field. Eight useful service/file
+drawers occupy a compact 2×4 block; live window previews are placed before redundant application
+badges, so the rest of the field remains an active overview of open work. Downloads, Documents,
+Media and Drives expand into a real places-and-volumes browser backed by `Files.Browse1`, with
+clickable folder navigation, actionable search results and brokered file opening.
+
 The first serious prototype should deliberately stop between the minimum and maximum versions.
 
 It should contain only these tile types:

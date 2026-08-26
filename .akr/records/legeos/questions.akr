@@ -1,0 +1,13 @@
+akr 0.1
+project legeos
+
+record legeos.question.home-field-default-density/1 : question {
+    title "Default field density: every drawer sits at the 2x2 floor, so the resize gesture is inert on first use"
+    state open
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    question """
+        The default field packs its drawer block at the 2x2 widget floor, so every neighbour of a resize is already at minimum span and the clamp rule reduces every grow request to nothing: on the default layout the neighbour-yielding resize does nothing visible. This is correct behaviour under the clamp-rather-than-evict rule the user set, but it makes the foundation's headline gesture look broken the first time anyone tries it. Should the default field keep this density (information-first, all eight drawers visible) and accept that resize only becomes useful once the user removes or shrinks something, or should the default leave slack — fewer drawers, a larger starting span for one or two, or deliberate empty cells — so the resize is discoverable on first use? This is the user's call, not an implementation detail.
+        """
+    derived_from [ @legeos.work.home-widget-foundations ]
+    part_of [ @legeos.work.home-widgets ]
+}

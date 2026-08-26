@@ -1,6 +1,100 @@
 akr 0.1
 project legeos
 
+record legeos.papercut.a-batched-diagnostic-call-failed-before/1 : papercut {
+    title "A batched diagnostic call failed before execution because a JavaScript…"
+    state verified
+    statement """
+        A batched diagnostic call failed before execution because a JavaScript string containing a shell quote produced invalid syntax; reissuing it with safer quoting.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "functions.exec"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.a-batched-field-model-test-cleanup-missed/1 : papercut {
+    title "A batched field-model test cleanup missed because several LiveState…"
+    state verified
+    statement """
+        A batched field-model test cleanup missed because several LiveState fixtures used different surrounding lines than the shared patch context. Retrying with the concrete fixture ranges.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "apply_patch"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.a-bounded-d-bus-integration-script-using-an/1 : papercut {
+    title "A bounded D-Bus integration script using an explicit…"
+    state verified
+    statement """
+        A bounded D-Bus integration script using an explicit /tmp/legeos-browse.* directory was rejected because its cleanup contained rm -rf, even though the target was prefix-validated. Use automatic TemporaryDirectory cleanup or a non-recursive cleanup helper.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "exec_command"
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.a-multi-file-patch-for-browse1-failed/1 : papercut {
+    title "A multi-file patch for Browse1 failed atomically because two hunks for…"
+    state verified
+    statement """
+        A multi-file patch for Browse1 failed atomically because two hunks for dbus.rs were supplied out of source order; the matching lines existed verbatim, but the patch verifier did not explain that hunk ordering was the issue.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "apply_patch"
+    author "gpt-5-codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.a-second-promise-batched-diagnostic-script/1 : papercut {
+    title "A second Promise-batched diagnostic script failed JavaScript parsing…"
+    state verified
+    statement """
+        A second Promise-batched diagnostic script failed JavaScript parsing despite simple tool arguments; split the FFF search and shell comparison into separate calls to avoid the batching wrapper.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "functions.exec"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.a-simple-exec-command-wrapper-for-sed-returned/1 : papercut {
+    title "A simple exec_command wrapper for sed returned `SyntaxError: Invalid or…"
+    state verified
+    statement """
+        A simple exec_command wrapper for sed returned `SyntaxError: Invalid or unexpected token`; retrying the same JavaScript with only spacing changes succeeded, making routine source inspection flaky.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "functions.exec"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.adding-actionable-search-results-hit-rust-s/1 : papercut {
+    title "Adding actionable search results hit Rust's empty-array inference in…"
+    state verified
+    statement """
+        Adding actionable search results hit Rust's empty-array inference in `map_or`: `&[]` fixed the branch to `&[_; 0]` instead of a `&[BrowseEntry]`; the local needs an explicit slice type.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "gpt-5-codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.adding-existing-index-reuse-pushed-lege-filed-s/1 : papercut {
+    title "Adding existing-index reuse pushed lege-filed's main one line past the…"
+    state verified
+    statement """
+        Adding existing-index reuse pushed lege-filed's main one line past the workspace clippy too_many_lines threshold; extracted startup-root selection into a helper instead of suppressing the lint.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
 record legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 : papercut {
     title "ADR-0012 landed as a markdown ADR without a matching ledger record, so…"
     state verified
@@ -12,6 +106,29 @@ record legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 : papercut 
     created_at 2026-08-21
 }
 
+record legeos.papercut.after-cargo-test-clippy-passed-target-debug/1 : papercut {
+    title "After cargo test/clippy passed, target/debug/lege-comp was still the…"
+    state verified
+    statement """
+        After cargo test/clippy passed, target/debug/lege-comp was still the pre-change standalone binary (tests built the hashed test executable), so the first nested smoke rejected --socket-name; an explicit cargo build is required before direct binary smoke tests.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "cargo"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 : papercut {
+    title "After cargo test -p lege-filed browse passed, target/debug/lege-filed…"
+    state verified
+    statement """
+        After cargo test -p lege-filed browse passed, target/debug/lege-filed was still an older runnable binary and the live D-Bus smoke returned UnknownInterface for Browse1. An explicit cargo build -p lege-filed is required before daemon-level smoke tests.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
 record legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 : papercut {
     title "Bumping interfaces/wayland/lege-shell-v1.xml to version 2: `cargo xtask…"
     state verified
@@ -21,6 +138,86 @@ record legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 : paper
     observed_at git:70df99e539de1899ef5740db2456504a906a16ad
     author "claude"
     created_at 2026-08-22
+}
+
+record legeos.papercut.cargo-deb-special-cases-the-crate-s-target/1 : papercut {
+    title "cargo-deb special-cases the crate's target/release binary, but an…"
+    state verified
+    statement """
+        cargo-deb special-cases the crate's target/release binary, but an additional staged asset named target/preview-codecs was resolved under services/lege-filed instead of the workspace root. Extra target assets must use ../../target/... from the package manifest.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercut {
+    title "Cleaning an explicitly validated mktemp smoke directory, exec rejected…"
+    state verified
+    statement """
+        Cleaning an explicitly validated mktemp smoke directory, exec rejected `rm -rf`; the safer `gio trash` path then failed because /tmp is an internal mount. Cleanup required enumerating every file with find, unlinking each, then rmdir-ing children and root.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "codex-exec"
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut {
+    title "Inspecting freshly built cargo-deb archives with tar paths prefixed by…"
+    state verified
+    statement """
+        Inspecting freshly built cargo-deb archives with tar paths prefixed by ./ failed because these archives store member names as usr/... without the dot prefix; the package-content check had to be rerun with the exact archive names.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "cargo-deb"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
+    title "knowledge.propose exposes a generic slots object but not each kind's…"
+    state verified
+    statement """
+        knowledge.propose exposes a generic slots object but not each kind's valid slot names; authoring this work item required failed retries to learn that work accepts `intent`, not `work` (and that topic is normative-only). Including kind-slot guidance in the tool schema would avoid this.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "akr"
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : papercut {
+    title "`lege doctor` exited 1 on every developer install and made…"
+    state verified
+    statement """
+        `lege doctor` exited 1 on every developer install and made scripts/reinstall-legeos-desktop.sh refuse a perfectly good session. Two checks asked image-time questions at runtime: os-release demanded ID=legeos on an Ubuntu build host, and mime-handlers resolved handlers against LegeOS app manifests only, so all 156 real .desktop entries in the user's own KDE mimeapps.list read as missing. The 4KB single-line detail then buried both fail rows, so the operator saw only "do not log out until its failures are fixed" with no visible failure. Fixed: os-release skips at root "/", mime-handlers resolves against every XDG applications dir (snap and flatpak exports always included, not just what XDG_DATA_DIRS happens to carry), and the CLI abbreviates detail and prints a closing tally naming the failures.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "claude"
+    created_at 2026-08-25
+}
+
+record legeos.papercut.on-this-ntfs-fuse-workspace-systemd-analyze/1 : papercut {
+    title "On this NTFS/FUSE workspace, systemd-analyze verify warns that every…"
+    state verified
+    statement """
+        On this NTFS/FUSE workspace, systemd-analyze verify warns that every checked-in user unit is executable/world-writable because the mount presents mode 0777, although git records 0644 and installed units are 0644. Verification output needs that mount caveat to avoid a false packaging diagnosis.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.package-binary-inspection-initially-used-usr/1 : papercut {
+    title "Package binary inspection initially used ./usr/libexec/lege-filed, but…"
+    state verified
+    statement """
+        Package binary inspection initially used ./usr/libexec/lege-filed, but dpkg-deb --fsys-tarfile emits member names without the leading ./ and tar could not find it. Use usr/libexec/lege-filed for streaming checks.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
 }
 
 record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
@@ -44,4 +241,229 @@ record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercu
     about "akr"
     author "claude"
     created_at 2026-08-17
+}
+
+record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
+    title "systemd-analyze --user verify accepted the session units but warned…"
+    state verified
+    statement """
+        systemd-analyze --user verify accepted the session units but warned every source unit is executable/world-writable because this workspace filesystem presents broad mode bits; package metadata explicitly installs them as 0644, so the warnings do not describe the installed files.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "systemd-analyze"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 : papercut {
+    title "The conventional cargo xtask invocation is not installed in this…"
+    state verified
+    statement """
+        The conventional cargo xtask invocation is not installed in this workspace; interface and packaging checks must use cargo run -p xtask -- <command>. A cargo alias or more prominent root-level hint would prevent the failed probe.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.the-documented-pre-login-check-lege-doctor-root/1 : papercut {
+    title "The documented pre-login check `lege doctor --root /` fails on the…"
+    state verified
+    statement """
+        The documented pre-login check `lege doctor --root /` fails on the installed 0.1.0-1 CLI with `File not found: doctor`; the command parser appears to treat `doctor` as a path, so the safety instruction itself needs verification/fixing.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-explicit-rust-1-93-verification-tried-to/1 : papercut {
+    title "The explicit Rust 1.93 verification tried to install the missing…"
+    state verified
+    statement """
+        The explicit Rust 1.93 verification tried to install the missing toolchain under /home, whose filesystem had only 341 MiB free, and failed despite the project volume having 40 GiB. Use a task-local RUSTUP_HOME on the project volume for this check.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.the-first-home-file-row-compile-exposed-a-non/1 : papercut {
+    title "The first Home file-row compile exposed a non-obvious lifetime trap:…"
+    state verified
+    statement """
+        The first Home file-row compile exposed a non-obvious lifetime trap: passing `&format::bytes(...)` as one branch of an `&str` expression made the temporary too short for `Ui::label`; the formatted size needs a row-local binding.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "gpt-5-codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.the-first-live-video-preview-failed-only-under/1 : papercut {
+    title "The first live video preview failed only under the helper's 2 GiB…"
+    state verified
+    statement """
+        The first live video preview failed only under the helper's 2 GiB address-space cap because ffmpeg's PNG path auto-created many frame threads. Pinning decoder/filter/encoder thread counts makes the bounded subprocess reliable and avoids excessive virtual-memory reservations.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.the-first-nested-compositor-smoke-command-was/1 : papercut {
+    title "The first nested compositor smoke command was rejected before execution…"
+    state verified
+    statement """
+        The first nested compositor smoke command was rejected before execution because its EXIT trap removed its own mktemp directory with rm -rf; reran without deletion, leaving only OS-temporary logs.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "exec_command"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-first-package-content-spot-check-assumed/1 : papercut {
+    title "The first package-content spot check assumed tar members were prefixed…"
+    state verified
+    statement """
+        The first package-content spot check assumed tar members were prefixed with `./`; cargo-deb archives use `usr/...`, so tar -xOf missed despite successful packages. Retrying with paths exactly as listed by tar.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "dpkg-deb"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-first-targeted-build-caught-an-incorrect/1 : papercut {
+    title "The first targeted build caught an incorrect relative include_str! path…"
+    state verified
+    statement """
+        The first targeted build caught an incorrect relative include_str! path in the new lege-session unit-contract test; compiler suggested the correct ../../units path and the test was adjusted.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-lege-field-integration-proptest-reported/1 : papercut {
+    title "The lege-field integration proptest reported…"
+    state verified
+    statement """
+        The lege-field integration proptest reported FileFailurePersistence::SourceParallel could not find lib.rs or main.rs before saving under tests/field.proptest-regressions. The configured source-parallel persistence is noisy/misresolved for this integration-test layout.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.the-m2-acceptance-command-lists-six-xtask/1 : papercut {
+    title "The M2 acceptance command lists six xtask subcommands in one…"
+    state verified
+    statement """
+        The M2 acceptance command lists six xtask subcommands in one invocation, but xtask/clap accepts exactly one and rejected `deps-check` after `tree-check`. Run each subcommand separately (as the justfile does); the ledger command should be revised.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-readiness-smoke-targeted-target-debug-lege/1 : papercut {
+    title "The readiness smoke targeted target/debug/lege-comp after cargo test -p…"
+    state verified
+    statement """
+        The readiness smoke targeted target/debug/lege-comp after cargo test -p lege-comp; Cargo had built only the test harness under target/debug/deps, so the named binary did not exist and required an explicit cargo build.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.the-sibling-codebase-was-referenced-as-rust/1 : papercut {
+    title "The sibling codebase was referenced as rust-projects/silvaview-rs, but…"
+    state verified
+    statement """
+        The sibling codebase was referenced as rust-projects/silvaview-rs, but the on-disk directory is case-sensitive `Silvaview-rs`; the first read failed and required a case-insensitive directory lookup.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "gpt-5-codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 : papercut {
+    title "While adding bounded image-rs decoding, its public Limits fields looked…"
+    state verified
+    statement """
+        While adding bounded image-rs decoding, its public Limits fields looked constructible but the non_exhaustive type rejects a struct literal; the working pattern is Limits::default() followed by field assignments.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.while-checking-two-focused-lege-filed-filters-i/1 : papercut {
+    title "While checking two focused lege-filed filters I passed both as…"
+    state verified
+    statement """
+        While checking two focused lege-filed filters I passed both as positional cargo test arguments; cargo accepts only one TESTNAME, so the focused checks must be separate invocations or one shared substring.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.while-locating-the-resolved-smithay-source-i/1 : papercut {
+    title "While locating the resolved Smithay source, I passed `--no-deps=false`…"
+    state verified
+    statement """
+        While locating the resolved Smithay source, I passed `--no-deps=false` to `cargo metadata`; the flag is boolean-only, so the command failed and had to be rerun without it.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "cargo"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.while-resuming-the-standalone-file-manager/1 : papercut {
+    title "While resuming the standalone file manager, distro/forks/manifest.toml…"
+    state verified
+    statement """
+        While resuming the standalone file manager, distro/forks/manifest.toml pointed cosmic-files at https://github.com/legeos/cosmic-files, but git ls-remote returns Repository not found; just forks-fetch therefore cannot materialize the declared file-manager source.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.while-running-the-documented-family-of-xtask/1 : papercut {
+    title "While running the documented family of xtask structural checks, `xtask…"
+    state verified
+    statement """
+        While running the documented family of xtask structural checks, `xtask tree-check deps-check ...` rejected every argument after the first although the checks read like composable subcommands. The checks must be invoked one process at a time; clearer help or multi-command support would avoid the retry.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-23
+}
+
+record legeos.papercut.while-tracing-home-file-panes-multi-grep-with/1 : papercut {
+    title "While tracing Home file panes, multi_grep with several directory…"
+    state verified
+    statement """
+        While tracing Home file panes, multi_grep with several directory constraints returned zero matches because the constraint syntax does not make their OR/AND behavior clear; I had to retry with a broader single directory.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    about "FFF"
+    author "gpt-5-codex"
+    created_at 2026-08-24
+}
+
+record legeos.papercut.while-tracing-the-lege-pdf-renderer-i-assumed/1 : papercut {
+    title "While tracing the Lege PDF renderer I assumed lege-pdf/render was a…"
+    state verified
+    statement """
+        While tracing the Lege PDF renderer I assumed lege-pdf/render was a nested Cargo workspace and issued a read for its nonexistent Cargo.toml; the renderer crates actually inherit from the Lege-ecosystem root workspace. A small renderer README/path map would make reuse easier.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    author "codex"
+    created_at 2026-08-24
 }

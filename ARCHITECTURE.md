@@ -35,6 +35,7 @@
 | `lege-sessiond` | user | **the** policy daemon: identity/launch, associations, providers/autostart, history, notifications, settings, projects, power, location — one state DB, one crash unit, no cross-daemon races (ADR-0001) |
 | `lege-resourced` | user | must tick while everything else thrashes; no SQLite/fsync/D-Bus on its loop (ADR-0002) |
 | `lege-filed` | user | heavy I/O; a stuck mount must not stall policy |
+| `lege-preview-codecs` | transient child of filed | bounded JPXL/Lege-PDF decode seam; keeps their Rust 1.97 graph out of the Rust 1.93 service |
 | `lege-hostd` | root, system bus | the one privileged surface, one polkit policy (ADR-0003) |
 | `lege-boot-health` | root, oneshot | gates `boot-complete.target` (ADR-0004) |
 | `xdg-desktop-portal-lege` | user, D-Bus activated | one backend over the same services |
@@ -56,7 +57,8 @@
 | `lege-client` | shell, apps, portal, cli, comp | proxies + app SDK (checkpoint protocol) |
 | `lege-hwdetect` | hostd, installer, doctor | GPU detection, flavour, modes |
 | `lege-resourced` (lib) | itself | cgroup wrapper, PSI, pure `Governor`, executor, `app.slice` scan |
-| `lege-filed` (lib) | itself | operation journal, storage/reserve, last-dir policy |
+| `lege-filed` (lib) | itself | structured browsing, bounded previews, operation journal, storage/reserve, last-dir policy |
+| `lege-preview-codecs` (bin) | transient helper | JPXL decode and first-page Lege PDF CPU rendering behind time, memory and output limits |
 | `lege` (lib) | cli, tests | `doctor` engine |
 
 ## Invariants the code enforces

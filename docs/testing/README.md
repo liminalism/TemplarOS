@@ -48,9 +48,9 @@ What to exercise by hand, because no test covers it:
   window must remain recoverable.
 * Minimise a window (its own button, or `xdg_toplevel.set_minimized`). It must vanish entirely —
   not render, not take clicks where it was — and `Ctrl+Alt+Space` must bring it back.
-* Maximise a window with its own button. It must fill the output minus the dock's reserved strip,
-  never cover the dock, and come back to its old size on unmaximise.
-* With two or three windows open, press `Super+D` (or `Ctrl+Alt+H`, or the dock's **Home** cell).
+* Maximise a window with its own button. It must fill the output and come back to its old size on
+  unmaximise; Home itself has no taskbar or exclusive bottom strip.
+* With two or three windows open, tap `Super` (or press `Ctrl+Alt+H`; `Super+D` remains a fallback).
   Every window must disappear behind the Home Surface with nothing else changing; `Escape`, the
   same key again, or clicking a window's entry must bring the exact prior stack back.
 * **Kill `lege-shell` while revealed.** The windows must reappear on their own.
@@ -78,7 +78,8 @@ What to exercise by hand, because no test covers it:
 | `Ctrl+Alt+Space` | show every window, scattered — shelved ones included | yes |
 | `Ctrl+Alt+Escape` | escape a fullscreen or modal window | yes |
 | `Alt+Tab` / `Alt+Shift+Tab` | compositor's fallback switcher | yes |
-| `Ctrl+Alt+H`, `Super+D` | go home: hide every client window behind the Home Surface, or bring them back | yes (shows the bare backdrop) |
+| bare `Super` tap | toggle Home, as the primary no-taskbar window-switching route | yes (shows the bare backdrop) |
+| `Ctrl+Alt+H`, `Super+D` | fallback routes for the same Home toggle | yes (shows the bare backdrop) |
 | `Escape` while revealed | ends the reveal | yes |
 
 These call `WindowService` directly rather than going over the wire protocol, which is why they
@@ -90,30 +91,53 @@ shelves nothing and moves nothing, so there is never anything to undo when it en
 This is the "desktop environment" form. You install LegeOS's packages onto the Ubuntu you already
 have, and a **LegeOS** entry appears in your display manager's session list.
 
+For repeat development installs, the repository script rebuilds nm-tray2 and every LegeOS package,
+installs the exact package set, repairs dependencies, reloads the user manager, and runs the installed
+doctor check:
+
+```sh
+scripts/reinstall-legeos-desktop.sh
+```
+
+Use `--dry-run` to inspect the commands, `--skip-build` to reinstall existing artifacts, or
+`--skip-nm-tray2` when that separate source tree is intentionally unavailable. The script must be run
+as the desktop user, not through `sudo`; it elevates only the install commands and never restarts the
+live session.
+
+The equivalent manual LegeOS package steps are:
+
 ```sh
 just deb                                # builds target/debian/*.deb
 sudo dpkg -i target/debian/*.deb
 sudo apt-get -f install                 # pull in anything dpkg flagged
+systemctl --user daemon-reload          # refresh units cached by the current desktop session
 ```
+
+The explicit reload matters during development because these Stage-1 `cargo-deb` packages do not
+yet ship Debian maintainer scripts. A user manager can survive logout and otherwise reuse the old
+unit definitions even though the corrected files are already present under `/usr/lib/systemd/user`.
 
 Then check it before you log out, because the whole point is not to end up unable to log in:
 
 ```sh
-lege doctor --root /
+/usr/bin/lege doctor --root /
 ```
 
 `unit-binaries` and `compositor-usable` are the two that matter here. The first resolves every
 LegeOS unit's `ExecStart` against what is actually installed; the second additionally checks
 XWayland, which is a runtime lookup no build step can catch. If either fails, do not log out —
-fix it first.
+fix it first. The absolute path is intentional: a development host may already have an unrelated
+`lege` in `~/.local/bin`, which commonly precedes `/usr/bin` in `PATH`.
 
 Now log out and choose **LegeOS** from the session menu.
 
 ### If it does not come up
 
 Switch to a TTY with `Ctrl+Alt+F3` and log in there. `journalctl --user -b -u lege-comp` and
-`-u lege-shell` have the story. To get back to your usual desktop, just pick it from the session
-menu at the next login — installing these packages changes nothing about your existing session.
+`journalctl --user -b -u lege-shell` have the current boot's story. After a forced restart, use
+`journalctl -b -1 _SYSTEMD_USER_UNIT=lege-comp.service` (and `lege-shell.service`) for the previous
+boot instead. To get back to your usual desktop, just pick it from the session menu at the next
+login — installing these packages changes nothing about your existing session.
 
 ### Caveats
 

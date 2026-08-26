@@ -1,6 +1,26 @@
 akr 0.1
 project legeos
 
+record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observation {
+    title "Hardware Home loads and cursor works, but file panes expose no usable file content"
+    state verified
+    scope [
+        path "interfaces/dbus/org.legeos.Files.*",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
+    statement """
+        On the 2026-08-24 installed desktop build, the user reached the Home environment and moved the cursor successfully, but the manager remained unusable: folder/file panes did not show actual file contents and could not be used to navigate files.
+        """
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    method observation
+    watches [
+        "shell/lege-shell/**",
+        "services/lege-filed/**",
+        "interfaces/dbus/org.legeos.Files.*"
+    ]
+}
+
 record legeos.observation.transient-unit-launch-converged-independently/1 : observation {
     title "Omarchy launches applications into transient systemd units too, then identifies windows by self-declared app_id anyway"
     state superseded

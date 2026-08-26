@@ -151,7 +151,7 @@ record legeos.decision.forks-by-manifest/1 : decision {
 
 record legeos.decision.forks-by-manifest/2 : decision {
     title "D6/ADR-0005 — Upstream forks (cosmic-files, cosmic portal, cosmic-applets) are pinned by distro/forks/manifest.toml, not git submodules"
-    state active
+    state superseded
     scope [ path "apps/lege-files/**", path "distro/forks/**" ]
     decision """
         Each fork lives in its own repository with an 'upstream' tracking branch and a 'legeos' patch branch; distro/forks/manifest.toml pins URL/branch/commit; `just forks-fetch` clones into the gitignored forks/ directory. The files fork depends on lege-client. Patches are limited to the items enumerated in apps/lege-files/FORK.md.
@@ -168,6 +168,29 @@ record legeos.decision.forks-by-manifest/2 : decision {
         @legeos.constraint.packaging-and-render-thread
     ]
     supersedes [ @legeos.decision.forks-by-manifest/1 ]
+}
+
+record legeos.decision.forks-by-manifest/3 : decision {
+    title "D6/ADR-0005 — External compatibility components are pinned forks; lege-files is a first-party service client"
+    state active
+    scope [ path "apps/lege-files/**", path "distro/forks/**" ]
+    decision """
+        Each remaining external fork lives in its own repository with an 'upstream' tracking branch and a 'legeos' patch branch; distro/forks/manifest.toml pins URL/branch/commit and `just forks-fetch` clones it into the gitignored forks/ directory. The standalone `lege-files` manager is instead a first-party Pixelkit application in this workspace: it depends on lege-client, owns no filesystem policy, and delegates browse, volume, operation, recents, search, path-action, association and launch decisions to the corresponding LegeOS services. This correction is required because the declared legeos/cosmic-files fork was never materialized and its configured remote does not exist; keeping the client local also makes the installable manager and its exact service contracts testable in the main workspace.
+        """
+    context """
+        The user's four separately maintained COSMIC submodules already caused rebase and detached-HEAD problems; Stage 2 wants proper downstream repos with automated rebase checks. The manifest model itself is unchanged by ADR-0012 — what changed is its membership: cosmic-comp and cosmic-greeter are no longer forks at all, so compositor/** leaves this record's scope. One of the six measurements behind that decision was specifically about this model's limits: of 92 cosmic-comp commits in the last 12 months touching the paths a fork would delete, 52 touched a kept path in the same commit, so the fork boundary would not have insulated us and the monthly rebase cadence below would have landed in deleted code constantly.
+        """
+    consequences """
+        No submodule state in this repository; reproducible builds from the manifest; monthly rebase cadence for the forks that remain. The compositor is now first-party (compositor/lege-comp) and carries no rebase burden; compositor/lege-comp-integration is an ordinary workspace crate rather than a path crate a fork depends on.
+        """
+    depends_on [ @legeos.decision.compositor-on-smithay ]
+    implements [
+        @legeos.constraint.first-release-scope,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    supersedes [ @legeos.decision.forks-by-manifest/2 ]
+    acknowledged true
 }
 
 record legeos.decision.mkosi-images/1 : decision {

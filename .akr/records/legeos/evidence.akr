@@ -1,6 +1,159 @@
 akr 0.1
 project legeos
 
+record legeos.evidence.desktop-debian-packages-20260823/1 : evidence {
+    title "Fresh desktop Debian package set builds"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "just deb"
+    summary """
+        All 12 LegeOS service, session, compositor, greeter, shell, settings, portal, and CLI Debian packages built successfully.
+        """
+}
+
+record legeos.evidence.desktop-integration-checks-20260823/1 : evidence {
+    title "Desktop integration checks pass"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "tests/integration/run.sh"
+    summary """
+        Compositor check mode, execution lifecycle, shell print mode, and integration smoke tests all passed.
+        """
+}
+
+record legeos.evidence.desktop-reinstall-helper-20260824/1 : evidence {
+    title "Desktop reinstall helper validation"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "bash -n scripts/reinstall-legeos-desktop.sh && scripts/reinstall-legeos-desktop.sh --help >/dev/null && scripts/reinstall-legeos-desktop.sh --dry-run >/dev/null && scripts/reinstall-legeos-desktop.sh --skip-build --skip-nm-tray2 --dry-run >/dev/null"
+    artifact "scripts/reinstall-legeos-desktop.sh"
+    summary """
+        The reinstall helper passed Bash syntax checking, help-path validation, a complete nm-tray2 plus 12-package dry run, and an existing-artifact/no-nm-tray2 dry run without executing privileged commands.
+        """
+}
+
+record legeos.evidence.desktop-systemd-units-20260823/1 : evidence {
+    title "Desktop user units verify"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "systemd-analyze --user verify session/units/user/*.service session/units/user/*.target"
+    summary """
+        All LegeOS desktop user services and the session target passed systemd verification; only filesystem mode warnings from the FUSE-backed workspace were emitted.
+        """
+}
+
+record legeos.evidence.file-copy-path-20260824/1 : evidence {
+    title "Copy Path action tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files copy_path"
+    summary """
+        Three Copy Path tests passed for the visible shortcut, service-provided as-shown path, real clipboard boundary, and relative-path rejection.
+        """
+}
+
+record legeos.evidence.file-folder-properties-20260824/1 : evidence {
+    title "Recursive folder properties tests pass"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        cargo test -p lege-filed folder_properties and cargo test -p lege-files properties passed, covering recursive file/size totals, symlink avoidance, visible action wiring, and rendered folder summaries.
+        """
+}
+
+record legeos.evidence.file-preview-live-fixtures-20260824/1 : evidence {
+    title "Native preview routes render real fixtures"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        The service rendered real BPG and HEIC fixtures through bpg-rs, JPEG XL through JPXL, and PDF page one through the Lege PDF renderer; every result was a bounded PNG at or below 256 px.
+        """
+}
+
+record legeos.evidence.file-preview-packaging-20260824/1 : evidence {
+    title "Preview helper and Files packages build"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        just preview-codecs, check-packaging, and both cargo-deb builds passed; the service package contains /usr/libexec/lege-preview-codecs plus Browse1 and Previews1 XML and depends on ffmpeg without ImageMagick or Poppler.
+        """
+}
+
+record legeos.evidence.file-preview-surface-20260824/1 : evidence {
+    title "Files preview surface tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files preview"
+    summary """
+        Two preview-model and preview-surface tests passed, including stale-result rejection and painting the selected file bitmap.
+        """
+}
+
+record legeos.evidence.file-preview-workspace-quality-20260824/1 : evidence {
+    title "Files follow-up passes full workspace gates"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        Formatting, strict workspace clippy, all workspace tests, Rust 1.93.1 workspace check, compositor integration, tree/dependency/interface/proxy/asset/packaging checks, native-helper tests, and native-helper strict clippy all exited successfully.
+        """
+}
+
+record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
+    title "Video previews seek to three percent"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-filed video_preview"
+    summary """
+        The unit test passed with a 1000-second duration producing an ffmpeg -ss value of 30.000000, and a real MP4 rendered a 256x144 PNG through the ffmpeg video-at-3% route.
+        """
+}
+
+record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
+    title "Hardware input journal identifies compositor-side omission"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "journalctl -b -1 _SYSTEMD_USER_UNIT=lege-comp.service --no-pager -n 400"
+    summary """
+        The installed run stayed alive, presented the Home surface, and libinput added twelve event devices; the old binary also mapped a separate 64px ShellOverlay. Code inspection showed libinput relative PointerMotion was unhandled and the DRM renderer composed no cursor.
+        """
+}
+
+record legeos.evidence.home-field-clippy-20260823/1 : evidence {
+    title "Changed runtime crates pass strict Clippy"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo clippy -p lege-field -p lege-window -p lege-session-core -p lege-shell -p lege-comp -p lege-session -p lege-resourced -p lege-filed --all-targets -- -D warnings"
+    summary """
+        Strict Clippy passed for every crate changed by the Home Field and desktop-startup work.
+        """
+}
+
 record legeos.evidence.home-field-in-text/1 : evidence {
     title "`lege-shell --print field` renders the same merged document the surface draws (one line per tile, drawer tiles present) with no session bus and no compositor."
     state verified
@@ -46,6 +199,17 @@ record legeos.evidence.home-field-maximize-fills-work-area/1 : evidence {
     command "cargo test -p lege-window maximize"
     summary """
         Proptest over arbitrary topologies: set_maximized yields exactly one output's usable() rect and is recoverable; unmaximize restores a recoverable rect of the original size; a maximized window follows its output through hotplug.
+        """
+}
+
+record legeos.evidence.home-field-nested-visual-20260823/1 : evidence {
+    title "Nested Home Field renders and remains stable"
+    state verified
+    result pass
+    method manual
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        A 2560x1600 nested desktop showed the archive-derived Home Field, compact 2x3 drawer block, full-size Home surface, and 64-pixel dock; a 10-second run after shell-surface filtering had no EGL allocation or context-loss warning.
         """
 }
 
@@ -145,6 +309,124 @@ record legeos.evidence.home-field-windows-cannot-be-lost/1 : evidence {
     command "cargo test -p lege-window hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
     summary """
         Proptest over shelve/unshelve/activate/reveal sequences: a hidden window is hidden only because it is shelved or a reveal is in effect, shelved windows never hold activation; ShowAllWindows unshelves everything and ends a reveal; a reveal changes no record and ends on Activate.
+        """
+}
+
+record legeos.evidence.home-field-workspace-tests-20260823/1 : evidence {
+    title "Home Field workspace tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test --workspace"
+    summary """
+        The complete Rust workspace test suite passed with the implemented Home Field design system and window-filtering changes.
+        """
+}
+
+record legeos.evidence.home-file-brokered-open-20260824/1 : evidence {
+    title "Brokered Home file opening tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-shell brokered_file_open"
+    summary """
+        Both brokered-open tests passed: canonical association resolution precedes launch, and an unresolved association never invokes the launcher.
+        """
+}
+
+record legeos.evidence.home-file-clickable-panes-20260824/1 : evidence {
+    title "Clickable Home file pane tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-shell file_browser"
+    summary """
+        Four file-browser tests passed for real file drawers, pointer activation, keyboard/root/up navigation and actionable search-result rows.
+        """
+}
+
+record legeos.evidence.home-file-live-dbus-20260824/1 : evidence {
+    title "Live Browse1 D-Bus smoke"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        An isolated session bus running the rebuilt lege-filed returned a real fixture directory through Browse1 in folder-first natural order: Folder2, file2.txt, file10.txt.
+        """
+}
+
+record legeos.evidence.home-file-packages-20260824/1 : evidence {
+    title "Home file surface Debian packages"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "just deb"
+    summary """
+        All twelve Debian packages built; the fresh shell package depends on legeos-filed and the filed package contains the compiled Browse1 interface.
+        """
+}
+
+record legeos.evidence.home-file-structured-browse-20260824/1 : evidence {
+    title "Structured Browse1 directory data tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-filed browse"
+    summary """
+        Five browse tests passed for bounded replies, folder-first natural ordering, hidden entries, symlinks, metadata and clear path errors.
+        """
+}
+
+record legeos.evidence.home-file-window-overview-20260824/1 : evidence {
+    title "Home window overview and Super tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-shell field_model && cargo test -p lege-comp keybindings::tests"
+    summary """
+        Eight Home field-model tests and fourteen compositor keybinding tests passed, including tight-field coverage for every live window and bare-Super release semantics.
+        """
+}
+
+record legeos.evidence.home-file-workspace-20260824/1 : evidence {
+    title "Home file surface workspace gate"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- check-interfaces"
+    summary """
+        Formatting, warnings-denied workspace Clippy, the complete workspace suite and all 25 server/client interface documents passed.
+        """
+}
+
+record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
+    title "Launcher widget: manifest fields, icon resolution, app search, widget, and live search bar — workspace gates green"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo run -p xtask -- check-actions"
+    summary """
+        Launcher widget implemented per the record's three prerequisites: AppManifest carries icon/categories/keywords/NoDisplay (serde defaults keep old manifests parsing), new AppIdentity1.ListApplications, icons.rs resolves imported apps via desktop_file_ids and rasterizes SVG through resvg (default-features off), pure app_search ranking module, launcher WidgetDescriptor with declared regions, and the field search bar now filters the launcher live with Enter launching the best match. Workspace tests, clippy -D warnings, and all seven xtask checks pass on the combined tree (check-actions: 21 declared actions, 11 chorded, all with pointer routes, 0 exempt).
+        """
+}
+
+record legeos.evidence.installed-home-visible-20260824/1 : evidence {
+    title "Installed LegeOS session reaches Home on the laptop"
+    state verified
+    result pass
+    method manual
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        The user reported that the display issue is fixed and the installed LegeOS session now visibly reaches the Home screen on the real laptop.
         """
 }
 
@@ -410,5 +692,218 @@ record legeos.evidence.m1-workspace-builds-and-tests/1 : evidence {
     command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
     summary """
         0 build errors, 0 clippy errors under the pedantic subset, 378 tests passed / 0 failed across the workspace (55 at M0)
+        """
+}
+
+record legeos.evidence.nm-tray2-popup-build-20260824/1 : evidence {
+    title "nm-tray2 popup integration builds"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cmake --build build --parallel 2 && QT_QPA_PLATFORM=offscreen ./build/nm-tray --help"
+    summary """
+        The user's nm-tray2 built successfully with a --popup option, session-bus forwarding to an already running instance, and LegeOS network-status provider metadata; --help exposed the new popup route.
+        """
+}
+
+record legeos.evidence.nm-tray2-xdg-install-path-20260824/1 : evidence {
+    title "nm-tray2 installs LegeOS provider metadata into the standard XDG path"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && rg -n 'nm-tray-autostart.desktop' build/cmake_install.cmake"
+    summary """
+        The regenerated nm-tray2 installer places nm-tray-autostart.desktop at /etc/xdg/autostart, so sessiond's standard XDG autostart discovery can see the LegeOS network-status provider declaration.
+        """
+}
+
+record legeos.evidence.refinement-checks-20260824/1 : evidence {
+    title "Home input and refinement checks pass"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "just check"
+    summary """
+        Formatting, warnings-denied workspace clippy, the complete workspace test suite, tree/dependency/interface/proxy/packaging/asset checks all passed with relative pointer, cursor, bare-Super, no-dock, tile filtering, clock and network-control regressions covered; the optional Rust 1.93 toolchain was not installed, so the recipe reported its install hint.
+        """
+}
+
+record legeos.evidence.refinement-debian-packages-20260824/1 : evidence {
+    title "Refined compositor and shell Debian set builds"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "just deb"
+    summary """
+        All 12 Debian packages built, then legeos-comp and legeos-shell were refreshed after final cleanup; the installable fixed packages are under target/debian.
+        """
+}
+
+record legeos.evidence.refinement-integration-smoke-20260824/1 : evidence {
+    title "Refined desktop integration smoke passes"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "tests/integration/run.sh"
+    summary """
+        The integration smoke rebuilt the workspace, exercised compositor check and exec lifetimes, and completed with 'integration smoke: ok'.
+        """
+}
+
+record legeos.evidence.standalone-files-brokered-open-20260824/1 : evidence {
+    title "Standalone Files brokered-open tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files brokered_open"
+    summary """
+        Both brokered-open tests passed: absolute files resolve through Associations1, launch through Launcher1, and record recents; relative paths are refused.
+        """
+}
+
+record legeos.evidence.standalone-files-browser-20260824/1 : evidence {
+    title "Standalone Files browser-state and clickable-row tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files browser"
+    summary """
+        Four focused browser tests passed, including stale-response safety, successful-only history, operation-plan selection, and rasterized pointer selection of a real row.
+        """
+}
+
+record legeos.evidence.standalone-files-integration-20260824/1 : evidence {
+    title "LegeOS integration smoke after standalone manager"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "tests/integration/run.sh"
+    summary """
+        The repository integration smoke rebuilt the affected desktop components and completed with integration smoke: ok.
+        """
+}
+
+record legeos.evidence.standalone-files-interaction-20260824/1 : evidence {
+    title "Standalone Files interaction parity tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files interaction"
+    summary """
+        Five interaction tests passed, covering visible-action keyboard parity, list navigation, resizable-window configuration, modifier selection and dismissible dialogs.
+        """
+}
+
+record legeos.evidence.standalone-files-live-dbus-20260824/1 : evidence {
+    title "Standalone Files live service-backed smoke"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        On an isolated session bus, real lege-filed plus lege-files --print showed the XDG places, /, /boot/efi and Samsung980_1TB with live capacity, and folder-first natural report2/report10 ordering; the graphical app then ran on the current Wayland display without panic.
+        """
+}
+
+record legeos.evidence.standalone-files-ops-properties-20260824/1 : evidence {
+    title "Standalone Files operations and properties tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test -p lege-files -p lege-filed operation && cargo test -p lege-filed properties"
+    summary """
+        Operation planning, validation, journalling, undo/cancel paths and bounded real filesystem properties all passed.
+        """
+}
+
+record legeos.evidence.standalone-files-packaging-20260824/1 : evidence {
+    title "Standalone Files package build and consistency check"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files"
+    summary """
+        Packaging consistency passed for all 13 source packages and cargo-deb produced lege-files_0.1.0-1_amd64.deb.
+        """
+}
+
+record legeos.evidence.standalone-files-workspace-20260824/1 : evidence {
+    title "Standalone Files full workspace quality gate"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && just tree-check && just deps-check && just check-interfaces"
+    summary """
+        The exact combined formatting, strict Clippy, full workspace test, tree, dependency, interface, proxy, packaging and asset gate exited successfully.
+        """
+}
+
+record legeos.evidence.taskbar-free-home-visual-20260824/1 : evidence {
+    title "Nested Home is taskbar-free and no longer flooded by Desktop tiles"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        An isolated 2560x1600 nested capture showed one full-size Home surface, the six standard drawer widgets, a top information row with clock/network/live counts, no bottom taskbar, and no repeated 'desktop' tiles; runtime logs mapped exactly one HomeSurface and no ShellOverlay.
+        """
+}
+
+record legeos.evidence.third-desktop-run-journal-20260823/1 : evidence {
+    title "Third desktop run journal diagnosis"
+    state verified
+    result pass
+    method observation
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    summary """
+        The third installed run reached Intel EGL, lit eDP-2 at 2560x1600, started the trusted shell, and remained alive for about 53 seconds; the physical power key initiated shutdown, so the later SDDM helper SIGTERM was not a startup crash.
+        """
+}
+
+record legeos.evidence.widget-foundations-nested-run-20260825/1 : evidence {
+    title "Nested run: the shell connected to lege_shell_v1, declared Layer::HomeSurface and rendered for twelve seconds with no error or panic, exercising the new widget-contract draw path, the Session system tile and the resize grip on every frame. lege-comp --check reports ok and still offers the screencopy globals on the trusted socket only."
+    state verified
+    result pass
+    method manual
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "./target/debug/lege-comp --backend winit; WAYLAND_DISPLAY=wayland-N-shell ./target/debug/lege-shell --surface"
+    summary """
+        Nested run: the shell connected to lege_shell_v1, declared Layer::HomeSurface and rendered for twelve seconds with no error or panic, exercising the new widget-contract draw path, the Session system tile and the resize grip on every frame. lege-comp --check reports ok and still offers the screencopy globals on the trusted socket only.
+        """
+}
+
+record legeos.evidence.widget-foundations-workspace-20260825/1 : evidence {
+    title "Workspace tests and clippy clean; all seven xtask checks pass, including the new check-actions (5 CLI verbs reach a subcommand, every action a surface performs is declared). lege-field's four pre-existing invariant properties — ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates, placement_is_deterministic, content_changes_move_nothing — pass unmodified alongside the two new resize properties."
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test --workspace && cargo clippy --workspace --all-targets && for c in tree-check deps-check check-interfaces check-proxies check-packaging check-assets check-actions; do cargo run -q -p xtask -- $c; done"
+    summary """
+        Workspace tests and clippy clean; all seven xtask checks pass, including the new check-actions (5 CLI verbs reach a subcommand, every action a surface performs is declared). lege-field's four pre-existing invariant properties — ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates, placement_is_deterministic, content_changes_move_nothing — pass unmodified alongside the two new resize properties.
+        """
+}
+
+record legeos.evidence.window-controls-20260825/1 : evidence {
+    title "Window close, interactive resize, context menu, and enforced pointer-route rule — workspace gates green"
+    state verified
+    result pass
+    method command
+    observed_at git:a185a0043a662c2923503984557948f598ee5220
+    command "cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo run -p xtask -- check-actions"
+    summary """
+        Window controls and mouse parity implemented: interactive resize on both routes (xdg_shell.rs resize_request and X11 _NET_WM_MOVERESIZE, plus a painted compositor-owned bottom-right grip for no-CSD windows, minimum size keeps band+grip grabbable), window.close reachable via a new shell context menu with two-step confirm, secondary-click context menu carries all previously keyboard-only actions with chords as accelerators, and check-actions now fails any declared action with a chord and no pointer route (self-expiring exemption list, currently empty). Latent grab bug fixed: band grabs are primary-button-only. Workspace tests, clippy -D warnings, and all seven xtask checks pass on the combined tree.
         """
 }

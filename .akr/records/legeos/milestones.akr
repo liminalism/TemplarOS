@@ -177,7 +177,7 @@ record legeos.milestone.m1-session-runtime/1 : milestone {
 }
 
 record legeos.milestone.m2-session-runs/1 : milestone {
-    title "M2 — the session runs: lege-comp on Smithay, graphical greeter, Home Surface and dock"
+    title "M2 — the session runs: lege-comp on Smithay, graphical greeter and taskbar-free Home Surface"
     state proposed
     scope [
         path "apps/lege-greeter/**",
@@ -188,7 +188,7 @@ record legeos.milestone.m2-session-runs/1 : milestone {
         path "shell/**"
     ]
     intent """
-        Make LegeOS reachable by a human. M1 finished the services but nothing drew a pixel, so there was no way to log in. M2 delivers the compositor (lege-comp, built directly on Smithay per ADR-0012 rather than forking cosmic-comp), the greeter (lege-greeter over greetd's JSON IPC, so greetd owns PAM), and the shell's first two surfaces — the Home Surface and the dock — on pixelkit. The measure of done is a session a person can log into and use, including when the shell is dead: the compositor's recovery band, show-all-windows, fullscreen-escape and the fallback switcher are all reachable from compositor keybindings with no shell running at all.
+        Make LegeOS reachable by a human. M1 finished the services but nothing drew a pixel, so there was no way to log in. M2 delivers the compositor (lege-comp, built directly on Smithay per ADR-0012 rather than forking cosmic-comp), the greeter (lege-greeter over greetd's JSON IPC, so greetd owns PAM), and a taskbar-free Home Surface on pixelkit. A bare Super tap is the primary route between windows and Home, backed by Home's window/session tiles rather than a permanent dock. The measure of done is a session a person can log into and use, including when the shell is dead: the compositor's recovery band, show-all-windows, fullscreen-escape and the fallback switcher are all reachable from compositor keybindings with no shell running at all.
         """
     note """
         Two things are knowingly not met, named here rather than discovered later. (1) Accessibility: docs/architecture/accessibility.md requires AT-SPI/orca, and pixelkit has no accessibility code or dependency of any kind, so the shell is invisible to a screen reader. Partially mitigated in that compositor recovery is keyboard-reachable without the shell and `lege` exposes everything the shell shows — both of which that document also requires — but the invariant is not met, and an AccessKit adapter (it has an AT-SPI backend) should be a named M3 item. (2) The pixelkit crates are path dependencies to a sibling working tree that has no git remote, so the workspace builds only on a machine with that tree beside it; this must become a pinned git dependency before any release build, and blocks reproducible packaging rather than local development.
