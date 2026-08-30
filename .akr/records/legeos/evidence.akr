@@ -213,6 +213,18 @@ record legeos.evidence.home-field-clippy-20260823/1 : evidence {
         """
 }
 
+record legeos.evidence.home-field-density-and-composition-20260830/1 : evidence {
+    title "Home Field density and composition: workspace gates green, two new layout property tests"
+    state verified
+    result pass
+    method command
+    observed_at git:06bf665f54b58b218e145fb66f8d4033e53e39bc
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- tree-check deps-check check-interfaces check-proxies check-packaging check-assets check-actions"
+    summary """
+        Workspace tests, clippy with warnings denied, rustfmt and all seven xtask gates pass with the notifications system widget added and the field's default density reworked. Two new property tests cover every field shape from 4x4 to 64x64: the drawer block holds all eight drawers with balanced columns inside a third of the width, and the system shelf lands in the bottom-right corner clear of the drawers with no two tiles sharing a cell. The Home Field visual baseline was reviewed as a render before being updated.
+        """
+}
+
 record legeos.evidence.home-field-in-text/1 : evidence {
     title "`lege-shell --print field` renders the same merged document the surface draws (one line per tile, drawer tiles present) with no session bus and no compositor."
     state verified

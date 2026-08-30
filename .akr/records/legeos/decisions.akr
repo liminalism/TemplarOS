@@ -193,6 +193,29 @@ record legeos.decision.forks-by-manifest/3 : decision {
     acknowledged true
 }
 
+record legeos.decision.home-field-default-leaves-slack/1 : decision {
+    title "The Home Field's default leaves slack: floors below preferred sizes, and a drawer block bounded by a share of the width"
+    state proposed
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    topic density
+    decision """
+        The default Home Field leaves slack rather than packing every tile at its floor. Drawer tiles take a 1x1 floor beneath their 2x2 preferred size and system tiles a 2x1 floor beneath their 3x2, so a resize has neighbours that can yield. The drawer block's shape is derived from the field's height instead of being fixed at two columns, and falls back to 1x1 shortcuts when a 2x2 block would claim more than a third of the field's width. All eight drawers stay on the field: the slack comes from lower floors, not from a shorter list.
+        """
+    context """
+        Asked as @legeos.question.home-field-default-density and left to the user: with floor and preferred both at 2x2 every neighbour of a resize was already at minimum, the clamp-rather-than-evict rule reduced every grow request to nothing, and the widget foundations' headline gesture did nothing visible on the default layout.
+
+        Adding notifications as a third system widget settled it by making the old density unsatisfiable. Three system tiles at the 3x2 class floor plus eight drawers at 2x2 leave a 1200x800 field with no arrangement that both places the launcher and keeps every open window visible, and the project treats each of those as a defect: a window that is not on Home cannot be reached, and the launcher is the only route to an application with no window yet.
+        """
+    consequences """
+        The resize gesture does something visible on a field nobody has rearranged yet. A busy field degrades by compacting its furniture instead of failing to place it, so the launcher is always present even when every cell is spoken for. A roomy field looks as it did: 2x2 drawers still fit the width share at 1080p and above, and only a short or narrow field sees the 1x1 rail.
+
+        The cost is that the default field is less information-dense than the drawers-at-2x2 arrangement on small screens, and that tile sizes now vary with the field's shape, which makes the layout harder to describe in a fixed diagram. The levers are DRAWER_WIDTH_SHARE and the two SpanRange floors in shell/lege-shell/src/field_model.rs.
+        """
+    derived_from [ @legeos.work.home-widget-foundations ]
+    resolves [ @legeos.question.home-field-default-density ]
+    supported_by [ @legeos.evidence.home-field-density-and-composition-20260830 ]
+}
+
 record legeos.decision.mkosi-images/1 : decision {
     title "D7/ADR-0006 — mkosi builds the dev/CI/VM disk image (ESP + btrfs subvolumes); the installer ISO is a later stage"
     state active

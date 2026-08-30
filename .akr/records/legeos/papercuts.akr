@@ -433,6 +433,17 @@ record legeos.papercut.the-sibling-codebase-was-referenced-as-rust/1 : papercut 
     created_at 2026-08-24
 }
 
+record legeos.papercut.the-working-tree-carried-a-body-of-in-flight/1 : papercut {
+    title "The working tree carried a body of in-flight work that did not compile…"
+    state verified
+    statement """
+        The working tree carried a body of in-flight work that did not compile (a borrow error in the portal's new dialog.rs) and had three failing shell tests, so `git status` looked like ordinary uncommitted progress while `cargo check` was broken. Running the gates before trusting a dirty tree cost a while; a pre-commit hook, or a note in the handoff that the tree is mid-change and red, would have said so up front.
+        """
+    observed_at git:06bf665f54b58b218e145fb66f8d4033e53e39bc
+    author "claude"
+    created_at 2026-08-30
+}
+
 record legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 : papercut {
     title "While adding bounded image-rs decoding, its public Limits fields looked…"
     state verified
