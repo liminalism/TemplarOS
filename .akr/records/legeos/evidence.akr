@@ -1,6 +1,65 @@
 akr 0.1
 project legeos
 
+record legeos.evidence.desktop-audit-hardware-flag-20260827/1 : evidence {
+    title "The two outputs and exit codes were byte-identical; Context.hardware has no production reads, so lege doctor --hardware does not execute the TOML hardware matrix it is documented as running."
+    state verified
+    result fail
+    method command
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    command "compare target/debug/lege doctor --root tests/fixtures/image-root --json with the same command plus --hardware"
+    summary """
+        The two outputs and exit codes were byte-identical; Context.hardware has no production reads, so lege doctor --hardware does not execute the TOML hardware matrix it is documented as running.
+        """
+}
+
+record legeos.evidence.desktop-audit-smoke-20260827/1 : evidence {
+    title "The runtime smoke exited successfully, but it remained a process/dry-run smoke: it imported the developer's live desktop entries and mimeapps and printed an UNHEALTHY boot-health report without failing."
+    state verified
+    result pass
+    method command
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    command "tests/integration/run.sh"
+    summary """
+        The runtime smoke exited successfully, but it remained a process/dry-run smoke: it imported the developer's live desktop entries and mimeapps and printed an UNHEALTHY boot-health report without failing.
+        """
+}
+
+record legeos.evidence.desktop-audit-structural-gates-20260827/1 : evidence {
+    title "All seven structural and action gates passed when invoked one subcommand at a time; clippy with warnings denied and rustfmt check also passed."
+    state verified
+    result pass
+    method command
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    command "cargo run -q -p xtask -- <each of tree-check, deps-check, check-interfaces, check-proxies, check-packaging, check-assets, check-actions>"
+    summary """
+        All seven structural and action gates passed when invoked one subcommand at a time; clippy with warnings denied and rustfmt check also passed.
+        """
+}
+
+record legeos.evidence.desktop-audit-surface-gaps-20260827/1 : evidence {
+    title "Source inspection found no automated nested session or greeter login, no graphical Settings app, portal FileChooser/AppChooser/Background wired to NoUiAvailable, offscreen Home testing that asserts PNG dimensions but no pixels, and the compositor-active boot-health marker explicitly unwired."
+    state verified
+    result fail
+    method observation
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    summary """
+        Source inspection found no automated nested session or greeter login, no graphical Settings app, portal FileChooser/AppChooser/Background wired to NoUiAvailable, offscreen Home testing that asserts PNG dimensions but no pixels, and the compositor-active boot-health marker explicitly unwired.
+        """
+}
+
+record legeos.evidence.desktop-audit-workspace-tests-20260827/1 : evidence {
+    title "The current working tree completed all 1,015 listed workspace tests with zero failures or ignored tests."
+    state verified
+    result pass
+    method command
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    command "cargo test --workspace"
+    summary """
+        The current working tree completed all 1,015 listed workspace tests with zero failures or ignored tests.
+        """
+}
+
 record legeos.evidence.desktop-debian-packages-20260823/1 : evidence {
     title "Fresh desktop Debian package set builds"
     state verified

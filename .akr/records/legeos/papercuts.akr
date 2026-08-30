@@ -209,6 +209,17 @@ record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : paper
     created_at 2026-08-25
 }
 
+record legeos.papercut.making-the-integration-smoke-hermetic-by/1 : papercut {
+    title "Making the integration smoke hermetic by replacing HOME also redirected…"
+    state verified
+    statement """
+        Making the integration smoke hermetic by replacing HOME also redirected rustup/cargo caches, triggering a full toolchain and dependency download on every run. The harness now preserves the caller's CARGO_HOME and RUSTUP_HOME explicitly.
+        """
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    author "codex"
+    created_at 2026-08-27
+}
+
 record legeos.papercut.on-this-ntfs-fuse-workspace-systemd-analyze/1 : papercut {
     title "On this NTFS/FUSE workspace, systemd-analyze verify warns that every…"
     state verified
@@ -499,4 +510,15 @@ record legeos.papercut.while-tracing-the-lege-pdf-renderer-i-assumed/1 : papercu
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.while-verifying-m2-its-structural-checks/1 : papercut {
+    title "While verifying M2, its structural-checks acceptance command (`cargo…"
+    state verified
+    statement """
+        While verifying M2, its structural-checks acceptance command (`cargo run -q -p xtask -- tree-check deps-check ...`) failed because xtask accepts exactly one subcommand. The ledger command should invoke each gate separately (or use `just check-interfaces`).
+        """
+    observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
+    author "codex"
+    created_at 2026-08-27
 }

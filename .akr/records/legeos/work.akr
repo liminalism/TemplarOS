@@ -63,6 +63,83 @@ record legeos.work.consumers-cli-portal-shell/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.desktop-validation-foundations/1 : work {
+    title "Desktop validation foundations — honest hardware, composed-session, installation and visual gates"
+    state active
+    scope [
+        path ".github/**",
+        path "apps/lege-greeter/**",
+        path "ci/**",
+        path "cli/lege/**",
+        path "compositor/**",
+        path "scripts/**",
+        path "services/lege-boot-health/**",
+        path "services/lege-hostd/**",
+        path "services/lege-sessiond/**",
+        path "shell/**",
+        path "tests/**"
+    ]
+    intent """
+        Turn the audit's false-green and manual-only desktop checks into executable gates before treating M2 as a usable session: run the hardware matrix honestly, isolate runtime smoke state, prove compositor/session readiness, automate a nested composed-session journey, exercise the greeter protocol end to end, install every desktop package in a clean root, and compare deterministic Home renders.
+        """
+    note """
+        User-set order on 2026-08-27: complete validation foundations first, then finish the ordinary desktop surfaces; real-hardware execution and its detailed matrix are deliberately deferred to a later Plan-mode session.
+        """
+    acceptance {
+        check clean-install {
+            statement """
+                CI builds every Debian package and installs the complete desktop set into a clean disposable root or VM, then checks unit binaries, session entries and package coherence.
+                """
+            method command
+            command "tests/integration/package-install.sh"
+        }
+        check greeter-integration {
+            statement """
+                A fake greetd server and the real greeter protocol/client exercise success, authentication failure, retry, cancellation, selected session command, and compositor --exec exit propagation.
+                """
+            method command
+            command "cargo test -p lege-greeter && tests/integration/greeter.sh"
+        }
+        check hardware-runner {
+            statement """
+                lege doctor --hardware parses the TOML matrix, filters by detected/requested profile and optional check ID, reports each step/expectation without executing destructive actions implicitly, and differs structurally from ordinary doctor.
+                """
+            method command
+            command "cargo test -p lege doctor::hardware"
+        }
+        check isolated-smoke {
+            statement """
+                The integration smoke uses isolated HOME/XDG directories and a private session bus, starts real session services where applicable, and cannot import developer-host desktop state.
+                """
+            method command
+            command "tests/integration/run.sh"
+        }
+        check nested-session-journey {
+            statement """
+                An automated nested journey starts compositor, services and shell, observes their readiness, launches a client, exercises input/window/Home recovery including shell restart, and leaves no processes or sockets behind.
+                """
+            method command
+            command "tests/integration/nested-session.sh"
+        }
+        check readiness-is-honest {
+            statement """
+                Boot-health cannot report a healthy session unless compositor-active and session-healthy have both been reported; the smoke asserts expected health outcomes instead of accepting any report-only output.
+                """
+            method command
+            command "cargo test -p lege-boot-health -p lege-hostd -p lege-sessiond"
+        }
+        check visual-regression {
+            statement """
+                Deterministic Home renders at representative sizes and scale/layout states are compared semantically or pixel-wise against reviewed baselines, with an explicit baseline-update command.
+                """
+            method command
+            command "cargo test -p lege-shell visual_regression"
+        }
+    }
+    derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+}
+
 record legeos.work.display-manager-session-startup-reliability/1 : work {
     title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
     state superseded

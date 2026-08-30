@@ -1,0 +1,60 @@
+akr 0.1
+project legeos
+
+record legeos.assessment.desktop-test-readiness-20260827/1 : assessment {
+    title "Desktop test-readiness audit — strong logic tests, missing system validation and core interaction surfaces"
+    state verified
+    scope [
+        path "apps/**",
+        path "ci/**",
+        path "compositor/**",
+        path "portals/**",
+        path "scripts/**",
+        path "services/**",
+        path "shell/**",
+        path "tests/**"
+    ]
+    statement """
+        LegeOS has a large, currently green unit/property test base, but the desktop cannot yet be considered system-tested: the integration harness does not start or drive a real composed session, the documented hardware runner is inert, installation/greeter/recovery/hardware paths remain manual, and several ordinary desktop interactions still have no graphical implementation.
+        """
+    confidence high
+    as_of git:a2dd92c0ae7d3dca35e79c9291f09b2f7e657934
+    claim accessibility-and-localisation {
+        text """
+            The repository ships accessibility and localisation intentions, but no AT-SPI/accessibility-tree implementation or runtime Fluent loader is present in the audited sources.
+            """
+    }
+    claim automated-foundation {
+        text """
+            All 1,015 workspace tests, lint/format checks, runtime smoke, and seven structural/action gates pass on the audited working tree.
+            """
+    }
+    claim desktop-capability-gaps {
+        text """
+            Graphical Settings is still a text renderer; FileChooser, AppChooser and Background portal prompts use NoUiAvailable; session lock is NotSupported; notifications are stored but not rendered; and power profiles are stored without idle/lid/brightness/battery actuation.
+            """
+    }
+    claim false-green-risks {
+        text """
+            The smoke test imports developer-host application state and tolerates an UNHEALTHY boot-health report, Home's offscreen test checks PNG validity and dimensions rather than rendered pixels, CI builds only the sessiond Debian package, and compositor-active boot health is explicitly unwired.
+            """
+    }
+    claim hardware-runner-noop {
+        text """
+            `lege doctor --hardware` produces byte-identical output to ordinary doctor because Context.hardware is never consumed; tests/hardware/*.toml is currently passive checklist data.
+            """
+    }
+    claim system-test-gap {
+        text """
+            There is no automated greetd-to-Home login, nested compositor input/render interaction, installed multi-package session, VM first-boot, shell-death recovery, or real-hardware execution path.
+            """
+    }
+    derived_from [ @legeos.milestone.m2-session-runs/1 ]
+    supported_by [
+        @legeos.evidence.desktop-audit-hardware-flag-20260827/1,
+        @legeos.evidence.desktop-audit-smoke-20260827/1,
+        @legeos.evidence.desktop-audit-structural-gates-20260827/1,
+        @legeos.evidence.desktop-audit-surface-gaps-20260827/1,
+        @legeos.evidence.desktop-audit-workspace-tests-20260827/1
+    ]
+}
