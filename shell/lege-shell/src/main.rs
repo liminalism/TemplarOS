@@ -80,7 +80,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if let Some(target) = &cli.print {
-        println!("{}", print_target(target, cli.limit).await?);
+        let size = parse_size(&cli.size)?;
+        println!("{}", print_target(target, cli.limit, size).await?);
         return Ok(());
     }
 
@@ -157,12 +158,12 @@ fn drawer_from_slug(target: &str) -> Option<Drawer> {
 
 /// Render one `--print` target, degrading to a readable line per drawer when its service is not
 /// reachable rather than failing the whole command.
-async fn print_target(target: &str, limit: u32) -> Result<String> {
+async fn print_target(target: &str, limit: u32, size: (u32, u32)) -> Result<String> {
     if target.eq_ignore_ascii_case("pressure") {
         return Ok(render_pressure_glossary());
     }
     if target.eq_ignore_ascii_case("field") {
-        return Ok(render_field().await);
+        return Ok(render_field(size).await);
     }
 
     let Some(drawer) = drawer_from_slug(target) else {
@@ -202,10 +203,24 @@ fn render_window_shelf() -> String {
 /// The Home Field as text: the same document the graphical surface draws, merged from the
 /// installed applications (no windows — this command has no `lege_shell_v1` connection, see
 /// `render_window_shelf`) on a default 16×8 grid, one line per tile.
-async fn render_field() -> String {
-    let (cols, rows) =
-        lege_shell::field_model::grid_for(1920, 1080, lege_shell::field_model::TILE_SIZE);
-    let mut doc = lege_field::FieldDocument::new("primary", cols, rows);
+/// The Home Field as text, at the grid `--size` implies.
+///
+/// The *persisted* field, the same one `--render` draws and the session shows, not a fresh one:
+/// this built `FieldDocument::new` and merged into it, so it always described the arrangement a
+/// brand-new field would have and never the one on screen. That made it actively misleading as a
+/// diagnostic — the two commands are meant to be the text and picture of one field, and they
+/// silently described different ones whenever a layout had ever been saved.
+async fn render_field(size: (u32, u32)) -> String {
+    let (width, height) = size;
+    let (cols, rows) = lege_shell::field_model::grid_for(
+        width as i32,
+        height as i32,
+        lege_shell::field_model::TILE_SIZE,
+    );
+    let persisted = data::fetch_field("primary", cols, rows).await;
+    let stored = persisted.is_some();
+    let mut doc =
+        persisted.unwrap_or_else(|| lege_field::FieldDocument::new("primary", cols, rows));
     lege_shell::field_model::merge(
         &mut doc,
         &lege_shell::field_model::LiveState {
@@ -213,9 +228,14 @@ async fn render_field() -> String {
             projects: &data::fetch_projects().await,
         },
     );
+    let source = if stored {
+        "the saved layout"
+    } else {
+        "a fresh field: no layout is saved, or the session service is not answering"
+    };
     format!(
-        "{}(this text command has no lege_shell_v1 connection; windows appear only in \
-         `lege-shell --surface`)",
+        "{}({source}; this text command has no lege_shell_v1 connection, so windows appear only \
+         in `lege-shell --surface`)",
         lege_field::text::render(&doc)
     )
 }
@@ -282,7 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn print_field_renders_the_drawer_tiles_without_a_bus() {
-        let text = print_target("field", 10).await.unwrap();
+        let text = print_target("field", 10, (1920, 1080)).await.unwrap();
         assert!(text.starts_with("field primary  18x10"), "{text}");
         for drawer in lege_shell::field_model::DRAWER_TILES {
             assert!(
@@ -296,7 +316,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_print_target_names_the_valid_ones() {
-        let error = print_target("wallpaper", 10).await.unwrap_err();
+        let error = print_target("wallpaper", 10, (1920, 1080))
+            .await
+            .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("wallpaper"));
         assert!(message.contains("drives"), "{message}");
@@ -307,17 +329,17 @@ mod tests {
     async fn the_two_bus_free_drawers_render_without_any_session_bus() {
         // Network has no service to reach, and the Window Shelf's producer does not exist yet;
         // both must still render, since this test runs with no session bus at all.
-        let network = print_target("network", 10).await.unwrap();
+        let network = print_target("network", 10, (1920, 1080)).await.unwrap();
         assert!(network.contains("not wired to a service yet"));
 
-        let shelf = print_target("windows", 10).await.unwrap();
+        let shelf = print_target("windows", 10, (1920, 1080)).await.unwrap();
         assert!(shelf.contains("nothing shelved"));
         assert!(shelf.contains("lege_shell_v1"));
     }
 
     #[tokio::test]
     async fn the_pressure_glossary_needs_no_bus_and_covers_every_level() {
-        let text = print_target("pressure", 10).await.unwrap();
+        let text = print_target("pressure", 10, (1920, 1080)).await.unwrap();
         for level in ["normal", "elevated", "severe", "critical"] {
             assert!(text.contains(level), "{level} missing from the glossary");
         }
@@ -340,7 +362,7 @@ mod tests {
         // Every one of these drawers must produce a sentence rather than panicking, hanging, or
         // printing a zbus debug dump.
         for target in ["recent", "drives", "operations", "trash", "projects"] {
-            let text = print_target(target, 5).await.unwrap();
+            let text = print_target(target, 5, (1920, 1080)).await.unwrap();
             assert!(
                 text.contains("unavailable"),
                 "{target} did not degrade readably: {text}"

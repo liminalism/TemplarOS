@@ -46,7 +46,7 @@ pub use field::{
     cell_rect, tile_rect,
 };
 pub use grammar::{Operation, Target, operation_for};
-pub use ops::{FieldError, FieldOp, apply};
+pub use ops::{FieldError, FieldOp, apply, reshape};
 pub use reflow::{LayoutCost, Reflow};
 pub use tile::{Representation, Span, SpanRange, Tile, TileId, TileKind, TrayId};
 

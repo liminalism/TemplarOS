@@ -23,11 +23,24 @@ pub fn load(store: &Store, output: &str) -> Result<Option<FieldDocument>> {
         .transpose()
 }
 
-/// The stored document, or a fresh empty one at `cols`×`rows` — persisted, so the first `Apply`
-/// has something to apply to and `GetRevision` answers 0 rather than "no such output".
+/// The stored document, reshaped to `cols`×`rows` if the display it was saved on is not the one
+/// asking, or a fresh empty one — persisted either way, so the first `Apply` has something to
+/// apply to and `GetRevision` answers 0 rather than "no such output".
+///
+/// The reshape is what makes the stored layout belong to the *field* rather than to whichever
+/// screen last drew it. Without it, a document saved at one resolution came back unchanged at
+/// another and was drawn over the new pixel area regardless: cells the size of the old grid
+/// stretched or squashed across the new one, and anything past a shrunken edge went out of reach.
+/// `lege_field::reshape` re-seats every tile proportionally through the ordinary reflow, so the
+/// result satisfies the same invariants a drop does.
 pub fn load_or_create(store: &Store, output: &str, cols: u16, rows: u16) -> Result<FieldDocument> {
     if let Some(doc) = load(store, output)? {
-        return Ok(doc);
+        if doc.cols == cols && doc.rows == rows {
+            return Ok(doc);
+        }
+        let reshaped = lege_field::reshape(&doc, cols, rows);
+        store.transaction(|tx| save_within(tx, &reshaped))?;
+        return Ok(reshaped);
     }
     let doc = FieldDocument::new(output, cols, rows);
     store.transaction(|tx| save_within(tx, &doc))?;

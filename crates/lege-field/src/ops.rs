@@ -605,3 +605,89 @@ fn moved_back(
         })
         .collect()
 }
+
+/// Re-seat a document onto a grid of a different size.
+///
+/// A field is persisted per output and reloaded whenever the shell starts, but the grid it was
+/// saved on is the one the *display* had at the time: change the resolution, the scale, or the
+/// monitor, and the stored cells describe a grid that no longer exists. Replayed verbatim they
+/// were drawn over the new pixel area anyway — a 24×15 field on a 1920×1080 screen gave 79×67
+/// cells instead of 104×104, so every tile was squat and the layout rules had no visible effect —
+/// and on a grid that shrank, a tile beyond the new edge simply stopped being reachable.
+///
+/// Each tile keeps its place in the field *proportionally*: a cell two thirds of the way across a
+/// 24-column grid is two thirds of the way across an 18-column one, so a shelf in the corner stays
+/// in the corner and the drawer rail stays against the left edge. Tiles are re-seated in reading
+/// order through the ordinary reflow, so the result obeys every invariant a drop does — nothing
+/// overlaps, nothing is out of bounds, and a tile that cannot fit even at its minimum span is
+/// shelved rather than dropped, which keeps it recoverable.
+///
+/// Container interiors are not touched: a project's own grid is its own, and does not change
+/// because the screen did.
+pub fn reshape(doc: &FieldDocument, cols: u16, rows: u16) -> FieldDocument {
+    let (cols, rows) = (cols.max(1), rows.max(1));
+    if doc.cols == cols && doc.rows == rows {
+        return doc.clone();
+    }
+
+    // Reading order, so the result is deterministic and the top-left keeps first claim.
+    let mut top = doc.placements_in(None);
+    top.sort_by_key(|(id, placement)| (placement.cell.row, placement.cell.col, *id));
+
+    let mut next = doc.clone();
+    next.cols = cols;
+    next.rows = rows;
+    for (id, _) in &top {
+        next.set_location(*id, None);
+    }
+
+    let mut grid = Grid {
+        cols,
+        rows,
+        places: Vec::with_capacity(top.len()),
+    };
+    for (id, placement) in top {
+        let Some(tile) = doc.tile(id) else { continue };
+        let landing = Cell::new(
+            scale(placement.cell.col, doc.cols, cols),
+            scale(placement.cell.row, doc.rows, rows),
+        );
+        // The tile's own range, with the ceiling brought inside the new grid so a span that only
+        // made sense on a larger one cannot be asked for.
+        let spans = SpanRange::new(
+            Span::new(tile.spans.min.cols.min(cols), tile.spans.min.rows.min(rows)),
+            Span::new(placement.span.cols.min(cols), placement.span.rows.min(rows)),
+            Span::new(tile.spans.max.cols.min(cols), tile.spans.max.rows.min(rows)),
+        );
+        // The preferred landing first, then every other band, because `find_placement` only
+        // considers the band its anchor is in. Shelving is a genuinely last resort: nothing in
+        // the shell offers a route back off the shelf, so a tile put there by a resolution
+        // change would be gone until the user rebuilt it by hand.
+        let Some(reflow) = std::iter::once(landing)
+            .chain((0..rows).flat_map(|row| (0..cols).map(move |col| Cell::new(col, row))))
+            .find_map(|candidate| find_placement(&grid, &spans, candidate, None).ok())
+        else {
+            continue;
+        };
+        apply_reflow(&mut grid, id, &reflow);
+        for (moved, placement) in &grid.places {
+            next.set_location(
+                *moved,
+                Some(Located {
+                    container: None,
+                    placement: *placement,
+                }),
+            );
+        }
+    }
+    next
+}
+
+/// `value` on a `from`-wide axis, at the same proportion of a `to`-wide one.
+fn scale(value: u16, from: u16, to: u16) -> u16 {
+    if from <= 1 {
+        return 0;
+    }
+    let scaled = u32::from(value) * u32::from(to) / u32::from(from);
+    u16::try_from(scaled).unwrap_or(u16::MAX).min(to - 1)
+}

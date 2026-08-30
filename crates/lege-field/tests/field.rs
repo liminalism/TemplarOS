@@ -693,3 +693,112 @@ fn a_document_from_another_version_is_refused() {
         FieldError::VersionMismatch
     );
 }
+
+proptest! {
+    /// Reshaping onto another grid is still a legal field: nothing overlaps, nothing is out of
+    /// bounds, and no tile is silently dropped — a tile with nowhere to go is shelved, which
+    /// leaves it listed and recoverable rather than gone.
+    ///
+    /// This is the invariant behind reloading a persisted layout on a display that is not the one
+    /// it was saved on.
+    #[test]
+    fn reshaping_onto_another_grid_keeps_the_field_legal(
+        steps in proptest::collection::vec(step(), 1..15),
+        cols in 2..14u16,
+        rows in 2..12u16,
+    ) {
+        let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+        for step in &steps {
+            if let Ok((next, _)) = apply(&doc, &to_op(&doc, step)) {
+                doc = next;
+            }
+        }
+
+        let next = lege_field::reshape(&doc, cols, rows);
+        prop_assert_eq!(next.cols, cols);
+        prop_assert_eq!(next.rows, rows);
+        prop_assert_eq!(
+            next.tiles.len(),
+            doc.tiles.len(),
+            "reshape must not drop a tile from the document"
+        );
+
+        let top = next.placements_in(None);
+        for (index, (id, placement)) in top.iter().enumerate() {
+            prop_assert!(
+                placement.fits(cols, rows),
+                "{:?} at {:?} is outside the {}x{} grid",
+                id, placement, cols, rows
+            );
+            for (other_id, other) in top.iter().skip(index + 1) {
+                prop_assert!(
+                    !placement.overlaps(*other),
+                    "{:?} at {:?} overlaps {:?} at {:?}",
+                    id, placement, other_id, other
+                );
+            }
+        }
+
+        // A tile inside a project keeps its interior placement: the project's grid is its own and
+        // does not change because the screen did.
+        for (id, before) in &doc.located {
+            if before.container.is_some() {
+                prop_assert_eq!(
+                    next.location(*id),
+                    Some(*before),
+                    "{:?} moved inside its container",
+                    id
+                );
+            }
+        }
+    }
+
+    /// Reshaping to the size the document already has changes nothing at all.
+    #[test]
+    fn reshaping_to_the_same_grid_is_the_identity(
+        steps in proptest::collection::vec(step(), 1..15),
+    ) {
+        let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+        for step in &steps {
+            if let Ok((next, _)) = apply(&doc, &to_op(&doc, step)) {
+                doc = next;
+            }
+        }
+        prop_assert_eq!(lege_field::reshape(&doc, COLS, ROWS), doc);
+    }
+}
+
+/// A field that fits comfortably on the new grid keeps every tile placed. Shelving during a
+/// reshape is a last resort, not a shortcut: nothing offers a route back off the shelf, so a tile
+/// put there by a change of resolution would be gone until the user rebuilt it by hand.
+#[test]
+fn reshaping_onto_a_roomier_grid_shelves_nothing() {
+    let mut doc = FieldDocument::new("eDP-1", COLS, ROWS);
+    for index in 0..6u64 {
+        let op = FieldOp::Place {
+            tile: tile(
+                index + 1,
+                TileKind::App {
+                    app_id: "org.legeos.Files".parse().unwrap(),
+                },
+            ),
+            landing: Landing {
+                container: None,
+                cell: Cell::new((index as u16) % COLS, (index as u16) / COLS),
+            },
+        };
+        doc = apply(&doc, &op).expect("placed").0;
+    }
+    let placed = doc.placements_in(None).len();
+    assert_eq!(placed, 6, "the fixture itself must start fully placed");
+
+    for (cols, rows) in [(16, 12), (4, 4), (COLS, ROWS), (32, 3)] {
+        let next = lege_field::reshape(&doc, cols, rows);
+        assert_eq!(
+            next.placements_in(None).len(),
+            placed,
+            "{cols}x{rows} has room for all six, so none may be shelved"
+        );
+        assert_eq!(next.shelved().count(), 0, "{cols}x{rows} shelved a tile");
+    }
+}
