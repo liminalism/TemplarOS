@@ -66,10 +66,13 @@ fn drawer_grid(cols: u16, rows: u16) -> (u16, u16, u16) {
     let len = u16::try_from(DRAWER_TILES.len()).unwrap_or(u16::MAX);
     let budget = (cols / DRAWER_WIDTH_SHARE).max(1);
     for span in [DRAWER_SPAN, 1] {
-        let per_column = (rows / span).max(1);
-        let columns = len.div_ceil(per_column);
+        let fit = (rows / span).max(1);
+        let columns = len.div_ceil(fit);
         if columns * span <= budget || span == 1 {
-            return (span, per_column, columns);
+            // Spread over the columns the height forced rather than filling each to the brim:
+            // eight drawers in two columns is four and four, not five and three with a notch cut
+            // out of the second.
+            return (span, len.div_ceil(columns), columns);
         }
     }
     unreachable!("the loop returns on its last iteration")
@@ -295,26 +298,31 @@ fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     }
 }
 
-/// Where Home first puts each system tile: alternating bottom corners.
+/// System widgets form a shelf in the bottom-right corner, packed right to left in declaration
+/// order and stacking upward once the row is full, never left of the drawer block.
 ///
-/// Both used to land on the bottom left, which meant the second one arrived on top of the first
-/// and the reflow shoved it — and then a drawer — somewhere neither belonged. Opposite corners
-/// keep the two apart on any grid wide enough for them, and leave the middle of the field, where
-/// windows and applications live, alone.
-/// System widgets form a shelf along the bottom of the field, to the right of the drawer block,
-/// packed left to right and stacking upward when the row is full.
-///
-/// The previous rule alternated bottom-left and bottom-right, which only has room for two: a
+/// The rule used to alternate bottom-left and bottom-right, which has room for exactly two: a
 /// third widget landed on the first one's cell and the reflow scattered it, moving every tile
-/// placed after it. Packing is stable as widgets are added, and leaves the drawer columns alone
-/// instead of landing inside them and being pushed straight back out.
+/// placed after it. Packing is stable as widgets are added.
+///
+/// The corner rather than the drawer block's right edge: anchored to the drawers the shelf sat
+/// wherever the block happened to end and trailed off into empty field, which reads as an
+/// accident on a wide screen. In the corner it balances the status cluster diagonally opposite
+/// it, and the middle of the field — where windows and applications live — stays clear.
 fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange) -> Cell {
     let width = spans.preferred.cols.max(1);
     let height = spans.preferred.rows.max(1);
     let first_col = drawer_reserved_cols(doc.cols, doc.rows);
     let per_row = (doc.cols.saturating_sub(first_col) / width).max(1);
+    let len = u16::try_from(SYSTEM_WIDGETS.len()).unwrap_or(u16::MAX);
     let index = u16::try_from(index).unwrap_or(u16::MAX);
-    let col = (first_col + (index % per_row) * width).min(doc.cols.saturating_sub(width));
+    // Right to left from the corner, so the group's right edge is the field's — however many
+    // widgets share the row, and whatever width they take.
+    let in_row = per_row
+        .min(len.saturating_sub((index / per_row) * per_row))
+        .max(1);
+    let from_right = in_row.saturating_sub(index % per_row).saturating_mul(width);
+    let col = doc.cols.saturating_sub(from_right).max(first_col);
     let row = doc
         .rows
         .saturating_sub(height)
@@ -692,6 +700,112 @@ mod tests {
             Some(moved),
             "a refresh put the session widget back where Home wanted it"
         );
+    }
+
+    /// The drawer block's shape, over every field the grid can produce: it holds all eight
+    /// drawers, its columns differ by at most one, and it never takes more than a third of the
+    /// width unless a single column already does.
+    #[test]
+    fn the_drawer_block_fits_its_field_and_its_columns_are_balanced() {
+        for cols in 4..=64u16 {
+            for rows in 4..=64u16 {
+                let (span, per_column, columns) = drawer_grid(cols, rows);
+                let len = u16::try_from(DRAWER_TILES.len()).unwrap();
+                assert!(
+                    per_column * columns >= len,
+                    "{cols}x{rows}: {columns} columns of {per_column} hold fewer than {len}"
+                );
+                assert!(
+                    per_column * span <= rows,
+                    "{cols}x{rows}: a column of {per_column} at span {span} overflows {rows} rows"
+                );
+                // Balanced: dropping one from any column would no longer fit them all.
+                assert!(
+                    (per_column - 1) * columns < len,
+                    "{cols}x{rows}: {columns}x{per_column} is taller than it needs to be"
+                );
+                let width = drawer_reserved_cols(cols, rows);
+                assert!(
+                    width < cols,
+                    "{cols}x{rows}: the block leaves no room beside it"
+                );
+                if span == DRAWER_SPAN {
+                    assert!(
+                        width <= cols / DRAWER_WIDTH_SHARE,
+                        "{cols}x{rows}: a 2x2 block claims {width} of {cols} columns"
+                    );
+                } else {
+                    // Already down to 1x1: as narrow as eight drawers can be on a field this
+                    // short, which on a very small one still exceeds the share. Nothing left
+                    // to give.
+                    assert_eq!(
+                        columns,
+                        len.div_ceil(rows),
+                        "{cols}x{rows}: a 1x1 block is wider than it has to be"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The shelf sits in the bottom-right corner, in bounds, clear of the drawer block, and with
+    /// one tile per cell — the failure the alternating-corners rule had when a third widget
+    /// arrived was two tiles landing on the same cell.
+    #[test]
+    fn the_system_shelf_lands_in_the_corner_without_overlapping_the_drawers() {
+        for cols in 4..=64u16 {
+            for rows in 4..=64u16 {
+                let doc = FieldDocument::new("eDP-1", cols, rows);
+                let kind = TileKind::System {
+                    probe: "session".to_owned(),
+                };
+                let class = SpanRange::for_kind(&kind, cols, rows);
+                let spans = SpanRange::new(Span::new(2, 1), class.min, class.max);
+                let reserved = drawer_reserved_cols(cols, rows);
+                let per_row = (cols.saturating_sub(reserved) / spans.preferred.cols.max(1)).max(1);
+                let cells: Vec<Cell> = (0..SYSTEM_WIDGETS.len())
+                    .map(|index| system_landing(index, &doc, spans))
+                    .collect();
+                for cell in &cells {
+                    assert!(
+                        cell.col + spans.preferred.cols <= cols || cell.col == reserved,
+                        "{cols}x{rows}: {cell:?} runs off the right edge"
+                    );
+                    assert!(
+                        cell.row + spans.preferred.rows <= rows,
+                        "{cols}x{rows}: {cell:?} runs off the bottom"
+                    );
+                    assert!(
+                        cell.col >= reserved,
+                        "{cols}x{rows}: {cell:?} lands inside the drawer block"
+                    );
+                }
+                // Distinct landings wherever the shelf can actually be seated. On a field too
+                // small to hold it — three 3x2 tiles want more than a 4x4 grid has — the landing
+                // is only a preference and the reflow settles the rest.
+                let seats = (rows / spans.preferred.rows) * per_row;
+                if usize::from(seats) >= SYSTEM_WIDGETS.len() {
+                    let mut distinct = cells.clone();
+                    distinct.sort_by_key(|cell| (cell.row, cell.col));
+                    distinct.dedup();
+                    assert_eq!(
+                        distinct.len(),
+                        cells.len(),
+                        "{cols}x{rows}: two shelf tiles share a landing — {cells:?}"
+                    );
+                }
+                // The rightmost tile of the bottom row reaches the field's right edge, so the
+                // shelf reads as anchored to the corner rather than trailing off mid-field.
+                if cols.saturating_sub(reserved) >= spans.preferred.cols {
+                    let right = cells.iter().map(|cell| cell.col).max().unwrap();
+                    assert_eq!(
+                        right + spans.preferred.cols,
+                        cols,
+                        "{cols}x{rows}: the shelf stops short of the right edge"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -192,6 +192,16 @@ impl FieldDocument {
             .collect()
     }
 
+    /// How many tiles sit on one grid, without building the list. The field's draw asks this of
+    /// every tile on every frame, purely to decide whether a project shows a child count; going
+    /// through [`Self::placements_in`] allocated a vector per tile per frame to call `.len()` on.
+    pub fn count_in(&self, container: Option<TileId>) -> usize {
+        self.located
+            .iter()
+            .filter(|(_, located)| located.container == container)
+            .count()
+    }
+
     /// The size of one grid: the field's, or a container's.
     pub fn grid_size(&self, container: Option<TileId>) -> Option<(u16, u16)> {
         match container {

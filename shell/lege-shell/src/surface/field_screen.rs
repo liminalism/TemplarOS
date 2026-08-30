@@ -1079,23 +1079,26 @@ impl FieldScreen {
                 // Topmost tile whose grab band is under the pointer: later in reading order
                 // draws later, so search from the end. The grip is checked first for the same
                 // reason, so a tile drawn later cannot have its corner stolen by one beneath it.
-                for (id, rect) in self.current_rects(doc, ui).into_iter().rev() {
-                    let resizable = doc.tile(id).is_some_and(Self::resizable);
-                    if resizable && Self::grip(rect, ui).contains(cx, cy) {
+                // One pass over the rects, walked twice: laying them out means a `tile_rect` for
+                // every tile and a sort, and this arm runs on every press.
+                let rects = self.current_rects(doc, ui);
+                for (id, rect) in rects.iter().rev() {
+                    let resizable = doc.tile(*id).is_some_and(Self::resizable);
+                    if resizable && Self::grip(*rect, ui).contains(cx, cy) {
                         let span = doc
-                            .location(id)
+                            .location(*id)
                             .map_or_else(|| Span::new(1, 1), |located| located.placement.span);
-                        self.resize = Some((id, span));
-                        self.focus = Some(id);
+                        self.resize = Some((*id, span));
+                        self.focus = Some(*id);
                         self.keyboard_move = None;
                         self.keyboard_resize = None;
                         return;
                     }
                 }
                 let mut hit = None;
-                for (id, rect) in self.current_rects(doc, ui).into_iter().rev() {
-                    if Self::band(rect, ui).contains(cx, cy) {
-                        hit = Some((id, rect));
+                for (id, rect) in rects.iter().rev() {
+                    if Self::band(*rect, ui).contains(cx, cy) {
+                        hit = Some((*id, *rect));
                         break;
                     }
                 }
@@ -1565,7 +1568,7 @@ impl FieldScreen {
             TileKind::ParkedSession { .. } => (design::SHELL, design::EDGE_STRONG),
             TileKind::System { .. } => (design::SYSTEM_SHELL, design::EDGE_STRONG),
             TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
             {
                 (design::SYSTEM_SHELL, design::EDGE_STRONG)
             }
@@ -1602,7 +1605,7 @@ impl FieldScreen {
         }
 
         let band = Self::band(rect, ui);
-        let child_count = data.field.placements_in(Some(tile.id)).len();
+        let child_count = data.field.count_in(Some(tile.id));
         let controls_width = match &tile.kind {
             TileKind::ParkedSession { .. } if window.is_some_and(|window| !window.shelved) => 64,
             TileKind::App { .. } if running > 0 => 32,
@@ -1615,7 +1618,7 @@ impl FieldScreen {
             TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
             TileKind::System { .. } => tile.title.to_uppercase(),
             TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
             {
                 tile.title.to_uppercase()
             }
@@ -1624,7 +1627,7 @@ impl FieldScreen {
         let title_style = match &tile.kind {
             TileKind::Project { .. } | TileKind::System { .. } => design::system_label_style(ui),
             TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget) == Some(Drawer::Drives) =>
+                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
             {
                 design::system_label_style(ui)
             }

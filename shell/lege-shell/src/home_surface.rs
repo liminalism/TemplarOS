@@ -49,6 +49,16 @@ impl Drawer {
         }
     }
 
+    /// Whether this drawer reports on the machine rather than listing the user's files.
+    ///
+    /// The field draws the two differently — an instrument takes the system tile's shell and its
+    /// tracked capitals, a file location takes the ordinary tile's. Drives already did; Operations
+    /// and Network are the same kind of thing and were reading as file locations, and the rule
+    /// lived as the same `== Drawer::Drives` test written out in three places.
+    pub fn is_instrument(self) -> bool {
+        matches!(self, Self::Drives | Self::Network | Self::Operations)
+    }
+
     pub fn description(self) -> &'static str {
         match self {
             Self::Recent => "Recently used files, applications and projects",
