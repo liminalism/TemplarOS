@@ -881,6 +881,30 @@ record legeos.work.home-input-and-refinement/1 : work {
     part_of [ @legeos.work.home-field ]
 }
 
+record legeos.work.home-shelf-and-representation-ladder/1 : work {
+    title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
+    state proposed
+    scope [
+        path "crates/lege-field/**",
+        path "crates/lege-types/src/action.rs",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Close the three gaps the reshape work exposed, all of them about showing and hiding information deliberately rather than by accident.
+
+        One: a tile on the shelf is unreachable (@legeos.observation.shelved-tiles-have-no-route-back). Needs the shelf enumerated somewhere a person can see it and a `field.restore` action to bring a tile back, declared in the manifest like every other action so it reaches the menu, the cheat sheet and the CLI at once.
+
+        Two: nothing resets a field to its defaults. `merge` is add-only by design — it never moves a tile the user placed — so every layout improvement is invisible to anyone with a saved field, and a field that has drifted into a mess can only be repaired tile by tile. `lege_field::reflow::tidy` exists as the packing primitive and has no command above it.
+
+        Three: drawer tiles do not climb the representation ladder that `docs/homefield.md` describes and the system widgets already implement. A drawer clips its raw text lines to whatever height it has, so a short tile shows a truncated path rather than the 'name, count, content-colour band' the design calls for at the compact rung. The data is unstructured text today, so this likely needs the drawer feed to carry a count and a headline separately from its lines.
+        """
+    note """
+        Opened from the reshape work rather than planned: the first two were only visible once `--print field` stopped describing a hypothetical field, and the third once tiles were drawn at their true size.
+        """
+    derived_from [ @legeos.observation.shelved-tiles-have-no-route-back ]
+    part_of [ @legeos.work.home-widgets ]
+}
+
 record legeos.work.home-widget-foundations/1 : work {
     title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
     state superseded

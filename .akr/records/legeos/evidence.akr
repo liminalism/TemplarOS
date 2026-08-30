@@ -347,6 +347,18 @@ record legeos.evidence.home-field-projects-and-zoom/1 : evidence {
         """
 }
 
+record legeos.evidence.home-field-reshape-across-resolutions-20260831/1 : evidence {
+    title "Persisted Home Field reshapes across resolutions without losing or degrading tiles"
+    state verified
+    result pass
+    method command
+    observed_at git:53f7fd81e0e68bdff94978d180304fd0935509b6
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && for s in 1920x1080 1366x768 1024x768 2560x1600 1920x1080; do lege-shell --print field --size $s; done"
+    summary """
+        Workspace gates green. Against a live lege-sessiond holding a layout saved on a 24x15 grid, the persisted Home Field now follows the requested grid at 1920x1080 (18x10), 1366x768 (13x7), 1024x768 (9x7) and 2560x1600 (24x15) and back to 1920x1080, with ten tiles placed at every step and no degradation over repeated round trips. The one shelved tile (Recent) was already shelved in the saved document before the change. Three new lege-field tests: two properties over arbitrary edit histories and target grids (legal field, no overlap, in bounds, container interiors untouched, identity at the same size) and one case asserting a roomier grid shelves nothing.
+        """
+}
+
 record legeos.evidence.home-field-shelved-is-hidden/1 : evidence {
     title "WindowService::is_visible reports a shelved window hidden and an unshelved one visible; space_sync unmaps hidden windows from Space, topmost_window_at filters on is_visible, collect_bands skips hidden windows."
     state verified

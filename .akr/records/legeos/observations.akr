@@ -51,6 +51,27 @@ record legeos.observation.home-hands-on-failures-diagnosed/1 : observation {
     derived_from [ @legeos.work.home-widget-foundations ]
 }
 
+record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {
+    title "A stashed tile has no route back onto the field, and a drawer already sits on the shelf unreachable"
+    state verified
+    scope [ path "crates/lege-types/src/action.rs", path "shell/lege-shell/**" ]
+    statement """
+        The action manifest declares `field.stash` but no inverse. Delete shelves the focused tile, `lege_field` keeps it in `tiles` with no location, and the only way back is `field.undo` immediately afterwards — nothing enumerates the shelf, and no action, context-menu entry or chord restores from it. `FieldDocument::shelved()` exists and has no user-facing surface above it.
+
+        This is not hypothetical on the developer host: the saved field carries the Recent drawer on the shelf, which is why Recent renders nowhere. `merge_drawers` cannot bring it back, because it skips any drawer whose tile already exists and correctly refuses to undo a deliberate stash — a tile shelved by accident and one shelved on purpose are indistinguishable once saved.
+
+        The Window Shelf drawer covers minimised windows only. There is no equivalent for tiles.
+        """
+    observed_at git:53f7fd81e0e68bdff94978d180304fd0935509b6
+    method observation
+    watches [
+        "crates/lege-types/src/action.rs",
+        "shell/lege-shell/src/surface/field_screen.rs",
+        "shell/lege-shell/src/surface/context_menu.rs"
+    ]
+    derived_from [ @legeos.evidence.home-field-reshape-across-resolutions-20260831 ]
+}
+
 record legeos.observation.transient-unit-launch-converged-independently/1 : observation {
     title "Omarchy launches applications into transient systemd units too, then identifies windows by self-declared app_id anyway"
     state superseded
