@@ -123,6 +123,12 @@ enum Command {
         /// Include hardware-matrix checks.
         #[arg(long)]
         hardware: bool,
+        /// Select one hardware case or built-in check (for example `gpu-mode`).
+        #[arg(long, requires = "hardware")]
+        check: Option<String>,
+        /// Override hardware profile detection when reviewing a matrix off-device.
+        #[arg(long, requires = "hardware")]
+        profile: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -366,9 +372,15 @@ async fn run() -> Result<()> {
         Command::Doctor {
             root,
             hardware,
+            check,
+            profile,
             json,
         } => {
-            let findings = doctor::run_all(&doctor::Context { root, hardware });
+            let context = doctor::Context { root, hardware };
+            let findings = doctor::run_all_with_hardware(
+                &context,
+                &doctor::hardware::HardwareOptions { check, profile },
+            );
             if json {
                 println!("{}", serde_json::to_string_pretty(&findings)?);
             } else {

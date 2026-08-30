@@ -53,6 +53,32 @@ impl BackgroundUi for NoUiAvailable {
     }
 }
 
+/// Pixelkit consent prompt used for applications sessiond cannot already vouch for.
+#[derive(Debug, Default)]
+pub struct NativeUi;
+
+#[async_trait]
+impl BackgroundUi for NativeUi {
+    async fn ask(&self, app_id: &str, display_name: &str) -> Option<u32> {
+        let title = "Background access".to_owned();
+        let message = format!("Allow {display_name} ({app_id}) to keep running in the background?");
+        tokio::task::spawn_blocking(move || {
+            crate::dialog::choice(title, message, vec!["Forbid".into(), "Allow".into()]).map(
+                |choice| {
+                    if choice == "Allow" {
+                        notify_result::ALLOW
+                    } else {
+                        notify_result::FORBID
+                    }
+                },
+            )
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+}
+
 /// The one slice of `Resources1.Report`'s JSON this backend needs. `lege_resourced::state::Report`
 /// only derives `Serialize` (it is produced by the governor, never consumed back), so this is a
 /// deliberately partial, local mirror rather than a dependency on a type that does not exist.

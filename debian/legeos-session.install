@@ -2,6 +2,5 @@ target/release/lege-session usr/bin/
 session/units/wayland-sessions/legeos.desktop usr/share/wayland-sessions/
 session/units/user/legeos-session.target usr/lib/systemd/user/
 session/units/user/lege-shell.service usr/lib/systemd/user/
-session/units/greetd/config.toml usr/share/legeos/greetd/
 distro/branding/os-release usr/share/legeos/branding/
 distro/branding/lsb-release usr/share/legeos/branding/

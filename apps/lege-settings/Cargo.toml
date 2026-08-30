@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 lege-client = { workspace = true }
+lege-session-core = { workspace = true }
 lege-types = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -23,6 +24,10 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
 
 [lints]
 workspace = true
@@ -32,4 +37,7 @@ name = "legeos-settings"
 section = "x11"
 priority = "optional"
 depends = "$auto, legeos-sessiond"
-assets = [["target/release/lege-settings", "usr/bin/lege-settings", "755"]]
+assets = [
+    ["target/release/lege-settings", "usr/bin/lege-settings", "755"],
+    ["org.legeos.Settings.desktop", "usr/share/applications/org.legeos.Settings.desktop", "644"],
+]

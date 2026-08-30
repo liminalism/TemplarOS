@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod checks;
+pub mod hardware;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -57,10 +58,22 @@ pub trait Check: Sync {
 
 /// Run every registered check.
 pub fn run_all(context: &Context) -> Vec<Finding> {
-    checks::all()
+    run_all_with_hardware(context, &hardware::HardwareOptions::default())
+}
+
+/// Run the package/image checks and, when requested, append the selected hardware-matrix plan.
+pub fn run_all_with_hardware(
+    context: &Context,
+    hardware_options: &hardware::HardwareOptions,
+) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = checks::all()
         .iter()
         .map(|check| check.run(context))
-        .collect()
+        .collect();
+    if context.hardware {
+        findings.extend(hardware::findings(context, hardware_options));
+    }
+    findings
 }
 
 /// Exit code convention: 0 all pass, 1 any error, 2 warnings only.

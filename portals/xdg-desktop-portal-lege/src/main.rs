@@ -12,6 +12,7 @@
 mod app_chooser;
 mod background;
 mod clients;
+mod dialog;
 mod file_chooser;
 mod request;
 mod settings;
@@ -65,9 +66,38 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Whether a compositor is reachable. Without one, the Pixelkit dialogs have nothing to open
+/// onto, so each interface falls back to its headless default — which declines rather than
+/// fabricating an answer — instead of blocking a worker thread on a window that cannot appear.
+fn display_available() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
+}
+
 /// Wire every interface onto `connection` and start the background forwarders. Split out from
 /// `main` so a future integration test can call it directly against a private connection.
 async fn serve(connection: &zbus::Connection) -> Result<()> {
+    let graphical = display_available();
+    if !graphical {
+        tracing::warn!(
+            "no WAYLAND_DISPLAY or DISPLAY: portal dialogs will decline instead of prompting"
+        );
+    }
+    let file_chooser_ui: Arc<dyn file_chooser::FileChooserUi> = if graphical {
+        Arc::new(file_chooser::NativeUi)
+    } else {
+        Arc::new(file_chooser::NoUiAvailable)
+    };
+    let app_chooser_ui: Arc<dyn app_chooser::AppChooserUi> = if graphical {
+        Arc::new(app_chooser::NativeUi)
+    } else {
+        Arc::new(app_chooser::NoUiAvailable)
+    };
+    let background_ui: Arc<dyn background::BackgroundUi> = if graphical {
+        Arc::new(background::NativeUi)
+    } else {
+        Arc::new(background::NoUiAvailable)
+    };
+
     let recents: Arc<dyn clients::RecentsClient> = Arc::new(LiveRecents(connection.clone()));
     let associations: Arc<dyn clients::AssociationsClient> =
         Arc::new(LiveAssociations(connection.clone()));
@@ -81,7 +111,7 @@ async fn serve(connection: &zbus::Connection) -> Result<()> {
             PATH,
             file_chooser::FileChooserApi {
                 recents,
-                ui: Arc::new(file_chooser::NoUiAvailable),
+                ui: file_chooser_ui,
             },
         )
         .await
@@ -92,7 +122,7 @@ async fn serve(connection: &zbus::Connection) -> Result<()> {
             PATH,
             app_chooser::AppChooserApi {
                 associations,
-                ui: Arc::new(app_chooser::NoUiAvailable),
+                ui: app_chooser_ui,
             },
         )
         .await
@@ -113,7 +143,7 @@ async fn serve(connection: &zbus::Connection) -> Result<()> {
             PATH,
             background::BackgroundApi {
                 app_state: Arc::clone(&app_state),
-                ui: Arc::new(background::NoUiAvailable),
+                ui: background_ui,
             },
         )
         .await

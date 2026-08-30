@@ -9,16 +9,16 @@ shadow and nothing setuid. The lock screen is unrelated to any of this — it is
 greeter at all.
 
 `config.toml` here is the template installed to `/usr/share/legeos/greetd/config.toml` by the
-`legeos-session` package (`debian/legeos-session.install`). Getting it live at `/etc/greetd/config.toml`
-is a packaging step that does not exist yet (no postinst copies it) — see "Enabling" below for the manual
-equivalent, and the note at the end of this file for what that gap is.
+`legeos-greeter` package. The LegeOS image build copies it to `/etc/greetd/config.toml`, disables the
+conflicting VT1 getty, and enables greetd. An ordinary package installation intentionally leaves an
+administrator's existing display-manager configuration untouched; see "Enabling" for that case.
 
 ## The greetd user
 
 greetd runs `default_session.command` as `default_session.user` — a dedicated system account, never a
-real login. `config.toml` here names it `lege-greeter`; nothing currently creates that account
-automatically (there is no `sysusers.d` entry for it yet — another packaging gap, noted below). Until
-that lands, create it by hand once per image/install:
+real login. `config.toml` names it `lege-greeter`; the package ships
+`/usr/lib/sysusers.d/legeos-greeter.conf` and `/usr/lib/tmpfiles.d/legeos-greeter.conf`, so normal
+package/image setup creates both the account and its state directory. To repair them manually:
 
 ```sh
 sudo useradd --system --no-create-home --home-dir /var/lib/lege-greeter \
@@ -83,9 +83,11 @@ Two things worth knowing before debugging this on real hardware:
 
 1. Install `legeos-comp`, `legeos-greeter` and `greetd` (`legeos-session` already `Recommends:` all three,
    `debian/control`).
-2. Put this directory's `config.toml` at `/etc/greetd/config.toml` (until the packaging gap above is
-   closed): `sudo install -m 644 /usr/share/legeos/greetd/config.toml /etc/greetd/config.toml`.
-3. Create the `lege-greeter` user (above), if the package has not by the time this is read.
+2. Put this directory's `config.toml` at `/etc/greetd/config.toml`:
+   `sudo install -m 644 /usr/share/legeos/greetd/config.toml /etc/greetd/config.toml`.
+3. Apply the packaged account declarations if package hooks have not already done so:
+   `sudo systemd-sysusers /usr/lib/sysusers.d/legeos-greeter.conf` and
+   `sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/legeos-greeter.conf`.
 4. **Check VT1 is not already spoken for.** `config.toml` runs on `vt = 1`; if a getty is still enabled
    there (`systemctl status getty@tty1.service`), greetd and the getty will both be attached to the same
    VT and corrupt each other's display. Disable it first:
@@ -138,9 +140,8 @@ A broken greeter means no graphical login at all, on the one VT it occupies. Non
   whole IPC client and state machine are tested against an in-process fake greetd, with no socket file,
   no display and no PAM anywhere near it.
 
-## Known gaps outside this file's own reach
+## Remaining boundary
 
-Both noted above, repeated here because they are easy to miss: no `sysusers.d`/postinst creates the
-`lege-greeter` system user yet, and no postinst copies `config.toml` from
-`/usr/share/legeos/greetd/config.toml` to the live `/etc/greetd/config.toml`. Both are `debian/**`
-packaging work, not `session/units/greetd/**`'s to do.
+The package ships the account declarations and a safe configuration template. Only the LegeOS image
+build selects it automatically; a package installed alongside another desktop does not replace that
+machine's display manager. Real PAM/logind/seat/VT testing remains part of the hardware phase.

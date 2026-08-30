@@ -2,10 +2,9 @@
 # cosmic-greeter — lege-greeter uses pixelkit, the same toolkit as the shell, and speaks greetd's
 # JSON IPC directly; greetd alone owns PAM).
 #
-# Installed as /usr/share/legeos/greetd/config.toml by the legeos-session package
-# (debian/legeos-session.install); becoming the live /etc/greetd/config.toml is a packaging step
-# outside this file's own reach (see README.md beside this file for what still has to happen and
-# how to recover if it goes wrong).
+# Installed as /usr/share/legeos/greetd/config.toml by the legeos-greeter package. The LegeOS image
+# build deliberately installs it as /etc/greetd/config.toml; an ordinary package install leaves an
+# administrator's existing display-manager configuration untouched.
 [terminal]
 # VT1. If the image still runs a getty on tty1 (`systemctl status getty@tty1.service`), disable or
 # mask it first — greetd and a getty both attached to the same VT corrupt each other's output. See

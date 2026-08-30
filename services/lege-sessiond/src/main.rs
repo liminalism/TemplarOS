@@ -41,6 +41,17 @@ struct Cli {
     #[arg(long = "manifest-dir")]
     manifest_dirs: Vec<PathBuf>,
 
+    /// Override the standard desktop-entry search path (repeatable). Intended for hermetic tests
+    /// and image validation; when omitted the normal system and user application directories are
+    /// scanned.
+    #[arg(long = "application-dir")]
+    application_dirs: Vec<PathBuf>,
+
+    /// Do not read system/user manifest defaults. Use with explicit `--manifest-dir` and
+    /// `--application-dir` arguments to make integration tests independent of the host install.
+    #[arg(long)]
+    no_default_discovery: bool,
+
     /// State database path (default: $XDG_STATE_HOME/legeos/session.db).
     #[arg(long)]
     state_db: Option<PathBuf>,
@@ -157,12 +168,15 @@ fn load_services(cli: &Cli) -> Result<Services> {
 
     // --- appd: native manifests, then desktop-entry import ------------------------------------
     let registry = Arc::new(Registry::default());
-    let mut manifest_dirs = vec![
-        PathBuf::from(manifests::SYSTEM_DIR),
-        PathBuf::from(manifests::ETC_DIR),
-    ];
-    if let Some(data_home) = xdg_home("XDG_DATA_HOME", ".local/share") {
-        manifest_dirs.push(data_home.join("legeos/apps"));
+    let mut manifest_dirs = Vec::new();
+    if !cli.no_default_discovery {
+        manifest_dirs.extend([
+            PathBuf::from(manifests::SYSTEM_DIR),
+            PathBuf::from(manifests::ETC_DIR),
+        ]);
+        if let Some(data_home) = xdg_home("XDG_DATA_HOME", ".local/share") {
+            manifest_dirs.push(data_home.join("legeos/apps"));
+        }
     }
     manifest_dirs.extend(cli.manifest_dirs.iter().cloned());
     for dir in &manifest_dirs {
@@ -176,16 +190,17 @@ fn load_services(cli: &Cli) -> Result<Services> {
     let native_count = registry.manifests().len();
 
     let resolver: Arc<dyn ExecResolver> = Arc::new(PathExecResolver::from_env());
-    let imported_count = background::desktop_import::import(
-        &registry,
-        &store,
-        &background::desktop_import::application_dirs(),
-        resolver.as_ref(),
-    )
-    .unwrap_or_else(|error| {
-        tracing::warn!(%error, "desktop-entry import failed");
-        0
-    });
+    let application_dirs = if cli.application_dirs.is_empty() && !cli.no_default_discovery {
+        background::desktop_import::application_dirs()
+    } else {
+        cli.application_dirs.clone()
+    };
+    let imported_count =
+        background::desktop_import::import(&registry, &store, &application_dirs, resolver.as_ref())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "desktop-entry import failed");
+                0
+            });
     tracing::info!(
         native = native_count,
         imported = imported_count,
@@ -388,6 +403,13 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Power1")?;
+    object_server
+        .at(
+            names::NOTIFICATIONS_PATH,
+            apis::notifications::NotificationsControlApi::new(services.store.clone()),
+        )
+        .await
+        .context("serving Notifications1")?;
     // Lifecycle needs the system bus to reach logind, and is served whether or not one was
     // reachable at startup: `SystemLogind` retries lazily, the way `Location1` does. Making the
     // registration conditional is what made "the shutdown button does nothing" possible — a
@@ -442,11 +464,10 @@ async fn serve_interfaces(
 /// can only report `Skipped` and a black-screened trial boot looks identical to a healthy one
 /// (ADR-0004).
 ///
-/// Only `ReportSessionHealthy` is sent. `ReportCompositorActive` asserts that the compositor's
-/// Wayland socket is accepting connections, and sessiond has no honest evidence of that: it
-/// neither owns the socket nor watches `lege-comp.service`. Reporting a fact we cannot
-/// substantiate would defeat the purpose of a fail-closed check, so that marker stays unwired and
-/// the boot probe keeps reporting it `Skipped` rather than `Pass`.
+/// `ReportSessionHealthy` covers sessiond's policy/bus readiness. Compositor readiness is a
+/// separate fact: a background probe waits until the public Wayland socket accepts a connection
+/// and only then sends `ReportCompositorActive`. Keeping the reports separate means neither one
+/// implies more than sessiond can observe.
 ///
 /// Entirely best-effort. A desktop that refused to start because a boot-health marker could not
 /// be written would be a far worse failure than the one this exists to catch.
@@ -470,6 +491,74 @@ async fn report_session_healthy(system_connection: Option<&zbus::Connection>) {
             tracing::warn!(%error, "lege-hostd unreachable; session health not reported");
         }
     }
+}
+
+fn resolve_wayland_socket(
+    display: &std::ffi::OsStr,
+    runtime_dir: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let display = std::path::PathBuf::from(display);
+    if display.is_absolute() {
+        return Some(display);
+    }
+    Some(std::path::PathBuf::from(runtime_dir?).join(display))
+}
+
+fn wayland_socket_path() -> Option<std::path::PathBuf> {
+    let display = std::env::var_os("WAYLAND_DISPLAY")?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    resolve_wayland_socket(&display, runtime.as_deref())
+}
+
+/// Wait for the compositor's public socket to accept a client, then report precisely that fact to
+/// hostd. The bounded retry covers the normal race between the independently-started compositor
+/// and sessiond services without holding up sessiond's own readiness notification.
+fn spawn_compositor_active_report(system_connection: Option<zbus::Connection>) {
+    let Some(connection) = system_connection else {
+        tracing::warn!("no system bus; compositor readiness will not be reported to lege-hostd");
+        return;
+    };
+    let Some(socket_path) = wayland_socket_path() else {
+        tracing::warn!("WAYLAND_DISPLAY/XDG_RUNTIME_DIR absent; compositor readiness not probed");
+        return;
+    };
+
+    tokio::spawn(async move {
+        for attempt in 1..=30 {
+            let path = socket_path.clone();
+            let accepted = tokio::task::spawn_blocking(move || {
+                std::os::unix::net::UnixStream::connect(path).is_ok()
+            })
+            .await
+            .unwrap_or(false);
+            if accepted {
+                match lege_client::proxies::HostSessionProxy::new(&connection).await {
+                    Ok(proxy) => match proxy.report_compositor_active().await {
+                        Ok(()) => tracing::info!(
+                            socket = %socket_path.display(),
+                            "reported compositor readiness to lege-hostd"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "lege-hostd would not record compositor readiness"
+                        ),
+                    },
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "lege-hostd unreachable; compositor readiness not reported"
+                    ),
+                }
+                return;
+            }
+            if attempt < 30 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+        tracing::warn!(
+            socket = %socket_path.display(),
+            "compositor did not accept a Wayland connection within 15 seconds"
+        );
+    });
 }
 
 /// Report readiness and, if `WatchdogSec` is set, keep pinging the service manager.
@@ -593,8 +682,32 @@ async fn main() -> Result<()> {
     // learns it so a trial boot can fail on a session that never came up.
     start_systemd_notify();
     report_session_healthy(host_connection.as_ref()).await;
+    spawn_compositor_active_report(host_connection);
     spawn_background_tasks(&connection, &services, backend, history_notifier);
 
     pending::<()>().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::resolve_wayland_socket;
+    use std::{ffi::OsStr, path::PathBuf};
+
+    #[test]
+    fn relative_wayland_display_resolves_beneath_runtime_dir() {
+        assert_eq!(
+            resolve_wayland_socket(OsStr::new("legeos-0"), Some(OsStr::new("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000/legeos-0"))
+        );
+    }
+
+    #[test]
+    fn absolute_wayland_display_does_not_need_runtime_dir() {
+        assert_eq!(
+            resolve_wayland_socket(OsStr::new("/tmp/nested-wayland"), None),
+            Some(PathBuf::from("/tmp/nested-wayland"))
+        );
+        assert_eq!(resolve_wayland_socket(OsStr::new("legeos-0"), None), None);
+    }
 }

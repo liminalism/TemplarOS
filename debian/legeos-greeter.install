@@ -1,1 +1,4 @@
 target/release/lege-greeter usr/bin/
+session/units/greetd/config.toml usr/share/legeos/greetd/
+distro/policy/sysusers.d/legeos-greeter.conf usr/lib/sysusers.d/
+distro/policy/tmpfiles.d/legeos-greeter.conf usr/lib/tmpfiles.d/

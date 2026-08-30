@@ -65,6 +65,20 @@ impl FileChooserUi for NoUiAvailable {
     }
 }
 
+/// Pixelkit graphical chooser used by the live portal backend.
+#[derive(Debug, Default)]
+pub struct NativeUi;
+
+#[async_trait]
+impl FileChooserUi for NativeUi {
+    async fn choose(&self, request: ChooserRequest) -> Option<ChosenFiles> {
+        tokio::task::spawn_blocking(move || crate::dialog::files(request))
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
 /// `OperationType` the shared last-directory policy should file this dialog under.
 fn operation_type(kind: &ChooserKind) -> OperationType {
     match kind {

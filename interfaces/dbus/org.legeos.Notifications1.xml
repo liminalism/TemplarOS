@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node>
+  <interface name="org.legeos.Notifications1">
+    <method name="ListActive">
+      <arg name="notifications_json" type="as" direction="out"/>
+    </method>
+    <method name="Dismiss">
+      <arg name="id" type="u" direction="in"/>
+      <arg name="removed" type="b" direction="out"/>
+    </method>
+    <method name="ClearAll">
+      <arg name="removed" type="u" direction="out"/>
+    </method>
+    <signal name="Changed"/>
+  </interface>
+</node>

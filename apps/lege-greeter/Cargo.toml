@@ -65,4 +65,9 @@ priority = "optional"
 # package's `lege-greeter-session` orchestrator role (`src/main.rs`) spawns `lege-comp` itself, so
 # it depends on that package directly rather than assuming it is merely "recommended" alongside.
 depends = "$auto, greetd, legeos-comp"
-assets = [["target/release/lege-greeter", "usr/bin/lege-greeter", "755"]]
+assets = [
+    ["target/release/lege-greeter", "usr/bin/lege-greeter", "755"],
+    ["../../session/units/greetd/config.toml", "usr/share/legeos/greetd/config.toml", "644"],
+    ["../../distro/policy/sysusers.d/legeos-greeter.conf", "usr/lib/sysusers.d/legeos-greeter.conf", "644"],
+    ["../../distro/policy/tmpfiles.d/legeos-greeter.conf", "usr/lib/tmpfiles.d/legeos-greeter.conf", "644"],
+]

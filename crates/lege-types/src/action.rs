@@ -428,6 +428,15 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    ActionDecl {
+        id: "notifications.clear",
+        label: "Clear notifications",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: true,
+        requires: Requires::Always,
+    },
     // ---- Session ----------------------------------------------------------------------
     ActionDecl {
         id: "session.lock",

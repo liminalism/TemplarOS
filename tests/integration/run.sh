@@ -10,6 +10,43 @@
 # only mean the behaviour being asserted, never a broken build.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Run the smoke in a private home and a private session bus. Without this wrapper, app discovery
+# and MIME import silently consume the developer's real ~/.config and ~/.local/share, so a green
+# result depends on whatever happens to be installed on that workstation.
+if [ "${LEGE_INTEGRATION_ISOLATED:-0}" != 1 ]; then
+    if ! command -v dbus-run-session >/dev/null 2>&1; then
+        echo "integration smoke: FAILED — dbus-run-session is required for isolation" >&2
+        exit 1
+    fi
+    isolated_root="$(mktemp -d /tmp/legeos-integration.XXXXXX)"
+    integration_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+    integration_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+    cleanup() {
+        case "$isolated_root" in
+            /tmp/legeos-integration.*) rm -rf -- "$isolated_root" ;;
+            *) echo "refusing to remove unexpected integration path: $isolated_root" >&2 ;;
+        esac
+    }
+    trap cleanup EXIT
+    mkdir -p "$isolated_root"/{home,config,data,state,cache,runtime}
+    chmod 700 "$isolated_root/runtime"
+    dbus-run-session -- env \
+        LEGE_INTEGRATION_ISOLATED=1 \
+        LEGE_INTEGRATION_ROOT="$isolated_root" \
+        CARGO_HOME="$integration_cargo_home" \
+        RUSTUP_HOME="$integration_rustup_home" \
+        HOME="$isolated_root/home" \
+        XDG_CONFIG_HOME="$isolated_root/config" \
+        XDG_DATA_HOME="$isolated_root/data" \
+        XDG_DATA_DIRS="$isolated_root/data" \
+        XDG_STATE_HOME="$isolated_root/state" \
+        XDG_CACHE_HOME="$isolated_root/cache" \
+        XDG_RUNTIME_DIR="$isolated_root/runtime" \
+        bash "$root/tests/integration/run.sh"
+    exit $?
+fi
+: "${LEGE_INTEGRATION_ROOT:?isolated wrapper did not provide LEGE_INTEGRATION_ROOT}"
 cd "$root"
 
 bin="${CARGO_TARGET_DIR:-$root/target}/debug"
@@ -56,17 +93,38 @@ expect_clean_failure() {
     fi
 }
 
-"$bin/lege-sessiond" --dry-run --manifest-dir tests/fixtures/manifests --state-db "$(mktemp -d)/s.db"
+session_summary="$("$bin/lege-sessiond" --dry-run --manifest-dir tests/fixtures/manifests \
+    --application-dir "$LEGE_INTEGRATION_ROOT/data/applications" \
+    --no-default-discovery \
+    --state-db "$LEGE_INTEGRATION_ROOT/state/session.db")"
+if ! grep -q 'manifests:    1 native, 0 imported from .desktop files' <<<"$session_summary"; then
+    echo "integration smoke: FAILED — sessiond discovery escaped the isolated fixture" >&2
+    echo "$session_summary" >&2
+    exit 1
+fi
+echo "lege-sessiond discovery: isolated (1 fixture manifest, 0 host desktop files)"
 "$bin/lege-resourced" --once
 "$bin/lege-filed" --dry-run >/dev/null
 "$bin/lege-session" --dry-run
 # hostd has no --dry-run of its own; --probe is its read-only equivalent — it prints the detected
 # hardware profile and returns before claiming org.legeos.Host on the system bus.
 "$bin/lege-hostd" --probe --root tests/fixtures/image-root >/dev/null
-# --report-only is boot-health's dry-run: it always exits 0 and only prints the report, never
-# arming the reboot path (that path is covered by services/lege-boot-health/src/main.rs's own
-# unit tests, not this smoke script).
-"$bin/lege-boot-health" --report-only --root tests/fixtures/image-root >/dev/null
+# --report-only never arms the reboot path, but the report still has to tell the truth. This
+# fixture intentionally has neither runtime marker, so both wired checks must fail and the overall
+# report must be unhealthy. Merely accepting exit 0 here used to turn UNHEALTHY into a false green.
+boot_report="$LEGE_INTEGRATION_ROOT/boot-health.json"
+"$bin/lege-boot-health" --report-only --root tests/fixtures/image-root >"$boot_report"
+grep -q '"healthy": false' "$boot_report"
+grep -q '"session_healthy_report_wired": true' "$boot_report"
+grep -q '"compositor_active_report_wired": true' "$boot_report"
+for marker in compositor-active session-healthy; do
+    if ! grep -A2 "\"name\": \"$marker\"" "$boot_report" | grep -q '"status": "fail"'; then
+        echo "integration smoke: FAILED — $marker was not reported as a failed wired check" >&2
+        cat "$boot_report" >&2
+        exit 1
+    fi
+done
+echo "lege-boot-health: expected unhealthy fixture confirmed"
 
 # The compositor, headlessly: constructs every protocol global, binds both its public and
 # trusted-shell sockets, and exits. This is the one compositor mode that runs where there is no

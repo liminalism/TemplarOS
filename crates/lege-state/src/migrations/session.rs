@@ -105,4 +105,19 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX homefield_undo_output ON homefield_undo (output, id);
 ",
     ),
+    (
+        "0005-notification-details",
+        r"
+        -- `notifications_active` used to be only an ID ledger.  The notification server is the
+        -- policy owner, so the shell needs a complete read model here instead of reconstructing
+        -- presentation state from History1's human-oriented sentences.
+        ALTER TABLE notifications_active ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+        ALTER TABLE notifications_active ADD COLUMN body TEXT NOT NULL DEFAULT '';
+        ALTER TABLE notifications_active ADD COLUMN icon TEXT NOT NULL DEFAULT '';
+        ALTER TABLE notifications_active ADD COLUMN urgency INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE notifications_active ADD COLUMN category TEXT NOT NULL DEFAULT '';
+        ALTER TABLE notifications_active ADD COLUMN actions_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE notifications_active ADD COLUMN expires_ms INTEGER;
+",
+    ),
 ];

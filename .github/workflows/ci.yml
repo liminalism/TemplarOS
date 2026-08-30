@@ -16,6 +16,6 @@ jobs:
         with:
           toolchain: "1.93"
       - run: rustup default 1.97.1
-      - run: sudo apt-get update && sudo apt-get install -y just libsqlite3-dev
+      - run: sudo apt-get update && sudo apt-get install -y just libsqlite3-dev dbus-x11 xvfb xauth
       - run: cargo install cargo-deb cargo-deny --locked
       - run: ci/run.sh

@@ -8,6 +8,10 @@
     <method name="Schema">
       <arg name="schema" type="a(sssb)" direction="out"/>
     </method>
+    <!-- Complete SettingSpec JSON documents, including choices and numeric bounds. -->
+    <method name="SchemaDetails">
+      <arg name="specs_json" type="as" direction="out"/>
+    </method>
     <!-- The effective value (stored override, or the schema default) as JSON. -->
     <method name="Get">
       <arg name="key" type="s" direction="in"/>

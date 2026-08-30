@@ -41,6 +41,26 @@ impl AppChooserUi for NoUiAvailable {
     }
 }
 
+/// Pixelkit graphical application chooser used by the live portal backend.
+#[derive(Debug, Default)]
+pub struct NativeUi;
+
+#[async_trait]
+impl AppChooserUi for NativeUi {
+    async fn choose(&self, request: AppChoiceRequest) -> Option<String> {
+        let message = request.content_type.as_deref().map_or_else(
+            || "Choose an application".to_owned(),
+            |kind| format!("Open {kind} with"),
+        );
+        tokio::task::spawn_blocking(move || {
+            crate::dialog::choice("Open with".into(), message, request.choices)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+}
+
 fn get_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     options
         .get(key)

@@ -10,3 +10,11 @@ systemctl --global mask xdg-desktop-autostart.target || true
 # Enable the session-scope core once packages ship their units.
 systemctl --global enable legeos-session.target 2>/dev/null || true
 systemctl enable lege-hostd.service lege-boot-health.service 2>/dev/null || true
+# This image owns its display-manager choice. The ordinary package keeps the template under
+# /usr/share so installing LegeOS alongside another desktop never overwrites an administrator's
+# greetd configuration; the image build is the deliberate point where it becomes live.
+install -D -m 0644 /usr/share/legeos/greetd/config.toml /etc/greetd/config.toml
+systemd-sysusers /usr/lib/sysusers.d/legeos-greeter.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/legeos-greeter.conf
+systemctl disable getty@tty1.service 2>/dev/null || true
+systemctl enable greetd.service 2>/dev/null || true

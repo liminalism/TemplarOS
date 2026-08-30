@@ -206,6 +206,9 @@ mod settings {
         /// `(key, description, default-json, privileged)`
         fn schema(&self) -> zbus::Result<Vec<(String, String, String, bool)>>;
 
+        /// Complete `lege_session_core::settings::SettingSpec` JSON documents.
+        fn schema_details(&self) -> zbus::Result<Vec<String>>;
+
         fn get(&self, key: &str) -> zbus::Result<String>;
 
         fn set(&self, key: &str, value_json: &str, origin: &str) -> zbus::Result<()>;
@@ -295,6 +298,27 @@ mod power {
     }
 }
 
+mod notifications {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.Notifications1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Notifications"
+    )]
+    pub trait Notifications {
+        /// Active notification documents, newest first, encoded as JSON.
+        fn list_active(&self) -> zbus::Result<Vec<String>>;
+
+        fn dismiss(&self, id: u32) -> zbus::Result<bool>;
+
+        fn clear_all(&self) -> zbus::Result<u32>;
+
+        #[zbus(signal)]
+        fn changed(&self) -> zbus::Result<()>;
+    }
+}
+
 mod lifecycle {
     use zbus::proxy;
 
@@ -354,6 +378,7 @@ pub use homefield::HomeFieldProxy;
 pub use launcher::LauncherProxy;
 pub use lifecycle::LifecycleProxy;
 pub use location::LocationProxy;
+pub use notifications::NotificationsProxy;
 pub use power::PowerProxy;
 pub use projects::ProjectsProxy;
 pub use providers::ProvidersProxy;

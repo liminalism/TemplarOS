@@ -1,8 +1,8 @@
 //! `lege-settings` — one settings application over `org.legeos.Settings1`, `Providers1`,
 //! `Associations1`, `History1`, `Resources1` (and `Host.Hardware1` for the one privileged page).
 //! Every page maps to a D-Bus interface; nothing is a private implementation detail. UI: this
-//! milestone ships the model and a text renderer only — libcosmic is a large git dependency that
-//! belongs to the first real surface, a later milestone (see `README.md`).
+//! The normal entry point is graphical. `--print` preserves the deterministic text renderer for
+//! terminals, diagnostics and integration tests.
 //!
 //! Every page's real work — parsing the service's exact wire JSON, cross-referencing sources,
 //! rendering a sentence a person can read — is a pure, unit-tested function behind a small trait
@@ -15,6 +15,7 @@ mod hardware;
 mod history;
 mod providers;
 mod resources;
+mod surface;
 
 use clap::Parser;
 use lege_types::ProviderRole;
@@ -23,6 +24,10 @@ use lege_types::ProviderRole;
 #[derive(Debug, Parser)]
 #[command(name = "lege-settings", version, about)]
 struct Cli {
+    /// Render a page to stdout instead of opening the graphical application.
+    #[arg(long)]
+    print: bool,
+
     /// Open a specific page: `providers`, `associations`, `background`, `resources`, `history`,
     /// `hardware`. Omit to list the available pages instead of connecting to anything.
     #[arg(long)]
@@ -62,11 +67,23 @@ const PAGES: &[&str] = &[
     "hardware",
 ];
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt().init();
     let cli = Cli::parse();
 
+    if !cli.print {
+        if let Err(error) = surface::run() {
+            eprintln!("lege-settings: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let runtime = tokio::runtime::Runtime::new().expect("settings print runtime");
+    runtime.block_on(print_page(cli));
+}
+
+async fn print_page(cli: Cli) {
     let Some(page) = cli.page.as_deref() else {
         println!(
             "lege-settings: pass --page <name> to view one. Pages: {}.",

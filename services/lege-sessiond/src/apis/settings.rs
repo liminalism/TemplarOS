@@ -51,6 +51,18 @@ impl SettingsApi {
             .collect()
     }
 
+    /// Complete [`SettingSpec`] documents. `Schema` remains for compact/older clients; graphical
+    /// editors use this method so choice sets and numeric bounds come from policy rather than
+    /// being duplicated in the UI.
+    async fn schema_details(&self) -> Vec<String> {
+        self.schema
+            .read()
+            .specs
+            .values()
+            .filter_map(|spec| serde_json::to_string(spec).ok())
+            .collect()
+    }
+
     async fn get(&self, key: &str) -> fdo::Result<String> {
         let schema = self.schema.read();
         let values = self.values.read();

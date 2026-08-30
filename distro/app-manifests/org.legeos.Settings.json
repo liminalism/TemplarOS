@@ -1,0 +1,17 @@
+{
+  "id": "org.legeos.Settings",
+  "display_name": "Settings",
+  "primary_desktop_file_id": "org.legeos.Settings.desktop",
+  "executable": "/usr/bin/lege-settings",
+  "aliases": {
+    "desktop_file_ids": ["org.legeos.Settings.desktop"],
+    "wayland_app_ids": ["org.legeos.Settings"],
+    "startup_wm_classes": ["lege-settings"],
+    "flatpak_ids": [],
+    "executable_paths": ["/usr/bin/lege-settings"]
+  },
+  "mime_types": [],
+  "resource_class": "Interactive",
+  "supports_checkpoint": false,
+  "provides": []
+}

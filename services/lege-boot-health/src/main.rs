@@ -36,11 +36,10 @@
 //!   - `/run/legeos/compositor-active` — hostd writes this when `Session1.ReportCompositorActive`
 //!     is called, once the compositor's Wayland socket is accepting connections.
 //!   - `/run/legeos/session-healthy` — hostd writes this when `Session1.ReportSessionHealthy` is
-//!     called, once the session's own startup sequence finished *and* a successful client frame
-//!     was observed — broader than "the compositor process exists".
+//!     called, once sessiond has loaded policy and claimed its D-Bus name.
 //!
-//! `lege-sessiond` reports session health at readiness; the compositor-active fact has no
-//! track's job, tracked by the `*_REPORT_WIRED` switches below.
+//! `lege-sessiond` reports session health at readiness and probes the public Wayland socket before
+//! reporting compositor activity. The `*_REPORT_WIRED` switches below keep those claims explicit.
 
 use anyhow::Result;
 use clap::Parser;
@@ -80,11 +79,9 @@ use std::{
 /// policy is loaded and the bus name is claimed.
 const SESSION_HEALTHY_REPORT_WIRED: bool = true;
 
-/// Still unwired, and honestly so. This asserts the compositor's Wayland socket is accepting
-/// connections, and nothing in the session can currently substantiate that — `lege-sessiond`
-/// neither owns the socket nor watches `lege-comp.service`. It becomes `true` when the compositor
-/// fork gains a signal worth believing, not before.
-const COMPOSITOR_ACTIVE_REPORT_WIRED: bool = false;
+/// `lege-sessiond` now waits for the public Wayland socket to accept a connection before asking
+/// hostd to persist this marker.
+const COMPOSITOR_ACTIVE_REPORT_WIRED: bool = true;
 
 /// Boot health probe.
 #[derive(Debug, Parser)]
@@ -659,7 +656,7 @@ mod tests {
             healthy,
             trial,
             session_healthy_report_wired: true,
-            compositor_active_report_wired: false,
+            compositor_active_report_wired: true,
             checks: vec![],
         };
         assert!(!should_force_reboot(&report(true, true)));
@@ -703,10 +700,9 @@ mod tests {
         // The session-healthy writer is wired (`SESSION_HEALTHY_REPORT_WIRED`), so a genuinely
         // healthy boot is one where the session actually reported: an absent marker now means
         // "the session did not come up", which is exactly the case a trial boot must fail on.
-        // The compositor-active marker stays absent on purpose — its writer is not wired, so it
-        // is Skipped, and a skip must never be what makes a boot unhealthy.
         fs::create_dir_all(dir.path().join("run/legeos")).unwrap();
         fs::write(dir.path().join("run/legeos/session-healthy"), "ok\n").unwrap();
+        fs::write(dir.path().join("run/legeos/compositor-active"), "ok\n").unwrap();
 
         let report = evaluate(dir.path(), Duration::from_secs(5), true);
         assert!(report.healthy, "{:?}", report.checks);

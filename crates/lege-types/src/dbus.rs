@@ -41,6 +41,9 @@ pub mod session {
     pub const LOCATION_PATH: &str = "/org/legeos/Session/Location";
     pub const LOCATION_IFACE: &str = "org.legeos.Location1";
 
+    pub const NOTIFICATIONS_PATH: &str = "/org/legeos/Session/Notifications";
+    pub const NOTIFICATIONS_IFACE: &str = "org.legeos.Notifications1";
+
     /// Also claimed by sessiond when it is the selected notification-server provider.
     pub const FDO_NOTIFICATIONS_BUS_NAME: &str = "org.freedesktop.Notifications";
 }

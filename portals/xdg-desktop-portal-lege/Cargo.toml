@@ -28,6 +28,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
+url = { workspace = true }
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
 
 [lints]
 workspace = true
