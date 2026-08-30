@@ -141,6 +141,14 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
             WidgetRegion::new("launcher.show-all", Representation::Wide),
         ],
     },
+    WidgetDescriptor {
+        id: "notifications",
+        title: "Notifications",
+        regions: &[WidgetRegion::new(
+            "notifications.clear",
+            Representation::Small,
+        )],
+    },
 ];
 
 /// The widget `id` names, if the shell knows it.

@@ -236,7 +236,10 @@ impl ShellApp {
                 let field_settings = fetch_home_field_settings().await;
                 let projects = crate::data::fetch_projects().await;
                 let browser_sources = crate::data::fetch_browser_sources().await;
-                let session_widget = crate::data::fetch_session_widget().await;
+                let (session_widget, notifications_widget) = tokio::join!(
+                    crate::data::fetch_session_widget(),
+                    crate::data::fetch_notifications_widget(),
+                );
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
@@ -245,6 +248,10 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
                 let _ = tx.send(DataUpdate::Widget("session".to_owned(), session_widget));
+                let _ = tx.send(DataUpdate::Widget(
+                    "notifications".to_owned(),
+                    notifications_widget,
+                ));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -880,6 +887,7 @@ impl ShellApp {
                 self.field_screen.search.set_text("");
                 self.field_screen.search_focused = false;
             }
+            "notifications.clear" => self.spawn_clear_notifications(),
             "session.logout" | "session.reboot" | "session.poweroff" | "session.suspend"
             | "session.lock" => self.spawn_lifecycle(id),
             "window.show-all" => {
@@ -979,6 +987,35 @@ impl ShellApp {
             return;
         };
         self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
+    }
+
+    fn spawn_clear_notifications(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::NotificationsProxy::new(&connection).await?;
+                proxy.clear_all().await.map_err(anyhow::Error::from)
+            }
+            .await;
+            match result {
+                Ok(count) => {
+                    let _ = tx.send(DataUpdate::Notice(format!(
+                        "Cleared {count} notification{}",
+                        if count == 1 { "" } else { "s" }
+                    )));
+                    let snapshot = crate::data::fetch_notifications_widget().await;
+                    let _ = tx.send(DataUpdate::Widget("notifications".to_owned(), snapshot));
+                }
+                Err(error) => {
+                    let _ = tx.send(DataUpdate::Notice(format!(
+                        "Could not clear notifications — {error:#}"
+                    )));
+                }
+            }
+            let _ = proxy_wake.send_event(Wake);
+        });
     }
 
     fn spawn_launch_with_args(&self, app_id: AppId, arguments: Vec<String>) {

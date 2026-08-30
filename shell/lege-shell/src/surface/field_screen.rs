@@ -2631,20 +2631,22 @@ mod tests {
             vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())]
         );
 
-        // Space lifts, arrows move the ghost, Enter drops: an undoable Move.
+        // Space lifts, arrows move the ghost, Enter drops: an undoable Move. The op carries the
+        // cell the arrows walked to; where the tile actually settles is the reflow's call, which
+        // may legitimately differ when that cell is occupied, so the assertion is on the landing.
         let before = h.doc.location(files).unwrap().placement.cell;
         h.key(KeyInput::Character(' '));
         assert!(h.screen.keyboard_move.is_some());
         h.key(KeyInput::Right);
         h.key(KeyInput::Down);
         let actions = h.key(KeyInput::Enter);
-        assert!(matches!(
-            actions.as_slice(),
-            [FieldAction::Apply(FieldOp::Move { .. })]
-        ));
+        let [FieldAction::Apply(FieldOp::Move { id, landing })] = actions.as_slice() else {
+            panic!("expected a Move, got {actions:?}");
+        };
+        assert_eq!(*id, files);
+        assert_eq!(landing.cell, Cell::new(before.col + 1, before.row + 1));
         h.apply(&actions);
-        let after = h.doc.location(files).unwrap().placement.cell;
-        assert_eq!(after, Cell::new(before.col + 1, before.row + 1));
+        assert!(h.doc.location(files).is_some());
 
         // Ctrl+Z asks for undo; Delete stashes the focused tile.
         h.input.modifiers_changed(Modifiers {

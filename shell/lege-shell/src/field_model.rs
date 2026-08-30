@@ -44,13 +44,41 @@ pub const DRAWER_TILES: [Drawer; 8] = [
 /// The launcher is here for the same reason Session is: without it a freshly booted session has
 /// nothing on the field to open anything with, because application tiles are derived from windows
 /// that already exist (`merge_apps`) and go away with the last one.
-pub const SYSTEM_WIDGETS: [&str; 2] = ["session", "launcher"];
+pub const SYSTEM_WIDGETS: [&str; 3] = ["session", "launcher", "notifications"];
 
-const DRAWER_GRID_COLUMNS: u16 = 2;
 const DRAWER_SPAN: u16 = 2;
 
-fn drawer_reserved_cols(cols: u16) -> u16 {
-    (DRAWER_GRID_COLUMNS * DRAWER_SPAN).min(cols.saturating_sub(1))
+/// The share of the field's width the drawer block may claim. The drawers are shortcuts, not the
+/// desktop: past a third of the screen they start costing the launcher and the window previews
+/// more than they are worth.
+const DRAWER_WIDTH_SHARE: u16 = 3;
+
+/// The shape of the drawer block on a `cols`×`rows` field: the span of one drawer, how many stack
+/// in a column, and how many columns that needs.
+///
+/// The grid used to be a fixed two columns of 2×2, which needs eight rows for the eight drawers —
+/// one more than a 1200×800 field has. The last drawers overflowed, the reflow scattered them
+/// along the bottom, and the system shelf was displaced up into the area application tiles land
+/// in. Deriving the shape from the field keeps the block whole; falling back to 1×1 drawers when
+/// the 2×2 block would exceed [`DRAWER_WIDTH_SHARE`] keeps it from crowding out everything else
+/// on a small field. A roomy field is unaffected: 2×2 still fits the share there.
+fn drawer_grid(cols: u16, rows: u16) -> (u16, u16, u16) {
+    let len = u16::try_from(DRAWER_TILES.len()).unwrap_or(u16::MAX);
+    let budget = (cols / DRAWER_WIDTH_SHARE).max(1);
+    for span in [DRAWER_SPAN, 1] {
+        let per_column = (rows / span).max(1);
+        let columns = len.div_ceil(per_column);
+        if columns * span <= budget || span == 1 {
+            return (span, per_column, columns);
+        }
+    }
+    unreachable!("the loop returns on its last iteration")
+}
+
+/// The columns the drawer block occupies, always leaving at least one column for everything else.
+fn drawer_reserved_cols(cols: u16, rows: u16) -> u16 {
+    let (span, _, columns) = drawer_grid(cols, rows);
+    (columns * span).min(cols.saturating_sub(1))
 }
 
 /// How many cells a field of `width`×`height` logical pixels has at `tile_size` pixels a cell,
@@ -147,6 +175,8 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     merge_drawers(doc, &mut wanted, &mut applied);
     // A Home overview must never sacrifice a real open window to a project shortcut or redundant
     // application badge when space is tight, so sessions get first claim after the utility block.
+    // The system shelf still always lands, because its tiles may compact to 2x1 — see
+    // `merge_system`; a field can be too full for a large launcher but never too full for one.
     merge_sessions(doc, live, &mut wanted, &mut applied);
     merge_projects(doc, live, &mut applied);
     merge_system(doc, &mut applied);
@@ -170,13 +200,15 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     applied
 }
 
-/// Compact drawers form a 2×4 utility block. They obey the widget's 2×2 floor but do not all
-/// demand its 4×4 instrument view on first sight; the user can grow the ones that matter.
+/// Compact drawers form a utility block along the left edge, shaped by [`drawer_grid`]. They do
+/// not demand the widget class's 4×4 instrument view on first sight; the user grows the ones that
+/// matter, and the block gives way to 1×1 shortcuts on a field too small to spare the width.
 fn merge_drawers(
     doc: &mut FieldDocument,
     wanted: &mut BTreeSet<TileId>,
     applied: &mut Vec<FieldOp>,
 ) {
+    let (span, per_column, _) = drawer_grid(doc.cols, doc.rows);
     for (index, drawer) in DRAWER_TILES.iter().enumerate() {
         let id = tile_id_for(&format!("drawer:{}", drawer.name()));
         wanted.insert(id);
@@ -194,30 +226,33 @@ fn merge_drawers(
             // Compact by default, but the ceiling is the widget class's, not the default size:
             // a drawer the user grows is how Downloads becomes a real treemap instead of a
             // colour band, and it was previously capped one step above its own preferred size.
-            spans: SpanRange::new(
-                Span::new(DRAWER_SPAN, DRAWER_SPAN),
-                Span::new(DRAWER_SPAN, DRAWER_SPAN),
-                Span::new(8, 6),
-            ),
+            //
+            // The floor is below the preferred size on purpose. With floor and preferred both at
+            // 2x2 the drawer block was rigid: every neighbour of a resize was already at its
+            // minimum, so the clamp rule reduced every grow request to nothing and the field's
+            // headline gesture did nothing on the default layout. A drawer that can compact to a
+            // single cell is also what lets a busy field seat the system shelf and every open
+            // window instead of leaving one of them unplaced.
+            spans: SpanRange::new(Span::new(1, 1), Span::new(span, span), Span::new(8, 6)),
             accent: None,
         };
+        let index = u16::try_from(index).unwrap_or(u16::MAX);
         let landing = Landing {
             container: None,
-            cell: Cell::new(
-                (index as u16 % DRAWER_GRID_COLUMNS) * DRAWER_SPAN,
-                (index as u16 / DRAWER_GRID_COLUMNS) * DRAWER_SPAN,
-            ),
+            cell: Cell::new((index / per_column) * span, (index % per_column) * span),
         };
         try_apply(doc, FieldOp::Place { tile, landing }, applied);
     }
 }
 
-/// The system widgets Home always offers. One today: Session, which is the only route out of a
-/// running session that does not involve killing the compositor from a virtual terminal.
+/// The system widgets Home always offers: Session, which is the only route out of a running
+/// session that does not involve killing the compositor from a virtual terminal; the launcher,
+/// which is the only route to an application with no window yet; and notifications.
 ///
 /// Add-only, like projects: a system tile is never removed by a merge, so a user who has moved
-/// or resized one keeps their arrangement. The landing is the bottom-left, under the drawer
-/// block; if that is taken the reflow finds the nearest place rather than displacing a drawer.
+/// or resized one keeps their arrangement. The landing is a shelf along the bottom, to the right
+/// of the drawer block; if that is taken the reflow finds the nearest place rather than
+/// displacing a drawer.
 fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     for (index, widget) in SYSTEM_WIDGETS.iter().enumerate() {
         let id = tile_id_for(&format!("system:{widget}"));
@@ -225,12 +260,18 @@ fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
             probe: (*widget).to_owned(),
         };
         // Compact by default, with the class ceiling intact — the same bargain the drawer block
-        // strikes above. Two system widgets at their *preferred* 4x2 claim sixteen cells of a
-        // laptop's seventy-seven before a single window exists, which is a field that arrives
-        // full; at the 3x2 floor they are a strip along the bottom that a person grows if they
-        // want the launcher to list more than a handful of rows at a time.
+        // strikes above. Three system widgets at their *preferred* 4x2 claim twenty-four cells of
+        // a laptop's seventy-seven before a single window exists, which is a field that arrives
+        // full; at the 3x2 class floor they are a strip along the bottom that a person grows if
+        // they want the launcher to list more than a handful of rows at a time.
+        //
+        // The tile's own floor is lower still, at 2x1. These three are the desktop's furniture
+        // and are placed last, after every open window has its overview space: without room to
+        // compact, a busy field simply failed to place the launcher, which is precisely the field
+        // on which someone reaches for it. A 2x1 launcher is a small tile that expands, not a
+        // missing one.
         let class = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-        let spans = SpanRange::new(class.min, class.min, class.max);
+        let spans = SpanRange::new(Span::new(2, 1), class.min, class.max);
         let cell = system_landing(index, doc, spans);
         if doc.tile(id).is_some() {
             continue;
@@ -260,13 +301,25 @@ fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
 /// and the reflow shoved it — and then a drawer — somewhere neither belonged. Opposite corners
 /// keep the two apart on any grid wide enough for them, and leave the middle of the field, where
 /// windows and applications live, alone.
+/// System widgets form a shelf along the bottom of the field, to the right of the drawer block,
+/// packed left to right and stacking upward when the row is full.
+///
+/// The previous rule alternated bottom-left and bottom-right, which only has room for two: a
+/// third widget landed on the first one's cell and the reflow scattered it, moving every tile
+/// placed after it. Packing is stable as widgets are added, and leaves the drawer columns alone
+/// instead of landing inside them and being pushed straight back out.
 fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange) -> Cell {
-    let row = doc.rows.saturating_sub(spans.preferred.rows);
-    if index.is_multiple_of(2) {
-        Cell::new(0, row)
-    } else {
-        Cell::new(doc.cols.saturating_sub(spans.preferred.cols), row)
-    }
+    let width = spans.preferred.cols.max(1);
+    let height = spans.preferred.rows.max(1);
+    let first_col = drawer_reserved_cols(doc.cols, doc.rows);
+    let per_row = (doc.cols.saturating_sub(first_col) / width).max(1);
+    let index = u16::try_from(index).unwrap_or(u16::MAX);
+    let col = (first_col + (index % per_row) * width).min(doc.cols.saturating_sub(width));
+    let row = doc
+        .rows
+        .saturating_sub(height)
+        .saturating_sub((index / per_row).saturating_mul(height));
+    Cell::new(col, row)
 }
 
 /// Projects from the right edge, stacked down. Add-only: a project tile is never removed by a
@@ -323,7 +376,7 @@ fn merge_apps(
     }
     app_ids.sort();
     app_ids.dedup();
-    let start_col = drawer_reserved_cols(doc.cols);
+    let start_col = drawer_reserved_cols(doc.cols, doc.rows);
     let app_cols = doc.cols.saturating_sub(start_col).max(1);
     for (index, app_id) in app_ids.iter().enumerate() {
         let id = tile_id_for(&format!("app:{app_id}"));
@@ -349,11 +402,25 @@ fn merge_apps(
     }
 }
 
+/// How many rows the system shelf occupies across `available_cols`, at the class floor its tiles
+/// prefer. Sessions size themselves around this rather than over it: with the shelf unaccounted
+/// for, session previews claimed the bottom rows and the shelf was squeezed into whatever was
+/// left, so the launcher arrived as a sliver on a field with plenty of room for it.
+fn system_shelf_rows(available_cols: u16) -> u16 {
+    let (shelf_cols, shelf_rows) = (3, 2);
+    let per_row = (available_cols / shelf_cols).max(1);
+    let len = u16::try_from(SYSTEM_WIDGETS.len()).unwrap_or(u16::MAX);
+    len.div_ceil(per_row).saturating_mul(shelf_rows)
+}
+
 /// The largest common overview span that lets every live session fit in the field area to the
-/// right of the drawer block. Large previews remain the normal case; busy workspaces step down
-/// through still-legible shapes before reaching the 2×1 session floor.
+/// right of the drawer block and above the system shelf. Large previews remain the normal case;
+/// busy workspaces step down through still-legible shapes before reaching the 2×1 session floor.
 fn session_overview_span(cols: u16, rows: u16, session_count: usize) -> Span {
-    let available_cols = cols.saturating_sub(drawer_reserved_cols(cols));
+    let available_cols = cols.saturating_sub(drawer_reserved_cols(cols, rows));
+    let rows = rows
+        .saturating_sub(system_shelf_rows(available_cols))
+        .max(1);
     let count = u32::try_from(session_count).unwrap_or(u32::MAX);
     [
         Span::new(4, 2),
@@ -392,13 +459,19 @@ fn merge_sessions(
         .collect();
     toplevels.sort_by_key(|toplevel| std::cmp::Reverse(toplevel.window_id));
     let overview_span = session_overview_span(doc.cols, doc.rows, toplevels.len());
-    let start_col = drawer_reserved_cols(doc.cols);
-    let per_row = doc
-        .cols
-        .saturating_sub(start_col)
+    let start_col = drawer_reserved_cols(doc.cols, doc.rows);
+    let available_cols = doc.cols.saturating_sub(start_col);
+    let per_row = available_cols
         .checked_div(overview_span.cols)
         .unwrap_or(0)
         .max(1);
+    // Sessions stack up from the row above the shelf, not from the bottom edge: the shelf is
+    // fixed furniture placed later, and previews that started at the edge sat on top of where it
+    // goes, leaving it to squeeze into the gap above them.
+    let session_floor = doc
+        .rows
+        .saturating_sub(system_shelf_rows(available_cols))
+        .max(overview_span.rows);
     for (index, toplevel) in toplevels.iter().enumerate() {
         let identifier = session_identifier(toplevel, None);
         let id = tile_id_for(&format!("session:{identifier}"));
@@ -427,7 +500,7 @@ fn merge_sessions(
             accent: None,
         };
         let slot = u16::try_from(index).unwrap_or(u16::MAX);
-        let row = doc.rows.saturating_sub(
+        let row = session_floor.saturating_sub(
             slot.checked_div(per_row)
                 .unwrap_or(0)
                 .saturating_add(1)
@@ -646,7 +719,8 @@ mod tests {
         assert_eq!(doc.tiles.len(), expected);
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
-        // Drawers occupy a compact 4×8 block, apps follow it, sessions sit at the bottom.
+        // Drawers occupy a compact 4×8 block, apps follow it, sessions sit above the system
+        // shelf, which takes the bottom two rows.
         let inbox = tile_id_for("drawer:Downloads");
         assert_eq!(doc.location(inbox).unwrap().placement.cell, Cell::new(0, 0));
         // Apps are sorted by id: the Editor (known only from its window) precedes Files.
@@ -658,7 +732,7 @@ mod tests {
             Cell::new(4, 0)
         );
         let session = session_tile_for(&doc, &windows[1]).unwrap();
-        assert_eq!(doc.location(session).unwrap().placement.cell.row, 6);
+        assert_eq!(doc.location(session).unwrap().placement.cell.row, 4);
 
         // A second merge with the same state changes nothing.
         let before = doc.clone();
@@ -672,7 +746,7 @@ mod tests {
                 id: files,
                 landing: Landing {
                     container: None,
-                    cell: Cell::new(10, 4),
+                    cell: Cell::new(10, 1),
                 },
             },
         )
@@ -682,7 +756,7 @@ mod tests {
         merge(&mut doc, &live);
         assert_eq!(
             doc.location(files).unwrap().placement.cell,
-            Cell::new(10, 4)
+            Cell::new(10, 1)
         );
     }
 
@@ -718,11 +792,12 @@ mod tests {
 
     #[test]
     fn every_open_window_gets_overview_space_before_projects_or_app_badges() {
-        // Eight drawers fill the left half of this deliberately tight field. Eight 2×2 session
-        // previews exactly fill the right half, so merging projects or app badges first would
-        // hide windows.
+        // A deliberately tight field, saturated by live windows: on eight columns the drawers
+        // compact to a single-column rail and the previews step down to their 2×1 floor, and at
+        // twenty windows the last free cells are gone. Merging projects or app badges before
+        // sessions would hide a window behind a shortcut.
         let mut doc = FieldDocument::new("eDP-1", 8, 8);
-        let windows: Vec<_> = (1..=8)
+        let windows: Vec<_> = (1..=20)
             .map(|id| {
                 toplevel(
                     id,

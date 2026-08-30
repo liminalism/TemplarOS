@@ -8,7 +8,7 @@
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, FilesBrowseProxy, FilesOperationsProxy, FilesRecentsProxy,
     FilesSearchProxy, FilesVolumesProxy, HomeFieldProxy, LauncherProxy, LifecycleProxy,
-    ProjectsProxy,
+    NotificationsProxy, ProjectsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
 use std::fmt::Write as _;
@@ -269,6 +269,41 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
         detail,
         available: true,
         refused,
+    }
+}
+
+/// Active notifications as a stable Home widget snapshot. The service owns ordering, expiry and
+/// dismissal; Home only turns its returned JSON into a count and a few lines.
+pub async fn fetch_notifications_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
+    let Ok(connection) = session().await else {
+        return WidgetSnapshot::unavailable("Notifications — no session bus");
+    };
+    let Ok(proxy) = NotificationsProxy::new(&connection).await else {
+        return WidgetSnapshot::unavailable("Notifications — service unavailable");
+    };
+    let Ok(rows) = proxy.list_active().await else {
+        return WidgetSnapshot::unavailable("Notifications — service unavailable");
+    };
+    let detail = rows
+        .iter()
+        .take(3)
+        .filter_map(|row| serde_json::from_str::<serde_json::Value>(row).ok())
+        .map(|row| {
+            let app = row["app_name"].as_str().unwrap_or("Application");
+            let summary = row["summary"].as_str().unwrap_or("Notification");
+            format!("{app} — {summary}")
+        })
+        .collect();
+    WidgetSnapshot {
+        headline: match rows.len() {
+            0 => "All caught up".to_owned(),
+            1 => "1 notification".to_owned(),
+            count => format!("{count} notifications"),
+        },
+        detail,
+        available: true,
+        refused: Vec::new(),
     }
 }
 

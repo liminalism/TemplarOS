@@ -39,11 +39,12 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     // Everything a live shell would have fetched. Each of these degrades on its own when its
     // service is absent, so this works on a machine with no session daemon at all.
-    let (drawer_texts, apps, projects, session_widget, browser_sources) = tokio::join!(
+    let (drawer_texts, apps, projects, session_widget, notifications_widget, browser_sources) = tokio::join!(
         crate::data::fetch_all(12),
         crate::data::fetch_apps(),
         crate::data::fetch_projects(),
         crate::data::fetch_session_widget(),
+        crate::data::fetch_notifications_widget(),
         crate::data::fetch_browser_sources(),
     );
 
@@ -65,6 +66,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     let mut widgets = HashMap::new();
     widgets.insert("session".to_owned(), session_widget);
+    widgets.insert("notifications".to_owned(), notifications_widget);
 
     let drawer_texts: HashMap<_, Vec<String>> = drawer_texts
         .into_iter()
@@ -150,6 +152,117 @@ fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fixed-pixel baseline for the default Home Field. Unlike `render_field`, this fixture reads
+    /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
+    /// therefore be reviewed and deliberately update this hash; environment changes cannot make
+    /// it flicker.
+    #[test]
+    fn visual_regression_home_field_baseline() {
+        let (width, height) = (800_u32, 600_u32);
+        let (cols, rows) =
+            field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
+        let mut field = lege_field::FieldDocument::new("visual-baseline", cols, rows);
+        let projects = vec![field_model::ProjectInfo {
+            id: "legeos".to_owned(),
+            name: "LegeOS".to_owned(),
+            is_open: true,
+        }];
+        let live = LiveState {
+            toplevels: &[],
+            projects: &projects,
+        };
+        field_model::merge(&mut field, &live);
+        field_model::refresh_titles(&mut field, &live);
+
+        let drawer_texts = crate::home_surface::Drawer::DEFAULT
+            .into_iter()
+            .map(|drawer| {
+                (
+                    drawer,
+                    vec![
+                        format!("{} fixture", drawer.name()),
+                        "One stable row".to_owned(),
+                    ],
+                )
+            })
+            .collect();
+        let mut widgets = HashMap::new();
+        widgets.insert(
+            "session".to_owned(),
+            crate::surface::widgets::WidgetSnapshot {
+                headline: "Session ready".to_owned(),
+                detail: vec!["Balanced power".to_owned()],
+                available: true,
+                refused: Vec::new(),
+            },
+        );
+        let empty_bitmaps = HashMap::new();
+        let empty_treemaps = HashMap::new();
+        let empty_compositions = HashMap::new();
+        let browser_sources = crate::file_browser::BrowserSources::default();
+        let browser = FileBrowserData {
+            sources: &browser_sources,
+            listing: None,
+            pending: None,
+            error: None,
+            status: None,
+            search_query: None,
+            search_entries: None,
+            search_error: None,
+        };
+        let apps = Vec::new();
+        let data = FieldData {
+            field: &field,
+            toplevels: &[],
+            icons: &empty_bitmaps,
+            previews: &empty_bitmaps,
+            drawer_texts: &drawer_texts,
+            treemaps: &empty_treemaps,
+            compositions: &empty_compositions,
+            browser: &browser,
+            connected: true,
+            home_revealed: true,
+            network_control_available: false,
+            apps: &apps,
+            apps_available: true,
+            widgets: &widgets,
+            clock_label: "Thu 27 Aug 10:15",
+            reduced_motion: true,
+            now_ms: 0,
+        };
+
+        let mut buffer = WindowBuffer::new(width, height);
+        let mut text = pixelkit_text::TextCache::new(fonts::set());
+        let mut kernel = RasterKernel::new();
+        let mut input = Input::new();
+        let mut screen = FieldScreen::default();
+        for _ in 0..2 {
+            let mut ui = Ui::new(
+                Painter::new(&mut buffer),
+                &mut text,
+                &mut input,
+                design::theme(),
+                Scale::ONE,
+                &mut kernel,
+            );
+            screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
+            input.end_frame();
+        }
+
+        let hash = buffer
+            .pixels
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, pixel| {
+                pixel.to_le_bytes().into_iter().fold(hash, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                })
+            });
+        assert_eq!(
+            hash, 0xb5fc_3691_2d72_d7f4,
+            "review the Home Field pixels before updating this baseline"
+        );
+    }
 
     #[tokio::test]
     async fn a_field_is_rendered_to_a_readable_png() {
