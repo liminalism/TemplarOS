@@ -15,9 +15,9 @@ use clap::{Parser, Subcommand};
 use lege::{bus, doctor, files, history, open, power, project, providers, res, settings, update};
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, FilesActionsProxy, FilesOperationsProxy,
-    FilesRecentsProxy, FilesSearchProxy, FilesVolumesProxy, HistoryProxy, HostDeploymentsProxy,
-    HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy,
-    PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
+    FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy, FilesVolumesProxy, HistoryProxy,
+    HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy,
+    LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
 use std::{fmt::Write as _, path::PathBuf};
@@ -63,6 +63,13 @@ enum Command {
     Files {
         #[command(subcommand)]
         command: FilesCommand,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// The trash: what is in it, putting something back, and emptying it.
+    Trash {
+        #[command(subcommand)]
+        command: Option<TrashCommand>,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -203,6 +210,27 @@ enum FilesCommand {
         /// `canonical|as-shown|uri|shell-quoted|parent-directory|name`; omit to list the forms.
         #[arg(long)]
         form: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TrashCommand {
+    /// Everything in every trash, newest deletion first (the default).
+    List,
+    /// Put trashed items back where they came from, by their path under `Trash/files`.
+    Restore { trashed_paths: Vec<String> },
+    /// Remove trashed items for good. There is no undo.
+    Delete {
+        trashed_paths: Vec<String>,
+        /// Required: this cannot be undone.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Empty every trash this user has. There is no undo.
+    Empty {
+        /// Required: this cannot be undone.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -418,6 +446,9 @@ async fn run() -> Result<()> {
             res_command(command.unwrap_or(ResCommand::Status), json).await
         }
         Command::Files { command, json } => files_command(command, json).await,
+        Command::Trash { command, json } => {
+            trash_command(command.unwrap_or(TrashCommand::List), json).await
+        }
         Command::Update { command, json } => {
             update_command(command.unwrap_or(UpdateCommand::Status), json).await
         }
@@ -705,6 +736,71 @@ async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
             }
         }
     }
+}
+
+/// `lege trash` — the trash as a listing, and the three things done with it.
+///
+/// The two destructive verbs demand `--yes` rather than prompting: this is the surface a script
+/// reaches for, and a permanent delete that can happen by pressing return in the wrong terminal
+/// is the one mistake in this whole area that nothing can put right.
+async fn trash_command(command: TrashCommand, json: bool) -> Result<()> {
+    let connection = bus::session().await?;
+    let proxy = FilesTrashProxy::new(&connection).await?;
+    match command {
+        TrashCommand::List => {
+            let entries = files::parse_trash(&files::TrashClient::list(&proxy).await?)?;
+            emit(json, &entries, &files::render_trash(&entries))
+        }
+        TrashCommand::Restore { trashed_paths } => {
+            let op_id = files::TrashClient::restore(&proxy, trashed_paths.clone(), "").await?;
+            emit(
+                json,
+                &serde_json::json!({"op_id": op_id, "restoring": trashed_paths}),
+                &format!(
+                    "restoring {} item(s) as operation {op_id}",
+                    trashed_paths.len()
+                ),
+            )
+        }
+        TrashCommand::Delete { trashed_paths, yes } => {
+            if !yes {
+                return refuse_without_yes("lege trash delete");
+            }
+            let op_id =
+                files::TrashClient::delete_permanently(&proxy, trashed_paths.clone(), "").await?;
+            emit(
+                json,
+                &serde_json::json!({"op_id": op_id, "deleting": trashed_paths}),
+                &format!(
+                    "deleting {} item(s) permanently as operation {op_id}",
+                    trashed_paths.len()
+                ),
+            )
+        }
+        TrashCommand::Empty { yes } => {
+            if !yes {
+                return refuse_without_yes("lege trash empty");
+            }
+            let op_id = files::TrashClient::empty(&proxy, "").await?;
+            if op_id.is_empty() {
+                // Not an error: an already-empty trash is the state the verb asks for.
+                return emit(
+                    json,
+                    &serde_json::json!({"op_id": "", "emptied": false}),
+                    "the trash is already empty",
+                );
+            }
+            emit(
+                json,
+                &serde_json::json!({"op_id": op_id, "emptied": true}),
+                &format!("emptying the trash as operation {op_id}"),
+            )
+        }
+    }
+}
+
+fn refuse_without_yes(verb: &str) -> Result<()> {
+    anyhow::bail!("{verb} cannot be undone; pass --yes to go ahead")
 }
 
 /// `Files.Search1.Search` returns `[[entry, rank], ...]`; render the path and why it matched.
