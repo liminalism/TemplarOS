@@ -927,6 +927,18 @@ record legeos.evidence.refinement-integration-smoke-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.rust-1-97-baseline-20260831/1 : evidence {
+    title "Formatting, warnings-denied workspace Clippy, all workspace tests, Rust 1.97 MSRV check, tree/dependency checks, interfaces, proxies, packaging, assets and action routes passed after aligning Cargo, Clippy, CI and local recipes to Rust 1.97."
+    state verified
+    result pass
+    method command
+    observed_at git:eb63654b38f9684ec44d2332c7d21b515b403129
+    command "just check"
+    summary """
+        Formatting, warnings-denied workspace Clippy, all workspace tests, Rust 1.97 MSRV check, tree/dependency checks, interfaces, proxies, packaging, assets and action routes passed after aligning Cargo, Clippy, CI and local recipes to Rust 1.97.
+        """
+}
+
 record legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1 : evidence {
     title "Shelf restore, field reset and the drawer representation ladder — gates green, service methods verified live"
     state verified

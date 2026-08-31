@@ -338,21 +338,69 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
 }
 
 record legeos.work.file-operations-from-home/1 : work {
-    title "Rename, copy, new folder and properties from the field itself, and a file that can be dropped onto an application"
+    title "Copy, cut, paste, drag/drop, trash and ordinary file actions inside Home folder surfaces"
     state proposed
-    scope [ path "services/lege-filed/**", path "shell/lege-shell/**" ]
+    scope [
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "interfaces/dbus/org.legeos.Files.Operations1.xml",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
     intent """
-        From the Home Field a user can navigate and open. That is the whole verb list: the drawer browser does into-a-folder, Up, Refresh, show-hidden and open (shell/lege-shell/src/surface/file_browser.rs). There is no rename, no copy or move, no new folder, no properties, and no clipboard — neither key match block in the shell has a Ctrl+X/C/V arm. Nothing under shell/lege-shell/src ever calls the file service's mutation path, so every file task is a trip to the separate Files app.
+        Complete ordinary file manipulation inside expanded Home folders and shortcut panes, using the multi-selection model that now exists. Ctrl+C/Ctrl+X/Ctrl+V copy or move every selected item through Files.Operations1; the clipboard advertises and accepts standard URI-list data where possible so Files and other desktop applications interoperate. Delete moves real files to Trash through the journalled service and reports an undo route. Rename, New Folder, Properties and Copy Path remain part of the same coherent action surface.
 
-        Drag is the sharper half. The field's drag moves one tile between grid cells and never carries a file: Operation::OpenWith and Operation::AddReference — the two that would mean 'drop this file on that app' and 'put this file in that tray' — return None with the comment that they are placement only (surface/field_screen.rs:1435). Dropping a document onto an application is among the oldest gestures a desktop has, and on a surface whose entire premise is that files live on it in drawers, its absence is felt harder here than it would be on a conventional desktop.
+        Implement drag and drop with typed destinations. Dropping onto a real folder copies or moves according to the declared gesture/modifier; dropping onto a shortcut pane adds references unless the user explicitly chooses a file operation; dropping onto an application resolves an Open With/application action; dragging out exports URI-list data. Bare Home never accepts an individual file as a loose tile and instead routes it to a shortcut pane per the governing object model.
 
-        The service side already exists — lege-filed implements rename, copy, move, trash and CreateDirectory as journalled transactions — so this is a shell and protocol problem: reach Operations1 from the shell, and decide how a field tile becomes a Wayland drag source. Worth settling alongside it whether the field's undo and the file service's undo stay two stacks or become one, because a user who has just renamed a file from Home and presses Ctrl+Z will not care which subsystem owns the last action.
+        All bulk operations are one journalled operation with one progress/error surface and one undo. The Home field-layout undo and file-operation undo remain distinct internally, but the focused surface routes Ctrl+Z to the most recent applicable action and says which action will be undone. Conflict, permission, partial-failure and cross-device cases are answered by the file service rather than guessed by the shell.
         """
     note """
         Rank 3 of the audit's daily-work gaps. Depends on selection landing first if bulk file operations are wanted rather than one file at a time.
         """
+    acceptance {
+        check clipboard-bulk-operations {
+            statement """
+                Copy, cut and paste operate on the complete selected path set as one journalled service operation, support standard URI-list clipboard interchange, and never duplicate a cut source after success.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-shell -p lege-files clipboard"
+        }
+        check ordinary-file-verbs {
+            statement """
+                Rename, New Folder, Properties and Copy Path are available by keyboard and pointer in Home folder surfaces with the same service semantics as the standalone Files app.
+                """
+            method command
+            command "cargo test -p lege-shell file_actions && cargo run -q -p xtask -- check-actions"
+        }
+        check progress-and-failure {
+            statement """
+                Bulk copy/move/trash exposes bounded progress, cancellation and item-specific failures without reporting a partially failed operation as wholly successful.
+                """
+            method command
+            command "cargo test -p lege-filed operations"
+        }
+        check trash-delete-and-undo {
+            statement """
+                Delete moves selected real items to Trash as one operation, Remove from Pane only removes references, and one undo restores every successfully trashed item exactly.
+                """
+            method command
+            command "cargo test -p lege-filed trash undo"
+        }
+        check typed-drag-drop {
+            statement """
+                Drag/drop distinguishes real folders, shortcut panes, applications and external URI-list targets; every target advertises the exact operation before release and bare Home never creates a loose file tile.
+                """
+            method command
+            command "cargo test -p lege-shell drag_drop"
+        }
+    }
+    depends_on [
+        @legeos.work.home-field-selection-and-bulk-action,
+        @legeos.work.home-folders-and-shortcut-panes
+    ]
     derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
-    part_of [ @legeos.work.home-field ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.file-previews-copy-path-and-folder-properties/1 : work {
@@ -742,22 +790,131 @@ record legeos.work.home-field-selection-and-bulk-action/1 : work {
 }
 
 record legeos.work.home-field-settings-gui/1 : work {
-    title "A Home Field page in lege-settings — shipped; what remains is every other page, which is still read-only"
+    title "Graphical Settings for displays, mouse/trackpad and Home appearance"
     state proposed
-    scope [ path "apps/lege-settings/**", path "crates/lege-session-core/src/settings.rs" ]
+    scope [
+        path "apps/lege-settings/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-session-core/src/settings.rs",
+        path "interfaces/dbus/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/src/surface/design.rs"
+    ]
     intent """
-        Superseded in part by what shipped on 2026-08-30. The premise of revision 1 — that the five shell.home-field.* keys are CLI-only — no longer holds: lege-settings now opens graphically by default (apps/lege-settings/src/main.rs:74, with --print as the legacy text path), and its Home Field tab carries live controls that write through Settings1.Set and Reset. tile-size, throw, previews, preview-rate and reduced-motion are all editable in the GUI.
+        The graphical Settings app already edits the five Home Field tuning keys; replace the vague goal of making every read-only diagnostic tab editable with the common controls needed for daily use.
 
-        What is left is the rest of the app. Of the seven tabs — Home Field, Providers, Associations, Background, Resources, History, Hardware — only Home Field is interactive; the other six render the same lines the CLI --print path produces, with no controls (apps/lege-settings/src/surface.rs). So provider role selection, association defaults and everything else can be read graphically and changed only from the CLI. shell.wallpaper.enabled is a further case: a real settings key that falls outside the HOME_PREFIX filter and therefore has no GUI control at all.
+        Displays: enumerate connected outputs and allow resolution, refresh rate, rotation/orientation and scale per output, including mixed-scale arrangements. Apply through compositor-owned validated configuration with a visible confirmation countdown and automatic rollback when the new mode is not confirmed or the output disappears. Show the resulting logical arrangement before applying and retain a known-good configuration.
 
-        Kept open rather than completed because the original goal — settings a user can change without a terminal — is met for one page out of seven.
+        Mouse and trackpad: expose pointer speed, acceleration profile, natural scrolling, primary-button choice and scroll behaviour; for touchpads also tap-to-click, tap-and-drag, two-finger/edge scrolling and disable-while-typing where libinput supports them. Unsupported controls are identified as unavailable rather than drawn as inert switches.
+
+        Appearance: select light/dark or bundled themes, accent and object-material palette/texture roles, background/wallpaper behaviour, and the defaults used by Home panels, folder panes and widgets. Themes are declarative design tokens/material assets, never executable shell extensions, and application fullscreen remains free of Home chrome. Every graphical setting writes through a typed service/schema and has Reset; CLI inspection/change remains equivalent. Provider, association, history and hardware diagnostic pages may remain read-only until their own scoped work exists.
         """
     note """
         Revised 2026-08-31 by the Home Field usability audit, which found revision 1's CLI-only premise stale.
         """
-    depends_on [ @legeos.constraint.services-not-indicators ]
+    acceptance {
+        check mixed-scale-preview {
+            statement """
+                Settings previews the logical mixed-scale output arrangement accurately and applying it keeps every window recoverable.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-settings display"
+        }
+        check mouse-trackpad-controls {
+            statement """
+                Mouse and touchpad settings map to the correct libinput devices, persist independently, and unsupported capabilities render explicitly unavailable rather than inert.
+                """
+            method command
+            command "cargo test -p lege-comp -p lege-settings input_settings"
+        }
+        check safe-display-configuration {
+            statement """
+                Resolution, refresh, rotation and per-output scale validate against live modes; an unconfirmed, failed or disconnected-output apply automatically restores the known-good topology.
+                """
+            method command
+            command "cargo test -p lege-comp display_configuration"
+        }
+        check theme-and-material-tokens {
+            statement """
+                Light/dark, accent, background and object-material choices update Home through declarative validated tokens/assets, persist, reset, and cannot load executable shell code.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-settings appearance"
+        }
+        check typed-service-parity {
+            statement """
+                Every graphical control is represented by a typed schema/service value with validation, CLI parity and a Reset path.
+                """
+            method command
+            command "cargo test -p lege-session-core -p lege-settings && cargo run -q -p xtask -- check-interfaces"
+        }
+    }
+    depends_on [
+        @legeos.constraint.services-not-indicators,
+        @legeos.work.file-operations-from-home,
+        @legeos.work.home-file-sorting-and-view-modes,
+        @legeos.work.home-panel-and-dock-layouts,
+        @legeos.work.reversible-window-arrangement-presets
+    ]
     derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
-    part_of [ @legeos.work.home-widgets ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.home-file-sorting-and-view-modes/1 : work {
+    title "Folder sorting plus list and thumbnail modes across Home and Files"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "crates/lege-client/**",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Give every Home folder/shortcut pane and the standalone Files app an explicit presentation control. List mode shows name, type, size and modified time with bounded columns. Thumbnail mode lays out responsive preview cells using Files.Previews1 and the same representation ladder, request limits and off-thread decoding already used by the inspector. Switching modes preserves selection, focus and the nearest visible item rather than jumping to the top.
+
+        Offer deterministic sorting by natural name, type, size and modified time in ascending or descending order, with a clear folder-first choice and stable tie breakers. A shortcut pane may additionally retain its manual reference order. Home and Files share one sort descriptor/comparator contract so the same directory never silently changes order between surfaces. Store a global default plus per-folder/pane overrides, and expose every choice by pointer and keyboard. Thumbnails remain content inside a folder/pane; they do not become loose Home tiles.
+        """
+    acceptance {
+        check bounded-preview-loading {
+            statement """
+                Thumbnail mode requests only visible/near-visible bounded previews, cancels stale requests and never decodes or walks files on the render thread.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-files thumbnail"
+        }
+        check list-and-thumbnail {
+            statement """
+                Both Home folder surfaces and Files can switch between bounded detail-list and responsive thumbnail modes without losing selection, focus or scroll context.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-files view_mode"
+        }
+        check no-loose-thumbnail-tiles {
+            statement """
+                Thumbnail cells exist only inside folder or shortcut-pane surfaces and cannot be persisted as loose Home file tiles.
+                """
+            method command
+            command "cargo test -p lege-field -p lege-shell no_loose_file_tiles"
+        }
+        check preferences-persist {
+            statement """
+                Global defaults and per-folder/pane sort/view overrides round-trip, survive restart and reset independently.
+                """
+            method command
+            command "cargo test -p lege-session-core file_view_preferences"
+        }
+        check sort-contract {
+            statement """
+                Natural name, type, size, modified and manual-reference sorts are deterministic total orders with stable tie breakers, ascending/descending handling and an explicit folder-first policy shared by Home and Files.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-files sort"
+        }
+    }
+    depends_on [ @legeos.work.home-folders-and-shortcut-panes ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.home-file-surface/1 : work {
@@ -886,6 +1043,64 @@ record legeos.work.home-file-surface/2 : work {
     supported_by [ @legeos.observation.hardware-home-loads-but-file-panes-empty/1 ]
 }
 
+record legeos.work.home-folders-and-shortcut-panes/1 : work {
+    title "Placeable folders and composite shortcut panes replace loose desktop file icons"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "crates/lege-field/**",
+        path "services/lege-filed/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Make folders and shortcut panes first-class placeable Home objects. A folder object points to one real directory and opens or expands into its live contents. A shortcut pane is a named, ordered collection of references to files and folders from multiple locations; it never relocates the referenced item merely by adding it. Both participate in the Home representation ladder, resize/yield rules, panel layouts, persistence and multi-selection.
+
+        Import the user's XDG Desktop directory as the default large Home folder/shortcut pane so software that still writes desktop launchers or files has a visible destination without recreating scattered desktop icons. Provide pointer, keyboard and Files-app routes to pin a folder, create/rename a pane, add references, reorder them and remove references. Removing from a shortcut pane is distinct from Move to Trash and never deletes the underlying item.
+
+        Dragging an individual file to bare Home does not create a loose file tile: it offers or uses a shortcut pane. Existing serialized TileKind::File entries remain readable and migrate to references or the shelf without data loss. Folder, pane, widget and session shells get distinct tint/material roles (optionally glass-, stone- or paper-like) while remaining rectangular, legible and theme-controlled.
+        """
+    acceptance {
+        check desktop-directory-default {
+            statement """
+                The XDG Desktop directory appears as a default Home folder/pane when available, degrades readably when absent, and does not explode its children into loose Home tiles.
+                """
+            method command
+            command "cargo test -p lege-shell desktop_folder"
+        }
+        check folder-and-pane-model {
+            statement """
+                A folder binds one directory; a shortcut pane stores deterministic references from multiple directories without moving or copying their targets, and both round-trip through Home persistence.
+                """
+            method command
+            command "cargo test -p lege-field folder shortcut_pane"
+        }
+        check material-roles {
+            statement """
+                A reviewed Home render distinguishes folder, shortcut-pane, widget and session object types by theme-owned tint/material treatment without changing tile geometry or reducing text legibility.
+                """
+            method observation
+        }
+        check no-new-loose-files {
+            statement """
+                No Home pointer, keyboard, drag/drop or service path creates a new loose file tile; dropping a file on bare Home routes it to a shortcut pane.
+                """
+            method command
+            command "cargo test -p lege-shell no_loose_file_tiles"
+        }
+        check reference-removal-is-safe {
+            statement """
+                Remove from Pane deletes only the reference; trashing the target is a separate explicitly labelled file-service operation with its own undo.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-shell shortcut_pane_remove"
+        }
+    }
+    depends_on [ @legeos.work.home-panel-and-dock-layouts ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.home-input-and-refinement/1 : work {
     title "Home refinement — hardware input and cursor, bare-Super toggle, no taskbar, clean tiles and information row"
     state active
@@ -963,6 +1178,53 @@ record legeos.work.home-input-and-refinement/1 : work {
     part_of [ @legeos.work.home-field ]
 }
 
+record legeos.work.home-panel-and-dock-layouts/1 : work {
+    title "Adjustable Home panels and docks with automatic arrangements for each output shape"
+    state proposed
+    scope [
+        path "crates/lege-field/**",
+        path "crates/lege-session-core/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Turn the fixed drawer block and system shelf into user-adjustable Home-only containers. A panel/rail/dock is a layout group for folders, shortcut panes, widgets or sessions: it can be moved, resized, oriented as a row/column/edge rail, or assigned an automatic arrangement that fits the current output. Automatic choices include balanced rows/columns, edge rails and a cushion-map-like composition where area follows the importance or content measure the object declares.
+
+        Preset buttons on Home switch arrangements immediately without rebuilding or losing the contained objects. A custom layout is retained as the restore target; selecting another preset replaces the current preset in one action rather than building an undo stack of intermediate movements. Layout persists per output identity and safely reflows when scale, resolution or topology changes. These docks never map as ShellOverlay, never reserve an exclusive zone outside Home, and disappear completely behind application work.
+        """
+    acceptance {
+        check adjustable-home-groups {
+            statement """
+                Home panels/rails can be created or configured, moved, resized and oriented without changing the identity or contents of their objects.
+                """
+            method command
+            command "cargo test -p lege-field -p lege-shell panel_layout"
+        }
+        check automatic-layouts-fit {
+            statement """
+                Balanced, edge-rail and cushion-style automatic arrangements are deterministic, non-overlapping and bounded across supported output sizes and scales.
+                """
+            method command
+            command "cargo test -p lege-field panel_layout -- --include-ignored"
+        }
+        check home-only-no-exclusive-zone {
+            statement """
+                With an application fullscreen or maximized, no Home panel/dock is visible and no panel/dock reduces the application work area.
+                """
+            method observation
+        }
+        check preset-switch-is-reversible {
+            statement """
+                Switching directly between any two presets is one operation, preserves the saved custom arrangement, and Restore Custom returns every group to its exact prior placement.
+                """
+            method command
+            command "cargo test -p lege-field panel_presets"
+        }
+    }
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.home-shelf-and-representation-ladder/1 : work {
     title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
     state completed
@@ -1019,6 +1281,33 @@ record legeos.work.home-shelf-and-representation-ladder/1 : work {
     }
     derived_from [ @legeos.observation.shelved-tiles-have-no-route-back ]
     part_of [ @legeos.work.home-widgets ]
+}
+
+record legeos.work.home-surface-usability-next/1 : work {
+    title "Next Home usability sequence — adaptable Home, complete folder surfaces, then common Settings"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "apps/lege-settings/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Carry the Home surface from a fixed demonstration layout to an ordinary daily desktop in the order set by the user on 2026-08-31.
+
+        First, make Home itself adaptable: configurable Home-only panels/rails/docks, automatic panel layouts for different output shapes, user-invoked arrangements for all open windows, and immediate reversible switching among those arrangements. Preserve truly chrome-free fullscreen application work and refine bare Super from release-only toggling into immediate press/hold Home reveal with shortcut-safe semantics.
+
+        Second, make folders and composite shortcut panes the Home file objects. Build copy/cut/paste, drag and drop, delete/trash and the remaining ordinary file verbs on the multi-selection foundation; then add deterministic sorting and list-versus-thumbnail presentation. Loose individual file tiles are explicitly not part of this model.
+
+        Third, make the graphical Settings app adjust the common controls a person expects: resolution/refresh/rotation/scale, mouse and trackpad behaviour, and appearance/theme/material choices. Accessibility remains deferred behind these product-completeness items per the user's standing priority.
+        """
+    depends_on [ @legeos.work.home-field-selection-and-bulk-action ]
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-field ]
 }
 
 record legeos.work.home-widget-foundations/1 : work {
@@ -1266,6 +1555,63 @@ record legeos.work.host-update-transaction/1 : work {
         Make lege-hostd able to promote or roll back a kernel and its NVIDIA modules as a pair: the Planned → Downloading → Staging → Verifying → AwaitingReboot → Trial → Promoted|RolledBack|Failed state machine over a durable journal that resumes mid-apt after a restart, with apt run as a child transient unit; a BootManager trait with working systemd-boot and grub backends so ADR-0004's undecided Secure-Boot posture stays a configuration choice rather than a hardcoding; one driver authority that selects a single flavour from detected hardware, verifies the version lock and detects support violations; the storage reserve and its trim order; polkit authorisation checked in the daemon on every privileged method, with the policy and an AppArmor profile shipped; and a lege-boot-health that can actually fail, since it gates boot-complete.target with FailureAction=reboot-force.
         """
     part_of [ @legeos.milestone.m1-session-runtime ]
+}
+
+record legeos.work.reversible-window-arrangement-presets/1 : work {
+    title "One-press reversible arrangements for all open windows"
+    state proposed
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Add a Home control made of manifest-declared buttons that arranges the eligible open windows on an output into useful shapes: one-window focus/full-output, halves, thirds, quarters/grid, a large-focus-plus-side-stack layout, and a cushion/treemap-style packing inspired by Silvaview. The compositor owns window geometry and recoverability; the shell only requests a named preset and renders its preview/button.
+
+        The first preset request snapshots every affected window's prior geometry and state. Choosing a different preset recomputes directly from that baseline and the current eligible window set, so a person can audition arrangements by pressing buttons without walking an undo history. Restore returns surviving windows exactly to the saved baseline, repaired only when output topology makes an old rectangle unreachable. Closed windows disappear cleanly; newly opened windows join on the next explicit preset press rather than causing surprise background retiling. The feature is user-invoked arrangement, not a permanently enforced tiling window manager.
+
+        Arrangement controls live on Home. An application can still be fullscreen with no Home chrome visible, and the compositor's shell-independent recovery routes remain available.
+        """
+    acceptance {
+        check buttons-and-accelerators {
+            statement """
+                Every arrangement and Restore has a visible Home button/menu route and may additionally have a Super accelerator declared by the same action manifest.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions"
+        }
+        check dynamic-window-set {
+            statement """
+                Closed windows are ignored, newly opened windows join only on the next explicit arrangement request, and output removal repairs without losing any surviving window.
+                """
+            method command
+            command "cargo test -p lege-comp arrangement"
+        }
+        check fullscreen-remains-clean {
+            statement """
+                A fullscreen application occupies the output with no Home panel, dock, arrangement control or reserved strip visible.
+                """
+            method observation
+        }
+        check preset-geometry {
+            statement """
+                Every declared preset produces deterministic, bounded, non-overlapping recoverable rectangles for one through a practical upper bound of windows on mixed-scale outputs.
+                """
+            method command
+            command "cargo test -p lege-window arrangement"
+        }
+        check switch-from-baseline {
+            statement """
+                A→B preset switching is computed from one retained baseline rather than from A's geometry, and Restore returns the exact baseline when the output still permits it.
+                """
+            method command
+            command "cargo test -p lege-window arrangement_presets_are_reversible"
+        }
+    }
+    depends_on [ @legeos.work.home-panel-and-dock-layouts ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.session-lock-client/1 : work {
@@ -1535,6 +1881,55 @@ record legeos.work.standalone-file-manager/3 : work {
     part_of [ @legeos.milestone.m2-session-runs ]
     supersedes [ @legeos.work.standalone-file-manager/2 ]
     acknowledged true
+}
+
+record legeos.work.super-press-hold-home-reveal/1 : work {
+    title "Super reveals Home on press, stays momentary while held, and keeps chords fast"
+    state proposed
+    scope [
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Refine the existing release-only bare-Super toggle into two compatible modes. Super key-down reveals Home immediately. While either Super key remains held, Home stays visible as a momentary surface. Releasing after a hold returns to the exact prior application/Home state; a short unmodified tap retains the convenient latched toggle. Pressing another key while Super is held performs the declared accelerator and resolves the momentary reveal without also toggling Home on release. Two Super keys behave as one logical hold.
+
+        This remains compositor-owned so Home is reachable and the gesture terminates safely if the shell dies. Ctrl+Alt+H and Super+D remain fallbacks. The interaction changes no window geometry, activation, shelving or arrangement state.
+        """
+    acceptance {
+        check chord-does-not-toggle {
+            statement """
+                Every declared Super chord performs only its action; release never additionally latches Home, and chord handling safely ends the momentary reveal.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::super_chord"
+        }
+        check no-window-mutation {
+            statement """
+                Momentary and latched Home reveal change no window geometry, activation, fullscreen, maximize or shelf state.
+                """
+            method command
+            command "cargo test -p lege-window commands::tests::a_reveal_changes_no_window"
+        }
+        check press-and-hold {
+            statement """
+                Home becomes revealed on Super key-down, remains revealed while either Super key is held, and a held release restores the exact preceding reveal state.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::super"
+        }
+        check tap-still-latches {
+            statement """
+                A short bare-Super tap toggles the latched Home state without a second toggle on key release.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::bare_super"
+        }
+    }
+    derived_from [ @legeos.work.home-input-and-refinement ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {

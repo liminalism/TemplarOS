@@ -467,6 +467,17 @@ record legeos.papercut.the-readiness-smoke-targeted-target-debug-lege/1 : paperc
     created_at 2026-08-23
 }
 
+record legeos.papercut.the-rust-msrv-was-duplicated-in-clippy-toml-as/1 : papercut {
+    title "The Rust MSRV was duplicated in clippy.toml as well as Cargo.toml, CI,…"
+    state verified
+    statement """
+        The Rust MSRV was duplicated in clippy.toml as well as Cargo.toml, CI, justfile, and ci/run.sh; the initial version search omitted that file and `just check` only exposed the drift as a repeated warning. A single source or an MSRV consistency gate would prevent this.
+        """
+    observed_at git:8edc68e8289bceb0ae57d0ef8993de2ad2ecb7c3
+    author "codex"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.the-sibling-codebase-was-referenced-as-rust/1 : papercut {
     title "The sibling codebase was referenced as rust-projects/silvaview-rs, but…"
     state verified
