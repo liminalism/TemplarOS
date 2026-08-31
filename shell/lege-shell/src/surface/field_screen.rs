@@ -357,6 +357,24 @@ impl FieldScreen {
         tile.spans.min != tile.spans.max
     }
 
+    /// Every tile drags by its band; an object-like tile (a file, a folder, a pane, an app —
+    /// the things every desktop taught people to drag from anywhere) drags by its whole body
+    /// too. Instrument tiles (widgets, drawers, parked sessions, projects) keep the band-only
+    /// grab so a press on their controls can never lift the tile out from under its own button.
+    /// A press that never crosses the lift threshold is still delivered as the click it was, so
+    /// opening things is unchanged.
+    fn body_draggable(doc: &FieldDocument, id: TileId) -> bool {
+        doc.tile(id).is_some_and(|tile| {
+            matches!(
+                tile.kind,
+                TileKind::File { .. }
+                    | TileKind::Folder { .. }
+                    | TileKind::Tray { .. }
+                    | TileKind::App { .. }
+            )
+        })
+    }
+
     /// The span the pointer at `(x, y)` is asking a tile anchored at its current cell to become,
     /// clamped to the tile's own declared range. `None` when the pointer is off the grid.
     fn span_under_pointer(
@@ -1388,7 +1406,12 @@ impl FieldScreen {
                 }
                 let mut hit = None;
                 for (id, rect) in rects.iter().rev() {
-                    if Self::band(*rect, ui).contains(cx, cy) {
+                    let grabbed = if Self::body_draggable(doc, *id) {
+                        rect.contains(cx, cy)
+                    } else {
+                        Self::band(*rect, ui).contains(cx, cy)
+                    };
+                    if grabbed {
                         hit = Some((*id, *rect));
                         break;
                     }
@@ -3500,6 +3523,43 @@ mod tests {
         assert_eq!(*id, files);
         assert_eq!(landing.cell, Cell::new(before.col + 3, before.row));
         assert_eq!(h.screen.drag, Drag::Idle);
+    }
+
+    /// An object-like tile (here an app) lifts from anywhere in its body, not just the band —
+    /// the gesture every desktop taught — while an instrument tile (a drawer widget) still
+    /// grabs only by its band, so a press on its controls can never lift it.
+    #[test]
+    fn object_tiles_drag_by_their_whole_body_and_instruments_do_not() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        let rect = h.rect_of(files);
+        // Press well below the band, near the tile's bottom edge (clear of the corner grip).
+        h.input
+            .cursor_moved((rect.x + 6) as f32, (rect.bottom() - 6) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert!(
+            matches!(h.screen.drag, Drag::Pressed { .. }),
+            "a body press on an app tile arms the drag: {:?}",
+            h.screen.drag
+        );
+        h.input.mouse(MouseButton::Left, false);
+        h.frame();
+        assert_eq!(h.screen.drag, Drag::Idle, "an unmoved press stays a click");
+
+        let downloads = tile_id_for("drawer:Downloads");
+        let rect = h.rect_of(downloads);
+        h.input
+            .cursor_moved((rect.x + 6) as f32, (rect.bottom() - 6) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert_eq!(
+            h.screen.drag,
+            Drag::Idle,
+            "a widget's body press is its own, not a grab"
+        );
+        h.input.mouse(MouseButton::Left, false);
+        h.frame();
     }
 
     /// The drawer tiles are the widgets a person actually grabs, so the grip is tested on one.
