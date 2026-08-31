@@ -1202,6 +1202,20 @@ impl ShellApp {
                 self.bridge_call("restore_arrangement", ShellBridge::restore_arrangement);
             }
             id if id.starts_with("windows.arrange.") => {
+                // With nothing to arrange the compositor would (correctly) do nothing — but a
+                // button that does nothing silently reads as broken, so say why on the field.
+                let arrangeable = self.bridge.as_ref().is_some_and(|bridge| {
+                    bridge
+                        .toplevels()
+                        .iter()
+                        .any(|toplevel| !toplevel.shelved && !toplevel.fullscreen)
+                });
+                if !arrangeable {
+                    let now_ms = self.started.elapsed().as_millis() as u64;
+                    self.field_screen
+                        .report("Nothing to arrange — no windows are open".to_owned(), now_ms);
+                    return;
+                }
                 let name = id.trim_start_matches("windows.arrange.");
                 if let Some(preset) = lege_window::ArrangementPreset::from_name(name) {
                     self.bridge_call("arrange_windows", |bridge| bridge.arrange_windows(preset));
