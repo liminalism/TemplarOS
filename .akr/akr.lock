@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:2f2ec64ca70d633315c5462a2de35e1e807f3a6ed0dcd16336c43c5f9536a5f8"
+    source_graph "sha256:cfc74d3d289bfcf0028562d123f9d19aeca6ce4a62a5547ecb9087c51cd790ab"
 }
 
 source ".akr/project.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:b48df527432debbdd1230e58349f1f658ecef65d597894db8e027794a627a651"
+    hash "sha256:b0d957aca8e2a5f8771c02256b86b5115c959e25302a9f24cf24a44bcfa1129c"
     records 44
 }
 
