@@ -163,6 +163,9 @@ struct FileOperationUndo {
 /// different step sizes would make the two surfaces disagree about what "one step" means.
 const STEP_PERCENT: i32 = 5;
 
+/// The application `settings.open` opens — the id of `apps/lege-settings/org.legeos.Settings.desktop`.
+const SETTINGS_APP_ID: &str = "org.legeos.Settings";
+
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 
@@ -1176,6 +1179,7 @@ impl ShellApp {
                 self.field_screen.search_focused = false;
             }
             "notifications.clear" => self.spawn_clear_notifications(),
+            "settings.open" => self.spawn_settings(),
             "trash.empty" => self.confirm_then_empty_trash(),
             "volume.increase" => self.spawn_volume_step(STEP_PERCENT),
             "volume.decrease" => self.spawn_volume_step(-STEP_PERCENT),
@@ -1290,6 +1294,20 @@ impl ShellApp {
                 report(format!("{label} refused — {error}"));
             }
         });
+    }
+
+    /// Open the Settings application through the real launch chain, exactly as the launcher would.
+    ///
+    /// No special case, no `Command::new`: identity comes from the cgroup the broker puts the
+    /// process in, so a shell that started its own child would be launching an application the
+    /// session cannot then identify, park or associate with anything.
+    fn spawn_settings(&self) {
+        match SETTINGS_APP_ID.parse::<AppId>() {
+            Ok(app_id) => self.spawn_launch(app_id),
+            // Unreachable: the id is a constant. Logged rather than unwrapped, because a panic in
+            // the shell is a lost session and this is a button.
+            Err(error) => tracing::error!(%error, "the Settings app id is not a valid AppId"),
+        }
     }
 
     fn spawn_network_control(&self) {
