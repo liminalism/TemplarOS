@@ -198,7 +198,18 @@ impl<I: IdentityCache> WindowService<I> {
             .identity
             .resolve_cached(peer_pid, &claims)
             .unwrap_or(CachedIdentity::UNKNOWN);
-        let geometry = repair_window(requested_geometry, &self.outputs);
+        // Placement, not obedience: an origin-located request has no position intent (xdg
+        // clients cannot ask for one) and is centred-and-cascaded; a real position — a restored
+        // session window, an X11 client that placed itself — is honoured and repaired. The
+        // cascade counts existing *client* windows so shell surfaces (the Home surface maps
+        // through here before its layer claim) never push application windows off centre.
+        let existing_clients = self
+            .windows
+            .values()
+            .filter(|window| self.is_client_window(window.id))
+            .count();
+        let geometry =
+            crate::geometry::place_new_window(requested_geometry, existing_clients, &self.outputs);
 
         self.windows.insert(
             id,

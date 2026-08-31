@@ -118,6 +118,12 @@ pub fn apply_arrangement<B: Backend + 'static>(
     else {
         return;
     };
+    // Arranging windows is a request to look at them: the controls live on the Home Field's
+    // menu, so without this the preset would be applied entirely behind the reveal that is
+    // hiding every window it just moved — pressing the button would appear to do nothing.
+    if !moves.is_empty() && state.window_service.home_revealed() {
+        state.reveal_home(lege_window::RevealHome::Hide);
+    }
     for (window_id, geometry) in moves {
         let maximized = state
             .window_service
@@ -309,6 +315,14 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .map_or(requested, |record| record.geometry);
         self.space
             .map_element(window.clone(), (repaired.x, repaired.y), false);
+        // Placement may have clamped an oversized request to the output's usable area
+        // (`lege_window::place_new_window`); the client only learns a size through a configure.
+        if (repaired.width, repaired.height) != (requested.width, requested.height) {
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some((repaired.width, repaired.height).into());
+            });
+            toplevel.send_configure();
+        }
         tracing::info!(
             ?window_id,
             requested = ?requested,

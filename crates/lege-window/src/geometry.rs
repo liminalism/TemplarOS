@@ -245,6 +245,52 @@ pub fn shell_surface_placement(
     move_into_view(requested, std::slice::from_ref(output))
 }
 
+/// How far each successive cascaded window is stepped down-right from centre
+/// ([`place_new_window`]). One recovery-band height: exactly enough that the previous window's
+/// band stays visible above the new window.
+pub const PLACEMENT_CASCADE_STEP: i32 = 32;
+
+/// Where a newly mapped client window goes.
+///
+/// xdg-shell gives a client no way to position itself, so the location of `requested` carries no
+/// intent — it is almost always `(0, 0)` — and honouring it verbatim stacked every new window
+/// flush into the top-left corner of the first output, each exactly over the last. Placement is
+/// the compositor's decision (the same argument as [`shell_surface_placement`]): an
+/// origin-located request is centred in the first output's usable area, stepped down-right by
+/// [`PLACEMENT_CASCADE_STEP`] per window already open so consecutive windows stay individually
+/// visible, wrapping back to centre before the cascade could reach the area's edge. The size is
+/// the client's, clamped to the usable area so nothing maps bigger than the screen.
+///
+/// A request located *away* from the origin is a real position — a restored session window
+/// mapping with its saved geometry, or an X11 client that placed itself — and is honoured,
+/// repaired through [`repair_window`] like any other geometry.
+pub fn place_new_window(requested: Rect, existing_windows: usize, outputs: &[Output]) -> Rect {
+    let Some(output) = outputs.first() else {
+        return requested;
+    };
+    if (requested.x, requested.y) != (0, 0) {
+        return repair_window(requested, outputs);
+    }
+    let usable = output.usable();
+    let width = requested.width.clamp(1, usable.width.max(1));
+    let height = requested.height.clamp(1, usable.height.max(1));
+    let centered_x = usable.x + (usable.width - width) / 2;
+    let centered_y = usable.y + (usable.height - height) / 2;
+    // Room below-right of centre before the window's far edge would leave the usable area; the
+    // cascade cycles within it rather than clamping, so window N+k never buries window N in the
+    // corner.
+    let room = (usable.right() - width - centered_x).min(usable.bottom() - height - centered_y);
+    let wrap = usize::try_from(room / PLACEMENT_CASCADE_STEP).unwrap_or(0);
+    let steps = i32::try_from(existing_windows % (wrap + 1)).unwrap_or(0);
+    let placed = Rect::new(
+        centered_x + steps * PLACEMENT_CASCADE_STEP,
+        centered_y + steps * PLACEMENT_CASCADE_STEP,
+        width,
+        height,
+    );
+    repair_window(placed, outputs)
+}
+
 /// Minimum visible width of the recovery band.
 pub const MIN_RECOVERY_WIDTH: i32 = 96;
 /// Height of the compositor-owned recovery band at the top of a window.
@@ -765,6 +811,50 @@ mod tests {
         let repaired = repair_window(lost, &edp());
         assert!(is_recoverable(repaired, &edp()));
         assert_eq!((repaired.width, repaired.height), (1200, 900));
+    }
+
+    /// An origin-located map request has no position intent: the first window is centred in the
+    /// usable area, wholly on screen.
+    #[test]
+    fn a_new_window_is_centred_not_cornered() {
+        let placed = place_new_window(Rect::new(0, 0, 800, 600), 0, &edp());
+        assert_eq!(placed, Rect::new(560, 240, 800, 600));
+    }
+
+    /// Consecutive windows cascade rather than mapping exactly over one another, and every one
+    /// of them stays wholly inside the usable area.
+    #[test]
+    fn consecutive_windows_cascade_and_stay_on_screen() {
+        let usable = edp()[0].usable();
+        let mut seen = Vec::new();
+        for existing in 0..40 {
+            let placed = place_new_window(Rect::new(0, 0, 800, 600), existing, &edp());
+            assert!(placed.x >= usable.x && placed.y >= usable.y);
+            assert!(placed.right() <= usable.right() && placed.bottom() <= usable.bottom());
+            if let Some(previous) = seen.last() {
+                assert_ne!(placed, *previous, "window {existing} buried its predecessor");
+            }
+            seen.push(placed);
+        }
+    }
+
+    /// A request bigger than the screen is clamped to the usable area, not mapped hanging off.
+    #[test]
+    fn an_oversized_window_is_clamped_to_the_usable_area() {
+        let placed = place_new_window(Rect::new(0, 0, 5000, 4000), 0, &edp());
+        assert_eq!(placed, Rect::new(0, 0, 1920, 1080));
+    }
+
+    /// A located request is a real position — a restored session window — and is honoured,
+    /// repaired only as any geometry would be.
+    #[test]
+    fn a_positioned_request_is_honoured() {
+        assert_eq!(
+            place_new_window(Rect::new(300, 200, 640, 480), 5, &edp()),
+            Rect::new(300, 200, 640, 480)
+        );
+        let lost = place_new_window(Rect::new(4000, 3000, 640, 480), 0, &edp());
+        assert!(is_recoverable(lost, &edp()));
     }
 
     #[test]
