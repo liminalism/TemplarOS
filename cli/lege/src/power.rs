@@ -1,5 +1,10 @@
-//! `lege power` — idle/lid/brightness policy per power source (`docs/architecture/session.md`,
-//! `crates/lege-session-core/src/power.rs`), the exclusive `power-manager` role.
+//! `lege power` — the stored idle and lid policy per power source
+//! (`crates/lege-session-core/src/power.rs`).
+//!
+//! What it prints is what the session has been *told* to do, not what it will do: nothing
+//! enforces these intervals yet, and `org.legeos.Power1`'s documentation says so at length. It is
+//! also not brightness or battery, whatever the earlier summary here claimed — those are
+//! `lege status brightness` and `lege status battery`, over `Backlight1` and `Battery1`.
 //!
 //! Every D-Bus call goes through [`PowerClient`] so the rendering below is testable with a
 //! fixture, never a live `org.legeos.Power1`.
