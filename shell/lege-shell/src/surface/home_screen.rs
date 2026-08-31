@@ -40,6 +40,8 @@ pub enum HomeSurfaceAction {
     },
     /// The Window Shelf's Restore button was clicked for this window.
     RestoreWindow(WindowId),
+    /// Open this folder in the standalone Files manager.
+    OpenInFiles(PathBuf),
     /// Ask `Files.Browse1` for one directory. The view never reads it itself.
     BrowseDirectory {
         drawer: Drawer,
@@ -151,6 +153,7 @@ impl HomeSurfaceScreen {
                     show_hidden,
                 },
                 Some(FileBrowserAction::Open(path)) => HomeSurfaceAction::OpenFile(path),
+                Some(FileBrowserAction::OpenInFiles(path)) => HomeSurfaceAction::OpenInFiles(path),
                 Some(FileBrowserAction::File(request)) => HomeSurfaceAction::File(request),
                 None => HomeSurfaceAction::None,
             }

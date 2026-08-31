@@ -11,7 +11,7 @@ use pixelkit_text::{Align, TextStyle};
 use pixelkit_ui::{ScrollState, Ui};
 use std::collections::HashMap;
 
-use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind, RootKind};
+use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, RootKind};
 use crate::home_surface::Drawer;
 
 const ROOTS_WIDTH: i32 = 220;
@@ -125,6 +125,9 @@ pub enum FileBrowserAction {
         show_hidden: bool,
     },
     Open(PathBuf),
+    /// Hand this folder to the standalone Files manager — the surface with the full drives
+    /// sidebar and properties. Home's pane is the quick look; this is the door to the deep one.
+    OpenInFiles(PathBuf),
     /// An ordinary file verb, for the host to perform through `lege-filed`.
     File(FileRequest),
 }
@@ -700,6 +703,7 @@ impl FileBrowserScreen {
     ) -> Option<FileBrowserAction> {
         let (up, rest) = area.split_left(ui.px(64));
         let (refresh, rest) = rest.split_left(ui.px(88));
+        let (files, rest) = rest.split_left(ui.px(72));
         let (hidden, rest) = rest.split_right(ui.px(116));
         let (view, rest) = rest.split_right(ui.px(96));
         let (direction, rest) = rest.split_right(ui.px(72));
@@ -751,6 +755,11 @@ impl FileBrowserScreen {
                 show_hidden: self.show_hidden,
             });
         }
+        if ui.button(files.inset(ui.px(4)), "Files")
+            && let Some(path) = current
+        {
+            return Some(FileBrowserAction::OpenInFiles(path.to_path_buf()));
+        }
         if ui.button(
             hidden.inset(ui.px(4)),
             if self.show_hidden {
@@ -768,21 +777,84 @@ impl FileBrowserScreen {
                 });
             }
         }
-        ui.label(
-            path_area.inset(ui.px(8)),
-            &search_query.map_or_else(
-                || {
-                    current.map_or_else(
-                        || "No location".to_owned(),
-                        |path| path.display().to_string(),
-                    )
-                },
-                |query| format!("SEARCH RESULTS · {query}"),
-            ),
-            ui.theme.text,
-            Align::Left,
-        );
-        None
+        if let Some(query) = search_query {
+            ui.label(
+                path_area.inset(ui.px(8)),
+                &format!("Search · {query}"),
+                ui.theme.text,
+                Align::Left,
+            );
+            return None;
+        }
+        let Some(path) = current else {
+            ui.label(
+                path_area.inset(ui.px(8)),
+                "No location",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return None;
+        };
+        self.draw_breadcrumb(ui, path_area, drawer, path)
+    }
+
+    /// The location as a row of its ancestors, each one a step the pointer can take — the
+    /// answer to "how do I get to a specific folder" being the path itself. When the row is
+    /// deeper than the space, the leading ancestors give way: the folders nearest to where the
+    /// person is are the ones worth a button.
+    fn draw_breadcrumb(
+        &self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        drawer: Drawer,
+        path: &Path,
+    ) -> Option<FileBrowserAction> {
+        let mut prefixes: Vec<(String, PathBuf)> = Vec::new();
+        let mut prefix = PathBuf::new();
+        for component in path.components() {
+            prefix.push(component);
+            let label = match component {
+                std::path::Component::RootDir => "/".to_owned(),
+                other => other.as_os_str().to_string_lossy().into_owned(),
+            };
+            prefixes.push((label, prefix.clone()));
+        }
+        // Fit from the tail: measure right-to-left, then draw whatever fits left-to-right.
+        let pad = ui.px(10);
+        let mut width_needed = 0;
+        let mut first_shown = prefixes.len();
+        for (label, _) in prefixes.iter().rev() {
+            let width = pad + ui.px(7) * i32::try_from(label.chars().count()).unwrap_or(24);
+            if width_needed + width > area.w {
+                break;
+            }
+            width_needed += width;
+            first_shown -= 1;
+        }
+        // Always show at least the folder itself, however long its name.
+        first_shown = first_shown.min(prefixes.len().saturating_sub(1));
+        let mut x = area.x;
+        let mut action = None;
+        for (index, (label, target)) in prefixes.iter().enumerate().skip(first_shown) {
+            let width = (pad + ui.px(7) * i32::try_from(label.chars().count()).unwrap_or(24))
+                .min(area.right() - x);
+            if width <= pad / 2 {
+                break;
+            }
+            let slot = Rect::new(x, area.y, width, area.h);
+            let last = index + 1 == prefixes.len();
+            if last {
+                ui.label(slot.inset(ui.px(4)), label, ui.theme.text, Align::Centre);
+            } else if ui.button(slot.inset(ui.px(4)), label) {
+                action = Some(FileBrowserAction::Browse {
+                    drawer,
+                    path: target.clone(),
+                    show_hidden: self.show_hidden,
+                });
+            }
+            x += width;
+        }
+        action
     }
 
     /// The rename dialogue: a name field, a refusal, and two buttons.
@@ -1148,15 +1220,28 @@ impl FileBrowserScreen {
                             image.inset(ui.px(2)),
                             pixelkit_raster::ScaleFilter::Bilinear,
                         );
+                    } else if entry.is_dir() {
+                        // Folder-ness is a material, not a caption: the warm folder shell the
+                        // Home Field already uses for folder objects, with no text to repeat it.
+                        let plate = image.inset(ui.px(6));
+                        ui.painter.fill_rounded_rect(
+                            plate,
+                            ui.px(crate::surface::design::CHIP_RADIUS),
+                            crate::surface::design::FOLDER_SHELL,
+                        );
+                        ui.painter.stroke_rect(
+                            plate,
+                            ui.scale.hairline(),
+                            crate::surface::design::FOLDER_EDGE,
+                        );
                     } else {
+                        // A file with an extension names it once; one without shows nothing —
+                        // an all-caps FILE label repeats what the surface already says.
                         let chip = entry
                             .path
                             .extension()
                             .and_then(|extension| extension.to_str())
-                            .map_or_else(
-                                || if entry.is_dir() { "FOLDER" } else { "FILE" }.to_owned(),
-                                str::to_uppercase,
-                            );
+                            .map_or_else(String::new, str::to_uppercase);
                         ui.label(image, &chip, ui.theme.text_dim, Align::Centre);
                     }
                     ui.label(
@@ -1229,15 +1314,14 @@ impl FileBrowserScreen {
             }
             let (modified, rest) = row.split_right(ui.px(150).min(row.w / 3));
             let (size, name) = rest.split_right(ui.px(100).min(rest.w / 3));
-            let kind = match entry.kind {
-                EntryKind::Directory => "FOLDER",
-                EntryKind::File => "FILE",
-                EntryKind::Other => "OTHER",
-            };
-            let link = if entry.is_symlink { " · LINK" } else { "" };
+            // The name carries the identity; the row does not repeat what a person can see. A
+            // trailing "/" is the whole folder marker, "→" the whole symlink one — the size
+            // column's "—" already separates folders from files at a glance.
+            let marker = if entry.is_dir() { "/" } else { "" };
+            let link = if entry.is_symlink { " →" } else { "" };
             ui.label(
                 name.inset(ui.px(7)),
-                &format!("{kind}{link}   {}", entry.name),
+                &format!("{}{marker}{link}", entry.name),
                 ui.theme.text,
                 Align::Left,
             );
@@ -1308,7 +1392,7 @@ fn action_for_entry(drawer: Drawer, show_hidden: bool, entry: &BrowseEntry) -> F
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_browser::BrowserRoot;
+    use crate::file_browser::{BrowserRoot, EntryKind};
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
 
@@ -1455,6 +1539,37 @@ mod tests {
             Some(FileBrowserAction::File(request)) => Some((request.verb, request.paths)),
             _ => None,
         }
+    }
+
+    /// The toolbar's location is a breadcrumb: each shown ancestor is a button, and pressing
+    /// one browses there. With the 146px the fixture leaves the row, "/home/test/Downloads"
+    /// keeps its last two segments — "test" is the clickable ancestor.
+    #[test]
+    fn toolbar_breadcrumb_navigates_to_an_ancestor() {
+        let mut harness = Harness::new();
+        harness.frame();
+        assert_eq!(
+            harness.click(470.0, 29.0),
+            Some(FileBrowserAction::Browse {
+                drawer: Drawer::Downloads,
+                path: PathBuf::from("/home/test"),
+                show_hidden: false,
+            })
+        );
+    }
+
+    /// The Files button hands the open folder to the standalone manager — the route from a
+    /// quick Home pane to the surface with the full drives sidebar.
+    #[test]
+    fn toolbar_files_button_opens_the_folder_in_the_manager() {
+        let mut harness = Harness::new();
+        harness.frame();
+        assert_eq!(
+            harness.click(416.0, 29.0),
+            Some(FileBrowserAction::OpenInFiles(PathBuf::from(
+                "/home/test/Downloads"
+            )))
+        );
     }
 
     #[test]

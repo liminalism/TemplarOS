@@ -63,6 +63,9 @@ pub enum FieldAction {
         show_hidden: bool,
     },
     OpenFile(PathBuf),
+    /// Open this folder in the standalone Files manager (`org.legeos.Files`), the surface with
+    /// the full drives sidebar — the browse pane's door to somewhere it does not go itself.
+    OpenInFiles(PathBuf),
     /// Perform one declared action (`lege_types::action::MANIFEST`). This is how every widget
     /// region, and every menu row, reaches a capability: the tile names an action id and the
     /// host decides what performing it means, so a new control never needs a new variant here.
@@ -1071,6 +1074,7 @@ impl FieldScreen {
                 show_hidden,
             }),
             HomeSurfaceAction::OpenFile(path) => actions.push(FieldAction::OpenFile(path)),
+            HomeSurfaceAction::OpenInFiles(path) => actions.push(FieldAction::OpenInFiles(path)),
             HomeSurfaceAction::File(request) => actions.push(FieldAction::FileVerb(request)),
             HomeSurfaceAction::None => {}
         }
@@ -2497,11 +2501,17 @@ impl FieldScreen {
             }
             TileKind::File { path } => {
                 let inner = content.inset(ui.px(12));
+                // The extension names the kind once; a file without one gets no chip at all —
+                // an all-caps FILE placeholder only repeats what the tile already is.
                 let extension = path
                     .extension()
                     .and_then(|extension| extension.to_str())
-                    .map_or_else(|| "FILE".to_owned(), str::to_uppercase);
-                let chip_width = ui.px(48).min(inner.w);
+                    .map_or_else(String::new, str::to_uppercase);
+                let chip_width = if extension.is_empty() {
+                    0
+                } else {
+                    ui.px(48).min(inner.w)
+                };
                 let (chip, detail) = inner.split_right(chip_width);
                 ui.label_styled(
                     detail,
@@ -2512,20 +2522,22 @@ impl FieldScreen {
                     design::TEXT_DIM,
                     Align::Left,
                 );
-                ui.painter.fill_rounded_rect(
-                    chip.inset(ui.px(3)),
-                    ui.px(design::CHIP_RADIUS),
-                    design::SHELL_LOW,
-                );
-                ui.painter
-                    .stroke_rect(chip.inset(ui.px(3)), ui.scale.hairline(), design::EDGE);
-                ui.label_styled(
-                    chip.inset(ui.px(5)),
-                    &extension,
-                    design::state_style(ui),
-                    design::TEXT_DIM,
-                    Align::Centre,
-                );
+                if !extension.is_empty() {
+                    ui.painter.fill_rounded_rect(
+                        chip.inset(ui.px(3)),
+                        ui.px(design::CHIP_RADIUS),
+                        design::SHELL_LOW,
+                    );
+                    ui.painter
+                        .stroke_rect(chip.inset(ui.px(3)), ui.scale.hairline(), design::EDGE);
+                    ui.label_styled(
+                        chip.inset(ui.px(5)),
+                        &extension,
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Centre,
+                    );
+                }
                 ui.painter.fill_rect(
                     Rect::new(
                         rect.x,

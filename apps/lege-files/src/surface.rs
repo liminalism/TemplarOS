@@ -31,6 +31,10 @@ const ACCENT: u32 = 0x000e_7482;
 const ACCENT_SOFT: u32 = 0x00e3_f1f3;
 const DANGER: u32 = 0x00b3_261e;
 const GOOD: u32 = 0x001f_8f60;
+/// The Home Field's folder material (`design::FOLDER_SHELL`/`FOLDER_EDGE`), so a folder reads
+/// as the same warm paper in both surfaces.
+const FOLDER_PLATE: u32 = 0x00fb_f8f1;
+const FOLDER_PLATE_EDGE: u32 = 0x00e2_dbc9;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Dialog {
@@ -550,16 +554,20 @@ fn draw_thumbnail_grid(
                     image.inset(ui.px(2)),
                     pixelkit_raster::ScaleFilter::Bilinear,
                 );
+            } else if entry.is_dir() {
+                // Folder-ness is shown, not spelled: the warm folder plate Home uses for
+                // folder objects, with no text repeating what the shape already says.
+                let plate = image.inset(ui.px(6));
+                ui.painter.fill_rounded_rect(plate, ui.px(6), FOLDER_PLATE);
+                ui.painter
+                    .stroke_rect(plate, ui.scale.hairline(), FOLDER_PLATE_EDGE);
             } else {
-                let chip = if entry.is_dir() {
-                    "FOLDER".to_owned()
-                } else {
-                    entry
-                        .path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .map_or_else(|| "FILE".to_owned(), str::to_uppercase)
-                };
+                // A file's extension names it once; one without shows nothing.
+                let chip = entry
+                    .path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map_or_else(String::new, str::to_uppercase);
                 ui.label(image, &chip, TEXT_DIM, Align::Centre);
             }
             ui.label(caption.inset(ui.px(2)), &entry.name, TEXT, Align::Left);
@@ -625,17 +633,19 @@ fn draw_directory_entries(
         }
         let (modified, rest) = row.split_right(ui.px(130).min(row.w / 3));
         let (size, name) = rest.split_right(ui.px(90).min(rest.w / 3));
-        let marker = match entry.kind {
-            EntryKind::Directory => "FOLDER",
-            EntryKind::File => "FILE",
-            EntryKind::Other => "OTHER",
+        // The name leads; a trailing "/" is the whole folder marker and "→" the whole symlink
+        // one — the size column's "—" already tells folders from files.
+        let marker = if entry.kind == EntryKind::Directory {
+            "/"
+        } else {
+            ""
         };
         ui.label(
             name.inset(ui.px(7)),
             &format!(
-                "{marker}{}   {}",
-                if entry.is_symlink { " · LINK" } else { "" },
-                entry.name
+                "{}{marker}{}",
+                entry.name,
+                if entry.is_symlink { " →" } else { "" },
             ),
             TEXT,
             Align::Left,
