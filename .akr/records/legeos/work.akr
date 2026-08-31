@@ -1563,7 +1563,7 @@ record legeos.work.host-update-transaction/1 : work {
 
 record legeos.work.reversible-window-arrangement-presets/1 : work {
     title "One-press reversible arrangements for all open windows"
-    state proposed
+    state completed
     scope [
         path "compositor/lege-comp/**",
         path "crates/lege-types/src/action.rs",
@@ -1584,6 +1584,7 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
         }
         check dynamic-window-set {
             statement """
@@ -1591,12 +1592,14 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
                 """
             method command
             command "cargo test -p lege-comp arrangement"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
         }
         check fullscreen-remains-clean {
             statement """
                 A fullscreen application occupies the output with no Home panel, dock, arrangement control or reserved strip visible.
                 """
             method observation
+            verified_by [ @legeos.evidence.arrangements-fullscreen-clean-20260831/1 ]
         }
         check preset-geometry {
             statement """
@@ -1604,6 +1607,7 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
                 """
             method command
             command "cargo test -p lege-window arrangement"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
         }
         check switch-from-baseline {
             statement """
@@ -1611,6 +1615,7 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
                 """
             method command
             command "cargo test -p lege-window arrangement_presets_are_reversible"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
         }
     }
     depends_on [ @legeos.work.home-panel-and-dock-layouts ]
@@ -1942,7 +1947,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
 
 record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {
     title "Files.Trash1 — see what is in the trash, put an item back, and empty it"
-    state proposed
+    state completed
     scope [
         path "apps/lege-files/**",
         path "cli/lege/**",

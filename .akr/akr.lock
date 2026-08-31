@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:2b704d1a61c3fa0bd6347672dae8355010341eadacef538677eef6ffea2d06c5"
+    source_graph "sha256:4b796aa197c22953c8ad60e3a8b2f342254390eecd70166eaad61bcbb0dde337"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:67eadb3d869f9b950381ce1544d5d547430d33ea895679b1aed29aa19349a901"
-    records 96
+    hash "sha256:e394c847d860f885fd3a41075bed73f92fd4a72edfea63ba6344063cf6ab7dcd"
+    records 99
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,8 +39,8 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:0b9cca296484ddd3a34ac507e70ae9c44a98528c486e48c57ab960c183c6fef1"
-    records 7
+    hash "sha256:29312e9ca687754a0342dca4de7d30701728b6a8b454a040518fb8e5991146ea"
+    records 8
 }
 
 source ".akr/records/legeos/papercuts.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:19a192328c6d38da62fdda55966c2a9858bd3a9f1f589f7182976d720ac3b433"
+    hash "sha256:7a47c3f5b127369cea1339ce0abc5038305750a4d3b104689dcbcf1f3dc6e485"
     records 43
 }
 
@@ -643,7 +643,7 @@ resolution @legeos.work.home-field-settings-gui/1 {
 resolution @legeos.work.home-field-settings-gui/1 {
     slot depends_on
     to @legeos.work.reversible-window-arrangement-presets/1
-    hash "sha256:04e494bd2b5486bb5d64f2a35de1d8ce4e71f734c1c5ddfe6378bd7bc2f5b142"
+    hash "sha256:4ff797ee1be96c643e1910180650100208fafd9037020abc895232d960496a1d"
 }
 
 resolution @legeos.work.home-field-settings-gui/1 {
@@ -1180,6 +1180,11 @@ seal @legeos.decision.toolchain-licence-namespace/3 {
     hash "sha256:716930a57026db5c3efdba7eb452b2e024e07e51dd15fdf0c8af7838db53635c"
 }
 
+seal @legeos.evidence.arrangements-fullscreen-clean-20260831/1 {
+    state verified
+    hash "sha256:c05a1301ad78e761044cb48e56c2379ee7472ab6fd1b07c4f0ed822d432ec89c"
+}
+
 seal @legeos.evidence.desktop-audit-hardware-flag-20260827/1 {
     state verified
     hash "sha256:b50982002b4ed5fb5961ae5a45cd716fab40b87c9d1a44b10b897d6a55293963"
@@ -1645,6 +1650,11 @@ seal @legeos.evidence.trash-undo-and-search-fixes-20260831/1 {
     hash "sha256:8b50434879168723a5a3da4285db555a67cb8b0df6c758893861e4f40c60f3c4"
 }
 
+seal @legeos.evidence.trash1-surfaces-20260831/1 {
+    state verified
+    hash "sha256:64f2b211bf9beea0f731905380a28ffa90135bcd791390653442bd087378a445"
+}
+
 seal @legeos.evidence.widget-foundations-nested-run-20260825/1 {
     state verified
     hash "sha256:090563daf875edb0cc15f412bb858023f0ba091bfd24c803e3fdc3695e0a5d91"
@@ -1653,6 +1663,11 @@ seal @legeos.evidence.widget-foundations-nested-run-20260825/1 {
 seal @legeos.evidence.widget-foundations-workspace-20260825/1 {
     state verified
     hash "sha256:70133e8eb5cce302ab1342a148ccc59d22cad7a045d5a31c9df5f3e08e1ecc59"
+}
+
+seal @legeos.evidence.window-arrangements-20260831/1 {
+    state verified
+    hash "sha256:e87d0809ab27edb9c7671e94b9820ae4b57035d7e8a1eb989817918d18f1055a"
 }
 
 seal @legeos.evidence.window-controls-20260825/1 {
@@ -1668,6 +1683,11 @@ seal @legeos.milestone.m0-initial-structure/1 {
 seal @legeos.milestone.m1-session-runtime/1 {
     state completed
     hash "sha256:590f00030286e8c6e3fdd6cab172d3189b0ded3fed5cedd3d2d590c8560f1a92"
+}
+
+seal @legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 {
+    state verified
+    hash "sha256:40a4b440d9a748406cf1ae5186d288befe53b825454d5a90e6bd96e05de5703a"
 }
 
 seal @legeos.observation.hardware-home-loads-but-file-panes-empty/1 {
@@ -2100,6 +2120,11 @@ seal @legeos.work.host-update-transaction/1 {
     hash "sha256:6b38531e6314e4f328e451b9125fd09179ebfe549bd8127d05f9ab374a756a8b"
 }
 
+seal @legeos.work.reversible-window-arrangement-presets/1 {
+    state completed
+    hash "sha256:4ff797ee1be96c643e1910180650100208fafd9037020abc895232d960496a1d"
+}
+
 seal @legeos.work.sessiond-persistence-and-launch/1 {
     state completed
     hash "sha256:ae25f5b2317c4ec69631343bd8d6221a847fb25be4ec5b74c7e0a1a1979c26b0"
@@ -2123,6 +2148,11 @@ seal @legeos.work.standalone-file-manager/3 {
 seal @legeos.work.super-press-hold-home-reveal/1 {
     state completed
     hash "sha256:c3f10082b80c1ba65a4de640cd4832a28247b4925b2d1727b61c060078d8fd6c"
+}
+
+seal @legeos.work.trash-that-can-be-seen-and-emptied/1 {
+    state completed
+    hash "sha256:fc38ec6c69c76ab617a2703f5cd87cdcc256a126c0fcf36205583e932590c881"
 }
 
 seal @legeos.work.window-controls-and-mouse-parity/1 {

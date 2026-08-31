@@ -1,6 +1,17 @@
 akr 0.1
 project legeos
 
+record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
+    title "Fullscreen stays clean: no arrangement chrome outside Home, fullscreen windows never arranged"
+    state verified
+    result pass
+    method observation
+    observed_at git:f3233a772c5765a59bf25e0c5a21cb5718511573
+    summary """
+        Fullscreen windows are excluded from arrangement eligibility (WindowService::arrangement_eligible filters window.fullscreen), and the arrangement controls live on the Home Field's secondary-click menu inside the Home surface — no ShellOverlay surface, no exclusive zone, no reserved strip exists for them — so a fullscreen application occupies its output with no arrangement chrome visible, by construction.
+        """
+}
+
 record legeos.evidence.desktop-audit-hardware-flag-20260827/1 : evidence {
     title "The two outputs and exit codes were byte-identical; Context.hardware has no production reads, so lege doctor --hardware does not execute the TOML hardware matrix it is documented as running."
     state verified
@@ -1115,6 +1126,18 @@ record legeos.evidence.trash-undo-and-search-fixes-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.trash1-surfaces-20260831/1 : evidence {
+    title "Trash1 interface, service, proxy, CLI, drawer and Files place all landed with the full gate green"
+    state verified
+    result pass
+    method command
+    observed_at git:d26a90adb035772b2ee2542a5554308987e4cb6f
+    command "just check"
+    summary """
+        Files.Trash1 shipped across all four planned stages: the interface XML, service implementation (List sweeps the home trash and every mounted volume's; Restore/DeletePermanently/Empty are thin validating wrappers over the same FileService::start, Empty sweeps server-side including orphaned .trashinfo records; Changed emitted from the one completion site), lege-client proxy, `lege trash list|restore|delete|empty` with --yes on the destructive verbs, the shell Trash drawer listing the real trash with per-row restore and a two-press EMPTY chip, and the Files app trash place with its own columns, toolbar and confirmation rule. Service tests run against fixture trashes through the real FileService; full just check green at the merge commit.
+        """
+}
+
 record legeos.evidence.widget-foundations-nested-run-20260825/1 : evidence {
     title "Nested run: the shell connected to lege_shell_v1, declared Layer::HomeSurface and rendered for twelve seconds with no error or panic, exercising the new widget-contract draw path, the Session system tile and the resize grip on every frame. lege-comp --check reports ok and still offers the screencopy globals on the trusted socket only."
     state verified
@@ -1136,6 +1159,18 @@ record legeos.evidence.widget-foundations-workspace-20260825/1 : evidence {
     command "cargo test --workspace && cargo clippy --workspace --all-targets && for c in tree-check deps-check check-interfaces check-proxies check-packaging check-assets check-actions; do cargo run -q -p xtask -- $c; done"
     summary """
         Workspace tests and clippy clean; all seven xtask checks pass, including the new check-actions (5 CLI verbs reach a subcommand, every action a surface performs is declared). lege-field's four pre-existing invariant properties — ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates, placement_is_deterministic, content_changes_move_nothing — pass unmodified alongside the two new resize properties.
+        """
+}
+
+record legeos.evidence.window-arrangements-20260831/1 : evidence {
+    title "Reversible window arrangements: geometry, baseline, dynamic-set and action-route checks green"
+    state verified
+    result pass
+    method command
+    observed_at git:f3233a772c5765a59bf25e0c5a21cb5718511573
+    command "cargo test -p lege-window arrangement; cargo test -p lege-window arrangement_presets_are_reversible; cargo test -p lege-comp arrangement; cargo run -q -p xtask -- check-actions; just check"
+    summary """
+        Six presets (focus, halves, thirds, quarters, main-and-stack, cushion) produce deterministic, bounded, non-overlapping, recoverable rects for 1..=12 windows on plain, offset and mixed-scale outputs; A-to-B switching equals computing B on a service that never saw A and Restore returns geometry and maximize state exactly; closed windows are ignored, new ones join only on the next explicit request, and restore after output loss repairs survivors; seven declared actions all have their menu route (check-actions 32 actions green); full just check green.
         """
 }
 
