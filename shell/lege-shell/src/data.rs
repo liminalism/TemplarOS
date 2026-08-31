@@ -287,30 +287,63 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
     }
 }
 
-/// Active notifications as a stable Home widget snapshot. The service owns ordering, expiry and
-/// dismissal; Home only turns its returned JSON into a count and a few lines.
-pub async fn fetch_notifications_widget() -> crate::surface::widgets::WidgetSnapshot {
+/// Active notifications as a stable Home widget snapshot plus the structured rows the widget's
+/// per-item controls need. The service owns ordering, expiry and dismissal; Home renders.
+pub async fn fetch_notifications_widget() -> (
+    crate::surface::widgets::WidgetSnapshot,
+    Vec<crate::surface::widgets::notifications::NotificationRow>,
+) {
     use crate::surface::widgets::WidgetSnapshot;
+    use crate::surface::widgets::notifications::NotificationRow;
     let Ok(connection) = session().await else {
-        return WidgetSnapshot::unavailable("Notifications — no session bus");
+        return (
+            WidgetSnapshot::unavailable("Notifications — no session bus"),
+            Vec::new(),
+        );
     };
     let Ok(proxy) = NotificationsProxy::new(&connection).await else {
-        return WidgetSnapshot::unavailable("Notifications — service unavailable");
+        return (
+            WidgetSnapshot::unavailable("Notifications — service unavailable"),
+            Vec::new(),
+        );
     };
     let Ok(rows) = proxy.list_active().await else {
-        return WidgetSnapshot::unavailable("Notifications — service unavailable");
+        return (
+            WidgetSnapshot::unavailable("Notifications — service unavailable"),
+            Vec::new(),
+        );
     };
-    let detail = rows
+    let structured: Vec<NotificationRow> = rows
         .iter()
-        .take(3)
         .filter_map(|row| serde_json::from_str::<serde_json::Value>(row).ok())
-        .map(|row| {
-            let app = row["app_name"].as_str().unwrap_or("Application");
-            let summary = row["summary"].as_str().unwrap_or("Notification");
-            format!("{app} — {summary}")
+        .filter_map(|row| {
+            let id = u32::try_from(row["id"].as_u64()?).ok()?;
+            let actions = row["actions"]
+                .as_array()
+                .map(|actions| {
+                    actions
+                        .iter()
+                        .filter_map(|pair| {
+                            let key = pair.get(0)?.as_str()?.to_owned();
+                            let label = pair.get(1)?.as_str()?.to_owned();
+                            Some((key, label))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(NotificationRow {
+                id,
+                app: row["app_name"].as_str().unwrap_or("Application").to_owned(),
+                summary: row["summary"].as_str().unwrap_or("Notification").to_owned(),
+                actions,
+            })
         })
         .collect();
-    WidgetSnapshot {
+    let detail = structured
+        .iter()
+        .map(|row| format!("{} — {}", row.app, row.summary))
+        .collect();
+    let snapshot = WidgetSnapshot {
         headline: match rows.len() {
             0 => "All caught up".to_owned(),
             1 => "1 notification".to_owned(),
@@ -319,7 +352,8 @@ pub async fn fetch_notifications_widget() -> crate::surface::widgets::WidgetSnap
         detail,
         available: true,
         refused: Vec::new(),
-    }
+    };
+    (snapshot, structured)
 }
 
 /// The battery widget's content.

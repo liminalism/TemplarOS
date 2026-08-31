@@ -59,6 +59,9 @@ enum DataUpdate {
     Projects(Vec<ProjectInfo>),
     /// One widget's refreshed content. Content only: by the field's own rule this moves nothing.
     Widget(String, crate::surface::widgets::WidgetSnapshot),
+    /// The notifications widget's structured rows, beside its generic snapshot: ids and action
+    /// keys the per-item dismiss and invoke controls act on.
+    NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
     HomeFieldSettings(HomeFieldSettings),
     /// Something the user asked for did not happen, in words meant for them. Shown in the field's
     /// notice strip, the same place a successful operation reports itself.
@@ -198,6 +201,7 @@ struct ShellApp {
     file_thumbnails: std::collections::HashMap<PathBuf, pixelkit_raster::Bitmap>,
     file_thumbnails_generation: u64,
     file_thumbnails_pending: std::collections::HashSet<PathBuf>,
+    notification_rows: Vec<crate::surface::widgets::notifications::NotificationRow>,
     browser_pending: Option<(Drawer, bool, PathBuf)>,
     browser_error: Option<(Drawer, PathBuf, String)>,
     browser_status: Option<String>,
@@ -255,6 +259,7 @@ impl ShellApp {
             file_thumbnails: std::collections::HashMap::new(),
             file_thumbnails_generation: 0,
             file_thumbnails_pending: std::collections::HashSet::new(),
+            notification_rows: Vec::new(),
             browser_pending: None,
             browser_error: None,
             browser_status: None,
@@ -295,10 +300,12 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
                 let _ = tx.send(DataUpdate::Widget("session".to_owned(), session_widget));
+                let (notifications_snapshot, notification_rows) = notifications_widget;
                 let _ = tx.send(DataUpdate::Widget(
                     "notifications".to_owned(),
-                    notifications_widget,
+                    notifications_snapshot,
                 ));
+                let _ = tx.send(DataUpdate::NotificationRows(notification_rows));
                 let _ = tx.send(DataUpdate::Widget("battery".to_owned(), battery));
                 let _ = tx.send(DataUpdate::Widget("volume".to_owned(), volume));
                 let _ = tx.send(DataUpdate::Widget("brightness".to_owned(), brightness));
@@ -501,6 +508,7 @@ impl ShellApp {
                         self.file_thumbnails.insert(path, bitmap);
                     }
                 }
+                DataUpdate::NotificationRows(rows) => self.notification_rows = rows,
                 DataUpdate::TreemapsStale => self.treemaps.clear(),
                 DataUpdate::Field(doc) => {
                     self.field = doc;
@@ -807,6 +815,7 @@ impl ShellApp {
             thumbnails: &self.file_thumbnails,
         };
         let data = FieldData {
+            notifications: &self.notification_rows,
             field: &self.field,
             toplevels: &toplevels,
             icons: &self.icons,
@@ -849,8 +858,24 @@ impl ShellApp {
         self.spawn_thumbnails();
     }
 
+    #[allow(clippy::too_many_lines)]
     fn perform(&mut self, action: FieldAction) {
         match action {
+            FieldAction::DismissNotification(id) => self.spawn_notification_call(move |proxy| {
+                Box::pin(async move {
+                    proxy.dismiss(id).await?;
+                    Ok(())
+                })
+            }),
+            FieldAction::InvokeNotification { id, key } => {
+                self.spawn_notification_call(move |proxy| {
+                    Box::pin(async move {
+                        proxy.invoke(id, &key).await?;
+                        Ok(())
+                    })
+                });
+            }
+
             FieldAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
             FieldAction::Launch(app_id) => self.spawn_launch(app_id),
             FieldAction::Activate(window_id) => {
@@ -1149,6 +1174,39 @@ impl ShellApp {
         self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
     }
 
+    /// One notification call, then a widget refresh, off-thread. Shared by the per-item
+    /// dismiss and invoke routes so both keep the tile live without duplicating the plumbing.
+    fn spawn_notification_call<F>(&self, call: F)
+    where
+        F: FnOnce(
+                lege_client::proxies::NotificationsProxy<'_>,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = zbus::Result<()>> + Send + '_>,
+            > + Send
+            + 'static,
+    {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::NotificationsProxy::new(&connection).await?;
+                call(proxy).await.map_err(anyhow::Error::from)
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = tx.send(DataUpdate::Notice(format!(
+                    "Notification action failed — {error:#}"
+                )));
+            } else {
+                let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
+                let _ = tx.send(DataUpdate::Widget("notifications".to_owned(), snapshot));
+                let _ = tx.send(DataUpdate::NotificationRows(rows));
+            }
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
     fn spawn_clear_notifications(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -1165,8 +1223,9 @@ impl ShellApp {
                         "Cleared {count} notification{}",
                         if count == 1 { "" } else { "s" }
                     )));
-                    let snapshot = crate::data::fetch_notifications_widget().await;
+                    let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
                     let _ = tx.send(DataUpdate::Widget("notifications".to_owned(), snapshot));
+                    let _ = tx.send(DataUpdate::NotificationRows(rows));
                 }
                 Err(error) => {
                     let _ = tx.send(DataUpdate::Notice(format!(

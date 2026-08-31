@@ -267,6 +267,52 @@ impl NotificationsControlApi {
         Ok(removed)
     }
 
+    /// Invoke one of a notification's declared actions on the user's behalf. The shell is a
+    /// renderer: it names the id and the key, and this server emits the freedesktop
+    /// `ActionInvoked` the owning application is listening for, then closes the notification
+    /// (reason 2, dismissed by the user) — the default non-resident behaviour.
+    async fn invoke(
+        &self,
+        id: u32,
+        action_key: String,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<bool> {
+        let actions_json: Option<String> = self
+            .store
+            .transaction(|tx| {
+                Ok(tx
+                    .query_row(
+                        "SELECT actions_json FROM notifications_active WHERE id = ?1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .ok())
+            })
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        let Some(actions_json) = actions_json else {
+            return Ok(false);
+        };
+        let actions: Vec<(String, String)> =
+            serde_json::from_str(&actions_json).unwrap_or_default();
+        if !actions.iter().any(|(key, _)| *key == action_key) {
+            return Ok(false);
+        }
+        NotificationsApi::action_invoked(&emitter, id, action_key)
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        let removed = self
+            .store
+            .transaction(|tx| {
+                Ok(tx.execute("DELETE FROM notifications_active WHERE id = ?1", [id])? != 0)
+            })
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        if removed {
+            let _ = NotificationsApi::notification_closed(&emitter, id, 2).await;
+            let _ = emitter.changed().await;
+        }
+        Ok(true)
+    }
+
     #[zbus(signal)]
     async fn changed(signal_emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }

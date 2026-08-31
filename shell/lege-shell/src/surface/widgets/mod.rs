@@ -25,6 +25,7 @@
 //! rendering them too small to hit.
 
 pub mod launcher;
+pub mod notifications;
 
 use lege_field::Representation;
 use lege_types::action::{self, ActionDecl};

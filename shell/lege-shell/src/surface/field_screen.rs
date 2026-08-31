@@ -63,6 +63,15 @@ pub enum FieldAction {
         id: &'static str,
         window: WindowId,
     },
+    /// Dismiss exactly one notification (`Notifications1.Dismiss`); the bulk clear stays the
+    /// declared `notifications.clear` action.
+    DismissNotification(u32),
+    /// Invoke one notification's declared action (`Notifications1.Invoke`), which emits the
+    /// freedesktop `ActionInvoked` for the owning application.
+    InvokeNotification {
+        id: u32,
+        key: String,
+    },
     /// Put one trashed item back, named by its path under a trash's `files/`.
     ///
     /// Not a `RunAction`: a declared action carries no payload, and restoring is always *this*
@@ -119,6 +128,8 @@ pub struct FieldData<'a> {
     /// Each such drawer's composition: `(0x00RRGGBB, share)` per file category, largest first.
     pub compositions: &'a HashMap<Drawer, Vec<(u32, f32)>>,
     pub browser: &'a FileBrowserData<'a>,
+    /// The notifications widget's structured rows (`widgets::notifications`).
+    pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
     pub connected: bool,
     pub home_revealed: bool,
     /// Whether the nm-tray2 application manifest is installed and launchable.
@@ -2419,6 +2430,36 @@ impl FieldScreen {
                                 Some(declaration)
                             }
                         }
+                    } else if widget.id == "notifications" {
+                        let snapshot = data.widgets.get(probe.as_str());
+                        let notifications = widgets::notifications::NotificationsData {
+                            rows: data.notifications,
+                            headline: snapshot.map_or("…", |snapshot| snapshot.headline.as_str()),
+                            available: snapshot.is_none_or(|snapshot| snapshot.available),
+                        };
+                        match widgets::notifications::draw(
+                            ui,
+                            content,
+                            widget,
+                            &notifications,
+                            rung,
+                            self.confirming,
+                        ) {
+                            widgets::notifications::NotificationsOutcome::None => None,
+                            widgets::notifications::NotificationsOutcome::Dismiss(id) => {
+                                self.confirming = None;
+                                actions.push(FieldAction::DismissNotification(id));
+                                None
+                            }
+                            widgets::notifications::NotificationsOutcome::Invoke { id, key } => {
+                                self.confirming = None;
+                                actions.push(FieldAction::InvokeNotification { id, key });
+                                None
+                            }
+                            widgets::notifications::NotificationsOutcome::Action(declaration) => {
+                                Some(declaration)
+                            }
+                        }
                     } else {
                         widgets::draw(
                             ui,
@@ -2831,6 +2872,7 @@ mod tests {
                 thumbnails: &empty_thumbnails,
             };
             let data = FieldData {
+                notifications: &[],
                 field: &self.doc,
                 toplevels: &self.toplevels,
                 icons: &icons,

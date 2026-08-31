@@ -318,6 +318,10 @@ mod notifications {
 
         fn clear_all(&self) -> zbus::Result<u32>;
 
+        /// Invoke one declared action; the server emits the freedesktop `ActionInvoked` and
+        /// closes the notification.
+        fn invoke(&self, id: u32, action_key: &str) -> zbus::Result<bool>;
+
         #[zbus(signal)]
         fn changed(&self) -> zbus::Result<()>;
     }

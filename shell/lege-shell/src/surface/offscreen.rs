@@ -53,6 +53,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         Some(persisted) => persisted,
         None => lege_field::FieldDocument::new("primary", cols, rows),
     };
+    let (notifications_widget, _notification_rows) = notifications_widget;
     let apps_available = apps.is_some();
     let apps = apps.unwrap_or_default();
     // No compositor here, so no windows: the field is whatever the persisted document plus the
@@ -94,6 +95,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     };
     let clock_label = crate::surface::app::clock_label_now();
     let data = FieldData {
+        notifications: &[],
         field: &field,
         toplevels: &[],
         icons: &empty_icons,
@@ -226,6 +228,7 @@ mod tests {
         };
         let apps = Vec::new();
         let data = FieldData {
+            notifications: &[],
             field: &field,
             toplevels: &[],
             icons: &empty_bitmaps,
@@ -275,7 +278,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x5069_dcb1_8eba_05cf,
+            hash, 0x6919_b7b3_dd61_a912,
             "review the Home Field pixels before updating this baseline"
         );
     }
