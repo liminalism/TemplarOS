@@ -155,8 +155,12 @@ mod tests {
     /// therefore be reviewed and deliberately update this hash; environment changes cannot make
     /// it flicker.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn visual_regression_home_field_baseline() {
-        let (width, height) = (800_u32, 600_u32);
+        // 1280x832 -> a 12x8 grid: roomy enough that every object class — drawers, widgets,
+        // the system shelf, a project, a bound folder and a shortcut pane — actually places,
+        // so the baseline reviews all of their material roles at once.
+        let (width, height) = (1280_u32, 832_u32);
         let (cols, rows) =
             field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
         let mut field = lege_field::FieldDocument::new("visual-baseline", cols, rows);
@@ -171,6 +175,14 @@ mod tests {
         };
         field_model::merge(&mut field, &live);
         field_model::refresh_titles(&mut field, &live);
+        // One of each placeable object class the material roles distinguish: the merge already
+        // adds widgets and the system shelf; a bound folder and a shortcut pane join here so
+        // this baseline is also the reviewed render for their tints.
+        field_model::merge_desktop_folder(
+            &mut field,
+            Some(std::path::Path::new("/home/fixture/Desktop")),
+        );
+        field_model::route_file_drop(&mut field, std::path::Path::new("/home/fixture/notes.md"));
 
         let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
@@ -247,6 +259,9 @@ mod tests {
             input.end_frame();
         }
 
+        if let Ok(path) = std::env::var("LEGE_BASELINE_DUMP") {
+            write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
+        }
         let hash = buffer
             .pixels
             .iter()
@@ -256,7 +271,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x56d1_3235_1d8c_561e,
+            hash, 0x4f9b_7c05_616e_65fd,
             "review the Home Field pixels before updating this baseline"
         );
     }

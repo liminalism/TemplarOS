@@ -11,12 +11,14 @@
 use std::collections::BTreeSet;
 
 use lege_field::field::Placement;
+use lege_field::field::Tray;
 use lege_field::{
     Arrangement, Cell, FieldDocument, FieldError, FieldOp, Landing, Panel, PanelId, Span,
     SpanRange, Tile, TileId, TileKind, apply, panel_id_for,
 };
 use lege_types::AppId;
 use lege_window::{ShellToplevel, WindowId};
+use std::path::Path;
 
 use crate::home_surface::Drawer;
 
@@ -186,6 +188,7 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     merge_system(doc, &mut applied);
     merge_apps(doc, live, &mut wanted, &mut applied);
     merge_panels(doc, &mut applied);
+    adopt_loose_files(doc, &mut applied);
 
     // Windows that closed take their tiles with them; everything else the user placed stays.
     let gone: Vec<TileId> = doc
@@ -203,6 +206,204 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
         try_apply(doc, FieldOp::Remove { id }, &mut applied);
     }
     applied
+}
+
+/// The one default shortcut pane loose files route to. A pane is a `Tray` — references, never
+/// the files themselves — and this is the reason no path through Home ever creates a loose
+/// `TileKind::File` tile again: a file arriving on bare Home lands here instead
+/// (`route_file_drop`), and legacy File tiles are adopted here by the merge.
+pub const DEFAULT_PANE_TITLE: &str = "Shortcuts";
+
+pub fn default_pane_tile_id() -> TileId {
+    tile_id_for("pane:shortcuts")
+}
+
+pub fn desktop_folder_tile_id() -> TileId {
+    tile_id_for("folder:desktop")
+}
+
+/// The XDG Desktop directory as one placeable Home folder object — the visible destination for
+/// software that still writes desktop files, without recreating scattered desktop icons: the
+/// directory's children stay behind the folder's door, never exploded into Home tiles.
+/// Add-only like every merge step; `None` (no such directory) adds nothing, which is the
+/// readable degradation. The host passes `crate::drawers::standard_paths::desktop_dir()`.
+pub fn merge_desktop_folder(doc: &mut FieldDocument, desktop: Option<&Path>) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let Some(path) = desktop else {
+        return applied;
+    };
+    let id = desktop_folder_tile_id();
+    if doc.tile(id).is_some() {
+        return applied;
+    }
+    let kind = TileKind::Folder {
+        path: path.to_path_buf(),
+    };
+    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    let tile = Tile {
+        id,
+        kind,
+        title: "Desktop".to_owned(),
+        spans,
+        accent: None,
+    };
+    // Beside the projects column, under the information row: a large, findable landing that
+    // the reflow adjusts if the corner is taken.
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(doc.cols.saturating_sub(spans_preferred_cols(&tile)), 0),
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, &mut applied);
+    applied
+}
+
+fn spans_preferred_cols(tile: &Tile) -> u16 {
+    tile.spans.preferred.cols
+}
+
+/// The default pane's tray, created on first need: one op batch that makes the tray and places
+/// its tile. Returns the tray id to reference into.
+fn ensure_default_pane(
+    doc: &mut FieldDocument,
+    applied: &mut Vec<FieldOp>,
+) -> Option<lege_field::TrayId> {
+    let tile_id = default_pane_tile_id();
+    if let Some(tile) = doc.tile(tile_id)
+        && let TileKind::Tray { tray_id } = tile.kind
+    {
+        return Some(tray_id);
+    }
+    let tray_id = doc.next_tray_id();
+    try_apply(
+        doc,
+        FieldOp::CreateTray {
+            tray: Tray {
+                id: tray_id,
+                name: DEFAULT_PANE_TITLE.to_owned(),
+                entries: Vec::new(),
+            },
+        },
+        applied,
+    );
+    let kind = TileKind::Tray { tray_id };
+    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    let tile = Tile {
+        id: tile_id,
+        kind,
+        title: DEFAULT_PANE_TITLE.to_owned(),
+        spans,
+        accent: None,
+    };
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(doc.cols / 2, doc.rows / 2),
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, applied);
+    match doc.tile(tile_id).map(|tile| &tile.kind) {
+        Some(TileKind::Tray { tray_id }) => Some(*tray_id),
+        _ => None,
+    }
+}
+
+/// A new, empty shortcut pane with `title`, placed near the field's centre. The pointer route
+/// behind the declared `pane.new` action.
+pub fn create_pane(doc: &mut FieldDocument, title: &str) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let tray_id = doc.next_tray_id();
+    try_apply(
+        doc,
+        FieldOp::CreateTray {
+            tray: Tray {
+                id: tray_id,
+                name: title.to_owned(),
+                entries: Vec::new(),
+            },
+        },
+        &mut applied,
+    );
+    let kind = TileKind::Tray { tray_id };
+    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    let pane = Tile {
+        id: tile_id_for(&format!("pane:{}", tray_id.0)),
+        kind,
+        title: title.to_owned(),
+        spans,
+        accent: None,
+    };
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(doc.cols / 2, doc.rows / 2),
+    };
+    try_apply(
+        doc,
+        FieldOp::Place {
+            tile: pane,
+            landing,
+        },
+        &mut applied,
+    );
+    applied
+}
+
+/// One real file arriving on bare Home. Never a loose tile: it becomes a reference in the
+/// default shortcut pane (created on first use), and the file itself does not move.
+pub fn route_file_drop(doc: &mut FieldDocument, path: &Path) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let Some(tray) = ensure_default_pane(doc, &mut applied) else {
+        return applied;
+    };
+    let already = doc
+        .tray(tray)
+        .is_some_and(|tray| tray.entries.iter().any(|entry| entry == path));
+    if !already {
+        try_apply(
+            doc,
+            FieldOp::AddReference {
+                tray,
+                path: path.to_path_buf(),
+                at: None,
+            },
+            &mut applied,
+        );
+    }
+    applied
+}
+
+/// Legacy loose `TileKind::File` tiles — from documents serialized before the object model
+/// ruled them out — migrate into the default pane as references, losing nothing: the path is
+/// preserved, the file never moves, and the tile goes away.
+fn adopt_loose_files(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let loose: Vec<(TileId, std::path::PathBuf)> = doc
+        .tiles
+        .iter()
+        .filter_map(|tile| match &tile.kind {
+            TileKind::File { path } => Some((tile.id, path.clone())),
+            _ => None,
+        })
+        .collect();
+    if loose.is_empty() {
+        return;
+    }
+    let Some(tray) = ensure_default_pane(doc, applied) else {
+        return;
+    };
+    for (id, path) in loose {
+        let already = doc
+            .tray(tray)
+            .is_some_and(|tray| tray.entries.contains(&path));
+        if !already {
+            try_apply(
+                doc,
+                FieldOp::AddReference {
+                    tray,
+                    path,
+                    at: None,
+                },
+                applied,
+            );
+        }
+        try_apply(doc, FieldOp::Remove { id }, applied);
+    }
 }
 
 /// The panel every drawer belongs to, and the panel the system shelf belongs to. Both are the
@@ -1251,5 +1452,143 @@ mod tests {
             assert_eq!(&doc.location(*id), location, "exact prior placement");
         }
         assert_eq!(doc.tiles, tiles_before);
+    }
+
+    /// The XDG Desktop directory appears as one placeable Home folder object when it exists,
+    /// simply does not appear when it is absent, and never explodes its children into loose
+    /// tiles — however many files the directory holds, the field gains exactly one tile.
+    #[test]
+    fn desktop_folder_appears_when_present_and_degrades_when_absent() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        let tiles_before = doc.tiles.len();
+
+        let absent = merge_desktop_folder(&mut doc, None);
+        assert!(absent.is_empty(), "no directory, no tile, no error");
+        assert_eq!(doc.tiles.len(), tiles_before);
+
+        let ops = merge_desktop_folder(&mut doc, Some(Path::new("/home/someone/Desktop")));
+        assert_eq!(ops.len(), 1, "one folder object, never one tile per child");
+        let tile = doc.tile(desktop_folder_tile_id()).expect("desktop folder");
+        assert_eq!(
+            tile.kind,
+            TileKind::Folder {
+                path: "/home/someone/Desktop".into()
+            }
+        );
+        assert_eq!(tile.title, "Desktop");
+        assert!(
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::File { .. })),
+            "no loose file tiles came with it"
+        );
+
+        // Add-only: the next merge changes nothing, so a moved or resized folder stays put.
+        let again = merge_desktop_folder(&mut doc, Some(Path::new("/home/someone/Desktop")));
+        assert!(again.is_empty());
+    }
+
+    /// No Home path creates a loose file tile: a file arriving on bare Home becomes a
+    /// reference in the default shortcut pane, and legacy File tiles from older documents are
+    /// adopted into it by the merge without losing their paths.
+    #[test]
+    fn no_loose_file_tiles_drops_route_to_the_pane_and_legacy_tiles_migrate() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+
+        let ops = route_file_drop(&mut doc, Path::new("/home/a/notes.md"));
+        assert!(!ops.is_empty());
+        assert!(
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::File { .. })),
+            "a dropped file never becomes a loose tile"
+        );
+        let pane = doc.tile(default_pane_tile_id()).expect("default pane");
+        let TileKind::Tray { tray_id } = pane.kind else {
+            panic!("the pane is a tray");
+        };
+        assert_eq!(
+            doc.tray(tray_id).unwrap().entries,
+            vec![std::path::PathBuf::from("/home/a/notes.md")]
+        );
+        // The same file again adds nothing twice.
+        let again = route_file_drop(&mut doc, Path::new("/home/a/notes.md"));
+        assert!(again.is_empty());
+
+        // A legacy document with a serialized loose File tile: the merge adopts it into the
+        // pane and removes the tile — the path survives, the file never moves.
+        let legacy = Tile {
+            id: tile_id_for("file:legacy"),
+            kind: TileKind::File {
+                path: "/home/a/old-report.pdf".into(),
+            },
+            title: "old-report.pdf".to_owned(),
+            spans: SpanRange::for_kind(
+                &TileKind::File {
+                    path: std::path::PathBuf::new(),
+                },
+                16,
+                8,
+            ),
+            accent: None,
+        };
+        let (next, _) = apply(
+            &doc,
+            &FieldOp::AddTile {
+                tile: legacy,
+                at: None,
+                container: None,
+            },
+        )
+        .expect("seed legacy tile");
+        doc = next;
+        merge(&mut doc, &LiveState::default());
+        assert!(
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::File { .. })),
+            "the legacy tile is gone"
+        );
+        assert!(
+            doc.tray(tray_id)
+                .unwrap()
+                .entries
+                .contains(&std::path::PathBuf::from("/home/a/old-report.pdf")),
+            "its path became a reference"
+        );
+    }
+
+    /// Removing a reference from a pane is a field edit that touches only the reference — the
+    /// document's op has an exact inverse and no file-service call — while trashing the target
+    /// is a separate, labelled service operation (`lege-filed`'s own test covers its undo).
+    #[test]
+    fn shortcut_pane_remove_deletes_only_the_reference() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        route_file_drop(&mut doc, Path::new("/home/a/notes.md"));
+        route_file_drop(&mut doc, Path::new("/home/a/song.flac"));
+        let TileKind::Tray { tray_id } = doc.tile(default_pane_tile_id()).unwrap().kind else {
+            panic!("the pane is a tray");
+        };
+
+        let before = doc.clone();
+        let (next, inverse) = apply(
+            &doc,
+            &FieldOp::RemoveReference {
+                tray: tray_id,
+                path: "/home/a/notes.md".into(),
+            },
+        )
+        .expect("remove reference");
+        assert_eq!(
+            next.tray(tray_id).unwrap().entries,
+            vec![std::path::PathBuf::from("/home/a/song.flac")],
+            "exactly one reference gone; every tile untouched"
+        );
+        assert_eq!(next.tiles, before.tiles);
+        let (restored, _) = apply(&next, &inverse).expect("undo");
+        assert_eq!(restored, before, "reference removal inverts exactly");
     }
 }

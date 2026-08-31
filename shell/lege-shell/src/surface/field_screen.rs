@@ -1835,6 +1835,9 @@ impl FieldScreen {
                 self.focus = None;
                 self.keyboard_move = None;
             }
+            TileKind::Folder { path } => {
+                actions.push(FieldAction::OpenFile(path.clone()));
+            }
             TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {}
         }
     }
@@ -1872,10 +1875,11 @@ impl FieldScreen {
             {
                 (design::SYSTEM_SHELL, design::EDGE_STRONG)
             }
-            TileKind::App { .. }
-            | TileKind::Tray { .. }
-            | TileKind::Widget { .. }
-            | TileKind::File { .. } => (design::SHELL, design::EDGE),
+            TileKind::Folder { .. } => (design::FOLDER_SHELL, design::FOLDER_EDGE),
+            TileKind::Tray { .. } => (design::TRAY_SHELL, design::TRAY_EDGE),
+            TileKind::App { .. } | TileKind::Widget { .. } | TileKind::File { .. } => {
+                (design::SHELL, design::EDGE)
+            }
         };
         let elevation = if visual.lifted {
             Elevation::Lifted
@@ -2281,6 +2285,19 @@ impl FieldScreen {
                         );
                     }
                 }
+            }
+            TileKind::Folder { path } => {
+                // The bound directory, dimly: the tile's title is the folder's name, so the
+                // content row says where it lives. Live contents come from activation — the
+                // paint path never reads the filesystem.
+                let inner = content.inset(ui.px(12));
+                ui.label_styled(
+                    inner,
+                    &path.to_string_lossy(),
+                    design::state_style(ui),
+                    design::TEXT_DIM,
+                    Align::Left,
+                );
             }
             TileKind::Tray { tray_id } => {
                 let inner = content.inset(ui.px(12));

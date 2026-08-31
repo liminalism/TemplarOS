@@ -105,9 +105,10 @@ pub fn operation_for(source_id: TileId, source: &TileKind, target: &Target) -> O
                 TileKind::App { .. } => Operation::PinTool { project: *id },
                 TileKind::ParkedSession { .. } => Operation::ParkSession { project: *id },
                 TileKind::Widget { .. } => Operation::ScopeWidget { project: *id },
-                TileKind::File { .. } | TileKind::Tray { .. } | TileKind::System { .. } => {
-                    Operation::AddToProject { project: *id }
-                }
+                TileKind::File { .. }
+                | TileKind::Tray { .. }
+                | TileKind::Folder { .. }
+                | TileKind::System { .. } => Operation::AddToProject { project: *id },
             })
         }
         Target::Tile {
@@ -125,7 +126,12 @@ pub fn operation_for(source_id: TileId, source: &TileKind, target: &Target) -> O
                 (TileKind::File { .. }, TileKind::Tray { .. }) => {
                     Some(Operation::AddReference { tray: *id })
                 }
-                (TileKind::Project { .. }, _) | (_, TileKind::Project { .. }) => None,
+                // A drop on or of a folder never silently groups: real file operations onto a
+                // folder (copy/move) belong to the typed drag-drop of the file-operations item
+                // and must be named there, not defaulted to here. Projects refuse grouping for
+                // their own reason (a container never groups into another tile).
+                (TileKind::Folder { .. } | TileKind::Project { .. }, _)
+                | (_, TileKind::Folder { .. } | TileKind::Project { .. }) => None,
                 _ => Some(Operation::GroupIntoNewProject { with: *id }),
             }
         }

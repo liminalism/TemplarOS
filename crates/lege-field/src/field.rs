@@ -486,4 +486,101 @@ mod tests {
         }
         assert_eq!(cell_at(12, 8, bounds, 5, 5, 6), None, "outside the bounds");
     }
+
+    /// A folder object binds exactly one real directory: the path is the whole identity, and
+    /// it round-trips through the document's serialized form unchanged.
+    #[test]
+    fn folder_binds_one_directory_and_round_trips() {
+        let mut doc = FieldDocument::new("eDP-1", 8, 8);
+        let tile = Tile {
+            id: TileId(7),
+            kind: TileKind::Folder {
+                path: PathBuf::from("/home/someone/Desktop"),
+            },
+            title: "Desktop".to_owned(),
+            spans: crate::tile::SpanRange::for_kind(
+                &TileKind::Folder {
+                    path: PathBuf::new(),
+                },
+                8,
+                8,
+            ),
+            accent: None,
+        };
+        let op = crate::ops::FieldOp::AddTile {
+            tile,
+            at: Some(Located {
+                container: None,
+                placement: Placement::new(Cell::new(0, 0), Span::new(3, 3)),
+            }),
+            container: None,
+        };
+        doc = crate::ops::apply(&doc, &op).expect("place folder").0;
+        let json = serde_json::to_string(&doc).expect("serialize");
+        let back: FieldDocument = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, doc, "the folder survives persistence exactly");
+        let TileKind::Folder { path } = &back.tile(TileId(7)).unwrap().kind else {
+            panic!("still a folder");
+        };
+        assert_eq!(path, &PathBuf::from("/home/someone/Desktop"));
+    }
+
+    /// A shortcut pane stores ordered references from any number of directories; adding one
+    /// never moves or copies a target (the model holds paths and nothing else), the order is
+    /// deterministic, and the pane round-trips through persistence.
+    #[test]
+    fn shortcut_pane_references_do_not_move_targets_and_round_trip() {
+        let mut doc = FieldDocument::new("eDP-1", 8, 8);
+        let tray = Tray {
+            id: TrayId(1),
+            name: "Shortcuts".to_owned(),
+            entries: Vec::new(),
+        };
+        doc = crate::ops::apply(&doc, &crate::ops::FieldOp::CreateTray { tray })
+            .expect("create pane")
+            .0;
+        for path in [
+            "/home/a/notes.md",
+            "/media/disk/report.pdf",
+            "/home/a/song.flac",
+        ] {
+            doc = crate::ops::apply(
+                &doc,
+                &crate::ops::FieldOp::AddReference {
+                    tray: TrayId(1),
+                    path: PathBuf::from(path),
+                    at: None,
+                },
+            )
+            .expect("add reference")
+            .0;
+        }
+        let entries = &doc.tray(TrayId(1)).unwrap().entries;
+        assert_eq!(
+            entries,
+            &vec![
+                PathBuf::from("/home/a/notes.md"),
+                PathBuf::from("/media/disk/report.pdf"),
+                PathBuf::from("/home/a/song.flac"),
+            ],
+            "insertion order is the order, across directories"
+        );
+        let json = serde_json::to_string(&doc).expect("serialize");
+        let back: FieldDocument = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, doc);
+
+        // Removing a reference removes exactly that entry — the model has no operation that
+        // could touch the referenced file at all.
+        let (next, inverse) = crate::ops::apply(
+            &doc,
+            &crate::ops::FieldOp::RemoveReference {
+                tray: TrayId(1),
+                path: PathBuf::from("/media/disk/report.pdf"),
+            },
+        )
+        .expect("remove reference");
+        assert_eq!(next.tray(TrayId(1)).unwrap().entries.len(), 2);
+        let (restored, _) = crate::ops::apply(&next, &inverse).expect("undo");
+        assert_eq!(restored, doc, "reference removal inverts exactly");
+    }
 }

@@ -218,6 +218,21 @@ fn feed_parts(directories: &[PathBuf], queries: &[SavedQuery]) -> DrawerFeed {
 
 /// The user's home directory, for resolving `user-dirs.dirs`. `None` when `$HOME` is unset,
 /// which is a real state in a systemd unit with a scrubbed environment.
+/// The user's XDG Desktop directory, when it exists: `XDG_DESKTOP_DIR` from `user-dirs.dirs`,
+/// else `~/Desktop`. `None` when the directory is absent — the Home folder object degrades to
+/// simply not appearing rather than binding a path that is not there.
+pub fn desktop_dir() -> Option<PathBuf> {
+    let home = home_dir()?;
+    let parsed = read_user_dirs(&home)
+        .map(|text| parse_user_dirs(&text, &home))
+        .unwrap_or_default();
+    let path = parsed
+        .iter()
+        .find(|(key, _)| key == "XDG_DESKTOP_DIR")
+        .map_or_else(|| home.join("Desktop"), |(_, path)| path.clone());
+    path.is_dir().then_some(path)
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }

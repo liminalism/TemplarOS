@@ -26,8 +26,13 @@ pub enum TileKind {
         app_id: Option<AppId>,
         identifier: String,
     },
-    /// A non-destructive collection of references (`Tray`), never a filesystem folder.
+    /// A non-destructive collection of references (`Tray`), never a filesystem folder — the
+    /// shortcut pane: named, ordered, drawn from any number of directories, and adding to it
+    /// never relocates the referenced item.
     Tray { tray_id: TrayId },
+    /// One real directory, opened or expanded into its live contents. The placeable Home
+    /// folder object: it binds exactly this path and nothing else.
+    Folder { path: PathBuf },
     /// A live, data-first instrument (calendar, drives, inbox), optionally scoped to a project.
     Widget {
         widget: String,
@@ -56,6 +61,7 @@ impl TileKind {
             Self::App { .. } => "app",
             Self::ParkedSession { .. } => "session",
             Self::Tray { .. } => "tray",
+            Self::Folder { .. } => "folder",
             Self::Widget { .. } => "widget",
             Self::File { .. } => "file",
             Self::System { .. } => "system",
@@ -134,6 +140,9 @@ impl SpanRange {
                 Self::new(Span::new(2, 1), Span::new(4, 2), Span::new(8, 4))
             }
             TileKind::Tray { .. } => Self::new(Span::new(2, 2), Span::new(3, 3), Span::new(6, 4)),
+            // A folder is many things behind one door: the same class as a tray, with a larger
+            // ceiling because a real directory can earn a treemap.
+            TileKind::Folder { .. } => Self::new(Span::new(2, 2), Span::new(3, 3), Span::new(8, 6)),
             // A widget is an instrument, and some of them (a launcher, a notification list) are
             // only useful large — so the ceiling is well above the preferred size rather than
             // equal to it, which is what used to make widgets the one kind that could shrink but
@@ -194,7 +203,7 @@ impl Representation {
                 16..=35 => Self::Wide,
                 _ => Self::Large,
             },
-            TileKind::Tray { .. } | TileKind::Widget { .. } => {
+            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => {
                 if cells <= 4 {
                     Self::Small
                 } else if cells <= 8 {

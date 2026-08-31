@@ -91,6 +91,7 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("windows.arrange.main-and-stack", MenuScope::Field),
     MenuItem::new("windows.arrange.cushion", MenuScope::Field),
     MenuItem::new("windows.restore-arrangement", MenuScope::Field),
+    MenuItem::new("pane.new", MenuScope::Field),
     MenuItem::new("window.escape-fullscreen", MenuScope::Window),
     MenuItem::new("window.cycle-forward", MenuScope::Window),
     MenuItem::new("window.cycle-backward", MenuScope::Window),

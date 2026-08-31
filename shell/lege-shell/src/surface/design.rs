@@ -14,6 +14,13 @@ pub const GROUND: u32 = 0x00ec_eef0;
 pub const SHELL: u32 = 0x00fb_fcfd;
 pub const SHELL_LOW: u32 = 0x00f3_f5f7;
 pub const SYSTEM_SHELL: u32 = 0x00f4_f6f8;
+/// A real directory's shell: warm and paper-like, so a folder reads as material you file
+/// things into, distinct from the cool glass of a shortcut pane.
+pub const FOLDER_SHELL: u32 = 0x00fb_f8f1;
+pub const FOLDER_EDGE: u32 = 0x00e2_dbc9;
+/// A shortcut pane's shell: cool and glass-like — references, not the things themselves.
+pub const TRAY_SHELL: u32 = 0x00f3_f8fb;
+pub const TRAY_EDGE: u32 = 0x00cf_dde7;
 pub const RECESSED: u32 = 0x00e7_eaee;
 pub const RECESSED_EDGE: u32 = 0x00b9_c0c8;
 pub const EDGE: u32 = 0x00dd_e1e6;

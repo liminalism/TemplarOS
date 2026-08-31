@@ -1219,4 +1219,42 @@ mod tests {
         assert!(survey.sources.is_empty());
         assert_eq!(survey.errors.len(), 1);
     }
+
+    /// Removing a reference from a Home shortcut pane is a field-document edit
+    /// (`lege_field::FieldOp::RemoveReference`) and never reaches this service: nothing in
+    /// [`OperationKind`] models pane membership, so no code path here can touch a referenced
+    /// file because its shortcut went away. Trashing the *target* is the separate, explicitly
+    /// labelled operation — journalled, and answering with its own undo that restores exactly
+    /// what the trash recorded.
+    #[test]
+    fn shortcut_pane_remove_is_not_a_file_operation_and_trash_is_separate_with_undo() {
+        let kind = OperationKind::Trash {
+            paths: vec!["/home/a/notes.md".into()],
+        };
+        assert_eq!(kind.summary(), "Move notes.md to Trash");
+
+        let survey = Survey {
+            sources: vec![file_survey("/home/a/notes.md", 1, true, false)],
+            ..Survey::default()
+        };
+        let mut operation = plan(OperationId::new(), kind, &survey, Options::default());
+        assert_eq!(
+            undo_of(&operation),
+            None,
+            "an uncommitted trash has no undo"
+        );
+        for step in &mut operation.steps {
+            if let Step::MoveToTrash { trashed, .. } = step {
+                *trashed = Some("/home/a/.local/share/Trash/files/notes.md".into());
+            }
+        }
+        operation.state = OperationState::Committed;
+        assert_eq!(
+            undo_of(&operation),
+            Some(OperationKind::RestoreFromTrash {
+                paths: vec!["/home/a/.local/share/Trash/files/notes.md".into()],
+            }),
+            "the undo restores exactly what the trash recorded"
+        );
+    }
 }

@@ -553,7 +553,11 @@ impl ShellApp {
             toplevels,
             projects: &self.projects,
         };
-        let merged = field_model::merge(&mut self.field, &live);
+        let mut merged = field_model::merge(&mut self.field, &live);
+        merged.extend(field_model::merge_desktop_folder(
+            &mut self.field,
+            crate::drawers::standard_paths::desktop_dir().as_deref(),
+        ));
         if !merged.is_empty() && self.field_synced == Some(true) {
             self.spawn_field_apply(FieldOp::Batch { ops: merged });
         }
@@ -945,6 +949,12 @@ impl ShellApp {
                 self.bridge_call("escape_fullscreen_or_modal", |bridge| {
                     bridge.escape_fullscreen_or_modal(None)
                 });
+            }
+            "pane.new" => {
+                let ops = field_model::create_pane(&mut self.field, "Shortcuts");
+                if !ops.is_empty() && self.field_synced == Some(true) {
+                    self.spawn_field_apply(FieldOp::Batch { ops });
+                }
             }
             "windows.restore-arrangement" => {
                 self.bridge_call("restore_arrangement", ShellBridge::restore_arrangement);

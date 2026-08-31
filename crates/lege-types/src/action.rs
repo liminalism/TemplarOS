@@ -394,6 +394,15 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Window,
     },
     ActionDecl {
+        id: "pane.new",
+        label: "New shortcut pane",
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::TrustedShell,
+    },
+    ActionDecl {
         id: "windows.restore-arrangement",
         label: "Restore window arrangement",
         category: ActionCategory::Window,

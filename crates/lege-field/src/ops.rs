@@ -141,6 +141,10 @@ pub enum FieldOp {
     AddReference {
         tray: TrayId,
         path: PathBuf,
+        /// Where in the tray's order the reference lands; `None` appends. Carried so that
+        /// `RemoveReference`'s inverse restores the exact prior order, not just membership.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<usize>,
     },
     RemoveReference {
         tray: TrayId,
@@ -278,12 +282,13 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
             let tray = doc.trays.remove(index);
             Ok(FieldOp::CreateTray { tray })
         }
-        FieldOp::AddReference { tray, path } => {
+        FieldOp::AddReference { tray, path, at } => {
             let entry = doc.tray_mut(*tray).ok_or(FieldError::UnknownTray)?;
             if entry.entries.contains(path) {
                 return Err(FieldError::DuplicateReference);
             }
-            entry.entries.push(path.clone());
+            let index = at.unwrap_or(entry.entries.len()).min(entry.entries.len());
+            entry.entries.insert(index, path.clone());
             Ok(FieldOp::RemoveReference {
                 tray: *tray,
                 path: path.clone(),
@@ -300,6 +305,7 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
             Ok(FieldOp::AddReference {
                 tray: *tray,
                 path: path.clone(),
+                at: Some(index),
             })
         }
         FieldOp::Batch { ops } => {
