@@ -725,7 +725,7 @@ record legeos.work.home-field-discoverability/1 : work {
 
 record legeos.work.home-field-selection-and-bulk-action/1 : work {
     title "A selection, not just a focus — so more than one thing can be acted on at once"
-    state proposed
+    state completed
     scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
     intent """
         The Home Field has no selection at all, only a focus: a single focus: Option<TileId> (shell/lege-shell/src/surface/field_screen.rs:157), and a single entry_focus: usize in the drawer browser (surface/file_browser.rs:54). Every keyboard and pointer path that looks like selecting overwrites that one field. There is no shift-click, no ctrl-click, no marquee, and consequently no way to move three files, trash a group of downloads, or stash several tiles — each is one item at a time or not at all. Drag carries a single TileId by construction (crates/lege-field/src/drag.rs:52), and FieldOp::Move, Resize and Stash each take one id.

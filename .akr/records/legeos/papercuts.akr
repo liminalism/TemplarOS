@@ -186,6 +186,17 @@ record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut 
     created_at 2026-08-23
 }
 
+record legeos.papercut.just-check-passes-formatting-workspace-clippy/1 : papercut {
+    title "`just check` passes formatting, workspace Clippy, and workspace tests,…"
+    state verified
+    statement """
+        `just check` passes formatting, workspace Clippy, and workspace tests, then fails its MSRV gate because bpg-* 0.6.0 dependencies require Rust 1.97 while the recipe checks Rust 1.93. The declared MSRV and dependency floors have drifted.
+        """
+    observed_at git:0e0f2bc11716c18792ce5c2e52ae5735b88592cd
+    author "codex"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.just-msrv-fails-on-this-machine-at-any-commit/1 : papercut {
     title "just msrv fails on this machine at any commit, including a clean base:…"
     state verified
@@ -532,6 +543,17 @@ record legeos.papercut.while-running-the-documented-family-of-xtask/1 : papercut
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.while-running-three-named-rust-tests-cargo-test/1 : papercut {
+    title "While running three named Rust tests, `cargo test` accepts only one…"
+    state verified
+    statement """
+        While running three named Rust tests, `cargo test` accepts only one positional TESTNAME filter and rejected the extra names. Use one shared filter or run the full package suite.
+        """
+    observed_at git:0e0f2bc11716c18792ce5c2e52ae5735b88592cd
+    author "codex"
+    created_at 2026-08-31
 }
 
 record legeos.papercut.while-tracing-home-file-panes-multi-grep-with/1 : papercut {

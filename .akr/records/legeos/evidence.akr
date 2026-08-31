@@ -412,6 +412,42 @@ record legeos.evidence.home-field-reshape-across-resolutions-20260831/1 : eviden
         """
 }
 
+record legeos.evidence.home-field-selection-clippy/1 : evidence {
+    title "The changed model and shell targets passed Clippy with warnings denied."
+    state verified
+    result pass
+    method command
+    observed_at git:80ec64913672f6233808ce50f6c5cc757e362d44
+    command "cargo clippy -p lege-field -p lege-shell --all-targets -- -D warnings"
+    summary """
+        The changed model and shell targets passed Clippy with warnings denied.
+        """
+}
+
+record legeos.evidence.home-field-selection-structure/1 : evidence {
+    title "Repository structure, dependency boundaries, interfaces, proxies, packaging, assets, and action routes all passed."
+    state verified
+    result pass
+    method command
+    observed_at git:80ec64913672f6233808ce50f6c5cc757e362d44
+    command "just tree-check deps-check check-interfaces"
+    summary """
+        Repository structure, dependency boundaries, interfaces, proxies, packaging, assets, and action routes all passed.
+        """
+}
+
+record legeos.evidence.home-field-selection-tests/1 : evidence {
+    title "All lege-field and lege-shell tests passed, including selection, marquee, drawer range selection, and atomic bulk-operation coverage."
+    state verified
+    result pass
+    method command
+    observed_at git:80ec64913672f6233808ce50f6c5cc757e362d44
+    command "cargo test -p lege-field -p lege-shell"
+    summary """
+        All lege-field and lege-shell tests passed, including selection, marquee, drawer range selection, and atomic bulk-operation coverage.
+        """
+}
+
 record legeos.evidence.home-field-shelved-is-hidden/1 : evidence {
     title "WindowService::is_visible reports a shelved window hidden and an unshelved one visible; space_sync unmaps hidden windows from Space, topmost_window_at filters on is_visible, collect_bands skips hidden windows."
     state verified
