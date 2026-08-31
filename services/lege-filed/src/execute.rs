@@ -574,6 +574,302 @@ mod tests {
         run(operation, &config(dir), &Cancel::new(), |_| {})
     }
 
+    /// Plan one operation over a real fixture tree, exactly as the service does.
+    fn planned(kind: OperationKind, sources: &[PathBuf], destination: Option<&Path>) -> Operation {
+        let surveyed = crate::operations::survey(sources, destination);
+        crate::operations::plan(OperationId::new(), kind, &surveyed, Options::default())
+    }
+
+    fn write(path: &Path, contents: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn clipboard_a_paste_of_many_files_is_one_operation_over_the_whole_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("Documents");
+        std::fs::create_dir_all(&destination).unwrap();
+        let sources: Vec<PathBuf> = ["one.txt", "two.txt", "three.txt"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join("from").join(name);
+                write(&path, name.as_bytes());
+                path
+            })
+            .collect();
+
+        // One operation naming three files — what a Ctrl+C of three items and one Ctrl+V does.
+        let mut operation = planned(
+            OperationKind::Copy {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &sources,
+            Some(&destination),
+        );
+        assert_eq!(operation.total_items, 3);
+        execute(&mut operation, dir.path()).unwrap();
+        assert_eq!(operation.state, OperationState::Committed);
+        // One operation, one set of totals, one progress figure covering all three.
+        assert_eq!(operation.done_items, operation.total_items);
+        assert!((operation.progress() - 1.0).abs() < f64::EPSILON);
+        for name in ["one.txt", "two.txt", "three.txt"] {
+            assert_eq!(
+                std::fs::read(destination.join(name)).unwrap(),
+                name.as_bytes()
+            );
+            // A copy leaves the sources alone.
+            assert!(dir.path().join("from").join(name).exists());
+        }
+    }
+
+    #[test]
+    fn clipboard_a_cut_leaves_no_duplicate_behind_once_the_paste_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("Documents");
+        std::fs::create_dir_all(&destination).unwrap();
+        let sources: Vec<PathBuf> = ["one.txt", "two.txt"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join("from").join(name);
+                write(&path, name.as_bytes());
+                path
+            })
+            .collect();
+
+        let mut operation = planned(
+            OperationKind::Move {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &sources,
+            Some(&destination),
+        );
+        execute(&mut operation, dir.path()).unwrap();
+        assert_eq!(operation.state, OperationState::Committed);
+        for (index, name) in ["one.txt", "two.txt"].iter().enumerate() {
+            assert_eq!(
+                std::fs::read(destination.join(name)).unwrap(),
+                name.as_bytes()
+            );
+            assert!(
+                !sources[index].exists(),
+                "a cut that pasted must not leave the original behind as well"
+            );
+        }
+    }
+
+    #[test]
+    fn trash_a_bulk_delete_is_one_operation_and_one_undo_restores_every_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["a.txt", "b.txt", "c.txt"];
+        let victims: Vec<PathBuf> = names
+            .iter()
+            .map(|name| {
+                let path = dir.path().join("work").join(name);
+                write(&path, name.as_bytes());
+                path
+            })
+            .collect();
+
+        // Delete of a multiple selection is one trash operation naming every path, not one
+        // operation per file — which is what makes the single undo below possible at all.
+        let mut trashing = planned(
+            OperationKind::Trash {
+                paths: victims.clone(),
+            },
+            &[],
+            None,
+        );
+        assert_eq!(trashing.steps.len(), 3);
+        execute(&mut trashing, dir.path()).unwrap();
+        assert_eq!(trashing.state, OperationState::Committed);
+        for victim in &victims {
+            assert!(!victim.exists(), "{} is still there", victim.display());
+        }
+
+        // One undo, restoring every item exactly: same path, same bytes.
+        let undo = crate::operations::undo_of(&trashing).expect("trashing is reversible");
+        let mut restoring = planned(undo, &[], None);
+        execute(&mut restoring, dir.path()).unwrap();
+        assert_eq!(restoring.state, OperationState::Committed);
+        for (index, victim) in victims.iter().enumerate() {
+            assert_eq!(
+                std::fs::read(victim).unwrap(),
+                names[index].as_bytes(),
+                "{} did not come back as it was",
+                victim.display()
+            );
+        }
+    }
+
+    #[test]
+    fn trash_undo_restores_only_what_was_actually_trashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("work/kept.txt");
+        let trashed = dir.path().join("work/trashed.txt");
+        write(&kept, b"kept");
+        write(&trashed, b"trashed");
+
+        let mut operation = planned(
+            OperationKind::Trash {
+                paths: vec![trashed.clone()],
+            },
+            &[],
+            None,
+        );
+        execute(&mut operation, dir.path()).unwrap();
+
+        let undo = crate::operations::undo_of(&operation).expect("a trash has an undo");
+        // The undo names exactly the one item the trash actually took: an undo derived from the
+        // *request* rather than from what happened would try to restore things that never moved.
+        match &undo {
+            OperationKind::RestoreFromTrash { paths } => assert_eq!(paths.len(), 1),
+            other => panic!("undoing a trash must restore from it, got {other:?}"),
+        }
+        let mut restoring = planned(undo, &[], None);
+        execute(&mut restoring, dir.path()).unwrap();
+        assert_eq!(std::fs::read(&trashed).unwrap(), b"trashed");
+        assert_eq!(
+            std::fs::read(&kept).unwrap(),
+            b"kept",
+            "untouched throughout"
+        );
+    }
+
+    #[test]
+    fn operations_report_bounded_progress_that_only_ever_moves_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("to");
+        std::fs::create_dir_all(&destination).unwrap();
+        let sources: Vec<PathBuf> = (0..5)
+            .map(|index| {
+                let path = dir.path().join("from").join(format!("f{index}.bin"));
+                write(&path, &vec![b'x'; 4096]);
+                path
+            })
+            .collect();
+        let mut operation = planned(
+            OperationKind::Copy {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &sources,
+            Some(&destination),
+        );
+
+        let mut seen: Vec<(f64, u64, u64)> = Vec::new();
+        run(&mut operation, &config(dir.path()), &Cancel::new(), |op| {
+            seen.push((op.progress(), op.done_items, op.done_bytes));
+        })
+        .unwrap();
+
+        assert!(seen.len() >= 2, "progress was never reported: {seen:?}");
+        for (progress, done_items, done_bytes) in &seen {
+            assert!(
+                (0.0..=1.0).contains(progress),
+                "progress left the unit interval: {progress}"
+            );
+            assert!(*done_items <= operation.total_items);
+            assert!(*done_bytes <= operation.total_bytes);
+        }
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1].1 >= pair[0].1 && pair[1].2 >= pair[0].2,
+                "progress went backwards: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(seen.last().unwrap().1, operation.total_items);
+    }
+
+    #[test]
+    fn operations_stop_at_a_step_boundary_when_cancelled_and_say_they_were_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("to");
+        std::fs::create_dir_all(&destination).unwrap();
+        let sources: Vec<PathBuf> = (0..6)
+            .map(|index| {
+                let path = dir.path().join("from").join(format!("f{index}.txt"));
+                write(&path, b"payload");
+                path
+            })
+            .collect();
+        let mut operation = planned(
+            OperationKind::Copy {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &sources,
+            Some(&destination),
+        );
+
+        let cancel = Cancel::new();
+        let mut steps = 0;
+        run(&mut operation, &config(dir.path()), &cancel, |_| {
+            steps += 1;
+            if steps == 2 {
+                cancel.cancel();
+            }
+        })
+        .unwrap();
+
+        // Cancelled, not failed and certainly not committed: nothing went wrong, the person
+        // asked it to stop.
+        assert_eq!(operation.state, OperationState::Cancelled);
+        assert!(
+            operation.cursor < operation.steps.len(),
+            "a cancel must stop before the end, not after it"
+        );
+        assert!(operation.error.is_none(), "a cancel is not an error");
+        // Whatever was already exposed stays exposed, and the journal explains what was done.
+        assert!(operation.done_items <= operation.total_items);
+    }
+
+    #[test]
+    fn operations_that_fail_part_way_are_never_reported_as_whole_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("to");
+        std::fs::create_dir_all(&destination).unwrap();
+        let good = dir.path().join("from/good.txt");
+        let doomed = dir.path().join("from/doomed.txt");
+        write(&good, b"kept");
+        write(&doomed, b"vanishes");
+        let sources = vec![good.clone(), doomed.clone()];
+        let mut operation = planned(
+            OperationKind::Copy {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &sources,
+            Some(&destination),
+        );
+        // The second source disappears after the survey and before its step runs — a race with
+        // anything else on the machine, and the ordinary shape of a partial failure.
+        std::fs::remove_file(&doomed).unwrap();
+
+        let outcome = execute(&mut operation, dir.path());
+        assert!(outcome.is_err(), "a vanished source is a failure");
+        assert_eq!(
+            operation.state,
+            OperationState::Failed,
+            "a partial failure must never be recorded as Committed"
+        );
+        // The error names the item, so a person can tell which of the two did not arrive.
+        let error = operation
+            .error
+            .clone()
+            .expect("a failed operation says why");
+        assert!(
+            error.contains("doomed.txt"),
+            "the failure must name the item that failed: {error}"
+        );
+        // And the work that did land is visible rather than silently rolled back.
+        assert!(operation.done_items < operation.total_items);
+    }
+
     #[test]
     fn a_cross_device_style_move_copies_verifies_exposes_then_deletes() {
         let dir = tempfile::tempdir().unwrap();

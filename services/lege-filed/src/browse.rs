@@ -503,6 +503,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_actions_a_new_folder_gets_the_next_free_name_and_the_service_says_which() {
+        let dir = tempfile::tempdir().unwrap();
+        // The first is the name asked for; the service, not the surface, picks the ones after —
+        // otherwise two file managers on one machine number them differently.
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder"
+        );
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder 2"
+        );
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder 3"
+        );
+        assert!(dir.path().join("New folder 3").is_dir());
+        // A name taken by a *file* is still taken.
+        std::fs::write(dir.path().join("Notes"), b"x").unwrap();
+        assert_eq!(create_directory(dir.path(), "Notes").unwrap(), "Notes 2");
+    }
+
+    #[test]
+    fn file_actions_a_new_folder_name_is_one_component_and_never_a_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["", ".", "..", "../escape", "sub/deeper", "a\0b"] {
+            assert!(
+                create_directory(dir.path(), name).is_err(),
+                "{name:?} was accepted as a folder name"
+            );
+        }
+        assert!(
+            !dir.path().parent().unwrap().join("escape").exists(),
+            "a traversal must not have created anything outside the parent"
+        );
+        // And a parent that is not a directory is refused rather than guessed at.
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(create_directory(&file, "New folder").is_err());
+    }
+
+    #[test]
     fn browse_is_folder_first_natural_and_reports_real_metadata() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("folder10")).unwrap();
