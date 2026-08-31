@@ -356,6 +356,17 @@ record legeos.papercut.the-delete-key-means-two-unrelated-things-in/1 : papercut
     created_at 2026-08-31
 }
 
+record legeos.papercut.the-desktop-reinstall-failed-opaquely-when/1 : papercut {
+    title "The desktop reinstall failed opaquely when mutable sibling path…"
+    state verified
+    statement """
+        The desktop reinstall failed opaquely when mutable sibling path dependencies made helpers/lege-preview-codecs/Cargo.lock stale, and the error suggested --offline even though reinstall-legeos-desktop.sh did not accept that option. The codec build now refreshes its local dependency graph offline before enforcing --locked, and the wrapper exposes --offline.
+        """
+    observed_at git:aa2028cf247d6f7c3b7c888f6ea3a3f545dbd45b
+    author "codex"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.the-documented-pre-login-check-lege-doctor-root/1 : papercut {
     title "The documented pre-login check `lege doctor --root /` fails on the…"
     state verified

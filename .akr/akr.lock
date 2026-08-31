@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:515696839dfa825ef0bc3786352143a9deb069b81b942c15e48fe3b397792ed3"
+    source_graph "sha256:cb8c1f8d163a8559b32c5067cf94a9cad2d314c67d1ed517f0c058379ed46103"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:18f950bc1dcff69b18fe4e147a708e22ff0a26adc74377e6a9b989ff4e9afbab"
-    records 55
+    hash "sha256:251ff341dc3d1a7907e0bddde3cfc6c11b0ffb2e16fc6e0683bd25903d7b88c0"
+    records 56
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -1940,6 +1940,11 @@ seal @legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 {
 seal @legeos.papercut.the-delete-key-means-two-unrelated-things-in/1 {
     state verified
     hash "sha256:fcebc2c3bc5463b6b2000eccdc6141be72f832ef1c7136e20348e81e9ed7379b"
+}
+
+seal @legeos.papercut.the-desktop-reinstall-failed-opaquely-when/1 {
+    state verified
+    hash "sha256:5f3ca3deab87da70ec4ffc3edbfd554b8c595907835215d8faf4cca61261158e"
 }
 
 seal @legeos.papercut.the-documented-pre-login-check-lege-doctor-root/1 {

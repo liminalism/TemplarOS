@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "jbig2enc-rust"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "fax 0.3.0",
@@ -504,6 +504,7 @@ name = "lege-pdf-read"
 version = "0.1.0"
 dependencies = [
  "image",
+ "jpeg-encoder",
  "pdf-content",
  "pdf-document",
  "pdf-object",
@@ -514,6 +515,7 @@ dependencies = [
  "pdf-security",
  "pdf-source",
  "pdf-text",
+ "png",
  "skrifa",
  "thiserror",
 ]

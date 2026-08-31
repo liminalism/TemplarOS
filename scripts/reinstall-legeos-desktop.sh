@@ -9,6 +9,7 @@ skip_build=0
 skip_nm_tray2=0
 dry_run=0
 assume_yes=0
+offline=0
 
 usage() {
     cat <<'EOF'
@@ -22,6 +23,7 @@ Options:
   --skip-nm-tray2       Do not build or install nm-tray2.
   --nm-tray2-dir PATH   Use a different nm-tray2 source directory.
   --yes                 Let apt repair dependencies without prompting.
+  --offline             Build Rust packages without network access.
   --dry-run             Validate inputs and print commands without changing anything.
   -h, --help            Show this help.
 
@@ -79,6 +81,9 @@ while (($# > 0)); do
         --yes)
             assume_yes=1
             ;;
+        --offline)
+            offline=1
+            ;;
         --dry-run)
             dry_run=1
             ;;
@@ -130,7 +135,11 @@ if ((skip_build == 0)); then
     fi
 
     section "Build all LegeOS Debian packages"
-    run just deb
+    if ((offline == 1)); then
+        run env CARGO_NET_OFFLINE=true just deb
+    else
+        run just deb
+    fi
 else
     section "Reuse existing build artifacts"
 fi

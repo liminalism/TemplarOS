@@ -14,6 +14,11 @@ if ! rustup toolchain list | grep -q "^${TOOLCHAIN}"; then
     exit 1
 fi
 
+# The companion intentionally consumes mutable sibling path dependencies. Their
+# manifests can change without this repository changing, which makes Cargo's
+# saved dependency graph stale. Re-resolve from the local cache before using
+# --locked so packaging remains offline and the subsequent build is repeatable.
+cargo "+${TOOLCHAIN}" metadata --offline --manifest-path "$MANIFEST" --format-version 1 >/dev/null
 cargo "+${TOOLCHAIN}" test --locked --manifest-path "$MANIFEST" --target-dir "$PREVIEW_TARGET_DIR"
 cargo "+${TOOLCHAIN}" build --release --locked --manifest-path "$MANIFEST" --target-dir "$PREVIEW_TARGET_DIR"
 
