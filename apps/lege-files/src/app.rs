@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use crate::{
     actions::{ActionId, Command},
     backend::{Backend, Update},
-    model::{BrowseRequest, BrowserModel, ClipboardMode, PlannedOperation, SelectionModifiers},
+    model::{
+        BrowseRequest, BrowserModel, ClipboardMode, PlannedOperation, SelectionModifiers,
+        TrashIntent,
+    },
     surface::FileSurface,
 };
 
@@ -86,6 +89,15 @@ impl FilesApp {
                 Update::OperationFailed { summary, error } => {
                     self.model.operation_failed(format!("{summary}: {error}"));
                 }
+                Update::Trash(result) => self.model.apply_trash(result),
+                // Something changed the trash — this window, another one, Home, or the CLI. Only
+                // re-list when the trash is what is on screen; otherwise there is nothing to
+                // refresh and a listing would arrive for a place nobody is looking at.
+                Update::TrashChanged => {
+                    if self.model.in_trash() {
+                        self.backend.trash_list();
+                    }
+                }
                 Update::Cancelled(result) => match result {
                     Ok(()) => self.model.status = Some("Cancellation requested…".into()),
                     Err(error) => self.model.operation_failed(error),
@@ -145,8 +157,34 @@ impl FilesApp {
         }
     }
 
+    /// One trash action, through the model's confirmation rule. Nothing else may reach
+    /// `Backend::trash_action`, so no route can be the one that skips the question.
+    fn handle_trash_action(&mut self, action: ActionId) {
+        match self.model.request_trash_action(action) {
+            Ok(Some(intent)) => {
+                self.model.status = Some(match &intent {
+                    TrashIntent::Restore(paths) => {
+                        format!("Restoring {} item(s)…", paths.len())
+                    }
+                    TrashIntent::DeletePermanently(paths) => {
+                        format!("Deleting {} item(s) permanently…", paths.len())
+                    }
+                    TrashIntent::Empty => "Emptying the trash…".to_owned(),
+                });
+                self.backend.trash_action(intent);
+            }
+            // The prompt is already in `status`; there is nothing else to say.
+            Ok(None) => {}
+            Err(message) => self.model.status = Some(message),
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn handle_action(&mut self, action: ActionId, modifiers: SelectionModifiers) {
+        // Any action other than repeating the destructive one answers its question with "no".
+        if self.model.confirm != Some(action) {
+            self.model.cancel_confirmation();
+        }
         match action {
             ActionId::Back => {
                 let request = self.model.back();
@@ -206,6 +244,18 @@ impl FilesApp {
             ActionId::Trash => {
                 let operation = self.model.trash();
                 self.start_operation(operation);
+            }
+            ActionId::OpenTrash => {
+                self.model.open_trash();
+                self.backend.trash_list();
+            }
+            ActionId::Restore | ActionId::DeletePermanently | ActionId::EmptyTrash => {
+                if self.model.in_trash() {
+                    self.handle_trash_action(action);
+                } else {
+                    self.model.status =
+                        Some(format!("{} only applies in the trash.", action.label()));
+                }
             }
             ActionId::Undo => {
                 if let Some(id) = self.model.undo_id.take() {
@@ -305,6 +355,10 @@ impl PixelApp for FilesApp {
     fn attach(&mut self, waker: Waker) {
         self.backend.attach(waker);
         self.backend.roots();
+        // Started with the window, not with the trash view: the signal is what tells this window
+        // the trash changed, and a subscription that only exists while the trash is open would
+        // miss exactly the change that happened while the user was elsewhere.
+        self.backend.watch_trash();
     }
 
     fn tick(&mut self) {

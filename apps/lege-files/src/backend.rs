@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use lege_client::{
     files::{
         BrowserSources, FileInfo, OperationOptions, OperationRecord, OperationRequest,
-        PreviewMetadata, VolumeInfo,
+        PreviewMetadata, TrashEntry, VolumeInfo,
     },
     proxies::{
         AssociationsProxy, FilesActionsProxy, FilesBrowseProxy, FilesOperationsProxy,
-        FilesPreviewsProxy, FilesRecentsProxy, FilesVolumesProxy, LauncherProxy,
+        FilesPreviewsProxy, FilesRecentsProxy, FilesTrashProxy, FilesVolumesProxy, LauncherProxy,
     },
 };
 use pixelkit_shell::Waker;
@@ -21,7 +21,7 @@ use std::{
 
 use crate::model::{
     BrowseRequest, BrowseSnapshot, InspectRequest, PreviewRequest, PreviewSnapshot,
-    PropertiesSnapshot,
+    PropertiesSnapshot, TrashIntent,
 };
 
 pub const APP_ID: &str = "org.legeos.Files";
@@ -70,6 +70,10 @@ pub enum Update {
         error: String,
     },
     Cancelled(std::result::Result<(), String>),
+    /// A `Files.Trash1.List` answer, or why there is none.
+    Trash(std::result::Result<Vec<TrashEntry>, String>),
+    /// `Files.Trash1.Changed`: the trash changed, whoever changed it. The window re-lists.
+    TrashChanged,
 }
 
 pub struct Backend {
@@ -188,6 +192,100 @@ impl Backend {
                         error: error_text(error),
                     },
                 ),
+            }
+        });
+    }
+
+    /// Ask `Files.Trash1` what is in every trash.
+    pub fn trash_list(&self) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let result = fetch_trash().await.map_err(error_text);
+            deliver(&tx, &waker, Update::Trash(result));
+        });
+    }
+
+    /// Perform one trash action, then follow the operation it started exactly as any other file
+    /// operation is followed — progress, journal and all. `Trash1` is a wrapper over the same
+    /// `Operations1.Start`, so there is nothing else to watch.
+    pub fn trash_action(&self, intent: TrashIntent) {
+        let summary = trash_summary(&intent);
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let started = async {
+                let connection = session().await?;
+                let proxy = FilesTrashProxy::new(&connection)
+                    .await
+                    .context("Files.Trash1")?;
+                let id = match &intent {
+                    TrashIntent::Restore(paths) => proxy.restore(path_strings(paths), APP_ID).await,
+                    TrashIntent::DeletePermanently(paths) => {
+                        proxy.delete_permanently(path_strings(paths), APP_ID).await
+                    }
+                    TrashIntent::Empty => proxy.empty(APP_ID).await,
+                }
+                .context("asking Files.Trash1")?;
+                Ok::<_, anyhow::Error>((connection, id))
+            }
+            .await;
+            match started {
+                // An empty operation ID means there was nothing to do, which `Trash1.Empty`
+                // reports rather than treating as a failure.
+                Ok((_, id)) if id.is_empty() => {
+                    deliver(&tx, &waker, Update::Trash(Ok(Vec::new())));
+                }
+                Ok((connection, id)) => {
+                    deliver(
+                        &tx,
+                        &waker,
+                        Update::OperationStarted {
+                            id: id.clone(),
+                            summary: summary.clone(),
+                        },
+                    );
+                    if let Err(error) = poll_operation(&connection, &id, &tx, &waker).await {
+                        deliver(
+                            &tx,
+                            &waker,
+                            Update::OperationFailed {
+                                summary,
+                                error: error_text(error),
+                            },
+                        );
+                    }
+                }
+                Err(error) => deliver(
+                    &tx,
+                    &waker,
+                    Update::OperationFailed {
+                        summary,
+                        error: error_text(error),
+                    },
+                ),
+            }
+        });
+    }
+
+    /// Follow `Files.Trash1.Changed` for as long as the connection lasts.
+    ///
+    /// This is what keeps the trash view honest when something else did the changing — Home's
+    /// EMPTY, `lege trash restore`, another window. Without it the listing would be a snapshot
+    /// that quietly stops being true and still offers buttons over it.
+    pub fn watch_trash(&self) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = session().await else {
+                return;
+            };
+            let Ok(proxy) = FilesTrashProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                deliver(&tx, &waker, Update::TrashChanged);
             }
         });
     }
@@ -452,6 +550,34 @@ async fn start_operation(
         .with_context(|| request.summary())?;
     drop(proxy);
     Ok((connection, id))
+}
+
+fn path_strings(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn trash_summary(intent: &TrashIntent) -> String {
+    match intent {
+        TrashIntent::Restore(paths) => format!("Restore {} item(s) from Trash", paths.len()),
+        TrashIntent::DeletePermanently(paths) => {
+            format!("Delete {} item(s) permanently", paths.len())
+        }
+        TrashIntent::Empty => "Empty the Trash".to_owned(),
+    }
+}
+
+async fn fetch_trash() -> Result<Vec<TrashEntry>> {
+    let connection = session().await?;
+    let json = FilesTrashProxy::new(&connection)
+        .await
+        .context("Files.Trash1")?
+        .list()
+        .await
+        .context("listing the trash")?;
+    serde_json::from_str(&json).context("parsing the trash listing")
 }
 
 async fn poll_operation(

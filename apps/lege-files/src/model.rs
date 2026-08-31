@@ -1,8 +1,9 @@
 //! Pure file-manager state: stale-safe browsing, history, selection and operation intent.
 
+use crate::actions::ActionId;
 use lege_client::files::{
     BrowserSources, DirectoryListing, FileInfo, OperationOptions, OperationRecord,
-    OperationRequest, PreviewMetadata, VolumeInfo, valid_file_name,
+    OperationRequest, PreviewMetadata, TrashEntry, VolumeInfo, valid_file_name,
 };
 use pixelkit_raster::Bitmap;
 use std::{collections::BTreeSet, path::PathBuf};
@@ -68,6 +69,24 @@ pub struct PlannedOperation {
     pub options: OperationOptions,
 }
 
+/// The trash as a place: a listing that is not a directory, so it is held apart from `listing`
+/// rather than dressed up as one. It has no parent, no hidden files and no paste.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrashView {
+    pub entries: Vec<TrashEntry>,
+    /// Why the listing could not be read, if it could not.
+    pub error: Option<String>,
+    pub loading: bool,
+}
+
+/// What the trash is being asked to do, once any confirmation has been answered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrashIntent {
+    Restore(Vec<PathBuf>),
+    DeletePermanently(Vec<PathBuf>),
+    Empty,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Navigation {
     Reset,
@@ -102,6 +121,14 @@ pub struct BrowserModel {
     pub undo_id: Option<String>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// The trash, when the trash is the open place. `None` means a directory is.
+    pub trash: Option<TrashView>,
+    /// A destructive action that has been asked for once and is waiting to be asked again.
+    ///
+    /// The rule is a second press of the *same* action rather than a timer: this model is pure
+    /// and has no clock, and anything else the user does clears it — which is the behaviour that
+    /// matters, since the danger is a confirmation left armed while attention moved on.
+    pub confirm: Option<ActionId>,
     back: Vec<PathBuf>,
     forward: Vec<PathBuf>,
     anchor: Option<usize>,
@@ -134,6 +161,8 @@ impl BrowserModel {
             undo_id: None,
             status: Some("Connecting to the file service…".into()),
             error: None,
+            trash: None,
+            confirm: None,
             back: Vec::new(),
             forward: Vec::new(),
             anchor: None,
@@ -223,6 +252,10 @@ impl BrowserModel {
     }
 
     fn begin(&mut self, path: PathBuf, navigation: Navigation) -> BrowseRequest {
+        // Browsing a directory leaves the trash: they are two different places, and one listing
+        // is shown at a time.
+        self.trash = None;
+        self.confirm = None;
         self.sequence = self.sequence.wrapping_add(1);
         let request = BrowseRequest {
             id: self.sequence,
@@ -303,14 +336,32 @@ impl BrowserModel {
         }
     }
 
+    /// The path of each visible row, in order: a trash listing's items when the trash is open,
+    /// the directory's entries otherwise. Selection, focus and select-all are all written against
+    /// this, so the trash is a place with the same keyboard behaviour rather than a special case
+    /// with none.
+    fn row_paths(&self) -> Vec<PathBuf> {
+        match &self.trash {
+            Some(view) => view
+                .entries
+                .iter()
+                .map(|entry| entry.trashed_path.clone())
+                .collect(),
+            None => self.listing.as_ref().map_or_else(Vec::new, |listing| {
+                listing
+                    .entries
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            }),
+        }
+    }
+
     pub fn select(&mut self, index: usize, modifiers: SelectionModifiers) -> bool {
-        let Some(entries) = self.listing.as_ref().map(|listing| &listing.entries) else {
+        let entries = self.row_paths();
+        let Some(path) = entries.get(index).cloned() else {
             return false;
         };
-        let Some(entry) = entries.get(index) else {
-            return false;
-        };
-        let path = entry.path.clone();
         let was_only_selected = self.selected.len() == 1 && self.selected.contains(&path);
         self.focus = index;
         if modifiers.shift {
@@ -323,8 +374,7 @@ impl BrowserModel {
             if !modifiers.control {
                 self.selected.clear();
             }
-            self.selected
-                .extend(entries[start..=end].iter().map(|entry| entry.path.clone()));
+            self.selected.extend(entries[start..=end].iter().cloned());
         } else if modifiers.control {
             if !self.selected.remove(&path) {
                 self.selected.insert(path);
@@ -342,10 +392,7 @@ impl BrowserModel {
     }
 
     pub fn move_focus(&mut self, target: usize, extend: bool) {
-        let len = self
-            .listing
-            .as_ref()
-            .map_or(0, |listing| listing.entries.len());
+        let len = self.row_paths().len();
         if len == 0 {
             return;
         }
@@ -360,17 +407,15 @@ impl BrowserModel {
     }
 
     pub fn select_all(&mut self) {
-        if let Some(listing) = &self.listing {
-            self.selected = listing
-                .entries
-                .iter()
-                .map(|entry| entry.path.clone())
-                .collect();
-            self.anchor = (!listing.entries.is_empty()).then_some(0);
-            self.properties = None;
-            self.properties_error = None;
-            self.pending_inspect = None;
+        let rows = self.row_paths();
+        if rows.is_empty() {
+            return;
         }
+        self.anchor = Some(0);
+        self.selected = rows.into_iter().collect();
+        self.properties = None;
+        self.properties_error = None;
+        self.pending_inspect = None;
     }
 
     pub fn clear_selection(&mut self) {
@@ -388,6 +433,131 @@ impl BrowserModel {
         let listing = self.listing.as_ref()?;
         let entry = listing.entries.get(self.focus)?;
         self.selected.contains(&entry.path).then_some(&entry.path)
+    }
+
+    pub fn in_trash(&self) -> bool {
+        self.trash.is_some()
+    }
+
+    pub fn trash_entries(&self) -> &[TrashEntry] {
+        self.trash
+            .as_ref()
+            .map_or(&[] as &[TrashEntry], |view| view.entries.as_slice())
+    }
+
+    /// Open the trash. The caller asks the service for the listing; this only says which place
+    /// is showing, so the pane never renders a directory's rows under the trash's columns.
+    pub fn open_trash(&mut self) {
+        self.clear_selection();
+        self.confirm = None;
+        self.trash = Some(TrashView {
+            loading: true,
+            ..TrashView::default()
+        });
+        self.error = None;
+        self.status = Some("Loading the trash…".into());
+    }
+
+    /// A `Trash1.List` answer. Ignored when the trash is no longer the open place, so a listing
+    /// that arrives after the user has navigated away cannot replace the directory they moved to.
+    pub fn apply_trash(&mut self, result: Result<Vec<TrashEntry>, String>) {
+        let Some(view) = self.trash.as_mut() else {
+            return;
+        };
+        view.loading = false;
+        match result {
+            Ok(entries) => {
+                // Anything that is no longer there cannot stay selected: the buttons above act
+                // on the selection, and offering to restore a vanished item is a lie.
+                let present: BTreeSet<PathBuf> = entries
+                    .iter()
+                    .map(|entry| entry.trashed_path.clone())
+                    .collect();
+                self.selected.retain(|path| present.contains(path));
+                let count = entries.len();
+                view.entries = entries;
+                view.error = None;
+                self.error = None;
+                self.status = Some(match count {
+                    0 => "The trash is empty.".to_owned(),
+                    1 => "1 item in the trash.".to_owned(),
+                    count => format!("{count} items in the trash."),
+                });
+            }
+            Err(error) => {
+                view.error = Some(error.clone());
+                self.status = None;
+                self.error = Some(error);
+            }
+        }
+    }
+
+    /// The trash items the selection names, in listing order.
+    pub fn selected_trashed(&self) -> Vec<PathBuf> {
+        self.trash_entries()
+            .iter()
+            .map(|entry| entry.trashed_path.clone())
+            .filter(|path| self.selected.contains(path))
+            .collect()
+    }
+
+    /// Ask for one trash action. `Ok(None)` means it needs confirming first and the prompt is in
+    /// [`Self::status`]; the same action asked again goes through.
+    ///
+    /// Every destructive route funnels through here — button, menu row and accelerator alike — so
+    /// none of them can be the one that skips the question.
+    pub fn request_trash_action(
+        &mut self,
+        action: ActionId,
+    ) -> Result<Option<TrashIntent>, String> {
+        let armed = self.confirm == Some(action);
+        self.confirm = None;
+        let intent = match action {
+            ActionId::Restore => {
+                let paths = self.selected_trashed();
+                if paths.is_empty() {
+                    return Err("Select something in the trash to restore.".into());
+                }
+                TrashIntent::Restore(paths)
+            }
+            ActionId::DeletePermanently => {
+                let paths = self.selected_trashed();
+                if paths.is_empty() {
+                    return Err("Select something in the trash to delete.".into());
+                }
+                TrashIntent::DeletePermanently(paths)
+            }
+            ActionId::EmptyTrash => {
+                if self.trash_entries().is_empty() {
+                    return Err("The trash is already empty.".into());
+                }
+                TrashIntent::Empty
+            }
+            other => return Err(format!("{} is not a trash action.", other.label())),
+        };
+        if action.destructive() && !armed {
+            self.confirm = Some(action);
+            self.error = None;
+            self.status = Some(match &intent {
+                TrashIntent::Empty => format!(
+                    "Delete all {} item(s) in the trash for good? This cannot be undone — press                      Empty trash again to confirm.",
+                    self.trash_entries().len()
+                ),
+                TrashIntent::DeletePermanently(paths) => format!(
+                    "Delete {} item(s) for good? This cannot be undone — press Delete permanently                      again to confirm.",
+                    paths.len()
+                ),
+                TrashIntent::Restore(_) => unreachable!("restoring is not destructive"),
+            });
+            return Ok(None);
+        }
+        Ok(Some(intent))
+    }
+
+    /// Forget a half-asked confirmation. Anything the user does other than repeating the action
+    /// calls this, so a question that was walked away from cannot be answered by accident later.
+    pub fn cancel_confirmation(&mut self) {
+        self.confirm = None;
     }
 
     pub fn single_selected(&self) -> Option<&PathBuf> {
@@ -619,6 +789,165 @@ mod tests {
             },
             volume: volume(),
         }
+    }
+
+    fn trashed(name: &str, original: &str, deleted: &str) -> TrashEntry {
+        TrashEntry {
+            name: name.to_owned(),
+            trashed_path: PathBuf::from("/home/u/.local/share/Trash/files").join(name),
+            info_path: PathBuf::from("/home/u/.local/share/Trash/info")
+                .join(format!("{name}.trashinfo")),
+            original_path: PathBuf::from(original),
+            deletion_date: deleted.to_owned(),
+            trash_root: "/home/u/.local/share/Trash".into(),
+            is_directory: false,
+            size_bytes: 10,
+        }
+    }
+
+    fn model_in_the_trash(entries: Vec<TrashEntry>) -> BrowserModel {
+        let mut model = BrowserModel::new(None, false);
+        let first = model.begin(PathBuf::from("/one"), Navigation::Reset);
+        model.apply_browse(first.id, &first.path, Ok(snapshot("/one", &["kept"])));
+        model.open_trash();
+        model.apply_trash(Ok(entries));
+        model
+    }
+
+    #[test]
+    fn trash_is_a_place_of_its_own_and_browsing_a_folder_leaves_it() {
+        let mut model = model_in_the_trash(vec![trashed(
+            "report.pdf",
+            "/home/u/work/report.pdf",
+            "2026-08-30T18:04:11",
+        )]);
+        assert!(model.in_trash());
+        assert_eq!(model.trash_entries().len(), 1);
+        assert_eq!(model.status.as_deref(), Some("1 item in the trash."));
+        assert_eq!(model.trash_entries()[0].original_location(), "/home/u/work");
+
+        let request = model.navigate(PathBuf::from("/two"));
+        assert!(!model.in_trash(), "a folder and the trash are two places");
+        model.apply_browse(request.id, &request.path, Ok(snapshot("/two", &[])));
+        assert_eq!(model.directory(), Some(std::path::Path::new("/two")));
+    }
+
+    #[test]
+    fn trash_selection_uses_the_trash_rows_not_the_last_folders() {
+        let mut model = model_in_the_trash(vec![
+            trashed("a.txt", "/home/u/a.txt", "2026-08-30T18:04:11"),
+            trashed("b.txt", "/home/u/b.txt", "2026-08-29T10:00:00"),
+        ]);
+        model.select_all();
+        assert_eq!(model.selected_trashed().len(), 2);
+        assert!(
+            !model.selected.contains(&PathBuf::from("/one/kept")),
+            "the folder underneath must not be selected by the trash's Select all"
+        );
+        model.select(1, SelectionModifiers::default());
+        assert_eq!(
+            model.selected_trashed(),
+            vec![PathBuf::from("/home/u/.local/share/Trash/files/b.txt")]
+        );
+    }
+
+    #[test]
+    fn a_permanent_delete_needs_a_second_press_and_anything_else_cancels_it() {
+        let mut model = model_in_the_trash(vec![trashed(
+            "a.txt",
+            "/home/u/a.txt",
+            "2026-08-30T18:04:11",
+        )]);
+        model.select_all();
+
+        assert_eq!(
+            model.request_trash_action(ActionId::DeletePermanently),
+            Ok(None),
+            "the first press must only ask"
+        );
+        assert!(
+            model
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("cannot be undone")
+        );
+        // Walking away from the question answers it: the next press asks again.
+        model.cancel_confirmation();
+        assert_eq!(
+            model.request_trash_action(ActionId::DeletePermanently),
+            Ok(None)
+        );
+        assert_eq!(
+            model.request_trash_action(ActionId::DeletePermanently),
+            Ok(Some(TrashIntent::DeletePermanently(vec![PathBuf::from(
+                "/home/u/.local/share/Trash/files/a.txt"
+            )])))
+        );
+        assert_eq!(model.confirm, None, "the confirmation is spent");
+    }
+
+    #[test]
+    fn restoring_is_reversible_so_it_never_asks_and_emptying_always_does() {
+        let mut model = model_in_the_trash(vec![trashed(
+            "a.txt",
+            "/home/u/a.txt",
+            "2026-08-30T18:04:11",
+        )]);
+        model.select_all();
+        assert_eq!(
+            model.request_trash_action(ActionId::Restore),
+            Ok(Some(TrashIntent::Restore(vec![PathBuf::from(
+                "/home/u/.local/share/Trash/files/a.txt"
+            )])))
+        );
+        assert_eq!(model.request_trash_action(ActionId::EmptyTrash), Ok(None));
+        assert_eq!(
+            model.request_trash_action(ActionId::EmptyTrash),
+            Ok(Some(TrashIntent::Empty))
+        );
+    }
+
+    #[test]
+    fn trash_actions_refuse_plainly_when_there_is_nothing_to_act_on() {
+        let mut model = model_in_the_trash(Vec::new());
+        assert_eq!(model.status.as_deref(), Some("The trash is empty."));
+        assert!(model.request_trash_action(ActionId::Restore).is_err());
+        assert!(model.request_trash_action(ActionId::EmptyTrash).is_err());
+        assert_eq!(model.confirm, None, "a refusal must not arm anything");
+    }
+
+    #[test]
+    fn a_relisting_drops_a_selection_whose_item_is_gone() {
+        let mut model = model_in_the_trash(vec![
+            trashed("a.txt", "/home/u/a.txt", "2026-08-30T18:04:11"),
+            trashed("b.txt", "/home/u/b.txt", "2026-08-29T10:00:00"),
+        ]);
+        model.select_all();
+        // Someone else restored a.txt; the change signal brought a fresh listing.
+        model.apply_trash(Ok(vec![trashed(
+            "b.txt",
+            "/home/u/b.txt",
+            "2026-08-29T10:00:00",
+        )]));
+        assert_eq!(
+            model.selected_trashed(),
+            vec![PathBuf::from("/home/u/.local/share/Trash/files/b.txt")]
+        );
+    }
+
+    #[test]
+    fn a_trash_listing_that_arrives_after_leaving_is_ignored() {
+        let mut model = model_in_the_trash(Vec::new());
+        let request = model.navigate(PathBuf::from("/two"));
+        model.apply_browse(request.id, &request.path, Ok(snapshot("/two", &[])));
+        model.apply_trash(Ok(vec![trashed(
+            "late.txt",
+            "/home/u/late.txt",
+            "2026-08-30T18:04:11",
+        )]));
+        assert!(!model.in_trash());
+        assert!(model.trash_entries().is_empty());
     }
 
     #[test]

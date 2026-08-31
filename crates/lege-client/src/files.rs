@@ -236,6 +236,36 @@ impl OperationRequest {
     }
 }
 
+/// One item in one of this user's trashes, as `Files.Trash1.List` reports it.
+///
+/// A trash listing is not a directory listing and does not pretend to be one: the columns that
+/// matter are when it went and where it came from, and `original_path` is the only thing that
+/// makes "restore" mean anything to the person reading it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TrashEntry {
+    pub name: String,
+    pub trashed_path: PathBuf,
+    pub info_path: PathBuf,
+    pub original_path: PathBuf,
+    /// Local time, `YYYY-MM-DDThh:mm:ss`.
+    pub deletion_date: String,
+    /// The trash holding it: the home trash, or a volume's.
+    pub trash_root: PathBuf,
+    pub is_directory: bool,
+    /// The item's own size, not a directory's recursive total.
+    pub size_bytes: u64,
+}
+
+impl TrashEntry {
+    /// Where the item was, as a person would say it — the whole point of the trash listing.
+    pub fn original_location(&self) -> String {
+        self.original_path.parent().map_or_else(
+            || self.original_path.display().to_string(),
+            |parent| parent.display().to_string(),
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperationState {
