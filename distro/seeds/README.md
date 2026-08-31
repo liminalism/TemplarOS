@@ -10,7 +10,7 @@ Plain package lists (one per line, `#` comments), composed by the image build an
 | `hardware.seed` | firmware, Mesa, Vulkan, PipeWire/WirePlumber, NetworkManager, BlueZ, upower |
 | `nvidia-open.seed` / `nvidia-proprietary.seed` | exactly one is included, chosen by `lege-hwdetect` |
 | `ime.seed` | one input method (fcitx5) — the `input-method` provider role |
-| `a11y.seed` | orca, AT-SPI, high-contrast/large-text assets |
+| `a11y.seed` | orca, AT-SPI, speech-dispatcher — the AT stack, installed ahead of the shell's AT-SPI bridge, which is **not yet implemented** (`docs/architecture/accessibility.md`) |
 | `dev.seed` | build tooling for a self-hosting image |
 
 Excluded on purpose (ADR-0011): `snapd`, `apport`, `whoopsie`, `ubuntu-report`, second desktop stacks.

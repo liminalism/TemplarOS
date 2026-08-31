@@ -339,7 +339,7 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
 
 record legeos.work.file-operations-from-home/1 : work {
     title "Copy, cut, paste, drag/drop, trash and ordinary file actions inside Home folder surfaces"
-    state proposed
+    state active
     scope [
         path "apps/lege-files/**",
         path "crates/lege-client/**",
@@ -355,7 +355,7 @@ record legeos.work.file-operations-from-home/1 : work {
         All bulk operations are one journalled operation with one progress/error surface and one undo. The Home field-layout undo and file-operation undo remain distinct internally, but the focused surface routes Ctrl+Z to the most recent applicable action and says which action will be undone. Conflict, permission, partial-failure and cross-device cases are answered by the file service rather than guessed by the shell.
         """
     note """
-        Rank 3 of the audit's daily-work gaps. Depends on selection landing first if bulk file operations are wanted rather than one file at a time.
+        Rank 3 of the audit's daily-work gaps. Selection and folders/panes both landed, unblocking this. Acceptance command for trash-delete-and-undo corrected to pass both libtest filters after --; cargo takes only one TESTNAME positionally.
         """
     acceptance {
         check clipboard-bulk-operations {
@@ -384,7 +384,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 Delete moves selected real items to Trash as one operation, Remove from Pane only removes references, and one undo restores every successfully trashed item exactly.
                 """
             method command
-            command "cargo test -p lege-filed trash undo"
+            command "cargo test -p lege-filed -- trash undo"
         }
         check typed-drag-drop {
             statement """
