@@ -3,7 +3,10 @@
 //! transaction as any history/undo-log write, and, where the interface documents one, emits a
 //! `Changed` signal afterward.
 
+pub mod audio;
 pub mod background;
+pub mod backlight;
+pub mod battery;
 pub mod history;
 pub mod homefield;
 pub mod lifecycle;

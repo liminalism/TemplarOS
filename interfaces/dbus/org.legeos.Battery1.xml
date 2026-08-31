@@ -1,0 +1,36 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Battery. What the battery is doing.
+
+     Read straight from sysfs (`/sys/class/power_supply`), not through upower. upower is another
+     daemon to depend on, to start, and to be absent; the kernel already exposes every figure
+     below in files this service can read unprivileged, and reading them is the whole
+     implementation. Nothing here writes anything, so there is no privilege question at all.
+
+     Read-only by construction: this interface has no Set of any kind. A battery is a fact about
+     the machine and the only thing a surface can do with it is show it.
+
+     Implemented in services/lege-sessiond/src/apis/battery.rs. -->
+<node>
+  <interface name="org.legeos.Battery1">
+
+    <!-- The battery as JSON:
+         { present, percent, status, on_mains, time_to_empty_minutes, time_to_full_minutes }.
+
+         `present: false` is a desktop, and is a fact rather than a failure. `status` is the
+         kernel's own word — "charging", "discharging", "full", "not charging", "unknown" —
+         passed through rather than flattened, because "full" and "not charging" are different
+         things to say to a person.
+
+         The two time estimates are `null` unless the kernel has the figures to compute them: a
+         battery that reports no current draw cannot be given a time remaining, and inventing one
+         is worse than leaving the field empty. When several batteries are present their charges
+         are summed, which is what a two-battery laptop's user means by "how much is left".
+
+         `on_mains` comes from the Mains supply and is answered even on a machine with no
+         battery, because "plugged in" is still true of a desktop. -->
+    <method name="Get">
+      <arg name="state_json" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

@@ -342,6 +342,48 @@ async fn serve_launch_and_association_interfaces(
     Ok(())
 }
 
+/// Volume, backlight and battery: what the hardware is doing.
+///
+/// Three interfaces rather than one, because they are three different machines' worth of facts
+/// with three different reasons to be absent, and only one of them is read-only. Each is served
+/// unconditionally: a laptop with no `wpctl` and a desktop with no battery both get an interface
+/// that answers `present: false`, which a surface can report, rather than a missing one, which it
+/// cannot tell apart from a daemon that failed to start.
+async fn serve_hardware_status_interfaces(
+    connection: &zbus::Connection,
+    system_connection: Option<zbus::Connection>,
+) -> Result<()> {
+    let object_server = connection.object_server();
+    object_server
+        .at(
+            names::AUDIO_PATH,
+            apis::audio::AudioApi::new(std::sync::Arc::new(apis::audio::WpctlAudio)),
+        )
+        .await
+        .context("serving Audio1")?;
+    // Backlight writes through logind, so it takes the same lazily retried system connection
+    // Lifecycle1 does, and for the same reason: registering only when the system bus happened to
+    // answer during startup is what makes a control silently dead for a whole session.
+    object_server
+        .at(
+            names::BACKLIGHT_PATH,
+            apis::backlight::BacklightApi::new(
+                apis::backlight::SysfsBacklight::system(),
+                std::sync::Arc::new(apis::backlight::LogindBrightness::new(system_connection)),
+            ),
+        )
+        .await
+        .context("serving Backlight1")?;
+    object_server
+        .at(
+            names::BATTERY_PATH,
+            apis::battery::BatteryApi::new(apis::battery::SysfsBatteries::system()),
+        )
+        .await
+        .context("serving Battery1")?;
+    Ok(())
+}
+
 /// The rest of the session-core domains: history/settings/projects/power/location.
 async fn serve_policy_interfaces(
     connection: &zbus::Connection,
@@ -403,6 +445,7 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Power1")?;
+    serve_hardware_status_interfaces(connection, system_connection.clone()).await?;
     object_server
         .at(
             names::NOTIFICATIONS_PATH,
