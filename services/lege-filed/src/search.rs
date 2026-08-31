@@ -90,7 +90,6 @@ impl Index {
                 "node_modules",
                 "target",
                 "__pycache__",
-                ".Trash",
                 ".venv",
             ]
             .iter()
@@ -245,6 +244,17 @@ impl Index {
     }
 }
 
+/// Whether this is one of the trash directories, in any of the shapes the specification allows.
+///
+/// A deleted file should stop turning up in search, and the names cannot be expressed as literal
+/// skip entries: the home trash is `Trash` with no leading dot, and a volume trash is
+/// `.Trash-$uid`, whose suffix is different on every machine.
+fn is_trash_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "Trash" || name.starts_with(".Trash"))
+}
+
 fn walk(
     path: &Path,
     depth: usize,
@@ -284,7 +294,9 @@ fn walk(
     let mut children: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|child| !skip.iter().any(|name| child.ends_with(name)))
+        .filter(|child| {
+            !is_trash_directory(child) && !skip.iter().any(|name| child.ends_with(name))
+        })
         .collect();
     children.sort();
     for child in children {
@@ -361,6 +373,34 @@ mod tests {
             hits.iter()
                 .all(|hit| !hit.entry.path.starts_with(dir.path().join(".git"))),
             "the .git tree leaked into the index"
+        );
+    }
+
+    #[test]
+    fn a_trashed_file_stops_turning_up_in_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Both shapes the specification allows. The skip list could express neither: the home
+        // trash has no leading dot, and a volume trash's uid suffix differs per machine.
+        std::fs::create_dir_all(root.join("Trash/files")).unwrap();
+        std::fs::create_dir_all(root.join(".Trash-1000/files")).unwrap();
+        std::fs::write(root.join("Trash/files/report.pdf"), b"deleted").unwrap();
+        std::fs::write(root.join(".Trash-1000/files/report.pdf"), b"deleted").unwrap();
+        std::fs::write(root.join("report.pdf"), b"kept").unwrap();
+
+        let index = Index::new(Store::in_memory().unwrap());
+        index.index_root(root).unwrap();
+
+        let paths: Vec<PathBuf> = index
+            .search("report", &[], 50)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.entry.path)
+            .collect();
+        assert_eq!(
+            paths,
+            [root.join("report.pdf")],
+            "the trash leaked into the index"
         );
     }
 
