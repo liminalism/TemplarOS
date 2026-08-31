@@ -80,6 +80,7 @@ What to exercise by hand, because no test covers it:
 | `Alt+Tab` / `Alt+Shift+Tab` | compositor's fallback switcher | yes |
 | bare `Super` tap | toggle Home, as the primary no-taskbar window-switching route | yes (shows the bare backdrop) |
 | `Ctrl+Alt+H`, `Super+D` | fallback routes for the same Home toggle | yes (shows the bare backdrop) |
+| `Ctrl+Alt+P` | park the active window onto Home's shelf | yes |
 | `Escape` while revealed | ends the reveal | yes |
 
 These call `WindowService` directly rather than going over the wire protocol, which is why they

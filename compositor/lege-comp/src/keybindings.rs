@@ -34,6 +34,8 @@ pub enum RecoveryAction {
     /// (`geometry::contiguous_window`).
     GroupNext,
     GroupPrevious,
+    /// Park the activated window onto Home's shelf.
+    ParkFocused,
 }
 
 /// How many spatial steps make one contiguous group. A first rule rather than a settled one —
@@ -55,6 +57,7 @@ const GROUP_HOPS: u8 = 2;
 /// | Alt+Shift+Tab          | cycle switcher backward   |
 /// | Super+Left / Super+Right | previous/next in group  |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
+/// | Ctrl+Alt+P             | park the active window    |
 /// | Super (tap)            | go home (toggle reveal)   |
 /// | Super+D                | go home (legacy shortcut) |
 /// | Escape, while revealed | go home (ends the reveal) |
@@ -77,6 +80,9 @@ pub fn recovery_action(
         }
         if raw == keysyms::KEY_h || raw == keysyms::KEY_H {
             return Some(RecoveryAction::RevealHome);
+        }
+        if raw == keysyms::KEY_p || raw == keysyms::KEY_P {
+            return Some(RecoveryAction::ParkFocused);
         }
     }
     if modifiers.alt && !modifiers.ctrl && !modifiers.logo && raw == keysyms::KEY_Tab {
@@ -280,6 +286,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::input::activate_window(self, next);
                 }
             }
+            RecoveryAction::ParkFocused => self.park_focused(ctx),
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
                 let current = self
                     .window_service
@@ -313,6 +320,22 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     });
                 }
             }
+        }
+    }
+
+    fn park_focused(&mut self, ctx: CommandContext) {
+        let current = self
+            .window_service
+            .windows()
+            .find(|window| window.activated && !window.shelved)
+            .map(|window| window.id);
+        if let Some(window_id) = current
+            && self
+                .window_service
+                .handle_command(WindowCommand::Shelve { window_id }, ctx)
+                .is_ok()
+        {
+            crate::space_sync::sync_after_change(self);
         }
     }
 
@@ -598,6 +621,7 @@ mod tests {
                 Key::Right => keysyms::KEY_Right,
                 Key::Character('h') => keysyms::KEY_h,
                 Key::Character('d') => keysyms::KEY_d,
+                Key::Character('p') => keysyms::KEY_p,
                 // Not a combination the keysym table can answer: the bare tap is a gesture,
                 // tracked by `SuperTapTracker`, and the rest belong to the shell.
                 _ => return None,
@@ -624,6 +648,7 @@ mod tests {
             (RecoveryAction::RevealHome, "home.reveal"),
             (RecoveryAction::GroupNext, "window.group-next"),
             (RecoveryAction::GroupPrevious, "window.group-previous"),
+            (RecoveryAction::ParkFocused, "window.park"),
         ];
         for (action, id) in expected {
             let declaration = action::action(id).unwrap_or_else(|| panic!("{id} is not declared"));

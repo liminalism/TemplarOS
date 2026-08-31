@@ -42,6 +42,8 @@ pub enum Key {
     Right,
     Up,
     Down,
+    /// A function key, by number. F1 is the conventional route to contextual help.
+    Function(u8),
     /// The logo key pressed and released with nothing else — a gesture, not a combination.
     /// Tracked by `SuperTapTracker` in the compositor; named here so the cheat sheet can show
     /// the primary route to Home rather than only its fallbacks.
@@ -64,6 +66,7 @@ impl fmt::Display for Key {
             Self::Right => formatter.write_str("Right"),
             Self::Up => formatter.write_str("Up"),
             Self::Down => formatter.write_str("Down"),
+            Self::Function(number) => write!(formatter, "F{number}"),
             Self::LogoTap => formatter.write_str("Super"),
         }
     }
@@ -108,6 +111,11 @@ impl Modifiers {
     };
     pub const ALT_SHIFT: Modifiers = Modifiers {
         alt: true,
+        shift: true,
+        ..Modifiers::NONE
+    };
+    pub const CTRL_SHIFT: Modifiers = Modifiers {
+        ctrl: true,
         shift: true,
         ..Modifiers::NONE
     };
@@ -265,6 +273,15 @@ impl ActionDecl {
 pub const MANIFEST: &[ActionDecl] = &[
     // ---- Navigation -------------------------------------------------------------------
     ActionDecl {
+        id: "field.help",
+        label: "Show Home help",
+        category: ActionCategory::Navigation,
+        chords: &[Chord::bare(Key::Function(1))],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
         id: "home.reveal",
         label: "Go home",
         category: ActionCategory::Navigation,
@@ -339,7 +356,9 @@ pub const MANIFEST: &[ActionDecl] = &[
         id: "window.park",
         label: "Park this window",
         category: ActionCategory::Window,
-        chords: &[],
+        // Compositor-owned so the one-workspace substitute remains available with the shell
+        // dead, alongside show-all and the fallback switcher.
+        chords: &[Chord::new(Modifiers::CTRL_ALT, Key::Character('p'))],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
@@ -397,10 +416,7 @@ pub const MANIFEST: &[ActionDecl] = &[
         id: "field.restore",
         label: "Bring shelved tiles back",
         category: ActionCategory::Field,
-        // No chord: recovery actions are rare and deliberate, and the context menu is itself
-        // keyboard-navigable, so this is reachable without the pointer without spending an
-        // accelerator on it.
-        chords: &[],
+        chords: &[Chord::new(Modifiers::CTRL_SHIFT, Key::Character('r'))],
         cli_verb: None,
         confirm: false,
         requires: Requires::ShelvedTile,

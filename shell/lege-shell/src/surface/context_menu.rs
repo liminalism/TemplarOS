@@ -82,6 +82,7 @@ impl MenuItem {
 /// Close is last and alone at the bottom, the position a destructive row has held in menus for
 /// forty years; nothing above it can be reached by overshooting.
 pub const MENU: &[MenuItem] = &[
+    MenuItem::new("field.help", MenuScope::Field),
     MenuItem::new("window.park", MenuScope::Window),
     MenuItem::new("window.escape-fullscreen", MenuScope::Window),
     MenuItem::new("window.cycle-forward", MenuScope::Window),

@@ -172,6 +172,8 @@ pub struct FieldScreen {
     pub drawer_view: HomeSurfaceScreen,
     pub search: TextFieldState,
     pub search_focused: bool,
+    /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
+    pub help_open: bool,
     /// The field's pixel rectangle from the last frame, for tests and hit-testing.
     pub bounds: Rect,
     /// The last pointer drop, for the experiment's retry measure.
@@ -201,6 +203,7 @@ impl Default for FieldScreen {
             drawer_view: HomeSurfaceScreen::default(),
             search: TextFieldState::new(),
             search_focused: false,
+            help_open: false,
             bounds: Rect::new(0, 0, 0, 0),
             last_drop: None,
             notice: None,
@@ -364,19 +367,20 @@ impl FieldScreen {
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) -> Vec<FieldAction> {
         ui.painter.fill_rect(area, ui.theme.background);
         let mut actions = Vec::new();
-
-        if self
-            .notice
-            .as_ref()
-            .is_some_and(|notice| data.now_ms >= notice.expires_at_ms)
-        {
-            self.notice = None;
+        if self.handle_help_mode(ui, area) {
+            return actions;
         }
+
+        self.expire_notice(data.now_ms);
 
         let (bar, below_bar) = area
             .inset(ui.px(design::FIELD_INSET))
             .split_top(ui.px(design::TOP_BAR_HEIGHT));
         self.draw_search_bar(ui, bar, data, &mut actions);
+        if self.help_open {
+            self.draw_help_overlay(ui, area);
+            return actions;
+        }
         let gap = ui.px(design::TOP_BAR_GAP).min(below_bar.h);
         let rest = Rect::new(
             below_bar.x,
@@ -455,20 +459,35 @@ impl FieldScreen {
         self.menu.paint(ui, rest);
 
         if rects.is_empty() {
-            ui.label(
-                rest.inset(ui.px(12)),
-                if self.zoomed.is_some() {
-                    "Empty project — drop tiles onto its tile on the field to fill it"
-                } else if data.connected {
-                    "Home Field — nothing here yet; open an application and it will appear"
-                } else {
-                    "Home Field — not connected to the compositor's lege_shell_v1 protocol"
-                },
-                ui.theme.text_dim,
-                Align::Left,
-            );
+            self.draw_empty_state(ui, rest, data.connected);
         }
         actions
+    }
+
+    fn draw_empty_state(&self, ui: &mut Ui<'_>, area: Rect, connected: bool) {
+        let message = if self.zoomed.is_some() {
+            "Empty project — drop tiles onto its tile on the field to fill it"
+        } else if connected {
+            "Home Field — nothing here yet; open an application and it will appear"
+        } else {
+            "Home Field — not connected to the compositor's lege_shell_v1 protocol"
+        };
+        ui.label(
+            area.inset(ui.px(12)),
+            message,
+            ui.theme.text_dim,
+            Align::Left,
+        );
+    }
+
+    fn expire_notice(&mut self, now_ms: u64) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| now_ms >= notice.expires_at_ms)
+        {
+            self.notice = None;
+        }
     }
 
     /// The pending resize, dry-run and drawn: where the tile would end up, and which neighbours
@@ -660,6 +679,7 @@ impl FieldScreen {
             (after_home.w - gap).max(0),
             after_home.h,
         );
+        let after_home = self.draw_help_button(ui, after_home, gap);
         let status_width = if after_home.w >= ui.px(820) {
             (after_home.w / 3).clamp(ui.px(300), ui.px(520))
         } else {
@@ -728,6 +748,146 @@ impl FieldScreen {
             if let Some(entry) = crate::app_search::best(data.apps, self.search.text()) {
                 actions.push(FieldAction::Launch(entry.id.clone()));
                 self.search.set_text("");
+            }
+        }
+    }
+
+    fn draw_help_button(&mut self, ui: &mut Ui<'_>, area: Rect, gap: i32) -> Rect {
+        let (help, before_help) = area.split_right(ui.px(78).min(area.w / 4));
+        design::shell(ui, help, design::SHELL, design::EDGE, Elevation::Rest);
+        if ui.input.hovering(help) {
+            ui.painter.fill_rect(help.inset(1), design::ACCENT_SOFT);
+        }
+        ui.label_styled(
+            help.inset(ui.px(6)),
+            "F1  HELP",
+            TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+            design::TEXT_DIM,
+            Align::Centre,
+        );
+        if ui.input.take_click(help) {
+            self.help_open = true;
+            self.search_focused = false;
+        }
+        Rect::new(
+            before_help.x,
+            before_help.y,
+            (before_help.w - gap).max(0),
+            before_help.h,
+        )
+    }
+
+    /// Toggle/dismiss Help and, while it is open, claim the entire surface for it.
+    fn handle_help_mode(&mut self, ui: &mut Ui<'_>, area: Rect) -> bool {
+        let f1 = ui.input.keys().contains(&KeyInput::Function(1));
+        if f1 {
+            self.help_open = !self.help_open;
+            let _ = ui.input.take_keys();
+        } else if self.help_open && ui.input.keys().contains(&KeyInput::Escape) {
+            self.help_open = false;
+            let _ = ui.input.take_keys();
+        }
+        if !self.help_open {
+            return false;
+        }
+        self.menu.close();
+        let _ = ui.input.take_keys();
+        self.draw_help_overlay(ui, area);
+        true
+    }
+
+    /// The action manifest rendered as product help, rather than copied into another list that
+    /// can drift. Actions without an accelerator remain visible as deliberate on-screen routes.
+    fn draw_help_overlay(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        ui.painter.blend_rect(area, design::TEXT, 105);
+        let panel = area.inset(ui.px(24));
+        ui.painter
+            .shadow_rect(panel, ui.px(5), ui.px(9), design::TEXT, 90);
+        ui.painter
+            .fill_rounded_rect(panel, ui.px(design::WELL_RADIUS), design::SHELL);
+        ui.painter
+            .stroke_rect(panel, ui.scale.hairline(), design::EDGE_STRONG);
+
+        let (header, content) = panel.inset(ui.px(18)).split_top(ui.px(52));
+        let (close, title) = header.split_right(ui.px(116).min(header.w / 3));
+        ui.label_styled(
+            title,
+            "HOME HELP",
+            TextStyle::tracked(ui.theme.heading.face, 20.0, 0.10),
+            design::TEXT,
+            Align::Left,
+        );
+        design::shell(ui, close, design::RECESSED, design::EDGE, Elevation::Rest);
+        if ui.input.hovering(close) {
+            ui.painter.fill_rect(close.inset(1), design::ACCENT_SOFT);
+        }
+        ui.label_styled(
+            close.inset(ui.px(6)),
+            "CLOSE  ·  F1",
+            design::state_style(ui),
+            design::TEXT_DIM,
+            Align::Centre,
+        );
+        if ui.input.take_click(close) {
+            self.help_open = false;
+            return;
+        }
+
+        let columns = if content.w >= ui.px(880) { 3 } else { 2 };
+        let category_count = lege_types::action::ActionCategory::ALL.len();
+        let rows = category_count.div_ceil(columns);
+        let gap = ui.px(12);
+        let cell_w = (content.w - gap * (columns as i32 - 1)).max(1) / columns as i32;
+        let cell_h = (content.h - gap * (rows as i32 - 1)).max(1) / rows as i32;
+
+        for (index, category) in lege_types::action::ActionCategory::ALL
+            .into_iter()
+            .enumerate()
+        {
+            let col = index % columns;
+            let row_index = index / columns;
+            let cell = Rect::new(
+                content.x + col as i32 * (cell_w + gap),
+                content.y + row_index as i32 * (cell_h + gap),
+                cell_w,
+                cell_h,
+            );
+            design::shell(ui, cell, design::RECESSED, design::EDGE, Elevation::Rest);
+            let inner = cell.inset(ui.px(10));
+            let declarations: Vec<_> = lege_types::action::in_category(category).collect();
+            let heading_h = ui.px(24);
+            ui.label_styled(
+                inner.split_top(heading_h).0,
+                &category.title().to_uppercase(),
+                TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
+                design::TEXT_FAINT,
+                Align::Left,
+            );
+            let body = Rect::new(inner.x, inner.y + heading_h, inner.w, inner.h - heading_h);
+            let row_h = (body.h / declarations.len().max(1) as i32)
+                .min(ui.px(28))
+                .max(1);
+            for (action_index, declaration) in declarations.into_iter().enumerate() {
+                let row = Rect::new(body.x, body.y + action_index as i32 * row_h, body.w, row_h);
+                let (accelerator, label) = row.split_right(ui.px(116).min(row.w / 2));
+                ui.label_styled(
+                    label,
+                    declaration.label,
+                    design::state_style(ui),
+                    design::TEXT,
+                    Align::Left,
+                );
+                let route = declaration.primary_chord().map_or_else(
+                    || "ON-SCREEN".to_owned(),
+                    |chord| chord.to_string().to_uppercase(),
+                );
+                ui.label_styled(
+                    accelerator,
+                    &route,
+                    TextStyle::tracked(ui.theme.body.face, 10.0, 0.08),
+                    design::TEXT_FAINT,
+                    Align::Right,
+                );
             }
         }
     }
@@ -947,6 +1107,11 @@ impl FieldScreen {
                 }
                 KeyInput::Character('z' | 'Z') if modifiers.control => {
                     actions.push(FieldAction::Undo);
+                }
+                KeyInput::Character('r' | 'R') if modifiers.control && modifiers.shift => {
+                    if let Some(op) = field_model::restore_shelved(doc) {
+                        actions.push(FieldAction::Apply(op));
+                    }
                 }
                 // The pointer's grip, by keyboard: `field.resize` in the action manifest. Every
                 // field gesture has to be reachable both ways, so resize cannot be the one that
@@ -1205,6 +1370,7 @@ impl FieldScreen {
         let window = chosen.target.window;
         let tile = chosen.target.tile;
         match chosen.action {
+            "field.help" => self.help_open = true,
             "field.undo" => actions.push(FieldAction::Undo),
             "field.stash" => {
                 if let Some(id) = tile {
@@ -2708,6 +2874,52 @@ mod tests {
         assert_eq!(
             actions,
             vec![FieldAction::Apply(FieldOp::Stash { id: files })]
+        );
+    }
+
+    #[test]
+    fn f1_opens_manifest_help_and_f1_or_escape_closes_it() {
+        let mut h = Harness::new();
+        assert_eq!(h.key(KeyInput::Function(1)), Vec::new());
+        assert!(h.screen.help_open);
+        assert_eq!(
+            lege_types::action::action("field.help")
+                .and_then(lege_types::action::ActionDecl::primary_chord),
+            Some(lege_types::action::Chord::bare(
+                lege_types::action::Key::Function(1)
+            ))
+        );
+
+        assert_eq!(h.key(KeyInput::Escape), Vec::new());
+        assert!(!h.screen.help_open);
+        h.key(KeyInput::Function(1));
+        h.key(KeyInput::Function(1));
+        assert!(!h.screen.help_open);
+    }
+
+    #[test]
+    fn ctrl_shift_r_restores_the_shelf_as_one_undoable_field_operation() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        h.doc = apply(&h.doc, &FieldOp::Stash { id: files })
+            .expect("stash applies")
+            .0;
+        assert!(h.doc.location(files).is_none());
+
+        h.input.modifiers_changed(Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        });
+        let actions = h.key(KeyInput::Character('r'));
+        let [FieldAction::Apply(op)] = actions.as_slice() else {
+            panic!("expected one restore operation, got {actions:?}");
+        };
+        let (restored, inverse) = apply(&h.doc, op).expect("restore applies");
+        assert!(restored.location(files).is_some());
+        assert_eq!(
+            apply(&restored, &inverse).expect("inverse applies").0,
+            h.doc
         );
     }
 

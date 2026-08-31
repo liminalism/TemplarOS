@@ -256,7 +256,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x01a4_57be_8d93_edef,
+            hash, 0x56d1_3235_1d8c_561e,
             "review the Home Field pixels before updating this baseline"
         );
     }
