@@ -36,6 +36,7 @@ pub mod field;
 pub mod focus;
 pub mod grammar;
 pub mod ops;
+pub mod panel;
 pub mod reflow;
 pub mod selection;
 pub mod text;
@@ -48,6 +49,7 @@ pub use field::{
 };
 pub use grammar::{Operation, Target, operation_for};
 pub use ops::{FieldError, FieldOp, apply, reshape};
+pub use panel::{Arrangement, Edge, Orientation, Panel, PanelId, arrangement_layout, panel_id_for};
 pub use reflow::{LayoutCost, Reflow};
 pub use selection::Selection;
 pub use tile::{Representation, Span, SpanRange, Tile, TileId, TileKind, TrayId};

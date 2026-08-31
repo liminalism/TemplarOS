@@ -10,9 +10,10 @@
 
 use std::collections::BTreeSet;
 
+use lege_field::field::Placement;
 use lege_field::{
-    Cell, FieldDocument, FieldError, FieldOp, Landing, Span, SpanRange, Tile, TileId, TileKind,
-    apply,
+    Arrangement, Cell, FieldDocument, FieldError, FieldOp, Landing, Panel, PanelId, Span,
+    SpanRange, Tile, TileId, TileKind, apply, panel_id_for,
 };
 use lege_types::AppId;
 use lege_window::{ShellToplevel, WindowId};
@@ -184,6 +185,7 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     merge_projects(doc, live, &mut applied);
     merge_system(doc, &mut applied);
     merge_apps(doc, live, &mut wanted, &mut applied);
+    merge_panels(doc, &mut applied);
 
     // Windows that closed take their tiles with them; everything else the user placed stays.
     let gone: Vec<TileId> = doc
@@ -201,6 +203,81 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
         try_apply(doc, FieldOp::Remove { id }, &mut applied);
     }
     applied
+}
+
+/// The panel every drawer belongs to, and the panel the system shelf belongs to. Both are the
+/// hard-coded landings of [`merge_drawers`] and [`merge_system`] made adjustable: the panels are
+/// created add-only (a user's move, resize or re-orientation survives every merge), start as
+/// `Arrangement::Custom` over the block the landing heuristics build, and pick up newly added
+/// drawer or system tiles as members without moving anything.
+pub fn drawer_panel_id() -> PanelId {
+    panel_id_for("panel:drawers")
+}
+
+pub fn system_panel_id() -> PanelId {
+    panel_id_for("panel:system")
+}
+
+fn merge_panels(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let drawers: Vec<TileId> = DRAWER_TILES
+        .iter()
+        .map(|drawer| tile_id_for(&format!("drawer:{}", drawer.name())))
+        .collect();
+    let systems: Vec<TileId> = SYSTEM_WIDGETS
+        .iter()
+        .map(|widget| tile_id_for(&format!("system:{widget}")))
+        .collect();
+    let reserved = drawer_reserved_cols(doc.cols, doc.rows);
+    let shelf_rows = 2u16.min(doc.rows);
+    let groups = [
+        (
+            drawer_panel_id(),
+            "Drawers",
+            drawers,
+            Placement::new(Cell::new(0, 0), Span::new(reserved.max(1), doc.rows)),
+        ),
+        (
+            system_panel_id(),
+            "System shelf",
+            systems,
+            Placement::new(
+                Cell::new(
+                    reserved.min(doc.cols.saturating_sub(1)),
+                    doc.rows - shelf_rows,
+                ),
+                Span::new(doc.cols.saturating_sub(reserved).max(1), shelf_rows),
+            ),
+        ),
+    ];
+    for (id, title, members, region) in groups {
+        match doc.panel(id).cloned() {
+            None => {
+                let panel = Panel {
+                    id,
+                    title: title.to_owned(),
+                    region,
+                    arrangement: Arrangement::Custom,
+                    members,
+                    baseline: None,
+                };
+                try_apply(doc, FieldOp::CreatePanel { panel }, applied);
+            }
+            Some(existing) => {
+                // Membership follows the tile set; layout, region and arrangement stay the
+                // user's. ConfigurePanel is metadata-only, so nothing moves here.
+                let missing: Vec<TileId> = members
+                    .iter()
+                    .copied()
+                    .filter(|member| !existing.members.contains(member))
+                    .collect();
+                if !missing.is_empty() {
+                    let mut panel = existing;
+                    panel.members.extend(missing);
+                    try_apply(doc, FieldOp::ConfigurePanel { panel }, applied);
+                }
+            }
+        }
+    }
 }
 
 /// Compact drawers form a utility block along the left edge, shaped by [`drawer_grid`]. They do
@@ -913,9 +990,10 @@ mod tests {
             projects: &[],
         };
         let ops = merge(&mut doc, &live);
-        // Eight drawers, two apps, two sessions, and the system widgets Home always offers.
+        // Eight drawers, two apps, two sessions, and the system widgets Home always offers —
+        // plus one op per default panel grouping the drawers and the system shelf.
         let expected = DRAWER_TILES.len() + 2 + 2 + SYSTEM_WIDGETS.len();
-        assert_eq!(ops.len(), expected);
+        assert_eq!(ops.len(), expected + 2);
         assert_eq!(doc.tiles.len(), expected);
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
@@ -1096,5 +1174,82 @@ mod tests {
         assert_eq!(short_name(&imported), "Editor");
         let simple: AppId = "desktop-import.nm-tray.desktop".parse().unwrap();
         assert_eq!(short_name(&simple), "nm-tray");
+    }
+
+    /// The default drawer block and system shelf arrive as adjustable panels: created by the
+    /// merge, grouping exactly the drawer and system tiles, and add-only — a second merge
+    /// changes nothing, and a user's configuration survives.
+    #[test]
+    fn panel_layout_default_panels_group_drawers_and_system_tiles() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let live = LiveState::default();
+        merge(&mut doc, &live);
+
+        let drawers = doc.panel(drawer_panel_id()).expect("drawer panel");
+        for drawer in DRAWER_TILES {
+            let id = tile_id_for(&format!("drawer:{}", drawer.name()));
+            assert!(drawers.members.contains(&id), "{drawer:?} not grouped");
+        }
+        let system = doc.panel(system_panel_id()).expect("system panel");
+        for widget in SYSTEM_WIDGETS {
+            let id = tile_id_for(&format!("system:{widget}"));
+            assert!(system.members.contains(&id), "{widget} not grouped");
+        }
+        assert_eq!(drawers.arrangement, Arrangement::Custom);
+
+        let before = doc.clone();
+        let applied = merge(&mut doc, &live);
+        assert_eq!(doc, before, "the second merge is a no-op");
+        assert!(applied.is_empty());
+    }
+
+    /// Panel ops make the block adjustable without touching what the tiles are: re-orienting
+    /// the drawer panel as a right-edge rail moves every drawer to the right edge and changes
+    /// no tile's identity, and restoring the custom arrangement puts every drawer back exactly.
+    #[test]
+    fn panel_layout_reorienting_the_drawer_panel_moves_but_never_changes_tiles() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        let tiles_before = doc.tiles.clone();
+        let custom: Vec<_> = DRAWER_TILES
+            .iter()
+            .map(|drawer| {
+                let id = tile_id_for(&format!("drawer:{}", drawer.name()));
+                (id, doc.location(id))
+            })
+            .collect();
+
+        // The top edge: the one edge nothing else occupies on the default field (drawers are
+        // the members themselves, and the system shelf holds the bottom corner — arranging over
+        // an occupied edge is refused with NotFree rather than displacing a bystander).
+        let (mut doc, _) = apply(
+            &doc,
+            &FieldOp::ArrangePanel {
+                id: drawer_panel_id(),
+                arrangement: Arrangement::Rail(lege_field::Edge::Top),
+            },
+        )
+        .expect("rail arrangement");
+        assert_eq!(doc.tiles, tiles_before, "identity and contents untouched");
+        for (id, _) in &custom {
+            let location = doc.location(*id).expect("every drawer fits the top rail");
+            assert_eq!(
+                location.placement.cell.row, 0,
+                "{id:?} not on the top rail: {location:?}"
+            );
+        }
+
+        (doc, _) = apply(
+            &doc,
+            &FieldOp::ArrangePanel {
+                id: drawer_panel_id(),
+                arrangement: Arrangement::Custom,
+            },
+        )
+        .expect("restore custom");
+        for (id, location) in &custom {
+            assert_eq!(&doc.location(*id), location, "exact prior placement");
+        }
+        assert_eq!(doc.tiles, tiles_before);
     }
 }

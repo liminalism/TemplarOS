@@ -2,6 +2,7 @@
 //! shelf (tiles with no location), and trays of references. Plus the one place grid cells meet
 //! pixels (`cell_rect` / `cell_at` / `tile_rect`).
 
+use crate::panel::{Panel, PanelId};
 use crate::tile::{Span, Tile, TileId, TileKind, TrayId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -125,6 +126,10 @@ pub struct FieldDocument {
     pub located: Vec<(TileId, Located)>,
     pub containers: Vec<Container>,
     pub trays: Vec<Tray>,
+    /// Home-only layout groups (`crate::panel`), kept sorted by id like `located`. Absent in
+    /// documents persisted before panels existed, which read back with none.
+    #[serde(default)]
+    pub panels: Vec<Panel>,
 }
 
 impl FieldDocument {
@@ -140,6 +145,7 @@ impl FieldDocument {
             located: Vec::new(),
             containers: Vec::new(),
             trays: Vec::new(),
+            panels: Vec::new(),
         }
     }
 
@@ -149,6 +155,14 @@ impl FieldDocument {
 
     pub fn tile_mut(&mut self, id: TileId) -> Option<&mut Tile> {
         self.tiles.iter_mut().find(|tile| tile.id == id)
+    }
+
+    pub fn panel(&self, id: PanelId) -> Option<&Panel> {
+        self.panels.iter().find(|panel| panel.id == id)
+    }
+
+    pub fn panel_mut(&mut self, id: PanelId) -> Option<&mut Panel> {
+        self.panels.iter_mut().find(|panel| panel.id == id)
     }
 
     pub fn container(&self, id: TileId) -> Option<&Container> {

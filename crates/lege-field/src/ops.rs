@@ -7,6 +7,7 @@
 //! inverse is made of. [`FieldOp::Batch`] composes, and inverts to the reversed inverses.
 
 use crate::field::{Cell, Container, FieldDocument, Landing, Located, Placement, Tray};
+use crate::panel::{Arrangement, Panel, PanelId, arrangement_layout};
 use crate::reflow::{Grid, apply_reflow, find_placement, find_resize, tidy};
 use crate::tile::{Span, SpanRange, Tile, TileId, TrayId};
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,9 @@ pub enum FieldError {
     BadSpan,
     /// The document's `version` is not [`crate::DOCUMENT_VERSION`].
     VersionMismatch,
+    /// A panel with that id already exists.
+    DuplicatePanel,
+    UnknownPanel,
 }
 
 impl fmt::Display for FieldError {
@@ -54,6 +58,8 @@ impl fmt::Display for FieldError {
             Self::NotAContainer => "only a project tile can hold other tiles",
             Self::BadSpan => "the span is outside the tile's accepted range",
             Self::VersionMismatch => "the document is from another version of the field",
+            Self::DuplicatePanel => "a panel with that id already exists",
+            Self::UnknownPanel => "no such panel",
         };
         f.write_str(message)
     }
@@ -140,6 +146,27 @@ pub enum FieldOp {
         tray: TrayId,
         path: PathBuf,
     },
+    /// A new Home-only layout group (`crate::panel`). Grouping only: no tile moves.
+    CreatePanel {
+        panel: Panel,
+    },
+    /// The group is gone; its member tiles stay exactly where they are.
+    RemovePanel {
+        id: PanelId,
+    },
+    /// Replace a panel's title, region, members or arrangement label in place — metadata only;
+    /// follow with [`FieldOp::ArrangePanel`] (usually as one `Batch`) to relayout.
+    ConfigurePanel {
+        panel: Panel,
+    },
+    /// Lay the panel's members out per `arrangement`, in one exactly invertible step. The first
+    /// preset applied over a custom layout retains that layout as the panel's baseline;
+    /// switching presets computes from the region and member set, never from the previous
+    /// preset's result; `Arrangement::Custom` restores the baseline exactly and clears it.
+    ArrangePanel {
+        id: PanelId,
+        arrangement: Arrangement,
+    },
     /// Several ops as one; inverts to the reversed inverses.
     Batch {
         ops: Vec<FieldOp>,
@@ -167,6 +194,10 @@ impl FieldOp {
             Self::RemoveTray { .. } => "REMOVE TRAY",
             Self::AddReference { .. } => "ADD REFERENCE · files remain in place",
             Self::RemoveReference { .. } => "REMOVE REFERENCE",
+            Self::CreatePanel { .. } => "NEW PANEL",
+            Self::RemovePanel { .. } => "REMOVE PANEL · tiles stay",
+            Self::ConfigurePanel { .. } => "CONFIGURE PANEL",
+            Self::ArrangePanel { .. } => "ARRANGE PANEL",
             Self::Batch { .. } => "SEVERAL CHANGES",
         }
     }
@@ -209,6 +240,10 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
         }
         FieldOp::StashMany { ids } => stash_many(doc, ids),
         FieldOp::Layout { set } => layout(doc, set),
+        FieldOp::CreatePanel { panel } => create_panel(doc, panel),
+        FieldOp::RemovePanel { id } => remove_panel(doc, *id),
+        FieldOp::ConfigurePanel { panel } => configure_panel(doc, panel),
+        FieldOp::ArrangePanel { id, arrangement } => arrange_panel(doc, *id, arrangement),
         FieldOp::Tidy { container } => {
             let mut grid = grid_of(doc, *container)?;
             let moved = tidy(&grid);
@@ -517,6 +552,76 @@ fn layout(
         doc.set_location(*id, *location);
     }
     Ok(FieldOp::Layout { set: before })
+}
+
+fn create_panel(doc: &mut FieldDocument, panel: &Panel) -> Result<FieldOp, FieldError> {
+    if doc.panel(panel.id).is_some() {
+        return Err(FieldError::DuplicatePanel);
+    }
+    let at = doc
+        .panels
+        .binary_search_by_key(&panel.id, |existing| existing.id)
+        .unwrap_err();
+    doc.panels.insert(at, panel.clone());
+    Ok(FieldOp::RemovePanel { id: panel.id })
+}
+
+fn remove_panel(doc: &mut FieldDocument, id: PanelId) -> Result<FieldOp, FieldError> {
+    let at = doc
+        .panels
+        .binary_search_by_key(&id, |panel| panel.id)
+        .map_err(|_| FieldError::UnknownPanel)?;
+    let panel = doc.panels.remove(at);
+    Ok(FieldOp::CreatePanel { panel })
+}
+
+fn configure_panel(doc: &mut FieldDocument, panel: &Panel) -> Result<FieldOp, FieldError> {
+    let stored = doc.panel_mut(panel.id).ok_or(FieldError::UnknownPanel)?;
+    let before = std::mem::replace(stored, panel.clone());
+    Ok(FieldOp::ConfigurePanel { panel: before })
+}
+
+fn arrange_panel(
+    doc: &mut FieldDocument,
+    id: PanelId,
+    arrangement: &Arrangement,
+) -> Result<FieldOp, FieldError> {
+    let panel = doc.panel(id).cloned().ok_or(FieldError::UnknownPanel)?;
+    let before_panel = panel.clone();
+    let before_locations: Vec<(TileId, Option<Located>)> = panel
+        .members
+        .iter()
+        .copied()
+        .filter(|member| doc.tile(*member).is_some())
+        .map(|member| (member, doc.location(member)))
+        .collect();
+
+    let set = arrangement_layout(doc, &panel, arrangement);
+    layout(doc, &set)?;
+
+    let stored = doc.panel_mut(id).ok_or(FieldError::UnknownPanel)?;
+    match arrangement {
+        Arrangement::Custom => {
+            stored.baseline = None;
+        }
+        _ => {
+            if matches!(stored.arrangement, Arrangement::Custom) && stored.baseline.is_none() {
+                stored.baseline = Some(before_locations.clone());
+            }
+        }
+    }
+    stored.arrangement = arrangement.clone();
+
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Layout {
+                set: before_locations,
+            },
+            FieldOp::ConfigurePanel {
+                panel: before_panel,
+            },
+        ],
+    })
 }
 
 fn set_grid(doc: &mut FieldDocument, cols: u16, rows: u16) -> Result<FieldOp, FieldError> {
