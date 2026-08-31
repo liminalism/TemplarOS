@@ -10,6 +10,7 @@ use crate::field::{Cell, Container, FieldDocument, Landing, Located, Placement, 
 use crate::reflow::{Grid, apply_reflow, find_placement, find_resize, tidy};
 use crate::tile::{Span, SpanRange, Tile, TileId, TrayId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -85,6 +86,13 @@ pub enum FieldOp {
         id: TileId,
         landing: Landing,
     },
+    /// Move a group as one rigid shape. Relative cells and spans are preserved; unlike a single
+    /// move, a group never reflows unrelated tiles and is refused when its exact landing is busy.
+    MoveMany {
+        ids: Vec<TileId>,
+        anchor: TileId,
+        landing: Landing,
+    },
     /// A tile's span changes in place; band-mates may be pushed.
     Resize {
         id: TileId,
@@ -93,6 +101,10 @@ pub enum FieldOp {
     /// To the shelf: the tile keeps existing but has no place on the field.
     Stash {
         id: TileId,
+    },
+    /// Put a selected group onto the shelf as one exactly invertible operation.
+    StashMany {
+        ids: Vec<TileId>,
     },
     /// Exact locations, no reflow: `None` means the shelf. Every entry must end up free.
     Layout {
@@ -143,8 +155,10 @@ impl FieldOp {
             Self::AddTile { .. } => "ADD",
             Self::Remove { .. } => "REMOVE FROM FIELD",
             Self::Move { .. } => "MOVE",
+            Self::MoveMany { .. } => "MOVE SELECTION",
             Self::Resize { .. } => "RESIZE",
             Self::Stash { .. } => "STASH ON SHELF",
+            Self::StashMany { .. } => "STASH SELECTION ON SHELF",
             Self::Layout { .. } => "ARRANGE",
             Self::Tidy { .. } => "TIDY",
             Self::SetGrid { .. } => "RESIZE FIELD",
@@ -179,6 +193,11 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
         } => add_tile(doc, tile, *at, container.as_ref()),
         FieldOp::Remove { id } => remove(doc, *id),
         FieldOp::Move { id, landing } => move_tile(doc, *id, *landing),
+        FieldOp::MoveMany {
+            ids,
+            anchor,
+            landing,
+        } => move_many(doc, ids, *anchor, *landing),
         FieldOp::Resize { id, span } => resize(doc, *id, *span),
         FieldOp::Stash { id } => {
             doc.tile(*id).ok_or(FieldError::UnknownTile)?;
@@ -188,6 +207,7 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
                 set: vec![(*id, before)],
             })
         }
+        FieldOp::StashMany { ids } => stash_many(doc, ids),
         FieldOp::Layout { set } => layout(doc, set),
         FieldOp::Tidy { container } => {
             let mut grid = grid_of(doc, *container)?;
@@ -361,6 +381,83 @@ fn move_tile(doc: &mut FieldDocument, id: TileId, landing: Landing) -> Result<Fi
     apply_reflow(&mut grid, id, &reflow);
     write_grid(doc, landing.container, &grid);
     Ok(FieldOp::Layout { set })
+}
+
+fn move_many(
+    doc: &mut FieldDocument,
+    ids: &[TileId],
+    anchor: TileId,
+    landing: Landing,
+) -> Result<FieldOp, FieldError> {
+    let ids: BTreeSet<TileId> = ids.iter().copied().collect();
+    if ids.is_empty() || !ids.contains(&anchor) {
+        return Err(FieldError::UnknownTile);
+    }
+    if landing
+        .container
+        .is_some_and(|container| ids.contains(&container))
+    {
+        return Err(FieldError::NestingTooDeep);
+    }
+    let anchor_location = doc.location(anchor).ok_or(FieldError::NotFree)?;
+    let source_container = anchor_location.container;
+    let delta_col = i32::from(landing.cell.col) - i32::from(anchor_location.placement.cell.col);
+    let delta_row = i32::from(landing.cell.row) - i32::from(anchor_location.placement.cell.row);
+    let mut before = Vec::with_capacity(ids.len());
+    let mut after = Vec::with_capacity(ids.len());
+    for id in ids {
+        let tile = doc.tile(id).cloned().ok_or(FieldError::UnknownTile)?;
+        let location = doc.location(id).ok_or(FieldError::NotFree)?;
+        if location.container != source_container {
+            return Err(FieldError::NotFree);
+        }
+        check_grid_accepts(doc, landing.container, &tile)?;
+        let col = i32::from(location.placement.cell.col) + delta_col;
+        let row = i32::from(location.placement.cell.row) + delta_row;
+        let (Ok(col), Ok(row)) = (u16::try_from(col), u16::try_from(row)) else {
+            return Err(FieldError::NotFree);
+        };
+        before.push((id, Some(location)));
+        after.push((
+            id,
+            Located {
+                container: landing.container,
+                placement: Placement::new(Cell::new(col, row), location.placement.span),
+            },
+        ));
+    }
+
+    for (id, _) in &before {
+        doc.set_location(*id, None);
+    }
+    for (id, location) in &after {
+        let (cols, rows) = doc
+            .grid_size(location.container)
+            .ok_or(FieldError::UnknownContainer)?;
+        if !location.placement.fits(cols, rows)
+            || !doc.is_free(location.container, location.placement, None)
+        {
+            return Err(FieldError::NotFree);
+        }
+        doc.set_location(*id, Some(*location));
+    }
+    Ok(FieldOp::Layout { set: before })
+}
+
+fn stash_many(doc: &mut FieldDocument, ids: &[TileId]) -> Result<FieldOp, FieldError> {
+    let ids: BTreeSet<TileId> = ids.iter().copied().collect();
+    if ids.is_empty() {
+        return Err(FieldError::UnknownTile);
+    }
+    let mut before = Vec::with_capacity(ids.len());
+    for id in ids {
+        doc.tile(id).ok_or(FieldError::UnknownTile)?;
+        before.push((id, doc.location(id)));
+    }
+    for (id, _) in &before {
+        doc.set_location(*id, None);
+    }
+    Ok(FieldOp::Layout { set: before })
 }
 
 fn resize(doc: &mut FieldDocument, id: TileId, span: Span) -> Result<FieldOp, FieldError> {

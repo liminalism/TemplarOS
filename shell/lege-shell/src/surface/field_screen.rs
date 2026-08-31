@@ -20,8 +20,8 @@ use pixelkit_ui::{TextFieldState, Ui};
 use lege_field::drag::{Drag, DragConfig, DragSample, GrabOffset, Release};
 use lege_field::focus::Direction;
 use lege_field::{
-    Cell, FieldDocument, FieldOp, Landing, Operation, PixelRect, Placement, Representation, Span,
-    SpanRange, Target, Tile, TileId, TileKind, apply, cell_at, tile_rect,
+    Cell, FieldDocument, FieldOp, Landing, Operation, PixelRect, Placement, Representation,
+    Selection, Span, SpanRange, Target, Tile, TileId, TileKind, apply, cell_at, tile_rect,
 };
 use lege_types::AppId;
 use lege_window::{ShellToplevel, WindowId};
@@ -155,6 +155,10 @@ pub struct FieldScreen {
     pub drag: Drag,
     pub drag_cfg: DragConfig,
     pub focus: Option<TileId>,
+    /// Tiles affected by the next bulk operation. Focus remains a separate keyboard cursor.
+    pub selection: Selection<TileId>,
+    /// A background drag selects every tile intersecting this pixel rectangle.
+    marquee: Option<Marquee>,
     /// Space on a focused tile: it is lifted by keyboard, and the arrows move this landing.
     pub keyboard_move: Option<(TileId, Cell)>,
     /// A pointer resize in progress: the tile, and the span the pointer is currently asking
@@ -195,6 +199,8 @@ impl Default for FieldScreen {
             drag: Drag::Idle,
             drag_cfg: DragConfig::default(),
             focus: None,
+            selection: Selection::default(),
+            marquee: None,
             keyboard_move: None,
             resize: None,
             keyboard_resize: None,
@@ -421,6 +427,12 @@ impl FieldScreen {
             rest
         };
         self.bounds = rest;
+        let visible: Vec<TileId> = self
+            .current_rects(doc, ui)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        self.selection.retain(|id| visible.contains(id));
         if self
             .focus
             .is_some_and(|id| doc.location(id).is_none_or(|l| l.container != self.zoomed))
@@ -444,6 +456,7 @@ impl FieldScreen {
             let visual = TileVisual {
                 hovered: ui.input.hovering(*rect),
                 focused: self.focus == Some(*id),
+                selected: self.selection.contains(id),
                 lifted: false,
                 displaced: ghost
                     .as_ref()
@@ -454,6 +467,9 @@ impl FieldScreen {
         }
 
         self.draw_overlays(ui, doc, data, ghost.as_ref(), lifted, &mut actions);
+        if let Some(marquee) = self.marquee {
+            design::dashed_rect(ui, marquee.rect(), design::ACCENT);
+        }
         self.draw_resize_preview(ui, doc);
         self.draw_notice(ui, rest);
         self.menu.paint(ui, rest);
@@ -629,6 +645,7 @@ impl FieldScreen {
             let visual = TileVisual {
                 hovered: false,
                 focused: false,
+                selected: self.selection.contains(&id),
                 lifted: true,
                 displaced: None,
             };
@@ -1025,6 +1042,7 @@ impl FieldScreen {
         self.expanded = Some(self.drawer_view.selected);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_keys(
         &mut self,
         ui: &mut Ui<'_>,
@@ -1059,10 +1077,7 @@ impl FieldScreen {
                         KeyInput::Up => Direction::Up,
                         _ => Direction::Down,
                     };
-                    self.focus = match self.focus {
-                        None => first_in(&rects),
-                        Some(from) => neighbour_in(&rects, from, direction).or(Some(from)),
-                    };
+                    self.navigate_selection(&rects, direction, modifiers.shift);
                 }
                 KeyInput::Tab => {
                     self.focus = self.focus.map_or_else(
@@ -1108,6 +1123,9 @@ impl FieldScreen {
                 KeyInput::Character('z' | 'Z') if modifiers.control => {
                     actions.push(FieldAction::Undo);
                 }
+                KeyInput::Character('a' | 'A') if modifiers.control => {
+                    self.select_all(&rects);
+                }
                 KeyInput::Character('r' | 'R') if modifiers.control && modifiers.shift => {
                     if let Some(op) = field_model::restore_shelved(doc) {
                         actions.push(FieldAction::Apply(op));
@@ -1126,16 +1144,56 @@ impl FieldScreen {
                     }
                 }
                 KeyInput::Delete => {
-                    if let Some(id) = self.focus {
-                        actions.push(FieldAction::Apply(FieldOp::Stash { id }));
+                    if let Some(op) = self.stash_selection() {
+                        actions.push(FieldAction::Apply(op));
                     }
                 }
                 KeyInput::Escape if self.confirming.is_some() => self.confirming = None,
                 KeyInput::Escape if self.zoomed.is_some() => self.zoomed = None,
-                KeyInput::Escape => self.focus = None,
+                KeyInput::Escape => {
+                    self.focus = None;
+                    self.selection.clear();
+                }
                 _ => {}
             }
         }
+    }
+
+    fn navigate_selection(&mut self, rects: &[(TileId, Rect)], direction: Direction, extend: bool) {
+        let previous = self.focus;
+        let next = match previous {
+            None => first_in(rects),
+            Some(from) => neighbour_in(rects, from, direction).or(Some(from)),
+        };
+        self.focus = next;
+        let Some(next) = next else { return };
+        let order: Vec<TileId> = rects.iter().map(|(id, _)| *id).collect();
+        if extend {
+            if self.selection.is_empty()
+                && let Some(previous) = previous
+            {
+                self.selection.replace(previous);
+            }
+            self.selection.extend_to(&order, next);
+        } else {
+            self.selection.replace(next);
+        }
+    }
+
+    fn stash_selection(&self) -> Option<FieldOp> {
+        if self.selection.len() > 1 {
+            Some(FieldOp::StashMany {
+                ids: self.selection.to_vec(),
+            })
+        } else {
+            self.focus.map(|id| FieldOp::Stash { id })
+        }
+    }
+
+    fn select_all(&mut self, rects: &[(TileId, Rect)]) {
+        let order: Vec<TileId> = rects.iter().map(|(id, _)| *id).collect();
+        self.selection.select_all(&order);
+        self.focus = order.first().copied();
     }
 
     /// Arrow keys move a keyboard-lifted tile's landing cell; Enter drops it on the current
@@ -1163,13 +1221,20 @@ impl FieldScreen {
             }
             KeyInput::Enter => {
                 self.keyboard_move = None;
-                actions.push(FieldAction::Apply(FieldOp::Move {
-                    id: tile,
-                    landing: Landing {
-                        container: self.zoomed,
-                        cell,
-                    },
-                }));
+                let landing = Landing {
+                    container: self.zoomed,
+                    cell,
+                };
+                let op = if self.selection.len() > 1 && self.selection.contains(&tile) {
+                    FieldOp::MoveMany {
+                        ids: self.selection.to_vec(),
+                        anchor: tile,
+                        landing,
+                    }
+                } else {
+                    FieldOp::Move { id: tile, landing }
+                };
+                actions.push(FieldAction::Apply(op));
             }
             KeyInput::Escape => self.keyboard_move = None,
             _ => {}
@@ -1224,6 +1289,23 @@ impl FieldScreen {
             self.finish_resize(ui, doc, actions);
             return;
         };
+
+        if let Some(mut marquee) = self.marquee {
+            if held {
+                marquee.current = (cx, cy);
+                self.marquee = Some(marquee);
+                let area = marquee.rect();
+                let selected = self
+                    .current_rects(doc, ui)
+                    .into_iter()
+                    .filter_map(|(id, rect)| intersects(area, rect).then_some(id));
+                self.selection.replace_many(selected);
+                self.focus = self.selection.iter().next().copied();
+            } else {
+                self.marquee = None;
+            }
+            return;
+        }
 
         // A resize owns the pointer for as long as it is held: it is started from a corner the
         // move band cannot reach, so there is never a question of which gesture this is.
@@ -1281,6 +1363,18 @@ impl FieldScreen {
                         sample,
                     );
                     self.focus = Some(id);
+                    if !self.selection.contains(&id) && !ui.input.modifiers().shift {
+                        self.selection.replace(id);
+                    }
+                } else if !rects.iter().any(|(_, rect)| rect.contains(cx, cy))
+                    && ui.input.take_click(self.bounds)
+                {
+                    self.selection.clear();
+                    self.focus = None;
+                    self.marquee = Some(Marquee {
+                        origin: (cx, cy),
+                        current: (cx, cy),
+                    });
                 }
             }
             (Drag::Idle, false) => {}
@@ -1341,6 +1435,9 @@ impl FieldScreen {
             .map(|window| window.window_id);
         if let Some(id) = tile {
             self.focus = Some(id);
+            if !self.selection.contains(&id) {
+                self.selection.replace(id);
+            }
         }
         self.menu.open_at(
             (cx, cy),
@@ -1373,8 +1470,8 @@ impl FieldScreen {
             "field.help" => self.help_open = true,
             "field.undo" => actions.push(FieldAction::Undo),
             "field.stash" => {
-                if let Some(id) = tile {
-                    actions.push(FieldAction::Apply(FieldOp::Stash { id }));
+                if let Some(op) = self.stash_selection() {
+                    actions.push(FieldAction::Apply(op));
                 }
             }
             "field.restore" => {
@@ -1481,7 +1578,21 @@ impl FieldScreen {
                 lifted_for_ms,
             }) => {
                 let _ = ui.input.take_click(ui.painter.bounds());
-                if let Some(op) = self.drop_op(doc, tile, tile_at, ui, data) {
+                let group = self.selection.len() > 1 && self.selection.contains(&tile);
+                let op = if group {
+                    self.landing_cell(doc, tile, tile_at, ui)
+                        .map(|cell| FieldOp::MoveMany {
+                            ids: self.selection.to_vec(),
+                            anchor: tile,
+                            landing: Landing {
+                                container: self.zoomed,
+                                cell,
+                            },
+                        })
+                } else {
+                    self.drop_op(doc, tile, tile_at, ui, data)
+                };
+                if let Some(op) = op {
                     let relift = self.last_drop.is_some_and(|(last, at)| {
                         last == tile && data.now_ms.saturating_sub(at) < 3000
                     });
@@ -1489,7 +1600,7 @@ impl FieldScreen {
                     actions.push(FieldAction::DropMetrics(DropMetrics {
                         thrown,
                         lifted_for_ms,
-                        semantic: !matches!(op, FieldOp::Move { .. }),
+                        semantic: !matches!(op, FieldOp::Move { .. } | FieldOp::MoveMany { .. }),
                         relift,
                         op: op.label(),
                     }));
@@ -1768,6 +1879,10 @@ impl FieldScreen {
             Elevation::Rest
         };
         design::shell(ui, rect, fill, edge, elevation);
+        if visual.selected && !visual.lifted {
+            ui.painter
+                .stroke_rect(rect.inset(ui.px(2)), ui.px(2).max(1), design::ACCENT);
+        }
 
         let widget_composition = match &tile.kind {
             TileKind::Widget { widget, .. } => field_model::widget_drawer(widget)
@@ -2304,7 +2419,20 @@ impl FieldScreen {
         // A press on the grip is a resize, never an open.
         if !visual.lifted && !on_grip && ui.input.take_click(content) {
             self.focus = Some(tile.id);
-            self.primary_action(tile, data, actions);
+            let modifiers = ui.input.modifiers();
+            if modifiers.control {
+                self.selection.toggle(tile.id);
+            } else if modifiers.shift {
+                let order: Vec<TileId> = self
+                    .current_rects(data.field, ui)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+                self.selection.extend_to(&order, tile.id);
+            } else {
+                self.selection.replace(tile.id);
+                self.primary_action(tile, data, actions);
+            }
         }
     }
 }
@@ -2436,9 +2564,33 @@ fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
 struct TileVisual {
     hovered: bool,
     focused: bool,
+    selected: bool,
     lifted: bool,
     /// Drawn dimmed: a ghost predicts it moving to this cell.
     displaced: Option<Cell>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Marquee {
+    origin: (i32, i32),
+    current: (i32, i32),
+}
+
+impl Marquee {
+    fn rect(self) -> Rect {
+        let x = self.origin.0.min(self.current.0);
+        let y = self.origin.1.min(self.current.1);
+        Rect::new(
+            x,
+            y,
+            (self.origin.0 - self.current.0).abs().max(1),
+            (self.origin.1 - self.current.1).abs().max(1),
+        )
+    }
+}
+
+fn intersects(a: Rect, b: Rect) -> bool {
+    a.x < b.right() && a.right() > b.x && a.y < b.bottom() && a.bottom() > b.y
 }
 
 /// The first tile in reading order among `rects`.
@@ -2875,6 +3027,100 @@ mod tests {
             actions,
             vec![FieldAction::Apply(FieldOp::Stash { id: files })]
         );
+    }
+
+    #[test]
+    fn field_selection_emits_one_bulk_stash_and_one_keyboard_group_move() {
+        let mut h = Harness::new();
+        h.frame();
+        h.input.modifiers_changed(Modifiers {
+            control: true,
+            ..Modifiers::default()
+        });
+        assert!(h.key(KeyInput::Character('a')).is_empty());
+        let selected = h.screen.selection.to_vec();
+        assert!(selected.len() > 1);
+        h.input.modifiers_changed(Modifiers::default());
+        assert_eq!(
+            h.key(KeyInput::Delete),
+            vec![FieldAction::Apply(FieldOp::StashMany {
+                ids: selected.clone(),
+            })]
+        );
+
+        let files = tile_id_for("app:org.legeos.Files");
+        let editor = tile_id_for("app:org.example.Editor");
+        h.screen.selection.replace_many([files, editor]);
+        h.screen.focus = Some(files);
+        let before = h.doc.location(files).unwrap().placement.cell;
+        h.key(KeyInput::Character(' '));
+        h.key(KeyInput::Down);
+        let actions = h.key(KeyInput::Enter);
+        let [
+            FieldAction::Apply(FieldOp::MoveMany {
+                ids,
+                anchor,
+                landing,
+            }),
+        ] = actions.as_slice()
+        else {
+            panic!("expected one MoveMany, got {actions:?}");
+        };
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&files) && ids.contains(&editor));
+        assert_eq!(*anchor, files);
+        assert_eq!(landing.cell, Cell::new(before.col, before.row + 1));
+    }
+
+    #[test]
+    fn control_click_toggles_a_tile_without_activating_it() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        let rect = h.rect_of(files);
+        h.input.modifiers_changed(Modifiers {
+            control: true,
+            ..Modifiers::default()
+        });
+        assert!(h.click(rect.x + rect.w / 2, rect.bottom() - 10).is_empty());
+        assert!(h.screen.selection.contains(&files));
+        assert!(h.click(rect.x + rect.w / 2, rect.bottom() - 10).is_empty());
+        assert!(!h.screen.selection.contains(&files));
+    }
+
+    #[test]
+    fn dragging_from_bare_ground_marquee_selects_intersecting_tiles() {
+        let mut h = Harness::new();
+        h.frame();
+        let (rects, bounds) = {
+            let ui = Ui::new(
+                Painter::new(&mut h.buffer),
+                &mut h.text,
+                &mut h.input,
+                design::theme(),
+                Scale::ONE,
+                &mut h.kernel,
+            );
+            (h.screen.current_rects(&h.doc, &ui), h.screen.bounds)
+        };
+        let start = (bounds.y..bounds.bottom())
+            .step_by(4)
+            .flat_map(|y| (bounds.x..bounds.right()).step_by(4).map(move |x| (x, y)))
+            .find(|(x, y)| !rects.iter().any(|(_, rect)| rect.contains(*x, *y)))
+            .expect("the field has bare ground between its tiles");
+        let (target, target_rect) = rects[0];
+
+        h.input.cursor_moved(start.0 as f32, start.1 as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        h.input.cursor_moved(
+            (target_rect.x + target_rect.w / 2) as f32,
+            (target_rect.y + target_rect.h / 2) as f32,
+        );
+        h.frame();
+        assert!(h.screen.selection.contains(&target));
+        h.input.mouse(MouseButton::Left, false);
+        h.frame();
+        assert!(h.screen.marquee.is_none());
     }
 
     #[test]

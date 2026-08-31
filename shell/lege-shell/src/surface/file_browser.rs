@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use lege_field::Selection;
 use pixelkit_raster::Rect;
 use pixelkit_shell::KeyInput;
 use pixelkit_text::{Align, TextStyle};
@@ -53,6 +54,7 @@ pub struct FileBrowserScreen {
     focus_area: FocusArea,
     root_focus: usize,
     entry_focus: usize,
+    entry_selection: Selection<PathBuf>,
     root_scroll: ScrollState,
     entry_scroll: ScrollState,
     last_directory: Option<PathBuf>,
@@ -66,6 +68,7 @@ impl Default for FileBrowserScreen {
             focus_area: FocusArea::Entries,
             root_focus: 0,
             entry_focus: 0,
+            entry_selection: Selection::default(),
             root_scroll: ScrollState::new(),
             entry_scroll: ScrollState::new(),
             last_directory: None,
@@ -74,6 +77,11 @@ impl Default for FileBrowserScreen {
 }
 
 impl FileBrowserScreen {
+    /// Paths currently selected in deterministic order, ready for a caller's bulk file action.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        self.entry_selection.to_vec()
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn draw(
         &mut self,
@@ -88,6 +96,7 @@ impl FileBrowserScreen {
             self.show_hidden = false;
             self.focus_area = FocusArea::Entries;
             self.entry_focus = 0;
+            self.entry_selection.clear();
             self.entry_scroll = ScrollState::new();
             self.last_directory = None;
         }
@@ -109,12 +118,15 @@ impl FileBrowserScreen {
         } else {
             listing.map_or(&[], |listing| listing.entries.as_slice())
         };
+        self.entry_selection
+            .retain(|path| visible_entries.iter().any(|entry| &entry.path == path));
 
         if listing.map(|listing| &listing.directory) != self.last_directory.as_ref()
             && pending.is_none()
         {
             self.last_directory = listing.map(|listing| listing.directory.clone());
             self.entry_focus = 0;
+            self.entry_selection.clear();
             self.entry_scroll = ScrollState::new();
         }
 
@@ -242,6 +254,8 @@ impl FileBrowserScreen {
         entries: &[BrowseEntry],
     ) -> Option<FileBrowserAction> {
         let mut action = None;
+        let modifiers = ui.input.modifiers();
+        let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         for key in ui.input.keys() {
             match key {
                 KeyInput::Left => self.focus_area = FocusArea::Roots,
@@ -254,7 +268,22 @@ impl FileBrowserScreen {
                 }
                 KeyInput::Up => match self.focus_area {
                     FocusArea::Roots => self.root_focus = self.root_focus.saturating_sub(1),
-                    FocusArea::Entries => self.entry_focus = self.entry_focus.saturating_sub(1),
+                    FocusArea::Entries => {
+                        let previous = self.entry_focus;
+                        self.entry_focus = self.entry_focus.saturating_sub(1);
+                        if let Some(path) = entries.get(self.entry_focus).map(|e| e.path.clone()) {
+                            if modifiers.shift {
+                                if self.entry_selection.is_empty()
+                                    && let Some(anchor) = entries.get(previous)
+                                {
+                                    self.entry_selection.replace(anchor.path.clone());
+                                }
+                                self.entry_selection.extend_to(&order, path);
+                            } else {
+                                self.entry_selection.replace(path);
+                            }
+                        }
+                    }
                 },
                 KeyInput::Down => match self.focus_area {
                     FocusArea::Roots => {
@@ -262,8 +291,21 @@ impl FileBrowserScreen {
                             (self.root_focus + 1).min(sources.roots.len().saturating_sub(1));
                     }
                     FocusArea::Entries => {
+                        let previous = self.entry_focus;
                         self.entry_focus =
                             (self.entry_focus + 1).min(entries.len().saturating_sub(1));
+                        if let Some(path) = entries.get(self.entry_focus).map(|e| e.path.clone()) {
+                            if modifiers.shift {
+                                if self.entry_selection.is_empty()
+                                    && let Some(anchor) = entries.get(previous)
+                                {
+                                    self.entry_selection.replace(anchor.path.clone());
+                                }
+                                self.entry_selection.extend_to(&order, path);
+                            } else {
+                                self.entry_selection.replace(path);
+                            }
+                        }
                     }
                 },
                 KeyInput::Home => match self.focus_area {
@@ -284,6 +326,11 @@ impl FileBrowserScreen {
                             show_hidden: self.show_hidden,
                         });
                     }
+                }
+                KeyInput::Character('a' | 'A') if modifiers.control => {
+                    self.entry_selection.select_all(&order);
+                    self.entry_focus = 0;
+                    self.focus_area = FocusArea::Entries;
                 }
                 KeyInput::Enter => match self.focus_area {
                     FocusArea::Roots => {
@@ -477,10 +524,12 @@ impl FileBrowserScreen {
         }
         let heights = vec![ui.px(ENTRY_HEIGHT); entries.len()];
         let mut selected = None;
+        let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         ui.scroll_list(&mut self.entry_scroll, area, &heights, |ui, index, row| {
             let entry = &entries[index];
             let focused = self.focus_area == FocusArea::Entries && self.entry_focus == index;
-            if focused {
+            let in_selection = self.entry_selection.contains(&entry.path);
+            if focused || in_selection {
                 ui.painter.fill_rect(row, ui.theme.selection);
             } else if ui.input.hovering(row) {
                 ui.painter.fill_rect(row, ui.theme.hover);
@@ -521,8 +570,22 @@ impl FileBrowserScreen {
             );
             if ui.input.take_click(row) {
                 self.focus_area = FocusArea::Entries;
+                let previous = self.entry_focus;
                 self.entry_focus = index;
-                selected = Some(entry.clone());
+                let modifiers = ui.input.modifiers();
+                if modifiers.control {
+                    self.entry_selection.toggle(entry.path.clone());
+                } else if modifiers.shift {
+                    if self.entry_selection.is_empty()
+                        && let Some(anchor) = entries.get(previous)
+                    {
+                        self.entry_selection.replace(anchor.path.clone());
+                    }
+                    self.entry_selection.extend_to(&order, entry.path.clone());
+                } else {
+                    self.entry_selection.replace(entry.path.clone());
+                    selected = Some(entry.clone());
+                }
             }
         });
         if truncated {
@@ -556,7 +619,7 @@ mod tests {
     use super::*;
     use crate::file_browser::BrowserRoot;
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
-    use pixelkit_shell::{Input, MouseButton, Scale};
+    use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
 
     struct Harness {
         screen: FileBrowserScreen,
@@ -715,6 +778,43 @@ mod tests {
             Some(FileBrowserAction::Browse { path, .. })
                 if path == Path::new("/home/test/Downloads")
         ));
+    }
+
+    #[test]
+    fn file_browser_shift_and_control_select_without_opening() {
+        let mut harness = Harness::new();
+        harness.frame();
+
+        harness.input.modifiers_changed(Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        });
+        harness.input.key(KeyInput::Down);
+        assert_eq!(harness.frame(), None);
+        assert_eq!(
+            harness.screen.selected_paths(),
+            vec![
+                PathBuf::from("/home/test/Downloads/Folder"),
+                PathBuf::from("/home/test/Downloads/paper.pdf"),
+            ]
+        );
+
+        harness.input.modifiers_changed(Modifiers {
+            control: true,
+            ..Modifiers::default()
+        });
+        harness.input.cursor_moved(400.0, 88.0);
+        harness.input.mouse(MouseButton::Left, true);
+        harness.input.mouse(MouseButton::Left, false);
+        assert_eq!(harness.frame(), None);
+        assert_eq!(
+            harness.screen.selected_paths(),
+            vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
+        );
+
+        harness.input.key(KeyInput::Character('a'));
+        assert_eq!(harness.frame(), None);
+        assert_eq!(harness.screen.selected_paths().len(), 2);
     }
 
     #[test]

@@ -259,6 +259,125 @@ proptest! {
     }
 }
 
+#[test]
+fn moving_a_selection_preserves_its_shape_and_inverts_as_one_operation() {
+    let mut doc = FieldDocument::new("eDP-1", 6, 4);
+    for (id, col, row) in [(1, 0, 0), (2, 1, 0), (3, 5, 3)] {
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: TileId(id),
+                    title: format!("tile {id}"),
+                    spans: SpanRange::fixed(Span::new(1, 1)),
+                    accent: None,
+                    kind: TileKind::System { probe: "x".into() },
+                },
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(col, row),
+                },
+            },
+        )
+        .expect("place")
+        .0;
+    }
+    let op = FieldOp::MoveMany {
+        ids: vec![TileId(2), TileId(1), TileId(2)],
+        anchor: TileId(1),
+        landing: Landing {
+            container: None,
+            cell: Cell::new(2, 2),
+        },
+    };
+    let (moved, inverse) = apply(&doc, &op).expect("group fits");
+    assert_eq!(
+        moved.location(TileId(1)).unwrap().placement.cell,
+        Cell::new(2, 2)
+    );
+    assert_eq!(
+        moved.location(TileId(2)).unwrap().placement.cell,
+        Cell::new(3, 2)
+    );
+    assert_eq!(moved.location(TileId(3)), doc.location(TileId(3)));
+    assert_eq!(apply(&moved, &inverse).expect("inverse").0, doc);
+}
+
+#[test]
+fn a_group_move_is_refused_atomically_when_any_member_cannot_land() {
+    let mut doc = FieldDocument::new("eDP-1", 4, 2);
+    for (id, col) in [(1, 0), (2, 1), (3, 3)] {
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: TileId(id),
+                    title: format!("tile {id}"),
+                    spans: SpanRange::fixed(Span::new(1, 1)),
+                    accent: None,
+                    kind: TileKind::System { probe: "x".into() },
+                },
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(col, 0),
+                },
+            },
+        )
+        .expect("place")
+        .0;
+    }
+    let before = doc.clone();
+    assert_eq!(
+        apply(
+            &doc,
+            &FieldOp::MoveMany {
+                ids: vec![TileId(1), TileId(2)],
+                anchor: TileId(1),
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(2, 0),
+                },
+            },
+        ),
+        Err(FieldError::NotFree)
+    );
+    assert_eq!(doc, before, "apply-on-a-copy leaves the source untouched");
+}
+
+#[test]
+fn stashing_a_selection_has_one_inverse_for_the_whole_group() {
+    let mut doc = FieldDocument::new("eDP-1", 4, 2);
+    for id in 1..=2 {
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: tile(
+                    id,
+                    TileKind::File {
+                        path: format!("/tmp/{id}").into(),
+                    },
+                ),
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new((id - 1) as u16, 0),
+                },
+            },
+        )
+        .expect("place")
+        .0;
+    }
+    let (stashed, inverse) = apply(
+        &doc,
+        &FieldOp::StashMany {
+            ids: vec![TileId(1), TileId(2)],
+        },
+    )
+    .expect("stash group");
+    assert!(stashed.location(TileId(1)).is_none());
+    assert!(stashed.location(TileId(2)).is_none());
+    assert_eq!(apply(&stashed, &inverse).expect("inverse").0, doc);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
