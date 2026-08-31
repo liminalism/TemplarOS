@@ -1708,13 +1708,28 @@ impl ShellApp {
                 self.spawn_file_operation(kind.to_string(), summary);
             }
             FileVerb::Rename => {
-                // Renaming needs a name, and asking for one is a dialogue this surface does not
-                // have yet. Saying so is better than a button that appears to do nothing; the
-                // Files app has the dialogue today and reaches the same `Operations1.Start`.
-                self.field_screen.report(
-                    "Rename needs a name — open this folder in Files to rename here".to_owned(),
-                    now_ms,
+                // The surface only sends this once its dialogue has a name; a rename with none
+                // is a request that was never made.
+                let (Some(path), Some(new_name)) =
+                    (request.paths.first(), request.new_name.as_ref())
+                else {
+                    return;
+                };
+                // The same journalled operation the Files app starts, so a rename is undoable
+                // from either surface and means one thing on this machine.
+                let kind = serde_json::json!({
+                    "kind": "rename",
+                    "path": path,
+                    "new_name": new_name,
+                });
+                let summary = format!(
+                    "Rename {} to {new_name}",
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned()
+                    )
                 );
+                self.spawn_file_operation(kind.to_string(), summary);
             }
             FileVerb::NewFolder => {
                 let Some(directory) = request.directory.as_ref() else {

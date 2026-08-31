@@ -113,6 +113,8 @@ pub struct FileRequest {
     pub paths: Vec<PathBuf>,
     /// The folder currently being shown — a paste destination, a new folder's parent.
     pub directory: Option<PathBuf>,
+    /// The name a rename was given, once the person has typed one. `None` for every other verb.
+    pub new_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -171,6 +173,58 @@ pub struct FileBrowserScreen {
     /// The entry range the last thumbnail draw could see, plus a row of lookahead — the only
     /// entries [`Self::begin_thumbnails`] will ask for.
     visible_thumbnails: std::ops::Range<usize>,
+    /// The open rename dialogue, if any.
+    rename: Option<RenameDialog>,
+}
+
+/// Renaming one item: which one, what the person has typed, and why it is refused so far.
+///
+/// A dialogue rather than an inline edit because the listing re-sorts as you type — a file being
+/// renamed from "a" to "z" would walk out from under the caret — and because the refusal has
+/// somewhere to be said.
+#[derive(Debug)]
+pub struct RenameDialog {
+    path: PathBuf,
+    field: pixelkit_ui::TextFieldState,
+    /// Why the name typed so far cannot be used. Shown live, so the Rename button being inert is
+    /// explained rather than mysterious.
+    error: Option<&'static str>,
+}
+
+impl RenameDialog {
+    fn new(path: PathBuf) -> RenameDialog {
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        RenameDialog {
+            path,
+            field: pixelkit_ui::TextFieldState::with_text(name),
+            error: None,
+        }
+    }
+
+    /// The name as typed, or why it cannot be used.
+    ///
+    /// The same rule the service enforces (`lege_client::files::valid_file_name`), checked here
+    /// only so the person is told *before* pressing Rename. The service still refuses
+    /// independently — this is feedback, not the authority.
+    fn validated(&self) -> Result<String, &'static str> {
+        let typed = self.field.text().trim();
+        if typed.is_empty() {
+            return Err("A name is required.");
+        }
+        if !lege_client::files::valid_file_name(typed) {
+            return Err("Use one filename, without / . or ..");
+        }
+        if self
+            .path
+            .file_name()
+            .is_some_and(|current| current == std::ffi::OsStr::new(typed))
+        {
+            return Err("That is already its name.");
+        }
+        Ok(typed.to_owned())
+    }
 }
 
 impl Default for FileBrowserScreen {
@@ -189,6 +243,7 @@ impl Default for FileBrowserScreen {
             view: ViewMode::default(),
             thumbnail_generation: 0,
             visible_thumbnails: 0..0,
+            rename: None,
         }
     }
 }
@@ -256,7 +311,10 @@ impl FileBrowserScreen {
             self.visible_thumbnails = 0..0;
         }
 
-        let mut action = if keyboard_enabled {
+        // The rename dialogue owns the frame while it is open: it takes the keys, so nothing
+        // underneath can act on a keystroke meant for the name being typed.
+        let renaming = self.rename.is_some();
+        let mut action = if keyboard_enabled && !renaming {
             self.handle_keys(ui, drawer, data.sources, listing, visible_entries)
         } else {
             None
@@ -351,6 +409,16 @@ impl FileBrowserScreen {
             );
         }
 
+        // Drawn last so it sits over the listing, and consulted before the automatic browse
+        // below: a dialogue waiting for an answer must not be reloaded out from under itself.
+        let directory = listing.map(|listing| listing.directory.as_path());
+        if let Some(renamed) = self.draw_rename(ui, entries_area, directory) {
+            return Some(renamed);
+        }
+        if self.rename.is_some() {
+            return action;
+        }
+
         if action.is_none()
             && let Some(path) = current
             && listing.is_none_or(|listing| listing.directory != path)
@@ -373,7 +441,28 @@ impl FileBrowserScreen {
     /// The single gate every route goes through, so a toolbar button and an accelerator cannot
     /// disagree about when a verb applies — and so "Trash with nothing selected" is a no-op here
     /// rather than a request the service has to refuse.
-    fn request(&self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
+    /// Perform `verb`. Has side effects — Rename opens its dialogue — so it is only ever called
+    /// for a verb somebody actually asked for.
+    ///
+    /// Kept apart from [`Self::can_request`] because the two were briefly the same function, and
+    /// the verb row calls the availability check once per button per frame to decide what to grey
+    /// out. A query that performs the action is a query that opened the rename dialogue sixty
+    /// times a second and swallowed every keystroke aimed at the listing underneath it.
+    fn request(&mut self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
+        if verb == FileVerb::Rename {
+            let selected = self.entry_selection.to_vec();
+            let [only] = selected.as_slice() else {
+                return None;
+            };
+            // Opening the dialogue *is* performing Rename; the request comes with the name.
+            self.rename = Some(RenameDialog::new(only.clone()));
+            return None;
+        }
+        self.can_request(verb, directory)
+    }
+
+    /// Whether `verb` applies right now, and the request it would make. No side effects.
+    fn can_request(&self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
         let paths = self.entry_selection.to_vec();
         if verb.needs_selection() && paths.is_empty() {
             return None;
@@ -394,6 +483,7 @@ impl FileBrowserScreen {
             verb,
             paths,
             directory: directory.map(Path::to_path_buf),
+            new_name: None,
         }))
     }
 
@@ -695,6 +785,98 @@ impl FileBrowserScreen {
         None
     }
 
+    /// The rename dialogue: a name field, a refusal, and two buttons.
+    ///
+    /// Returns the confirmed request, and consumes the frame's keys while open so a stray Delete
+    /// aimed at the field cannot trash the item being renamed.
+    fn draw_rename(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        directory: Option<&Path>,
+    ) -> Option<FileBrowserAction> {
+        let dialog = self.rename.as_mut()?;
+        let keys = ui.input.take_keys();
+        if keys.contains(&KeyInput::Escape) {
+            self.rename = None;
+            return None;
+        }
+        let confirmed = keys.contains(&KeyInput::Enter);
+        dialog.field.apply(&keys);
+        dialog.error = dialog.validated().err();
+
+        // A panel over the listing rather than beside it: the item is not going anywhere and the
+        // question is the only thing to answer.
+        let panel = Rect::new(
+            area.x + area.w / 2 - ui.px(210),
+            area.y + ui.px(40),
+            ui.px(420).min(area.w),
+            ui.px(150),
+        );
+        ui.painter.fill_rect(panel, ui.theme.panel);
+        ui.painter
+            .stroke_rect(panel, ui.scale.hairline(), ui.theme.panel_edge);
+        let inner = panel.inset(ui.px(14));
+        let (title, rest) = inner.split_top(ui.px(24));
+        ui.label(
+            title,
+            &format!(
+                "Rename {}",
+                dialog.path.file_name().map_or_else(
+                    || dialog.path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned()
+                )
+            ),
+            ui.theme.text,
+            Align::Left,
+        );
+        let (field, rest) = rest.split_top(ui.px(34));
+        ui.text_field(
+            &mut dialog.field,
+            field.inset(ui.px(3)),
+            "New name",
+            true,
+            false,
+        );
+        let (message, buttons) = rest.split_top(ui.px(24));
+        if let Some(error) = dialog.error {
+            ui.label(message, error, ui.theme.alarm, Align::Left);
+        }
+
+        let (cancel, rest) = buttons.split_right(ui.px(96));
+        let (rename, _) = rest.split_right(ui.px(96));
+        let valid = dialog.validated().ok();
+        if ui.button(cancel.inset(ui.px(4)), "Cancel") {
+            self.rename = None;
+            return None;
+        }
+        let pressed = if let Some(new_name) = valid.clone() {
+            let clicked = ui.button(rename.inset(ui.px(4)), "Rename");
+            (clicked || confirmed).then_some(new_name)
+        } else {
+            // Inert rather than absent, with the reason above it: a button that vanishes as you
+            // type is a button you cannot learn.
+            ui.painter
+                .fill_rounded_rect(rename.inset(ui.px(4)), ui.px(4), ui.theme.panel_alt);
+            ui.label(
+                rename.inset(ui.px(4)),
+                "Rename",
+                ui.theme.text_dim,
+                Align::Centre,
+            );
+            None
+        };
+        let new_name = pressed?;
+        let path = dialog.path.clone();
+        self.rename = None;
+        Some(FileBrowserAction::File(FileRequest {
+            verb: FileVerb::Rename,
+            paths: vec![path],
+            directory: directory.map(Path::to_path_buf),
+            new_name: Some(new_name),
+        }))
+    }
+
     /// The file verbs as buttons: every action a keyboard can reach here, reachable by pointer.
     ///
     /// A keyboard-only capability is a capability half the people using this machine do not
@@ -709,7 +891,7 @@ impl FileBrowserScreen {
     ) -> Option<FileBrowserAction> {
         let directory = listing.map(|listing| listing.directory.as_path());
         let mut cursor = area;
-        let mut chosen = None;
+        let mut pressed: Option<FileVerb> = None;
         for verb in FILE_VERB_ROUTES.iter().map(|route| route.verb) {
             let width = ui.px(
                 if matches!(verb, FileVerb::NewFolder | FileVerb::CopyPath) {
@@ -723,11 +905,12 @@ impl FileBrowserScreen {
             }
             let (button, rest) = cursor.split_left(width);
             cursor = rest;
-            let request = self.request(verb, directory);
-            let enabled = request.is_some();
+            // The availability query, never the performing one: this runs for every button on
+            // every frame.
+            let enabled = self.can_request(verb, directory).is_some();
             if enabled {
                 if ui.button(button.inset(ui.px(4)), verb.label()) {
-                    chosen = chosen.or(request);
+                    pressed = Some(verb);
                 }
             } else {
                 // Present but visibly inert: the control does not move, and its absence is not
@@ -742,7 +925,8 @@ impl FileBrowserScreen {
                 );
             }
         }
-        chosen
+        // Performed after the loop, so the one verb with a side effect has one chance to run.
+        self.request(pressed?, directory)
     }
 
     fn draw_columns(ui: &mut Ui<'_>, area: Rect) {
@@ -1286,11 +1470,6 @@ mod tests {
             (KeyInput::Character('v'), control(), FileVerb::Paste),
             (KeyInput::Delete, Modifiers::default(), FileVerb::Trash),
             (
-                KeyInput::Function(2),
-                Modifiers::default(),
-                FileVerb::Rename,
-            ),
-            (
                 KeyInput::Character('c'),
                 control_shift(),
                 FileVerb::CopyPath,
@@ -1324,6 +1503,99 @@ mod tests {
             request.directory,
             Some(PathBuf::from("/home/test/Downloads"))
         );
+    }
+
+    #[test]
+    fn file_actions_rename_asks_for_a_name_and_only_then_becomes_a_request() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&["/home/test/Downloads/paper.pdf"]);
+
+        // F2 opens the dialogue rather than emitting a request: a rename with no name is not a
+        // request anybody made.
+        assert_eq!(
+            verb_of(harness.press(KeyInput::Function(2), Modifiers::default())),
+            None
+        );
+        assert!(harness.screen.rename.is_some(), "F2 opened no dialogue");
+        // Pre-filled with the current name, which is what a person edits rather than retypes.
+        assert_eq!(
+            harness.screen.rename.as_ref().unwrap().field.text(),
+            "paper.pdf"
+        );
+
+        // The dialogue owns the keys while it is open, so a stray Delete aimed at the field
+        // cannot trash the very item being renamed.
+        assert_eq!(
+            verb_of(harness.press(KeyInput::Delete, Modifiers::default())),
+            None
+        );
+        assert!(harness.screen.rename.is_some());
+
+        // Type a new name and confirm it.
+        harness
+            .screen
+            .rename
+            .as_mut()
+            .unwrap()
+            .field
+            .set_text("report.pdf");
+        let action = harness.press(KeyInput::Enter, Modifiers::default());
+        let Some(FileBrowserAction::File(request)) = action else {
+            panic!("Enter did not confirm the rename: {action:?}");
+        };
+        assert_eq!(request.verb, FileVerb::Rename);
+        assert_eq!(
+            request.paths,
+            vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
+        );
+        assert_eq!(request.new_name.as_deref(), Some("report.pdf"));
+        assert!(harness.screen.rename.is_none(), "the dialogue stayed open");
+    }
+
+    #[test]
+    fn file_actions_rename_refuses_a_name_that_is_not_one_and_says_why() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&["/home/test/Downloads/paper.pdf"]);
+        harness.press(KeyInput::Function(2), Modifiers::default());
+
+        for (typed, reason) in [
+            ("", "A name is required."),
+            ("   ", "A name is required."),
+            ("../escape", "Use one filename, without / . or .."),
+            ("sub/deeper", "Use one filename, without / . or .."),
+            ("..", "Use one filename, without / . or .."),
+            // Renaming something to what it is already called is not a rename.
+            ("paper.pdf", "That is already its name."),
+        ] {
+            harness
+                .screen
+                .rename
+                .as_mut()
+                .unwrap()
+                .field
+                .set_text(typed);
+            // Confirming a refused name does nothing and leaves the dialogue open to be fixed.
+            assert_eq!(
+                verb_of(harness.press(KeyInput::Enter, Modifiers::default())),
+                None,
+                "{typed:?} was accepted"
+            );
+            assert!(
+                harness.screen.rename.is_some(),
+                "{typed:?} closed the dialogue"
+            );
+            assert_eq!(
+                harness.screen.rename.as_ref().unwrap().error,
+                Some(reason),
+                "{typed:?} gave the wrong reason"
+            );
+        }
+
+        // Escape abandons it, and nothing was renamed.
+        harness.press(KeyInput::Escape, Modifiers::default());
+        assert!(harness.screen.rename.is_none());
     }
 
     #[test]
