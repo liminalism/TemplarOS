@@ -1445,10 +1445,11 @@ fn walk_assets_dirs(root: &Path) -> Vec<PathBuf> {
             }
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if matches!(
-                &*name,
-                "target" | ".git" | "vendor" | "forks" | "node_modules"
-            ) {
+            // Every dot-directory is somebody's private working area, not shipped source —
+            // `.claude/worktrees/` in particular holds whole sibling-repo checkouts.
+            if name.starts_with('.')
+                || matches!(&*name, "target" | "vendor" | "forks" | "node_modules")
+            {
                 continue;
             }
             if name == "assets" {
