@@ -220,6 +220,19 @@ mod tests {
                 refused: Vec::new(),
             },
         );
+        // Fixed readings, so the baseline reviews the Settings widget's three-line body and its
+        // control row rather than the "…" a tile with no snapshot yet would show.
+        widgets.insert(
+            "settings".to_owned(),
+            crate::surface::widgets::settings::snapshot(
+                [
+                    "72% · 2 h 23 min remaining".to_owned(),
+                    "45%".to_owned(),
+                    "60%".to_owned(),
+                ],
+                Vec::new(),
+            ),
+        );
         let empty_bitmaps = HashMap::new();
         let empty_treemaps = HashMap::new();
         let empty_compositions = HashMap::new();
@@ -288,7 +301,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x6919_b7b3_dd61_a912,
+            hash, 0xf597_8489_6e30_f9f9,
             "review the Home Field pixels before updating this baseline"
         );
     }
