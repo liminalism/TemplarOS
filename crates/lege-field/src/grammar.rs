@@ -10,6 +10,22 @@ use crate::field::Cell;
 use crate::tile::{TileId, TileKind};
 use serde::{Deserialize, Serialize};
 
+/// What the pointer's modifiers asked this drop to mean.
+///
+/// The grammar needs this for exactly one family of drops — a real file onto a real folder — and
+/// takes it as a value rather than guessing, because the two answers move a person's data in
+/// different ways and the difference must be announced before release, not discovered after.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DropModifiers {
+    /// Copy rather than move. Ctrl on every desktop this project's users are arriving from.
+    pub copy: bool,
+}
+
+impl DropModifiers {
+    pub const MOVE: DropModifiers = DropModifiers { copy: false };
+    pub const COPY: DropModifiers = DropModifiers { copy: true };
+}
+
 /// What a lifted tile is over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
@@ -61,6 +77,16 @@ pub enum Operation {
     GroupIntoNewProject {
         with: TileId,
     },
+    /// Copy the dropped item into the folder this tile binds. A real file operation: the shell
+    /// hands it to `Files.Operations1` and the service, not the shell, decides what a conflict,
+    /// a permission failure or a device boundary means.
+    CopyInto {
+        folder: TileId,
+    },
+    /// Move the dropped item into the folder this tile binds.
+    MoveInto {
+        folder: TileId,
+    },
 }
 
 impl Operation {
@@ -77,6 +103,12 @@ impl Operation {
             Self::ScopeWidget { .. } => Some("SCOPE TO PROJECT"),
             Self::AddToProject { .. } => Some("ADD TO PROJECT"),
             Self::GroupIntoNewProject { .. } => Some("NEW PROJECT FROM THESE TWO"),
+            // Named in full, and named differently from each other, because these are the two
+            // drops in the whole grammar that change a file rather than a relationship. "MOVE"
+            // and "COPY" are not interchangeable words to somebody watching their only copy of
+            // something leave the folder it was in.
+            Self::CopyInto { .. } => Some("COPY INTO FOLDER"),
+            Self::MoveInto { .. } => Some("MOVE INTO FOLDER"),
         }
     }
 
@@ -85,11 +117,27 @@ impl Operation {
     pub fn is_semantic(&self) -> bool {
         self.label().is_some()
     }
+
+    /// Whether performing this touches the filesystem rather than the field document.
+    ///
+    /// The dividing line the shell routes on: a field operation is applied to the document and
+    /// undone from the field's own log, while one of these is handed to `Files.Operations1` and
+    /// undone through the journal. Both are undo; they are not the same undo, and the surface has
+    /// to know which it is offering.
+    pub fn is_file_operation(&self) -> bool {
+        matches!(self, Self::CopyInto { .. } | Self::MoveInto { .. })
+    }
 }
 
 /// The grammar table. `source` is the lifted tile's kind, `source_id` its id (so a tile is
-/// never grouped with itself).
-pub fn operation_for(source_id: TileId, source: &TileKind, target: &Target) -> Option<Operation> {
+/// never grouped with itself), and `modifiers` is what the pointer asked for — consulted only
+/// where the answer genuinely differs, which is a real file onto a real folder.
+pub fn operation_for(
+    source_id: TileId,
+    source: &TileKind,
+    target: &Target,
+    modifiers: DropModifiers,
+) -> Option<Operation> {
     match target {
         Target::Empty { container, cell } => Some(Operation::Relocate {
             container: *container,
@@ -126,10 +174,22 @@ pub fn operation_for(source_id: TileId, source: &TileKind, target: &Target) -> O
                 (TileKind::File { .. }, TileKind::Tray { .. }) => {
                     Some(Operation::AddReference { tray: *id })
                 }
-                // A drop on or of a folder never silently groups: real file operations onto a
-                // folder (copy/move) belong to the typed drag-drop of the file-operations item
-                // and must be named there, not defaulted to here. Projects refuse grouping for
-                // their own reason (a container never groups into another tile).
+                // A real thing onto a real folder is a real file operation, and it is named:
+                // this is where the grammar stopped short before, returning None so that no drop
+                // could quietly move somebody's data while the invariant "an unnamed drop changes
+                // only position" still held. It holds here too — both answers carry a label, and
+                // which one is shown depends on the modifier the pointer is holding.
+                (TileKind::File { .. } | TileKind::Folder { .. }, TileKind::Folder { .. }) => {
+                    Some(if modifiers.copy {
+                        Operation::CopyInto { folder: *id }
+                    } else {
+                        Operation::MoveInto { folder: *id }
+                    })
+                }
+                // Everything else involving a folder still refuses rather than grouping: a folder
+                // is not a loose tile to be swept into a project by accident, and dropping some
+                // other kind of tile *onto* one has no file meaning at all. Projects refuse for
+                // their own reason — a container never groups into another tile.
                 (TileKind::Folder { .. } | TileKind::Project { .. }, _)
                 | (_, TileKind::Folder { .. } | TileKind::Project { .. }) => None,
                 _ => Some(Operation::GroupIntoNewProject { with: *id }),
@@ -164,7 +224,8 @@ mod tests {
                     id: TileId(2),
                     kind: app.clone(),
                     accepts_open: true
-                }
+                },
+                DropModifiers::default()
             ),
             Some(Operation::OpenWith { app: TileId(2) })
         );
@@ -176,12 +237,18 @@ mod tests {
                     id: TileId(3),
                     kind: TileKind::Tray { tray_id: TrayId(1) },
                     accepts_open: false
-                }
+                },
+                DropModifiers::default()
             ),
             Some(Operation::AddReference { tray: TileId(3) })
         );
         assert_eq!(
-            operation_for(TileId(1), &app, &Target::Project { id: project }),
+            operation_for(
+                TileId(1),
+                &app,
+                &Target::Project { id: project },
+                DropModifiers::default()
+            ),
             Some(Operation::PinTool { project })
         );
         assert_eq!(
@@ -191,7 +258,8 @@ mod tests {
                     app_id: None,
                     identifier: "w".into()
                 },
-                &Target::Project { id: project }
+                &Target::Project { id: project },
+                DropModifiers::default()
             ),
             Some(Operation::ParkSession { project })
         );
@@ -202,7 +270,8 @@ mod tests {
                 &Target::Empty {
                     container: None,
                     cell: Cell::new(2, 2)
-                }
+                },
+                DropModifiers::default()
             ),
             Some(Operation::Relocate {
                 container: None,
@@ -210,7 +279,7 @@ mod tests {
             })
         );
         assert_eq!(
-            operation_for(TileId(1), &file(), &Target::Shelf),
+            operation_for(TileId(1), &file(), &Target::Shelf, DropModifiers::default()),
             Some(Operation::Stash)
         );
     }
@@ -226,7 +295,7 @@ mod tests {
             accepts_open: false,
         };
         assert_eq!(
-            operation_for(TileId(1), &app, &other),
+            operation_for(TileId(1), &app, &other, DropModifiers::default()),
             Some(Operation::GroupIntoNewProject { with: TileId(2) })
         );
         let itself = Target::Tile {
@@ -234,11 +303,148 @@ mod tests {
             kind: app.clone(),
             accepts_open: false,
         };
-        assert_eq!(operation_for(TileId(1), &app, &itself), None);
+        assert_eq!(
+            operation_for(TileId(1), &app, &itself, DropModifiers::default()),
+            None
+        );
         // A file on an app that does not open it is not "open"; it groups like anything else.
         assert_eq!(
-            operation_for(TileId(1), &file(), &other),
+            operation_for(TileId(1), &file(), &other, DropModifiers::default()),
             Some(Operation::GroupIntoNewProject { with: TileId(2) })
+        );
+    }
+
+    fn folder(path: &str) -> TileKind {
+        TileKind::Folder {
+            path: PathBuf::from(path),
+        }
+    }
+
+    fn onto(id: u64, kind: TileKind) -> Target {
+        Target::Tile {
+            id: TileId(id),
+            kind,
+            accepts_open: false,
+        }
+    }
+
+    #[test]
+    fn drag_drop_a_file_onto_a_folder_is_a_named_move_or_a_named_copy() {
+        let target = onto(2, folder("/home/u/Documents"));
+        assert_eq!(
+            operation_for(TileId(1), &file(), &target, DropModifiers::MOVE),
+            Some(Operation::MoveInto { folder: TileId(2) })
+        );
+        assert_eq!(
+            operation_for(TileId(1), &file(), &target, DropModifiers::COPY),
+            Some(Operation::CopyInto { folder: TileId(2) })
+        );
+        // A folder is a file too: dropping one into another is the same operation.
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &folder("/home/u/Notes"),
+                &target,
+                DropModifiers::MOVE
+            ),
+            Some(Operation::MoveInto { folder: TileId(2) })
+        );
+        // Never onto itself, whatever the modifier says.
+        for modifiers in [DropModifiers::MOVE, DropModifiers::COPY] {
+            assert_eq!(
+                operation_for(
+                    TileId(2),
+                    &folder("/home/u/Documents"),
+                    &onto(2, folder("/home/u/Documents")),
+                    modifiers
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn drag_drop_names_both_answers_before_release_and_never_confuses_them() {
+        let copy = Operation::CopyInto { folder: TileId(2) };
+        let moved = Operation::MoveInto { folder: TileId(2) };
+        // Every file operation is announced: the invariant is that an unnamed drop changes only
+        // position, and these change the filesystem.
+        assert_eq!(copy.label(), Some("COPY INTO FOLDER"));
+        assert_eq!(moved.label(), Some("MOVE INTO FOLDER"));
+        assert_ne!(
+            copy.label(),
+            moved.label(),
+            "a person watching their only copy leave a folder must be able to tell these apart"
+        );
+        assert!(copy.is_semantic() && moved.is_semantic());
+        // And both are routed to the service, not to the field's own undo log.
+        assert!(copy.is_file_operation() && moved.is_file_operation());
+        for other in [
+            Operation::Stash,
+            Operation::AddReference { tray: TileId(3) },
+            Operation::GroupIntoNewProject { with: TileId(3) },
+            Operation::Relocate {
+                container: None,
+                to: Cell::new(0, 0),
+            },
+        ] {
+            assert!(
+                !other.is_file_operation(),
+                "{other:?} must not be routed through Files.Operations1"
+            );
+        }
+    }
+
+    #[test]
+    fn drag_drop_onto_a_shortcut_pane_still_only_adds_a_reference() {
+        // A pane binds no directory, so there is no file operation to choose even when the
+        // pointer asks for one: adding to it never relocates what it points at.
+        let pane = onto(3, TileKind::Tray { tray_id: TrayId(1) });
+        for modifiers in [DropModifiers::MOVE, DropModifiers::COPY] {
+            assert_eq!(
+                operation_for(TileId(1), &file(), &pane, modifiers),
+                Some(Operation::AddReference { tray: TileId(3) })
+            );
+        }
+        assert!(!Operation::AddReference { tray: TileId(3) }.is_file_operation());
+    }
+
+    #[test]
+    fn drag_drop_still_refuses_every_other_drop_involving_a_folder() {
+        let app = TileKind::App {
+            app_id: "org.legeos.Viewer".parse().unwrap(),
+        };
+        // A folder is not a loose tile to be swept into a project by accident...
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &folder("/home/u/Notes"),
+                &onto(2, app.clone()),
+                DropModifiers::MOVE
+            ),
+            None
+        );
+        // ...and dropping something with no file meaning onto one is refused rather than named.
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &app,
+                &onto(2, folder("/home/u/Notes")),
+                DropModifiers::COPY
+            ),
+            None
+        );
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &TileKind::Widget {
+                    widget: "battery".into(),
+                    scope: None
+                },
+                &onto(2, folder("/home/u/Notes")),
+                DropModifiers::MOVE
+            ),
+            None
         );
     }
 

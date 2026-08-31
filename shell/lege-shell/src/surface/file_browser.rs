@@ -20,6 +20,101 @@ const TOOLBAR_HEIGHT: i32 = 42;
 const COLUMNS_HEIGHT: i32 = 28;
 const ENTRY_HEIGHT: i32 = 38;
 
+/// The ordinary file verbs, named once so the keyboard and the pointer reach the same thing.
+///
+/// One vocabulary rather than two code paths: every accelerator below and every toolbar button
+/// resolves to one of these, and the host performs it through the same `lege-filed` interfaces
+/// the Files app uses. That is what "the same service semantics" means in practice — not similar
+/// code in two places, but one request shape both surfaces send.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileVerb {
+    Copy,
+    Cut,
+    Paste,
+    /// To the trash, through the journalled service. Never an unlink.
+    Trash,
+    Rename,
+    NewFolder,
+    Properties,
+    CopyPath,
+}
+
+/// One button on the file-verb row: the declared action it performs, and the verb that performs
+/// it.
+///
+/// A named type rather than a tuple so that this row is discoverable as a *pointer route*:
+/// `cargo xtask check-actions` reads this constructor the same way it reads a widget region or a
+/// menu row, which is what stops a file verb existing on a keyboard and nowhere else.
+/// The project's rule is that a chord is an accelerator and never the only route; this is the
+/// table that keeps it true here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileVerbRoute {
+    pub action: &'static str,
+    pub verb: FileVerb,
+}
+
+impl FileVerbRoute {
+    pub const fn new(action: &'static str, verb: FileVerb) -> FileVerbRoute {
+        FileVerbRoute { action, verb }
+    }
+}
+
+/// Every file verb the Home file surfaces offer, in the order the row shows them.
+///
+/// One table, read by the row that draws the buttons and by [`FileVerb::action_id`], so a verb
+/// cannot acquire a second identity by being spelled differently in two places.
+pub const FILE_VERB_ROUTES: &[FileVerbRoute] = &[
+    FileVerbRoute::new("files.copy", FileVerb::Copy),
+    FileVerbRoute::new("files.cut", FileVerb::Cut),
+    FileVerbRoute::new("files.paste", FileVerb::Paste),
+    FileVerbRoute::new("files.rename", FileVerb::Rename),
+    FileVerbRoute::new("files.new-folder", FileVerb::NewFolder),
+    FileVerbRoute::new("files.trash", FileVerb::Trash),
+    FileVerbRoute::new("files.copy-path", FileVerb::CopyPath),
+    FileVerbRoute::new("files.properties", FileVerb::Properties),
+];
+
+impl FileVerb {
+    /// The action id in `lege_types::action::MANIFEST` this verb performs.
+    pub fn action_id(self) -> &'static str {
+        FILE_VERB_ROUTES
+            .iter()
+            .find(|route| route.verb == self)
+            .map_or("files.unknown", |route| route.action)
+    }
+
+    /// Whether this verb acts on the selection. The rest act on the folder being shown, and
+    /// offering them with nothing selected is correct rather than a mistake.
+    pub fn needs_selection(self) -> bool {
+        !matches!(self, Self::Paste | Self::NewFolder)
+    }
+
+    /// What a button or a menu row calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Cut => "Cut",
+            Self::Paste => "Paste",
+            Self::Trash => "Trash",
+            Self::Rename => "Rename",
+            Self::NewFolder => "New folder",
+            Self::Properties => "Properties",
+            Self::CopyPath => "Copy path",
+        }
+    }
+}
+
+/// One file verb, with everything the host needs to perform it and nothing it would have to
+/// re-derive: the surface knows what is selected and which folder is open, so it says.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileRequest {
+    pub verb: FileVerb,
+    /// The selection, in the order the listing shows it. Empty for a verb that does not need one.
+    pub paths: Vec<PathBuf>,
+    /// The folder currently being shown — a paste destination, a new folder's parent.
+    pub directory: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileBrowserAction {
     Browse {
@@ -28,6 +123,8 @@ pub enum FileBrowserAction {
         show_hidden: bool,
     },
     Open(PathBuf),
+    /// An ordinary file verb, for the host to perform through `lege-filed`.
+    File(FileRequest),
 }
 
 /// One consistent snapshot of the app-owned async state. Paths are paired with the drawer and
@@ -180,7 +277,12 @@ impl FileBrowserScreen {
         } else {
             self.draw_toolbar(ui, toolbar, drawer, current, listing, data.search_query);
         }
-        let (columns, entries_area) = below_toolbar.split_top(ui.px(COLUMNS_HEIGHT));
+        let (verbs, below_verbs) = below_toolbar.split_top(ui.px(TOOLBAR_HEIGHT));
+        let verb_action = self.draw_file_verbs(ui, verbs, listing);
+        if action.is_none() {
+            action = verb_action;
+        }
+        let (columns, entries_area) = below_verbs.split_top(ui.px(COLUMNS_HEIGHT));
         Self::draw_columns(ui, columns);
 
         let error = data.search_error.or_else(|| {
@@ -266,6 +368,36 @@ impl FileBrowserScreen {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// Turn a verb into a request, or refuse it because there is nothing for it to act on.
+    ///
+    /// The single gate every route goes through, so a toolbar button and an accelerator cannot
+    /// disagree about when a verb applies — and so "Trash with nothing selected" is a no-op here
+    /// rather than a request the service has to refuse.
+    fn request(&self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
+        let paths = self.entry_selection.to_vec();
+        if verb.needs_selection() && paths.is_empty() {
+            return None;
+        }
+        // Rename and Properties are about one item; asking for either with a dozen selected has
+        // no single answer, so the surface does not ask.
+        if matches!(
+            verb,
+            FileVerb::Rename | FileVerb::Properties | FileVerb::CopyPath
+        ) && paths.len() != 1
+        {
+            return None;
+        }
+        if matches!(verb, FileVerb::Paste | FileVerb::NewFolder) && directory.is_none() {
+            return None;
+        }
+        Some(FileBrowserAction::File(FileRequest {
+            verb,
+            paths,
+            directory: directory.map(Path::to_path_buf),
+        }))
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn handle_keys(
         &mut self,
         ui: &Ui<'_>,
@@ -276,9 +408,37 @@ impl FileBrowserScreen {
     ) -> Option<FileBrowserAction> {
         let mut action = None;
         let modifiers = ui.input.modifiers();
+        let directory = listing.map(|listing| listing.directory.as_path());
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         for key in ui.input.keys() {
             match key {
+                // The ordinary file verbs. Surface-local accelerators, exactly like Ctrl+G and
+                // Ctrl+S beneath them: these are not compositor-reserved chords, so they cost
+                // the recovery keys nothing and work only where a file surface has focus.
+                KeyInput::Character('c' | 'C') if modifiers.control && modifiers.shift => {
+                    action = action.or_else(|| self.request(FileVerb::CopyPath, directory));
+                }
+                KeyInput::Character('c' | 'C') if modifiers.control => {
+                    action = action.or_else(|| self.request(FileVerb::Copy, directory));
+                }
+                KeyInput::Character('x' | 'X') if modifiers.control => {
+                    action = action.or_else(|| self.request(FileVerb::Cut, directory));
+                }
+                KeyInput::Character('v' | 'V') if modifiers.control => {
+                    action = action.or_else(|| self.request(FileVerb::Paste, directory));
+                }
+                KeyInput::Character('n' | 'N') if modifiers.control && modifiers.shift => {
+                    action = action.or_else(|| self.request(FileVerb::NewFolder, directory));
+                }
+                KeyInput::Delete => {
+                    action = action.or_else(|| self.request(FileVerb::Trash, directory));
+                }
+                KeyInput::Function(2) => {
+                    action = action.or_else(|| self.request(FileVerb::Rename, directory));
+                }
+                KeyInput::Enter if modifiers.alt => {
+                    action = action.or_else(|| self.request(FileVerb::Properties, directory));
+                }
                 KeyInput::Character('g') if modifiers.control => self.toggle_view(),
                 KeyInput::Character('s') if modifiers.control => self.cycle_sort_field(entries),
                 KeyInput::Character('r') if modifiers.control => {
@@ -358,7 +518,7 @@ impl FileBrowserScreen {
                     self.entry_focus = 0;
                     self.focus_area = FocusArea::Entries;
                 }
-                KeyInput::Enter => match self.focus_area {
+                KeyInput::Enter if !modifiers.alt => match self.focus_area {
                     FocusArea::Roots => {
                         if let Some(root) = sources.roots.get(self.root_focus) {
                             action = Some(FileBrowserAction::Browse {
@@ -533,6 +693,56 @@ impl FileBrowserScreen {
             Align::Left,
         );
         None
+    }
+
+    /// The file verbs as buttons: every action a keyboard can reach here, reachable by pointer.
+    ///
+    /// A keyboard-only capability is a capability half the people using this machine do not
+    /// have, and the project's own rule is that a chord is an accelerator and never the only
+    /// route. A button whose verb does not currently apply is drawn disabled rather than hidden,
+    /// so the row does not reshuffle under the pointer as the selection changes.
+    fn draw_file_verbs(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        listing: Option<&DirectoryListing>,
+    ) -> Option<FileBrowserAction> {
+        let directory = listing.map(|listing| listing.directory.as_path());
+        let mut cursor = area;
+        let mut chosen = None;
+        for verb in FILE_VERB_ROUTES.iter().map(|route| route.verb) {
+            let width = ui.px(
+                if matches!(verb, FileVerb::NewFolder | FileVerb::CopyPath) {
+                    104
+                } else {
+                    88
+                },
+            );
+            if cursor.w < width {
+                break;
+            }
+            let (button, rest) = cursor.split_left(width);
+            cursor = rest;
+            let request = self.request(verb, directory);
+            let enabled = request.is_some();
+            if enabled {
+                if ui.button(button.inset(ui.px(4)), verb.label()) {
+                    chosen = chosen.or(request);
+                }
+            } else {
+                // Present but visibly inert: the control does not move, and its absence is not
+                // something a person has to go looking for.
+                ui.painter
+                    .fill_rounded_rect(button.inset(ui.px(4)), ui.px(4), ui.theme.panel_alt);
+                ui.label(
+                    button.inset(ui.px(4)),
+                    verb.label(),
+                    ui.theme.text_dim,
+                    Align::Centre,
+                );
+            }
+        }
+        chosen
     }
 
     fn draw_columns(ui: &mut Ui<'_>, area: Rect) {
@@ -1023,13 +1233,191 @@ mod tests {
         }
     }
 
+    impl Harness {
+        /// Press a key with modifiers and report what the surface asked for.
+        fn press(&mut self, key: KeyInput, modifiers: Modifiers) -> Option<FileBrowserAction> {
+            self.input.modifiers_changed(modifiers);
+            self.input.key(key);
+            let action = self.frame();
+            self.input.modifiers_changed(Modifiers::default());
+            action
+        }
+
+        fn select(&mut self, paths: &[&str]) {
+            self.screen.entry_selection.clear();
+            for path in paths {
+                self.screen.entry_selection.toggle(PathBuf::from(path));
+            }
+        }
+    }
+
+    fn control() -> Modifiers {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
+    }
+
+    fn control_shift() -> Modifiers {
+        Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        }
+    }
+
+    fn verb_of(action: Option<FileBrowserAction>) -> Option<(FileVerb, Vec<PathBuf>)> {
+        match action {
+            Some(FileBrowserAction::File(request)) => Some((request.verb, request.paths)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn file_actions_are_reachable_by_keyboard_over_the_selection() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&["/home/test/Downloads/paper.pdf"]);
+        let one = vec![PathBuf::from("/home/test/Downloads/paper.pdf")];
+
+        for (key, modifiers, verb) in [
+            (KeyInput::Character('c'), control(), FileVerb::Copy),
+            (KeyInput::Character('x'), control(), FileVerb::Cut),
+            (KeyInput::Character('v'), control(), FileVerb::Paste),
+            (KeyInput::Delete, Modifiers::default(), FileVerb::Trash),
+            (
+                KeyInput::Function(2),
+                Modifiers::default(),
+                FileVerb::Rename,
+            ),
+            (
+                KeyInput::Character('c'),
+                control_shift(),
+                FileVerb::CopyPath,
+            ),
+        ] {
+            assert_eq!(
+                verb_of(harness.press(key, modifiers)),
+                Some((verb, one.clone())),
+                "{verb:?} has no keyboard route"
+            );
+        }
+        // Alt+Enter is Properties and must not also open the focused entry.
+        assert_eq!(
+            verb_of(harness.press(
+                KeyInput::Enter,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                }
+            )),
+            Some((FileVerb::Properties, one))
+        );
+        // New folder acts on the open directory, so it needs no selection at all.
+        harness.select(&[]);
+        let request = match harness.press(KeyInput::Character('n'), control_shift()) {
+            Some(FileBrowserAction::File(request)) => request,
+            other => panic!("no new-folder request: {other:?}"),
+        };
+        assert_eq!(request.verb, FileVerb::NewFolder);
+        assert_eq!(
+            request.directory,
+            Some(PathBuf::from("/home/test/Downloads"))
+        );
+    }
+
+    #[test]
+    fn file_actions_are_reachable_by_pointer_and_every_one_is_a_declared_action() {
+        // The verb row: 220 px roots rail, then the toolbar, then this row at y 42..84.
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&["/home/test/Downloads/paper.pdf"]);
+        let clicked = verb_of(harness.click(260.0, 62.0));
+        assert_eq!(
+            clicked.map(|(verb, _)| verb),
+            Some(FileVerb::Copy),
+            "the first button on the verb row is Copy"
+        );
+
+        // Every verb on the row is a declared action, and the row is what makes them reachable
+        // without a keyboard at all.
+        for route in FILE_VERB_ROUTES {
+            assert_eq!(route.verb.action_id(), route.action);
+            assert!(
+                lege_types::action::action(route.action).is_some(),
+                "{} is on the verb row and in no manifest",
+                route.action
+            );
+        }
+        assert_eq!(FILE_VERB_ROUTES.len(), 8);
+    }
+
+    #[test]
+    fn file_actions_that_need_one_item_refuse_a_multiple_selection() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&[
+            "/home/test/Downloads/paper.pdf",
+            "/home/test/Downloads/Folder",
+        ]);
+        // Copy, cut and trash are bulk verbs and take the whole selection as one request.
+        for (key, modifiers, verb) in [
+            (KeyInput::Character('c'), control(), FileVerb::Copy),
+            (KeyInput::Delete, Modifiers::default(), FileVerb::Trash),
+        ] {
+            let (got, paths) = verb_of(harness.press(key, modifiers)).expect("a bulk verb");
+            assert_eq!(got, verb);
+            assert_eq!(
+                paths.len(),
+                2,
+                "one request naming both, never two requests"
+            );
+        }
+        // Rename, Properties and Copy path have no single answer for a dozen items, so the
+        // surface does not ask rather than asking about an arbitrary one of them.
+        for (key, modifiers) in [
+            (KeyInput::Function(2), Modifiers::default()),
+            (KeyInput::Character('c'), control_shift()),
+        ] {
+            assert_eq!(verb_of(harness.press(key, modifiers)), None);
+        }
+    }
+
+    #[test]
+    fn file_actions_do_nothing_with_nothing_selected() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&[]);
+        for (key, modifiers) in [
+            (KeyInput::Character('c'), control()),
+            (KeyInput::Character('x'), control()),
+            (KeyInput::Delete, Modifiers::default()),
+            (KeyInput::Function(2), Modifiers::default()),
+        ] {
+            assert_eq!(
+                verb_of(harness.press(key, modifiers)),
+                None,
+                "a verb that acts on a selection must not fire without one"
+            );
+        }
+        // Paste and New folder act on the folder being shown and are still offered.
+        assert!(matches!(
+            harness.press(KeyInput::Character('v'), control()),
+            Some(FileBrowserAction::File(FileRequest {
+                verb: FileVerb::Paste,
+                ..
+            }))
+        ));
+    }
+
     #[test]
     fn file_browser_pointer_activates_folders_and_files() {
         let mut harness = Harness::new();
         harness.frame();
-        // Browser begins after the 220 px roots rail; entries begin below the 42 + 28 px bars.
+        // Browser begins after the 220 px roots rail; entries begin below the toolbar, the
+        // file-verb row and the column header — 42 + 42 + 28 px.
         assert_eq!(
-            harness.click(400.0, 88.0),
+            harness.click(400.0, 130.0),
             Some(FileBrowserAction::Browse {
                 drawer: Drawer::Downloads,
                 path: PathBuf::from("/home/test/Downloads/Folder"),
@@ -1037,7 +1425,7 @@ mod tests {
             })
         );
         assert_eq!(
-            harness.click(400.0, 126.0),
+            harness.click(400.0, 168.0),
             Some(FileBrowserAction::Open(PathBuf::from(
                 "/home/test/Downloads/paper.pdf"
             )))
@@ -1102,7 +1490,7 @@ mod tests {
             control: true,
             ..Modifiers::default()
         });
-        harness.input.cursor_moved(400.0, 88.0);
+        harness.input.cursor_moved(400.0, 130.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);
         assert_eq!(harness.frame(), None);
@@ -1121,7 +1509,7 @@ mod tests {
         let mut harness = Harness::new();
         let entries = harness.listing.entries.clone();
         harness.frame_with_search(Some("paper"), Some(&entries));
-        harness.input.cursor_moved(400.0, 126.0);
+        harness.input.cursor_moved(400.0, 168.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);
         assert_eq!(

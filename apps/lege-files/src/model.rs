@@ -770,6 +770,31 @@ impl BrowserModel {
         true
     }
 
+    /// The selection as a `text/uri-list` payload, for the clipboard and for a drag out.
+    ///
+    /// The same encoding Home uses (`lege_types::uri_list`), which is the whole point: what the
+    /// Files app copies is what Home pastes and what any GTK or Qt application pastes, because
+    /// there is one encoder rather than one per surface.
+    pub fn selection_as_uri_list(&self) -> String {
+        lege_types::uri_list::encode(&self.selected.iter().cloned().collect::<Vec<_>>())
+    }
+
+    /// Take a `text/uri-list` from elsewhere as the clipboard contents.
+    ///
+    /// A copy, never a move: a bare uri-list carries no cut/copy distinction, and guessing "move"
+    /// would take somebody's original away from wherever it was needed.
+    pub fn set_clipboard_from_uri_list(&mut self, payload: &str) -> bool {
+        let paths = lege_types::uri_list::decode(payload);
+        if paths.is_empty() {
+            return false;
+        }
+        self.clipboard = Some(Clipboard {
+            paths,
+            mode: ClipboardMode::Copy,
+        });
+        true
+    }
+
     pub fn set_clipboard(&mut self, mode: ClipboardMode) -> bool {
         if self.selected.is_empty() {
             return false;
@@ -1069,6 +1094,85 @@ mod tests {
         )]));
         assert!(!model.in_trash());
         assert!(model.trash_entries().is_empty());
+    }
+
+    #[test]
+    fn clipboard_a_copy_of_many_files_is_one_operation_over_the_whole_set() {
+        let mut model = BrowserModel::new(None, false);
+        let request = model.begin(PathBuf::from("/one"), Navigation::Reset);
+        model.apply_browse(
+            request.id,
+            &request.path,
+            Ok(snapshot("/one", &["a.txt", "b.txt", "c.txt"])),
+        );
+        model.select_all();
+        assert!(model.set_clipboard(ClipboardMode::Copy));
+
+        let second = model.navigate(PathBuf::from("/two"));
+        model.apply_browse(second.id, &second.path, Ok(snapshot("/two", &[])));
+        let planned = model.paste().expect("a paste into the open folder");
+        match planned.request {
+            OperationRequest::Copy {
+                sources,
+                destination_dir,
+            } => {
+                // One request naming all three, never three requests: one progress bar, one
+                // error, one undo.
+                assert_eq!(sources.len(), 3);
+                assert_eq!(destination_dir, PathBuf::from("/two"));
+            }
+            other => panic!("a copy clipboard must paste as a copy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clipboard_a_cut_pastes_as_a_move_so_the_source_is_not_duplicated() {
+        let mut model = BrowserModel::new(None, false);
+        let request = model.begin(PathBuf::from("/one"), Navigation::Reset);
+        model.apply_browse(request.id, &request.path, Ok(snapshot("/one", &["a.txt"])));
+        model.select_all();
+        assert!(model.set_clipboard(ClipboardMode::Move));
+
+        let second = model.navigate(PathBuf::from("/two"));
+        model.apply_browse(second.id, &second.path, Ok(snapshot("/two", &[])));
+        assert!(matches!(
+            model.paste().unwrap().request,
+            OperationRequest::Move { .. }
+        ));
+    }
+
+    #[test]
+    fn clipboard_interchange_is_the_uri_list_every_other_application_reads() {
+        let mut model = BrowserModel::new(None, false);
+        let request = model.begin(PathBuf::from("/one"), Navigation::Reset);
+        model.apply_browse(
+            request.id,
+            &request.path,
+            Ok(snapshot("/one", &["a.txt", "b.txt"])),
+        );
+        model.select_all();
+        assert_eq!(
+            model.selection_as_uri_list(),
+            "file:///one/a.txt\r\nfile:///one/b.txt\r\n"
+        );
+
+        // And what arrives from elsewhere becomes a clipboard here — a copy, because a bare
+        // uri-list says nothing about a cut and guessing one would move somebody's original.
+        assert!(model.set_clipboard_from_uri_list(
+            "file:///elsewhere/one.txt\r\nfile:///elsewhere/two.txt\r\n"
+        ));
+        let clipboard = model.clipboard.as_ref().unwrap();
+        assert_eq!(clipboard.mode, ClipboardMode::Copy);
+        assert_eq!(
+            clipboard.paths,
+            vec![
+                PathBuf::from("/elsewhere/one.txt"),
+                PathBuf::from("/elsewhere/two.txt")
+            ]
+        );
+        // Nothing pasteable in an empty payload, and no clipboard is silently discarded.
+        assert!(!model.set_clipboard_from_uri_list(""));
+        assert_eq!(model.clipboard.as_ref().unwrap().paths.len(), 2);
     }
 
     #[test]

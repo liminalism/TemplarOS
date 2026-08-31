@@ -19,6 +19,7 @@
 #![deny(unsafe_code)]
 
 pub mod app_search;
+pub mod clipboard;
 pub mod data;
 pub mod drawers;
 pub mod field_model;

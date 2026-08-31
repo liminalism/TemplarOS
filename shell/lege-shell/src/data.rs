@@ -356,6 +356,74 @@ pub async fn fetch_notifications_widget() -> (
     (snapshot, structured)
 }
 
+/// What the shell calls itself to `Files.Operations1`, so the journal records who asked.
+pub const SHELL_APP_ID: &str = "org.legeos.Shell";
+
+/// Poll one journalled operation until it stops, and hand back the record.
+///
+/// Polling rather than the `Finished` signal because this is a short-lived task that started the
+/// operation and wants only its own: subscribing would mean filtering a stream of everybody's.
+/// The interval is the service's own progress cadence; a copy of any size reports several times.
+pub async fn follow_operation(
+    proxy: &lege_client::proxies::FilesOperationsProxy<'_>,
+    op_id: &str,
+) -> anyhow::Result<lege_client::files::OperationRecord> {
+    loop {
+        let json = proxy.get(op_id).await?;
+        let record: lege_client::files::OperationRecord = serde_json::from_str(&json)?;
+        if record.state.terminal() {
+            return Ok(record);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+}
+
+/// One line about a finished operation, in the person's terms.
+///
+/// A partial failure is never reported as success. The service records what it skipped and why it
+/// stopped; both appear here, because "Moved 40 items" over an operation that actually moved 37
+/// and gave up is the single most damaging thing a file manager can say — the person closes the
+/// window believing the other three arrived.
+pub fn describe_operation(summary: &str, record: &lege_client::files::OperationRecord) -> String {
+    use lege_client::files::OperationState;
+    let skipped = if record.skipped.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · {} skipped ({})",
+            record.skipped.len(),
+            record
+                .skipped
+                .iter()
+                .take(3)
+                .map(|path| path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned()
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    match record.state {
+        // Committed with skips is not a plain success and does not read as one.
+        OperationState::Committed => format!("{summary} — done{skipped}"),
+        OperationState::Failed => format!(
+            "{summary} — failed after {} of {} item(s): {}{skipped}",
+            record.done_items,
+            record.total_items,
+            record.error.as_deref().unwrap_or("no reason given")
+        ),
+        OperationState::Cancelled => format!(
+            "{summary} — cancelled after {} of {} item(s){skipped}",
+            record.done_items, record.total_items
+        ),
+        OperationState::Undone => format!("{summary} — undone"),
+        // Not terminal; `follow_operation` does not return these, and saying "done" would be a
+        // guess about work still in flight.
+        other => format!("{summary} — {other:?}{skipped}").to_lowercase(),
+    }
+}
+
 /// The battery widget's content.
 ///
 /// A machine with no battery is not a failure and must not read as one: the snapshot stays

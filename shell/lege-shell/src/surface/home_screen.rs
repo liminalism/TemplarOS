@@ -19,7 +19,9 @@ use lege_window::{ShellToplevel, WindowId};
 use crate::drawers::window_shelf;
 use crate::file_browser;
 use crate::home_surface::Drawer;
-use crate::surface::file_browser::{FileBrowserAction, FileBrowserData, FileBrowserScreen};
+use crate::surface::file_browser::{
+    FileBrowserAction, FileBrowserData, FileBrowserScreen, FileRequest,
+};
 
 /// The three drawers `Files.Search1` can search — see [`Drawer`]'s doc: each is a standard XDG
 /// path plus its saved queries, which is exactly what a query root should be.
@@ -46,6 +48,9 @@ pub enum HomeSurfaceAction {
     },
     /// Resolve through Associations1 and launch through Launcher1.
     OpenFile(PathBuf),
+    /// An ordinary file verb performed in a Home file surface, for the host to send to
+    /// `lege-filed`. The surface names what and where; the service decides everything else.
+    File(FileRequest),
 }
 
 /// Everything the screen reads but does not own — refreshed by [`crate::surface::app`] from
@@ -146,6 +151,7 @@ impl HomeSurfaceScreen {
                     show_hidden,
                 },
                 Some(FileBrowserAction::Open(path)) => HomeSurfaceAction::OpenFile(path),
+                Some(FileBrowserAction::File(request)) => HomeSurfaceAction::File(request),
                 None => HomeSurfaceAction::None,
             }
         } else {

@@ -272,6 +272,55 @@ fn parse_user_dirs(text: &str, home: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// Make a directory under `parent`, returning the name it actually got.
+///
+/// The service picks the free name rather than failing on a collision, because the alternative is
+/// every surface inventing its own numbering and two file managers on one machine disagreeing
+/// about what the next untitled folder is called. Bounded rather than open-ended: after a
+/// thousand it stops, which is long past the point where the name was the problem.
+pub fn create_directory(parent: &Path, preferred_name: &str) -> Result<String> {
+    if !valid_component(preferred_name) {
+        bail!("a folder name must be one ordinary filename component: {preferred_name:?}");
+    }
+    if !parent.is_dir() {
+        bail!("{} is not a directory", parent.display());
+    }
+    let (stem, extension) = match preferred_name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
+        _ => (preferred_name, String::new()),
+    };
+    for index in 1..1_000 {
+        let name = if index == 1 {
+            preferred_name.to_owned()
+        } else {
+            format!("{stem} {index}{extension}")
+        };
+        let candidate = parent.join(&name);
+        // `create_dir` fails if the path exists, which is the check and the creation in one step
+        // — a separate `exists()` first would be a race with anything else making the same name.
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(name),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", candidate.display()));
+            }
+        }
+    }
+    bail!(
+        "no free name for {preferred_name:?} in {}",
+        parent.display()
+    )
+}
+
+/// One ordinary filename component: never a traversal, never a path, never a device.
+fn valid_component(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.as_bytes().contains(&0)
+}
+
 /// Inspect one path and, for a real directory, summarize its descendants without following links.
 pub fn inspect(path: &Path) -> Result<FileInfo> {
     if !path.is_absolute() {
@@ -452,6 +501,48 @@ pub fn sort_item(entry: &BrowseEntry) -> lege_types::file_sort::SortItem<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_actions_a_new_folder_gets_the_next_free_name_and_the_service_says_which() {
+        let dir = tempfile::tempdir().unwrap();
+        // The first is the name asked for; the service, not the surface, picks the ones after —
+        // otherwise two file managers on one machine number them differently.
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder"
+        );
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder 2"
+        );
+        assert_eq!(
+            create_directory(dir.path(), "New folder").unwrap(),
+            "New folder 3"
+        );
+        assert!(dir.path().join("New folder 3").is_dir());
+        // A name taken by a *file* is still taken.
+        std::fs::write(dir.path().join("Notes"), b"x").unwrap();
+        assert_eq!(create_directory(dir.path(), "Notes").unwrap(), "Notes 2");
+    }
+
+    #[test]
+    fn file_actions_a_new_folder_name_is_one_component_and_never_a_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["", ".", "..", "../escape", "sub/deeper", "a\0b"] {
+            assert!(
+                create_directory(dir.path(), name).is_err(),
+                "{name:?} was accepted as a folder name"
+            );
+        }
+        assert!(
+            !dir.path().parent().unwrap().join("escape").exists(),
+            "a traversal must not have created anything outside the parent"
+        );
+        // And a parent that is not a directory is refused rather than guessed at.
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(create_directory(&file, "New folder").is_err());
+    }
 
     #[test]
     fn browse_is_folder_first_natural_and_reports_real_metadata() {
