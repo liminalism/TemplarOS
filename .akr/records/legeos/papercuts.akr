@@ -186,6 +186,17 @@ record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut 
     created_at 2026-08-23
 }
 
+record legeos.papercut.just-msrv-fails-on-this-machine-at-any-commit/1 : papercut {
+    title "just msrv fails on this machine at any commit, including a clean base:…"
+    state verified
+    statement """
+        just msrv fails on this machine at any commit, including a clean base: sibling path deps bpg-bitstream/decode/format/hevc/hevc-decode declare rust-version 1.97, so cargo +1.93 refuses to resolve the workspace before compiling anything. That makes `just check` unable to reach green locally, so its failure carries no signal about the change under test. Pinning the bpg-* siblings as git deps, or excluding the preview graph from the MSRV check the way lege-preview-codecs already is, would restore it.
+        """
+    observed_at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+    author "claude"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     title "knowledge.propose exposes a generic slots object but not each kind's…"
     state verified
@@ -286,6 +297,17 @@ record legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 : paperc
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.the-delete-key-means-two-unrelated-things-in/1 : papercut {
+    title "The Delete key means two unrelated things in one product: on the Home…"
+    state verified
+    statement """
+        The Delete key means two unrelated things in one product: on the Home Field it stashes the focused tile to the shelf (field_screen.rs:963), in the Files app it moves the selected file to the trash (actions.rs:87). The Files app even labels it "Delete · Trash" in its shortcut hint while the same key one surface away destroys no file at all. Worth a vocabulary decision rather than a blind fix — either the field's verb stops being Delete, or shelving and trashing are named as one reversible "put away".
+        """
+    observed_at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+    author "claude"
+    created_at 2026-08-31
 }
 
 record legeos.papercut.the-documented-pre-login-check-lege-doctor-root/1 : papercut {

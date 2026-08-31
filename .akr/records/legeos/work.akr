@@ -1,6 +1,28 @@
 akr 0.1
 project legeos
 
+record legeos.work.accessibility-claimed-but-not-built/1 : work {
+    title "Either build the AT-SPI bridge and the high-contrast variant, or stop documenting them as shipped"
+    state proposed
+    scope [
+        path "distro/seeds/**",
+        path "docs/architecture/accessibility.md",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        docs/architecture/accessibility.md states that AT-SPI and Orca ship, and that every shell surface has a high-contrast variant. Neither is true in code. No Cargo.toml in the workspace depends on atspi; no accessible-object tree is registered and no a11y bus is spoken anywhere in shell/lege-shell or crates/. No high-contrast token, theme or setting exists in the shell. distro/seeds/a11y.seed really does install orca, at-spi2-core and speech-dispatcher — which is what makes this worse than a plain omission: a blind user can install LegeOS, start Orca, and meet a desktop that says nothing, because the shell paints itself with a custom rasterizer and exposes no name, role or state for any tile, drawer row or widget region. A toolkit would have carried the bridge; painting everything means owning it.
+
+        What is real: the focus ring is a genuine distinct indicator, reduced motion is a respected setting, and the field is deliberately keyboard-complete with pointer parity enforced by a gate. Those are the foundations; they are not a screen reader.
+
+        Two defensible outcomes and one indefensible one. Build the bridge; or correct the documentation and the seed to say plainly that assistive-technology support is not yet implemented. What must not persist is the current state, where the docs assert a capability a user could depend on and be stranded by. Correcting the documentation costs almost nothing and should not wait for the implementation — that part is separable and worth doing first, whatever is decided about the rest.
+        """
+    note """
+        Ranked fifth for daily-work cost, but the false documentation is a defect independent of that ranking and is cheap to fix on its own.
+        """
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+}
+
 record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
     title "Declare every user-facing action once, and generate the menu, the cheat sheet and the CLI verb from it"
     state proposed
@@ -313,6 +335,24 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
     implements [ @legeos.decision.session-greeter-lock/2 ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
     supersedes [ @legeos.work.display-manager-session-startup-reliability/3 ]
+}
+
+record legeos.work.file-operations-from-home/1 : work {
+    title "Rename, copy, new folder and properties from the field itself, and a file that can be dropped onto an application"
+    state proposed
+    scope [ path "services/lege-filed/**", path "shell/lege-shell/**" ]
+    intent """
+        From the Home Field a user can navigate and open. That is the whole verb list: the drawer browser does into-a-folder, Up, Refresh, show-hidden and open (shell/lege-shell/src/surface/file_browser.rs). There is no rename, no copy or move, no new folder, no properties, and no clipboard — neither key match block in the shell has a Ctrl+X/C/V arm. Nothing under shell/lege-shell/src ever calls the file service's mutation path, so every file task is a trip to the separate Files app.
+
+        Drag is the sharper half. The field's drag moves one tile between grid cells and never carries a file: Operation::OpenWith and Operation::AddReference — the two that would mean 'drop this file on that app' and 'put this file in that tray' — return None with the comment that they are placement only (surface/field_screen.rs:1435). Dropping a document onto an application is among the oldest gestures a desktop has, and on a surface whose entire premise is that files live on it in drawers, its absence is felt harder here than it would be on a conventional desktop.
+
+        The service side already exists — lege-filed implements rename, copy, move, trash and CreateDirectory as journalled transactions — so this is a shell and protocol problem: reach Operations1 from the shell, and decide how a field tile becomes a Wayland drag source. Worth settling alongside it whether the field's undo and the file service's undo stay two stacks or become one, because a user who has just renamed a file from Home and presses Ctrl+Z will not care which subsystem owns the last action.
+        """
+    note """
+        Rank 3 of the audit's daily-work gaps. Depends on selection landing first if bulk file operations are wanted rather than one file at a time.
+        """
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    part_of [ @legeos.work.home-field ]
 }
 
 record legeos.work.file-previews-copy-path-and-folder-properties/1 : work {
@@ -664,17 +704,59 @@ record legeos.work.home-field/1 : work {
     part_of [ @legeos.milestone.m2-session-runs ]
 }
 
+record legeos.work.home-field-discoverability/1 : work {
+    title "Render the cheat sheet the action manifest can already generate, and give the pointer-only actions a chord"
+    state proposed
+    scope [ path "crates/lege-types/**", path "shell/lege-shell/**" ]
+    intent """
+        Nothing about the Home Field is discoverable. There is no cheat sheet, no help overlay, no tooltip, no first-run — grepping the shell for cheat, help, shortcut, onboarding, tooltip and first-run finds only doc comments describing a cheat sheet that would read the action manifest, and a backend data migration named first_run that no user ever sees. The only hints in the product are the accelerator beside each context-menu row, an Escape breadcrumb while a drawer is expanded, and the search placeholder.
+
+        This compounds every other divergence. A user who has lost the taskbar and the virtual desktops has to find park, show-all and restore to work at all, and those actions carry chords: &[] in the manifest (crates/lege-types/src/action.rs:338-515) — window.park, window.close, field.restore, field.reset and every session.* verb are reachable only by guessing that a right-click menu exists on a surface with no visible affordance for one. The audit's verdict on the one-workspace invariant turns entirely on this: the substitute for virtual desktops is sound, and undiscoverable.
+
+        Two halves. First, render a cheat sheet from the manifest — the declaration already exists and check-actions already enforces that every action a surface performs is declared, so this is a view over data the project maintains, not a new list to keep in sync. Second, decide chords for the actions that have none, which is a design call about which verbs earn a key rather than a mechanical fill-in.
+        """
+    note """
+        Rank 2 of the audit's daily-work gaps. The manifest already carries everything a cheat sheet needs; nothing renders it.
+        """
+    depends_on [ @legeos.work.action-manifest-one-declaration-three-surfaces ]
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    part_of [ @legeos.work.home-field ]
+}
+
+record legeos.work.home-field-selection-and-bulk-action/1 : work {
+    title "A selection, not just a focus — so more than one thing can be acted on at once"
+    state proposed
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    intent """
+        The Home Field has no selection at all, only a focus: a single focus: Option<TileId> (shell/lege-shell/src/surface/field_screen.rs:157), and a single entry_focus: usize in the drawer browser (surface/file_browser.rs:54). Every keyboard and pointer path that looks like selecting overwrites that one field. There is no shift-click, no ctrl-click, no marquee, and consequently no way to move three files, trash a group of downloads, or stash several tiles — each is one item at a time or not at all. Drag carries a single TileId by construction (crates/lege-field/src/drag.rs:52), and FieldOp::Move, Resize and Stash each take one id.
+
+        Ranked first because it is the plainest daily-work blocker in the audit: bulk action is table stakes everywhere else, and its absence is felt on the ordinary path rather than an exotic one.
+
+        The work is a model change before it is a UI one. lege-field is where selection has to live to keep the ops invertible — a bulk move must be one undoable op, not N ops that undo one at a time — so expect FieldOp variants that take a set, and the existing property tests (ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates) to be the gate on getting it right. Shift-click for a range, ctrl-click to toggle, drag-on-background for a marquee, and Ctrl+A; keyboard parity means shift-arrows extending the selection, since the field is deliberately keyboard-complete.
+        """
+    note """
+        Rank 1 of the audit's daily-work gaps. The lege-field invariant tests are the reason to do the model first: a bulk op that does not invert exactly would break a property the field already guarantees.
+        """
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    part_of [ @legeos.work.home-field ]
+}
+
 record legeos.work.home-field-settings-gui/1 : work {
-    title "A Home Field page in lege-settings — five shell.home-field.* keys are CLI-only today"
+    title "A Home Field page in lege-settings — shipped; what remains is every other page, which is still read-only"
     state proposed
     scope [ path "apps/lege-settings/**", path "crates/lege-session-core/src/settings.rs" ]
     intent """
-        The settings schema declares five Home Field keys that lege-shell reads — shell.home-field.tile-size, .throw, .previews, .preview-rate and .reduced-motion (add_home_field_specs in crates/lege-session-core/src/settings.rs) — but apps/lege-settings has no Home Field page: its pages are associations, background, hardware, history, providers and resources, and the app is deliberately a model plus text renderer for now. The only route to tune the field is the `lege settings` CLI verb, which fails the field's own standard that no capability may be chord- or CLI-only. The work is a Home Field section in lege-settings driven by the schema (descriptions, defaults, choices and min/max are already declared there), so every shell.home-field.* key is adjustable from the GUI while the settings service stays the single policy owner.
+        Superseded in part by what shipped on 2026-08-30. The premise of revision 1 — that the five shell.home-field.* keys are CLI-only — no longer holds: lege-settings now opens graphically by default (apps/lege-settings/src/main.rs:74, with --print as the legacy text path), and its Home Field tab carries live controls that write through Settings1.Set and Reset. tile-size, throw, previews, preview-rate and reduced-motion are all editable in the GUI.
+
+        What is left is the rest of the app. Of the seven tabs — Home Field, Providers, Associations, Background, Resources, History, Hardware — only Home Field is interactive; the other six render the same lines the CLI --print path produces, with no controls (apps/lege-settings/src/surface.rs). So provider role selection, association defaults and everything else can be read graphically and changed only from the CLI. shell.wallpaper.enabled is a further case: a real settings key that falls outside the HOME_PREFIX filter and therefore has no GUI control at all.
+
+        Kept open rather than completed because the original goal — settings a user can change without a terminal — is met for one page out of seven.
         """
     note """
-        Recorded as the settings-GUI gap from the Home Field gap audit. Schema-driven is the point: the page should render whatever add_home_field_specs declares, so a sixth key needs no GUI change.
+        Revised 2026-08-31 by the Home Field usability audit, which found revision 1's CLI-only premise stale.
         """
     depends_on [ @legeos.constraint.services-not-indicators ]
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
     part_of [ @legeos.work.home-widgets ]
 }
 
@@ -1100,7 +1182,7 @@ record legeos.work.home-widget-launcher/1 : work {
 }
 
 record legeos.work.home-widget-notifications/1 : work {
-    title "Notification widget, and the read-back path sessiond does not yet offer"
+    title "Notification widget — the tile and the read-back path shipped; per-notification dismiss, actions and any push remain"
     state proposed
     scope [
         path "cli/lege/**",
@@ -1109,13 +1191,16 @@ record legeos.work.home-widget-notifications/1 : work {
         path "shell/lege-shell/src/surface/widgets/**"
     ]
     intent """
-        Render notifications. sessiond hosts org.freedesktop.Notifications, attributes each notification to an AppId and files it in searchable history, and docs/architecture/history.md states plainly that "the shell renders" — but the shell contains no notification rendering whatsoever. Any application that posts a notification today gets a successful D-Bus reply and the user sees nothing at all.
+        Superseded in part by what shipped on 2026-08-30. Revision 1's premise — that the shell contains no notification rendering whatsoever, and that sessiond offers no read-back — no longer holds. org.legeos.Notifications1 serves ListActive, Dismiss, ClearAll and a Changed signal alongside the full org.freedesktop.Notifications implementation, and the shell has a notifications system widget (shell/lege-shell/src/surface/widgets/mod.rs:144) showing a headline count and up to three app — summary lines, with a clear-all region wired to ClearAll.
+
+        What remains is most of what makes notifications useful. There is no per-notification dismiss, only bulk clear. A notification's actions cannot be invoked from the shell — ActionInvoked is served but never emitted by any surface — so a notification offering Reply or Open is decorative. Nothing is pushed: no toast, no OSD, nothing appears unprompted, so a notification is seen only if the user happens to look at the tile, which for a message or a finished job is close to not being notified at all. The three-line cap does not grow with the tile.
+
+        History is readable through Settings — History or lege settings --page history, so nothing is lost; it is just not surfaced where a user would look.
         """
     note """
-        The blocking gap is that the shell has no way to read notifications back. The notifications_active table is write-only from the shell's point of view: NotificationsApi has no List or GetActive method, so the only read path is History1.Recent, which returns every kind of history event mixed together, cannot filter by kind server-side, and carries no still-active flag. On top of that, Notify receives app_icon, the urgency and category hints, and expire_timeout, and discards all of them — the module's own comment names these as legitimate future additions "once the shell renders notifications", which is now. So the first task is extending the service, not drawing anything.
-
-        A notification arriving must never move a tile. homefield.md is explicit that geometry changes only through explicit user action, monitor reconfiguration or a layout command, and names a notification arriving as an example of what must not disturb the field; the widget contract already routes snapshots as content-only for this reason, and the content_changes_move_nothing property guards it.
+        Revised 2026-08-31 by the Home Field usability audit, which found revision 1's no-rendering premise stale. The remaining gap is push and per-item action, not rendering.
         """
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
     part_of [ @legeos.work.home-widgets ]
 }
 
@@ -1450,6 +1535,36 @@ record legeos.work.standalone-file-manager/3 : work {
     part_of [ @legeos.milestone.m2-session-runs ]
     supersedes [ @legeos.work.standalone-file-manager/2 ]
     acknowledged true
+}
+
+record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {
+    title "Files.Trash1 — see what is in the trash, put an item back, and empty it"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "cli/lege/**",
+        path "crates/lege-client/**",
+        path "interfaces/dbus/**",
+        path "services/lege-filed/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        The trash cannot be looked at. trash::list is implemented and freedesktop-correct — it parses .trashinfo, handles the per-volume .Trash-$uid, sorts newest first (services/lege-filed/src/trash.rs:198) — and is called from exactly one place in the repository: a test. No D-Bus interface exposes it, so the shell's Trash drawer renders the operations journal filtered to trash and restore, and says so honestly in its own empty state; its header comment names Files.Trash1 as the interface it wants (shell/lege-shell/src/drawers/trash.rs:1-15). There is no empty-trash anywhere — no method, no verb, no control — and no explicit restore action in the Files app, which has Trash and Undo but no Restore. Permanent delete is modelled and executable and no UI ever constructs it.
+
+        Design settled by the audit. Trash1 gets one read method, List, which is the thing Operations1 genuinely cannot answer and which must sweep every trash this user has — the home trash and each mounted volume's — not just the one. Restore, DeletePermanently and Empty are thin validating wrappers over the same FileService::start that Operations1.Start uses, so a large empty keeps its progress, its journal and its crash-resume, and a restore keeps its undo, instead of growing a second execution path with a different story. Empty sweeps server-side rather than making a client list-then-delete, which would race. A Changed signal, emitted from the single place operations complete, keeps the drawer and the Files app live whichever client did the mutating.
+
+        Order: interface, service and proxy together (check-interfaces and check-proxies only go green as a set), then the CLI verbs, then the shell drawer's real listing, then the Files app's trash place last — that one is the largest piece, because it means teaching a directory browser to render a listing that is not a directory, with different columns, different actions and a confirmation rule of its own. The Files app is the cut line if budget runs short; the CLI gives a working path meanwhile.
+
+        The undo defect this area also carried is already fixed at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db and is not part of this item.
+        """
+    note """
+        Rank 4. The backend capability already exists and is spec-correct; what is missing is the wire and the three surfaces over it.
+        """
+    derived_from [
+        @legeos.assessment.home-field-usability-gaps-20260831,
+        @legeos.observation.trash-undo-reported-a-restore-it-did-not-perform
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
 }
 
 record legeos.work.window-controls-and-mouse-parity/1 : work {

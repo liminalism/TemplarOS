@@ -967,6 +967,18 @@ record legeos.evidence.third-desktop-run-journal-20260823/1 : evidence {
         """
 }
 
+record legeos.evidence.trash-undo-and-search-fixes-20260831/1 : evidence {
+    title "Trash undo and search-index fixes: 86 lege-filed tests pass, both fixes proven to fail without them"
+    state verified
+    result pass
+    method command
+    observed_at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+    command "cargo test -p lege-filed && cargo clippy -p lege-filed --all-targets && cargo fmt -p lege-filed -- --check && just check"
+    summary """
+        86 lege-filed tests pass (was 85; two added, one corrected), clippy pedantic and rustfmt clean, and just check green through fmt, clippy, workspace tests and all seven xtask gates. Both fixes were verified by reversion rather than assertion alone: restoring the old undo_of makes trashing_and_undoing_it_round_trip fail with the file still in the trash while the operation reports Committed, which is the reported symptom; disabling only the trash-directory predicate makes a_trashed_file_stops_turning_up_in_search fail with both the home Trash and .Trash-1000 copies back in the results. just msrv fails, identically at the base commit 453a9b1, because sibling bpg-* crates require Rust 1.97 against the 1.93 MSRV — pre-existing and unrelated to these changes.
+        """
+}
+
 record legeos.evidence.widget-foundations-nested-run-20260825/1 : evidence {
     title "Nested run: the shell connected to lege_shell_v1, declared Layer::HomeSurface and rendered for twelve seconds with no error or panic, exercising the new widget-contract draw path, the Session system tile and the resize grip on every frame. lege-comp --check reports ok and still offers the screencopy globals on the trusted socket only."
     state verified

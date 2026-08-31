@@ -133,3 +133,23 @@ record legeos.observation.transient-unit-launch-converged-independently/2 : obse
             """
     }
 }
+
+record legeos.observation.trash-undo-reported-a-restore-it-did-not-perform/1 : observation {
+    title "Undoing a trash restored nothing and still committed — and the covering test hid it by substituting its own inputs"
+    state verified
+    scope [ path "services/lege-filed/**" ]
+    statement """
+        Undo of a trash operation reported success and moved no file. undo_of built the undo plan from the operation's own paths — the pre-trash locations, the only ones OperationKind::Trash retains — so plan emitted Step::RestoreFromTrash aimed at a path the file had just vacated; execute found nothing there, took that for 'already restored', returned Ok, and the operation reached Committed. Ctrl+Z in the Files app and lege files undo both told the user the file was back when it was still in the trash. The same defect existed in the other direction, undoing a restore, with no test coverage at all.
+
+        What matters beyond the fix: the test that should have caught this concealed it. trashing_and_undoing_it_round_trip took undo_of's result, discarded its paths, looked the real trashed paths up itself via trash::list, and passed those in — a substitution production never performs. The test therefore exercised a path no caller takes and passed for four months while the production path was broken. A test that repairs its subject's output before asserting on it is not covering that subject; the repair is the bug, made invisible.
+
+        Fixed at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db by recording where the trash actually put each item into the executed step, the way Move's undo already reads its RenameInPlace destination. A post-hoc trash::list lookup could not serve: trash::free_name resolves collisions against the live directory, so a path trashed twice leaves two records and nothing outside the operation can say which is which. The corrected test feeds undo_of straight into plan; reverting the fix fails it.
+        """
+    observed_at git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+    method command
+    watches [
+        "services/lege-filed/src/execute.rs",
+        "services/lege-filed/src/operations.rs",
+        "services/lege-filed/src/trash.rs"
+    ]
+}

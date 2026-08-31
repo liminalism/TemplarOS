@@ -58,3 +58,30 @@ record legeos.assessment.desktop-test-readiness-20260827/1 : assessment {
         @legeos.evidence.desktop-audit-workspace-tests-20260827/1
     ]
 }
+
+record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
+    title "Home Field usability audit — a deliberate divergence is a gap only where its substitute is missing, weaker or undiscoverable"
+    state verified
+    scope [
+        path "apps/**",
+        path "compositor/**",
+        path "portals/**",
+        path "services/lege-filed/**",
+        path "shell/**"
+    ]
+    statement """
+        Audited the Home Field and the modules around it against mainstream desktop expectations. The Home Field's rejections — no taskbar, no tray, no virtual desktops, no title bars — are the product, so this audit judges each one by its substitute rather than by the convention it dropped, and reports a gap only where the substitute is missing, weaker or undiscoverable. On that test the shell's own rejections mostly hold; what fails is a different class of thing entirely — capabilities the project intends to have, believes it has, or documents as shipped, which are absent in code.
+
+        JUDGED BY SUBSTITUTE, AND SOUND. Virtual desktops: rejected by the one-workspace invariant (compositor/COMPOSITOR.md:12); substitute is park-to-tile plus show-all plus Alt-Tab; the substitute is real, but window.park has no chord at all and window.show-all has no pointer route outside one context menu, so the gap is discoverability, not the missing workspaces. Taskbar: rejected; substitute is the field's own app and parked-session tiles, which is a genuine replacement. Tray: rejected under the services-not-indicators constraint; substitute is the widget system plus ProviderRole slots, which works for network via the user's nm-tray2 but leaves a third-party app no place to dock. Title bars: no server-side chrome renderer, so decoration is forced client-side (compositor/lege-comp/src/xdg_shell.rs:467); the substitute for close is a context-menu row and for resize a compositor-painted grip, but there is no user-facing maximize control at all — a window only maximizes if the app asks.
+
+        GENUINE GAPS, RANKED BY DAILY COST. (1) No multi-select anywhere: the field carries a single focus: Option<TileId> (shell/lege-shell/src/surface/field_screen.rs:157) and the drawer browser a single entry_focus: usize (surface/file_browser.rs:54); no shift-click, ctrl-click or marquee exists, so no bulk action on files or tiles is possible. (2) Nothing is discoverable: no cheat sheet, tooltip, help overlay or first-run anywhere in the shell; park, close, restore and reset have no chord and live only in a right-click menu the user must guess is there; the action manifest can already generate a cheat sheet and nothing renders one. (3) No file operations from Home: navigate and open only — no rename, copy, move, new folder, properties or clipboard, and no drag of a file into an application; Operation::OpenWith and AddReference return None (field_screen.rs:1435). (4) The trash could not list its contents. (5) Accessibility is claimed but not built.
+
+        DOCUMENTED-BUT-ABSENT, which is a distinct and worse category than merely missing, because the docs assert it: docs/architecture/accessibility.md claims AT-SPI support and a high-contrast variant for every shell surface; no atspi dependency exists in any Cargo.toml and no contrast token or theme exists in shell/lege-shell/src. a11y.seed installs Orca with nothing to read, because the shell paints itself with a custom rasterizer and exposes no accessible name, role or state for any tile, row or widget. Reduced motion and the focus ring are real and respected; the rest of the claim is not implemented.
+
+        ABSENT WITH NO SUBSTITUTE: Lifecycle1.Lock hard-fails NotSupported although the compositor fully implements ext-session-lock-v1 — nothing drives it; volume, brightness and battery exist nowhere in the tree as code, not as stubs; the Files app has no new folder, search, sort control, view mode or breadcrumbs, though lege-filed supports CreateDirectory; the OpenURI, Screenshot, ScreenCast and Print portals do not exist; no removable-media mount or eject; no display configuration; no keyboard-layout switcher, touchpad settings or IME.
+
+        STALE LEDGER CLAIMS corrected by this audit: the graphical settings app and the shell's notification rendering both shipped on 2026-08-30, after the 08-27 readiness audit that called them stubs, and the portal NoUiAvailable path is now a headless-only fallback rather than the default.
+        """
+    confidence high
+    as_of git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+}
