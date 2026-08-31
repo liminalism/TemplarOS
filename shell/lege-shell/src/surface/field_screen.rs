@@ -1780,20 +1780,37 @@ impl FieldScreen {
     /// `wl_data_device_manager` bound. The payload is exact and tested; the handover is not
     /// built.
     pub fn dragged_uri_list(&self, doc: &FieldDocument) -> Option<String> {
-        let tile = self.drag.tile()?;
+        let paths = self.dragged_file_paths(doc);
+        (!paths.is_empty()).then(|| lege_types::uri_list::encode(&paths))
+    }
+
+    /// The files a live drag is carrying, in selection order. Empty when nothing is lifted or
+    /// what is lifted is not a file.
+    pub fn dragged_file_paths(&self, doc: &FieldDocument) -> Vec<PathBuf> {
+        let Some(tile) = self.drag.tile() else {
+            return Vec::new();
+        };
         let carried: Vec<TileId> = if self.selection.len() > 1 && self.selection.contains(&tile) {
             self.selection.to_vec()
         } else {
             vec![tile]
         };
-        let paths: Vec<PathBuf> = carried
+        carried
             .iter()
             .filter_map(|id| match doc.kind_of(*id)? {
                 TileKind::File { path } | TileKind::Folder { path } => Some(path.clone()),
                 _ => None,
             })
-            .collect();
-        (!paths.is_empty()).then(|| lege_types::uri_list::encode(&paths))
+            .collect()
+    }
+
+    /// Whether the drag has actually been lifted, as opposed to a press that has not moved far
+    /// enough to be one yet.
+    ///
+    /// A `wl_data_device` drag must not start on a press: a click on a file tile would then
+    /// become a drag the compositor is grabbing for, and the click would never arrive.
+    pub fn drag_is_lifted(&self) -> bool {
+        self.drag.is_lifted()
     }
 
     /// A drop the grammar named as a real file operation, as one request for the whole
@@ -4167,6 +4184,54 @@ mod tests {
             h.frame();
         }
         assert_eq!(h.screen.dragged_uri_list(&h.doc), None);
+    }
+
+    #[test]
+    fn data_device_a_drag_is_only_exported_once_it_is_actually_lifted() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/one.txt"),
+            (
+                TileId(2),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        let from = h.rect_of(TileId(1));
+
+        // Pressed but not moved: this is a click on its way to happening, not a drag. Starting a
+        // `wl_data_device` drag here would turn the compositor's grab on and the click would
+        // never arrive.
+        h.input
+            .cursor_moved((from.x + 10) as f32, (from.y + 8) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert!(
+            !h.screen.drag_is_lifted(),
+            "a press is not a lift, and must not export a drag"
+        );
+
+        // Moved far enough to be a lift: now there is a drag, and it is carrying the file.
+        for step in 1..=6 {
+            h.input
+                .cursor_moved((from.x + 10 + step * 14) as f32, (from.y + 8) as f32);
+            h.now += 60;
+            h.frame();
+        }
+        assert!(h.screen.drag_is_lifted());
+        assert_eq!(
+            h.screen.dragged_file_paths(&h.doc),
+            vec![PathBuf::from("/home/u/one.txt")]
+        );
+
+        // Released: nothing is lifted, so the next press starts from scratch rather than
+        // continuing to look like an export in progress.
+        h.input.mouse(MouseButton::Left, false);
+        h.frame();
+        assert!(!h.screen.drag_is_lifted());
+        assert!(h.screen.dragged_file_paths(&h.doc).is_empty());
     }
 
     #[test]

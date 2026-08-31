@@ -233,6 +233,9 @@ struct ShellApp {
     /// What Ctrl+C or Ctrl+X last put down. Held by the host rather than by a surface, because
     /// it outlives whichever folder was open when it was filled.
     clipboard: Option<Clipboard>,
+    /// Whether a `wl_data_device` drag has already been started for the lift now in progress, so
+    /// one lift starts exactly one drag rather than one per frame.
+    drag_exported: bool,
     field_settings: HomeFieldSettings,
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
@@ -316,6 +319,7 @@ impl ShellApp {
             last_field_change_at: None,
             last_file_operation: None,
             clipboard: None,
+            drag_exported: false,
             field_settings: HomeFieldSettings::default(),
             field_requested: false,
             apps: Vec::new(),
@@ -960,6 +964,7 @@ impl ShellApp {
         // The browse grid told us during the draw which cells it can see; hand the bounded
         // thumbnail work to the preview service now, off-thread.
         self.spawn_thumbnails();
+        self.export_drag_if_lifted();
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1643,12 +1648,15 @@ impl ShellApp {
                 };
                 // Offered to the rest of the desktop as well as kept here, so Home's copy is
                 // pasteable in the Files app and in anything else that reads a uri-list.
-                Self::publish_clipboard(&clipboard);
+                let shared = self.publish_clipboard(&clipboard);
                 self.field_screen.report(
                     format!(
-                        "{} {} — paste with Ctrl+V",
+                        "{} {} — paste with Ctrl+V{}",
                         if copied { "Copied" } else { "Cut" },
-                        items(clipboard.paths().len())
+                        items(clipboard.paths().len()),
+                        // Said plainly rather than left to be discovered: a copy that only works
+                        // inside Home is a different promise from one the whole desktop can take.
+                        if shared { "" } else { " (in Home only)" }
                     ),
                     now_ms,
                 );
@@ -1658,7 +1666,11 @@ impl ShellApp {
                 let Some(directory) = request.directory.as_ref() else {
                     return;
                 };
-                let Some(clipboard) = self.clipboard.as_ref() else {
+                // Whoever owns the seat selection is what a paste reads. Ctrl+C in a browser
+                // then Ctrl+V in Home must paste the browser's files, not the ones Home copied
+                // ten minutes ago — and the compositor already told us which by cancelling
+                // Home's source, so this is a fact rather than a guess.
+                let Some(clipboard) = self.paste_clipboard() else {
                     self.field_screen
                         .report("Nothing to paste".to_owned(), now_ms);
                     return;
@@ -1801,23 +1813,100 @@ impl ShellApp {
         });
     }
 
-    /// Offer the clipboard to the rest of the desktop.
+    /// Start a `wl_data_device` drag once per lift, when what is lifted is a file.
     ///
-    /// **This is where the Wayland wiring stops.** Making a selection available to other
-    /// applications means owning `wl_data_device`'s selection and answering `send` requests for
-    /// each offered MIME type, and the shell's compositor connection is the private
-    /// `lege_shell_v1` protocol — it has no `wl_data_device_manager` bound and no seat to own a
-    /// selection on. Everything *above* that transport is finished and tested: the encodings are
-    /// exact (`crate::clipboard`, `lege_types::uri_list`), and both payloads are produced here
-    /// ready to hand over. What is missing is the handover itself, so a copy in Home is
-    /// pasteable in Home and not yet in Firefox.
-    fn publish_clipboard(clipboard: &Clipboard) {
-        tracing::debug!(
-            paths = clipboard.paths().len(),
-            uri_list = clipboard.to_uri_list().len(),
-            gnome = clipboard.to_gnome_copied_files().len(),
-            "clipboard ready to offer; wl_data_device is not bound on the shell's connection"
-        );
+    /// Edge-triggered on the lift rather than on the press: a drag started on press would turn
+    /// every click on a file tile into a compositor grab and the click would never arrive. Once
+    /// per lift rather than per frame for the obvious reason — `start_drag` twice is two drags.
+    ///
+    /// The field's own drag continues underneath. That is deliberate: the tile has to keep
+    /// following the pointer inside Home whatever the compositor is doing with the drag, and a
+    /// drop back onto Home is still a Home drop.
+    fn export_drag_if_lifted(&mut self) {
+        let lifted = self.field_screen.drag_is_lifted();
+        if !lifted {
+            self.drag_exported = false;
+            return;
+        }
+        if self.drag_exported {
+            return;
+        }
+        let paths = self.field_screen.dragged_file_paths(&self.field);
+        // Nothing to export: a window, a widget or a project carries no files, and offering an
+        // empty uri-list would be a promise of files that turns out to be a lie.
+        let Some(clipboard) = Clipboard::copy(paths) else {
+            // Marked as handled anyway, so a non-file drag is not re-examined every frame.
+            self.drag_exported = true;
+            return;
+        };
+        let payload = crate::data_device::ClipboardPayload::of(&clipboard);
+        self.drag_exported = true;
+        let Some(window) = self
+            .home
+            .as_ref()
+            .map(|home| std::sync::Arc::clone(&home.window))
+        else {
+            return;
+        };
+        if let Some(bridge) = self.bridge.as_mut()
+            && let Err(error) = bridge.start_file_drag(&window, payload)
+        {
+            tracing::debug!(%error, "could not start a drag for the rest of the desktop");
+        }
+    }
+
+    /// Offer the clipboard to the rest of the desktop as the seat selection.
+    ///
+    /// Returns whether the transport took it. `false` is the ordinary no-compositor case — a
+    /// nested development session with no trusted socket, or a connection that has seen no input
+    /// event and so has no serial to name — and Home's own clipboard still works either way.
+    fn publish_clipboard(&mut self, clipboard: &Clipboard) -> bool {
+        let payload = crate::data_device::ClipboardPayload::of(clipboard);
+        let Some(bridge) = self.bridge.as_mut() else {
+            return false;
+        };
+        match bridge.offer_selection(payload) {
+            Ok(offered) => offered,
+            Err(error) => {
+                tracing::warn!(%error, "could not offer the clipboard to the seat");
+                false
+            }
+        }
+    }
+
+    /// The clipboard a paste should read: Home's own, or whatever another application is offering.
+    ///
+    /// Reading a foreign selection is a synchronous, bounded transfer over a pipe — it happens
+    /// here, on the frame thread, because a paste is something a person just asked for and
+    /// deferring it a frame would paste into a folder they may already have left.
+    fn paste_clipboard(&mut self) -> Option<Clipboard> {
+        use crate::data_device::PasteSource;
+        let (owns, foreign_available) = self.bridge.as_ref().map_or((false, false), |bridge| {
+            (
+                bridge.owns_selection(),
+                bridge.foreign_selection_available(),
+            )
+        });
+        match crate::data_device::paste_source(owns, self.clipboard.as_ref(), foreign_available) {
+            PasteSource::Own => self.clipboard.clone(),
+            PasteSource::Foreign => {
+                let foreign = self.bridge.as_mut()?.read_foreign_selection();
+                match foreign {
+                    Ok(Some(selection)) => match selection.mode {
+                        crate::clipboard::ClipboardMode::Cut => Clipboard::cut(selection.paths),
+                        crate::clipboard::ClipboardMode::Copy => Clipboard::copy(selection.paths),
+                    },
+                    // Offered but unreadable, or offering something that is not files. Falling
+                    // back to Home's own is better than refusing outright.
+                    Ok(None) => self.clipboard.clone(),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not read the selection on offer");
+                        self.clipboard.clone()
+                    }
+                }
+            }
+            PasteSource::Nothing => None,
+        }
     }
 
     /// `New folder` through the same service the Files app uses.

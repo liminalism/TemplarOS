@@ -60,13 +60,23 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use std::os::fd::AsFd;
+
 use wayland_backend::client::{Backend as WBackend, ObjectData, ObjectId};
 use wayland_client::protocol::{
+    wl_data_device::{self, WlDataDevice},
+    wl_data_device_manager::{self, WlDataDeviceManager},
+    wl_data_offer::{self, WlDataOffer},
+    wl_data_source::{self, WlDataSource},
+    wl_keyboard::{self, WlKeyboard},
+    wl_pointer::{self, WlPointer},
     wl_registry::{self, WlRegistry},
+    wl_seat::{self, WlSeat},
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 
+use crate::data_device::{ClipboardPayload, ForeignSelection, InputSerials, choose_target};
 use lege_types::{AppId, InstanceId};
 use lege_window::{Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Edge};
 
@@ -163,6 +173,34 @@ pub struct BridgeState {
     home_revealed: bool,
     /// Window previews over the standard capture protocols (`crate::previews`).
     pub(crate) previews: crate::previews::PreviewState,
+    /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
+    /// well as a privileged one, and this is the normal half.
+    pub(crate) data: DataDeviceBridge,
+}
+
+/// Everything `wl_data_device` needs, on the same connection as the rest.
+#[derive(Default)]
+pub(crate) struct DataDeviceBridge {
+    manager: Option<WlDataDeviceManager>,
+    seat: Option<WlSeat>,
+    device: Option<WlDataDevice>,
+    /// Bound only to receive serials: `set_selection` and `start_drag` must name a real input
+    /// event, and this connection has to have seen one to have a serial at all.
+    keyboard: Option<WlKeyboard>,
+    pointer: Option<WlPointer>,
+    serials: InputSerials,
+    /// What to write when a receiver asks. Held for as long as the selection is Home's.
+    payload: Option<ClipboardPayload>,
+    /// The source currently offered as the seat selection, and whether it is still live —
+    /// `cancelled` arrives the moment another client takes the selection.
+    source: Option<WlDataSource>,
+    own_selection_live: bool,
+    /// The offer the compositor last named as the selection, and the types it advertises.
+    offer: Option<WlDataOffer>,
+    offer_mime_types: Vec<String>,
+    /// The offer being built up: `wl_data_offer.offer` events arrive before the
+    /// `wl_data_device.selection` that names which offer they belonged to.
+    pending_mime_types: HashMap<ObjectId, Vec<String>>,
 }
 
 impl Dispatch<WlRegistry, ()> for BridgeState {
@@ -184,11 +222,249 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
                 let version = version.min(SHELL_PROTOCOL_VERSION);
                 state.manager =
                     Some(registry.bind::<LegeShellManagerV1, _, _>(name, version, qh, ()));
+            } else if interface == "wl_data_device_manager" {
+                // Version 3 is what everything ships; the drag/selection requests this uses have
+                // existed since version 1, so a lower advertisement still works.
+                let version = version.min(3);
+                state.data.manager =
+                    Some(registry.bind::<WlDataDeviceManager, _, _>(name, version, qh, ()));
+                state.data.attach(qh);
+            } else if interface == "wl_seat" && state.data.seat.is_none() {
+                // A second `wl_seat` binding beside winit's own. Two bindings of one seat is
+                // ordinary Wayland — each gets its own keyboard and pointer objects receiving the
+                // same events — and it is the only way to see serials without asking winit for
+                // something it does not expose.
+                let version = version.min(5);
+                state.data.seat = Some(registry.bind::<WlSeat, _, _>(name, version, qh, ()));
+                state.data.attach(qh);
             } else {
                 state
                     .previews
                     .bind_global(registry, name, &interface, version, qh);
             }
+        }
+    }
+}
+
+impl DataDeviceBridge {
+    /// Create the data device once both halves have arrived.
+    ///
+    /// Called from each global's arm rather than after the round trip because the registry does
+    /// not promise an order: whichever of the manager and the seat is advertised second is the
+    /// one that completes the pair.
+    fn attach(&mut self, qh: &QueueHandle<BridgeState>) {
+        if self.device.is_some() {
+            return;
+        }
+        let (Some(manager), Some(seat)) = (self.manager.as_ref(), self.seat.as_ref()) else {
+            return;
+        };
+        self.device = Some(manager.get_data_device(seat, qh, ()));
+    }
+
+    /// Forget the selection Home was offering, whether it was taken away or replaced.
+    fn drop_own_source(&mut self) {
+        if let Some(source) = self.source.take() {
+            source.destroy();
+        }
+        self.payload = None;
+        self.own_selection_live = false;
+    }
+}
+
+impl Dispatch<WlDataDeviceManager, ()> for BridgeState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlDataDeviceManager,
+        _event: wl_data_device_manager::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // `wl_data_device_manager` has no events.
+    }
+}
+
+impl Dispatch<WlSeat, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        seat: &WlSeat,
+        event: wl_seat::Event,
+        (): &(),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        // Keyboard and pointer are taken purely for their serials — nothing here interprets a
+        // key or a click, which is winit's job on its own objects.
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
+        {
+            if capabilities.contains(wl_seat::Capability::Keyboard) && state.data.keyboard.is_none()
+            {
+                state.data.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
+            if capabilities.contains(wl_seat::Capability::Pointer) && state.data.pointer.is_none() {
+                state.data.pointer = Some(seat.get_pointer(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<WlKeyboard, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlKeyboard,
+        event: wl_keyboard::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Enter { serial, .. }
+            | wl_keyboard::Event::Leave { serial, .. }
+            | wl_keyboard::Event::Key { serial, .. }
+            | wl_keyboard::Event::Modifiers { serial, .. } => state.data.serials.record(serial),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlPointer, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlPointer,
+        event: wl_pointer::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter { serial, .. }
+            | wl_pointer::Event::Leave { serial, .. }
+            | wl_pointer::Event::Button { serial, .. } => state.data.serials.record(serial),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlDataDevice, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlDataDevice,
+        event: wl_data_device::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            // A new offer object, whose types arrive as `wl_data_offer.offer` events *before* the
+            // `selection` that says which offer they described. Collected by object id until then.
+            wl_data_device::Event::DataOffer { id } => {
+                state.data.pending_mime_types.insert(id.id(), Vec::new());
+            }
+            wl_data_device::Event::Selection { id } => {
+                if let Some(previous) = state.data.offer.take() {
+                    previous.destroy();
+                }
+                match id {
+                    Some(offer) => {
+                        state.data.offer_mime_types = state
+                            .data
+                            .pending_mime_types
+                            .remove(&offer.id())
+                            .unwrap_or_default();
+                        state.data.offer = Some(offer);
+                    }
+                    // A null selection means the seat holds nothing at all.
+                    None => {
+                        state.data.offer_mime_types.clear();
+                    }
+                }
+                state.data.pending_mime_types.clear();
+            }
+            _ => {}
+        }
+    }
+
+    fn event_created_child(opcode: u16, qh: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        match opcode {
+            // `wl_data_device.data_offer` is opcode 0 and the only event carrying a new id.
+            0 => qh.make_data::<WlDataOffer, ()>(()),
+            other => panic!("wl_data_device: unexpected new-id event opcode {other}"),
+        }
+    }
+}
+
+impl Dispatch<WlDataOffer, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        proxy: &WlDataOffer,
+        event: wl_data_offer::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            // Before `selection` names the offer it belongs to, and afterwards for an offer that
+            // is already the selection; both end up in the right place.
+            if let Some(pending) = state.data.pending_mime_types.get_mut(&proxy.id()) {
+                pending.push(mime_type);
+            } else if state
+                .data
+                .offer
+                .as_ref()
+                .is_some_and(|offer| offer == proxy)
+            {
+                state.data.offer_mime_types.push(mime_type);
+            }
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, ()> for BridgeState {
+    fn event(
+        state: &mut Self,
+        proxy: &WlDataSource,
+        event: wl_data_source::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // Only the source currently offered may answer; a cancelled one that has not been dropped
+        // yet must not still be writing files to whoever asks.
+        if state
+            .data
+            .source
+            .as_ref()
+            .is_none_or(|source| source != proxy)
+        {
+            return;
+        }
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                let Some(payload) = state.data.payload.as_ref() else {
+                    return;
+                };
+                let Some(bytes) = payload.bytes_for(&mime_type) else {
+                    // Asked for something never offered: close the pipe rather than writing an
+                    // empty file, which a receiver would read as "this really is empty".
+                    return;
+                };
+                // The fd is ours to close, which is what tells the receiver the transfer ended.
+                let mut file = std::fs::File::from(fd);
+                if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
+                    // A receiver that went away mid-transfer is ordinary, not a fault here.
+                    tracing::debug!(%error, %mime_type, "selection transfer ended early");
+                }
+            }
+            // Another client took the selection. Home's clipboard is no longer what the seat is
+            // offering, and `data_device::paste_source` reads exactly this fact.
+            wl_data_source::Event::Cancelled => {
+                state.data.own_selection_live = false;
+                state.data.payload = None;
+            }
+            _ => {}
         }
     }
 }
@@ -492,6 +768,116 @@ impl ShellBridge {
             .dispatch_pending(&mut self.state)
             .context("dispatching the trusted-shell connection's event queue")?;
         Ok(())
+    }
+
+    /// Offer `payload` to the rest of the desktop as the seat's selection.
+    ///
+    /// Whether this lands is the compositor's call, and Smithay's rule is keyboard focus rather
+    /// than the serial (see [`crate::data_device`]): a copy made while Home has focus — which is
+    /// every copy a person makes in Home — is accepted. `Ok(false)` means the transport was not
+    /// available at all, which is the nested-development case and not a fault.
+    pub fn offer_selection(&mut self, payload: ClipboardPayload) -> Result<bool> {
+        let (Some(manager), Some(device)) = (
+            self.state.data.manager.clone(),
+            self.state.data.device.clone(),
+        ) else {
+            return Ok(false);
+        };
+        let Some(serial) = self.state.data.serials.latest() else {
+            // No input event has ever reached this connection, so there is no serial to name. A
+            // made-up one is worse than not offering: it is a request the protocol says is
+            // malformed, and a stricter compositor is right to kill the client for it.
+            return Ok(false);
+        };
+
+        self.state.data.drop_own_source();
+        let qh = self.queue.handle();
+        let source = manager.create_data_source(&qh, ());
+        for mime_type in ClipboardPayload::offered_mime_types() {
+            source.offer(mime_type.to_owned());
+        }
+        device.set_selection(Some(&source), serial);
+        self.state.data.payload = Some(payload);
+        self.state.data.source = Some(source);
+        self.state.data.own_selection_live = true;
+        self.connection
+            .flush()
+            .context("flushing the clipboard selection")?;
+        Ok(true)
+    }
+
+    /// Whether Home still owns the seat selection.
+    pub fn owns_selection(&self) -> bool {
+        self.state.data.own_selection_live
+    }
+
+    /// Whether some other application is currently offering something Home could paste.
+    pub fn foreign_selection_available(&self) -> bool {
+        self.state.data.offer.is_some()
+            && choose_target(&self.state.data.offer_mime_types).is_some()
+    }
+
+    /// Read the current foreign selection, or `None` when there is nothing pasteable on offer.
+    ///
+    /// Synchronous, because a paste is a thing a person just asked for and the answer is wanted
+    /// now — bounded in time and size by [`crate::data_device::read_transfer`] so a badly behaved
+    /// sender costs one slow paste rather than the frame loop.
+    pub fn read_foreign_selection(&mut self) -> Result<Option<ForeignSelection>> {
+        let Some(offer) = self.state.data.offer.clone() else {
+            return Ok(None);
+        };
+        let Some(target) = choose_target(&self.state.data.offer_mime_types) else {
+            return Ok(None);
+        };
+        let (read_end, write_end) = std::io::pipe().context("pipe for a selection transfer")?;
+        offer.receive(target.mime_type().to_owned(), write_end.as_fd());
+        self.connection
+            .flush()
+            .context("flushing a selection transfer request")?;
+        // The sender only sees the request once the compositor has forwarded it, and only starts
+        // writing after that. Dropping our copy of the write end first is what makes their close
+        // the end of the read rather than a wait for our own descriptor.
+        drop(write_end);
+        let payload = crate::data_device::read_transfer(std::os::fd::OwnedFd::from(read_end))
+            .context("reading a selection transfer")?;
+        Ok(
+            crate::data_device::clipboard_from_transfer(target, &payload)
+                .as_ref()
+                .map(ForeignSelection::of),
+        )
+    }
+
+    /// Start a drag carrying `payload` from `window`'s surface.
+    ///
+    /// The export half of typed drag and drop. `Ok(false)` when the transport or a serial is
+    /// missing, exactly as [`Self::offer_selection`].
+    pub fn start_file_drag(
+        &mut self,
+        window: &winit::window::Window,
+        payload: ClipboardPayload,
+    ) -> Result<bool> {
+        let (Some(manager), Some(device)) = (
+            self.state.data.manager.clone(),
+            self.state.data.device.clone(),
+        ) else {
+            return Ok(false);
+        };
+        let Some(serial) = self.state.data.serials.latest() else {
+            return Ok(false);
+        };
+        let surface = self.wrap_surface(window)?;
+        let qh = self.queue.handle();
+        let source = manager.create_data_source(&qh, ());
+        for mime_type in ClipboardPayload::offered_mime_types() {
+            source.offer(mime_type.to_owned());
+        }
+        // No icon surface: the compositor draws its own drag feedback, and a shell-drawn icon
+        // would need a second surface on winit's connection that nothing here owns.
+        device.start_drag(Some(&source), &surface, None, serial);
+        self.state.data.payload = Some(payload);
+        self.state.data.source = Some(source);
+        self.connection.flush().context("flushing a drag start")?;
+        Ok(true)
     }
 
     /// Every toplevel this connection currently knows about, for [`crate::dock`] and
