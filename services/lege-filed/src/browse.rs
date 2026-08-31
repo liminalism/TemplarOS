@@ -641,6 +641,7 @@ mod tests {
     /// key, and folder-first is an explicit policy — so a client re-sorting with the same
     /// descriptor can never disagree with a listing this service served.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn sort_contract_is_shared_total_and_stable_across_fields_and_directions() {
         use lege_types::file_sort::{SortDescriptor, SortField, compare};
 

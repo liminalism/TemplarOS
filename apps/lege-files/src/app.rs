@@ -202,6 +202,43 @@ impl FilesApp {
                 let request = self.model.refresh();
                 self.browse(request);
             }
+            ActionId::CycleSort => {
+                let sort = self.model.sort;
+                let field = match sort.field {
+                    lege_types::file_sort::SortField::NaturalName => {
+                        lege_types::file_sort::SortField::Kind
+                    }
+                    lege_types::file_sort::SortField::Kind => {
+                        lege_types::file_sort::SortField::Size
+                    }
+                    lege_types::file_sort::SortField::Size => {
+                        lege_types::file_sort::SortField::Modified
+                    }
+                    lege_types::file_sort::SortField::Modified
+                    | lege_types::file_sort::SortField::Manual => {
+                        lege_types::file_sort::SortField::NaturalName
+                    }
+                };
+                self.model
+                    .set_sort(lege_types::file_sort::SortDescriptor { field, ..sort });
+            }
+            ActionId::ToggleSortDirection => {
+                let sort = self.model.sort;
+                self.model.set_sort(lege_types::file_sort::SortDescriptor {
+                    ascending: !sort.ascending,
+                    ..sort
+                });
+            }
+            ActionId::ToggleView => {
+                self.model.set_view(match self.model.view {
+                    lege_types::file_sort::ViewMode::List => {
+                        lege_types::file_sort::ViewMode::Thumbnails
+                    }
+                    lege_types::file_sort::ViewMode::Thumbnails => {
+                        lege_types::file_sort::ViewMode::List
+                    }
+                });
+            }
             ActionId::ToggleHidden => {
                 let request = self.model.toggle_hidden();
                 self.browse(request);

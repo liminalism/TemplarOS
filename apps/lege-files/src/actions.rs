@@ -37,6 +37,11 @@ pub enum ActionId {
     SelectLast,
     SelectAll,
     ClearSelection,
+    /// Cycle the primary sort field (name, type, size, date) — shared contract order.
+    CycleSort,
+    ToggleSortDirection,
+    /// Switch between the detail list and the thumbnail grid.
+    ToggleView,
 }
 
 /// The actions represented by visible toolbar buttons. Tests require each to have a shortcut.
@@ -57,6 +62,9 @@ pub const VISIBLE_ACTIONS: &[ActionId] = &[
     ActionId::OpenTrash,
     ActionId::Undo,
     ActionId::Properties,
+    ActionId::CycleSort,
+    ActionId::ToggleSortDirection,
+    ActionId::ToggleView,
 ];
 
 /// The actions the toolbar offers *instead* while the trash is open. Separate from
@@ -102,6 +110,9 @@ impl ActionId {
             Self::Rename => "Rename",
             Self::Undo => "Undo",
             Self::Properties => "Properties",
+            Self::CycleSort => "Sort",
+            Self::ToggleSortDirection => "Direction",
+            Self::ToggleView => "View",
             _ => "Action",
         }
     }
@@ -147,6 +158,9 @@ pub fn shortcut(key: &KeyInput, modifiers: Modifiers) -> Option<ActionId> {
         (KeyInput::Character('t' | 'T'), true, false) => Some(ActionId::OpenTrash),
         (KeyInput::Character('r' | 'R'), true, false) => Some(ActionId::Restore),
         (KeyInput::Character('a' | 'A'), true, false) => Some(ActionId::SelectAll),
+        (KeyInput::Character('s' | 'S'), true, false) => Some(ActionId::CycleSort),
+        (KeyInput::Character('d' | 'D'), true, false) => Some(ActionId::ToggleSortDirection),
+        (KeyInput::Character('g' | 'G'), true, false) => Some(ActionId::ToggleView),
         (KeyInput::Left, false, true) => Some(ActionId::Back),
         (KeyInput::Right, false, true) => Some(ActionId::Forward),
         (KeyInput::Backspace, false, false) => Some(ActionId::Up),
@@ -250,6 +264,27 @@ mod tests {
                 KeyInput::Enter,
                 Modifiers {
                     alt: true,
+                    ..Modifiers::default()
+                },
+            ),
+            (
+                KeyInput::Character('s'),
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+            ),
+            (
+                KeyInput::Character('d'),
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+            ),
+            (
+                KeyInput::Character('g'),
+                Modifiers {
+                    control: true,
                     ..Modifiers::default()
                 },
             ),

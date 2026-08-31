@@ -251,7 +251,19 @@ fn draw_navigation(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
         }
         cursor = rest;
     }
-    let (hidden, path) = cursor.split_right(ui.px(128));
+    let (hidden, rest) = cursor.split_right(ui.px(128));
+    let (view, rest) = rest.split_right(ui.px(72));
+    let (direction, rest) = rest.split_right(ui.px(92));
+    let (sort, path) = rest.split_right(ui.px(64));
+    for (button, action) in [
+        (sort, ActionId::CycleSort),
+        (direction, ActionId::ToggleSortDirection),
+        (view, ActionId::ToggleView),
+    ] {
+        if ui.button(button.inset(ui.px(3)), action.label()) {
+            commands.push(Command::Action(action, SelectionModifiers::default()));
+        }
+    }
     ui.label(
         path.inset(ui.px(8)),
         &if model.in_trash() {
