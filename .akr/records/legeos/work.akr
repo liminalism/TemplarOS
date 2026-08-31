@@ -1180,7 +1180,7 @@ record legeos.work.home-input-and-refinement/1 : work {
 
 record legeos.work.home-panel-and-dock-layouts/1 : work {
     title "Adjustable Home panels and docks with automatic arrangements for each output shape"
-    state proposed
+    state completed
     scope [
         path "crates/lege-field/**",
         path "crates/lege-session-core/**",
@@ -1199,6 +1199,7 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
                 """
             method command
             command "cargo test -p lege-field -p lege-shell panel_layout"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
         }
         check automatic-layouts-fit {
             statement """
@@ -1206,12 +1207,14 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
                 """
             method command
             command "cargo test -p lege-field panel_layout -- --include-ignored"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
         }
         check home-only-no-exclusive-zone {
             statement """
                 With an application fullscreen or maximized, no Home panel/dock is visible and no panel/dock reduces the application work area.
                 """
             method observation
+            verified_by [ @legeos.evidence.home-panels-no-exclusive-zone-20260831/1 ]
         }
         check preset-switch-is-reversible {
             statement """
@@ -1219,6 +1222,7 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
                 """
             method command
             command "cargo test -p lege-field panel_presets"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
         }
     }
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]

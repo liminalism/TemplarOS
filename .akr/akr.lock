@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:1a1d4ce78ea5dedf81797e2ee4ee766f856d509375ad0c0dd957ec10b3c4ce1b"
+    source_graph "sha256:2b704d1a61c3fa0bd6347672dae8355010341eadacef538677eef6ffea2d06c5"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:0af8d9fdd1651bc0e9781a14808fe5c5aa6900b533f851bd36220eaf01d5089d"
-    records 94
+    hash "sha256:67eadb3d869f9b950381ce1544d5d547430d33ea895679b1aed29aa19349a901"
+    records 96
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:f93eb7141d0fab59783dc0edef47cb71e89f8876c1bf662132fd1733971b15b4"
+    hash "sha256:19a192328c6d38da62fdda55966c2a9858bd3a9f1f589f7182976d720ac3b433"
     records 43
 }
 
@@ -637,7 +637,7 @@ resolution @legeos.work.home-field-settings-gui/1 {
 resolution @legeos.work.home-field-settings-gui/1 {
     slot depends_on
     to @legeos.work.home-panel-and-dock-layouts/1
-    hash "sha256:da6322db042f59f6af9c1ad13d3a5f30e232ffb728a57494c0408946695cb035"
+    hash "sha256:6c09e14e73d140714e7ca0f89167d0592d71250898645fd6b0254f389759f0ad"
 }
 
 resolution @legeos.work.home-field-settings-gui/1 {
@@ -685,7 +685,7 @@ resolution @legeos.work.home-file-sorting-and-view-modes/1 {
 resolution @legeos.work.home-folders-and-shortcut-panes/1 {
     slot depends_on
     to @legeos.work.home-panel-and-dock-layouts/1
-    hash "sha256:da6322db042f59f6af9c1ad13d3a5f30e232ffb728a57494c0408946695cb035"
+    hash "sha256:6c09e14e73d140714e7ca0f89167d0592d71250898645fd6b0254f389759f0ad"
 }
 
 resolution @legeos.work.home-folders-and-shortcut-panes/1 {
@@ -871,7 +871,7 @@ resolution @legeos.work.host-update-transaction/1 {
 resolution @legeos.work.reversible-window-arrangement-presets/1 {
     slot depends_on
     to @legeos.work.home-panel-and-dock-layouts/1
-    hash "sha256:da6322db042f59f6af9c1ad13d3a5f30e232ffb728a57494c0408946695cb035"
+    hash "sha256:6c09e14e73d140714e7ca0f89167d0592d71250898645fd6b0254f389759f0ad"
 }
 
 resolution @legeos.work.reversible-window-arrangement-presets/1 {
@@ -1418,6 +1418,16 @@ seal @legeos.evidence.home-file-window-overview-20260824/1 {
 seal @legeos.evidence.home-file-workspace-20260824/1 {
     state verified
     hash "sha256:1ae4726c2d1c3e434cb5b208084b1644c3410a4c879a229b87f83f7bc641888f"
+}
+
+seal @legeos.evidence.home-panels-20260831/1 {
+    state verified
+    hash "sha256:32f75b89d4307bd35ca22e4607bebbbed91e937bad8d9b8ca2b6aaad29c83250"
+}
+
+seal @legeos.evidence.home-panels-no-exclusive-zone-20260831/1 {
+    state verified
+    hash "sha256:130becd67cabbdf43e31974b65457c4cabbd025eec1be3b6e985d355cf499ba3"
 }
 
 seal @legeos.evidence.home-widget-launcher-20260825/1 {
@@ -2058,6 +2068,11 @@ seal @legeos.work.home-file-surface/2 {
 seal @legeos.work.home-input-and-refinement/1 {
     state active
     hash "sha256:4ce53d0bd0daa2056facfa96669a228324e60235ec0fd626afffc26b9b4af3a6"
+}
+
+seal @legeos.work.home-panel-and-dock-layouts/1 {
+    state completed
+    hash "sha256:6c09e14e73d140714e7ca0f89167d0592d71250898645fd6b0254f389759f0ad"
 }
 
 seal @legeos.work.home-shelf-and-representation-ladder/1 {

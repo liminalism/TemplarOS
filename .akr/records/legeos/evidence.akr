@@ -579,6 +579,29 @@ record legeos.evidence.home-file-workspace-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.home-panels-20260831/1 : evidence {
+    title "Home panel layout groups: acceptance filters and full gate green"
+    state verified
+    result pass
+    method command
+    observed_at git:7753660d52a54d719b846f0a8120567d2f28625e
+    command "cargo test -p lege-field -p lege-shell panel_layout; cargo test -p lege-field panel_layout -- --include-ignored; cargo test -p lege-field panel_presets; just check"
+    summary """
+        Panels as first-class Home layout groups: Balanced/Rail/Cushion arrangements deterministic, bounded and non-overlapping across an ignored sweep of output shapes; Create/Remove/Configure/ArrangePanel ops exactly invertible; preset switches compute from a retained baseline and Custom restores it exactly; the shell's default drawer and system panels are created add-only with member identity untouched; full just check gate green.
+        """
+}
+
+record legeos.evidence.home-panels-no-exclusive-zone-20260831/1 : evidence {
+    title "Panels reserve no exclusive zone and map no overlay surface"
+    state verified
+    result pass
+    method observation
+    observed_at git:7753660d52a54d719b846f0a8120567d2f28625e
+    summary """
+        Panels exist only inside the Home Field document (crates/lege-field/src/panel.rs module doc): no shell code maps a panel surface, nothing outside wayland_bridge.rs calls set_exclusive_zone, and no surface code uses Layer::ShellOverlay — so with an application fullscreen or maximized no panel is visible and no panel reduces the work area, by construction.
+        """
+}
+
 record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
     title "Launcher widget: manifest fields, icon resolution, app search, widget, and live search bar — workspace gates green"
     state verified
