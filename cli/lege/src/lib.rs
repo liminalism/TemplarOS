@@ -16,4 +16,5 @@ pub mod project;
 pub mod providers;
 pub mod res;
 pub mod settings;
+pub mod status;
 pub mod update;

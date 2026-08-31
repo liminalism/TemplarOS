@@ -551,6 +551,58 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Always,
     },
     // ---- Session ----------------------------------------------------------------------
+    // Volume and backlight: the two hardware levels a person changes several times a day. No
+    // chords on any of them — the keyboards that have these keys route them through the
+    // compositor's own table, and inventing a second binding here would put two different things
+    // on one key. What these declarations buy is the widget region and the `lege` verb, which is
+    // what makes the capability reachable without those keys at all.
+    ActionDecl {
+        id: "volume.decrease",
+        label: "Quieter",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: Some("status quieter"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "volume.increase",
+        label: "Louder",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: Some("status louder"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "volume.mute",
+        label: "Mute",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: Some("status mute"),
+        // Not destructive: muting is its own undo, and a confirmation on the control people reach
+        // for fastest — when something starts making noise — would defeat the point of it.
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "brightness.decrease",
+        label: "Dimmer",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: Some("status dimmer"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "brightness.increase",
+        label: "Brighter",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: Some("status brighter"),
+        confirm: false,
+        requires: Requires::Always,
+    },
     ActionDecl {
         id: "trash.empty",
         label: "Empty Trash",
