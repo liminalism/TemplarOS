@@ -347,9 +347,21 @@ pub enum Step {
     },
     MoveToTrash {
         path: PathBuf,
+        /// Where the trash actually put it, filled in by the executor.
+        ///
+        /// The name is only known once the step runs: `trash::free_name` resolves collisions
+        /// against the live directory, so the same path trashed twice lands under two different
+        /// names. Undo reads this back rather than guessing, exactly as `Move`'s undo reads
+        /// `RenameInPlace { to }`.
+        #[serde(default)]
+        trashed: Option<PathBuf>,
     },
     RestoreFromTrash {
         trashed: PathBuf,
+        /// Where it went back to, filled in by the executor, so undoing a restore re-trashes
+        /// the file at its restored location rather than at the trash path it has left.
+        #[serde(default)]
+        restored_to: Option<PathBuf>,
     },
     Unlink {
         path: PathBuf,
@@ -576,14 +588,16 @@ pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Opti
             from: path.clone(),
             to: path.with_file_name(new_name),
         }),
-        OperationKind::Trash { paths } => steps.extend(
-            paths
-                .iter()
-                .map(|path| Step::MoveToTrash { path: path.clone() }),
-        ),
+        OperationKind::Trash { paths } => {
+            steps.extend(paths.iter().map(|path| Step::MoveToTrash {
+                path: path.clone(),
+                trashed: None,
+            }));
+        }
         OperationKind::RestoreFromTrash { paths } => {
             steps.extend(paths.iter().map(|path| Step::RestoreFromTrash {
                 trashed: path.clone(),
+                restored_to: None,
             }));
         }
         OperationKind::Delete { paths } => {
@@ -805,12 +819,31 @@ pub fn undo_of(operation: &Operation) -> Option<OperationKind> {
             }),
             _ => None,
         }),
-        OperationKind::Trash { paths } => Some(OperationKind::RestoreFromTrash {
-            paths: paths.clone(),
-        }),
-        OperationKind::RestoreFromTrash { paths } => Some(OperationKind::Trash {
-            paths: paths.clone(),
-        }),
+        // Read back where the trash actually put each item, never the paths the operation was
+        // asked for: those name the place the file has just left, and a restore aimed at them
+        // finds nothing there, decides it has already run, and commits without moving anything.
+        OperationKind::Trash { .. } => {
+            let trashed: Vec<PathBuf> = operation
+                .steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::MoveToTrash { trashed, .. } => trashed.clone(),
+                    _ => None,
+                })
+                .collect();
+            (!trashed.is_empty()).then_some(OperationKind::RestoreFromTrash { paths: trashed })
+        }
+        OperationKind::RestoreFromTrash { .. } => {
+            let restored: Vec<PathBuf> = operation
+                .steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::RestoreFromTrash { restored_to, .. } => restored_to.clone(),
+                    _ => None,
+                })
+                .collect();
+            (!restored.is_empty()).then_some(OperationKind::Trash { paths: restored })
+        }
         // A copy is undone by deleting what it created — but deleting is irreversible, so the
         // UI asks rather than the service silently doing it.
         OperationKind::Copy { .. } | OperationKind::Delete { .. } => None,

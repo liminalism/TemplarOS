@@ -129,17 +129,24 @@ pub fn run(
             return Ok(());
         }
 
-        let step = operation.steps[operation.cursor].clone();
+        // Applied in place, not to a clone: a step that only learns where it put something once
+        // it runs — trashing, restoring — writes that back here, and the next `on_progress`
+        // journals it along with the rest of the operation.
+        let cursor = operation.cursor;
         let conflict = operation.options.conflict;
-        if let Err(error) = apply(&step, conflict, config) {
+        if let Err(error) = apply(&mut operation.steps[cursor], conflict, config) {
             operation.state = OperationState::Failed;
             operation.error = Some(format!("{error:#}"));
             on_progress(operation);
             return Err(error);
         }
 
-        operation.done_bytes = operation.done_bytes.saturating_add(step.bytes());
-        if step.is_item_boundary() {
+        let (bytes, boundary) = {
+            let step = &operation.steps[cursor];
+            (step.bytes(), step.is_item_boundary())
+        };
+        operation.done_bytes = operation.done_bytes.saturating_add(bytes);
+        if boundary {
             operation.done_items = operation.done_items.saturating_add(1);
         }
         operation.cursor += 1;
@@ -151,7 +158,7 @@ pub fn run(
             operation.state = OperationState::Verified;
         }
 
-        if step.is_item_boundary() || last_report.elapsed() >= config.progress_interval {
+        if boundary || last_report.elapsed() >= config.progress_interval {
             last_report = Instant::now();
             on_progress(operation);
         }
@@ -174,7 +181,61 @@ fn remaining_is_only_source_removal(operation: &Operation) -> bool {
 }
 
 /// Apply one step. Re-applying a step that already took effect must succeed and change nothing.
-fn apply(step: &Step, conflict: ConflictPolicy, config: &ExecutorConfig) -> Result<()> {
+///
+/// Takes the step by mutable reference because the trash steps learn where they put something
+/// only by doing it, and that is what undo later reads.
+fn apply(step: &mut Step, conflict: ConflictPolicy, config: &ExecutorConfig) -> Result<()> {
+    match step {
+        Step::MoveToTrash { path, trashed } => {
+            // Probed from the nearest surviving ancestor, because on the resume path below the
+            // file is already gone and a vanished path has no device to pick a trash from.
+            let directory = trash::trash_dir_for(&existing_ancestor(path), &config.data_home)?;
+            if path.symlink_metadata().is_err() {
+                // Already trashed — a crash between the rename and the journal write. The move
+                // really happened, so recover the name it was given; leaving this unset would
+                // cost the item its undo.
+                if trashed.is_none() {
+                    *trashed = trash::find_trashed(path, &directory);
+                }
+                return Ok(());
+            }
+            let item = trash::trash(path, &directory, &trash::now_local())
+                .with_context(|| format!("moving {} to the trash", path.display()))?;
+            *trashed = Some(item.trashed_path);
+            Ok(())
+        }
+
+        Step::RestoreFromTrash {
+            trashed,
+            restored_to,
+        } => {
+            let directory = trash::trash_dir_for(&existing_ancestor(trashed), &config.data_home)?;
+            if trashed.symlink_metadata().is_err() {
+                // Already restored. If the `.trashinfo` outlived the rename we can still say
+                // where the file went; if it did not, nothing on disk knows any more and this
+                // item loses its undo.
+                if restored_to.is_none() {
+                    *restored_to = trash::read_info(trashed, &directory)
+                        .ok()
+                        .map(|item| item.original_path);
+                }
+                return Ok(());
+            }
+            let original = trash::restore(trashed, &directory)
+                .with_context(|| format!("restoring {}", trashed.display()))?;
+            *restored_to = Some(original);
+            Ok(())
+        }
+
+        // Every other step only reads its plan, so it takes the step as shared and stays as it
+        // was before the trash steps needed to write back.
+        read_only => apply_read_only(read_only, conflict),
+    }
+}
+
+/// The steps that only read their plan. Only the trash needs `ExecutorConfig`, so this does not
+/// take one.
+fn apply_read_only(step: &Step, conflict: ConflictPolicy) -> Result<()> {
     match step {
         Step::CreateDirectory { destination } => fs::create_dir_all(destination)
             .with_context(|| format!("creating {}", destination.display())),
@@ -209,28 +270,25 @@ fn apply(step: &Step, conflict: ConflictPolicy, config: &ExecutorConfig) -> Resu
 
         Step::RemoveDirectory { path } => remove_directory(path),
 
-        Step::MoveToTrash { path } => {
-            if path.symlink_metadata().is_err() {
-                return Ok(()); // already trashed
-            }
-            let directory = trash::trash_dir_for(path, &config.data_home)?;
-            trash::trash(path, &directory, &trash::now_local())
-                .map(|_| ())
-                .with_context(|| format!("moving {} to the trash", path.display()))
-        }
-
-        Step::RestoreFromTrash { trashed } => {
-            if trashed.symlink_metadata().is_err() {
-                return Ok(()); // already restored
-            }
-            let directory = trash::trash_dir_for(trashed, &config.data_home)?;
-            trash::restore(trashed, &directory)
-                .map(|_| ())
-                .with_context(|| format!("restoring {}", trashed.display()))
-        }
-
         Step::Unlink { path } => unlink(path),
+
+        // `apply` handles these two. Reaching here would mean it had stopped recording where
+        // the trash put an item, so it fails loudly rather than quietly costing that item its
+        // undo — the exact failure this split exists to prevent.
+        Step::MoveToTrash { .. } | Step::RestoreFromTrash { .. } => {
+            bail!("a trash step reached the read-only executor, which cannot record where it went")
+        }
     }
+}
+
+/// `path` itself if it is still there, else the nearest ancestor that is.
+///
+/// Which trash a file belongs in is decided by the device it sits on, and a path that has already
+/// been moved away cannot answer that; its parent, on the same device, can.
+fn existing_ancestor(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find(|candidate| candidate.symlink_metadata().is_ok())
+        .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
 }
 
 fn copy_symlink(source: &Path, destination: &Path, conflict: ConflictPolicy) -> Result<()> {
@@ -706,7 +764,8 @@ mod tests {
         );
 
         // Apply every step twice, in order. A second application must be a no-op.
-        for step in &operation.steps {
+        let mut steps = operation.steps.clone();
+        for step in &mut steps {
             apply(step, ConflictPolicy::Fail, &config(dir.path())).unwrap();
             apply(step, ConflictPolicy::Fail, &config(dir.path()))
                 .unwrap_or_else(|error| panic!("{step:?} is not idempotent: {error:#}"));
@@ -777,28 +836,64 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(operation.state, OperationState::Committed);
 
+        // Straight from `undo_of` into `plan`, with nothing substituted: this is the path
+        // `Files.Operations1.Undo` takes, and the version of this test that looked the trashed
+        // name up itself and passed it in was the reason undo could report a restore it had
+        // not performed without any test noticing.
         let undo = undo_of(&operation).expect("trashing is reversible");
-        let trashed: Vec<PathBuf> =
-            trash::list(&trash::trash_dir_for(&path, &dir.path().join("data")).unwrap())
-                .unwrap()
-                .into_iter()
-                .map(|item| item.trashed_path)
-                .collect();
-        assert_eq!(trashed.len(), 1);
-
         let mut restoration = plan(
             OperationId::new(),
-            match undo {
-                OperationKind::RestoreFromTrash { .. } => {
-                    OperationKind::RestoreFromTrash { paths: trashed }
-                }
-                other => other,
-            },
+            undo,
             &Survey::default(),
             Options::default(),
         );
         execute(&mut restoration, dir.path()).unwrap();
+        assert_eq!(restoration.state, OperationState::Committed);
         assert_eq!(fs::read(&path).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn undoing_a_restore_puts_the_file_back_in_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"keep me").unwrap();
+
+        let mut trashing = plan(
+            OperationId::new(),
+            OperationKind::Trash {
+                paths: vec![path.clone()],
+            },
+            &survey(std::slice::from_ref(&path), None),
+            Options::default(),
+        );
+        execute(&mut trashing, dir.path()).unwrap();
+
+        let mut restoration = plan(
+            OperationId::new(),
+            undo_of(&trashing).expect("trashing is reversible"),
+            &Survey::default(),
+            Options::default(),
+        );
+        execute(&mut restoration, dir.path()).unwrap();
+        assert!(path.exists());
+
+        // The other direction, which had no coverage at all: undoing a restore has to re-trash
+        // the file where it was put back, not at the trash path it has since left.
+        let mut retrash = plan(
+            OperationId::new(),
+            undo_of(&restoration).expect("restoring is reversible"),
+            &survey(std::slice::from_ref(&path), None),
+            Options::default(),
+        );
+        execute(&mut retrash, dir.path()).unwrap();
+        assert_eq!(retrash.state, OperationState::Committed);
+        assert!(!path.exists(), "the file should be back in the trash");
+        assert_eq!(
+            trash::list(&trash::trash_dir_for(&path, &dir.path().join("data")).unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

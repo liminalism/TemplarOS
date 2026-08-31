@@ -208,6 +208,20 @@ pub fn list(trash: &TrashDir) -> Result<Vec<TrashedItem>> {
     Ok(items)
 }
 
+/// The newest trashed copy of `original`, if this trash holds one.
+///
+/// Only for recovering the name [`trash`] chose when a crash landed between the rename and the
+/// journal write: on the ordinary path the executor records that name as it happens, because a
+/// path trashed more than once has several records here and this cannot tell them apart.
+pub fn find_trashed(original: &Path, trash: &TrashDir) -> Option<PathBuf> {
+    let original = absolute(original);
+    list(trash)
+        .ok()?
+        .into_iter()
+        .find(|item| item.original_path == original)
+        .map(|item| item.trashed_path)
+}
+
 /// Local time in the specification's `YYYY-MM-DDThh:mm:ss` form.
 pub fn now_local() -> String {
     // SAFETY: `time(NULL)` reads the clock and cannot fail in a way we must handle;
