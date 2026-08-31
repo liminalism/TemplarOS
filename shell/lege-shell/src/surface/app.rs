@@ -1007,15 +1007,12 @@ impl ShellApp {
                 self.spawn_browse(drawer, path, show_hidden);
             }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
-            FieldAction::OpenInFiles(path) => {
-                match "org.legeos.Files".parse::<AppId>() {
-                    Ok(app_id) => self.spawn_launch_with_args(
-                        app_id,
-                        vec![path.to_string_lossy().into_owned()],
-                    ),
-                    Err(error) => tracing::error!(%error, "the Files app id failed to parse"),
+            FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
+                Ok(app_id) => {
+                    self.spawn_launch_with_args(app_id, vec![path.to_string_lossy().into_owned()]);
                 }
-            }
+                Err(error) => tracing::error!(%error, "the Files app id failed to parse"),
+            },
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
@@ -1221,8 +1218,10 @@ impl ShellApp {
                 });
                 if !arrangeable {
                     let now_ms = self.started.elapsed().as_millis() as u64;
-                    self.field_screen
-                        .report("Nothing to arrange — no windows are open".to_owned(), now_ms);
+                    self.field_screen.report(
+                        "Nothing to arrange — no windows are open".to_owned(),
+                        now_ms,
+                    );
                     return;
                 }
                 let name = id.trim_start_matches("windows.arrange.");

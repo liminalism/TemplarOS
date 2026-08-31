@@ -832,7 +832,10 @@ mod tests {
             assert!(placed.x >= usable.x && placed.y >= usable.y);
             assert!(placed.right() <= usable.right() && placed.bottom() <= usable.bottom());
             if let Some(previous) = seen.last() {
-                assert_ne!(placed, *previous, "window {existing} buried its predecessor");
+                assert_ne!(
+                    placed, *previous,
+                    "window {existing} buried its predecessor"
+                );
             }
             seen.push(placed);
         }
