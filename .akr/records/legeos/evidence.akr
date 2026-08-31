@@ -590,6 +590,30 @@ record legeos.evidence.home-file-workspace-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.home-folders-and-panes-20260831/1 : evidence {
+    title "Folders and shortcut panes: model, defaults, routing, migration and separation tests green"
+    state verified
+    result pass
+    method command
+    observed_at git:e822badf7aa323df4cf0a3959e926ca305c0808c
+    command "cargo test -p lege-shell desktop_folder; cargo test -p lege-field -- folder shortcut_pane; cargo test -p lege-shell no_loose_file_tiles; cargo test -p lege-filed -p lege-shell shortcut_pane_remove; just check"
+    summary """
+        TileKind::Folder binds one directory and round-trips; the Tray shortcut pane holds ordered cross-directory references whose removal has an exact inverse (a pre-existing append-instead-of-restore inverse defect was found and fixed); the XDG Desktop directory merges add-only as one folder object and degrades to nothing when absent; a file dropped on bare Home routes to the default pane and legacy File tiles migrate in without losing paths; the lege-filed test pins that pane membership never reaches the file service while Trash is a separately labelled journalled operation with its own undo; full just check green.
+        """
+}
+
+record legeos.evidence.home-material-roles-20260831/1 : evidence {
+    title "Material roles reviewed in the enlarged visual baseline; hash updated after review"
+    state verified
+    result pass
+    method observation
+    observed_at git:e822badf7aa323df4cf0a3959e926ca305c0808c
+    artifact "shell/lege-shell/src/surface/offscreen.rs"
+    summary """
+        Reviewed the deterministic 1280x832 baseline render: the Desktop folder reads as warm paper (FOLDER_SHELL), the Shortcuts pane as cool glass (TRAY_SHELL) with its reference row, widgets and the system shelf stay neutral and the project keeps its accent tint; tile geometry is unchanged and every label remains legible. The visual-regression hash was updated only after this review, and the baseline now permanently contains one of each object class so future changes to any of their materials fail the pixel test.
+        """
+}
+
 record legeos.evidence.home-panels-20260831/1 : evidence {
     title "Home panel layout groups: acceptance filters and full gate green"
     state verified

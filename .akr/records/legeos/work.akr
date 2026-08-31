@@ -1045,7 +1045,7 @@ record legeos.work.home-file-surface/2 : work {
 
 record legeos.work.home-folders-and-shortcut-panes/1 : work {
     title "Placeable folders and composite shortcut panes replace loose desktop file icons"
-    state proposed
+    state completed
     scope [
         path "apps/lege-files/**",
         path "crates/lege-field/**",
@@ -1060,6 +1060,9 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
 
         Dragging an individual file to bare Home does not create a loose file tile: it offers or uses a shortcut pane. Existing serialized TileKind::File entries remain readable and migrate to references or the shelf without data loss. Folder, pane, widget and session shells get distinct tint/material roles (optionally glass-, stone- or paper-like) while remaining rectangular, legible and theme-controlled.
         """
+    note """
+        Acceptance command for folder-and-pane-model corrected to pass both libtest filters after --; cargo takes only one TESTNAME positionally. Rich pane management UI (rename, reorder) and the Files-app pin route ride with the file-operations item, which owns the interactive file surfaces.
+        """
     acceptance {
         check desktop-directory-default {
             statement """
@@ -1067,19 +1070,22 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
                 """
             method command
             command "cargo test -p lege-shell desktop_folder"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
         }
         check folder-and-pane-model {
             statement """
                 A folder binds one directory; a shortcut pane stores deterministic references from multiple directories without moving or copying their targets, and both round-trip through Home persistence.
                 """
             method command
-            command "cargo test -p lege-field folder shortcut_pane"
+            command "cargo test -p lege-field -- folder shortcut_pane"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
         }
         check material-roles {
             statement """
                 A reviewed Home render distinguishes folder, shortcut-pane, widget and session object types by theme-owned tint/material treatment without changing tile geometry or reducing text legibility.
                 """
             method observation
+            verified_by [ @legeos.evidence.home-material-roles-20260831/1 ]
         }
         check no-new-loose-files {
             statement """
@@ -1087,6 +1093,7 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
                 """
             method command
             command "cargo test -p lege-shell no_loose_file_tiles"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
         }
         check reference-removal-is-safe {
             statement """
@@ -1094,6 +1101,7 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
                 """
             method command
             command "cargo test -p lege-filed -p lege-shell shortcut_pane_remove"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
         }
     }
     depends_on [ @legeos.work.home-panel-and-dock-layouts ]

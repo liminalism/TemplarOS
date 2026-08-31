@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:4b796aa197c22953c8ad60e3a8b2f342254390eecd70166eaad61bcbb0dde337"
+    source_graph "sha256:4bf9701c2b99bda42999472b2ec3f8c59d5dfa6ecdf94466f7f8780cc8201a1b"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:e394c847d860f885fd3a41075bed73f92fd4a72edfea63ba6344063cf6ab7dcd"
-    records 99
+    hash "sha256:839fdda969c6ce8fea083527f0297425a86c25e679326fd67a8f4261ff0780ec"
+    records 101
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:7a47c3f5b127369cea1339ce0abc5038305750a4d3b104689dcbcf1f3dc6e485"
+    hash "sha256:8e2bc162f7b7f31dd15b49ca700192e34ed5beac6f2fa87ec97bf09f67e8b75a"
     records 43
 }
 
@@ -523,7 +523,7 @@ resolution @legeos.work.file-operations-from-home/1 {
 resolution @legeos.work.file-operations-from-home/1 {
     slot depends_on
     to @legeos.work.home-folders-and-shortcut-panes/1
-    hash "sha256:23855479fbe941bfa0e0f2b4573de8a2cc40138f2e97d9257b9131e675bd93ff"
+    hash "sha256:b4741599d389189a682e346e36c12da874fff8eb05eaf58644de5519a8800205"
 }
 
 resolution @legeos.work.file-operations-from-home/1 {
@@ -667,7 +667,7 @@ resolution @legeos.work.home-field-settings-gui/1 {
 resolution @legeos.work.home-file-sorting-and-view-modes/1 {
     slot depends_on
     to @legeos.work.home-folders-and-shortcut-panes/1
-    hash "sha256:23855479fbe941bfa0e0f2b4573de8a2cc40138f2e97d9257b9131e675bd93ff"
+    hash "sha256:b4741599d389189a682e346e36c12da874fff8eb05eaf58644de5519a8800205"
 }
 
 resolution @legeos.work.home-file-sorting-and-view-modes/1 {
@@ -1425,6 +1425,16 @@ seal @legeos.evidence.home-file-workspace-20260824/1 {
     hash "sha256:1ae4726c2d1c3e434cb5b208084b1644c3410a4c879a229b87f83f7bc641888f"
 }
 
+seal @legeos.evidence.home-folders-and-panes-20260831/1 {
+    state verified
+    hash "sha256:0fceb7afdd7d6e94200ec274b3897bd277ae0b157e9abbf8ddea69d752d1c8cb"
+}
+
+seal @legeos.evidence.home-material-roles-20260831/1 {
+    state verified
+    hash "sha256:4af16f89af2e003de414f5b72fcd8e4fd8a130045af30ea9addb7446e36f51be"
+}
+
 seal @legeos.evidence.home-panels-20260831/1 {
     state verified
     hash "sha256:32f75b89d4307bd35ca22e4607bebbbed91e937bad8d9b8ca2b6aaad29c83250"
@@ -2083,6 +2093,11 @@ seal @legeos.work.home-file-surface/1 {
 seal @legeos.work.home-file-surface/2 {
     state completed
     hash "sha256:dd3cc72e824c43a2ce515168c7019f8520f3812e2e53a7c20efe998f889c9767"
+}
+
+seal @legeos.work.home-folders-and-shortcut-panes/1 {
+    state completed
+    hash "sha256:b4741599d389189a682e346e36c12da874fff8eb05eaf58644de5519a8800205"
 }
 
 seal @legeos.work.home-input-and-refinement/1 {
