@@ -1,5 +1,5 @@
-# Development toolchain. The archive build targets Ubuntu 26.04's rustc (rust-version = "1.93"
-# in Cargo.toml); CI runs an MSRV check with that version. See docs/adr/0008-toolchain-licence-namespace.md.
+# Development toolchain and patch-pinned implementation of the workspace's Rust 1.97 minimum.
+# See docs/adr/0008-toolchain-licence-namespace.md.
 [toolchain]
 channel = "1.97.1"
 components = ["rustfmt", "clippy"]

@@ -48,7 +48,7 @@ The still/PDF routes are first-party Rust code. `bpg-rs` decodes BPG and HEIC/HE
 pixel and memory limits; image-rs decodes ordinary rasters; JPXL decodes JPEG XL; and the Lege CPU
 renderer compiles and paints page zero of a PDF. JPXL and the Lege renderer declare Rust 1.97, so
 `scripts/build-preview-codecs.sh` compiles them into one bounded `lege-preview-codecs` process and
-stages it beside `lege-filed`, preserving the main workspace's Rust 1.93 archive baseline.
+stages it beside `lege-filed`; the main workspace now shares their honest Rust 1.97 floor.
 `LEGEOS_PREVIEW_CODECS` selects an alternate development binary.
 
 Video thumbnails intentionally use ffmpeg because it has the broadest reliable container and

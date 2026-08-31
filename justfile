@@ -24,9 +24,9 @@ lint:
 fmt:
     cargo fmt --all
 
-# MSRV = Ubuntu 26.04's rustc (rust-version in Cargo.toml)
+# MSRV = workspace rust-version in Cargo.toml; the pinned development patch satisfies it.
 msrv:
-    if rustup toolchain list | grep -q '^1.93'; then cargo +1.93 check --workspace; else echo "install with: rustup toolchain install 1.93"; fi
+    if rustup toolchain list | grep -q '^1.97'; then cargo +1.97 check --workspace; else echo "install with: rustup toolchain install 1.97"; fi
 
 tree-check:
     cargo run -q -p xtask -- tree-check

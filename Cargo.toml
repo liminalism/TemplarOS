@@ -40,8 +40,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# Ubuntu 26.04 "resolute" ships rustc 1.93; the archive build must work there (ADR-0008).
-rust-version = "1.93"
+# The preview/codecs graph requires Rust 1.97, so the workspace shares that honest floor
+# instead of advertising an archive baseline its resolved dependencies cannot build (ADR-0008).
+rust-version = "1.97"
 license = "AGPL-3.0-only"
 repository = "https://github.com/legeos/legeos"
 homepage = "https://legeos.org"

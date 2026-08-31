@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 echo "== fmt";        cargo fmt --all -- --check
 echo "== clippy";     cargo clippy --workspace --all-targets -- -D warnings
 echo "== test";       cargo test --workspace
-echo "== msrv";       if rustup toolchain list | grep -q '^1.93'; then cargo +1.93 check --workspace; else echo "  (1.93 toolchain not installed; run 'rustup toolchain install 1.93' — required in CI)"; fi
+echo "== msrv";       if rustup toolchain list | grep -q '^1.97'; then cargo +1.97 check --workspace; else echo "  (1.97 toolchain not installed; run 'rustup toolchain install 1.97' — required in CI)"; fi
 echo "== deny";       if command -v cargo-deny >/dev/null; then cargo deny check; else echo "  (cargo-deny not installed)"; fi
 echo "== xtask";      cargo run -q -p xtask -- tree-check && cargo run -q -p xtask -- deps-check && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-packaging && cargo run -q -p xtask -- check-assets
 echo "== smoke";      tests/integration/run.sh

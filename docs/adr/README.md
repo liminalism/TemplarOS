@@ -9,7 +9,7 @@
 | 0005 | Forks pinned by manifest, not submodules | accepted |
 | 0006 | mkosi images; installer ISO later | accepted |
 | 0007 | Ubuntu 26.04 kernel 7.0 base; mainline 7.2 as transaction candidate | accepted |
-| 0008 | Toolchain, MSRV 1.93, `org.legeos` (licence superseded by 0013) | accepted |
+| 0008 | Toolchain, MSRV 1.97, `org.legeos` (licence superseded by 0013) | accepted |
 | 0009 | Packaging: cargo-deb → vendored source package | accepted |
 | 0010 | systemd session; greetd + cosmic-greeter; compositor-owned lock | accepted |
 | 0011 | Flatpak not snapd; telemetry-free crash handling | accepted |
