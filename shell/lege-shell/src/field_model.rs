@@ -54,6 +54,15 @@ pub const DRAWER_TILES: [Drawer; 8] = [
 /// three headings for three numbers, which is a tray by another name.
 pub const SYSTEM_WIDGETS: [&str; 4] = ["session", "launcher", "notifications", "settings"];
 
+/// The `TileKind::System` probes a saved field may still be carrying: one tile per hardware
+/// reading, as Home placed them before the Settings widget replaced all three.
+///
+/// A saved document outlives the roster that made it, and these three are not merely unknown —
+/// they are *superseded*. Left alone they would each render "no such widget" for as long as the
+/// layout survives, which on this desktop is forever. [`migrate_hardware_tiles`] is what turns
+/// them into the one tile they became.
+const LEGACY_HARDWARE_WIDGETS: [&str; 3] = ["battery", "volume", "brightness"];
+
 const DRAWER_SPAN: u16 = 2;
 
 /// The share of the field the system shelf may claim, as a divisor: at most one cell in this many.
@@ -217,6 +226,11 @@ pub struct SessionTile {
 pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
     let mut wanted: BTreeSet<TileId> = BTreeSet::new();
+    // First, before anything places a tile: a superseded widget has to become its replacement
+    // rather than sit beside one. Running this after `merge_system` would mean the Settings tile
+    // already existed by the time the old three were found, and the migration would have nowhere
+    // to put it but the shelf's default corner — losing the place a person had chosen.
+    migrate_hardware_tiles(doc, &mut applied);
     merge_drawers(doc, &mut wanted, &mut applied);
     // A Home overview must never sacrifice a real open window to a project shortcut or redundant
     // application badge when space is tight, so sessions get first claim after the utility block.
@@ -576,57 +590,117 @@ fn merge_drawers(
 fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     let fitting = system_widgets_that_fit(doc.cols, doc.rows);
     for (index, widget) in fitting.iter().copied().enumerate() {
-        let id = tile_id_for(&format!("system:{widget}"));
-        let kind = TileKind::System {
-            probe: widget.to_owned(),
-        };
-        // Compact by default, with the class ceiling intact — the same bargain the drawer block
-        // strikes above. Three system widgets at their *preferred* 4x2 claim twenty-four cells of
-        // a laptop's seventy-seven before a single window exists, which is a field that arrives
-        // full; at the 3x2 class floor they are a strip along the bottom that a person grows if
-        // they want the launcher to list more than a handful of rows at a time.
-        //
-        // The tile's own floor is lower still, at 2x1. These three are the desktop's furniture
-        // and are placed last, after every open window has its overview space: without room to
-        // compact, a busy field simply failed to place the launcher, which is precisely the field
-        // on which someone reaches for it. A 2x1 launcher is a small tile that expands, not a
-        // missing one.
-        let class = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-        // The arrival span comes from the widget, not from the tile class: the class figure is
-        // the launcher's — a list needs rows to be a list — and applying it to a battery reading
-        // "72%" is what turns the system shelf into four rows of a seven-row field. The 2x1 floor
-        // below is every system tile's and is unchanged, so this decides what a widget arrives
-        // at, never what a person may shrink it to.
-        let descriptor = crate::surface::widgets::descriptor(widget);
-        let wanted = descriptor.map_or((class.preferred.cols, class.preferred.rows), |declared| {
-            declared.preferred_span
-        });
-        let spans = SpanRange::new(
-            Span::new(2, 1),
-            Span::new(wanted.0.max(1), wanted.1.max(1)),
-            class.max,
-        );
-        let cell = system_landing(index, doc, spans, fitting.len());
-        if doc.tile(id).is_some() {
+        let tile = system_tile(widget, doc);
+        let cell = system_landing(index, doc, tile.spans, fitting.len());
+        if doc.tile(tile.id).is_some() {
             continue;
         }
-        let heading = descriptor.map_or_else(
-            || widget.to_owned(),
-            |descriptor| descriptor.title.to_owned(),
-        );
-        let tile = Tile {
-            id,
-            kind,
-            title: heading,
-            spans,
-            accent: None,
-        };
         let landing = Landing {
             container: None,
             cell,
         };
         try_apply(doc, FieldOp::Place { tile, landing }, applied);
     }
+}
+
+/// The tile Home places for one system widget — id, heading and span range, all derived from the
+/// widget's own declaration.
+///
+/// Shared by [`merge_system`] and [`migrate_hardware_tiles`] so a field that grew its Settings
+/// tile out of three older ones gets exactly the tile a fresh field would have been given.
+///
+/// Compact by default, with the class ceiling intact — the same bargain the drawer block strikes
+/// above. Four system widgets at the class's *preferred* 4x2 claim thirty-two cells of a laptop's
+/// seventy-seven before a single window exists, which is a field that arrives full; at the widgets'
+/// own declared spans they are a strip along the bottom that a person grows if they want the
+/// launcher to list more than a handful of rows at a time.
+///
+/// The tile's own floor is lower still, at 2x1. These are the desktop's furniture and are placed
+/// last, after every open window has its overview space: without room to compact, a busy field
+/// simply failed to place the launcher, which is precisely the field on which someone reaches for
+/// it. A 2x1 launcher is a small tile that expands, not a missing one.
+fn system_tile(widget: &str, doc: &FieldDocument) -> Tile {
+    let kind = TileKind::System {
+        probe: widget.to_owned(),
+    };
+    let class = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    // The arrival span comes from the widget, not from the tile class: the class figure is the
+    // launcher's — a list needs rows to be a list — and applying it to everything is what turns
+    // the system shelf into four rows of a seven-row field. The 2x1 floor below is every system
+    // tile's and is unchanged, so this decides what a widget arrives at, never what a person may
+    // shrink it to.
+    let descriptor = crate::surface::widgets::descriptor(widget);
+    let wanted = descriptor.map_or((class.preferred.cols, class.preferred.rows), |declared| {
+        declared.preferred_span
+    });
+    Tile {
+        id: tile_id_for(&format!("system:{widget}")),
+        kind,
+        title: descriptor.map_or_else(
+            || widget.to_owned(),
+            |descriptor| descriptor.title.to_owned(),
+        ),
+        spans: SpanRange::new(
+            Span::new(2, 1),
+            Span::new(wanted.0.max(1), wanted.1.max(1)),
+            class.max,
+        ),
+        accent: None,
+    }
+}
+
+/// Turn a saved field's Battery, Volume and Brightness tiles into the one Settings tile that
+/// replaced them, in the first place any of them held.
+///
+/// The only step of the merge that removes a system tile, and it is not an exception to the
+/// add-only rule so much as the reason the rule can stay: these three tiles no longer name a
+/// widget the shell can draw, so leaving them alone means three tiles reading "no such widget"
+/// for the life of the layout. Keeping the *place* is the part that matters — a person who moved
+/// their readouts to a corner finds the tile that replaced them in that corner.
+///
+/// Expressed as ordinary ops through [`try_apply`] like every other merge step, so the removals
+/// and the placement have the same exact inverses a drag does and a caller can forward them to
+/// `HomeField1.Apply` unchanged.
+fn migrate_hardware_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let legacy: Vec<TileId> = LEGACY_HARDWARE_WIDGETS
+        .iter()
+        .map(|widget| (widget, tile_id_for(&format!("system:{widget}"))))
+        // The kind is checked, not just the id: a tile id is a hash, and removing something else
+        // that happened to collide with one would be the worst possible outcome here.
+        .filter(|(widget, id)| {
+            doc.tile(*id).is_some_and(|tile| {
+                matches!(&tile.kind, TileKind::System { probe } if probe == *widget)
+            })
+        })
+        .map(|(_, id)| id)
+        .collect();
+    if legacy.is_empty() {
+        return;
+    }
+    // The first of their positions, in the order Home originally placed them. A field where all
+    // three had been stashed has no position to inherit, and `merge_system` then lands the
+    // replacement at the shelf's own corner.
+    let inherited = legacy
+        .iter()
+        .find_map(|id| doc.location(*id).map(|located| located.placement.cell));
+    for id in legacy {
+        try_apply(doc, FieldOp::Remove { id }, applied);
+    }
+    let tile = system_tile("settings", doc);
+    // A field that already carries the replacement wanted only the leftovers gone. Placing a
+    // second one is impossible anyway — ids are derived from the probe — and asking would move
+    // the tile the person is already using.
+    if doc.tile(tile.id).is_some() {
+        return;
+    }
+    let Some(cell) = inherited else {
+        return;
+    };
+    let landing = Landing {
+        container: None,
+        cell,
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, applied);
 }
 
 /// System widgets form a shelf in the bottom-right corner, packed right to left in declaration
@@ -1059,6 +1133,112 @@ mod tests {
                 "Home places a {probe:?} tile that `surface::widgets::WIDGETS` does not define"
             );
         }
+    }
+
+    /// A field saved when Home had a tile per hardware reading, with the three of them wherever
+    /// the person left them.
+    fn field_with_the_old_hardware_tiles(cells: [Cell; 3]) -> FieldDocument {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        for (widget, cell) in LEGACY_HARDWARE_WIDGETS.into_iter().zip(cells) {
+            let kind = TileKind::System {
+                probe: widget.to_owned(),
+            };
+            let spans = SpanRange::new(
+                Span::new(2, 1),
+                Span::new(3, 1),
+                SpanRange::for_kind(&kind, doc.cols, doc.rows).max,
+            );
+            let tile = Tile {
+                id: tile_id_for(&format!("system:{widget}")),
+                kind,
+                title: widget.to_owned(),
+                spans,
+                accent: None,
+            };
+            doc = apply(
+                &doc,
+                &FieldOp::Place {
+                    tile,
+                    landing: Landing {
+                        container: None,
+                        cell,
+                    },
+                },
+            )
+            .expect("the old tile places")
+            .0;
+        }
+        doc
+    }
+
+    /// The three superseded tiles become the one that replaced them, in the first place any of
+    /// them held — not back in the shelf's default corner, which would throw away the arrangement
+    /// the upgrade is supposed to preserve.
+    #[test]
+    fn a_saved_field_of_hardware_tiles_becomes_one_settings_tile_in_their_place() {
+        let corner = [Cell::new(9, 2), Cell::new(12, 2), Cell::new(9, 3)];
+        let mut doc = field_with_the_old_hardware_tiles(corner);
+        merge(&mut doc, &LiveState::default());
+
+        for widget in LEGACY_HARDWARE_WIDGETS {
+            assert!(
+                doc.tile(tile_id_for(&format!("system:{widget}"))).is_none(),
+                "{widget} is a reading on the Settings tile now, not a tile"
+            );
+        }
+        let settings = tile_id_for("system:settings");
+        let located = doc.tile(settings).and(doc.location(settings));
+        assert_eq!(
+            located.map(|located| located.placement.cell),
+            Some(corner[0]),
+            "the replacement did not inherit the first of their places"
+        );
+    }
+
+    /// A field that already has the Settings tile — one saved after the upgrade but before a
+    /// stale copy of the old three was written back — loses the leftovers and keeps its own tile
+    /// exactly where it is.
+    #[test]
+    fn a_field_that_already_has_settings_only_loses_the_leftovers() {
+        let mut doc =
+            field_with_the_old_hardware_tiles([Cell::new(9, 2), Cell::new(12, 2), Cell::new(9, 3)]);
+        let chosen = Cell::new(4, 6);
+        let tile = system_tile("settings", &doc);
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile,
+                landing: Landing {
+                    container: None,
+                    cell: chosen,
+                },
+            },
+        )
+        .expect("the settings tile places")
+        .0;
+
+        merge(&mut doc, &LiveState::default());
+        for widget in LEGACY_HARDWARE_WIDGETS {
+            assert!(doc.tile(tile_id_for(&format!("system:{widget}"))).is_none());
+        }
+        let settings = tile_id_for("system:settings");
+        assert_eq!(
+            doc.location(settings).map(|located| located.placement.cell),
+            Some(chosen),
+            "the tile a person is already using was moved"
+        );
+    }
+
+    /// The migration touches nothing on a field that never had the old tiles, and never runs
+    /// twice: a second merge of the same state is still empty.
+    #[test]
+    fn the_hardware_migration_is_silent_on_a_field_that_never_had_them() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        merge(&mut doc, &LiveState::default());
+        let mut ops = Vec::new();
+        migrate_hardware_tiles(&mut doc, &mut ops);
+        assert!(ops.is_empty(), "{ops:?}");
+        assert!(merge(&mut doc, &LiveState::default()).is_empty());
     }
 
     #[test]
