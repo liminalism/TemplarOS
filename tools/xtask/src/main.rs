@@ -51,6 +51,11 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     "WidgetRegion::new(\"",
     // `crate::surface::context_menu`: a row on the field's secondary-click menu.
     "MenuItem::new(\"",
+    // `crate::surface::file_browser`: a button on the file-verb row of a Home file surface.
+    // These verbs are reachable by accelerator too, and the accelerators are surface-local
+    // rather than compositor chords — so without this needle the row would be invisible here and
+    // a file verb could end up keyboard-only without the check noticing.
+    "FileVerbRoute::new(\"",
 ];
 
 /// Declared actions that carry a chord and, for now, legitimately have no pointer route.

@@ -560,6 +560,90 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Always,
     },
     // ---- Session ----------------------------------------------------------------------
+    // Ordinary file manipulation inside Home's file surfaces. No chords here, deliberately, and
+    // the reason is not timidity: these are surface-local accelerators handled by the file
+    // surface that has focus (`shell/lege-shell/src/surface/file_browser.rs`), not compositor
+    // chords. Ctrl+C means "copy this file" over a folder listing and something else entirely
+    // over a terminal, so reserving it globally would be wrong — and the compositor's fixed
+    // keysym table, which must keep working with the whole session bus dead, has no business
+    // carrying a paste. What these declarations buy is the pointer route on the verb row and one
+    // agreed name per verb, so the Home surface and the Files app cannot call the same thing two
+    // different things.
+    ActionDecl {
+        id: "files.copy",
+        label: "Copy",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.cut",
+        label: "Cut",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.paste",
+        label: "Paste",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.trash",
+        label: "Move to Trash",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        // Not confirmed, and that is the point of a trash: trashing is the reversible half of
+        // removal and it reports the undo that puts it back. A confirmation on the reversible
+        // action would train people to dismiss the one on `trash.empty`, which is not reversible.
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.rename",
+        label: "Rename",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.new-folder",
+        label: "New folder",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.properties",
+        label: "Properties",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.copy-path",
+        label: "Copy path",
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
     // Volume and backlight: the two hardware levels a person changes several times a day. No
     // chords on any of them — the keyboards that have these keys route them through the
     // compositor's own table, and inventing a second binding here would put two different things

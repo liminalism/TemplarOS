@@ -320,6 +320,16 @@ impl BrowseApi {
         json(&listing)
     }
 
+    /// Make a directory under `parent`; returns the name it actually got.
+    async fn create_directory(&self, parent: &str, preferred_name: &str) -> fdo::Result<String> {
+        let parent = PathBuf::from(parent);
+        let preferred = preferred_name.to_owned();
+        tokio::task::spawn_blocking(move || browse::create_directory(&parent, &preferred))
+            .await
+            .map_err(failed)?
+            .map_err(failed)
+    }
+
     /// One metadata record, with symlink-safe recursive totals for a real directory.
     async fn inspect(&self, path: &str) -> fdo::Result<String> {
         let path = PathBuf::from(path);

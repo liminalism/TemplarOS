@@ -26,6 +26,10 @@ pub trait FilesBrowse {
 
     /// `FileInfo` JSON for a properties pane, including recursive totals for real directories.
     fn inspect(&self, path: &str) -> zbus::Result<String>;
+
+    /// Make a directory under `parent`; returns the name it actually got, which differs from
+    /// `preferred_name` when that one was taken.
+    fn create_directory(&self, parent: &str, preferred_name: &str) -> zbus::Result<String>;
 }
 
 #[proxy(

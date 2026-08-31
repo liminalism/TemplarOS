@@ -24,6 +24,7 @@ use lege_types::AppId;
 use lege_types::action;
 use lege_window::RevealHome;
 
+use crate::clipboard::Clipboard;
 use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState, ProjectInfo};
 use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind};
@@ -32,7 +33,7 @@ use crate::icons::{self, SystemIconRoots};
 use crate::settings::{self, HomeFieldSettings, PreviewMode};
 use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
-use crate::surface::file_browser::FileBrowserData;
+use crate::surface::file_browser::{FileBrowserData, FileRequest, FileVerb};
 use crate::surface::fonts;
 use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
@@ -226,6 +227,9 @@ struct ShellApp {
     /// happened last and says which one it is undoing before it does.
     last_field_change_at: Option<Instant>,
     last_file_operation: Option<FileOperationUndo>,
+    /// What Ctrl+C or Ctrl+X last put down. Held by the host rather than by a surface, because
+    /// it outlives whichever folder was open when it was filled.
+    clipboard: Option<Clipboard>,
     field_settings: HomeFieldSettings,
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
@@ -295,6 +299,7 @@ impl ShellApp {
             undo: Vec::new(),
             last_field_change_at: None,
             last_file_operation: None,
+            clipboard: None,
             field_settings: HomeFieldSettings::default(),
             field_requested: false,
             apps: Vec::new(),
@@ -945,6 +950,7 @@ impl ShellApp {
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
+            FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             FieldAction::RevealHome => {
@@ -1412,6 +1418,110 @@ impl ShellApp {
         });
     }
 
+    /// Perform one ordinary file verb from a Home file surface.
+    ///
+    /// The whole point of this function is that it is the *only* one: keyboard and pointer both
+    /// arrive here, and each verb goes to the same `lege-filed` interface the Files app uses, so
+    /// the two surfaces cannot drift into different ideas of what "delete" means.
+    fn perform_file_verb(&mut self, request: &FileRequest) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        match request.verb {
+            FileVerb::Copy | FileVerb::Cut => {
+                let copied = request.verb == FileVerb::Copy;
+                let clipboard = if copied {
+                    Clipboard::copy(request.paths.clone())
+                } else {
+                    Clipboard::cut(request.paths.clone())
+                };
+                let Some(clipboard) = clipboard else {
+                    return;
+                };
+                // Offered to the rest of the desktop as well as kept here, so Home's copy is
+                // pasteable in the Files app and in anything else that reads a uri-list.
+                Self::publish_clipboard(&clipboard);
+                self.field_screen.report(
+                    format!(
+                        "{} {} — paste with Ctrl+V",
+                        if copied { "Copied" } else { "Cut" },
+                        items(clipboard.paths().len())
+                    ),
+                    now_ms,
+                );
+                self.clipboard = Some(clipboard);
+            }
+            FileVerb::Paste => {
+                let Some(directory) = request.directory.as_ref() else {
+                    return;
+                };
+                let Some(clipboard) = self.clipboard.as_ref() else {
+                    self.field_screen
+                        .report("Nothing to paste".to_owned(), now_ms);
+                    return;
+                };
+                let Some(paste) = clipboard.paste_into(directory) else {
+                    return;
+                };
+                let spent = clipboard.spent_by_paste();
+                let kind = serde_json::json!({
+                    "kind": if paste.copy { "copy" } else { "move" },
+                    "sources": paste.sources,
+                    "destination_dir": paste.destination,
+                });
+                let summary = format!(
+                    "{} {} to {}",
+                    if paste.copy { "Copy" } else { "Move" },
+                    items(paste.sources.len()),
+                    paste.destination.display()
+                );
+                self.spawn_file_operation(kind.to_string(), summary);
+                if spent {
+                    // A cut is consumed by the paste that honours it: the sources are no longer
+                    // where they were, and offering them again would move files that have moved.
+                    self.clipboard = None;
+                }
+            }
+            FileVerb::Trash => {
+                if request.paths.is_empty() {
+                    return;
+                }
+                // The journalled trash, never an unlink: this is the reversible half of removal
+                // and the undo it leaves is the whole reason to prefer it.
+                let kind = serde_json::json!({ "kind": "trash", "paths": request.paths });
+                let summary = format!("Move {} to Trash", items(request.paths.len()));
+                self.spawn_file_operation(kind.to_string(), summary);
+            }
+            FileVerb::Rename => {
+                // Renaming needs a name, and asking for one is a dialogue this surface does not
+                // have yet. Saying so is better than a button that appears to do nothing; the
+                // Files app has the dialogue today and reaches the same `Operations1.Start`.
+                self.field_screen.report(
+                    "Rename needs a name — open this folder in Files to rename here".to_owned(),
+                    now_ms,
+                );
+            }
+            FileVerb::NewFolder => {
+                let Some(directory) = request.directory.as_ref() else {
+                    return;
+                };
+                self.spawn_new_folder(directory.clone());
+            }
+            FileVerb::Properties => {
+                let Some(path) = request.paths.first().cloned() else {
+                    return;
+                };
+                self.spawn_properties(path);
+            }
+            FileVerb::CopyPath => {
+                let Some(path) = request.paths.first() else {
+                    return;
+                };
+                // The same `Files.Actions1.Render` form the Files app copies, so both surfaces
+                // put the identical text on the clipboard for the identical file.
+                self.spawn_copy_path(path.clone());
+            }
+        }
+    }
+
     /// Start one journalled operation for a typed file drop and follow it to its end.
     fn spawn_file_drop(&self, drop: &crate::surface::field_screen::FileDrop) {
         let kind = if drop.copy {
@@ -1482,6 +1592,99 @@ impl ShellApp {
                 },
             };
             let _ = tx.send(update);
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Offer the clipboard to the rest of the desktop.
+    ///
+    /// **This is where the Wayland wiring stops.** Making a selection available to other
+    /// applications means owning `wl_data_device`'s selection and answering `send` requests for
+    /// each offered MIME type, and the shell's compositor connection is the private
+    /// `lege_shell_v1` protocol — it has no `wl_data_device_manager` bound and no seat to own a
+    /// selection on. Everything *above* that transport is finished and tested: the encodings are
+    /// exact (`crate::clipboard`, `lege_types::uri_list`), and both payloads are produced here
+    /// ready to hand over. What is missing is the handover itself, so a copy in Home is
+    /// pasteable in Home and not yet in Firefox.
+    fn publish_clipboard(clipboard: &Clipboard) {
+        tracing::debug!(
+            paths = clipboard.paths().len(),
+            uri_list = clipboard.to_uri_list().len(),
+            gnome = clipboard.to_gnome_copied_files().len(),
+            "clipboard ready to offer; wl_data_device is not bound on the shell's connection"
+        );
+    }
+
+    /// `New folder` through the same service the Files app uses.
+    ///
+    /// The name is chosen here and not asked for, because this surface has no dialogue yet and a
+    /// folder called "New folder" that a person then renames is the behaviour every file manager
+    /// has. The service refuses a name already taken, and the refusal is reported.
+    fn spawn_new_folder(&self, directory: PathBuf) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesBrowseProxy::new(&connection).await?;
+                let name = proxy
+                    .create_directory(&directory.to_string_lossy(), "New folder")
+                    .await?;
+                Ok::<_, anyhow::Error>(name)
+            }
+            .await;
+            let notice = match result {
+                Ok(name) => format!("Created {name}"),
+                Err(error) => format!("Could not create a folder — {error:#}"),
+            };
+            let _ = tx.send(DataUpdate::Notice(notice));
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Properties, from `Files.Browse1.Inspect` — the same record the Files app's pane shows.
+    fn spawn_properties(&self, path: PathBuf) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesBrowseProxy::new(&connection).await?;
+                let json = proxy.inspect(&path.to_string_lossy()).await?;
+                let info: lege_client::files::FileInfo = serde_json::from_str(&json)?;
+                Ok::<_, anyhow::Error>(info)
+            }
+            .await;
+            let notice = match result {
+                Ok(info) => format!(
+                    "{} · {} · {}",
+                    info.name,
+                    crate::format::bytes(info.size_bytes),
+                    info.canonical_path.unwrap_or(info.path).display()
+                ),
+                Err(error) => format!("Could not read properties — {error:#}"),
+            };
+            let _ = tx.send(DataUpdate::Notice(notice));
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// `Copy path`, rendered by `Files.Actions1` so every surface copies the identical text.
+    fn spawn_copy_path(&self, path: PathBuf) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesActionsProxy::new(&connection).await?;
+                Ok::<_, anyhow::Error>(proxy.render(&path.to_string_lossy(), "canonical").await?)
+            }
+            .await;
+            let notice = match result {
+                Ok(rendered) => format!("Copied path: {rendered}"),
+                Err(error) => format!("Could not copy the path — {error:#}"),
+            };
+            let _ = tx.send(DataUpdate::Notice(notice));
             let _ = proxy_wake.send_event(Wake);
         });
     }

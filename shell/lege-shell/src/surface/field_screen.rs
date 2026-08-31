@@ -83,6 +83,10 @@ pub enum FieldAction {
     /// A drop the grammar named as a real file operation: copy or move these sources into that
     /// directory, as one journalled `Files.Operations1` operation with one undo.
     DropFiles(FileDrop),
+    /// An ordinary file verb performed in an expanded Home file surface — copy, cut, paste,
+    /// trash, rename, new folder, properties, copy path. The host performs it through the same
+    /// `lege-filed` interfaces the Files app uses.
+    FileVerb(crate::surface::file_browser::FileRequest),
     RevealHome,
     /// Discard the stored layout and take the current default instead. Not an `Apply`: the
     /// document and its undo log go together, so there is no inverse to keep and the host has to
@@ -1056,6 +1060,7 @@ impl FieldScreen {
                 show_hidden,
             }),
             HomeSurfaceAction::OpenFile(path) => actions.push(FieldAction::OpenFile(path)),
+            HomeSurfaceAction::File(request) => actions.push(FieldAction::FileVerb(request)),
             HomeSurfaceAction::None => {}
         }
         // The rail inside the drawer view may have switched drawers; follow it.
