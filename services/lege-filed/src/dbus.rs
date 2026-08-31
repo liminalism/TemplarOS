@@ -18,7 +18,7 @@ use crate::{
     preview,
     recents::{RecentAction, Recents},
     search::{Index, SavedQuery},
-    storage,
+    storage, trash,
 };
 use lege_types::{AppId, dbus::files as names};
 use parking_lot::Mutex;
@@ -127,7 +127,21 @@ impl FileService {
             }
             service.running.lock().remove(&id);
             service.emit_finished(&operation);
+            if touches_trash(&operation.kind) {
+                service.emit_trash_changed();
+            }
         });
+    }
+
+    /// The trash's contents changed. Emitted from the one place operations finish, so a drawer
+    /// and a file manager stay live whichever of them did the mutating — and so no caller has to
+    /// remember to announce it.
+    ///
+    /// Deliberately generous: every permanent delete announces it, not only the ones aimed at a
+    /// trash, because the cost of a client re-listing an unchanged trash is nothing and the cost
+    /// of a missed change is a stale listing that offers to restore a file that is gone.
+    fn emit_trash_changed(&self) {
+        self.emit_on(names::TRASH_IFACE, "Changed", &());
     }
 
     fn emit_progress(&self, operation: &Operation) {
@@ -159,19 +173,20 @@ impl FileService {
     where
         B: serde::Serialize + zbus::zvariant::DynamicType + Send + Sync + Clone + 'static,
     {
+        self.emit_on(names::OPERATIONS_IFACE, member, body);
+    }
+
+    fn emit_on<B>(&self, interface: &'static str, member: &'static str, body: &B)
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType + Send + Sync + Clone + 'static,
+    {
         let Some(connection) = self.connection.lock().clone() else {
             return;
         };
         let body = body.clone();
         tokio::spawn(async move {
             if let Err(error) = connection
-                .emit_signal(
-                    None::<&str>,
-                    names::ROOT_PATH,
-                    names::OPERATIONS_IFACE,
-                    member,
-                    &body,
-                )
+                .emit_signal(None::<&str>, names::ROOT_PATH, interface, member, &body)
                 .await
             {
                 tracing::debug!(%error, member, "no listener for the signal");
@@ -204,6 +219,16 @@ fn sources_of(kind: &OperationKind) -> Vec<PathBuf> {
         | OperationKind::RestoreFromTrash { .. }
         | OperationKind::Rename { .. } => Vec::new(),
     }
+}
+
+/// Whether finishing this operation could have changed what is in a trash.
+fn touches_trash(kind: &OperationKind) -> bool {
+    matches!(
+        kind,
+        OperationKind::Trash { .. }
+            | OperationKind::RestoreFromTrash { .. }
+            | OperationKind::Delete { .. }
+    )
 }
 
 fn destination_of(kind: &OperationKind) -> Option<&Path> {
@@ -447,6 +472,160 @@ impl OperationsApi {
         state: String,
         error: String,
     ) -> zbus::Result<()>;
+}
+
+/// Which mount points [`TrashApi`] looks on for a per-volume trash.
+///
+/// A test must never be able to reach the developer's own removable disks — `Empty` deletes what
+/// it finds — so the mount table is a value here rather than a call inside the sweep.
+#[derive(Clone, Debug)]
+pub enum TrashMounts {
+    /// Every user-visible mounted volume, as `Files.Volumes1` reports them. What the daemon uses.
+    System,
+    /// Exactly these mount points, and nothing else.
+    Fixed(Vec<PathBuf>),
+}
+
+impl TrashMounts {
+    fn mount_points(&self) -> Vec<PathBuf> {
+        match self {
+            // A failed mount-table read costs the volume trashes, not the home trash: a listing
+            // that shows most of the trash beats one that shows an error.
+            Self::System => storage::volumes(0)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|volume| volume.mount_point)
+                .collect(),
+            Self::Fixed(points) => points.clone(),
+        }
+    }
+}
+
+/// `org.legeos.Files.Trash1` — what is in the trash, and the three things done with it.
+///
+/// Every mutating method is a validating wrapper over [`FileService::start`], the same entry
+/// point `Operations1.Start` uses. That is the whole design: a large empty keeps its progress,
+/// its journal and its crash-resume, and a restore keeps its undo, because there is exactly one
+/// execution path and this is not a second one.
+#[derive(Debug)]
+pub struct TrashApi {
+    pub service: FileService,
+    pub mounts: TrashMounts,
+}
+
+impl TrashApi {
+    /// The daemon's configuration: the home trash plus every mounted volume's.
+    pub fn new(service: FileService) -> Self {
+        Self {
+            service,
+            mounts: TrashMounts::System,
+        }
+    }
+
+    fn trash_dirs(&self) -> Vec<trash::TrashDir> {
+        trash::all_trash_dirs(&self.service.config.data_home, &self.mounts.mount_points())
+    }
+
+    /// Turn client-named paths into trash entries, refusing anything that is not one.
+    ///
+    /// Any process on the session bus can call this, so "it came from List" is not something the
+    /// service may assume: a path that is not a direct child of one of this user's trashes is
+    /// rejected before anything is journalled.
+    fn resolve(paths: &[String], dirs: &[trash::TrashDir]) -> fdo::Result<Vec<PathBuf>> {
+        if paths.is_empty() {
+            return Err(fdo::Error::InvalidArgs(
+                "at least one trashed path is required".to_owned(),
+            ));
+        }
+        let mut resolved = Vec::with_capacity(paths.len());
+        for path in paths {
+            let path = PathBuf::from(path);
+            let Some(trash) = trash::owning_trash(&path, dirs) else {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "{} is not an item in this user's trash",
+                    path.display()
+                )));
+            };
+            if path.symlink_metadata().is_err() {
+                return Err(fdo::Error::FileNotFound(format!(
+                    "{} is no longer in the trash",
+                    path.display()
+                )));
+            }
+            resolved.push((path, trash));
+        }
+        Ok(resolved
+            .into_iter()
+            .flat_map(|(path, trash)| {
+                let info = trash::info_path_of(&path, trash);
+                std::iter::once(path).chain(info)
+            })
+            .collect())
+    }
+
+    fn begin(&self, kind: OperationKind, app_id: &str) -> fdo::Result<String> {
+        let app_id = (!app_id.is_empty()).then(|| app_id.parse().ok()).flatten();
+        self.service
+            .start(kind, Options::default(), app_id.as_ref())
+            .map(|id| id.to_string())
+            .map_err(failed)
+    }
+}
+
+#[zbus::interface(name = "org.legeos.Files.Trash1")]
+impl TrashApi {
+    /// Every trash this user has, newest deletion first, as `TrashEntry` JSON.
+    async fn list(&self) -> fdo::Result<String> {
+        let dirs = self.trash_dirs();
+        let entries = tokio::task::spawn_blocking(move || trash::list_all(&dirs))
+            .await
+            .map_err(failed)?;
+        json(&entries)
+    }
+
+    /// Put items back where they came from; returns the operation ID.
+    async fn restore(&self, trashed_paths: Vec<String>, app_id: &str) -> fdo::Result<String> {
+        let dirs = self.trash_dirs();
+        // The `.trashinfo` is not restored — it is consumed by the restore itself — so only the
+        // items go into the operation.
+        let paths: Vec<PathBuf> = Self::resolve(&trashed_paths, &dirs)?
+            .into_iter()
+            .filter(|path| path.extension().is_none_or(|kind| kind != "trashinfo"))
+            .collect();
+        self.begin(OperationKind::RestoreFromTrash { paths }, app_id)
+    }
+
+    /// Remove items from the trash for good, with their records. No undo.
+    async fn delete_permanently(
+        &self,
+        trashed_paths: Vec<String>,
+        app_id: &str,
+    ) -> fdo::Result<String> {
+        let dirs = self.trash_dirs();
+        let paths = Self::resolve(&trashed_paths, &dirs)?;
+        self.begin(OperationKind::Delete { paths }, app_id)
+    }
+
+    /// Empty every trash this user has. The sweep is here rather than in the client, so nothing
+    /// trashed between a listing and a delete is missed. An empty trash returns an empty ID.
+    async fn empty(&self, app_id: &str) -> fdo::Result<String> {
+        let dirs = self.trash_dirs();
+        let paths = tokio::task::spawn_blocking(move || {
+            dirs.iter()
+                .flat_map(trash::everything_in)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(failed)?;
+        if paths.is_empty() {
+            return Ok(String::new());
+        }
+        self.begin(OperationKind::Delete { paths }, app_id)
+    }
+
+    /// The trash's contents changed — call `List`.
+    #[zbus(signal)]
+    async fn changed(emitter: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// `org.legeos.Files.Recents1` — recent files and the shared last-used directory.
@@ -745,6 +924,162 @@ mod tests {
         settle(&service, id).await;
         assert!(!victim.exists());
         assert_eq!(service.journal.undo_of(id).unwrap(), None);
+    }
+
+    /// A `Trash1` over a service whose only trashes are the fixture's: the home trash under the
+    /// temporary `data_home`, and whichever fake volumes the test names.
+    fn trash_api(service: &FileService, volumes: &[PathBuf]) -> TrashApi {
+        TrashApi {
+            service: service.clone(),
+            mounts: TrashMounts::Fixed(volumes.to_vec()),
+        }
+    }
+
+    /// Trash `path` through the same journalled path a file manager uses, and wait for it.
+    async fn trash_it(service: &FileService, path: &Path) {
+        let id = service
+            .start(
+                OperationKind::Trash {
+                    paths: vec![path.to_path_buf()],
+                },
+                Options::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(settle(service, id).await.state, OperationState::Committed);
+    }
+
+    fn entries(listing: &str) -> Vec<crate::trash::TrashEntry> {
+        serde_json::from_str(listing).expect("Trash1.List returns TrashEntry JSON")
+    }
+
+    #[tokio::test]
+    async fn listing_the_trash_shows_what_was_trashed_and_where_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path());
+        let api = trash_api(&service, &[]);
+        assert_eq!(entries(&api.list().await.unwrap()), Vec::new());
+
+        let source = dir.path().join("work/report.pdf");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"contents").unwrap();
+        trash_it(&service, &source).await;
+
+        let listed = entries(&api.list().await.unwrap());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "report.pdf");
+        assert_eq!(listed[0].original_path, source);
+        assert_eq!(listed[0].size_bytes, 8);
+        assert!(listed[0].trashed_path.exists());
+    }
+
+    #[tokio::test]
+    async fn restoring_puts_an_item_back_and_leaves_the_trash_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path());
+        let api = trash_api(&service, &[]);
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, b"keep me").unwrap();
+        trash_it(&service, &source).await;
+        assert!(!source.exists());
+
+        let listed = entries(&api.list().await.unwrap());
+        let op = api
+            .restore(vec![listed[0].trashed_path.display().to_string()], "")
+            .await
+            .unwrap();
+        let operation = settle(&service, OperationId::parse(&op).unwrap()).await;
+        assert_eq!(operation.state, OperationState::Committed);
+        assert_eq!(std::fs::read(&source).unwrap(), b"keep me");
+        assert!(entries(&api.list().await.unwrap()).is_empty());
+        // Restoring is journalled like anything else, so it can be undone: the file goes back
+        // into the trash rather than being lost.
+        assert!(service.journal.undo_of(operation.id).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_permanent_delete_takes_the_item_and_its_record_and_offers_no_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path());
+        let api = trash_api(&service, &[]);
+        let source = dir.path().join("draft.txt");
+        std::fs::write(&source, b"x").unwrap();
+        trash_it(&service, &source).await;
+
+        let listed = entries(&api.list().await.unwrap());
+        let op = api
+            .delete_permanently(vec![listed[0].trashed_path.display().to_string()], "")
+            .await
+            .unwrap();
+        let operation = settle(&service, OperationId::parse(&op).unwrap()).await;
+        assert_eq!(operation.state, OperationState::Committed);
+        assert!(!listed[0].trashed_path.exists());
+        assert!(!listed[0].info_path.exists(), "the record went with it");
+        assert!(entries(&api.list().await.unwrap()).is_empty());
+        assert_eq!(service.journal.undo_of(operation.id).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn emptying_sweeps_every_trash_and_says_nothing_to_do_when_there_is_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path());
+        let volume = dir.path().join("mnt/stick");
+        std::fs::create_dir_all(&volume).unwrap();
+        let volume_trash = crate::trash::volume_trash(&volume);
+        let api = trash_api(&service, std::slice::from_ref(&volume));
+        assert_eq!(
+            api.empty("").await.unwrap(),
+            "",
+            "an empty trash is not an error"
+        );
+
+        let home_item = dir.path().join("one.txt");
+        std::fs::write(&home_item, b"a").unwrap();
+        trash_it(&service, &home_item).await;
+        // Trashed straight into the volume's own trash, the way a file on a second disk is.
+        let on_volume = volume.join("two.txt");
+        std::fs::write(&on_volume, b"b").unwrap();
+        crate::trash::trash(&on_volume, &volume_trash, "2026-08-30T10:00:00").unwrap();
+        assert_eq!(entries(&api.list().await.unwrap()).len(), 2);
+
+        let op = api.empty("").await.unwrap();
+        let operation = settle(&service, OperationId::parse(&op).unwrap()).await;
+        assert_eq!(operation.state, OperationState::Committed);
+        assert!(entries(&api.list().await.unwrap()).is_empty());
+        assert!(
+            std::fs::read_dir(volume_trash.files())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(
+            std::fs::read_dir(volume_trash.info())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_that_is_not_in_the_trash_is_refused_before_anything_is_journalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path());
+        let api = trash_api(&service, &[]);
+        let outsider = dir.path().join("precious.txt");
+        std::fs::write(&outsider, b"do not touch").unwrap();
+
+        for paths in [Vec::new(), vec![outsider.display().to_string()]] {
+            assert!(matches!(
+                api.delete_permanently(paths.clone(), "").await,
+                Err(fdo::Error::InvalidArgs(_))
+            ));
+            assert!(matches!(
+                api.restore(paths, "").await,
+                Err(fdo::Error::InvalidArgs(_))
+            ));
+        }
+        assert!(outsider.exists());
+        assert!(service.journal.recent(10).unwrap().is_empty());
     }
 
     #[tokio::test]

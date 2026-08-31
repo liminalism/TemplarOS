@@ -94,6 +94,30 @@ pub trait FilesOperations {
 }
 
 #[proxy(
+    interface = "org.legeos.Files.Trash1",
+    default_service = "org.legeos.Files",
+    default_path = "/org/legeos/Files"
+)]
+pub trait FilesTrash {
+    /// Every trash this user has — the home trash and each mounted volume's — newest deletion
+    /// first, as a JSON array of `TrashEntry`.
+    fn list(&self) -> zbus::Result<String>;
+
+    /// Put trashed items back where they came from; returns the operation ID.
+    fn restore(&self, trashed_paths: Vec<String>, app_id: &str) -> zbus::Result<String>;
+
+    /// Remove trashed items for good, with their `.trashinfo` records. No undo.
+    fn delete_permanently(&self, trashed_paths: Vec<String>, app_id: &str) -> zbus::Result<String>;
+
+    /// Empty every trash. The operation ID is empty when there was nothing to empty.
+    fn empty(&self, app_id: &str) -> zbus::Result<String>;
+
+    /// Something was trashed, restored or deleted for good. Carries nothing — call `list`.
+    #[zbus(signal)]
+    fn changed(&self) -> zbus::Result<()>;
+}
+
+#[proxy(
     interface = "org.legeos.Files.Recents1",
     default_service = "org.legeos.Files",
     default_path = "/org/legeos/Files"

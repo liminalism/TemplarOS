@@ -10,7 +10,7 @@ use lege_filed::{
     ExecutorConfig, SqliteJournal,
     dbus::{
         ActionsApi, BrowseApi, FileService, OperationsApi, PreviewsApi, RecentsApi, SearchApi,
-        VolumesApi,
+        TrashApi, VolumesApi,
     },
     lastdir::LastDirectoryStore,
     recents::Recents,
@@ -127,6 +127,7 @@ async fn main() -> Result<()> {
         .serve_at(names::ROOT_PATH, OperationsApi(service.clone()))?
         .serve_at(names::ROOT_PATH, RecentsApi(service.clone()))?
         .serve_at(names::ROOT_PATH, SearchApi(service.clone()))?
+        .serve_at(names::ROOT_PATH, TrashApi::new(service.clone()))?
         .serve_at(names::ROOT_PATH, ActionsApi)?
         .build()
         .await
