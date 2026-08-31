@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:cb8c1f8d163a8559b32c5067cf94a9cad2d314c67d1ed517f0c058379ed46103"
+    source_graph "sha256:1478aa22ba1847d112c859a28776686c81e457e65fbf467bc5bb9e8df42003ed"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:418e7dfa88290f3d7a06e410b7851edf2e45adbbaae3d67c985bce951833844c"
-    records 109
+    hash "sha256:f3c1619f243159dd03c8fd926dad1a2e233f8449faf282c80eab8d1c075dce07"
+    records 110
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -1615,6 +1615,11 @@ seal @legeos.evidence.nm-tray2-xdg-install-path-20260824/1 {
 seal @legeos.evidence.notifications-complete-20260831/1 {
     state verified
     hash "sha256:047bed1902dbae815cee145b489114097fe6ae5a96f53e9b3b254f57c2777145"
+}
+
+seal @legeos.evidence.offline-desktop-package-build-20260831/1 {
+    state verified
+    hash "sha256:b7a2aac4ce9a190bd67a03c623e7913878be5422c30c1b7cd9c880e1711ecc2a"
 }
 
 seal @legeos.evidence.refinement-checks-20260824/1 {

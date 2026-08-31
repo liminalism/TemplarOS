@@ -1021,6 +1021,18 @@ record legeos.evidence.notifications-complete-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.offline-desktop-package-build-20260831/1 : evidence {
+    title "Offline desktop package build passes"
+    state verified
+    result pass
+    method command
+    observed_at git:c2882466d51bfc519be61815f12a448fafc495e9
+    command "env CARGO_NET_OFFLINE=true just deb"
+    summary """
+        The preview companion tests and self-check passed and all 13 expected LegeOS Debian packages were produced without network access.
+        """
+}
+
 record legeos.evidence.refinement-checks-20260824/1 : evidence {
     title "Home input and refinement checks pass"
     state verified
