@@ -1757,6 +1757,34 @@ impl FieldScreen {
         })
     }
 
+    /// What a drag *out* of Home offers: the lifted files as a `text/uri-list`.
+    ///
+    /// The export half of typed drag and drop, and the same encoding the clipboard uses. A drag
+    /// carrying no file — a window, a widget, a project — offers nothing rather than an empty
+    /// payload, because an empty uri-list is a promise of files that turns out to be a lie.
+    ///
+    /// **Where the Wayland wiring stops:** handing this to another application means starting a
+    /// `wl_data_device` drag and answering `send` for the offered type, and the shell's
+    /// compositor connection is the private `lege_shell_v1` protocol with no
+    /// `wl_data_device_manager` bound. The payload is exact and tested; the handover is not
+    /// built.
+    pub fn dragged_uri_list(&self, doc: &FieldDocument) -> Option<String> {
+        let tile = self.drag.tile()?;
+        let carried: Vec<TileId> = if self.selection.len() > 1 && self.selection.contains(&tile) {
+            self.selection.to_vec()
+        } else {
+            vec![tile]
+        };
+        let paths: Vec<PathBuf> = carried
+            .iter()
+            .filter_map(|id| match doc.kind_of(*id)? {
+                TileKind::File { path } | TileKind::Folder { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        (!paths.is_empty()).then(|| lege_types::uri_list::encode(&paths))
+    }
+
     /// A drop the grammar named as a real file operation, as one request for the whole
     /// selection.
     ///
@@ -3975,6 +4003,128 @@ mod tests {
                 .any(|action| matches!(action, FieldAction::DropFiles(_))),
             "empty field is not a file destination: {actions:?}"
         );
+    }
+
+    #[test]
+    fn drag_drop_distinguishes_a_folder_a_pane_an_application_and_bare_field() {
+        // The four typed destinations, told apart by the grammar the screen consults — one
+        // source tile, four different things underneath it, four different answers.
+        let file = TileKind::File {
+            path: PathBuf::from("/home/u/report.pdf"),
+        };
+        let folder = lege_field::Target::Tile {
+            id: TileId(2),
+            kind: TileKind::Folder {
+                path: PathBuf::from("/home/u/Documents"),
+            },
+            accepts_open: false,
+        };
+        let pane = lege_field::Target::Tile {
+            id: TileId(3),
+            kind: TileKind::Tray {
+                tray_id: lege_field::TrayId(1),
+            },
+            accepts_open: false,
+        };
+        let application = lege_field::Target::Tile {
+            id: TileId(4),
+            kind: TileKind::App {
+                app_id: "org.legeos.Viewer".parse().unwrap(),
+            },
+            accepts_open: true,
+        };
+        let bare = lege_field::Target::Empty {
+            container: None,
+            cell: Cell::new(6, 3),
+        };
+        let plain = lege_field::DropModifiers::MOVE;
+
+        // A real folder is a real file operation, and only this one is.
+        let onto_folder = lege_field::operation_for(TileId(1), &file, &folder, plain).unwrap();
+        assert!(onto_folder.is_file_operation());
+        assert_eq!(onto_folder.label(), Some("MOVE INTO FOLDER"));
+
+        // A shortcut pane takes a reference: the file stays exactly where it is, and the label
+        // says so before release.
+        let onto_pane = lege_field::operation_for(TileId(1), &file, &pane, plain).unwrap();
+        assert!(!onto_pane.is_file_operation());
+        assert_eq!(
+            onto_pane.label(),
+            Some("ADD REFERENCE · files remain in place")
+        );
+
+        // An application that opens this file resolves to Open With.
+        assert_eq!(
+            lege_field::operation_for(TileId(1), &file, &application, plain),
+            Some(lege_field::Operation::OpenWith { app: TileId(4) })
+        );
+
+        // Bare field is placement only — no label, no file operation, and never a loose tile
+        // conjured out of a file, which `field_model::route_file_drop` owns.
+        let onto_bare = lege_field::operation_for(TileId(1), &file, &bare, plain).unwrap();
+        assert_eq!(onto_bare.label(), None);
+        assert!(!onto_bare.is_file_operation());
+    }
+
+    #[test]
+    fn drag_drop_out_of_home_exports_a_uri_list_for_files_and_nothing_for_anything_else() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/one.txt"),
+            file_tile(2, "/home/u/two.txt"),
+            (
+                TileId(3),
+                TileKind::Widget {
+                    widget: "battery".into(),
+                    scope: None,
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        // Nothing lifted: nothing on offer.
+        assert_eq!(h.screen.dragged_uri_list(&h.doc), None);
+
+        // Lift one file and hold it.
+        let from = h.rect_of(TileId(1));
+        h.input
+            .cursor_moved((from.x + 10) as f32, (from.y + 8) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        for step in 1..=6 {
+            h.input
+                .cursor_moved((from.x + 10 + step * 12) as f32, (from.y + 8) as f32);
+            h.now += 60;
+            h.frame();
+        }
+        assert_eq!(
+            h.screen.dragged_uri_list(&h.doc).as_deref(),
+            Some("file:///home/u/one.txt\r\n")
+        );
+
+        // A multi-selection exports every file it carries, in one payload.
+        h.screen.selection.replace(TileId(1));
+        h.screen.selection.toggle(TileId(2));
+        assert_eq!(
+            h.screen.dragged_uri_list(&h.doc).as_deref(),
+            Some("file:///home/u/one.txt\r\nfile:///home/u/two.txt\r\n")
+        );
+        h.input.mouse(MouseButton::Left, false);
+        h.frame();
+
+        // A widget carries no file, so it offers nothing rather than an empty list — an empty
+        // uri-list is a promise of files that turns out to be a lie.
+        let widget = h.rect_of(TileId(3));
+        h.input
+            .cursor_moved((widget.x + 10) as f32, (widget.y + 8) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        for step in 1..=6 {
+            h.input
+                .cursor_moved((widget.x + 10 + step * 12) as f32, (widget.y + 8) as f32);
+            h.now += 60;
+            h.frame();
+        }
+        assert_eq!(h.screen.dragged_uri_list(&h.doc), None);
     }
 
     #[test]
