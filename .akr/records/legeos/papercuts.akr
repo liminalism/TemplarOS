@@ -197,6 +197,18 @@ record legeos.papercut.just-msrv-fails-on-this-machine-at-any-commit/1 : papercu
     created_at 2026-08-31
 }
 
+record legeos.papercut.knowledge-evidence-add-many-returned-wrote/1 : papercut {
+    title "knowledge.evidence_add_many returned wrote:false because an observed_at…"
+    state verified
+    statement """
+        knowledge.evidence_add_many returned wrote:false because an observed_at commit was mistyped, but both evidence records were nevertheless written with that invalid commit; the promised atomic/no-write failure behavior did not hold, requiring two corrective revisions.
+        """
+    observed_at git:b8f052d91523b3d39628dc8ccad4e8c754deb3a3
+    about "akr"
+    author "codex"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     title "knowledge.propose exposes a generic slots object but not each kind's…"
     state verified

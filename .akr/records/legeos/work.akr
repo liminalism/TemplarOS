@@ -706,7 +706,7 @@ record legeos.work.home-field/1 : work {
 
 record legeos.work.home-field-discoverability/1 : work {
     title "Render the cheat sheet the action manifest can already generate, and give the pointer-only actions a chord"
-    state proposed
+    state completed
     scope [ path "crates/lege-types/**", path "shell/lege-shell/**" ]
     intent """
         Nothing about the Home Field is discoverable. There is no cheat sheet, no help overlay, no tooltip, no first-run — grepping the shell for cheat, help, shortcut, onboarding, tooltip and first-run finds only doc comments describing a cheat sheet that would read the action manifest, and a backend data migration named first_run that no user ever sees. The only hints in the product are the accelerator beside each context-menu row, an Escape breadcrumb while a drawer is expanded, and the search placeholder.

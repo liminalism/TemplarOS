@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:fc61668ce42aa4d2b16b04c256c0b783c295364505817f92f31c0eb0160ced53"
+    source_graph "sha256:f6387c595a8f32c61b25fef505cc286f57eacec963eadf337352c2da77d15303"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:da827706ed7024db999c849e35b8f9de3b93ea1c95e20d12562d53c385e3e83d"
-    records 85
+    hash "sha256:b9d8998dcd19c7fe9d304942863d6d738cb1acee0f99f1898add680f10d3c431"
+    records 89
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:d3f4423b35e210dbd98584cf9e99c03931782443612b5342c3471bd0b5403a94"
-    records 49
+    hash "sha256:d28683ddd39b8e458f1678bf9c583f3cab4b66e3441433786ef72d3474b4f90b"
+    records 50
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:8737c6bd65800cfb00ab390412a3b731f2b687c07bb80538390ce207389ec4d8"
+    hash "sha256:a1562de973de6950830c6d98850c61d581c5ebc6097115a8c8a842df70548687"
     records 37
 }
 
@@ -1056,6 +1056,26 @@ seal @legeos.evidence.home-field-density-and-composition-20260830/1 {
     hash "sha256:5f033b08ea6374771e78819fdbc4b92891ad331a3ab2ed5427a346169663df38"
 }
 
+seal @legeos.evidence.home-field-discoverability-tests-20260831/1 {
+    state superseded
+    hash "sha256:d5baaec8cf9834b797851834635b9c200aebfa32ed0dbbadd16120cc7f77ae95"
+}
+
+seal @legeos.evidence.home-field-discoverability-tests-20260831/2 {
+    state verified
+    hash "sha256:a8823516725bd6126dbb41628133caddbdd5ff043cf5062d29c5cd8513fe2f25"
+}
+
+seal @legeos.evidence.home-field-discoverability-visual-20260831/1 {
+    state superseded
+    hash "sha256:22b7d255d6ee93c366463c068ff5af2345be1ee0466578a099cdf715023f4cde"
+}
+
+seal @legeos.evidence.home-field-discoverability-visual-20260831/2 {
+    state verified
+    hash "sha256:387870c9f97eff8b9872e33b0f7dc2a21a45f8ece0a5c91e70d14b5f497624e2"
+}
+
 seal @legeos.evidence.home-field-in-text/1 {
     state verified
     hash "sha256:0d30c91bb7de942a02bee1e0f7206b760670823d4733f0168a29aa40921aea77"
@@ -1516,6 +1536,11 @@ seal @legeos.papercut.just-msrv-fails-on-this-machine-at-any-commit/1 {
     hash "sha256:eddbea3e165c2243382589d7690d44c4fce63ceae215d4b50924f4ec4b43736b"
 }
 
+seal @legeos.papercut.knowledge-evidence-add-many-returned-wrote/1 {
+    state verified
+    hash "sha256:706e35413d7a96feabdcfdde30ae301f27adddf6b6f4f9334df7287d51057363"
+}
+
 seal @legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 {
     state verified
     hash "sha256:8a9e8d06f285fc9bdff110be1eb57f4095dc323e46040f72c45073b2c53fe6d7"
@@ -1744,6 +1769,11 @@ seal @legeos.work.filed-transactions/1 {
 seal @legeos.work.governor-containment/1 {
     state completed
     hash "sha256:30ecfee9a27fdaaa14e05be7c5b1a6aab5db4df9da8e0231fa2dc5d9f8da6369"
+}
+
+seal @legeos.work.home-field-discoverability/1 {
+    state completed
+    hash "sha256:fbca0299184e911c6f7057cc8f73b8876393f6dbe3a3fd358c5d92cc9799b598"
 }
 
 seal @legeos.work.home-file-surface/1 {

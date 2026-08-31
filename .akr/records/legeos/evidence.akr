@@ -225,6 +225,59 @@ record legeos.evidence.home-field-density-and-composition-20260830/1 : evidence 
         """
 }
 
+record legeos.evidence.home-field-discoverability-tests-20260831/1 : evidence {
+    title "All workspace tests passed; clippy passed with warnings denied for workspace code; all seven structural/action gates passed, including 24 surfaced actions declared and all 14 chorded actions having pointer routes."
+    state superseded
+    result pass
+    method command
+    observed_at git:b8f052d41c1dfc4c4e79445a855a08c7bba853e4
+    command "cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings; cargo run -q -p xtask -- {tree-check,deps-check,check-interfaces,check-proxies,check-packaging,check-assets,check-actions}"
+    summary """
+        All workspace tests passed; clippy passed with warnings denied for workspace code; all seven structural/action gates passed, including 24 surfaced actions declared and all 14 chorded actions having pointer routes.
+        """
+}
+
+record legeos.evidence.home-field-discoverability-tests-20260831/2 : evidence {
+    title "All workspace tests passed; clippy passed with warnings denied for workspace code; all seven structural/action gates passed, including 24 surfaced actions declared and all 14 chorded actions having pointer routes."
+    state verified
+    result pass
+    method command
+    observed_at git:b8f052d91523b3d39628dc8ccad4e8c754deb3a3
+    command """
+        cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings; cargo run -q -p xtask -- {tree-check,deps-check,check-interfaces,check-proxies,check-packaging,check-assets,check-actions}
+        """
+    summary """
+        All workspace tests passed; clippy passed with warnings denied for workspace code; all seven structural/action gates passed, including 24 surfaced actions declared and all 14 chorded actions having pointer routes.
+        """
+    supersedes [ @legeos.evidence.home-field-discoverability-tests-20260831/1 ]
+}
+
+record legeos.evidence.home-field-discoverability-visual-20260831/1 : evidence {
+    title "Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review."
+    state superseded
+    result pass
+    method manual
+    observed_at git:b8f052d41c1dfc4c4e79445a855a08c7bba853e4
+    artifact "shell/lege-shell/src/surface/offscreen.rs"
+    summary """
+        Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review.
+        """
+}
+
+record legeos.evidence.home-field-discoverability-visual-20260831/2 : evidence {
+    title "Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review."
+    state verified
+    scope [ path "shell/lege-shell/src/surface/offscreen.rs" ]
+    result pass
+    method manual
+    observed_at git:b8f052d91523b3d39628dc8ccad4e8c754deb3a3
+    artifact "shell/lege-shell/src/surface/offscreen.rs"
+    summary """
+        Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review.
+        """
+    supersedes [ @legeos.evidence.home-field-discoverability-visual-20260831/1 ]
+}
+
 record legeos.evidence.home-field-in-text/1 : evidence {
     title "`lege-shell --print field` renders the same merged document the surface draws (one line per tile, drawer tiles present) with no session bus and no compositor."
     state verified
