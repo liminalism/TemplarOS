@@ -568,6 +568,18 @@ record legeos.papercut.while-locating-the-resolved-smithay-source-i/1 : papercut
     created_at 2026-08-23
 }
 
+record legeos.papercut.while-proposing-an-assessment-with-an-internal/1 : papercut {
+    title "While proposing an assessment with an internal source path plus line…"
+    state verified
+    statement """
+        While proposing an assessment with an internal source path plus line range, knowledge.propose rejected it because line citations also require a registered document; the schema accepts path alone but the distinction is easy to miss from the tool signature.
+        """
+    observed_at git:94aca593eed153689bf58a532e6cca87c51119c0
+    about "akr"
+    author "codex"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.while-resuming-the-standalone-file-manager/1 : papercut {
     title "While resuming the standalone file manager, distro/forks/manifest.toml…"
     state verified

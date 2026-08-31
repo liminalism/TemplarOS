@@ -12,6 +12,28 @@ record legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 : obser
     method manual
 }
 
+record legeos.observation.hands-on-run-20260831-findings/1 : observation {
+    title "Hands-on run after logout/login: usable but rough — placement, inert tiling menu, no tile drag, widget sprawl, label noise, no drive route"
+    state verified
+    scope [
+        path "compositor/**",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "shell/**"
+    ]
+    statement """
+        User logged out/in on real hardware at the offline package build (c288246 era) and reports: (1) a terminal opens but appears slightly off-screen and cannot be moved or snapped; (2) none of the tiling buttons in the right-click menu do anything; (3) Home elements cannot be drag-moved or drag-resized though the user expected both; (4) Super-to-reveal-Home works; (5) each settings component (e.g. brightness) is its own widget — the user wants ONE Settings widget that opens into a larger screen with all settings; (6) each file tile carries a big FILE or FOLDER label the user calls redundant; (7) it is unclear how to reach the main drives or a specific folder; (8) no wallpaper is fine but the space must be used effectively — every element must have a purpose, no redundancy, concise labels. Overall verdict: slightly improved, still not usable.
+        """
+    observed_at git:7bd5eef1dc5c4e8b53174003a943afe8cf68c943
+    method manual
+    watches [
+        "compositor/lege-comp/src/**",
+        "shell/lege-shell/src/**",
+        "crates/lege-window/src/**"
+    ]
+    derived_from [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observation {
     title "Hardware Home loads and cursor works, but file panes expose no usable file content"
     state verified

@@ -667,6 +667,75 @@ record legeos.work.governor-containment/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.hands-on-run-2-fixes/1 : work {
+    title "Act on the second hands-on run: adjustable windows, visible tiling, body-drag tiles, concise labels, a route to drives, one Settings widget"
+    state active
+    scope [
+        path "apps/lege-files/**",
+        path "apps/lege-settings/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-types/**",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Fix every deficiency in @legeos.observation.hands-on-run-20260831-findings. (1) Windows are adjustable: the compositor's recovery-band move and corner-grip resize actually start their grabs (they previously demanded an implicit grab that cannot exist yet at band-press time, so both affordances were dead on real hardware). (2) New windows are placed — centred in the usable area, cascaded, size-clamped — instead of honouring a meaningless (0,0) request flush into the corner. (3) Arranging from the Home menu ends the reveal so the result is visible, and arranging with no windows open says so on the field. (4) Object-like tiles (file, folder, pane, app) drag-move from anywhere in their body; instrument tiles keep the band. (5) Browse rows and grids drop the FOLDER/FILE caption noise: the name leads, '/' marks a folder, extensions name files once, folders read as the folder material. (6) The browse toolbar's path is a clickable breadcrumb and a Files button hands the folder to org.legeos.Files with its drives sidebar. (7) The battery/volume/brightness widgets consolidate into ONE Settings widget whose click opens the Settings app, per the user's direct instruction.
+        """
+    note """
+        All seven items are implemented and merged at ad3460b (my commits d79602f..49d999f plus the agent's bf75959..c5a4a0b); every command check passes there and the live nested session confirmed centred placement and oversize clamping. The one open check is #hands-on-confirmation — the user's next login at a real seat: window opens centred, band-move and grip-resize work, tiling menu visibly arranges, tiles drag-move, the Settings widget opens Settings. The packages must be rebuilt and reinstalled first (scripts/reinstall-legeos-desktop.sh, interactive sudo).
+        """
+    acceptance {
+        check body-drag {
+            statement """
+                Object-like tiles arm a drag from anywhere in their body while widget tiles only grab by their band, and an unmoved press stays a click.
+                """
+            method command
+            command "cargo test -p lege-shell object_tiles_drag_by_their_whole_body_and_instruments_do_not"
+            verified_by [ @legeos.evidence.hands-on-2-body-drag-20260831 ]
+        }
+        check browse-navigation {
+            statement """
+                The toolbar breadcrumb browses to an ancestor and the Files button hands the open folder to the standalone manager.
+                """
+            method command
+            command "cargo test -p lege-shell -- toolbar_breadcrumb toolbar_files"
+            verified_by [ @legeos.evidence.hands-on-2-browse-navigation-20260831 ]
+        }
+        check gates-green {
+            statement """
+                The full repository gate passes with all of the above merged.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.hands-on-2-gate-20260831 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At a real seat: a new window opens centred and can be moved by its top band and resized by its corner grip; the tiling menu visibly arranges; tiles drag-move; the Settings widget opens Settings.
+                """
+            method manual
+        }
+        check placement-policy {
+            statement """
+                An origin-located map request is centred and cascaded wholly inside the usable area; an oversized one is clamped; a positioned request is honoured and repaired.
+                """
+            method command
+            command "cargo test -p lege-window -- centred cascade clamped honoured"
+            verified_by [ @legeos.evidence.hands-on-2-placement-20260831 ]
+        }
+        check settings-widget {
+            statement """
+                One Settings widget replaces the battery/volume/brightness tiles, shows their state, and its open action launches the Settings app; saved layouts migrate.
+                """
+            method command
+            command "cargo test -p lege-shell settings"
+            verified_by [ @legeos.evidence.settings-widget-consolidation-20260831 ]
+        }
+    }
+    derived_from [ @legeos.observation.hands-on-run-20260831-findings ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.home-field/1 : work {
     title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
     state active

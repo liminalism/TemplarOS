@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:1478aa22ba1847d112c859a28776686c81e457e65fbf467bc5bb9e8df42003ed"
+    source_graph "sha256:16279cea7377ebbb968d83b3749d1fded6228518f456b4b2ed8ac1410cb3128c"
 }
 
 source ".akr/project.akr" {
@@ -14,8 +14,8 @@ source ".akr/project.akr" {
 }
 
 source ".akr/records/legeos/assessments.akr" {
-    hash "sha256:ccc78c7428803ddee2ba850af7ea58103bb32054324b4ad8d24f55009d2332da"
-    records 2
+    hash "sha256:8a6ef710520779226284e5b6ce8d04fd0649fb52f82607bd8cc8863b8ce46c0f"
+    records 4
 }
 
 source ".akr/records/legeos/constraints.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:f3c1619f243159dd03c8fd926dad1a2e233f8449faf282c80eab8d1c075dce07"
-    records 110
+    hash "sha256:b95f88dce2d843569d9fc2cf0454a93246ceaaf7bef5ff1a168da3617a57ec27"
+    records 115
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,13 +39,13 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:29312e9ca687754a0342dca4de7d30701728b6a8b454a040518fb8e5991146ea"
-    records 8
+    hash "sha256:246bcc9e9f9b08b0a2e3eabb65215c09d433fbe30dad95a7099ee2d4a7f5fac7"
+    records 9
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:251ff341dc3d1a7907e0bddde3cfc6c11b0ffb2e16fc6e0683bd25903d7b88c0"
-    records 56
+    hash "sha256:d6d86efdc9c69848b5248609405c85e25e51e4ae80a2f5094a52f162239b1467"
+    records 57
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:61146b1d3882a97c85311ee8cdff1e6eb30f71d8781aa45ebf08f4f7d6cf7866"
-    records 44
+    hash "sha256:e0de7b89953760269c55d98c010bba7e4fc3ea5df7ea191bd52cd82dabeafc63"
+    records 45
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -412,6 +412,12 @@ resolution @legeos.milestone.m2-session-runs/1 {
     hash "sha256:d806a9012d327d5c1608740d2d8c4cb1f174241da3a3f8b4af9428ff69a82dc4"
 }
 
+resolution @legeos.observation.hands-on-run-20260831-findings/1 {
+    slot derived_from
+    to @legeos.work.home-surface-usability-next/1
+    hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
+}
+
 resolution @legeos.observation.home-hands-on-failures-diagnosed/1 {
     slot derived_from
     to @legeos.work.home-widget-foundations/2
@@ -554,6 +560,48 @@ resolution @legeos.work.governor-containment/1 {
     slot part_of
     to @legeos.milestone.m1-session-runtime/1
     hash "sha256:590f00030286e8c6e3fdd6cab172d3189b0ded3fed5cedd3d2d590c8560f1a92"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot derived_from
+    to @legeos.observation.hands-on-run-20260831-findings/1
+    hash "sha256:750244701ad3701f160bdd33b9758ee391187f5fba043ba05ca497f4bdf6298c"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot part_of
+    to @legeos.work.home-surface-usability-next/1
+    hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-2-body-drag-20260831/1
+    hash "sha256:900ad40a9e0509fc448d242fa0dd12f3049cdb40130d7bf16acd972c3b9c5f39"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-2-browse-navigation-20260831/1
+    hash "sha256:941b93914849b3a30ca7cd01c934a41da9b4ecd25faf73f9c476838dbcce958d"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-2-gate-20260831/1
+    hash "sha256:9fc1542d3d1eecab38d43fea848c625e805be174ef16d68a77146c0b22135ae6"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-2-placement-20260831/1
+    hash "sha256:a859382fa129c9fb4865659a61e7a3807fc9364e1b457a2116e358a81f1dca5a"
+}
+
+resolution @legeos.work.hands-on-run-2-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.settings-widget-consolidation-20260831/1
+    hash "sha256:bf9f5fda939d4a97d079d0b5d97a6bc7c3baad8c6fe641ed57acb085d5f5b00c"
 }
 
 resolution @legeos.work.home-field/1 {
@@ -1082,6 +1130,16 @@ seal @legeos.assessment.home-field-usability-gaps-20260831/1 {
     hash "sha256:f84945ef9677333081b319d076c7db549300f763d4094284eb827e741cf124d8"
 }
 
+seal @legeos.assessment.hotfixability-current-state-20260831/1 {
+    state superseded
+    hash "sha256:0088044208f32250d1204200fb5fc3dda31ef693e79034ad84258d188dc1528a"
+}
+
+seal @legeos.assessment.hotfixability-current-state-20260831/2 {
+    state verified
+    hash "sha256:dd9c882de6e20bd2c56f5a773a1ff61aeacf370e6173f58716ca6961e8db8cdc"
+}
+
 seal @legeos.constraint.first-release-scope/1 {
     state active
     hash "sha256:6295770df7f4d169a7dc61241a47d946d836f7fd325ab81ae9c8a114015296bf"
@@ -1295,6 +1353,26 @@ seal @legeos.evidence.file-sorting-and-view-modes-20260831/1 {
 seal @legeos.evidence.file-video-preview-three-percent-20260824/1 {
     state verified
     hash "sha256:56094493449bc3f44699954be03f9e371b30ac5165ea4b8ece977dae385915a6"
+}
+
+seal @legeos.evidence.hands-on-2-body-drag-20260831/1 {
+    state verified
+    hash "sha256:900ad40a9e0509fc448d242fa0dd12f3049cdb40130d7bf16acd972c3b9c5f39"
+}
+
+seal @legeos.evidence.hands-on-2-browse-navigation-20260831/1 {
+    state verified
+    hash "sha256:941b93914849b3a30ca7cd01c934a41da9b4ecd25faf73f9c476838dbcce958d"
+}
+
+seal @legeos.evidence.hands-on-2-gate-20260831/1 {
+    state verified
+    hash "sha256:9fc1542d3d1eecab38d43fea848c625e805be174ef16d68a77146c0b22135ae6"
+}
+
+seal @legeos.evidence.hands-on-2-placement-20260831/1 {
+    state verified
+    hash "sha256:a859382fa129c9fb4865659a61e7a3807fc9364e1b457a2116e358a81f1dca5a"
 }
 
 seal @legeos.evidence.hardware-input-journal-diagnosis-20260824/1 {
@@ -1642,6 +1720,11 @@ seal @legeos.evidence.rust-1-97-baseline-20260831/1 {
     hash "sha256:14b651b0029bf2959e870658620ee38a79f298be4651e5e2cbecf62a0cfa4227"
 }
 
+seal @legeos.evidence.settings-widget-consolidation-20260831/1 {
+    state verified
+    hash "sha256:bf9f5fda939d4a97d079d0b5d97a6bc7c3baad8c6fe641ed57acb085d5f5b00c"
+}
+
 seal @legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1 {
     state verified
     hash "sha256:608d8399322c8c5f9d3ac574884d904f3f6fe425796034687a25b436428e3508"
@@ -1755,6 +1838,11 @@ seal @legeos.milestone.m1-session-runtime/1 {
 seal @legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 {
     state verified
     hash "sha256:40a4b440d9a748406cf1ae5186d288befe53b825454d5a90e6bd96e05de5703a"
+}
+
+seal @legeos.observation.hands-on-run-20260831-findings/1 {
+    state verified
+    hash "sha256:750244701ad3701f160bdd33b9758ee391187f5fba043ba05ca497f4bdf6298c"
 }
 
 seal @legeos.observation.hardware-home-loads-but-file-panes-empty/1 {
@@ -2042,6 +2130,11 @@ seal @legeos.papercut.while-locating-the-resolved-smithay-source-i/1 {
     hash "sha256:0648bd3a546d032e854ff25cf5cb87c14fa4c0814db94e84ceddd0c6a0c877fd"
 }
 
+seal @legeos.papercut.while-proposing-an-assessment-with-an-internal/1 {
+    state verified
+    hash "sha256:d9e89590deb94db2b0e15e094303e864b5d276ed206bd8ebe0a932eedbd45660"
+}
+
 seal @legeos.papercut.while-resuming-the-standalone-file-manager/1 {
     state verified
     hash "sha256:68c91e3b1cb17210bb9bf03bb3c09b9013df7a4ded41e1641c03407d280ee14d"
@@ -2155,6 +2248,11 @@ seal @legeos.work.filed-transactions/1 {
 seal @legeos.work.governor-containment/1 {
     state completed
     hash "sha256:30ecfee9a27fdaaa14e05be7c5b1a6aab5db4df9da8e0231fa2dc5d9f8da6369"
+}
+
+seal @legeos.work.hands-on-run-2-fixes/1 {
+    state active
+    hash "sha256:ee5bdfe8f0cbca24460dd008e5c6a8dfbf3dd7b7e3e1e9a7cf059efc49d98624"
 }
 
 seal @legeos.work.home-field/1 {

@@ -248,6 +248,54 @@ record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.hands-on-2-body-drag-20260831/1 : evidence {
+    title "An app tile arms the drag from a bottom-corner body press and an unmoved press stays a click; a drawer widget's body press arms nothing (band-only), so widget controls can never lift their own tile."
+    state verified
+    result pass
+    method command
+    observed_at git:49d999faab708fd29cbb2909587938fdf16ddf3f
+    command "cargo test -p lege-shell object_tiles_drag_by_their_whole_body_and_instruments_do_not"
+    summary """
+        An app tile arms the drag from a bottom-corner body press and an unmoved press stays a click; a drawer widget's body press arms nothing (band-only), so widget controls can never lift their own tile.
+        """
+}
+
+record legeos.evidence.hands-on-2-browse-navigation-20260831/1 : evidence {
+    title "Both navigation tests pass: the breadcrumb's ancestor button browses to /home/test and the Files button returns OpenInFiles for the open folder, routed to org.legeos.Files through the launch chain."
+    state verified
+    result pass
+    method command
+    observed_at git:49d999faab708fd29cbb2909587938fdf16ddf3f
+    command "cargo test -p lege-shell -- toolbar_breadcrumb toolbar_files"
+    summary """
+        Both navigation tests pass: the breadcrumb's ancestor button browses to /home/test and the Files button returns OpenInFiles for the open folder, routed to org.legeos.Files through the launch chain.
+        """
+}
+
+record legeos.evidence.hands-on-2-gate-20260831/1 : evidence {
+    title "The full repository gate passes at the merge commit with all seven hands-on-run fixes in: fmt --check, clippy pedantic -D warnings, workspace tests, MSRV, tree/deps/interfaces/proxies/packaging/assets/actions checks (47 actions declared, 12 CLI verbs, 14 chords all pointer-routed)."
+    state verified
+    result pass
+    method command
+    observed_at git:ad3460b5dfd2701a7a9c94c0ff3b73e7349ca0bb
+    command "just check"
+    summary """
+        The full repository gate passes at the merge commit with all seven hands-on-run fixes in: fmt --check, clippy pedantic -D warnings, workspace tests, MSRV, tree/deps/interfaces/proxies/packaging/assets/actions checks (47 actions declared, 12 CLI verbs, 14 chords all pointer-routed).
+        """
+}
+
+record legeos.evidence.hands-on-2-placement-20260831/1 : evidence {
+    title "All four placement tests pass; live nested-session confirmation: cosmic-term (1024x768 request at 0,0) mapped centred at (288,116) on the 1600x1000 nested output, and an oversized kitty (2048x1244) was clamped to 1600x1000 with a configure — from .agent/scratch/nested-session/comp.log during the run."
+    state verified
+    result pass
+    method command
+    observed_at git:49d999faab708fd29cbb2909587938fdf16ddf3f
+    command "cargo test -p lege-window -- centred cascade clamped honoured"
+    summary """
+        All four placement tests pass; live nested-session confirmation: cosmic-term (1024x768 request at 0,0) mapped centred at (288,116) on the 1600x1000 nested output, and an oversized kitty (2048x1244) was clamped to 1600x1000 with a configure — from .agent/scratch/nested-session/comp.log during the run.
+        """
+}
+
 record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
     title "Hardware input journal identifies compositor-side omission"
     state verified
@@ -1078,6 +1126,18 @@ record legeos.evidence.rust-1-97-baseline-20260831/1 : evidence {
     command "just check"
     summary """
         Formatting, warnings-denied workspace Clippy, all workspace tests, Rust 1.97 MSRV check, tree/dependency checks, interfaces, proxies, packaging, assets and action routes passed after aligning Cargo, Clippy, CI and local recipes to Rust 1.97.
+        """
+}
+
+record legeos.evidence.settings-widget-consolidation-20260831/1 : evidence {
+    title "One Settings widget replaces battery/volume/brightness (descriptor tests assert the old ids are gone), shows battery/volume/brightness readings, settings.open launches org.legeos.Settings through the broker, saved fields migrate in place (kind-checked, position-inheriting, idempotent), and the Settings app gained a fixture-tested System page. Visually reviewed baseline 0xf597_8489_6e30_f9f9: four shelf tiles, Settings showing three aligned readings."
+    state verified
+    result pass
+    method command
+    observed_at git:ad3460b5dfd2701a7a9c94c0ff3b73e7349ca0bb
+    command "cargo test -p lege-shell settings"
+    summary """
+        One Settings widget replaces battery/volume/brightness (descriptor tests assert the old ids are gone), shows battery/volume/brightness readings, settings.open launches org.legeos.Settings through the broker, saved fields migrate in place (kind-checked, position-inheriting, idempotent), and the Settings app gained a fixture-tested System page. Visually reviewed baseline 0xf597_8489_6e30_f9f9: four shelf tiles, Settings showing three aligned readings.
         """
 }
 

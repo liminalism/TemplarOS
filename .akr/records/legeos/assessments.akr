@@ -85,3 +85,72 @@ record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
     confidence high
     as_of git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
 }
+
+record legeos.assessment.hotfixability-current-state-20260831/1 : assessment {
+    title "Hot-fixability and daily-development readiness, 2026-08-31"
+    state superseded
+    scope [
+        path "crates/lege-state/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/planning/hotfixability-current-state.md",
+        path "installer/**",
+        path "packaging/**",
+        path "scripts/reinstall-legeos-desktop.sh",
+        path "services/lege-hostd/**",
+        path "session/units/**"
+    ]
+    statement """
+        LegeOS is currently suitable for active development as an additional desktop session on a stable Ubuntu host with the host session, display manager, TTY and backups retained as recovery paths. Stage-1 packages can be installed while the old session runs; applications, shell and separated services provide progressively restartable activation boundaries, while the compositor honestly requires logout and kernel/driver/boot changes require a staged reboot. It is not yet suitable as the sole recoverable bare-metal daily driver because installer/ISO and clean-install gates are unfinished, boot-deployment rollback is not hardware-proven and ADR-0004 remains open, coordinated service restart and cross-version state/IPC skew are unproven, and the archive path is inconsistent with the Rust 1.97 workspace and still has sibling path dependencies.
+        """
+    confidence high
+    as_of git:fe147d81961eb355a6fa1e77f4ffc789903a9b37
+    depends_on [
+        @legeos.decision.compositor-on-smithay/1,
+        @legeos.work.desktop-validation-foundations/1
+    ]
+    derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
+    source {
+        kind internal
+        role evidence
+        path "docs/planning/hotfixability-current-state.md"
+        use """
+            Detailed code and paper review, current-state matrix, operating model, priorities and go/no-go thresholds.
+            """
+    }
+}
+
+record legeos.assessment.hotfixability-current-state-20260831/2 : assessment {
+    title "Hot-fixability and daily-development readiness, 2026-08-31"
+    state verified
+    scope [
+        path "crates/lege-state/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/planning/**",
+        path "installer/**",
+        path "packaging/**",
+        path "scripts/reinstall-legeos-desktop.sh",
+        path "services/lege-hostd/**",
+        path "session/units/**"
+    ]
+    statement """
+        LegeOS is currently suitable for active development as an additional desktop session on a stable Ubuntu host with the host session, display manager, TTY and backups retained as recovery paths. Stage-1 packages can be installed while the old session runs; applications, shell and separated services provide progressively restartable activation boundaries, while the compositor honestly requires logout and kernel/driver/boot changes require a staged reboot. It is not yet suitable as the sole recoverable bare-metal daily driver because installer/ISO and clean-install gates are unfinished, boot-deployment rollback is not hardware-proven and ADR-0004 remains open, coordinated service restart and cross-version state/IPC skew are unproven, and the archive path is inconsistent with the Rust 1.97 workspace and still has sibling path dependencies.
+        """
+    confidence high
+    as_of git:fe147d81961eb355a6fa1e77f4ffc789903a9b37
+    depends_on [
+        @legeos.decision.compositor-on-smithay/1,
+        @legeos.work.desktop-validation-foundations/1
+    ]
+    derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
+    supersedes [ @legeos.assessment.hotfixability-current-state-20260831/1 ]
+    source {
+        kind internal
+        role evidence
+        path "docs/planning/hotfixability-current-state.md"
+        use """
+            Detailed code and paper review, current-state matrix, operating model, priorities and go/no-go thresholds.
+            """
+    }
+}
