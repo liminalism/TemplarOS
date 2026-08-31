@@ -49,6 +49,9 @@ pub struct Wake;
 
 enum DataUpdate {
     Drawers(Vec<(Drawer, crate::drawers::DrawerFeed)>),
+    /// One drawer's refreshed contents, out of band: what a service's own change signal delivers
+    /// between the periodic sweeps.
+    Drawer(Drawer, crate::drawers::DrawerFeed),
     /// Every installed application, with the metadata a launcher needs
     /// (`AppIdentity1.ListApplications`). `None` when the registry did not answer, which the
     /// launcher widget reports rather than drawing an empty list.
@@ -91,6 +94,16 @@ enum DataUpdate {
         path: PathBuf,
         result: Result<crate::data::OpenFileResult, String>,
     },
+}
+
+/// How long an armed EMPTY waits for its second press.
+const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
+
+/// Whether this EMPTY press is the confirming one: a press is only armed for a short window, so
+/// an unanswered confirmation expires rather than sitting armed until a stray click hours later
+/// finds it and empties the trash.
+fn empty_trash_confirmed(armed_at: Option<Instant>, now: Instant) -> bool {
+    armed_at.is_some_and(|at| now.duration_since(at) < EMPTY_TRASH_CONFIRM_WINDOW)
 }
 
 /// Which output's document the shell edits. The shell has one Home Surface window today and
@@ -172,6 +185,13 @@ struct ShellApp {
     icon_attempted: HashSet<String>,
 
     exit: bool,
+    /// When EMPTY was last pressed on the Trash tile, if it is still awaiting its second press.
+    ///
+    /// `ActionDecl::confirm` is honoured by the context menu, which is not where this control
+    /// lives, so the tile does the confirming itself: the first press says what will happen and
+    /// the second does it. A window this short is deliberate — an unanswered confirmation must
+    /// expire, not sit armed until a stray click hours later finds it.
+    empty_trash_armed_at: Option<Instant>,
 }
 
 impl ShellApp {
@@ -218,6 +238,7 @@ impl ShellApp {
             icons: HashMap::new(),
             icon_attempted: HashSet::new(),
             exit: false,
+            empty_trash_armed_at: None,
         }
     }
 
@@ -356,10 +377,11 @@ impl ShellApp {
     fn drain_updates(&mut self) {
         while let Ok(update) = self.data_rx.try_recv() {
             match update {
-                DataUpdate::Drawers(drawers) => {
-                    for (drawer, feed) in drawers {
-                        self.drawer_feeds.insert(drawer, feed);
-                    }
+                // Both shapes of the same news: the periodic sweep's whole set, and the one
+                // drawer a service's change signal refreshed on its own.
+                DataUpdate::Drawers(drawers) => self.drawer_feeds.extend(drawers),
+                DataUpdate::Drawer(drawer, feed) => {
+                    self.drawer_feeds.insert(drawer, feed);
                 }
                 DataUpdate::Apps(apps) => match apps {
                     Some(apps) => {
@@ -761,6 +783,7 @@ impl ShellApp {
                 self.spawn_browse(drawer, path, show_hidden);
             }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
+            FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
             FieldAction::RunAction(id) => self.perform_declared(id),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             FieldAction::RevealHome => {
@@ -912,6 +935,7 @@ impl ShellApp {
                 self.field_screen.search_focused = false;
             }
             "notifications.clear" => self.spawn_clear_notifications(),
+            "trash.empty" => self.confirm_then_empty_trash(),
             "session.logout" | "session.reboot" | "session.poweroff" | "session.suspend"
             | "session.lock" => self.spawn_lifecycle(id),
             "window.show-all" => {
@@ -1039,6 +1063,97 @@ impl ShellApp {
                 }
             }
             let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Emptying the trash cannot be undone, so the first press arms and says so, and only the
+    /// second within [`Self::EMPTY_TRASH_CONFIRM_WINDOW`] performs it.
+    fn confirm_then_empty_trash(&mut self) {
+        let armed = empty_trash_confirmed(self.empty_trash_armed_at, Instant::now());
+        self.empty_trash_armed_at = None;
+        if !armed {
+            self.empty_trash_armed_at = Some(Instant::now());
+            let now_ms = self.started.elapsed().as_millis() as u64;
+            self.field_screen.report(
+                "Empty the Trash? This cannot be undone — press EMPTY again to confirm.".to_owned(),
+                now_ms,
+            );
+            return;
+        }
+        self.spawn_trash_call("Empty", |proxy| async move { proxy.empty("").await });
+    }
+
+    fn spawn_trash_restore(&self, trashed_path: String) {
+        self.spawn_trash_call("Restore", |proxy| async move {
+            proxy.restore(vec![trashed_path], "").await
+        });
+    }
+
+    /// One `Files.Trash1` call off the event loop, reporting what did not happen on screen.
+    ///
+    /// A refusal here is the interesting case and must never vanish: the service validates every
+    /// path it is given, so "that is not in the trash any more" is a real answer a person needs
+    /// to see rather than a click that appears to do nothing.
+    fn spawn_trash_call<F, Fut>(&self, member: &'static str, call: F)
+    where
+        F: FnOnce(lege_client::proxies::FilesTrashProxy<'static>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = zbus::Result<String>> + Send,
+    {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesTrashProxy::new(&connection).await?;
+                call(proxy).await.map_err(anyhow::Error::from)
+            }
+            .await;
+            match result {
+                // An empty operation ID means there was nothing to do, which `Trash1.Empty`
+                // reports rather than treating as an error.
+                Ok(op_id) if op_id.is_empty() => {
+                    let _ = tx.send(DataUpdate::Notice("The Trash is already empty".to_owned()));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let _ = tx.send(DataUpdate::Notice(format!(
+                        "Could not {} the Trash — {error:#}",
+                        member.to_lowercase()
+                    )));
+                }
+            }
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Refresh the Trash drawer the moment `Files.Trash1.Changed` says it changed, rather than
+    /// on the next three-second tick.
+    ///
+    /// The signal is what makes the drawer live *whichever client did the mutating* — the file
+    /// manager permanently deleting something, or `lege trash restore` in a terminal, and not
+    /// only Home's own EMPTY. Losing the connection ends the watch rather than spinning: the
+    /// periodic refresh is still there underneath, so the drawer degrades to slow, not stale.
+    fn spawn_trash_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = lege_client::proxies::FilesTrashProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                let feed = crate::data::fetch_drawer(Drawer::Trash, 20).await;
+                if tx.send(DataUpdate::Drawer(Drawer::Trash, feed)).is_err() {
+                    return;
+                }
+                let _ = proxy_wake.send_event(Wake);
+            }
         });
     }
 
@@ -1353,6 +1468,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             }
         };
         self.spawn_refresh_loop();
+        self.spawn_trash_watch();
         if let Some(home) = &self.home {
             home.request_redraw();
         }
@@ -1480,6 +1596,26 @@ impl ApplicationHandler<Wake> for ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emptying_the_trash_needs_a_second_press_and_the_arming_expires() {
+        let armed = Instant::now();
+        assert!(
+            !empty_trash_confirmed(None, armed),
+            "the first press must only arm"
+        );
+        assert!(empty_trash_confirmed(
+            Some(armed),
+            armed + Duration::from_secs(1)
+        ));
+        assert!(
+            !empty_trash_confirmed(
+                Some(armed),
+                armed + EMPTY_TRASH_CONFIRM_WINDOW + Duration::from_secs(1)
+            ),
+            "an unanswered confirmation must expire, not stay armed"
+        );
+    }
 
     fn app_entry(id: &str) -> crate::app_search::AppEntry {
         crate::app_search::AppEntry {
