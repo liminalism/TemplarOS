@@ -54,7 +54,7 @@ pub enum HomeSurfaceAction {
 pub struct HomeSurfaceData<'a> {
     /// Non-browser D-Bus drawers' already-rendered text, split into lines. Absent for a drawer
     /// whose first fetch has not landed yet.
-    pub drawer_texts: &'a HashMap<Drawer, Vec<String>>,
+    pub drawer_feeds: &'a HashMap<Drawer, crate::drawers::DrawerFeed>,
     /// Every window the live connection knows about, for the Window Shelf.
     pub toplevels: &'a [ShellToplevel],
     /// Whether the trusted-shell connection is up at all — the Window Shelf explains itself
@@ -199,9 +199,9 @@ impl HomeSurfaceScreen {
     /// The lines this drawer shows right now: a live search's results if one is active, else the
     /// drawer's own already-fetched text — one line per already-tested record.
     fn current_lines<'a>(&self, data: &'a HomeSurfaceData<'a>) -> &'a [String] {
-        data.drawer_texts
+        data.drawer_feeds
             .get(&self.selected)
-            .map_or(&[] as &[String], Vec::as_slice)
+            .map_or(&[] as &[String], |feed| feed.lines.as_slice())
     }
 
     fn draw_text_drawer(&mut self, ui: &mut Ui<'_>, area: Rect, data: &HomeSurfaceData<'_>) {

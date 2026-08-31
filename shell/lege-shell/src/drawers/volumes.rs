@@ -7,6 +7,7 @@
 //! is nearly full. The reserve is rendered alongside free space rather than folded into it —
 //! space kept back for logging in, updating and recovering is not space the user can spend.
 
+use crate::drawers::DrawerFeed;
 use crate::format;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -58,16 +59,26 @@ impl VolumesClient for FilesVolumesProxy<'_> {
 }
 
 pub async fn render(client: &impl VolumesClient) -> Result<String> {
-    render_json(&client.list().await?)
+    Ok(feed(client).await?.to_text())
 }
 
-fn render_json(json: &str) -> Result<String> {
+pub async fn feed(client: &impl VolumesClient) -> Result<DrawerFeed> {
+    feed_json(&client.list().await?)
+}
+
+fn feed_json(json: &str) -> Result<DrawerFeed> {
     let volumes: Vec<VolumeInfo> =
         serde_json::from_str(json).context("parsing Files.Volumes1.List volumes_json")?;
     if volumes.is_empty() {
-        return Ok("Drives — no volumes".to_owned());
+        return Ok(DrawerFeed::new("no volumes", Vec::new()));
     }
-    Ok(volumes
+    // The glance is how much room is left, not how many disks there are: a count of volumes is
+    // never the reason anyone looks at this drawer.
+    let free: u64 = volumes.iter().map(VolumeInfo::usable_bytes).sum();
+    // Terse on purpose: the tile's own band already says DRIVES, and a compact tile has room
+    // for the figure or the sentence, not both.
+    let headline = format!("{} usable", format::bytes(free));
+    let lines = volumes
         .iter()
         .map(|volume| {
             format!(
@@ -82,8 +93,8 @@ fn render_json(json: &str) -> Result<String> {
                 if volume.read_only { "  read-only" } else { "" },
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect();
+    Ok(DrawerFeed::new(headline, lines))
 }
 
 #[cfg(test)]
@@ -134,22 +145,36 @@ mod tests {
 
     #[tokio::test]
     async fn every_volume_shows_free_space_and_its_reserve() {
-        let text = render(&FakeVolumes(FIXTURE)).await.unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("512.0 MiB free of 1.0 GiB"));
-        assert!(lines[0].contains("50% used"));
-        assert!(lines[0].contains("256.0 MiB reserved"));
-        assert!(lines[0].contains("256.0 MiB usable"));
-        assert!(lines[1].contains("read-only"));
+        let feed = feed(&FakeVolumes(FIXTURE)).await.unwrap();
+        assert_eq!(feed.lines.len(), 2);
+        assert!(feed.lines[0].contains("512.0 MiB free of 1.0 GiB"));
+        assert!(feed.lines[0].contains("50% used"));
+        assert!(feed.lines[0].contains("256.0 MiB reserved"));
+        assert!(feed.lines[0].contains("256.0 MiB usable"));
+        assert!(feed.lines[1].contains("read-only"));
+        // The rendered text is the headline and then those lines.
+        assert_eq!(
+            render(&FakeVolumes(FIXTURE)).await.unwrap().lines().count(),
+            3
+        );
+    }
+
+    /// The glance is room left, not a count of disks: nobody opens this drawer to learn how many
+    /// volumes they have.
+    #[tokio::test]
+    async fn the_headline_is_the_usable_space_across_every_volume() {
+        let full = feed(&FakeVolumes(FIXTURE)).await.unwrap();
+        assert_eq!(full.headline, "512.0 MiB usable");
+        assert!(full.available);
+
+        let empty = feed(&FakeVolumes("[]")).await.unwrap();
+        assert_eq!(empty.headline, "no volumes");
+        assert!(empty.lines.is_empty());
     }
 
     #[tokio::test]
     async fn no_volumes_is_said_plainly() {
-        assert_eq!(
-            render(&FakeVolumes("[]")).await.unwrap(),
-            "Drives — no volumes"
-        );
+        assert_eq!(render(&FakeVolumes("[]")).await.unwrap(), "no volumes");
     }
 
     #[tokio::test]

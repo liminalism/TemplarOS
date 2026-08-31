@@ -48,7 +48,7 @@ use crate::wayland_bridge::ShellBridge;
 pub struct Wake;
 
 enum DataUpdate {
-    Drawers(Vec<(Drawer, String)>),
+    Drawers(Vec<(Drawer, crate::drawers::DrawerFeed)>),
     /// Every installed application, with the metadata a launcher needs
     /// (`AppIdentity1.ListApplications`). `None` when the registry did not answer, which the
     /// launcher widget reports rather than drawing an empty list.
@@ -161,7 +161,7 @@ struct ShellApp {
     last_drop_at: Option<Instant>,
     started: Instant,
 
-    drawer_texts: HashMap<Drawer, Vec<String>>,
+    drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
     search_results: Option<(Drawer, String, Result<Vec<BrowseEntry>, String>)>,
     browser_sources: BrowserSources,
     browser_listing: Option<(Drawer, bool, DirectoryListing)>,
@@ -208,7 +208,7 @@ impl ShellApp {
             treemap_pending: HashSet::new(),
             last_drop_at: None,
             started: Instant::now(),
-            drawer_texts: HashMap::new(),
+            drawer_feeds: HashMap::new(),
             search_results: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
@@ -357,9 +357,8 @@ impl ShellApp {
         while let Ok(update) = self.data_rx.try_recv() {
             match update {
                 DataUpdate::Drawers(drawers) => {
-                    for (drawer, text) in drawers {
-                        self.drawer_texts
-                            .insert(drawer, text.lines().map(str::to_owned).collect());
+                    for (drawer, feed) in drawers {
+                        self.drawer_feeds.insert(drawer, feed);
                     }
                 }
                 DataUpdate::Apps(apps) => match apps {
@@ -703,7 +702,7 @@ impl ShellApp {
             toplevels: &toplevels,
             icons: &self.icons,
             previews: &self.previews,
-            drawer_texts: &self.drawer_texts,
+            drawer_feeds: &self.drawer_feeds,
             treemaps: &self.treemaps,
             compositions: &self.compositions,
             browser: &browser_data,

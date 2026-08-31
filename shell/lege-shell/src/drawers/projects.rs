@@ -5,6 +5,7 @@
 //! drawer shows every project whether or not it is open, and says which is which — a project you
 //! cannot find is the problem virtual desktops have.
 
+use crate::drawers::DrawerFeed;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use lege_client::proxies::ProjectsProxy;
@@ -27,18 +28,30 @@ impl ProjectsClient for ProjectsProxy<'_> {
 }
 
 pub async fn render(client: &impl ProjectsClient) -> Result<String> {
-    let projects = client.list().await?;
-    Ok(render_projects(&projects))
+    Ok(feed(client).await?.to_text())
+}
+
+pub async fn feed(client: &impl ProjectsClient) -> Result<DrawerFeed> {
+    Ok(feed_projects(&client.list().await?))
 }
 
 pub fn render_projects(projects: &[ProjectRow]) -> String {
+    feed_projects(projects).to_text()
+}
+
+pub fn feed_projects(projects: &[ProjectRow]) -> DrawerFeed {
     if projects.is_empty() {
-        return "Projects — none yet".to_owned();
+        return DrawerFeed::new("none yet", Vec::new());
     }
+    let open = projects
+        .iter()
+        .filter(|(_, _, _, is_open)| *is_open)
+        .count();
+    let headline = format!("{open} open of {}", projects.len());
     // Open projects first: they are the ones the user is working in right now.
     let mut ordered: Vec<&ProjectRow> = projects.iter().collect();
     ordered.sort_by_key(|(id, _, _, is_open)| (!*is_open, id.clone()));
-    ordered
+    let lines = ordered
         .into_iter()
         .map(|(id, name, root, is_open)| {
             format!(
@@ -49,8 +62,8 @@ pub fn render_projects(projects: &[ProjectRow]) -> String {
                 id,
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    DrawerFeed::new(headline, lines)
 }
 
 #[cfg(test)]
@@ -91,8 +104,9 @@ mod tests {
 
     #[tokio::test]
     async fn open_projects_are_listed_before_closed_ones() {
-        let text = render(&FakeProjects(fixture())).await.unwrap();
-        let lines: Vec<&str> = text.lines().collect();
+        let feed = feed(&FakeProjects(fixture())).await.unwrap();
+        assert_eq!(feed.headline, "1 open of 3");
+        let lines = &feed.lines;
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with("open"), "{}", lines[0]);
         assert!(lines[0].contains("Thesis"));
@@ -110,9 +124,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_projects_is_said_plainly() {
-        assert_eq!(
-            render(&FakeProjects(Vec::new())).await.unwrap(),
-            "Projects — none yet"
-        );
+        assert_eq!(render(&FakeProjects(Vec::new())).await.unwrap(), "none yet");
     }
 }

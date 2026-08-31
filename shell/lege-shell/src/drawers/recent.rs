@@ -1,6 +1,7 @@
 //! Recent drawer: `org.legeos.Files.Recents1.List("", limit)` — recently used files across every
 //! application, newest first (`docs/architecture/files.md` "One answer about the last folder").
 
+use crate::drawers::DrawerFeed;
 use crate::format;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -62,17 +63,21 @@ impl RecentsClient for FilesRecentsProxy<'_> {
 
 /// Render the Recent drawer: every application's recent files, newest first.
 pub async fn render(client: &impl RecentsClient, limit: u32) -> Result<String> {
-    let json = client.list("", limit).await?;
-    render_json(&json)
+    Ok(feed(client, limit).await?.to_text())
 }
 
-fn render_json(json: &str) -> Result<String> {
+pub async fn feed(client: &impl RecentsClient, limit: u32) -> Result<DrawerFeed> {
+    feed_json(&client.list("", limit).await?)
+}
+
+fn feed_json(json: &str) -> Result<DrawerFeed> {
     let entries: Vec<RecentEntry> =
         serde_json::from_str(json).context("parsing Files.Recents1.List entries_json")?;
     if entries.is_empty() {
-        return Ok("Recent — nothing yet".to_owned());
+        return Ok(DrawerFeed::new("nothing yet", Vec::new()));
     }
-    Ok(entries
+    let headline = DrawerFeed::count(entries.len(), "item", "items", "nothing yet");
+    let lines = entries
         .iter()
         .map(|entry| {
             format!(
@@ -83,8 +88,8 @@ fn render_json(json: &str) -> Result<String> {
                 entry.path.display(),
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect();
+    Ok(DrawerFeed::new(headline, lines))
 }
 
 #[cfg(test)]
@@ -117,19 +122,22 @@ mod tests {
 
     #[tokio::test]
     async fn render_lists_newest_first_with_app_and_action() {
+        let feed = feed(&FakeRecents(FIXTURE), 10).await.unwrap();
+        assert_eq!(feed.headline, "2 items");
+        assert_eq!(feed.lines.len(), 2);
+        assert!(feed.lines[0].contains("opened"));
+        assert!(feed.lines[0].contains("org.legeos.Viewer"));
+        assert!(feed.lines[0].contains("/home/u/report.pdf"));
+        assert!(feed.lines[1].contains("(unknown app)"));
+        // The text form is the headline followed by those lines.
         let text = render(&FakeRecents(FIXTURE), 10).await.unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("opened"));
-        assert!(lines[0].contains("org.legeos.Viewer"));
-        assert!(lines[0].contains("/home/u/report.pdf"));
-        assert!(lines[1].contains("(unknown app)"));
+        assert_eq!(text.lines().count(), 3);
     }
 
     #[tokio::test]
     async fn an_empty_list_is_said_plainly() {
         let text = render(&FakeRecents("[]"), 10).await.unwrap();
-        assert_eq!(text, "Recent — nothing yet");
+        assert_eq!(text, "nothing yet");
     }
 
     #[tokio::test]

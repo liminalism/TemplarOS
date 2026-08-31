@@ -68,10 +68,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     widgets.insert("session".to_owned(), session_widget);
     widgets.insert("notifications".to_owned(), notifications_widget);
 
-    let drawer_texts: HashMap<_, Vec<String>> = drawer_texts
-        .into_iter()
-        .map(|(drawer, text)| (drawer, text.lines().map(str::to_owned).collect()))
-        .collect();
+    let drawer_feeds: HashMap<_, crate::drawers::DrawerFeed> = drawer_texts.into_iter().collect();
 
     let mut buffer = WindowBuffer::new(width, height);
     let mut text = pixelkit_text::TextCache::new(fonts::set());
@@ -99,7 +96,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         toplevels: &[],
         icons: &empty_icons,
         previews: &empty_previews,
-        drawer_texts: &drawer_texts,
+        drawer_feeds: &drawer_feeds,
         treemaps: &empty_treemaps,
         compositions: &empty_compositions,
         browser: &browser,
@@ -175,15 +172,15 @@ mod tests {
         field_model::merge(&mut field, &live);
         field_model::refresh_titles(&mut field, &live);
 
-        let drawer_texts = crate::home_surface::Drawer::DEFAULT
+        let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
             .map(|drawer| {
                 (
                     drawer,
-                    vec![
+                    crate::drawers::DrawerFeed::new(
                         format!("{} fixture", drawer.name()),
-                        "One stable row".to_owned(),
-                    ],
+                        vec!["One stable row".to_owned()],
+                    ),
                 )
             })
             .collect();
@@ -217,7 +214,7 @@ mod tests {
             toplevels: &[],
             icons: &empty_bitmaps,
             previews: &empty_bitmaps,
-            drawer_texts: &drawer_texts,
+            drawer_feeds: &drawer_feeds,
             treemaps: &empty_treemaps,
             compositions: &empty_compositions,
             browser: &browser,
@@ -259,7 +256,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x4747_afce_ea84_85c5,
+            hash, 0x01a4_57be_8d93_edef,
             "review the Home Field pixels before updating this baseline"
         );
     }

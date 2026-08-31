@@ -15,6 +15,7 @@
 //! original paths is the follow-up this drawer wants; it is not this track's file to add.
 
 use super::operations::{Operation, OperationsClient, parse};
+use crate::drawers::DrawerFeed;
 use anyhow::Result;
 
 /// Keep only the operations that moved something into, or out of, the trash.
@@ -26,27 +27,43 @@ pub fn filter_trash(operations: &[Operation]) -> Vec<&Operation> {
 }
 
 pub async fn render(client: &impl OperationsClient, limit: u32) -> Result<String> {
-    let operations = parse(&client.recent(limit).await?)?;
-    Ok(render_operations(&operations))
+    Ok(feed(client, limit).await?.to_text())
+}
+
+pub async fn feed(client: &impl OperationsClient, limit: u32) -> Result<DrawerFeed> {
+    Ok(feed_operations(&parse(&client.recent(limit).await?)?))
 }
 
 pub fn render_operations(operations: &[Operation]) -> String {
+    feed_operations(operations).to_text()
+}
+
+pub fn feed_operations(operations: &[Operation]) -> DrawerFeed {
     let trash = filter_trash(operations);
     if trash.is_empty() {
-        return "Trash — no recent trash activity\n\
-                (the file service journals trash and restore operations; it does not yet expose \
-                the trash's current contents)"
-            .to_owned();
+        return DrawerFeed::new(
+            "no recent trash activity",
+            vec![
+                "(the file service journals trash and restore operations; it does not yet expose \
+                 the trash's current contents)"
+                    .to_owned(),
+            ],
+        );
     }
-    let mut out = String::from("Trash — recent trash activity (not a full listing)\n");
-    out.push_str(
-        &trash
+    // Deliberately "recent activity", not a count of what is in the trash: the service journals
+    // operations and cannot yet answer what the trash currently holds, and a headline reading
+    // "4 items" would be claiming otherwise.
+    // "records", not "items": these are journalled operations, and the caveat below says so in
+    // full for any tile tall enough to show it. The service cannot yet answer what the trash
+    // currently holds, so no headline here may imply a count of its contents.
+    let headline = DrawerFeed::count(trash.len(), "recent record", "recent records", "nothing");
+    let mut lines = vec!["(recent activity, not a full listing)".to_owned()];
+    lines.extend(
+        trash
             .iter()
-            .map(|operation| format!("{:<10} {}", operation.state, operation.kind.summary()))
-            .collect::<Vec<_>>()
-            .join("\n"),
+            .map(|operation| format!("{:<10} {}", operation.state, operation.kind.summary())),
     );
-    out
+    DrawerFeed::new(headline, lines)
 }
 
 #[cfg(test)]

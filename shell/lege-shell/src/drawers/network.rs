@@ -13,12 +13,24 @@
 //! Already-mounted remote filesystems are *not* silently omitted: they appear in Drives, and the
 //! text below points there so the user is not left thinking the shell cannot see them at all.
 
+use crate::drawers::DrawerFeed;
+
 /// The Network drawer's content: a statement of what is and is not available.
 pub fn render() -> String {
-    "Network — not wired to a service yet\n\
-     (no LegeOS interface discovers network shares or remote machines; already-mounted remote \
-     filesystems appear in the Drives drawer)"
-        .to_owned()
+    feed().to_text()
+}
+
+pub fn feed() -> DrawerFeed {
+    // Not `unavailable`: nothing failed to answer, there is simply no interface yet, and dimming
+    // the tile as if a service were down would misreport the situation.
+    DrawerFeed::new(
+        "not wired to a service yet",
+        vec![
+            "(no LegeOS interface discovers network shares or remote machines; already-mounted \
+             remote filesystems appear in the Drives drawer)"
+                .to_owned(),
+        ],
+    )
 }
 
 #[cfg(test)]

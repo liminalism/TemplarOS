@@ -17,6 +17,7 @@
 //! order the shell is explicitly not supposed to own, this sorts by `window_id` for a stable,
 //! deterministic listing and leaves the real ordering to whoever wires up `shelf_rank`.
 
+use crate::drawers::DrawerFeed;
 use lege_window::ShellToplevel;
 
 /// Every shelved window, in a stable order (see the module note on `shelf_rank`).
@@ -30,11 +31,19 @@ pub fn shelved(toplevels: &[ShellToplevel]) -> Vec<&ShellToplevel> {
 }
 
 pub fn render(toplevels: &[ShellToplevel]) -> String {
+    feed(toplevels).to_text()
+}
+
+pub fn feed(toplevels: &[ShellToplevel]) -> DrawerFeed {
     let shelved = shelved(toplevels);
     if shelved.is_empty() {
-        return "Windows — nothing shelved".to_owned();
+        return DrawerFeed::new("nothing shelved", Vec::new());
     }
-    shelved
+    let headline = format!(
+        "{} shelved",
+        DrawerFeed::count(shelved.len(), "window", "windows", "nothing")
+    );
+    let lines = shelved
         .into_iter()
         .map(|toplevel| {
             format!(
@@ -55,8 +64,8 @@ pub fn render(toplevels: &[ShellToplevel]) -> String {
                 },
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    DrawerFeed::new(headline, lines)
 }
 
 #[cfg(test)]
@@ -124,8 +133,8 @@ mod tests {
 
     #[test]
     fn nothing_shelved_is_said_plainly() {
-        assert_eq!(render(&[]), "Windows — nothing shelved");
+        assert_eq!(render(&[]), "nothing shelved");
         let unshelved = [toplevel(1, Some("org.legeos.Editor"), "a", false)];
-        assert_eq!(render(&unshelved), "Windows — nothing shelved");
+        assert_eq!(render(&unshelved), "nothing shelved");
     }
 }

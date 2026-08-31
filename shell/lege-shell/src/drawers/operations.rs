@@ -9,6 +9,7 @@
 //! carries the step list, the resume cursor and the conflict options; a text drawer that printed
 //! them would be a debugger, not a drawer, and `lege files operations` is where that belongs.
 
+use crate::drawers::DrawerFeed;
 use crate::format;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -141,15 +142,32 @@ pub fn parse(json: &str) -> Result<Vec<Operation>> {
 }
 
 pub async fn render(client: &impl OperationsClient, limit: u32) -> Result<String> {
-    let operations = parse(&client.recent(limit).await?)?;
-    Ok(render_operations(&operations))
+    Ok(feed(client, limit).await?.to_text())
+}
+
+pub async fn feed(client: &impl OperationsClient, limit: u32) -> Result<DrawerFeed> {
+    Ok(feed_operations(&parse(&client.recent(limit).await?)?))
 }
 
 pub fn render_operations(operations: &[Operation]) -> String {
+    feed_operations(operations).to_text()
+}
+
+pub fn feed_operations(operations: &[Operation]) -> DrawerFeed {
     if operations.is_empty() {
-        return "Operations — nothing running or recent".to_owned();
+        return DrawerFeed::new("nothing running or recent", Vec::new());
     }
-    operations
+    // What matters at a glance is whether anything is *still going*, not how many have ever run.
+    let running = operations
+        .iter()
+        .filter(|operation| operation.percent() < 100 && operation.error.is_none())
+        .count();
+    let headline = if running == 0 {
+        format!("{} finished", operations.len())
+    } else {
+        format!("{running} running of {}", operations.len())
+    };
+    let lines = operations
         .iter()
         .map(|operation| {
             let mut line = format!(
@@ -169,8 +187,8 @@ pub fn render_operations(operations: &[Operation]) -> String {
             }
             line
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    DrawerFeed::new(headline, lines)
 }
 
 #[cfg(test)]
@@ -237,8 +255,13 @@ mod tests {
 
     #[tokio::test]
     async fn render_shows_state_progress_and_a_failure_reason() {
-        let text = render(&FakeOperations(FIXTURE), 10).await.unwrap();
-        let lines: Vec<&str> = text.lines().collect();
+        let feed = feed(&FakeOperations(FIXTURE), 10).await.unwrap();
+        assert!(
+            feed.headline.contains("running"),
+            "the glance says whether anything is still going: {}",
+            feed.headline
+        );
+        let lines = &feed.lines;
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("running"));
         assert!(lines[0].contains("50%"));
@@ -251,7 +274,7 @@ mod tests {
     async fn nothing_recent_is_said_plainly() {
         assert_eq!(
             render(&FakeOperations("[]"), 10).await.unwrap(),
-            "Operations — nothing running or recent"
+            "nothing running or recent"
         );
     }
 

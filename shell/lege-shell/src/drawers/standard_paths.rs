@@ -11,6 +11,7 @@
 //! rather than merged into them: a query is not a folder, and pretending otherwise is how a file
 //! manager ends up with "smart folders" nobody can find on disk.
 
+use crate::drawers::DrawerFeed;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use lege_client::proxies::FilesSearchProxy;
@@ -165,14 +166,29 @@ pub async fn render(
     let user_dirs = user_dirs_text
         .map(|text| parse_user_dirs(text, home))
         .unwrap_or_default();
-    Ok(render_parts(
-        drawer,
+    Ok(feed_parts(&directories_for(drawer, &user_dirs, home), &queries).to_text())
+}
+
+/// The drawer's *places*: its directories and any saved queries under them. The caller adds the
+/// directory contents and the headline, because only it has listed them.
+pub async fn feed(
+    client: &impl SearchClient,
+    drawer: StandardDrawer,
+    home: &Path,
+    user_dirs_text: Option<&str>,
+) -> Result<DrawerFeed> {
+    let queries: Vec<SavedQuery> = serde_json::from_str(&client.saved_queries().await?)
+        .context("parsing Files.Search1.SavedQueries queries_json")?;
+    let user_dirs = user_dirs_text
+        .map(|text| parse_user_dirs(text, home))
+        .unwrap_or_default();
+    Ok(feed_parts(
         &directories_for(drawer, &user_dirs, home),
         &queries,
     ))
 }
 
-fn render_parts(drawer: StandardDrawer, directories: &[PathBuf], queries: &[SavedQuery]) -> String {
+fn feed_parts(directories: &[PathBuf], queries: &[SavedQuery]) -> DrawerFeed {
     let mut lines: Vec<String> = directories
         .iter()
         .map(|directory| {
@@ -191,9 +207,13 @@ fn render_parts(drawer: StandardDrawer, directories: &[PathBuf], queries: &[Save
         lines.push(format!("{:<40} saved query: {}", query.name, query.query));
     }
     if lines.is_empty() {
-        return format!("{} — nothing", drawer.title());
+        return DrawerFeed::new("nothing", Vec::new());
     }
-    lines.join("\n")
+    // A placeholder headline: the caller replaces it once it has counted the contents.
+    DrawerFeed::new(
+        DrawerFeed::count(directories.len(), "place", "places", "nothing"),
+        lines,
+    )
 }
 
 /// The user's home directory, for resolving `user-dirs.dirs`. `None` when `$HOME` is unset,

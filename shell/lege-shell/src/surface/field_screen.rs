@@ -106,7 +106,7 @@ pub struct FieldData<'a> {
     pub icons: &'a HashMap<String, Bitmap>,
     /// Window previews by session identifier (phase 6; empty until then).
     pub previews: &'a HashMap<String, Bitmap>,
-    pub drawer_texts: &'a HashMap<Drawer, Vec<String>>,
+    pub drawer_feeds: &'a HashMap<Drawer, crate::drawers::DrawerFeed>,
     /// Rasterized cushion treemaps of the standard-path drawers' directories
     /// (`lege_treemap`), keyed by drawer, at whatever size was last requested.
     pub treemaps: &'a HashMap<Drawer, Bitmap>,
@@ -837,7 +837,7 @@ impl FieldScreen {
         }
         self.drawer_view.selected = drawer;
         let inner = HomeSurfaceData {
-            drawer_texts: data.drawer_texts,
+            drawer_feeds: data.drawer_feeds,
             toplevels: data.toplevels,
             connected: data.connected,
             browser: data.browser,
@@ -1848,24 +1848,52 @@ impl FieldScreen {
                         }
                     }
                 } else {
-                    let lines = drawer
-                        .and_then(|drawer| data.drawer_texts.get(&drawer))
-                        .map_or(&[][..], Vec::as_slice);
-                    let text_area = inner;
+                    // The representation ladder, the same one the system widgets climb: the
+                    // headline is the drawer's count or figure and is shown at every rung, and
+                    // the listing only appears once the tile is wide enough to be read as one.
+                    // A short tile used to show the first line or two of the listing, clipped
+                    // mid-path, which told the user less than "12 items" would have.
+                    let feed = drawer.and_then(|drawer| data.drawer_feeds.get(&drawer));
                     let line_height = ui.px(16);
-                    let mut y = text_area.y;
-                    ui.painter.push_clip(text_area);
-                    for line in lines
-                        .iter()
-                        .take((text_area.h / line_height).max(0) as usize)
+                    // "…" is nothing fetched yet, as opposed to a service that answered with
+                    // nothing — which has a headline of its own.
+                    ui.label_styled(
+                        Rect::new(inner.x, inner.y, inner.w, line_height),
+                        feed.map_or("…", |feed| feed.headline.as_str()),
+                        design::measurement_style(ui),
+                        if feed.is_none_or(|feed| feed.available) {
+                            design::TEXT
+                        } else {
+                            design::TEXT_DIM
+                        },
+                        Align::Left,
+                    );
+                    if let Some(feed) = feed
+                        && representation >= Representation::Wide
                     {
-                        let row = Rect::new(text_area.x, y, text_area.w, line_height);
-                        ui.label_styled(row, line, small, design::TEXT_DIM, Align::Left);
-                        y += line_height;
-                    }
-                    ui.painter.pop_clip();
-                    if lines.is_empty() {
-                        ui.label_styled(text_area, "…", small, design::TEXT_DIM, Align::Left);
+                        let listing = Rect::new(
+                            inner.x,
+                            inner.y + line_height + ui.px(6),
+                            inner.w,
+                            (inner.bottom() - inner.y - line_height - ui.px(6)).max(0),
+                        );
+                        ui.painter.push_clip(listing);
+                        let mut y = listing.y;
+                        for line in feed
+                            .lines
+                            .iter()
+                            .take((listing.h / line_height).max(0) as usize)
+                        {
+                            ui.label_styled(
+                                Rect::new(listing.x, y, listing.w, line_height),
+                                line,
+                                small,
+                                design::TEXT_DIM,
+                                Align::Left,
+                            );
+                            y += line_height;
+                        }
+                        ui.painter.pop_clip();
                     }
                 }
             }
@@ -2389,7 +2417,7 @@ mod tests {
             self.now += 16;
             let icons = HashMap::new();
             let previews = HashMap::new();
-            let drawer_texts = HashMap::new();
+            let drawer_feeds = HashMap::new();
             let treemaps = HashMap::new();
             let compositions = HashMap::new();
             let widgets = HashMap::new();
@@ -2409,7 +2437,7 @@ mod tests {
                 toplevels: &self.toplevels,
                 icons: &icons,
                 previews: &previews,
-                drawer_texts: &drawer_texts,
+                drawer_feeds: &drawer_feeds,
                 treemaps: &treemaps,
                 compositions: &compositions,
                 browser: &browser,

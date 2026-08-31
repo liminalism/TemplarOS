@@ -11,7 +11,6 @@ use lege_client::proxies::{
     NotificationsProxy, ProjectsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
-use std::fmt::Write as _;
 
 use crate::drawers;
 use crate::drawers::standard_paths::StandardDrawer;
@@ -55,45 +54,56 @@ pub fn unavailable(what: &str, error: &anyhow::Error) -> String {
 /// `drawer` must not be [`Drawer::WindowShelf`] — see the module doc for why that one is the
 /// caller's own responsibility. [`Drawer::Network`] needs no bus at all and is answered directly.
 pub async fn render_drawer(drawer: Drawer, limit: u32) -> String {
+    fetch_drawer(drawer, limit).await.to_text()
+}
+
+/// One drawer at both densities — the headline the tile shows at every size, and the listing it
+/// shows once it is tall enough. [`render_drawer`] is this flattened to text.
+pub async fn fetch_drawer(drawer: Drawer, limit: u32) -> drawers::DrawerFeed {
+    use drawers::DrawerFeed;
     if drawer == Drawer::Network {
-        return drawers::network::render();
+        return drawers::network::feed();
     }
 
     let connection = match session().await {
         Ok(connection) => connection,
-        Err(message) => return format!("{} — {message}", drawer.name()),
+        Err(message) => {
+            return DrawerFeed::unavailable(format!("{} — {message}", drawer.name()));
+        }
     };
+    let failed =
+        |what: &str, error: &anyhow::Error| DrawerFeed::unavailable(unavailable(what, error));
 
     match drawer {
         Drawer::Recent => match FilesRecentsProxy::new(&connection).await {
-            Ok(proxy) => drawers::recent::render(&proxy, limit)
+            Ok(proxy) => drawers::recent::feed(&proxy, limit)
                 .await
-                .unwrap_or_else(|error| unavailable("Recent", &error)),
-            Err(error) => unavailable("Recent", &error.into()),
+                .unwrap_or_else(|error| failed("Recent", &error)),
+            Err(error) => failed("Recent", &error.into()),
         },
         Drawer::Drives => match FilesVolumesProxy::new(&connection).await {
-            Ok(proxy) => drawers::volumes::render(&proxy)
+            Ok(proxy) => drawers::volumes::feed(&proxy)
                 .await
-                .unwrap_or_else(|error| unavailable("Drives", &error)),
-            Err(error) => unavailable("Drives", &error.into()),
+                .unwrap_or_else(|error| failed("Drives", &error)),
+            Err(error) => failed("Drives", &error.into()),
         },
         Drawer::Operations => match FilesOperationsProxy::new(&connection).await {
-            Ok(proxy) => drawers::operations::render(&proxy, limit)
+            Ok(proxy) => drawers::operations::feed(&proxy, limit)
                 .await
-                .unwrap_or_else(|error| unavailable("Operations", &error)),
-            Err(error) => unavailable("Operations", &error.into()),
+                .unwrap_or_else(|error| failed("Operations", &error)),
+            Err(error) => failed("Operations", &error.into()),
         },
         Drawer::Trash => match FilesOperationsProxy::new(&connection).await {
-            Ok(proxy) => drawers::trash::render(&proxy, limit)
+            Ok(proxy) => drawers::trash::feed(&proxy, limit)
                 .await
-                .unwrap_or_else(|error| unavailable("Trash", &error)),
-            Err(error) => unavailable("Trash", &error.into()),
+                .unwrap_or_else(|error| failed("Trash", &error)),
+            Err(error) => failed("Trash", &error.into()),
         },
         Drawer::Projects => match ProjectsProxy::new(&connection).await {
-            Ok(proxy) => drawers::projects::render(&proxy)
+            Ok(proxy) => drawers::projects::feed(&proxy)
                 .await
-                .unwrap_or_else(|error| unavailable("Projects", &error)),
-            Err(error) => unavailable("Projects", &error.into()),
+                .unwrap_or_else(|error| failed("Projects", &error)),
+            Err(error) => failed("Projects", &error.into()),
         },
         Drawer::Downloads | Drawer::Documents | Drawer::Media => {
             let standard = match drawer {
@@ -101,7 +111,7 @@ pub async fn render_drawer(drawer: Drawer, limit: u32) -> String {
                 Drawer::Documents => StandardDrawer::Documents,
                 _ => StandardDrawer::Media,
             };
-            render_standard(&connection, standard).await
+            feed_standard(&connection, standard).await
         }
         // Handled above, before the connection was made.
         Drawer::Network => unreachable!(),
@@ -109,28 +119,34 @@ pub async fn render_drawer(drawer: Drawer, limit: u32) -> String {
     }
 }
 
-async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer) -> String {
+async fn feed_standard(
+    connection: &zbus::Connection,
+    standard: StandardDrawer,
+) -> drawers::DrawerFeed {
+    use drawers::DrawerFeed;
     let Some(home) = drawers::standard_paths::home_dir() else {
-        return format!(
+        return DrawerFeed::unavailable(format!(
             "{} — service unavailable: $HOME is not set",
             standard.title()
-        );
+        ));
     };
     let user_dirs = drawers::standard_paths::read_user_dirs(&home);
     let search = match FilesSearchProxy::new(connection).await {
         Ok(proxy) => proxy,
-        Err(error) => return unavailable(standard.title(), &error.into()),
+        Err(error) => return DrawerFeed::unavailable(unavailable(standard.title(), &error.into())),
     };
-    let mut rendered =
-        match drawers::standard_paths::render(&search, standard, &home, user_dirs.as_deref()).await
-        {
-            Ok(rendered) => rendered,
-            Err(error) => return unavailable(standard.title(), &error),
+    let mut feed =
+        match drawers::standard_paths::feed(&search, standard, &home, user_dirs.as_deref()).await {
+            Ok(feed) => feed,
+            Err(error) => return DrawerFeed::unavailable(unavailable(standard.title(), &error)),
         };
     let browse = match FilesBrowseProxy::new(connection).await {
         Ok(proxy) => proxy,
-        Err(error) => return unavailable(standard.title(), &error.into()),
+        Err(error) => return DrawerFeed::unavailable(unavailable(standard.title(), &error.into())),
     };
+    // The headline is what the drawer is about: how much is in it. Counted here because this is
+    // where the directories are actually listed.
+    let mut entries = 0usize;
     let parsed_user_dirs = user_dirs
         .as_deref()
         .map(|text| drawers::standard_paths::parse_user_dirs(text, &home))
@@ -142,34 +158,28 @@ async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer
         {
             Ok(json) => json,
             Err(error) => {
-                write!(
-                    &mut rendered,
-                    "\n  could not read {}: {error}",
-                    directory.display()
-                )
-                .expect("writing to a String cannot fail");
+                feed.lines
+                    .push(format!("  could not read {}: {error}", directory.display()));
                 continue;
             }
         };
         let listing: DirectoryListing = match serde_json::from_str(&json) {
             Ok(listing) => listing,
             Err(error) => {
-                write!(
-                    &mut rendered,
-                    "\n  malformed directory data for {}: {error}",
+                feed.lines.push(format!(
+                    "  malformed directory data for {}: {error}",
                     directory.display()
-                )
-                .expect("writing to a String cannot fail");
+                ));
                 continue;
             }
         };
         if listing.entries.is_empty() {
-            rendered.push_str("\n  (empty)");
+            feed.lines.push("  (empty)".to_owned());
         }
+        entries += listing.entries.len();
         for entry in listing.entries {
-            write!(
-                &mut rendered,
-                "\n  {:<7} {:<12} {}",
+            feed.lines.push(format!(
+                "  {:<7} {:<12} {}",
                 if entry.is_dir() { "folder" } else { "file" },
                 if entry.is_dir() {
                     "—".to_owned()
@@ -177,15 +187,19 @@ async fn render_standard(connection: &zbus::Connection, standard: StandardDrawer
                     crate::format::bytes(entry.size_bytes)
                 },
                 entry.name
-            )
-            .expect("writing to a String cannot fail");
+            ));
         }
         if listing.truncated {
-            write!(&mut rendered, "\n  … more than {} entries", listing.limit)
-                .expect("writing to a String cannot fail");
+            feed.lines
+                .push(format!("  … more than {} entries", listing.limit));
+            // A truncated listing is a floor, not a total, and the headline says so.
+            feed.headline = format!("{entries}+ items");
         }
     }
-    rendered
+    if !feed.headline.ends_with("+ items") {
+        feed.headline = drawers::DrawerFeed::count(entries, "item", "items", "empty");
+    }
+    feed
 }
 
 /// Every D-Bus-backed drawer's text in one call, for the Home Surface's background refresh.
@@ -374,13 +388,13 @@ pub async fn undo_field(output: &str) -> Option<FieldDocument> {
     serde_json::from_str(&json).ok()
 }
 
-pub async fn fetch_all(limit: u32) -> Vec<(Drawer, String)> {
+pub async fn fetch_all(limit: u32) -> Vec<(Drawer, drawers::DrawerFeed)> {
     let mut out = Vec::with_capacity(Drawer::DEFAULT.len() - 1);
     for drawer in Drawer::DEFAULT {
         if drawer == Drawer::WindowShelf {
             continue;
         }
-        out.push((drawer, render_drawer(drawer, limit).await));
+        out.push((drawer, fetch_drawer(drawer, limit).await));
     }
     out
 }
