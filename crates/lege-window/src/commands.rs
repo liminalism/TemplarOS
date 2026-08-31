@@ -8,6 +8,7 @@
 
 use crate::{
     IdentityCache, Rect, WindowId, WindowService,
+    arrangement::ArrangementPreset,
     geometry::{move_into_view, scatter_layout},
     service::EscapeAction,
 };
@@ -70,6 +71,17 @@ pub enum WindowCommand {
     RevealHome {
         reveal: RevealHome,
     },
+    /// Arrange every eligible window per the named preset
+    /// ([`WindowService::arrange_windows`]): the first request retains the pre-preset layout as
+    /// the baseline, and switching presets recomputes from that baseline and the current
+    /// eligible set — user-invoked arrangement, never a standing tiling policy.
+    ArrangeWindows {
+        preset: ArrangementPreset,
+    },
+    /// Return every surviving window exactly to the retained baseline
+    /// ([`WindowService::restore_arrangement`]), repaired only where the output topology makes
+    /// the old rectangle unreachable.
+    RestoreArrangement,
 }
 
 /// What [`WindowCommand::RevealHome`] should do to the reveal that may or may not be in effect.
@@ -123,6 +135,10 @@ pub enum CommandEffect {
     },
     HomeRevealed {
         revealed: bool,
+    },
+    /// The windows an arrangement (or its restore) moved, with the geometry to configure.
+    Arranged {
+        moves: Vec<(WindowId, Rect)>,
     },
 }
 
@@ -245,6 +261,12 @@ impl<I: IdentityCache> WindowService<I> {
                     geometry,
                 })
             }
+            WindowCommand::ArrangeWindows { preset } => Ok(CommandEffect::Arranged {
+                moves: self.arrange_windows(preset),
+            }),
+            WindowCommand::RestoreArrangement => Ok(CommandEffect::Arranged {
+                moves: self.restore_arrangement(),
+            }),
             WindowCommand::RevealHome { reveal } => {
                 let revealed = match reveal {
                     RevealHome::Show => true,
@@ -569,6 +591,181 @@ mod tests {
                 "{id:?} scattered somewhere unrecoverable: {rect:?}"
             );
         }
+    }
+
+    /// `switch-from-baseline` and restore: A→B is computed from the retained baseline (the
+    /// preset geometry is a function of the window set and output, never of A's result), the
+    /// baseline survives switching, and Restore returns every surviving window exactly.
+    #[test]
+    fn arrangement_presets_are_reversible() {
+        let (mut service, first) = service_with_one_window();
+        let second = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "two".into(),
+            Rect::new(300, 200, 500, 400),
+        );
+        let third = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "three".into(),
+            Rect::new(700, 300, 300, 300),
+        );
+        service
+            .handle_command(
+                WindowCommand::SetMaximized {
+                    window_id: third,
+                    maximized: true,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        let before: Vec<_> = [first, second, third]
+            .iter()
+            .map(|id| {
+                let window = service.window(*id).unwrap();
+                (*id, window.geometry, window.maximized)
+            })
+            .collect();
+
+        let a = service
+            .handle_command(
+                WindowCommand::ArrangeWindows {
+                    preset: crate::ArrangementPreset::Halves,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        assert!(matches!(a, CommandEffect::Arranged { ref moves } if moves.len() == 3));
+        assert!(service.arrangement_active());
+
+        // Switching to B from A equals applying B on a service that never saw A: geometry is
+        // computed from the baseline and window set, not from A's result.
+        let b = service
+            .handle_command(
+                WindowCommand::ArrangeWindows {
+                    preset: crate::ArrangementPreset::Cushion,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        let mut fresh = {
+            let (mut fresh, fresh_first) = service_with_one_window();
+            assert_eq!(fresh_first, first);
+            for (pid, title, rect) in [
+                (2u32, "two", Rect::new(300, 200, 500, 400)),
+                (3, "three", Rect::new(700, 300, 300, 300)),
+            ] {
+                let mapped = fresh.on_toplevel_mapped(
+                    pid,
+                    ClientKind::Application,
+                    WindowClaims::default(),
+                    title.into(),
+                    rect,
+                );
+                assert_eq!(mapped, WindowId(u64::from(pid)));
+            }
+            fresh
+                .handle_command(
+                    WindowCommand::SetMaximized {
+                        window_id: third,
+                        maximized: true,
+                    },
+                    trusted(0),
+                )
+                .unwrap();
+            fresh
+        };
+        let direct = fresh
+            .handle_command(
+                WindowCommand::ArrangeWindows {
+                    preset: crate::ArrangementPreset::Cushion,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        assert_eq!(b, direct, "B is computed from the baseline, not from A");
+
+        // Restore: every window exactly at its pre-arrangement geometry and maximize state.
+        service
+            .handle_command(WindowCommand::RestoreArrangement, trusted(0))
+            .unwrap();
+        for (id, geometry, maximized) in before {
+            let window = service.window(id).unwrap();
+            assert_eq!(window.geometry, geometry, "{id:?} geometry restored");
+            assert_eq!(
+                window.maximized, maximized,
+                "{id:?} maximize state restored"
+            );
+        }
+        assert!(!service.arrangement_active(), "the baseline is spent");
+    }
+
+    /// `dynamic-window-set`: a window closed between presses is ignored, a newly opened one
+    /// joins only on the next explicit request, and Restore skips the departed without losing
+    /// any survivor.
+    #[test]
+    fn arrangement_ignores_closed_windows_and_joins_new_ones_on_the_next_press() {
+        let (mut service, first) = service_with_one_window();
+        let second = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "two".into(),
+            Rect::new(300, 200, 500, 400),
+        );
+        service
+            .handle_command(
+                WindowCommand::ArrangeWindows {
+                    preset: crate::ArrangementPreset::Quarters,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        let arranged_second = service.window(second).unwrap().geometry;
+
+        // A new window maps: nothing retiles until the next explicit request.
+        let third = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "three".into(),
+            Rect::new(700, 300, 300, 300),
+        );
+        assert_eq!(
+            service.window(second).unwrap().geometry,
+            arranged_second,
+            "no background retiling on map"
+        );
+        let effect = service
+            .handle_command(
+                WindowCommand::ArrangeWindows {
+                    preset: crate::ArrangementPreset::Quarters,
+                },
+                trusted(0),
+            )
+            .unwrap();
+        let CommandEffect::Arranged { moves } = effect else {
+            panic!("expected Arranged");
+        };
+        assert!(
+            moves.iter().any(|(id, _)| *id == third),
+            "the new window joins on the explicit press"
+        );
+
+        // One closes; restore skips it and returns the survivors exactly.
+        let first_before = Rect::new(100, 100, 400, 300);
+        service.on_toplevel_destroyed(second);
+        let effect = service
+            .handle_command(WindowCommand::RestoreArrangement, trusted(0))
+            .unwrap();
+        let CommandEffect::Arranged { moves } = effect else {
+            panic!("expected Arranged");
+        };
+        assert!(moves.iter().all(|(id, _)| *id != second));
+        assert_eq!(service.window(first).unwrap().geometry, first_before);
     }
 
     #[test]

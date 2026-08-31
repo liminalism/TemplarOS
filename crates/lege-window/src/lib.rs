@@ -11,12 +11,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod arrangement;
 pub mod commands;
 pub mod geometry;
 pub mod layers;
 mod service;
 mod shell;
 
+pub use arrangement::{ArrangementPreset, preset_rects};
 pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };

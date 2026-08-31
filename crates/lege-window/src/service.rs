@@ -140,6 +140,10 @@ pub struct WindowService<I> {
     /// and the governor is never told about it — so a shell that dies mid-reveal, or a stray
     /// press, can never leave a window anywhere but exactly where it was.
     home_revealed: bool,
+    /// The geometry and maximize state every eligible window had when the first arrangement
+    /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
+    /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
+    arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
 }
 
 impl<I: IdentityCache> WindowService<I> {
@@ -155,6 +159,7 @@ impl<I: IdentityCache> WindowService<I> {
             layers: LayerStack::new(),
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
+            arrangement_baseline: None,
         }
     }
 
@@ -339,6 +344,125 @@ impl<I: IdentityCache> WindowService<I> {
             window.geometry = repair_window(restore, outputs);
         }
         Some(window.geometry)
+    }
+
+    /// The windows an arrangement preset applies to: mapped client windows that are neither
+    /// shelved nor fullscreen — the activated one first (it takes the main slot of Focus and
+    /// MainAndStack), then by id, so the result is deterministic in the service state.
+    fn arrangement_eligible(&self) -> Vec<WindowId> {
+        let mut eligible: Vec<(bool, WindowId)> = self
+            .windows
+            .values()
+            .filter(|window| {
+                self.is_client_window(window.id) && !window.shelved && !window.fullscreen
+            })
+            .map(|window| (window.activated, window.id))
+            .collect();
+        eligible.sort_by_key(|(activated, id)| (!*activated, *id));
+        eligible.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Arrange every eligible window on its output per `preset`, snapshotting the pre-preset
+    /// geometry and maximize state as the baseline on the first request. A later request —
+    /// switching presets, or the same preset after windows opened or closed — recomputes from
+    /// the current eligible set and the output, never from the previous preset's result, and
+    /// keeps the retained baseline. Returns the windows moved with their new geometry.
+    pub fn arrange_windows(
+        &mut self,
+        preset: crate::arrangement::ArrangementPreset,
+    ) -> Vec<(WindowId, Rect)> {
+        let eligible = self.arrangement_eligible();
+        if eligible.is_empty() {
+            return Vec::new();
+        }
+        if self.arrangement_baseline.is_none() {
+            self.arrangement_baseline = Some(
+                eligible
+                    .iter()
+                    .filter_map(|id| self.windows.get(id))
+                    .map(|window| (window.id, window.geometry, window.maximized))
+                    .collect(),
+            );
+        }
+        let baseline = self.arrangement_baseline.clone().unwrap_or_default();
+        let baseline_area = |id: WindowId, current: Rect| -> u64 {
+            let rect = baseline
+                .iter()
+                .find(|(entry, _, _)| *entry == id)
+                .map_or(current, |(_, rect, _)| *rect);
+            u64::from(rect.width.unsigned_abs()) * u64::from(rect.height.unsigned_abs())
+        };
+        let outputs = self.outputs.clone();
+        let mut moves = Vec::with_capacity(eligible.len());
+        for output in &outputs {
+            let group: Vec<WindowId> = eligible
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.windows.get(id).is_some_and(|window| {
+                        choose_target_output(window.geometry, &outputs).name == output.name
+                    })
+                })
+                .collect();
+            let weights: Vec<u64> = group
+                .iter()
+                .map(|id| {
+                    let current = self
+                        .windows
+                        .get(id)
+                        .map_or(Rect::new(0, 0, 1, 1), |w| w.geometry);
+                    baseline_area(*id, current).max(1)
+                })
+                .collect();
+            let rects = crate::arrangement::preset_rects(preset, &weights, output.usable());
+            for (id, rect) in group.into_iter().zip(rects) {
+                if let Some(window) = self.windows.get_mut(&id) {
+                    window.maximized = false;
+                    window.restore_geometry = None;
+                    window.geometry = rect;
+                    moves.push((id, rect));
+                }
+            }
+        }
+        moves
+    }
+
+    /// Return every surviving baseline window exactly to its pre-arrangement geometry and
+    /// maximize state, repaired only where the output topology no longer reaches the old
+    /// rectangle, and spend the baseline. No baseline, or none of its windows surviving,
+    /// returns no moves.
+    pub fn restore_arrangement(&mut self) -> Vec<(WindowId, Rect)> {
+        let Some(baseline) = self.arrangement_baseline.take() else {
+            return Vec::new();
+        };
+        let outputs = self.outputs.clone();
+        let mut moves = Vec::with_capacity(baseline.len());
+        for (id, rect, maximized) in baseline {
+            if !self.is_client_window(id) {
+                continue;
+            }
+            let Some(window) = self.windows.get_mut(&id) else {
+                continue;
+            };
+            if window.shelved {
+                continue;
+            }
+            window.maximized = maximized;
+            window.geometry = if maximized {
+                window.restore_geometry = Some(repair_window(rect, &outputs));
+                maximized_geometry(rect, &outputs)
+            } else {
+                window.restore_geometry = None;
+                repair_window(rect, &outputs)
+            };
+            moves.push((id, window.geometry));
+        }
+        moves
+    }
+
+    /// Whether a preset baseline is retained — i.e. Restore has something to return to.
+    pub fn arrangement_active(&self) -> bool {
+        self.arrangement_baseline.is_some()
     }
 
     /// Whether the compositor should render and hit-test `window_id` at all: not shelved, and
