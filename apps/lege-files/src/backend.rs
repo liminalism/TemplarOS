@@ -49,6 +49,12 @@ pub enum Update {
         request: PreviewRequest,
         result: std::result::Result<Option<PreviewSnapshot>, String>,
     },
+    /// One grid thumbnail, decoded off-thread. Tagged with the generation it was asked under so
+    /// the model can drop a decode whose directory is gone.
+    Thumbnail {
+        request: crate::model::ThumbnailRequest,
+        bitmap: Option<pixelkit_raster::Bitmap>,
+    },
     CopiedPath {
         path: PathBuf,
         result: std::result::Result<String, String>,
@@ -139,6 +145,18 @@ impl Backend {
         self.runtime.spawn(async move {
             let result = fetch_preview(&request.path).await.map_err(error_text);
             deliver(&tx, &waker, Update::Preview { request, result });
+        });
+    }
+
+    pub fn thumbnail(&self, request: crate::model::ThumbnailRequest) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let bitmap = fetch_preview(&request.path)
+                .await
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot.bitmap);
+            deliver(&tx, &waker, Update::Thumbnail { request, bitmap });
         });
     }
 

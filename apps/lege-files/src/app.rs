@@ -53,6 +53,10 @@ impl FilesApp {
                 Update::Preview { request, result } => {
                     self.model.apply_preview(request.id, &request.path, result);
                 }
+                Update::Thumbnail { request, bitmap } => {
+                    self.model
+                        .apply_thumbnail(request.generation, &request.path, bitmap);
+                }
                 Update::CopiedPath { path, result } => match result {
                     Ok(copied) => {
                         self.model.error = None;
@@ -345,6 +349,11 @@ impl FilesApp {
             Command::Navigate(path) => {
                 let request = self.model.navigate(path);
                 self.backend.browse(request);
+            }
+            Command::ThumbnailsVisible(range) => {
+                for request in self.model.begin_thumbnails(range) {
+                    self.backend.thumbnail(request);
+                }
             }
             Command::Select {
                 index,

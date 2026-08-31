@@ -130,6 +130,9 @@ pub enum Command {
     ConfirmRename(String),
     ConfirmLocation(String),
     DismissDialog,
+    /// The thumbnail grid reported which entry range it can see; the app asks the backend for
+    /// the bounded batch the model derives from it.
+    ThumbnailsVisible(std::ops::Range<usize>),
 }
 
 pub fn shortcut(key: &KeyInput, modifiers: Modifiers) -> Option<ActionId> {
@@ -182,6 +185,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn interaction_every_visible_action_has_a_keyboard_route() {
         let candidates = [
             (

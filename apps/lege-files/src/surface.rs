@@ -478,8 +478,109 @@ fn draw_entries(
         draw_trash_columns(ui, columns);
         return draw_trash_entries(ui, body, model, scroll);
     }
+    if model.view == lege_types::file_sort::ViewMode::Thumbnails {
+        return draw_thumbnail_grid(ui, area, model, scroll);
+    }
     draw_columns(ui, columns);
     draw_directory_entries(ui, body, model, scroll)
+}
+
+/// The same rows as the detail list, drawn as responsive preview cells. Selection, focus and
+/// activation behave exactly like list rows — a cell click is a `Command::Select` on the same
+/// index — and the grid asks for its visible thumbnails through `Command::ThumbnailsVisible`,
+/// never by touching a file itself.
+fn draw_thumbnail_grid(
+    ui: &mut Ui<'_>,
+    area: Rect,
+    model: &BrowserModel,
+    scroll: &mut ScrollState,
+) -> Vec<Command> {
+    let Some(listing) = &model.listing else {
+        ui.label(
+            area.inset(ui.px(14)),
+            "Loading folder contents…",
+            TEXT_DIM,
+            Align::Left,
+        );
+        return Vec::new();
+    };
+    if listing.entries.is_empty() {
+        ui.label(
+            area.inset(ui.px(14)),
+            "This folder is empty.",
+            TEXT_DIM,
+            Align::Left,
+        );
+        return Vec::new();
+    }
+    let cell = ui.px(132).max(48);
+    let columns = ((area.w / cell).max(1)) as usize;
+    let rows = listing.entries.len().div_ceil(columns);
+    let heights = vec![cell; rows];
+    let mut commands = Vec::new();
+    let mut seen: Option<(usize, usize)> = None;
+    ui.scroll_list(scroll, area, &heights, |ui, row_index, row| {
+        for slot in 0..columns {
+            let index = row_index * columns + slot;
+            let Some(entry) = listing.entries.get(index) else {
+                break;
+            };
+            seen = Some(match seen {
+                None => (index, index + 1),
+                Some((low, high)) => (low.min(index), high.max(index + 1)),
+            });
+            let slot_i = i32::try_from(slot).unwrap_or(0);
+            let tile = Rect::new(row.x + slot_i * cell, row.y, cell, row.h).inset(ui.px(4));
+            let selected = model.selected.contains(&entry.path);
+            if selected {
+                ui.painter.fill_rect(tile, ACCENT_SOFT);
+            } else if ui.input.hovering(tile) {
+                ui.painter.fill_rect(tile, 0x00f7_f9fa);
+            } else {
+                ui.painter.fill_rect(tile, PANEL_ALT);
+            }
+            if index == model.focus {
+                ui.painter
+                    .fill_rect(Rect::new(tile.x, tile.y, ui.px(3), tile.h), ACCENT);
+            }
+            let (image, caption) = tile.split_bottom(ui.px(20));
+            if let Some(bitmap) = model.thumbnails.get(&entry.path) {
+                ui.painter.blit(
+                    bitmap,
+                    image.inset(ui.px(2)),
+                    pixelkit_raster::ScaleFilter::Bilinear,
+                );
+            } else {
+                let chip = if entry.is_dir() {
+                    "FOLDER".to_owned()
+                } else {
+                    entry
+                        .path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map_or_else(|| "FILE".to_owned(), str::to_uppercase)
+                };
+                ui.label(image, &chip, TEXT_DIM, Align::Centre);
+            }
+            ui.label(caption.inset(ui.px(2)), &entry.name, TEXT, Align::Left);
+            if ui.input.take_click(tile) {
+                commands.push(Command::Select {
+                    index,
+                    modifiers: SelectionModifiers {
+                        control: ui.input.modifiers().control,
+                        shift: ui.input.modifiers().shift,
+                    },
+                    activate_if_selected: true,
+                });
+            }
+        }
+    });
+    if let Some((low, high)) = seen {
+        commands.push(Command::ThumbnailsVisible(
+            low.saturating_sub(columns)..(high + columns).min(listing.entries.len()),
+        ));
+    }
+    commands
 }
 
 fn draw_directory_entries(
