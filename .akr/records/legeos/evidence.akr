@@ -985,6 +985,18 @@ record legeos.evidence.nm-tray2-xdg-install-path-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.notifications-complete-20260831/1 : evidence {
+    title "Notifications: per-item dismiss, invoked actions and toast push all landed"
+    state verified
+    result pass
+    method command
+    observed_at git:2ce3f03617790facda2609b18659d614d67f1d80
+    command "cargo test -p lege-shell notifications_; cargo test -p lege-window notification; just check"
+    summary """
+        The record's three remaining gaps closed: per-notification dismiss (a control on every widget row, driving Notifications1.Dismiss for exactly that id); real actions (Notifications1.Invoke validates the key, emits the freedesktop ActionInvoked for the owning application, then closes the notification — with action chips on the Large rung); and push (the shell watches the Changed signal and shows a new arrival as a toast window on Layer::Notification, which the compositor anchors top-right of the usable area, auto-retiring after six seconds, click dismissing that one notification, the startup fetch only setting the watermark). Rows now fill the tile's height instead of a three-line cap. Widget tests drive the real draw with real clicks; the placement rule is tested in lege-window; full just check green.
+        """
+}
+
 record legeos.evidence.refinement-checks-20260824/1 : evidence {
     title "Home input and refinement checks pass"
     state verified

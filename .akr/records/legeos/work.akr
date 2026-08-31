@@ -1489,7 +1489,7 @@ record legeos.work.home-widget-launcher/1 : work {
 
 record legeos.work.home-widget-notifications/1 : work {
     title "Notification widget — the tile and the read-back path shipped; per-notification dismiss, actions and any push remain"
-    state proposed
+    state completed
     scope [
         path "cli/lege/**",
         path "crates/lege-state/src/migrations/session.rs",

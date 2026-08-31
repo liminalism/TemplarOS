@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:168b3856fe0f9675f3b697769d442b5e342ad567ce595b74e6fb4acc11da8949"
+    source_graph "sha256:7d78253d91f233c215d5a7c7136825ab32d3aff0ba088d0cf09c95afcdb41ae1"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:285b0ecf2465a629409f7ea20f9d1527971a7410640d5347ffa26373d36002d5"
-    records 105
+    hash "sha256:315b2ca4a9cf7661fbaec1d8490e7a228f1e3ef32f69774b8154b2a2217555b9"
+    records 106
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:9f7092fd0c64287315993c9f04483e5638c11c40da85f526a0eea3fbe38d2484"
+    hash "sha256:bc3286ba924ac6c27a6bab1144ca51607db538196a226df1902188cb41f4a0eb"
     records 43
 }
 
@@ -1590,6 +1590,11 @@ seal @legeos.evidence.nm-tray2-xdg-install-path-20260824/1 {
     hash "sha256:81edab5bab3915fed773c736527650a2e61c9d006f3f15de3a124932420b9c5f"
 }
 
+seal @legeos.evidence.notifications-complete-20260831/1 {
+    state verified
+    hash "sha256:047bed1902dbae815cee145b489114097fe6ae5a96f53e9b3b254f57c2777145"
+}
+
 seal @legeos.evidence.refinement-checks-20260824/1 {
     state verified
     hash "sha256:354f5e879e3348527481ccaaa43680651a43590560f55ce1ede16bd6403b1472"
@@ -2168,6 +2173,11 @@ seal @legeos.work.home-widget-foundations/2 {
 seal @legeos.work.home-widget-launcher/1 {
     state active
     hash "sha256:96f1f43a1c66ea647bd9c4e213de0d47785ccc6eafe846f5503232d47c9098c5"
+}
+
+seal @legeos.work.home-widget-notifications/1 {
+    state completed
+    hash "sha256:5afdfc3559458a4ac256f4d1b78946a099aa30cc16318d17789ef773ff80dfcf"
 }
 
 seal @legeos.work.home-widget-status-instruments/1 {
