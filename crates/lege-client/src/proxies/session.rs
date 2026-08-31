@@ -355,6 +355,78 @@ mod lifecycle {
     }
 }
 
+mod audio {
+    use zbus::proxy;
+
+    /// `org.legeos.Audio1` — the default sink's volume.
+    ///
+    /// `Adjust`/`Toggle` rather than read-modify-write by the caller: the service knows where the
+    /// volume was, so two clients on the same volume key cannot each undo the other.
+    #[proxy(
+        interface = "org.legeos.Audio1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Audio"
+    )]
+    pub trait Audio {
+        /// `AudioState` JSON: `{ present, volume_percent, muted }`.
+        fn get(&self) -> zbus::Result<String>;
+
+        fn set_volume(&self, percent: u32) -> zbus::Result<()>;
+
+        /// Step the volume and report where it landed.
+        fn adjust_volume(&self, delta: i32) -> zbus::Result<u32>;
+
+        fn set_muted(&self, muted: bool) -> zbus::Result<()>;
+
+        /// Flip mute and report the new state.
+        fn toggle_muted(&self) -> zbus::Result<bool>;
+
+        /// This service changed the volume or the mute state. Carries nothing — call `get`.
+        #[zbus(signal)]
+        fn changed(&self) -> zbus::Result<()>;
+    }
+}
+
+mod backlight {
+    use zbus::proxy;
+
+    /// `org.legeos.Backlight1` — the display backlight.
+    #[proxy(
+        interface = "org.legeos.Backlight1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Backlight"
+    )]
+    pub trait Backlight {
+        /// `BacklightState` JSON: `{ present, percent, device, raw, max_raw }`.
+        fn get(&self) -> zbus::Result<String>;
+
+        fn set_brightness(&self, percent: u32) -> zbus::Result<()>;
+
+        /// Step the backlight and report where it landed.
+        fn adjust_brightness(&self, delta: i32) -> zbus::Result<u32>;
+
+        /// This service changed the backlight. Carries nothing — call `get`.
+        #[zbus(signal)]
+        fn changed(&self) -> zbus::Result<()>;
+    }
+}
+
+mod battery {
+    use zbus::proxy;
+
+    /// `org.legeos.Battery1` — what the battery is doing. Read-only by construction.
+    #[proxy(
+        interface = "org.legeos.Battery1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/Battery"
+    )]
+    pub trait Battery {
+        /// `BatteryState` JSON: `{ present, percent, status, on_mains, time_to_empty_minutes,
+        /// time_to_full_minutes }`.
+        fn get(&self) -> zbus::Result<String>;
+    }
+}
+
 mod location {
     use zbus::proxy;
 
@@ -376,7 +448,10 @@ mod location {
 
 pub use app_identity::AppIdentityProxy;
 pub use associations::AssociationsProxy;
+pub use audio::AudioProxy;
 pub use background::BackgroundProxy;
+pub use backlight::BacklightProxy;
+pub use battery::BatteryProxy;
 pub use history::HistoryProxy;
 pub use homefield::HomeFieldProxy;
 pub use launcher::LauncherProxy;

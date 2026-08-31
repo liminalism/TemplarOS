@@ -3622,11 +3622,16 @@ mod tests {
         // This is a test about zooming into a project, not about how much of a 11×7 field Home's
         // own furniture claims: the system widgets are stashed so the hand-built project below
         // has a quadrant to land in on the small test grid.
+        // Only the ones this field actually received: a small field places the widgets it has
+        // room for and leaves the rest off, so stashing the whole manifest would name a tile that
+        // was never placed.
         for probe in field_model::SYSTEM_WIDGETS {
             let id = tile_id_for(&format!("system:{probe}"));
-            h.doc = apply(&h.doc, &FieldOp::Stash { id })
-                .expect("stash applies")
-                .0;
+            if h.doc.tile(id).is_some() {
+                h.doc = apply(&h.doc, &FieldOp::Stash { id })
+                    .expect("stash applies")
+                    .0;
+            }
         }
         let files = tile_id_for("app:org.legeos.Files");
         let editor = tile_id_for("app:org.example.Editor");

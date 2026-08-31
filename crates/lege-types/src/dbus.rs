@@ -35,6 +35,15 @@ pub mod session {
     pub const POWER_PATH: &str = "/org/legeos/Session/Power";
     pub const POWER_IFACE: &str = "org.legeos.Power1";
 
+    pub const AUDIO_PATH: &str = "/org/legeos/Session/Audio";
+    pub const AUDIO_IFACE: &str = "org.legeos.Audio1";
+
+    pub const BACKLIGHT_PATH: &str = "/org/legeos/Session/Backlight";
+    pub const BACKLIGHT_IFACE: &str = "org.legeos.Backlight1";
+
+    pub const BATTERY_PATH: &str = "/org/legeos/Session/Battery";
+    pub const BATTERY_IFACE: &str = "org.legeos.Battery1";
+
     pub const LIFECYCLE_PATH: &str = "/org/legeos/Session/Lifecycle";
     pub const LIFECYCLE_IFACE: &str = "org.legeos.Session.Lifecycle1";
 

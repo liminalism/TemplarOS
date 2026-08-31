@@ -14,10 +14,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lege::{bus, doctor, files, history, open, power, project, providers, res, settings, update};
 use lege_client::proxies::{
-    AppIdentityProxy, AssociationsProxy, FilesActionsProxy, FilesOperationsProxy,
-    FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy, FilesVolumesProxy, HistoryProxy,
-    HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy,
-    LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
+    AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
+    FilesActionsProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy,
+    FilesVolumesProxy, HistoryProxy, HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy,
+    HostStorageProxy, HostUpdatesProxy, LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy,
+    ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
 use std::{fmt::Write as _, path::PathBuf};
@@ -63,6 +64,13 @@ enum Command {
     Files {
         #[command(subcommand)]
         command: FilesCommand,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Volume, display brightness and battery.
+    Status {
+        #[command(subcommand)]
+        command: Option<StatusCommand>,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -211,6 +219,36 @@ enum FilesCommand {
         #[arg(long)]
         form: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum StatusCommand {
+    /// Volume, brightness and battery together (the default).
+    All,
+    /// The default sink's volume.
+    Volume {
+        /// Set the volume, 0..=100.
+        #[arg(long)]
+        set: Option<u32>,
+    },
+    /// Flip the default sink's mute.
+    Mute,
+    /// Volume up one step.
+    Louder,
+    /// Volume down one step.
+    Quieter,
+    /// The display backlight.
+    Brightness {
+        /// Set the brightness, 1..=100.
+        #[arg(long)]
+        set: Option<u32>,
+    },
+    /// Backlight up one step.
+    Brighter,
+    /// Backlight down one step.
+    Dimmer,
+    /// Charge, status and time remaining.
+    Battery,
 }
 
 #[derive(Debug, Subcommand)]
@@ -446,6 +484,9 @@ async fn run() -> Result<()> {
             res_command(command.unwrap_or(ResCommand::Status), json).await
         }
         Command::Files { command, json } => files_command(command, json).await,
+        Command::Status { command, json } => {
+            status_command(command.unwrap_or(StatusCommand::All), json).await
+        }
         Command::Trash { command, json } => {
             trash_command(command.unwrap_or(TrashCommand::List), json).await
         }
@@ -734,6 +775,108 @@ async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
                 let forms = files::ActionsClient::forms(&proxy).await?;
                 emit(json, &forms, &forms.join("\n"))
             }
+        }
+    }
+}
+
+/// How far one step moves a level.
+///
+/// Percentage points, and the same for both, because a person pressing a volume key and a person
+/// pressing a brightness key are doing the same thing and should not have to learn two different
+/// step sizes. Five is small enough to be fine-grained and large enough that reaching either end
+/// is a handful of presses rather than twenty.
+const STEP_PERCENT: i32 = 5;
+
+/// `lege status` — what the hardware is doing, and the controls for the two halves that have any.
+async fn status_command(command: StatusCommand, json: bool) -> Result<()> {
+    use lege::status::{AudioClient, BacklightClient, BatteryClient};
+    let connection = bus::session().await?;
+    match command {
+        StatusCommand::All => {
+            let audio = lege::status::parse_audio(
+                &AudioClient::get(&AudioProxy::new(&connection).await?).await?,
+            )?;
+            let backlight = lege::status::parse_backlight(
+                &BacklightClient::get(&BacklightProxy::new(&connection).await?).await?,
+            )?;
+            let battery = lege::status::parse_battery(
+                &BatteryClient::get(&BatteryProxy::new(&connection).await?).await?,
+            )?;
+            emit(
+                json,
+                &serde_json::json!({
+                    "audio": audio, "backlight": backlight, "battery": battery
+                }),
+                &lege::status::render_all(&audio, &backlight, &battery),
+            )
+        }
+        StatusCommand::Volume { set } => {
+            let proxy = AudioProxy::new(&connection).await?;
+            if let Some(percent) = set {
+                AudioClient::set_volume(&proxy, percent).await?;
+            }
+            let audio = lege::status::parse_audio(&AudioClient::get(&proxy).await?)?;
+            emit(json, &audio, &lege::status::render_audio(&audio))
+        }
+        StatusCommand::Louder | StatusCommand::Quieter => {
+            let proxy = AudioProxy::new(&connection).await?;
+            let delta = if matches!(command, StatusCommand::Louder) {
+                STEP_PERCENT
+            } else {
+                -STEP_PERCENT
+            };
+            // One call, so the service does the read-modify-write and two clients on the same key
+            // cannot each undo the other.
+            let percent = AudioClient::adjust_volume(&proxy, delta).await?;
+            emit(
+                json,
+                &serde_json::json!({"volume_percent": percent}),
+                &format!("volume     {percent}%"),
+            )
+        }
+        StatusCommand::Mute => {
+            let proxy = AudioProxy::new(&connection).await?;
+            let muted = AudioClient::toggle_muted(&proxy).await?;
+            emit(
+                json,
+                &serde_json::json!({"muted": muted}),
+                if muted {
+                    "volume     muted"
+                } else {
+                    "volume     unmuted"
+                },
+            )
+        }
+        StatusCommand::Brightness { set } => {
+            let proxy = BacklightProxy::new(&connection).await?;
+            if let Some(percent) = set {
+                BacklightClient::set_brightness(&proxy, percent).await?;
+            }
+            let backlight = lege::status::parse_backlight(&BacklightClient::get(&proxy).await?)?;
+            emit(
+                json,
+                &backlight,
+                &lege::status::render_backlight(&backlight),
+            )
+        }
+        StatusCommand::Brighter | StatusCommand::Dimmer => {
+            let proxy = BacklightProxy::new(&connection).await?;
+            let delta = if matches!(command, StatusCommand::Brighter) {
+                STEP_PERCENT
+            } else {
+                -STEP_PERCENT
+            };
+            let percent = BacklightClient::adjust_brightness(&proxy, delta).await?;
+            emit(
+                json,
+                &serde_json::json!({"percent": percent}),
+                &format!("brightness {percent}%"),
+            )
+        }
+        StatusCommand::Battery => {
+            let proxy = BatteryProxy::new(&connection).await?;
+            let battery = lege::status::parse_battery(&BatteryClient::get(&proxy).await?)?;
+            emit(json, &battery, &lege::status::render_battery(&battery))
         }
     }
 }

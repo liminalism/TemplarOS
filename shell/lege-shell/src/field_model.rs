@@ -47,9 +47,54 @@ pub const DRAWER_TILES: [Drawer; 8] = [
 /// The launcher is here for the same reason Session is: without it a freshly booted session has
 /// nothing on the field to open anything with, because application tiles are derived from windows
 /// that already exist (`merge_apps`) and go away with the last one.
-pub const SYSTEM_WIDGETS: [&str; 3] = ["session", "launcher", "notifications"];
+///
+/// Battery, volume and brightness are the three a laptop is not usable without and that no other
+/// surface offers: LegeOS has no tray and no menu bar by design, so a widget is the only place
+/// they can be. All six land at the 2x1 preferred span, so the shelf stays a strip along the
+/// bottom rather than a second desktop.
+pub const SYSTEM_WIDGETS: [&str; 6] = [
+    "session",
+    "launcher",
+    "notifications",
+    "battery",
+    "volume",
+    "brightness",
+];
 
 const DRAWER_SPAN: u16 = 2;
+
+/// The share of the field the system shelf may claim, as a divisor: at most one cell in this many.
+///
+/// The same bargain the drawer block strikes with [`DRAWER_WIDTH_SHARE`], and it exists for the
+/// same reason. Home's furniture is there to be reached, not to *be* the desktop: the middle of
+/// the field belongs to windows and applications. Three widgets never came close to this ceiling;
+/// six do on a small field, which is exactly when it matters.
+const SYSTEM_SHELF_SHARE: u16 = 4;
+
+/// The system widgets that fit on a `cols`x`rows` field, in declaration order.
+///
+/// Declaration order is the priority order, and [`SYSTEM_WIDGETS`] is written accordingly: session
+/// and the launcher are what a desktop is unusable without, so on a field with room for only some
+/// of them they are the ones that stay. A readout that does not fit is not placed rather than
+/// squeezed in on top of the space windows need — a laptop screen that arrives with no room to
+/// work is a worse outcome than one that shows two instruments instead of five.
+fn system_widgets_that_fit(cols: u16, rows: u16) -> Vec<&'static str> {
+    let budget = u32::from(cols) * u32::from(rows) / u32::from(SYSTEM_SHELF_SHARE.max(1));
+    let mut spent = 0u32;
+    let mut fitted = Vec::new();
+    for widget in SYSTEM_WIDGETS {
+        let (span_cols, span_rows) = crate::surface::widgets::descriptor(widget)
+            .map_or((3, 2), |descriptor| descriptor.preferred_span);
+        let cost = u32::from(span_cols.max(1)) * u32::from(span_rows.max(1));
+        // Always place the first: a field too small for even one widget still needs the session
+        // controls, and an empty shelf has no route to logging out at all.
+        if fitted.is_empty() || spent + cost <= budget {
+            spent += cost;
+            fitted.push(widget);
+        }
+    }
+    fitted
+}
 
 /// The share of the field's width the drawer block may claim. The drawers are shortcuts, not the
 /// desktop: past a third of the screen they start costing the launcher and the window previews
@@ -424,7 +469,7 @@ fn merge_panels(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         .iter()
         .map(|drawer| tile_id_for(&format!("drawer:{}", drawer.name())))
         .collect();
-    let systems: Vec<TileId> = SYSTEM_WIDGETS
+    let systems: Vec<TileId> = system_widgets_that_fit(doc.cols, doc.rows)
         .iter()
         .map(|widget| tile_id_for(&format!("system:{widget}")))
         .collect();
@@ -535,10 +580,11 @@ fn merge_drawers(
 /// of the drawer block; if that is taken the reflow finds the nearest place rather than
 /// displacing a drawer.
 fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
-    for (index, widget) in SYSTEM_WIDGETS.iter().enumerate() {
+    let fitting = system_widgets_that_fit(doc.cols, doc.rows);
+    for (index, widget) in fitting.iter().copied().enumerate() {
         let id = tile_id_for(&format!("system:{widget}"));
         let kind = TileKind::System {
-            probe: (*widget).to_owned(),
+            probe: widget.to_owned(),
         };
         // Compact by default, with the class ceiling intact — the same bargain the drawer block
         // strikes above. Three system widgets at their *preferred* 4x2 claim twenty-four cells of
@@ -552,13 +598,26 @@ fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         // on which someone reaches for it. A 2x1 launcher is a small tile that expands, not a
         // missing one.
         let class = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-        let spans = SpanRange::new(Span::new(2, 1), class.min, class.max);
-        let cell = system_landing(index, doc, spans);
+        // The arrival span comes from the widget, not from the tile class: the class figure is
+        // the launcher's — a list needs rows to be a list — and applying it to a battery reading
+        // "72%" is what turns the system shelf into four rows of a seven-row field. The 2x1 floor
+        // below is every system tile's and is unchanged, so this decides what a widget arrives
+        // at, never what a person may shrink it to.
+        let descriptor = crate::surface::widgets::descriptor(widget);
+        let wanted = descriptor.map_or((class.preferred.cols, class.preferred.rows), |declared| {
+            declared.preferred_span
+        });
+        let spans = SpanRange::new(
+            Span::new(2, 1),
+            Span::new(wanted.0.max(1), wanted.1.max(1)),
+            class.max,
+        );
+        let cell = system_landing(index, doc, spans, fitting.len());
         if doc.tile(id).is_some() {
             continue;
         }
-        let heading = crate::surface::widgets::descriptor(widget).map_or_else(
-            || (*widget).to_owned(),
+        let heading = descriptor.map_or_else(
+            || widget.to_owned(),
             |descriptor| descriptor.title.to_owned(),
         );
         let tile = Tile {
@@ -587,12 +646,14 @@ fn merge_system(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
 /// wherever the block happened to end and trailed off into empty field, which reads as an
 /// accident on a wide screen. In the corner it balances the status cluster diagonally opposite
 /// it, and the middle of the field — where windows and applications live — stays clear.
-fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange) -> Cell {
+fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange, placed: usize) -> Cell {
     let width = spans.preferred.cols.max(1);
     let height = spans.preferred.rows.max(1);
     let first_col = drawer_reserved_cols(doc.cols, doc.rows);
     let per_row = (doc.cols.saturating_sub(first_col) / width).max(1);
-    let len = u16::try_from(SYSTEM_WIDGETS.len()).unwrap_or(u16::MAX);
+    // How many are actually being placed, not how many exist: a field too small for every widget
+    // packs the ones it has, and counting the absent ones would leave a gap where they would be.
+    let len = u16::try_from(placed).unwrap_or(u16::MAX);
     let index = u16::try_from(index).unwrap_or(u16::MAX);
     // Right to left from the corner, so the group's right edge is the field's — however many
     // widgets share the row, and whatever width they take.
@@ -692,11 +753,29 @@ fn merge_apps(
 /// prefer. Sessions size themselves around this rather than over it: with the shelf unaccounted
 /// for, session previews claimed the bottom rows and the shelf was squeezed into whatever was
 /// left, so the launcher arrived as a sliver on a field with plenty of room for it.
-fn system_shelf_rows(available_cols: u16) -> u16 {
-    let (shelf_cols, shelf_rows) = (3, 2);
-    let per_row = (available_cols / shelf_cols).max(1);
-    let len = u16::try_from(SYSTEM_WIDGETS.len()).unwrap_or(u16::MAX);
-    len.div_ceil(per_row).saturating_mul(shelf_rows)
+fn system_shelf_rows(available_cols: u16, cols: u16, rows: u16) -> u16 {
+    // From the widgets that are actually placed and at the sizes they are actually placed at.
+    // This used to assume every system tile was 3x2, which was true while all three were the
+    // launcher's shape and stopped being true the moment a 2x1 battery joined them: the estimate
+    // then reserved four rows of an eight-row field for a shelf occupying two, and took the
+    // difference out of the session previews for nothing.
+    let per_row_budget = available_cols.max(1);
+    let mut used_in_row = 0u16;
+    let mut row_height = 0u16;
+    let mut total = 0u16;
+    for widget in system_widgets_that_fit(cols, rows) {
+        let (span_cols, span_rows) = crate::surface::widgets::descriptor(widget)
+            .map_or((3, 2), |descriptor| descriptor.preferred_span);
+        let (span_cols, span_rows) = (span_cols.max(1), span_rows.max(1));
+        if used_in_row > 0 && used_in_row + span_cols > per_row_budget {
+            total = total.saturating_add(row_height);
+            used_in_row = 0;
+            row_height = 0;
+        }
+        used_in_row = used_in_row.saturating_add(span_cols);
+        row_height = row_height.max(span_rows);
+    }
+    total.saturating_add(row_height)
 }
 
 /// The largest common overview span that lets every live session fit in the field area to the
@@ -705,7 +784,7 @@ fn system_shelf_rows(available_cols: u16) -> u16 {
 fn session_overview_span(cols: u16, rows: u16, session_count: usize) -> Span {
     let available_cols = cols.saturating_sub(drawer_reserved_cols(cols, rows));
     let rows = rows
-        .saturating_sub(system_shelf_rows(available_cols))
+        .saturating_sub(system_shelf_rows(available_cols, cols, rows))
         .max(1);
     let count = u32::try_from(session_count).unwrap_or(u32::MAX);
     [
@@ -756,7 +835,7 @@ fn merge_sessions(
     // goes, leaving it to squeeze into the gap above them.
     let session_floor = doc
         .rows
-        .saturating_sub(system_shelf_rows(available_cols))
+        .saturating_sub(system_shelf_rows(available_cols, doc.cols, doc.rows))
         .max(overview_span.rows);
     for (index, toplevel) in toplevels.iter().enumerate() {
         let identifier = session_identifier(toplevel, None);
@@ -1085,7 +1164,7 @@ mod tests {
                 let reserved = drawer_reserved_cols(cols, rows);
                 let per_row = (cols.saturating_sub(reserved) / spans.preferred.cols.max(1)).max(1);
                 let cells: Vec<Cell> = (0..SYSTEM_WIDGETS.len())
-                    .map(|index| system_landing(index, &doc, spans))
+                    .map(|index| system_landing(index, &doc, spans, SYSTEM_WIDGETS.len()))
                     .collect();
                 for cell in &cells {
                     assert!(
@@ -1180,6 +1259,55 @@ mod tests {
     }
 
     #[test]
+    fn the_system_shelf_never_claims_more_of_a_field_than_its_share() {
+        for (cols, rows) in [(4u16, 4u16), (11, 7), (16, 8), (18, 9), (32, 18)] {
+            let fitted = system_widgets_that_fit(cols, rows);
+            let spent: u32 = fitted
+                .iter()
+                .map(|widget| {
+                    let (c, r) = crate::surface::widgets::descriptor(widget)
+                        .map_or((3, 2), |d| d.preferred_span);
+                    u32::from(c) * u32::from(r)
+                })
+                .sum();
+            let field = u32::from(cols) * u32::from(rows);
+            assert!(
+                !fitted.is_empty(),
+                "{cols}x{rows}: a field with no widgets at all has no way to log out"
+            );
+            // The first is always placed even on a field too small for the share, so the ceiling
+            // is only binding once there is more than one.
+            if fitted.len() > 1 {
+                assert!(
+                    spent <= field / u32::from(SYSTEM_SHELF_SHARE),
+                    "{cols}x{rows}: the shelf claims {spent} of {field} cells"
+                );
+            }
+            // Declaration order is priority order: whatever fits, session comes first.
+            assert_eq!(fitted[0], "session");
+            assert!(
+                fitted.iter().all(|widget| SYSTEM_WIDGETS.contains(widget)),
+                "{cols}x{rows}: placed a widget that is not declared"
+            );
+        }
+    }
+
+    #[test]
+    fn a_roomy_field_gets_every_widget_and_a_cramped_one_keeps_the_essential_ones() {
+        // A laptop at 1920x1080 has room for all six.
+        let (cols, rows) = grid_for(1920, 1080, TILE_SIZE);
+        assert_eq!(
+            system_widgets_that_fit(cols, rows).len(),
+            SYSTEM_WIDGETS.len(),
+            "{cols}x{rows} should carry the whole shelf"
+        );
+        // A small field keeps the three a desktop is unusable without and drops the readouts,
+        // rather than filling the space windows need with instruments.
+        let fitted = system_widgets_that_fit(11, 7);
+        assert_eq!(fitted, vec!["session", "launcher", "notifications"]);
+    }
+
+    #[test]
     fn merge_adds_a_tile_per_drawer_app_and_window_and_keeps_places_on_refresh() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         let windows = vec![
@@ -1199,7 +1327,9 @@ mod tests {
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
         // Drawers occupy a compact 4×8 block, apps follow it, sessions sit above the system
-        // shelf, which takes the bottom two rows.
+        // shelf. On this 16×8 field the shelf is three rows: the three launcher-shaped widgets
+        // and two readouts fill one row of height two, and the last readout wraps to a row of
+        // its own.
         let inbox = tile_id_for("drawer:Downloads");
         assert_eq!(doc.location(inbox).unwrap().placement.cell, Cell::new(0, 0));
         // Apps are sorted by id: the Editor (known only from its window) precedes Files.
@@ -1211,7 +1341,7 @@ mod tests {
             Cell::new(4, 0)
         );
         let session = session_tile_for(&doc, &windows[1]).unwrap();
-        assert_eq!(doc.location(session).unwrap().placement.cell.row, 4);
+        assert_eq!(doc.location(session).unwrap().placement.cell.row, 3);
 
         // A second merge with the same state changes nothing.
         let before = doc.clone();

@@ -1,0 +1,239 @@
+//! Wire models for the three hardware-status interfaces: `Audio1`, `Backlight1`, `Battery1`.
+//!
+//! The daemon remains an independent process and clients do not link its implementation crate, so
+//! — exactly as [`crate::files`] does for `org.legeos.Files` — these serde models are the
+//! versioned JSON contract carried by the typed proxies. The CLI and the shell parse the same
+//! structs, which is what stops `lege status battery` and the battery widget from disagreeing
+//! about what "72%" means.
+//!
+//! Every one of the three carries `present`, and it is the field that matters most: a desktop has
+//! no battery and no backlight, and a machine with no WirePlumber has no volume. None of those is
+//! a failure, and a surface that cannot tell them from "0%" will show a working machine as a
+//! broken one.
+
+use serde::{Deserialize, Serialize};
+
+/// `Audio1.Get`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AudioState {
+    pub present: bool,
+    #[serde(default)]
+    pub volume_percent: u32,
+    #[serde(default)]
+    pub muted: bool,
+}
+
+/// `Backlight1.Get`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BacklightState {
+    pub present: bool,
+    #[serde(default)]
+    pub percent: u32,
+    #[serde(default)]
+    pub device: String,
+    #[serde(default)]
+    pub raw: u64,
+    #[serde(default)]
+    pub max_raw: u64,
+}
+
+/// `Battery1.Get`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatteryState {
+    pub present: bool,
+    #[serde(default)]
+    pub percent: Option<u32>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub on_mains: bool,
+    #[serde(default)]
+    pub time_to_empty_minutes: Option<u32>,
+    #[serde(default)]
+    pub time_to_full_minutes: Option<u32>,
+}
+
+impl AudioState {
+    /// The one line a widget or `lege status` shows at a glance.
+    ///
+    /// Presentation lives here and not in the service: the daemon's job is to know what the
+    /// volume *is*, and two clients that both render it must not each invent their own wording.
+    pub fn headline(&self) -> String {
+        if !self.present {
+            return "No audio".to_owned();
+        }
+        if self.muted {
+            // The level is still worth saying: unmuting returns to it, and "Muted" alone leaves a
+            // person unable to predict how loud that will be.
+            return format!("Muted · {}%", self.volume_percent);
+        }
+        format!("{}%", self.volume_percent)
+    }
+}
+
+impl BacklightState {
+    pub fn headline(&self) -> String {
+        if self.present {
+            format!("{}%", self.percent)
+        } else {
+            "No backlight".to_owned()
+        }
+    }
+}
+
+impl BatteryState {
+    /// The time estimate that applies to what the battery is currently doing, with the word for
+    /// it — `None` when the kernel published no estimate, which is common and not an error.
+    pub fn time_remaining(&self) -> Option<(&'static str, u32)> {
+        match self.status.as_str() {
+            "charging" => self
+                .time_to_full_minutes
+                .map(|minutes| ("to full", minutes)),
+            "discharging" => self
+                .time_to_empty_minutes
+                .map(|minutes| ("remaining", minutes)),
+            // "full" and "not charging" have no meaningful estimate: nothing is happening.
+            _ => None,
+        }
+    }
+
+    /// The one line a widget shows at its smallest rung.
+    pub fn headline(&self) -> String {
+        match (self.present, self.percent) {
+            (true, Some(percent)) => format!("{percent}%"),
+            (true, None) => "Battery".to_owned(),
+            // Neither an error nor a zero: a desktop has no battery, and "0%" would describe a
+            // machine that is working perfectly as one about to die.
+            (false, _) => {
+                if self.on_mains {
+                    "On mains".to_owned()
+                } else {
+                    "No battery".to_owned()
+                }
+            }
+        }
+    }
+}
+
+/// `143` as `2 h 23 min` — the shape a person reads at a glance.
+pub fn duration_minutes(minutes: u32) -> String {
+    let (hours, rest) = (minutes / 60, minutes % 60);
+    match (hours, rest) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wire_shapes_match_what_the_services_publish() {
+        // Exactly what `Battery1.Get` writes for a laptop on battery.
+        let battery: BatteryState = serde_json::from_str(
+            r#"{"present":true,"percent":72,"status":"discharging","on_mains":false,
+                "time_to_empty_minutes":143,"time_to_full_minutes":null}"#,
+        )
+        .unwrap();
+        assert_eq!(battery.percent, Some(72));
+        assert_eq!(battery.time_remaining(), Some(("remaining", 143)));
+
+        let audio: AudioState =
+            serde_json::from_str(r#"{"present":true,"volume_percent":45,"muted":true}"#).unwrap();
+        assert!(audio.muted);
+        assert_eq!(audio.volume_percent, 45);
+
+        let backlight: BacklightState = serde_json::from_str(
+            r#"{"present":true,"percent":40,"device":"intel_backlight","raw":7680,
+                "max_raw":19200}"#,
+        )
+        .unwrap();
+        assert_eq!(backlight.percent, 40);
+        assert_eq!(backlight.device, "intel_backlight");
+    }
+
+    #[test]
+    fn a_machine_without_the_hardware_parses_as_absent_not_as_zero() {
+        let battery: BatteryState = serde_json::from_str(
+            r#"{"present":false,"percent":null,"status":"unknown","on_mains":true,
+                "time_to_empty_minutes":null,"time_to_full_minutes":null}"#,
+        )
+        .unwrap();
+        assert!(!battery.present);
+        assert_eq!(battery.percent, None, "a desktop is not a flat battery");
+        assert_eq!(battery.time_remaining(), None);
+    }
+
+    #[test]
+    fn an_idle_battery_is_given_no_estimate_even_when_one_is_published() {
+        // "full" means nothing is happening, so neither estimate applies however stale a figure
+        // the kernel left in the file.
+        let battery = BatteryState {
+            present: true,
+            percent: Some(100),
+            status: "full".to_owned(),
+            on_mains: true,
+            time_to_empty_minutes: Some(600),
+            time_to_full_minutes: Some(0),
+        };
+        assert_eq!(battery.time_remaining(), None);
+    }
+
+    #[test]
+    fn a_headline_never_shows_absent_hardware_as_a_flat_or_silent_one() {
+        assert_eq!(
+            BatteryState {
+                present: false,
+                on_mains: true,
+                ..BatteryState::default()
+            }
+            .headline(),
+            "On mains"
+        );
+        assert_eq!(BatteryState::default().headline(), "No battery");
+        assert_eq!(AudioState::default().headline(), "No audio");
+        assert_eq!(BacklightState::default().headline(), "No backlight");
+    }
+
+    #[test]
+    fn a_present_headline_is_the_level_and_says_when_it_is_muted() {
+        assert_eq!(
+            AudioState {
+                present: true,
+                volume_percent: 45,
+                muted: false
+            }
+            .headline(),
+            "45%"
+        );
+        assert_eq!(
+            AudioState {
+                present: true,
+                volume_percent: 45,
+                muted: true
+            }
+            .headline(),
+            "Muted · 45%",
+            "the level survives a mute, because unmuting returns to it"
+        );
+        assert_eq!(
+            BatteryState {
+                present: true,
+                percent: Some(72),
+                ..BatteryState::default()
+            }
+            .headline(),
+            "72%"
+        );
+    }
+
+    #[test]
+    fn durations_read_the_way_a_person_says_them() {
+        assert_eq!(duration_minutes(0), "0 min");
+        assert_eq!(duration_minutes(45), "45 min");
+        assert_eq!(duration_minutes(120), "2 h");
+        assert_eq!(duration_minutes(143), "2 h 23 min");
+    }
+}

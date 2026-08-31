@@ -1,9 +1,20 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Power.
-     Idle/lid/brightness policy (crates/lege-session-core/src/power.rs) over logind/upower; the
-     exclusive `power-manager` role. Indicators only display state, never decide it.
-     Implemented in services/lege-sessiond/src/apis/power.rs. -->
+
+     The stored idle and lid policy for each power source (crates/lege-session-core/src/power.rs),
+     as a document to get, set and reset. Implemented in
+     services/lege-sessiond/src/apis/power.rs.
+
+     This records policy; it does not enforce it. There is no idle watcher behind this interface
+     and nothing here calls logind or upower: setting `suspend_after` stores an interval, it does
+     not schedule a suspend. That is deliberate remaining scope — an enforcer needs an idle source,
+     a way to dim and blank (org.legeos.Backlight1) and a lock surface to drive, and
+     Session.Lifecycle1.Lock is itself still a NotSupported stub. The earlier wording here
+     described the intended feature rather than the code, which is worse than saying nothing.
+
+     Battery state and brightness are NOT this interface: they are org.legeos.Battery1 and
+     org.legeos.Backlight1, hardware readings rather than stored policy. -->
 <node>
   <interface name="org.legeos.Power1">
     <!-- source is "battery" or "mains". Returns the effective PowerProfile as JSON (a stored
