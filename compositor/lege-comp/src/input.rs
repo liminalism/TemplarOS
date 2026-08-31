@@ -163,7 +163,23 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
     }
 }
 
-/// Start a recovery-band (or client-initiated `xdg_toplevel.move`) drag: `begin_drag` and install
+/// How a gesture came to be requested, which decides where its grab-start data comes from.
+///
+/// A client request (`xdg_toplevel.move`/`resize`, or the XWayland equivalent) must present the
+/// serial of the button press that motivated it — the implicit grab Smithay installed when that
+/// press was delivered is both the proof the press happened and the start data. The compositor's
+/// own affordances (recovery band, resize grip) hit-test the press *before* it is routed through
+/// `PointerHandle::button`, deliberately, so the press never reaches a client — but that also
+/// means no implicit grab exists yet at that moment, so demanding one silently disabled both
+/// affordances. Their start data is synthesized here instead: the press is the compositor's own
+/// observation, there is no client claim to validate.
+#[derive(Clone, Copy, Debug)]
+enum GestureOrigin {
+    ClientRequest,
+    CompositorAffordance,
+}
+
+/// Start a client-requested (`xdg_toplevel.move`) drag: `begin_drag` and install
 /// a [`WindowGestureGrab`]. `pointer_global` is already logical — see the module doc.
 pub fn start_drag<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
@@ -171,13 +187,19 @@ pub fn start_drag<B: Backend + 'static>(
     serial: Serial,
     window_id: WindowId,
 ) {
-    start_gesture(state, seat, serial, window_id, Gesture::Move);
+    start_gesture(
+        state,
+        seat,
+        serial,
+        window_id,
+        Gesture::Move,
+        GestureOrigin::ClientRequest,
+    );
 }
 
-/// Start an interactive resize dragging `edges`: `begin_resize` and install a
+/// Start a client-requested interactive resize dragging `edges`: `begin_resize` and install a
 /// [`WindowGestureGrab`]. Reached from `xdg_toplevel.resize` and its XWayland equivalent (a
-/// client-drawn resize border), and from a press on the compositor's own grip
-/// (`lege_window::resize_grip`) for a window that draws no border of its own.
+/// client-drawn resize border).
 pub fn start_resize<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     seat: &Seat<LegeCompState<B>>,
@@ -185,7 +207,14 @@ pub fn start_resize<B: Backend + 'static>(
     window_id: WindowId,
     edges: lege_window::ResizeEdges,
 ) {
-    start_gesture(state, seat, serial, window_id, Gesture::Resize { edges });
+    start_gesture(
+        state,
+        seat,
+        serial,
+        window_id,
+        Gesture::Resize { edges },
+        GestureOrigin::ClientRequest,
+    );
 }
 
 fn start_gesture<B: Backend + 'static>(
@@ -194,15 +223,29 @@ fn start_gesture<B: Backend + 'static>(
     serial: Serial,
     window_id: WindowId,
     gesture: Gesture,
+    origin: GestureOrigin,
 ) {
     let Some(pointer) = seat.get_pointer() else {
         return;
     };
-    if !pointer.has_grab(serial) {
-        return;
-    }
-    let Some(start_data) = pointer.grab_start_data() else {
-        return;
+    let start_data = match origin {
+        GestureOrigin::ClientRequest => {
+            if !pointer.has_grab(serial) {
+                return;
+            }
+            let Some(start_data) = pointer.grab_start_data() else {
+                return;
+            };
+            start_data
+        }
+        // See `GestureOrigin`: at band/grip press time the press has not been routed through
+        // `PointerHandle::button` yet, so there is no implicit grab to inherit — and must not
+        // be, because this press is swallowed rather than delivered to any client.
+        GestureOrigin::CompositorAffordance => PointerGrabStartData {
+            focus: None,
+            button: BTN_LEFT,
+            location: pointer.current_location(),
+        },
     };
     let pointer_global = to_lege_point(pointer.current_location());
     let started = match gesture {
@@ -752,12 +795,15 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 && rect_contains(grip, pos)
             {
                 let seat = self.seat.clone();
-                start_resize(
+                start_gesture(
                     self,
                     &seat,
                     serial,
                     window_id,
-                    lege_window::ResizeEdges::BOTTOM_RIGHT,
+                    Gesture::Resize {
+                        edges: lege_window::ResizeEdges::BOTTOM_RIGHT,
+                    },
+                    GestureOrigin::CompositorAffordance,
                 );
                 return;
             }
@@ -765,7 +811,14 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 && rect_contains(affordance.band, pos)
             {
                 let seat = self.seat.clone();
-                start_drag(self, &seat, serial, window_id);
+                start_gesture(
+                    self,
+                    &seat,
+                    serial,
+                    window_id,
+                    Gesture::Move,
+                    GestureOrigin::CompositorAffordance,
+                );
                 return;
             }
         }
