@@ -227,6 +227,21 @@ pub fn shell_surface_placement(
     if layer == Layer::HomeSurface {
         return full;
     }
+    if layer == Layer::Notification {
+        // A toast anchors to the top-right of the usable area: visible over whatever is being
+        // worked on, clear of any reserved edge, and where every desktop has taught people to
+        // glance. The client still owns only its size.
+        let usable = output.usable();
+        let margin = 12;
+        let width = requested.width.clamp(1, usable.width);
+        let height = requested.height.clamp(1, usable.height);
+        return Rect::new(
+            usable.right() - width - margin.min(usable.width - width),
+            usable.y + margin.min(usable.height - height),
+            width,
+            height,
+        );
+    }
     move_into_view(requested, std::slice::from_ref(output))
 }
 
@@ -1256,5 +1271,25 @@ mod tests {
             let outputs = load_topology("triple-mixed-scale");
             prop_assert!(is_recoverable(repair_window(window, &outputs), &outputs));
         }
+    }
+
+    /// A Notification-layer shell surface keeps its requested size and anchors to the
+    /// top-right of the output's usable area, clear of any reserved edge.
+    #[test]
+    fn notification_surfaces_anchor_top_right_of_the_usable_area() {
+        let output = Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)
+            .with_work_area(Rect::new(0, 40, 1920, 1040));
+        let placed =
+            shell_surface_placement(Layer::Notification, None, &output, Rect::new(0, 0, 360, 88));
+        assert_eq!(placed, Rect::new(1920 - 360 - 12, 40 + 12, 360, 88));
+        // A toast wider than the output is clamped rather than walked off-screen.
+        let huge = shell_surface_placement(
+            Layer::Notification,
+            None,
+            &output,
+            Rect::new(0, 0, 4000, 4000),
+        );
+        assert!(huge.width <= 1920 && huge.height <= 1040);
+        assert!(huge.x >= 0 && huge.y >= 40);
     }
 }

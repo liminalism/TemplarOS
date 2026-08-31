@@ -202,6 +202,18 @@ struct ShellApp {
     file_thumbnails_generation: u64,
     file_thumbnails_pending: std::collections::HashSet<PathBuf>,
     notification_rows: Vec<crate::surface::widgets::notifications::NotificationRow>,
+    /// A toast waiting for the event loop (window creation needs `ActiveEventLoop`).
+    pending_toast: Option<crate::surface::widgets::notifications::NotificationRow>,
+    /// The live toast surface, its notification, and when it appeared.
+    toast: Option<(
+        HostedWindow,
+        crate::surface::widgets::notifications::NotificationRow,
+        Instant,
+    )>,
+    /// The newest notification id a toast has been shown for, so re-fetches do not re-toast.
+    /// `None` until the first fetch: whatever was already active at startup is old news and
+    /// only sets the watermark.
+    last_toasted_id: Option<u32>,
     browser_pending: Option<(Drawer, bool, PathBuf)>,
     browser_error: Option<(Drawer, PathBuf, String)>,
     browser_status: Option<String>,
@@ -260,6 +272,9 @@ impl ShellApp {
             file_thumbnails_generation: 0,
             file_thumbnails_pending: std::collections::HashSet::new(),
             notification_rows: Vec::new(),
+            pending_toast: None,
+            toast: None,
+            last_toasted_id: None,
             browser_pending: None,
             browser_error: None,
             browser_status: None,
@@ -508,7 +523,22 @@ impl ShellApp {
                         self.file_thumbnails.insert(path, bitmap);
                     }
                 }
-                DataUpdate::NotificationRows(rows) => self.notification_rows = rows,
+                DataUpdate::NotificationRows(rows) => {
+                    // Push, not poll-and-hope: the newest unseen notification becomes a toast
+                    // the next time the event loop hands us a handle to create its window. The
+                    // first fetch only sets the watermark — what was already active at startup
+                    // is the tile's business, not a fresh arrival.
+                    let newest = rows.iter().map(|row| row.id).max().unwrap_or(0);
+                    match self.last_toasted_id {
+                        None => self.last_toasted_id = Some(newest),
+                        Some(seen) if newest > seen => {
+                            self.last_toasted_id = Some(newest);
+                            self.pending_toast = rows.iter().find(|row| row.id == newest).cloned();
+                        }
+                        Some(_) => {}
+                    }
+                    self.notification_rows = rows;
+                }
                 DataUpdate::TreemapsStale => self.treemaps.clear(),
                 DataUpdate::Field(doc) => {
                     self.field = doc;
@@ -1174,6 +1204,92 @@ impl ShellApp {
         self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
     }
 
+    /// How long a toast stays up before it retires on its own.
+    const TOAST_LIFETIME: Duration = Duration::from_secs(6);
+
+    /// Create the toast window for a pending notification, if any. The compositor places
+    /// Notification-layer surfaces at the top-right of the usable area
+    /// (`lege_window::shell_surface_placement`); this side only sizes it and declares its
+    /// layer over the trusted-shell protocol.
+    fn ensure_toast(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(row) = self.pending_toast.take() else {
+            return;
+        };
+        // A new arrival replaces whatever toast is up: newest wins, oldest was already seen.
+        self.toast = None;
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Notification")
+                .with_decorations(false)
+                .with_inner_size(LogicalSize::new(380.0, 92.0)),
+        ) {
+            Ok(window) => std::sync::Arc::new(window),
+            Err(error) => {
+                tracing::warn!(%error, "creating the notification toast window");
+                return;
+            }
+        };
+        if let Some(bridge) = &self.bridge
+            && let Err(error) = bridge.set_layer(&window, lege_window::Layer::Notification)
+        {
+            tracing::warn!(%error, "declaring the toast onto Layer::Notification");
+        }
+        match HostedWindow::new(window) {
+            Ok(hosted) => {
+                hosted.request_redraw();
+                self.toast = Some((hosted, row, Instant::now()));
+            }
+            Err(error) => tracing::warn!(%error, "presenting the notification toast"),
+        }
+    }
+
+    /// Paint the toast: app and summary, and the hint that a click dismisses it.
+    fn redraw_toast(&mut self) {
+        let Some((hosted, row, _)) = &mut self.toast else {
+            return;
+        };
+        if !hosted.prepare() {
+            return;
+        }
+        let width = i32::try_from(hosted.buffer.width).unwrap_or(1);
+        let height = i32::try_from(hosted.buffer.height).unwrap_or(1);
+        let area = pixelkit_raster::Rect::new(0, 0, width, height);
+        let mut ui = pixelkit_ui::Ui::new(
+            pixelkit_raster::Painter::new(&mut hosted.buffer),
+            &mut self.text,
+            &mut hosted.input,
+            crate::surface::design::theme(),
+            hosted.scale,
+            &mut self.kernel,
+        );
+        ui.painter
+            .fill_rounded_rect(area, ui.px(8), crate::surface::design::SHELL);
+        ui.painter.stroke_rect(
+            area,
+            ui.scale.hairline(),
+            crate::surface::design::EDGE_STRONG,
+        );
+        let inner = area.inset(ui.px(12));
+        let (title, body) = inner.split_top(ui.px(22));
+        ui.label_styled(
+            title,
+            &row.app,
+            crate::surface::design::measurement_style(&ui),
+            crate::surface::design::TEXT,
+            pixelkit_text::Align::Left,
+        );
+        ui.label_styled(
+            body,
+            &row.summary,
+            crate::surface::design::state_style(&ui),
+            crate::surface::design::TEXT_DIM,
+            pixelkit_text::Align::Left,
+        );
+        drop(ui);
+        hosted.input.end_frame();
+        hosted.present();
+    }
+
     /// One notification call, then a widget refresh, off-thread. Shared by the per-item
     /// dismiss and invoke routes so both keep the tile live without duplicating the plumbing.
     fn spawn_notification_call<F>(&self, call: F)
@@ -1304,6 +1420,37 @@ impl ShellApp {
     /// manager permanently deleting something, or `lege trash restore` in a terminal, and not
     /// only Home's own EMPTY. Losing the connection ends the watch rather than spinning: the
     /// periodic refresh is still there underneath, so the drawer degrades to slow, not stale.
+    /// Refetch the notifications the moment the server says they changed — this is what makes
+    /// a toast a push rather than a poll: a new arrival reaches the shell on the Changed
+    /// signal, not on the next three-second sweep.
+    fn spawn_notifications_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = lege_client::proxies::NotificationsProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
+                if tx
+                    .send(DataUpdate::Widget("notifications".to_owned(), snapshot))
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = tx.send(DataUpdate::NotificationRows(rows));
+                let _ = proxy_wake.send_event(Wake);
+            }
+        });
+    }
+
     fn spawn_trash_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -1697,13 +1844,15 @@ impl ApplicationHandler<Wake> for ShellApp {
         };
         self.spawn_refresh_loop();
         self.spawn_trash_watch();
+        self.spawn_notifications_watch();
         if let Some(home) = &self.home {
             home.request_redraw();
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: Wake) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _wake: Wake) {
         self.drain_updates();
+        self.ensure_toast(event_loop);
         if let Some(home) = &self.home {
             home.request_redraw();
         }
@@ -1715,6 +1864,29 @@ impl ApplicationHandler<Wake> for ShellApp {
         window_id: WinitWindowId,
         event: WindowEvent,
     ) {
+        let is_toast = self
+            .toast
+            .as_ref()
+            .is_some_and(|(hosted, _, _)| hosted.window.id() == window_id);
+        if is_toast {
+            match event {
+                WindowEvent::RedrawRequested => self.redraw_toast(),
+                WindowEvent::CloseRequested => self.toast = None,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } => {
+                    // A click acknowledges the toast: dismiss that one notification and let
+                    // the tile carry anything else.
+                    if let Some((_, row, _)) = self.toast.take() {
+                        let id = row.id;
+                        self.perform(FieldAction::DismissNotification(id));
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         let is_home = self
             .home
             .as_ref()
@@ -1794,6 +1966,14 @@ impl ApplicationHandler<Wake> for ShellApp {
             self.bridge = None;
         }
         self.drain_updates();
+        self.ensure_toast(event_loop);
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(_, _, shown)| shown.elapsed() >= Self::TOAST_LIFETIME)
+        {
+            self.toast = None;
+        }
         if self.exit {
             event_loop.exit();
             return;
@@ -1815,6 +1995,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             if let Some(home) = &self.home {
                 home.request_redraw();
             }
+        } else if let Some((_, _, shown)) = &self.toast {
+            let deadline = *shown + Self::TOAST_LIFETIME;
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline.max(Instant::now())));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
