@@ -163,6 +163,9 @@ struct FileOperationUndo {
 /// different step sizes would make the two surfaces disagree about what "one step" means.
 const STEP_PERCENT: i32 = 5;
 
+/// The application `settings.open` opens — the id of `apps/lege-settings/org.legeos.Settings.desktop`.
+const SETTINGS_APP_ID: &str = "org.legeos.Settings";
+
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 
@@ -369,12 +372,10 @@ impl ShellApp {
                 let field_settings = fetch_home_field_settings().await;
                 let projects = crate::data::fetch_projects().await;
                 let browser_sources = crate::data::fetch_browser_sources().await;
-                let (session_widget, notifications_widget, battery, volume, brightness) = tokio::join!(
+                let (session_widget, notifications_widget, settings_widget) = tokio::join!(
                     crate::data::fetch_session_widget(),
                     crate::data::fetch_notifications_widget(),
-                    crate::data::fetch_battery_widget(),
-                    crate::data::fetch_volume_widget(),
-                    crate::data::fetch_brightness_widget(),
+                    crate::data::fetch_settings_widget(),
                 );
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
@@ -390,9 +391,7 @@ impl ShellApp {
                     notifications_snapshot,
                 ));
                 let _ = tx.send(DataUpdate::NotificationRows(notification_rows));
-                let _ = tx.send(DataUpdate::Widget("battery".to_owned(), battery));
-                let _ = tx.send(DataUpdate::Widget("volume".to_owned(), volume));
-                let _ = tx.send(DataUpdate::Widget("brightness".to_owned(), brightness));
+                let _ = tx.send(DataUpdate::Widget("settings".to_owned(), settings_widget));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -1182,6 +1181,7 @@ impl ShellApp {
                 self.field_screen.search_focused = false;
             }
             "notifications.clear" => self.spawn_clear_notifications(),
+            "settings.open" => self.spawn_settings(),
             "trash.empty" => self.confirm_then_empty_trash(),
             "volume.increase" => self.spawn_volume_step(STEP_PERCENT),
             "volume.decrease" => self.spawn_volume_step(-STEP_PERCENT),
@@ -1312,6 +1312,20 @@ impl ShellApp {
                 report(format!("{label} refused — {error}"));
             }
         });
+    }
+
+    /// Open the Settings application through the real launch chain, exactly as the launcher would.
+    ///
+    /// No special case, no `Command::new`: identity comes from the cgroup the broker puts the
+    /// process in, so a shell that started its own child would be launching an application the
+    /// session cannot then identify, park or associate with anything.
+    fn spawn_settings(&self) {
+        match SETTINGS_APP_ID.parse::<AppId>() {
+            Ok(app_id) => self.spawn_launch(app_id),
+            // Unreachable: the id is a constant. Logged rather than unwrapped, because a panic in
+            // the shell is a lost session and this is a button.
+            Err(error) => tracing::error!(%error, "the Settings app id is not a valid AppId"),
+        }
     }
 
     fn spawn_network_control(&self) {
@@ -1599,7 +1613,7 @@ impl ShellApp {
     /// Immediate feedback is the whole point of a level control: a volume button whose number
     /// only moves a beat or two later reads as a button that did not work, and the second press
     /// that follows is one the person did not mean.
-    fn spawn_level_step<F, Fut>(&self, widget: &'static str, label: &'static str, call: F)
+    fn spawn_level_step<F, Fut>(&self, label: &'static str, call: F)
     where
         F: FnOnce(zbus::Connection) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
@@ -1617,17 +1631,15 @@ impl ShellApp {
                 // backlight" is a real answer a person needs to see, not a click that did nothing.
                 let _ = tx.send(DataUpdate::Notice(format!("{label} — {error:#}")));
             }
-            let snapshot = match widget {
-                "volume" => crate::data::fetch_volume_widget().await,
-                _ => crate::data::fetch_brightness_widget().await,
-            };
-            let _ = tx.send(DataUpdate::Widget(widget.to_owned(), snapshot));
+            // One tile reports both levels now, so one refetch serves either step.
+            let snapshot = crate::data::fetch_settings_widget().await;
+            let _ = tx.send(DataUpdate::Widget("settings".to_owned(), snapshot));
             let _ = proxy_wake.send_event(Wake);
         });
     }
 
     fn spawn_volume_step(&self, delta: i32) {
-        self.spawn_level_step("volume", "Volume", move |connection| async move {
+        self.spawn_level_step("Volume", move |connection| async move {
             let proxy = lege_client::proxies::AudioProxy::new(&connection).await?;
             proxy.adjust_volume(delta).await?;
             Ok(())
@@ -1635,7 +1647,7 @@ impl ShellApp {
     }
 
     fn spawn_volume_mute(&self) {
-        self.spawn_level_step("volume", "Mute", |connection| async move {
+        self.spawn_level_step("Mute", |connection| async move {
             let proxy = lege_client::proxies::AudioProxy::new(&connection).await?;
             proxy.toggle_muted().await?;
             Ok(())
@@ -1643,7 +1655,7 @@ impl ShellApp {
     }
 
     fn spawn_brightness_step(&self, delta: i32) {
-        self.spawn_level_step("brightness", "Brightness", move |connection| async move {
+        self.spawn_level_step("Brightness", move |connection| async move {
             let proxy = lege_client::proxies::BacklightProxy::new(&connection).await?;
             proxy.adjust_brightness(delta).await?;
             Ok(())

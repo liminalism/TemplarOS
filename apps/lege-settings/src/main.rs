@@ -16,6 +16,7 @@ mod history;
 mod providers;
 mod resources;
 mod surface;
+mod system;
 
 use clap::Parser;
 use lege_types::ProviderRole;
@@ -28,8 +29,8 @@ struct Cli {
     #[arg(long)]
     print: bool,
 
-    /// Open a specific page: `providers`, `associations`, `background`, `resources`, `history`,
-    /// `hardware`. Omit to list the available pages instead of connecting to anything.
+    /// Open a specific page: `system`, `providers`, `associations`, `background`, `resources`,
+    /// `history`, `hardware`. Omit to list the available pages instead of connecting to anything.
     #[arg(long)]
     page: Option<String>,
 
@@ -59,6 +60,7 @@ struct Cli {
 }
 
 const PAGES: &[&str] = &[
+    "system",
     "providers",
     "associations",
     "background",
@@ -94,7 +96,7 @@ async fn print_page(cli: Cli) {
 
     let output = match page {
         "hardware" => hardware::render().await,
-        "providers" | "associations" | "background" | "resources" | "history" => {
+        "system" | "providers" | "associations" | "background" | "resources" | "history" => {
             let connection = match zbus::Connection::session().await {
                 Ok(connection) => connection,
                 Err(error) => {
@@ -103,6 +105,7 @@ async fn print_page(cli: Cli) {
                 }
             };
             match page {
+                "system" => system::render(&connection).await,
                 "providers" => {
                     let role = cli.role.as_deref().and_then(|name| {
                         ProviderRole::ALL

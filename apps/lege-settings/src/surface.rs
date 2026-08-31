@@ -13,8 +13,12 @@ use pixelkit_ui::{Theme, Ui};
 use std::sync::{Arc, Mutex, mpsc};
 
 const HOME_PREFIX: &str = "shell.home-field.";
-const PAGE_NAMES: [&str; 7] = [
+/// The two interactive pages come first and the rendered text pages follow. `System` is second
+/// because it is the page the Home Field's Settings widget opens into: the widget reports the
+/// battery, the volume and the brightness, and this is where they can be set outright.
+const PAGE_NAMES: [&str; 8] = [
     "Home Field",
+    "System",
     "Providers",
     "Associations",
     "Background",
@@ -22,6 +26,12 @@ const PAGE_NAMES: [&str; 7] = [
     "History",
     "Hardware",
 ];
+/// The index of each page that draws controls rather than rendered text.
+const HOME_PAGE: usize = 0;
+const SYSTEM_PAGE: usize = 1;
+/// How far one press of a stepper moves a level: the same five points `lege status louder` and
+/// the Home Field's own controls use, so no two surfaces disagree about what one step means.
+const STEP_PERCENT: i32 = 5;
 
 #[derive(Clone, Debug)]
 struct SettingRow {
@@ -33,12 +43,38 @@ struct SettingRow {
 enum Command {
     Set { key: String, value: SettingValue },
     Reset { key: String },
+    System(SystemCommand),
+}
+
+/// One change to a hardware level, or a plain re-read.
+///
+/// `Adjust` rather than read-modify-write for a step, because the service knows where the level
+/// was and two clients on the same volume key must not each undo the other (`Audio1`'s own
+/// reasoning). Dragging the track is the one case that genuinely means "put it *there*", and that
+/// is what `Set` is for.
+#[derive(Clone, Copy, Debug)]
+enum SystemCommand {
+    Refresh,
+    SetVolume(u32),
+    StepVolume(i32),
+    ToggleMute,
+    SetBrightness(u32),
+    StepBrightness(i32),
 }
 
 #[derive(Debug)]
-struct ResultMessage {
-    key: String,
-    result: Result<(), String>,
+enum ResultMessage {
+    Setting {
+        key: String,
+        result: Result<(), String>,
+    },
+    /// Every system command answers with the state that followed it, so the page shows what the
+    /// service actually did rather than what was asked for — a level the service clamped is the
+    /// normal case, not an edge one.
+    System {
+        state: Box<crate::system::SystemState>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -59,34 +95,11 @@ impl Backend {
             .spawn(move || {
                 let runtime = tokio::runtime::Runtime::new().expect("settings write runtime");
                 while let Ok(command) = command_rx.recv() {
-                    let command_key = match &command {
-                        Command::Set { key, .. } | Command::Reset { key } => key.clone(),
-                    };
-                    let result = runtime.block_on(async {
-                        let connection =
-                            zbus::Connection::session().await.context("session bus")?;
-                        let proxy = SettingsProxy::new(&connection).await?;
-                        match command {
-                            Command::Set { key, value } => {
-                                let json = serde_json::to_string(&value)?;
-                                proxy.set(&key, &json, "lege-settings-gui").await?;
-                                Ok::<_, anyhow::Error>((key, ()))
-                            }
-                            Command::Reset { key } => {
-                                proxy.reset(&key, "lege-settings-gui").await?;
-                                Ok((key, ()))
-                            }
+                    let message = match command {
+                        Command::System(system) => runtime.block_on(run_system_command(system)),
+                        Command::Set { .. } | Command::Reset { .. } => {
+                            runtime.block_on(run_setting_command(command))
                         }
-                    });
-                    let message = match result {
-                        Ok((key, ())) => ResultMessage {
-                            key,
-                            result: Ok(()),
-                        },
-                        Err(error) => ResultMessage {
-                            key: command_key,
-                            result: Err(format!("{error:#}")),
-                        },
                     };
                     let _ = result_tx.send(message);
                     worker_waker.lock().expect("waker mutex").wake();
@@ -101,8 +114,66 @@ impl Backend {
     }
 }
 
+/// One `Settings1` write, as a result the page can show.
+async fn run_setting_command(command: Command) -> ResultMessage {
+    let key = match &command {
+        Command::Set { key, .. } | Command::Reset { key } => key.clone(),
+        Command::System(_) => unreachable!("dispatched by the caller"),
+    };
+    let result = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let proxy = SettingsProxy::new(&connection).await?;
+        match command {
+            Command::Set { key, value } => {
+                let json = serde_json::to_string(&value)?;
+                proxy.set(&key, &json, "lege-settings-gui").await?;
+            }
+            Command::Reset { key } => proxy.reset(&key, "lege-settings-gui").await?,
+            Command::System(_) => unreachable!("dispatched by the caller"),
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    ResultMessage::Setting {
+        key,
+        result: result.map_err(|error| format!("{error:#}")),
+    }
+}
+
+/// One hardware change, followed by a re-read: the page reports what the service did, not what it
+/// was asked to do. A failure is reported *and* followed by the re-read, so a refused write leaves
+/// the controls showing the level that is really set rather than the one that was attempted.
+async fn run_system_command(command: SystemCommand) -> ResultMessage {
+    use crate::system::{self, SystemControl};
+    let outcome = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let bus = system::Bus::connect(&connection).await?;
+        let attempted = match command {
+            SystemCommand::Refresh => Ok(()),
+            SystemCommand::SetVolume(percent) => bus.set_volume(percent).await,
+            SystemCommand::StepVolume(delta) => bus.adjust_volume(delta).await,
+            SystemCommand::ToggleMute => bus.toggle_muted().await,
+            SystemCommand::SetBrightness(percent) => bus.set_brightness(percent).await,
+            SystemCommand::StepBrightness(delta) => bus.adjust_brightness(delta).await,
+        };
+        Ok::<_, anyhow::Error>((system::read(&bus).await, attempted))
+    }
+    .await;
+    match outcome {
+        Ok((state, attempted)) => ResultMessage::System {
+            state: Box::new(state),
+            error: attempted.err().map(|error| format!("{error:#}")),
+        },
+        Err(error) => ResultMessage::System {
+            state: Box::new(crate::system::SystemState::default()),
+            error: Some(format!("{error:#}")),
+        },
+    }
+}
+
 struct SettingsApp {
     home: Vec<SettingRow>,
+    system: crate::system::SystemState,
     pages: Vec<Vec<String>>,
     selected_page: usize,
     input: Input,
@@ -129,11 +200,25 @@ impl SettingsApp {
 
     fn drain_results(&mut self) {
         while let Ok(message) = self.backend.results.try_recv() {
-            self.status = match message.result {
-                Ok(()) => format!("Saved {}", message.key),
-                Err(error) => format!("Could not save {} — {error}", message.key),
-            };
+            match message {
+                ResultMessage::Setting { key, result } => {
+                    self.status = match result {
+                        Ok(()) => format!("Saved {key}"),
+                        Err(error) => format!("Could not save {key} — {error}"),
+                    };
+                }
+                ResultMessage::System { state, error } => {
+                    self.system = *state;
+                    if let Some(error) = error {
+                        self.status = format!("Could not change it — {error}");
+                    }
+                }
+            }
         }
+    }
+
+    fn system(&mut self, command: SystemCommand) {
+        let _ = self.backend.commands.send(Command::System(command));
     }
 
     fn draw_home(&mut self, ui: &mut Ui<'_>, area: Rect) {
@@ -245,6 +330,55 @@ impl SettingsApp {
         }
     }
 
+    /// The System page: the battery, the volume and the display brightness.
+    ///
+    /// Same row shape as the Home form — a name, the sentence under it, and the controls on the
+    /// right — because they are the same kind of thing and a person should not have to learn a
+    /// second layout to change one of them.
+    fn draw_system(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        let battery = crate::system::battery_line(self.system.battery.as_ref());
+        // Battery first and read-only: there is nothing to do to a battery from a settings page,
+        // and a control here would have to be either a lie or a power profile (`Power1`).
+        let _ = system_row(ui, area, 0, "Battery", &battery);
+
+        let volume_line = crate::system::volume_line(self.system.audio.as_ref());
+        let settable = crate::system::volume_settable(&self.system);
+        let (percent, muted) = self
+            .system
+            .audio
+            .as_ref()
+            .map_or((0, false), |audio| (audio.volume_percent, audio.muted));
+        let controls = system_row(ui, area, 1, "Volume", &volume_line);
+        match level_controls(ui, controls, percent, settable, Some(muted)) {
+            Some(LevelChange::Step(delta)) => self.system(SystemCommand::StepVolume(delta)),
+            Some(LevelChange::ToggleMute) => self.system(SystemCommand::ToggleMute),
+            // Only when the drag has actually moved it: `pressing` is true every frame the button
+            // is held, and without this the page would write once per frame for as long as a
+            // person rested their finger on the track.
+            Some(LevelChange::Set(wanted)) if wanted != percent => {
+                self.system(SystemCommand::SetVolume(wanted));
+            }
+            None | Some(LevelChange::Set(_)) => {}
+        }
+
+        let brightness_line = crate::system::brightness_line(self.system.backlight.as_ref());
+        let settable = crate::system::brightness_settable(&self.system);
+        let percent = self
+            .system
+            .backlight
+            .as_ref()
+            .map_or(0, |backlight| backlight.percent);
+        let controls = system_row(ui, area, 2, "Brightness", &brightness_line);
+        match level_controls(ui, controls, percent, settable, None) {
+            Some(LevelChange::Step(delta)) => self.system(SystemCommand::StepBrightness(delta)),
+            Some(LevelChange::Set(wanted)) if wanted != percent => {
+                self.system(SystemCommand::SetBrightness(wanted));
+            }
+            // A display has no mute, so `level_controls` is never asked for one here.
+            None | Some(LevelChange::ToggleMute | LevelChange::Set(_)) => {}
+        }
+    }
+
     fn draw_text_page(&mut self, ui: &mut Ui<'_>, area: Rect) {
         let lines = self
             .pages
@@ -264,6 +398,146 @@ impl SettingsApp {
             );
         }
     }
+}
+
+/// What a frame's input asked of one level's controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LevelChange {
+    Step(i32),
+    Set(u32),
+    ToggleMute,
+}
+
+/// One row of the System page: name, the sentence under it, and the rectangle its controls get.
+///
+/// Returns the control area even for a read-only row; the caller simply does not draw into it.
+fn system_row(ui: &mut Ui<'_>, area: Rect, index: i32, name: &str, detail: &str) -> Rect {
+    let row = Rect::new(
+        area.x,
+        area.y + ui.px(88) * index,
+        area.w,
+        ui.px(78).min(area.h),
+    );
+    ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+    ui.painter
+        .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+    let controls_width = ui.px(360);
+    let text_width = (row.w - controls_width - ui.px(24)).max(ui.px(80));
+    ui.label(
+        Rect::new(row.x + ui.px(12), row.y + ui.px(7), text_width, ui.px(24)),
+        name,
+        ui.theme.text,
+        Align::Left,
+    );
+    ui.label(
+        Rect::new(row.x + ui.px(12), row.y + ui.px(33), text_width, ui.px(34)),
+        detail,
+        ui.theme.text_dim,
+        Align::Left,
+    );
+    Rect::new(
+        row.right() - controls_width,
+        row.y + ui.px(20),
+        controls_width - ui.px(12),
+        ui.px(38),
+    )
+}
+
+/// The controls for one hardware level: a stepper either side of a track that can be clicked or
+/// dragged to a value, plus Mute when `muted` is given.
+///
+/// Inert when `settable` is false — the track and the steppers are still drawn, dimmed, because a
+/// control that vanishes leaves a person hunting for it, while a live one over a service that
+/// cannot act is a promise the page cannot keep. The row's own sentence says why.
+fn level_controls(
+    ui: &mut Ui<'_>,
+    area: Rect,
+    percent: u32,
+    settable: bool,
+    muted: Option<bool>,
+) -> Option<LevelChange> {
+    if area.w <= 0 || area.h <= 0 {
+        return None;
+    }
+    let button = ui.px(38);
+    let gap = ui.px(8);
+    let mute_width = if muted.is_some() { ui.px(78) + gap } else { 0 };
+    let minus = Rect::new(area.x, area.y, button, area.h);
+    let plus = Rect::new(area.right() - mute_width - button, area.y, button, area.h);
+    let left = minus.right() + gap;
+    let track = Rect::new(
+        left,
+        area.y + ui.px(22),
+        (plus.x - gap - left).max(ui.px(20)),
+        ui.px(8),
+    );
+    // The whole strip between the steppers takes the drag, not the eight-pixel bar: a target a
+    // person has to hit exactly is a target they miss.
+    let grip = Rect::new(track.x, area.y, track.w, area.h);
+
+    ui.label(
+        Rect::new(track.x, area.y, track.w, ui.px(18)),
+        &format!("{percent}%"),
+        if settable {
+            ui.theme.text
+        } else {
+            ui.theme.text_dim
+        },
+        Align::Centre,
+    );
+    let radius = ui.px(4);
+    ui.painter
+        .fill_rounded_rect(track, radius, ui.theme.panel_edge);
+    let filled = track.w * i32::try_from(percent.min(100)).unwrap_or(0) / 100;
+    if filled > 0 {
+        ui.painter.fill_rounded_rect(
+            Rect::new(track.x, track.y, filled, track.h),
+            radius,
+            if settable {
+                ui.theme.accent
+            } else {
+                ui.theme.text_dim
+            },
+        );
+    }
+
+    if !settable {
+        for (rect, glyph) in [(minus, "−"), (plus, "+")] {
+            ui.label(rect, glyph, ui.theme.text_dim, Align::Centre);
+        }
+        if let Some(muted) = muted {
+            let rect = Rect::new(plus.right() + gap, area.y, ui.px(78), area.h);
+            ui.label(
+                rect,
+                if muted { "Unmute" } else { "Mute" },
+                ui.theme.text_dim,
+                Align::Centre,
+            );
+        }
+        return None;
+    }
+
+    let mut change = None;
+    if ui.button(minus, "−") {
+        change = Some(LevelChange::Step(-STEP_PERCENT));
+    }
+    if ui.button(plus, "+") {
+        change = Some(LevelChange::Step(STEP_PERCENT));
+    }
+    if let Some(muted) = muted {
+        let rect = Rect::new(plus.right() + gap, area.y, ui.px(78), area.h);
+        if ui.button(rect, if muted { "Unmute" } else { "Mute" }) {
+            change = Some(LevelChange::ToggleMute);
+        }
+    }
+    if change.is_none()
+        && ui.input.pressing(grip)
+        && let Some((x, _)) = ui.input.cursor()
+    {
+        let wanted = ((x - track.x) * 100 / track.w.max(1)).clamp(0, 100);
+        change = Some(LevelChange::Set(u32::try_from(wanted).unwrap_or(0)));
+    }
+    change
 }
 
 impl PixelApp for SettingsApp {
@@ -286,17 +560,23 @@ impl PixelApp for SettingsApp {
             let inset = whole.inset(ui.px(18));
             ui.heading(Rect::new(inset.x, inset.y, inset.w, ui.px(48)), "Settings");
             let tabs = Rect::new(inset.x, inset.y + ui.px(56), inset.w, ui.px(42));
-            ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES);
+            if ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES)
+                && self.selected_page == SYSTEM_PAGE
+            {
+                // Nothing pushes a level change at this window, so arriving on the page is when
+                // it re-reads. A stale charge is the one reading that goes wrong on its own.
+                self.system(SystemCommand::Refresh);
+            }
             let content = Rect::new(
                 inset.x,
                 tabs.bottom() + ui.px(14),
                 inset.w,
                 inset.bottom() - tabs.bottom() - ui.px(52),
             );
-            if self.selected_page == 0 {
-                self.draw_home(&mut ui, content);
-            } else {
-                self.draw_text_page(&mut ui, content);
+            match self.selected_page {
+                HOME_PAGE => self.draw_home(&mut ui, content),
+                SYSTEM_PAGE => self.draw_system(&mut ui, content),
+                _ => self.draw_text_page(&mut ui, content),
             }
             ui.label(
                 Rect::new(inset.x, inset.bottom() - ui.px(34), inset.w, ui.px(28)),
@@ -391,7 +671,10 @@ async fn load() -> Result<SettingsApp> {
     }
     home.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
 
+    // One entry per tab, so `selected_page` indexes both. The two interactive pages draw their own
+    // controls and keep an empty entry here rather than a rendered copy of themselves.
     let pages = vec![
+        Vec::new(),
         Vec::new(),
         super::providers::render(&connection, None)
             .await
@@ -424,8 +707,17 @@ async fn load() -> Result<SettingsApp> {
             .map(str::to_owned)
             .collect(),
     ];
+    // The System page's first reading, taken here with the rest so the page is populated the
+    // moment it is opened rather than blank until the first command comes back. Every interface
+    // it reads degrades on its own (`system::read`), so a machine with none of them still loads.
+    let system = match crate::system::Bus::connect(&connection).await {
+        Ok(bus) => crate::system::read(&bus).await,
+        Err(_) => crate::system::SystemState::default(),
+    };
+
     Ok(SettingsApp {
         home,
+        system,
         pages,
         selected_page: 0,
         input: Input::new(),

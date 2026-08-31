@@ -115,6 +115,39 @@ impl BatteryState {
     }
 }
 
+impl BatteryState {
+    /// The one line a surface with room for a sentence shows: the charge, and what it is doing.
+    ///
+    /// Here rather than in each caller for the same reason [`BatteryState::headline`] is: the
+    /// Home Field's Settings widget and Settings' own System page both render this, and two
+    /// clients that render one fact must not each invent their own wording for it.
+    ///
+    /// The estimate's word carries the direction, so nothing says it twice: "2 h 23 min
+    /// remaining" is already a battery going down, and adding "discharging" in front of it is the
+    /// same fact said again in a line that then has to be truncated to fit a tile. The status word
+    /// appears only when there is no estimate to imply it, which is when it is the whole answer.
+    pub fn reading(&self) -> String {
+        let mut line = self.headline();
+        if !self.present {
+            return line;
+        }
+        match self.time_remaining() {
+            Some((word, minutes)) => {
+                line.push_str(" · ");
+                line.push_str(&duration_minutes(minutes));
+                line.push(' ');
+                line.push_str(word);
+            }
+            None if !self.status.is_empty() && self.status != "unknown" => {
+                line.push(' ');
+                line.push_str(&self.status);
+            }
+            None => {}
+        }
+        line
+    }
+}
+
 /// `143` as `2 h 23 min` — the shape a person reads at a glance.
 pub fn duration_minutes(minutes: u32) -> String {
     let (hours, rest) = (minutes / 60, minutes % 60);
@@ -128,6 +161,47 @@ pub fn duration_minutes(minutes: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The direction is said once. "discharging · 2 h 23 min remaining" is one fact twice, and on
+    /// a tile it is one fact twice *and* truncated.
+    #[test]
+    fn a_battery_reading_never_states_its_direction_twice() {
+        let discharging = BatteryState {
+            present: true,
+            percent: Some(72),
+            status: "discharging".to_owned(),
+            on_mains: false,
+            time_to_empty_minutes: Some(143),
+            time_to_full_minutes: None,
+        };
+        assert_eq!(discharging.reading(), "72% · 2 h 23 min remaining");
+
+        // With no estimate the status word is the whole answer, so it does appear.
+        let no_estimate = BatteryState {
+            time_to_empty_minutes: None,
+            ..discharging.clone()
+        };
+        assert_eq!(no_estimate.reading(), "72% discharging");
+
+        // A full battery on mains gets no invented estimate and no doubled word.
+        let full = BatteryState {
+            present: true,
+            percent: Some(100),
+            status: "full".to_owned(),
+            on_mains: true,
+            time_to_empty_minutes: None,
+            time_to_full_minutes: None,
+        };
+        assert_eq!(full.reading(), "100% full");
+
+        // A machine with no battery says so and stops; nothing is appended to that.
+        let none = BatteryState {
+            present: false,
+            on_mains: true,
+            ..BatteryState::default()
+        };
+        assert_eq!(none.reading(), "On mains");
+    }
 
     #[test]
     fn the_wire_shapes_match_what_the_services_publish() {

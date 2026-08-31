@@ -644,6 +644,22 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    // The way in to everything the Settings widget only reports. The widget is a readout with two
+    // or three figures on it; changing anything beyond a step belongs in a window with room to
+    // explain itself, and this is the one declared route from the glance to that window.
+    ActionDecl {
+        id: "settings.open",
+        label: "Settings",
+        category: ActionCategory::System,
+        // No chord: it opens a window, and nothing that opens a window is a keystroke away here.
+        chords: &[],
+        // No `lege` verb either — `lege-settings` is an application a person launches, and a CLI
+        // verb whose whole effect is "start a graphical program" is not a capability, it is a
+        // shortcut for one.
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
     // Volume and backlight: the two hardware levels a person changes several times a day. No
     // chords on any of them — the keyboards that have these keys route them through the
     // compositor's own table, and inventing a second binding here would put two different things

@@ -2639,6 +2639,17 @@ impl FieldScreen {
                                 Some(declaration)
                             }
                         }
+                    } else if widget.id == "settings" {
+                        // Three readings are its headline, not a detail list the floor rung hides
+                        // — see `widgets::settings`. Regions and rungs are still the contract's.
+                        widgets::settings::draw(
+                            ui,
+                            content,
+                            widget,
+                            data.widgets.get(probe.as_str()),
+                            rung,
+                            self.confirming,
+                        )
                     } else {
                         widgets::draw(
                             ui,

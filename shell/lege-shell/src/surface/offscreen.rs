@@ -39,12 +39,21 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     // Everything a live shell would have fetched. Each of these degrades on its own when its
     // service is absent, so this works on a machine with no session daemon at all.
-    let (drawer_texts, apps, projects, session_widget, notifications_widget, browser_sources) = tokio::join!(
+    let (
+        drawer_texts,
+        apps,
+        projects,
+        session_widget,
+        notifications_widget,
+        settings_widget,
+        browser_sources,
+    ) = tokio::join!(
         crate::data::fetch_all(12),
         crate::data::fetch_apps(),
         crate::data::fetch_projects(),
         crate::data::fetch_session_widget(),
         crate::data::fetch_notifications_widget(),
+        crate::data::fetch_settings_widget(),
         crate::data::fetch_browser_sources(),
     );
 
@@ -68,6 +77,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     let mut widgets = HashMap::new();
     widgets.insert("session".to_owned(), session_widget);
     widgets.insert("notifications".to_owned(), notifications_widget);
+    widgets.insert("settings".to_owned(), settings_widget);
 
     let drawer_feeds: HashMap<_, crate::drawers::DrawerFeed> = drawer_texts.into_iter().collect();
 
@@ -210,6 +220,19 @@ mod tests {
                 refused: Vec::new(),
             },
         );
+        // Fixed readings, so the baseline reviews the Settings widget's three-line body and its
+        // control row rather than the "…" a tile with no snapshot yet would show.
+        widgets.insert(
+            "settings".to_owned(),
+            crate::surface::widgets::settings::snapshot(
+                [
+                    "72% · 2 h 23 min remaining".to_owned(),
+                    "45%".to_owned(),
+                    "60%".to_owned(),
+                ],
+                Vec::new(),
+            ),
+        );
         let empty_bitmaps = HashMap::new();
         let empty_treemaps = HashMap::new();
         let empty_compositions = HashMap::new();
@@ -278,7 +301,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x6919_b7b3_dd61_a912,
+            hash, 0xf597_8489_6e30_f9f9,
             "review the Home Field pixels before updating this baseline"
         );
     }
