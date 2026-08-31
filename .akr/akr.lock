@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:4bf9701c2b99bda42999472b2ec3f8c59d5dfa6ecdf94466f7f8780cc8201a1b"
+    source_graph "sha256:41a7cf44cf5b4cb2aaf0f030a2f67fc54ecf782d775e2d1700676033bafc37dc"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:839fdda969c6ce8fea083527f0297425a86c25e679326fd67a8f4261ff0780ec"
-    records 101
+    hash "sha256:14d932461f023dfafb3840578e505e73fd6c687018222e79c7ca47fcf4323c69"
+    records 103
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:8e2bc162f7b7f31dd15b49ca700192e34ed5beac6f2fa87ec97bf09f67e8b75a"
+    hash "sha256:3ac06added2890a29e9fea593a6dc8c3443f3e60f7a56416ba9ea9fd5ba57179"
     records 43
 }
 
@@ -631,7 +631,7 @@ resolution @legeos.work.home-field-settings-gui/1 {
 resolution @legeos.work.home-field-settings-gui/1 {
     slot depends_on
     to @legeos.work.home-file-sorting-and-view-modes/1
-    hash "sha256:319a4492af620ed58807cee6a7dbaa48528574802f41a666b07a909aa1820774"
+    hash "sha256:5e4769f866b0a33b3ac98da7c266d9a9eda6c1ae325ba1fcf64c04a1769a1c8a"
 }
 
 resolution @legeos.work.home-field-settings-gui/1 {
@@ -1260,6 +1260,11 @@ seal @legeos.evidence.file-preview-workspace-quality-20260824/1 {
     hash "sha256:3eaee679b7529004a4e3b81d748f1c90c63e9883acc42d6d375caf092c8fe6e9"
 }
 
+seal @legeos.evidence.file-sorting-and-view-modes-20260831/1 {
+    state verified
+    hash "sha256:13466a3e4baf9f4f0a2df3c81f1d6931b4b70a37db6f01b3b5cefee8eb7d0499"
+}
+
 seal @legeos.evidence.file-video-preview-three-percent-20260824/1 {
     state verified
     hash "sha256:56094493449bc3f44699954be03f9e371b30ac5165ea4b8ece977dae385915a6"
@@ -1638,6 +1643,11 @@ seal @legeos.evidence.standalone-files-packaging-20260824/1 {
 seal @legeos.evidence.standalone-files-workspace-20260824/1 {
     state verified
     hash "sha256:307f8900706e924c9ac7d62d82db4b75986441664693ae8cfa63bab8d3205d6b"
+}
+
+seal @legeos.evidence.status-instruments-20260831/1 {
+    state verified
+    hash "sha256:ddd4cef9141e116f71990e98930dc3a15b59f15fa8494cbe0a97f3e3e3e3948f"
 }
 
 seal @legeos.evidence.super-press-hold-20260831/1 {
@@ -2085,6 +2095,11 @@ seal @legeos.work.home-field-selection-and-bulk-action/1 {
     hash "sha256:ff04daebd0fb98d8faf2433e32d0c97de4d923944e22bda9e2bdc31d79f13133"
 }
 
+seal @legeos.work.home-file-sorting-and-view-modes/1 {
+    state completed
+    hash "sha256:5e4769f866b0a33b3ac98da7c266d9a9eda6c1ae325ba1fcf64c04a1769a1c8a"
+}
+
 seal @legeos.work.home-file-surface/1 {
     state superseded
     hash "sha256:dfb960211974db409094f5a6db38836da0fbdffd712f24d804256c6a5984c9b4"
@@ -2128,6 +2143,11 @@ seal @legeos.work.home-widget-foundations/2 {
 seal @legeos.work.home-widget-launcher/1 {
     state active
     hash "sha256:96f1f43a1c66ea647bd9c4e213de0d47785ccc6eafe846f5503232d47c9098c5"
+}
+
+seal @legeos.work.home-widget-status-instruments/1 {
+    state completed
+    hash "sha256:21f26cb0200f2e1201a948ed42aedce57cd1dc006147c23eeffb7c39acde093e"
 }
 
 seal @legeos.work.host-update-transaction/1 {

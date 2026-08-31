@@ -188,6 +188,18 @@ record legeos.evidence.file-preview-workspace-quality-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.file-sorting-and-view-modes-20260831/1 : evidence {
+    title "Sorting and view modes: shared contract, both surfaces, bounded thumbnails, preferences — all checks green"
+    state verified
+    result pass
+    method command
+    observed_at git:dddc9187c434e9f122503403ff7af8c207624e50
+    command "cargo test -p lege-filed -p lege-files sort; cargo test -p lege-shell -p lege-files view_mode; cargo test -p lege-shell -p lege-files thumbnail; cargo test -p lege-field -p lege-shell no_loose_file_tiles; cargo test -p lege-session-core file_view_preferences; just check"
+    summary """
+        One sort contract in lege_types::file_sort — natural name, kind, size, modified and manual-reference orders, deterministic and total with stable ascending tie breakers, direction flipping only the primary key, folder-first explicit — is what lege-filed serves and what Files and the shell's Home folder surfaces re-sort with; both surfaces switch between detail list and thumbnail grid preserving selection, focus and scroll, thumbnails load as capped visible-plus-lookahead batches through Files.Previews1 decoded off the render thread with stale generations dropped, tray contents never become tiles, and file-view preferences (global default plus independently-resetting per-path overrides) round-trip in lege-session-core behind the registered files.view-preferences key; full just check green.
+        """
+}
+
 record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
     title "Video previews seek to three percent"
     state verified
@@ -1101,6 +1113,18 @@ record legeos.evidence.standalone-files-workspace-20260824/1 : evidence {
     command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && just tree-check && just deps-check && just check-interfaces"
     summary """
         The exact combined formatting, strict Clippy, full workspace test, tree, dependency, interface, proxy, packaging and asset gate exited successfully.
+        """
+}
+
+record legeos.evidence.status-instruments-20260831/1 : evidence {
+    title "Volume, brightness and battery services, CLI and widgets landed; Power1 documentation made honest"
+    state verified
+    result pass
+    method command
+    observed_at git:dddc9187c434e9f122503403ff7af8c207624e50
+    command "just check"
+    summary """
+        Audio1 (wpctl subprocess — no C FFI or PipeWire loop in the one policy daemon), Backlight1 (sysfs read, logind SetBrightness write, floor of 1%) and Battery1 (sysfs, multi-battery summed by charge not averaged percentage) shipped with proxies, `lege status` verbs, and three widgets whose click and scroll routes are all manifest-declared; hardware-absent machines read as facts, not faults. Power1's module doc, XML and CLI header narrowed to what it actually does, with the unenforced idle policy noted as deliberate remaining scope. All backends fixture-injectable; every test runs against fixtures, none against host state. check-interfaces/proxies 32/32, check-actions 37 actions, full just check green at the merge.
         """
 }
 
