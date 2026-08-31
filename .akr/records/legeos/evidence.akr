@@ -167,6 +167,18 @@ record legeos.evidence.file-folder-properties-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.file-operations-from-home-20260831/1 : evidence {
+    title "File operations from Home: all five checks green; the Wayland transport boundary is a recorded follow-up"
+    state verified
+    result pass
+    method command
+    observed_at git:bc86e52585d821dd7909f61d1d0602e6613d21ad
+    command "cargo test -p lege-filed -p lege-shell -p lege-files clipboard; cargo test -p lege-shell file_actions && cargo run -q -p xtask -- check-actions; cargo test -p lege-filed operations; cargo test -p lege-filed -- trash undo; cargo test -p lege-shell drag_drop; just check"
+    summary """
+        All five acceptance checks pass at the merge commit: clipboard copy/cut/paste act on the whole selection as one journalled Files.Operations1 operation with URI-list payloads matching what other applications actually send and a cut never duplicating its source; the ordinary verbs are keyboard- and pointer-reachable through one gate with FileVerbRoute a declared check-actions needle (46 actions green) and a new Files.Browse1.CreateDirectory choosing the free name server-side; operations report forward-only bounded progress, cancel at step boundaries, and never report partial failure as success; a bulk delete is one op with one undo restoring exactly what was trashed; drag/drop names MOVE INTO FOLDER vs COPY INTO FOLDER before release via new grammar operations with modifiers, panes still take references, bare Home makes no loose tile, and drag-out exports a uri-list. Known boundary, recorded as @legeos.work.wayland-clipboard-and-dnd-transport: the wl_data_device handover is not bound, so cross-application paste/drag stops at the documented publish points; Home's Rename points at the Files app pending a name dialogue.
+        """
+}
+
 record legeos.evidence.file-preview-live-fixtures-20260824/1 : evidence {
     title "Native preview routes render real fixtures"
     state verified

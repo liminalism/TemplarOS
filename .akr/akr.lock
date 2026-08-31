@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:d3a2a9d08c338e9b6bfc4f4f92f3f77e00107c96b4a5c3899f6f8fbeb808ce62"
+    source_graph "sha256:2f2ec64ca70d633315c5462a2de35e1e807f3a6ed0dcd16336c43c5f9536a5f8"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:20f758133cf354060f898c5b14ff83ef96e65e549e2e315f687654b5dc671d0a"
-    records 107
+    hash "sha256:9962bbc6c9647b2846333671e385dcf2b9492e366497a6162e32895ed1237b5a"
+    records 108
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:505103233ca9b06abe4c35d5d4dd67d7deea71911fc1a6fc2d67e1703114c7d9"
-    records 43
+    hash "sha256:b48df527432debbdd1230e58349f1f658ecef65d597894db8e027794a627a651"
+    records 44
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -625,7 +625,7 @@ resolution @legeos.work.home-field-settings-gui/1 {
 resolution @legeos.work.home-field-settings-gui/1 {
     slot depends_on
     to @legeos.work.file-operations-from-home/1
-    hash "sha256:dbcaf4cda86385cd95afd4c8b12361a975dbf1eb3d8a6d1db11a6180d3dc2804"
+    hash "sha256:c50a8a3ae56860a8d44a66a4b5b52183f627b24db63db43841ea4dbbe7c70aa1"
 }
 
 resolution @legeos.work.home-field-settings-gui/1 {
@@ -1048,6 +1048,18 @@ resolution @legeos.work.trash-that-can-be-seen-and-emptied/1 {
     hash "sha256:8ede9ff650fa11376488b78fcd8e625d9cafc3c6665f726e310602b1f509ce8f"
 }
 
+resolution @legeos.work.wayland-clipboard-and-dnd-transport/1 {
+    slot derived_from
+    to @legeos.work.file-operations-from-home/1
+    hash "sha256:c50a8a3ae56860a8d44a66a4b5b52183f627b24db63db43841ea4dbbe7c70aa1"
+}
+
+resolution @legeos.work.wayland-clipboard-and-dnd-transport/1 {
+    slot part_of
+    to @legeos.work.home-surface-usability-next/1
+    hash "sha256:b4d8d5382711bbf62207279bbf4036e6f0186c590f10b173b077dd9228a75bc1"
+}
+
 resolution @legeos.work.window-controls-and-mouse-parity/1 {
     slot part_of
     to @legeos.work.home-widgets/1
@@ -1248,6 +1260,11 @@ seal @legeos.evidence.file-copy-path-20260824/1 {
 seal @legeos.evidence.file-folder-properties-20260824/1 {
     state verified
     hash "sha256:f6c2536eaa3cce663a3b293ea3e03fdd16ed7c0cdca7c95bcb5a1dd8e520f73c"
+}
+
+seal @legeos.evidence.file-operations-from-home-20260831/1 {
+    state verified
+    hash "sha256:ad7081303acb0f63763378fb39f873bdfaf5b26f7fab03309ee53c0b44b2539d"
 }
 
 seal @legeos.evidence.file-preview-live-fixtures-20260824/1 {
@@ -2096,8 +2113,8 @@ seal @legeos.work.display-manager-session-startup-reliability/4 {
 }
 
 seal @legeos.work.file-operations-from-home/1 {
-    state active
-    hash "sha256:dbcaf4cda86385cd95afd4c8b12361a975dbf1eb3d8a6d1db11a6180d3dc2804"
+    state completed
+    hash "sha256:c50a8a3ae56860a8d44a66a4b5b52183f627b24db63db43841ea4dbbe7c70aa1"
 }
 
 seal @legeos.work.file-previews-copy-path-and-folder-properties/1 {

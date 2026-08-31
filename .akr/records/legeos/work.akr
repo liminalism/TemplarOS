@@ -339,7 +339,7 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
 
 record legeos.work.file-operations-from-home/1 : work {
     title "Copy, cut, paste, drag/drop, trash and ordinary file actions inside Home folder surfaces"
-    state active
+    state completed
     scope [
         path "apps/lege-files/**",
         path "crates/lege-client/**",
@@ -364,6 +364,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 """
             method command
             command "cargo test -p lege-filed -p lege-shell -p lege-files clipboard"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
         }
         check ordinary-file-verbs {
             statement """
@@ -371,6 +372,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 """
             method command
             command "cargo test -p lege-shell file_actions && cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
         }
         check progress-and-failure {
             statement """
@@ -378,6 +380,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 """
             method command
             command "cargo test -p lege-filed operations"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
         }
         check trash-delete-and-undo {
             statement """
@@ -385,6 +388,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 """
             method command
             command "cargo test -p lege-filed -- trash undo"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
         }
         check typed-drag-drop {
             statement """
@@ -392,6 +396,7 @@ record legeos.work.file-operations-from-home/1 : work {
                 """
             method command
             command "cargo test -p lege-shell drag_drop"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
         }
     }
     depends_on [
@@ -1993,6 +1998,20 @@ record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {
         @legeos.observation.trash-undo-reported-a-restore-it-did-not-perform
     ]
     part_of [ @legeos.milestone.m2-session-runs ]
+}
+
+record legeos.work.wayland-clipboard-and-dnd-transport/1 : work {
+    title "Bind wl_data_device so Home's clipboard and drags reach other applications"
+    state proposed
+    scope [ path "shell/lege-shell/**" ]
+    intent """
+        The file-operations work left everything above the transport complete and tested: lege_types::uri_list encodes and decodes RFC 2483 text/uri-list (CRLF, reserved characters, non-UTF-8 names, foreign hosts skipped), and shell/lege-shell/src/clipboard.rs produces both text/uri-list and x-special/gnome-copied-files so a cut survives the trip, reading a bare uri-list as a copy and never a cut. What is missing is the handover: the shell's compositor connection is the private lege_shell_v1 protocol with no wl_data_device_manager bound and no seat to own a selection on, so a copy in Home pastes in Home and not yet in another application, and a drag cannot leave the shell. Both stopping points are documented in code (ShellApp::publish_clipboard, FieldScreen::dragged_uri_list). Bind the ordinary Wayland globals beside the private protocol (the shell is a normal client of the public socket too), own the seat selection with the two prepared payloads, accept offers on paste, and wire drag-out as a data source carrying the exported uri-list.
+        """
+    note """
+        Split out of @legeos.work.file-operations-from-home at completion so the boundary is a recorded plan rather than a silent gap. Also open from that work: Home's Rename verb points at the Files app because the Home surface has no name-entry dialogue yet.
+        """
+    derived_from [ @legeos.work.file-operations-from-home ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.window-controls-and-mouse-parity/1 : work {
