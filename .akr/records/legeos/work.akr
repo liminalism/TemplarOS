@@ -883,7 +883,7 @@ record legeos.work.home-input-and-refinement/1 : work {
 
 record legeos.work.home-shelf-and-representation-ladder/1 : work {
     title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
-    state proposed
+    state completed
     scope [
         path "crates/lege-field/**",
         path "crates/lege-types/src/action.rs",
@@ -901,6 +901,40 @@ record legeos.work.home-shelf-and-representation-ladder/1 : work {
     note """
         Opened from the reshape work rather than planned: the first two were only visible once `--print field` stopped describing a hypothetical field, and the third once tiles were drawn at their true size.
         """
+    acceptance {
+        check drawers-climb-the-ladder {
+            statement """
+                A drawer tile too small for its listing shows a headline figure or count rather than the listing clipped, and reveals the listing once it reaches Representation::Wide.
+                """
+            method command
+            command "cargo test -p lege-shell --lib drawers::"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check field-can-be-reset {
+            statement """
+                The stored layout and its undo log can be discarded so the current default layout is adopted, and the action confirms first because it is not undoable.
+                """
+            method command
+            command "busctl --user call org.legeos.Session /org/legeos/Session/HomeField org.legeos.HomeField1 Reset sqq <output> <cols> <rows>"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check gates-green {
+            statement """
+                Workspace tests, clippy with warnings denied, rustfmt and all seven xtask gates pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check shelf-has-a-route-back {
+            statement """
+                A stashed tile can be brought back onto the field from a surface, not only by an immediate undo, and the route is offered only when the shelf is occupied.
+                """
+            method command
+            command "cargo test -p lege-shell --lib restoring_brings_every_shelved_tile_back a_row_is_offered_only_where_it_could_be_performed"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+    }
     derived_from [ @legeos.observation.shelved-tiles-have-no-route-back ]
     part_of [ @legeos.work.home-widgets ]
 }

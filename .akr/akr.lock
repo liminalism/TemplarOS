@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:8ac7b5b9faabe669c15ebe9190a1167339550b7fc47ceee37fff021d2713c9b6"
+    source_graph "sha256:5489b22de8c349d7b674ab031137c5d84c0429f06137c0a8d76975ae557967ec"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:1c6b6df6efaedda12ba9f4aac7535735ec6a79fdd2b34caa76e19c89f959c41f"
-    records 83
+    hash "sha256:14bd54df475238bbdc339322ceef4f82ff3eafa3f542c7486ebd649596ded8aa"
+    records 84
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,8 +39,8 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:be5c3c5cf18c762724edff76c4c02b31d4406112450ec8dbc76f7affba4e48bf"
-    records 5
+    hash "sha256:950c34c3188ce0d569b7e466110ea177b1999825acea82de11746db7d7a6c486"
+    records 6
 }
 
 source ".akr/records/legeos/papercuts.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:6f83eb82e06eafec97a033a11f811c329723a4ab815cf49642446c53d0d82821"
+    hash "sha256:3b752c38b5b38ae0380630a9c9a2bceab0f975694ac0f2106a2b8e3ada620e7e"
     records 32
 }
 
@@ -376,6 +376,18 @@ resolution @legeos.observation.shelved-tiles-have-no-route-back/1 {
     hash "sha256:74af4a8dfad48ce85059810d2cebd7ba274dc29a1d20d2d6dbd8d35a0a73c7a7"
 }
 
+resolution @legeos.observation.shelved-tiles-have-no-route-back/2 {
+    slot depends_on
+    to @legeos.work.home-shelf-and-representation-ladder/1
+    hash "sha256:ae01ca1c11808a592f266d69177c26a389a9ee7446eac68229cc80f445089d59"
+}
+
+resolution @legeos.observation.shelved-tiles-have-no-route-back/2 {
+    slot derived_from
+    to @legeos.evidence.home-field-reshape-across-resolutions-20260831/1
+    hash "sha256:74af4a8dfad48ce85059810d2cebd7ba274dc29a1d20d2d6dbd8d35a0a73c7a7"
+}
+
 resolution @legeos.question.home-field-default-density/1 {
     slot derived_from
     to @legeos.work.home-widget-foundations/2
@@ -504,14 +516,20 @@ resolution @legeos.work.home-input-and-refinement/1 {
 
 resolution @legeos.work.home-shelf-and-representation-ladder/1 {
     slot derived_from
-    to @legeos.observation.shelved-tiles-have-no-route-back/1
-    hash "sha256:ee684665f8e74cfbf67fdd2faf951affdd8a3cb9f634bd29ddf13bc372743b68"
+    to @legeos.observation.shelved-tiles-have-no-route-back/2
+    hash "sha256:ce06de92eee2e3cfb39c3e12d0f1ccfd115c350e8994e5308632c4c4e87bc8d4"
 }
 
 resolution @legeos.work.home-shelf-and-representation-ladder/1 {
     slot part_of
     to @legeos.work.home-widgets/1
     hash "sha256:6467b59cb7ee6eac2c21dd4d81945c3348720f6cd0cbdaaf6d96cdeb505d0919"
+}
+
+resolution @legeos.work.home-shelf-and-representation-ladder/1 {
+    slot verified_by
+    to @legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1
+    hash "sha256:608d8399322c8c5f9d3ac574884d904f3f6fe425796034687a25b436428e3508"
 }
 
 resolution @legeos.work.home-widget-foundations/1 {
@@ -1204,6 +1222,11 @@ seal @legeos.evidence.refinement-integration-smoke-20260824/1 {
     hash "sha256:c98a094b36fbf86e45d56d149a0454a7b47ff80466953386803e388936f33738"
 }
 
+seal @legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1 {
+    state verified
+    hash "sha256:608d8399322c8c5f9d3ac574884d904f3f6fe425796034687a25b436428e3508"
+}
+
 seal @legeos.evidence.standalone-files-brokered-open-20260824/1 {
     state verified
     hash "sha256:654ed6eae49c3daaf4e0643201f7527da827558821f296064bbcca08f4e47e66"
@@ -1290,8 +1313,13 @@ seal @legeos.observation.home-hands-on-failures-diagnosed/1 {
 }
 
 seal @legeos.observation.shelved-tiles-have-no-route-back/1 {
-    state verified
-    hash "sha256:ee684665f8e74cfbf67fdd2faf951affdd8a3cb9f634bd29ddf13bc372743b68"
+    state superseded
+    hash "sha256:589aec051cfc9ec642d7e68dda7f3cc3ebf72b008f30628e8390f5f20dbb091b"
+}
+
+seal @legeos.observation.shelved-tiles-have-no-route-back/2 {
+    state superseded
+    hash "sha256:ce06de92eee2e3cfb39c3e12d0f1ccfd115c350e8994e5308632c4c4e87bc8d4"
 }
 
 seal @legeos.observation.transient-unit-launch-converged-independently/1 {
@@ -1622,6 +1650,11 @@ seal @legeos.work.home-file-surface/2 {
 seal @legeos.work.home-input-and-refinement/1 {
     state active
     hash "sha256:4ce53d0bd0daa2056facfa96669a228324e60235ec0fd626afffc26b9b4af3a6"
+}
+
+seal @legeos.work.home-shelf-and-representation-ladder/1 {
+    state completed
+    hash "sha256:ae01ca1c11808a592f266d69177c26a389a9ee7446eac68229cc80f445089d59"
 }
 
 seal @legeos.work.home-widget-foundations/1 {

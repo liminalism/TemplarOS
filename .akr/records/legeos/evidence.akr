@@ -838,6 +838,18 @@ record legeos.evidence.refinement-integration-smoke-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1 : evidence {
+    title "Shelf restore, field reset and the drawer representation ladder — gates green, service methods verified live"
+    state verified
+    result pass
+    method command
+    observed_at git:535271a04ab4184deea9cca10acbc7f4b5062083
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- tree-check deps-check check-interfaces check-proxies check-packaging check-assets check-actions"
+    summary """
+        Workspace gates and all seven xtask checks green for the three gaps the reshape work opened. field.restore brings every shelved tile back through a batch of Move ops whose landings are chosen by dry-run, covered by a test that stashes three tiles and restores them; the menu row appears only when the shelf is occupied. field.reset discards the stored document and its undo log via the new HomeField1.Reset, verified against a live sessiond on a throwaway output: one tile at revision 1, then an empty document at revision 0 with nothing left to undo. Drawer tiles carry a DrawerFeed with a headline shown at every rung and a listing from Representation::Wide up; verified by rendering the field against live lege-filed and lege-sessiond, where all eight drawers show a fitting figure or count instead of a truncated path.
+        """
+}
+
 record legeos.evidence.standalone-files-brokered-open-20260824/1 : evidence {
     title "Standalone Files brokered-open tests"
     state verified
