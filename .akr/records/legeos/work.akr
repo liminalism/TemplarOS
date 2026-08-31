@@ -1314,7 +1314,7 @@ record legeos.work.home-shelf-and-representation-ladder/1 : work {
 
 record legeos.work.home-surface-usability-next/1 : work {
     title "Next Home usability sequence — adaptable Home, complete folder surfaces, then common Settings"
-    state proposed
+    state active
     scope [
         path "apps/lege-files/**",
         path "apps/lege-settings/**",
@@ -1332,6 +1332,9 @@ record legeos.work.home-surface-usability-next/1 : work {
         Second, make folders and composite shortcut panes the Home file objects. Build copy/cut/paste, drag and drop, delete/trash and the remaining ordinary file verbs on the multi-selection foundation; then add deterministic sorting and list-versus-thumbnail presentation. Loose individual file tiles are explicitly not part of this model.
 
         Third, make the graphical Settings app adjust the common controls a person expects: resolution/refresh/rotation/scale, mouse and trackpad behaviour, and appearance/theme/material choices. Accessibility remains deferred behind these product-completeness items per the user's standing priority.
+        """
+    note """
+        Progress 2026-08-31: steps one and two are complete — Super press/hold reveal, Home panels with Balanced/Rail/Cushion arrangements, reversible window arrangement presets, placeable folders and shortcut panes, ordinary file operations with typed drag/drop and one journalled undo, deterministic sorting plus list/thumbnail modes, and the wl_data_device transport all landed with their records completed. The one remaining child is @legeos.work.home-field-settings-gui, whose two pre-implementation design questions (the compositor configuration channel, and making design.rs palette-driven) are surveyed on that record.
         """
     depends_on [ @legeos.work.home-field-selection-and-bulk-action ]
     derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
@@ -2002,7 +2005,7 @@ record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {
 
 record legeos.work.wayland-clipboard-and-dnd-transport/1 : work {
     title "Bind wl_data_device so Home's clipboard and drags reach other applications"
-    state proposed
+    state completed
     scope [ path "shell/lege-shell/**" ]
     intent """
         The file-operations work left everything above the transport complete and tested: lege_types::uri_list encodes and decodes RFC 2483 text/uri-list (CRLF, reserved characters, non-UTF-8 names, foreign hosts skipped), and shell/lege-shell/src/clipboard.rs produces both text/uri-list and x-special/gnome-copied-files so a cut survives the trip, reading a bare uri-list as a copy and never a cut. What is missing is the handover: the shell's compositor connection is the private lege_shell_v1 protocol with no wl_data_device_manager bound and no seat to own a selection on, so a copy in Home pastes in Home and not yet in another application, and a drag cannot leave the shell. Both stopping points are documented in code (ShellApp::publish_clipboard, FieldScreen::dragged_uri_list). Bind the ordinary Wayland globals beside the private protocol (the shell is a normal client of the public socket too), own the seat selection with the two prepared payloads, accept offers on paste, and wire drag-out as a data source carrying the exported uri-list.

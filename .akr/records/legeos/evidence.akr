@@ -1246,6 +1246,18 @@ record legeos.evidence.trash1-surfaces-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.wayland-clipboard-transport-20260831/1 : evidence {
+    title "wl_data_device bound: selection out and in, drag-out, serial discipline; live-seat observation awaits the nested run"
+    state verified
+    result pass
+    method command
+    observed_at git:2c943c7de834ac3db8ffaa4f2728fe268f73809d
+    command "cargo test -p lege-shell data_device; cargo run -q -p lege-comp -- --check; just check"
+    summary """
+        The record's whole intent landed: the compositor already served wl_data_device (Smithay handlers were wired all along; no compositor change needed), and the shell now binds the manager plus a second wl_seat on winit's connection purely for serials, offers both prepared targets (GNOME cut target first) with payloads captured at copy time, accepts foreign offers on paste by asking who owns the selection (bounded 250ms/4MiB synchronous read), exports drags edge-triggered on lift, and never invents a serial — with the Smithay finding recorded that set_selection is accepted by keyboard focus, which Home holds by construction. The Home browse surface also gained its Rename dialogue. Eleven fixture tests drive the decision rules and real-pipe transfers. Remaining, stated in code and in the agent report: drag-in from other applications, primary selection, and a shell-drawn drag icon; live-seat behaviour (paste into a GTK/Qt app, foreign copy into Home, drag-out onto another window, seat-binding coexistence with winit) awaits a nested-session run.
+        """
+}
+
 record legeos.evidence.widget-foundations-nested-run-20260825/1 : evidence {
     title "Nested run: the shell connected to lege_shell_v1, declared Layer::HomeSurface and rendered for twelve seconds with no error or panic, exercising the new widget-contract draw path, the Session system tile and the resize grip on every frame. lege-comp --check reports ok and still offers the screencopy globals on the trusted socket only."
     state verified
