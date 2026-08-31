@@ -7,8 +7,8 @@
 
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, FilesBrowseProxy, FilesOperationsProxy, FilesRecentsProxy,
-    FilesSearchProxy, FilesVolumesProxy, HomeFieldProxy, LauncherProxy, LifecycleProxy,
-    NotificationsProxy, ProjectsProxy,
+    FilesSearchProxy, FilesTrashProxy, FilesVolumesProxy, HomeFieldProxy, LauncherProxy,
+    LifecycleProxy, NotificationsProxy, ProjectsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
 
@@ -93,7 +93,7 @@ pub async fn fetch_drawer(drawer: Drawer, limit: u32) -> drawers::DrawerFeed {
                 .unwrap_or_else(|error| failed("Operations", &error)),
             Err(error) => failed("Operations", &error.into()),
         },
-        Drawer::Trash => match FilesOperationsProxy::new(&connection).await {
+        Drawer::Trash => match FilesTrashProxy::new(&connection).await {
             Ok(proxy) => drawers::trash::feed(&proxy, limit)
                 .await
                 .unwrap_or_else(|error| failed("Trash", &error)),

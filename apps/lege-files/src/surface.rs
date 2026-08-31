@@ -254,13 +254,17 @@ fn draw_navigation(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
     let (hidden, path) = cursor.split_right(ui.px(128));
     ui.label(
         path.inset(ui.px(8)),
-        &model
-            .pending_path()
-            .or_else(|| model.directory())
-            .map_or_else(
-                || "No location".to_owned(),
-                |path| path.display().to_string(),
-            ),
+        &if model.in_trash() {
+            "Trash".to_owned()
+        } else {
+            model
+                .pending_path()
+                .or_else(|| model.directory())
+                .map_or_else(
+                    || "No location".to_owned(),
+                    |path| path.display().to_string(),
+                )
+        },
         TEXT,
         Align::Left,
     );
@@ -284,17 +288,29 @@ fn draw_operations(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
     ui.painter.fill_rect(area, PANEL);
     let mut commands = Vec::new();
     let mut cursor = area.inset(ui.px(4));
-    let mut actions = vec![
-        ("Open", ActionId::Open, 68),
-        ("Copy", ActionId::Copy, 68),
-        ("Copy path", ActionId::CopyPath, 92),
-        ("Cut", ActionId::Cut, 58),
-        ("Paste", ActionId::Paste, 70),
-        ("Rename", ActionId::Rename, 82),
-        ("Trash", ActionId::Trash, 70),
-        ("Undo", ActionId::Undo, 66),
-        ("Properties", ActionId::Properties, 96),
-    ];
+    // The trash is a place, not a folder, so it gets its own toolbar: there is no paste into
+    // the trash and no rename of something deleted, and offering either would be a button that
+    // can only fail. Undo stays, because restoring is undoable like any other operation.
+    let mut actions = if model.in_trash() {
+        vec![
+            ("Restore", ActionId::Restore, 82),
+            ("Delete permanently", ActionId::DeletePermanently, 148),
+            ("Empty trash", ActionId::EmptyTrash, 104),
+            ("Undo", ActionId::Undo, 66),
+        ]
+    } else {
+        vec![
+            ("Open", ActionId::Open, 68),
+            ("Copy", ActionId::Copy, 68),
+            ("Copy path", ActionId::CopyPath, 92),
+            ("Cut", ActionId::Cut, 58),
+            ("Paste", ActionId::Paste, 70),
+            ("Rename", ActionId::Rename, 82),
+            ("Trash", ActionId::Trash, 70),
+            ("Undo", ActionId::Undo, 66),
+            ("Properties", ActionId::Properties, 96),
+        ]
+    };
     if model.active_operation_id.is_some() {
         actions.push(("Cancel", ActionId::CancelOperation, 74));
     }
@@ -348,13 +364,44 @@ fn draw_roots(
         TEXT_DIM,
         Align::Left,
     );
-    let heights = vec![ui.px(ROOT_ROW_HEIGHT); model.sources.roots.len()];
+    // The trash sits above the drives as its own place, because that is what it is: not a folder
+    // on any one of them, but one listing over every trash the user has.
+    let (trash_row, body) = body.split_top(ui.px(ROOT_ROW_HEIGHT));
     let mut commands = Vec::new();
+    if model.in_trash() {
+        ui.painter.fill_rect(trash_row, ACCENT_SOFT);
+    } else if ui.input.hovering(trash_row) {
+        ui.painter.fill_rect(trash_row, 0x00ff_ffff);
+    }
+    {
+        let (label, detail) = trash_row.inset(ui.px(6)).split_top(ui.px(22));
+        ui.label(label, "PLACE  Trash", TEXT, Align::Left);
+        ui.label_styled(
+            detail,
+            &match model.trash.as_ref() {
+                Some(view) if view.loading => "Loading…".to_owned(),
+                Some(view) => format!("{} item(s)", view.entries.len()),
+                None => "Deleted items".to_owned(),
+            },
+            TextStyle::new(fonts::BODY, 11.0),
+            TEXT_DIM,
+            Align::Left,
+        );
+        if ui.input.take_click(trash_row) {
+            commands.push(Command::Action(
+                ActionId::OpenTrash,
+                SelectionModifiers::default(),
+            ));
+        }
+    }
+    let heights = vec![ui.px(ROOT_ROW_HEIGHT); model.sources.roots.len()];
     ui.scroll_list(scroll, body, &heights, |ui, index, row| {
         let root = &model.sources.roots[index];
-        let active = model
-            .directory()
-            .is_some_and(|directory| directory == root.path);
+        // Not "the last folder I was in" — while the trash is open, no drive is the open place.
+        let active = !model.in_trash()
+            && model
+                .directory()
+                .is_some_and(|directory| directory == root.path);
         if active {
             ui.painter.fill_rect(row, ACCENT_SOFT);
         } else if ui.input.hovering(row) && root.available {
@@ -404,6 +451,9 @@ fn draw_roots(
     commands
 }
 
+/// The main pane: whichever listing is the open place. The two are held apart rather than
+/// squeezed into one row-drawing loop, because they are different listings with different
+/// columns and different things a click can mean.
 fn draw_entries(
     ui: &mut Ui<'_>,
     area: Rect,
@@ -412,7 +462,20 @@ fn draw_entries(
 ) -> Vec<Command> {
     ui.painter.fill_rect(area, PANEL);
     let (columns, body) = area.split_top(ui.px(COLUMN_HEIGHT));
+    if model.in_trash() {
+        draw_trash_columns(ui, columns);
+        return draw_trash_entries(ui, body, model, scroll);
+    }
     draw_columns(ui, columns);
+    draw_directory_entries(ui, body, model, scroll)
+}
+
+fn draw_directory_entries(
+    ui: &mut Ui<'_>,
+    body: Rect,
+    model: &BrowserModel,
+    scroll: &mut ScrollState,
+) -> Vec<Command> {
     let Some(listing) = &model.listing else {
         ui.label(
             body.inset(ui.px(14)),
@@ -509,6 +572,112 @@ fn draw_entries(
             Align::Right,
         );
     }
+    commands
+}
+
+/// The trash's own columns. A trash listing is not a directory listing: what a person needs is
+/// when it went and, above all, where it came from — a modified time and a size answer neither
+/// "is this the one I meant" nor "where will Restore put it back".
+fn draw_trash_columns(ui: &mut Ui<'_>, area: Rect) {
+    ui.painter.fill_rect(area, PANEL_ALT);
+    let (deleted, rest) = area.split_right(ui.px(150).min(area.w / 3));
+    let (origin, name) = rest.split_right(ui.px(240).min(rest.w / 2));
+    let style = TextStyle::tracked(fonts::BODY, 10.0, 0.10);
+    ui.label_styled(name.inset(ui.px(7)), "NAME", style, TEXT_DIM, Align::Left);
+    ui.label_styled(
+        origin.inset(ui.px(7)),
+        "ORIGINAL LOCATION",
+        style,
+        TEXT_DIM,
+        Align::Left,
+    );
+    ui.label_styled(
+        deleted.inset(ui.px(7)),
+        "DELETED",
+        style,
+        TEXT_DIM,
+        Align::Right,
+    );
+}
+
+fn draw_trash_entries(
+    ui: &mut Ui<'_>,
+    body: Rect,
+    model: &BrowserModel,
+    scroll: &mut ScrollState,
+) -> Vec<Command> {
+    let entries = model.trash_entries();
+    if entries.is_empty() {
+        let view = model.trash.as_ref();
+        ui.label(
+            body.inset(ui.px(14)),
+            match view {
+                Some(view) if view.loading => "Loading the trash…",
+                Some(view) if view.error.is_some() => "The trash could not be read.",
+                _ => "The trash is empty.",
+            },
+            TEXT_DIM,
+            Align::Left,
+        );
+        return Vec::new();
+    }
+    let heights = vec![ui.px(ENTRY_ROW_HEIGHT); entries.len()];
+    let mut commands = Vec::new();
+    ui.scroll_list(scroll, body, &heights, |ui, index, row| {
+        let entry = &entries[index];
+        let selected = model.selected.contains(&entry.trashed_path);
+        if selected {
+            ui.painter.fill_rect(row, ACCENT_SOFT);
+            if index == model.focus {
+                ui.painter
+                    .fill_rect(Rect::new(row.x, row.y, ui.px(3), row.h), ACCENT);
+            }
+        } else if ui.input.hovering(row) {
+            ui.painter.fill_rect(row, 0x00f7_f9fa);
+        } else if index % 2 == 1 {
+            ui.painter.fill_rect(row, PANEL_ALT);
+        }
+        let (deleted, rest) = row.split_right(ui.px(150).min(row.w / 3));
+        let (origin, name) = rest.split_right(ui.px(240).min(rest.w / 2));
+        ui.label(
+            name.inset(ui.px(7)),
+            &format!(
+                "{}   {}",
+                if entry.is_directory { "FOLDER" } else { "FILE" },
+                entry.name
+            ),
+            TEXT,
+            Align::Left,
+        );
+        ui.label_styled(
+            origin.inset(ui.px(7)),
+            &entry.original_location(),
+            TextStyle::new(fonts::BODY, 11.0),
+            TEXT_DIM,
+            Align::Left,
+        );
+        ui.label_styled(
+            deleted.inset(ui.px(7)),
+            &entry.deletion_date.replace('T', "  "),
+            TextStyle::new(fonts::BODY, 11.0),
+            TEXT_DIM,
+            Align::Right,
+        );
+        // Selecting only. Double-clicking a trashed item must not open it: opening would take
+        // it out of the trash's vocabulary and the whole point of the place is that its items
+        // are not in use.
+        if ui.input.take_click(row) || ui.input.take_context_click(row) {
+            let modifiers = ui.input.modifiers();
+            commands.push(Command::Select {
+                index,
+                modifiers: SelectionModifiers {
+                    control: modifiers.control,
+                    shift: modifiers.shift,
+                },
+                activate_if_selected: false,
+            });
+        }
+    });
     commands
 }
 
@@ -1009,6 +1178,56 @@ mod tests {
         let commands = surface.draw(&mut buffer, Scale::ONE, &model);
         assert!(
             matches!(commands.as_slice(), [Command::Select { index: 0, .. }]),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn trash_surface_shows_the_trash_place_its_own_columns_and_its_own_toolbar() {
+        let mut model = rendered_model();
+        model.open_trash();
+        model.apply_trash(Ok(vec![lege_client::files::TrashEntry {
+            name: "report.pdf".into(),
+            trashed_path: "/home/u/.local/share/Trash/files/report.pdf".into(),
+            info_path: "/home/u/.local/share/Trash/info/report.pdf.trashinfo".into(),
+            original_path: "/home/u/work/report.pdf".into(),
+            deletion_date: "2026-08-30T18:04:11".into(),
+            trash_root: "/home/u/.local/share/Trash".into(),
+            is_directory: false,
+            size_bytes: 2048,
+        }]));
+
+        let mut surface = FileSurface::default();
+        let mut buffer = WindowBuffer::new(1180, 760);
+        assert!(surface.draw(&mut buffer, Scale::ONE, &model).is_empty());
+
+        // The trash's row sits where the directory's did, and clicking it selects a trashed
+        // item rather than a file in the folder underneath.
+        surface.input.cursor_moved(300.0, 180.0);
+        surface.input.mouse(MouseButton::Left, true);
+        let commands = surface.draw(&mut buffer, Scale::ONE, &model);
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [Command::Select {
+                    index: 0,
+                    activate_if_selected: false,
+                    ..
+                }]
+            ),
+            "{commands:?}"
+        );
+
+        // Empty trash is on the toolbar (second row, y = 54 + 42 .. + 42), where Copy path is
+        // when a folder is open — the trash's own actions replace the folder's.
+        surface.input.cursor_moved(230.0, 118.0);
+        surface.input.mouse(MouseButton::Left, true);
+        let commands = surface.draw(&mut buffer, Scale::ONE, &model);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Action(ActionId::EmptyTrash | ActionId::DeletePermanently, _)
+            )),
             "{commands:?}"
         );
     }

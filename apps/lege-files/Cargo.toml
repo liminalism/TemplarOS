@@ -21,6 +21,8 @@ lege-client = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+# `StreamExt` for the `Files.Trash1.Changed` signal stream (src/backend.rs).
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -63,6 +63,12 @@ pub enum FieldAction {
         id: &'static str,
         window: WindowId,
     },
+    /// Put one trashed item back, named by its path under a trash's `files/`.
+    ///
+    /// Not a `RunAction`: a declared action carries no payload, and restoring is always *this*
+    /// item — the row the pointer was on. The host hands it to `Files.Trash1.Restore`, which
+    /// journals it like any other file operation, so it keeps its own undo.
+    RestoreFromTrash(String),
     RevealHome,
     /// Discard the stored layout and take the current default instead. Not an `Apply`: the
     /// document and its undo log go together, so there is no inverse to keep and the host has to
@@ -2136,10 +2142,48 @@ impl FieldScreen {
                     // mid-path, which told the user less than "12 items" would have.
                     let feed = drawer.and_then(|drawer| data.drawer_feeds.get(&drawer));
                     let line_height = ui.px(16);
+                    // The Trash drawer is the one drawer whose rows are things rather than
+                    // reports, so it is the one that carries controls: EMPTY beside the count,
+                    // and every row a restore. Both go through `Files.Trash1`, which journals
+                    // them, so Home cannot end up with its own idea of the trash.
+                    let mut headline_width = inner.w;
+                    if drawer == Some(Drawer::Trash)
+                        && feed.is_some_and(|feed| !feed.lines.is_empty())
+                        && representation >= Representation::Wide
+                    {
+                        let empty_button =
+                            Rect::new(inner.right() - ui.px(58), inner.y, ui.px(58), line_height);
+                        headline_width = (empty_button.x - inner.x - ui.px(6)).max(0);
+                        let hovered = ui.input.hovering(empty_button);
+                        ui.painter.fill_rounded_rect(
+                            empty_button,
+                            ui.px(design::CHIP_RADIUS),
+                            if hovered {
+                                design::ACCENT_SOFT
+                            } else {
+                                design::SHELL
+                            },
+                        );
+                        ui.painter.stroke_rect(
+                            empty_button,
+                            ui.scale.hairline(),
+                            design::EDGE_STRONG,
+                        );
+                        ui.label_styled(
+                            empty_button,
+                            "EMPTY",
+                            TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+                            design::TEXT_DIM,
+                            Align::Centre,
+                        );
+                        if ui.input.take_click(empty_button) {
+                            actions.push(FieldAction::RunAction("trash.empty"));
+                        }
+                    }
                     // "…" is nothing fetched yet, as opposed to a service that answered with
                     // nothing — which has a headline of its own.
                     ui.label_styled(
-                        Rect::new(inner.x, inner.y, inner.w, line_height),
+                        Rect::new(inner.x, inner.y, headline_width, line_height),
                         feed.map_or("…", |feed| feed.headline.as_str()),
                         design::measurement_style(ui),
                         if feed.is_none_or(|feed| feed.available) {
@@ -2160,18 +2204,35 @@ impl FieldScreen {
                         );
                         ui.painter.push_clip(listing);
                         let mut y = listing.y;
-                        for line in feed
+                        for (index, line) in feed
                             .lines
                             .iter()
+                            .enumerate()
                             .take((listing.h / line_height).max(0) as usize)
                         {
+                            let row = Rect::new(listing.x, y, listing.w, line_height);
+                            // Only a row that names something is a control; everywhere else a
+                            // drawer's listing stays exactly the report it was.
+                            let target = feed.row_target(index);
+                            if target.is_some() && ui.input.hovering(row) {
+                                ui.painter.fill_rect(row, design::ACCENT_SOFT);
+                            }
                             ui.label_styled(
-                                Rect::new(listing.x, y, listing.w, line_height),
+                                row,
                                 line,
                                 small,
-                                design::TEXT_DIM,
+                                if target.is_some() && ui.input.hovering(row) {
+                                    design::TEXT
+                                } else {
+                                    design::TEXT_DIM
+                                },
                                 Align::Left,
                             );
+                            if let Some(target) = target
+                                && ui.input.take_click(row)
+                            {
+                                actions.push(FieldAction::RestoreFromTrash(target.to_owned()));
+                            }
                             y += line_height;
                         }
                         ui.painter.pop_clip();

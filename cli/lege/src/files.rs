@@ -73,6 +73,34 @@ impl OperationsClient for lege_client::proxies::FilesOperationsProxy<'_> {
 }
 
 #[async_trait]
+pub trait TrashClient {
+    async fn list(&self) -> Result<String>;
+    async fn restore(&self, trashed_paths: Vec<String>, app_id: &str) -> Result<String>;
+    async fn delete_permanently(&self, trashed_paths: Vec<String>, app_id: &str) -> Result<String>;
+    async fn empty(&self, app_id: &str) -> Result<String>;
+}
+
+#[async_trait]
+impl TrashClient for lege_client::proxies::FilesTrashProxy<'_> {
+    async fn list(&self) -> Result<String> {
+        self.list().await.context("Files.Trash1.List")
+    }
+    async fn restore(&self, trashed_paths: Vec<String>, app_id: &str) -> Result<String> {
+        self.restore(trashed_paths, app_id)
+            .await
+            .context("Files.Trash1.Restore")
+    }
+    async fn delete_permanently(&self, trashed_paths: Vec<String>, app_id: &str) -> Result<String> {
+        self.delete_permanently(trashed_paths, app_id)
+            .await
+            .context("Files.Trash1.DeletePermanently")
+    }
+    async fn empty(&self, app_id: &str) -> Result<String> {
+        self.empty(app_id).await.context("Files.Trash1.Empty")
+    }
+}
+
+#[async_trait]
 pub trait RecentsClient {
     async fn record(&self, path: &str, app_id: &str, action: &str, mime: &str) -> Result<()>;
     async fn list(&self, app_id: &str, limit: u32) -> Result<String>;
@@ -247,6 +275,50 @@ pub fn render_operations(operations: &[Operation]) -> String {
         .join("\n")
 }
 
+/// Mirrors `lege_filed::trash::TrashEntry` — one item in one of this user's trashes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrashEntry {
+    pub name: String,
+    pub trashed_path: PathBuf,
+    pub info_path: PathBuf,
+    pub original_path: PathBuf,
+    pub deletion_date: String,
+    pub trash_root: PathBuf,
+    pub is_directory: bool,
+    pub size_bytes: u64,
+}
+
+pub fn parse_trash(entries_json: &str) -> Result<Vec<TrashEntry>> {
+    serde_json::from_str(entries_json).context("parsing Files.Trash1.List JSON")
+}
+
+/// The trash as a listing that is not a directory: when it went, what it was, and — the column
+/// that makes restoring meaningful — where it came from.
+pub fn render_trash(entries: &[TrashEntry]) -> String {
+    if entries.is_empty() {
+        return "the trash is empty".to_owned();
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}  {:>10}  {}\n{:19}  {:>10}  was {}",
+                entry.deletion_date,
+                if entry.is_directory {
+                    "folder".to_owned()
+                } else {
+                    human_bytes(entry.size_bytes)
+                },
+                entry.trashed_path.display(),
+                "",
+                "",
+                entry.original_path.display(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Mirrors `lege_filed::recents::RecentEntry`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecentEntry {
@@ -394,9 +466,39 @@ mod tests {
     }
 
     #[test]
+    fn a_trash_listing_shows_when_it_went_and_where_it_came_from() {
+        let entries = parse_trash(
+            r#"[{"name":"report.pdf",
+                 "trashed_path":"/home/u/.local/share/Trash/files/report.pdf",
+                 "info_path":"/home/u/.local/share/Trash/info/report.pdf.trashinfo",
+                 "original_path":"/home/u/work/report.pdf",
+                 "deletion_date":"2026-08-30T18:04:11",
+                 "trash_root":"/home/u/.local/share/Trash",
+                 "is_directory":false,"size_bytes":2048},
+                {"name":"old project",
+                 "trashed_path":"/media/stick/.Trash-1000/files/old project",
+                 "info_path":"/media/stick/.Trash-1000/info/old project.trashinfo",
+                 "original_path":"/media/stick/work/old project",
+                 "deletion_date":"2026-08-01T09:00:00",
+                 "trash_root":"/media/stick/.Trash-1000",
+                 "is_directory":true,"size_bytes":4096}]"#,
+        )
+        .unwrap();
+        let rendered = render_trash(&entries);
+        assert!(rendered.contains("2026-08-30T18:04:11"));
+        assert!(rendered.contains("was /home/u/work/report.pdf"));
+        // A trashed folder says "folder" rather than a size that means nothing.
+        assert!(rendered.contains("folder"));
+        assert!(!rendered.contains("4.0 kB"), "{rendered}");
+        // The volume trash is in the same listing as the home trash.
+        assert!(rendered.contains("/media/stick/.Trash-1000/files/old project"));
+    }
+
+    #[test]
     fn empty_lists_say_so_plainly() {
         assert_eq!(render_volumes(&[]), "no volumes");
         assert_eq!(render_operations(&[]), "no operations");
         assert_eq!(render_recents(&[]), "no recent files");
+        assert_eq!(render_trash(&[]), "the trash is empty");
     }
 }

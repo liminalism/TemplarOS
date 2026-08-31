@@ -485,6 +485,16 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     // ---- Session ----------------------------------------------------------------------
     ActionDecl {
+        id: "trash.empty",
+        label: "Empty Trash",
+        category: ActionCategory::System,
+        // No chord, deliberately: nothing that cannot be undone is one keystroke away.
+        chords: &[],
+        cli_verb: Some("trash empty"),
+        confirm: true,
+        requires: Requires::Always,
+    },
+    ActionDecl {
         id: "session.lock",
         label: "Lock the screen",
         category: ActionCategory::Session,

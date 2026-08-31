@@ -73,12 +73,6 @@ impl OperationKind {
             Self::Delete { paths } => format!("Delete {} permanently", names(paths)),
         }
     }
-
-    /// Whether this operation put something in, or took something out of, the trash — the Trash
-    /// drawer's only real data source (see [`crate::drawers::trash`]).
-    pub fn touches_trash(&self) -> bool {
-        matches!(self, Self::Trash { .. } | Self::RestoreFromTrash { .. })
-    }
 }
 
 fn display_name(path: &Path) -> String {
@@ -243,14 +237,6 @@ mod tests {
         assert_eq!(operations[0].percent(), 50);
         // The trash moves no bytes at all; by items it is complete.
         assert_eq!(operations[1].percent(), 100);
-    }
-
-    #[test]
-    fn only_trash_and_restore_touch_the_trash() {
-        let operations = parse(FIXTURE).unwrap();
-        assert!(!operations[0].kind.touches_trash());
-        assert!(operations[1].kind.touches_trash());
-        assert!(!operations[2].kind.touches_trash());
     }
 
     #[tokio::test]

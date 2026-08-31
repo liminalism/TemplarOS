@@ -64,6 +64,7 @@ pub mod files {
     pub const OPERATIONS_IFACE: &str = "org.legeos.Files.Operations1";
     pub const RECENTS_IFACE: &str = "org.legeos.Files.Recents1";
     pub const SEARCH_IFACE: &str = "org.legeos.Files.Search1";
+    pub const TRASH_IFACE: &str = "org.legeos.Files.Trash1";
 }
 
 /// Privileged host daemon (`lege-hostd`, system bus).

@@ -9,6 +9,7 @@
 //! long copy, and must never fail on a full disk.
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::Write as _,
     fs,
@@ -58,15 +59,60 @@ pub struct TrashedItem {
     pub info_path: PathBuf,
 }
 
+/// The home trash: `$XDG_DATA_HOME/Trash`, where paths in `.trashinfo` are absolute.
+pub fn home_trash(data_home: &Path) -> TrashDir {
+    TrashDir {
+        root: data_home.join("Trash"),
+        top_dir: None,
+    }
+}
+
+/// The trash on the volume mounted at `top_dir`, whether or not it exists yet.
+///
+/// The specification's `$topdir/.Trash/$uid` requires an administrator-created, sticky,
+/// non-symlink `.Trash`. Anything else, and the fallback `$topdir/.Trash-$uid` is correct — and
+/// is what nearly every removable volume actually has.
+pub fn volume_trash(top_dir: &Path) -> TrashDir {
+    let uid = current_uid();
+    let admin = top_dir.join(".Trash");
+    let root = if is_sticky_directory(&admin) {
+        admin.join(uid.to_string())
+    } else {
+        top_dir.join(format!(".Trash-{uid}"))
+    };
+    TrashDir {
+        root,
+        top_dir: Some(top_dir.to_path_buf()),
+    }
+}
+
+/// Every trash this user has: the home trash, plus the trash of every mount point in
+/// `mount_points` that already has one.
+///
+/// A volume with no trash directory is left out rather than conjured into existence — listing
+/// the trash must not create `.Trash-$uid` on every mounted volume, and emptying must not either.
+/// The mount points are passed in rather than read here so the sweep is testable without a
+/// mount table.
+pub fn all_trash_dirs(data_home: &Path, mount_points: &[PathBuf]) -> Vec<TrashDir> {
+    let mut dirs = vec![home_trash(data_home)];
+    for mount in mount_points {
+        let candidate = volume_trash(mount);
+        if candidate.root == dirs[0].root || !candidate.files().is_dir() {
+            continue;
+        }
+        if !dirs.iter().any(|existing| existing.root == candidate.root) {
+            dirs.push(candidate);
+        }
+    }
+    dirs
+}
+
 /// Where trashed items go, given a home directory and the volume a path lives on.
 ///
 /// `data_home` is `$XDG_DATA_HOME`. A path on the same device as the home trash uses it; on any
 /// other device the volume's own trash is used, so trashing is always a rename.
 pub fn trash_dir_for(path: &Path, data_home: &Path) -> Result<TrashDir> {
-    let home_trash = TrashDir {
-        root: data_home.join("Trash"),
-        top_dir: None,
-    };
+    let home_trash = home_trash(data_home);
     let (Some(path_device), Some(home_device)) = (device_of(path), device_of(data_home)) else {
         return Ok(home_trash);
     };
@@ -81,21 +127,7 @@ pub fn trash_dir_for(path: &Path, data_home: &Path) -> Result<TrashDir> {
         )
     })?;
 
-    // The specification's `$topdir/.Trash/$uid` requires an administrator-created, sticky,
-    // non-symlink `.Trash`. Anything else, and the fallback `$topdir/.Trash-$uid` is correct —
-    // and is what nearly every removable volume actually has.
-    let uid = current_uid();
-    let admin = top.join(".Trash");
-    if is_sticky_directory(&admin) {
-        return Ok(TrashDir {
-            root: admin.join(uid.to_string()),
-            top_dir: Some(top),
-        });
-    }
-    Ok(TrashDir {
-        root: top.join(format!(".Trash-{uid}")),
-        top_dir: Some(top),
-    })
+    Ok(volume_trash(&top))
 }
 
 /// Move `path` into `trash`, writing its `.trashinfo` first so a crash between the two leaves a
@@ -206,6 +238,106 @@ pub fn list(trash: &TrashDir) -> Result<Vec<TrashedItem>> {
         .collect();
     items.sort_by(|left, right| right.deletion_date.cmp(&left.deletion_date));
     Ok(items)
+}
+
+/// One trash entry as a client sees it: what it was called, where it came from, when it went,
+/// and which trash it is sitting in.
+///
+/// The wire form of `Files.Trash1.List`. `size_bytes` is the item's *own* size and not a
+/// directory's recursive total — a listing must not have to walk every trashed folder to be
+/// drawn, and `is_directory` is there so a UI can say "folder" instead of a misleading 4 kB.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TrashEntry {
+    pub name: String,
+    pub trashed_path: PathBuf,
+    pub info_path: PathBuf,
+    pub original_path: PathBuf,
+    /// Local time, `YYYY-MM-DDThh:mm:ss`, as the specification requires.
+    pub deletion_date: String,
+    /// The trash directory holding this entry: the home trash, or a volume's.
+    pub trash_root: PathBuf,
+    pub is_directory: bool,
+    pub size_bytes: u64,
+}
+
+impl TrashEntry {
+    fn of(item: TrashedItem, trash: &TrashDir) -> Self {
+        let metadata = item.trashed_path.symlink_metadata().ok();
+        Self {
+            name: file_name(&item.trashed_path),
+            is_directory: metadata.as_ref().is_some_and(std::fs::Metadata::is_dir),
+            size_bytes: metadata.as_ref().map_or(0, std::fs::Metadata::len),
+            trash_root: trash.root.clone(),
+            trashed_path: item.trashed_path,
+            info_path: item.info_path,
+            original_path: item.original_path,
+            deletion_date: item.deletion_date,
+        }
+    }
+}
+
+/// Everything in every trash in `dirs`, newest deletion first.
+///
+/// A trash that cannot be read contributes nothing rather than failing the whole listing: an
+/// unreadable removable volume must not be able to hide the home trash.
+pub fn list_all(dirs: &[TrashDir]) -> Vec<TrashEntry> {
+    let mut entries: Vec<TrashEntry> = dirs
+        .iter()
+        .flat_map(|trash| {
+            list(trash)
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |item| TrashEntry::of(item, trash))
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .deletion_date
+            .cmp(&left.deletion_date)
+            .then_with(|| left.trashed_path.cmp(&right.trashed_path))
+    });
+    entries
+}
+
+/// The trash that holds `path` as one of its own top-level items, if any.
+///
+/// This is the whole of `Trash1`'s authority check: a caller may name anything, and only a direct
+/// child of some `files/` directory is a trash entry. A path that merely *starts* with one — or
+/// climbs out of it with `..` — is not, so neither restoring nor deleting can be aimed at a file
+/// that was never in the trash.
+pub fn owning_trash<'a>(path: &Path, dirs: &'a [TrashDir]) -> Option<&'a TrashDir> {
+    let path = absolute(path);
+    path.file_name()?;
+    dirs.iter()
+        .find(|trash| path.parent() == Some(trash.files().as_path()))
+}
+
+/// The `.trashinfo` record beside a trashed item, if it still exists.
+///
+/// A permanent delete removes it alongside the item; an item whose record has already been lost
+/// is deleted on its own rather than refused.
+pub fn info_path_of(trashed_path: &Path, trash: &TrashDir) -> Option<PathBuf> {
+    let path = trash
+        .info()
+        .join(format!("{}.trashinfo", file_name(trashed_path)));
+    path.symlink_metadata().is_ok().then_some(path)
+}
+
+/// Every path a trash contains: its items and their `.trashinfo` records.
+///
+/// Both halves, because emptying a trash that keeps its `info/` is not emptying it — the records
+/// would outlive the files they describe and the next listing would be full of ghosts. Records
+/// whose item is already gone are swept up for the same reason.
+pub fn everything_in(trash: &TrashDir) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for directory in [trash.files(), trash.info()] {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        paths.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+    }
+    paths.sort();
+    paths
 }
 
 /// The newest trashed copy of `original`, if this trash holds one.
@@ -362,13 +494,6 @@ fn percent_decode(value: &str) -> String {
 mod tests {
     use super::*;
 
-    fn home_trash(root: &Path) -> TrashDir {
-        TrashDir {
-            root: root.join("Trash"),
-            top_dir: None,
-        }
-    }
-
     #[test]
     fn trashing_records_the_original_path_and_restoring_puts_it_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -481,6 +606,127 @@ mod tests {
         let top = top_dir_of(Path::new("/")).unwrap();
         assert_eq!(top, Path::new("/"));
         assert!(top_dir_of(Path::new("/definitely/not/here")).is_none());
+    }
+
+    /// A stand-in for a mounted volume: a directory with its own `.Trash-$uid` already made, the
+    /// way a removable disk that has been trashed to before looks.
+    fn volume_with_a_trash(top: &Path) -> TrashDir {
+        let trash = volume_trash(top);
+        trash.ensure().unwrap();
+        trash
+    }
+
+    #[test]
+    fn the_sweep_covers_the_home_trash_and_every_volume_that_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_home = dir.path().join("data");
+        let with_trash = dir.path().join("mnt/stick");
+        let without_trash = dir.path().join("mnt/plain");
+        fs::create_dir_all(&with_trash).unwrap();
+        fs::create_dir_all(&without_trash).unwrap();
+        volume_with_a_trash(&with_trash);
+
+        let dirs = all_trash_dirs(&data_home, &[with_trash.clone(), without_trash.clone()]);
+        let roots: Vec<&Path> = dirs.iter().map(TrashDir::root).collect();
+        assert_eq!(roots.len(), 2, "{roots:?}");
+        assert_eq!(roots[0], data_home.join("Trash"));
+        assert!(roots[1].starts_with(&with_trash));
+        assert!(
+            !without_trash
+                .join(format!(".Trash-{}", current_uid()))
+                .exists(),
+            "listing the trash must not create one on a volume that has none"
+        );
+    }
+
+    #[test]
+    fn listing_every_trash_puts_the_newest_deletion_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_home = dir.path().join("data");
+        let volume = dir.path().join("mnt/stick");
+        fs::create_dir_all(&volume).unwrap();
+        let volume_trash_dir = volume_with_a_trash(&volume);
+
+        let old = dir.path().join("old.txt");
+        fs::write(&old, b"old").unwrap();
+        trash(&old, &home_trash(&data_home), "2026-01-01T09:00:00").unwrap();
+
+        let recent = volume.join("recent.txt");
+        fs::write(&recent, b"recent").unwrap();
+        trash(&recent, &volume_trash_dir, "2026-08-30T18:00:00").unwrap();
+
+        let folder = dir.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        trash(&folder, &home_trash(&data_home), "2026-05-05T12:00:00").unwrap();
+
+        let dirs = all_trash_dirs(&data_home, std::slice::from_ref(&volume));
+        let entries = list_all(&dirs);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["recent.txt", "folder", "old.txt"]);
+
+        let from_volume = &entries[0];
+        assert_eq!(from_volume.original_path, recent);
+        assert_eq!(from_volume.trash_root, *volume_trash_dir.root());
+        assert!(!from_volume.is_directory);
+        assert_eq!(from_volume.size_bytes, 6);
+        assert!(entries[1].is_directory, "a trashed folder says it is one");
+        assert_eq!(entries[2].original_path, old);
+        assert_eq!(entries[2].trash_root, data_home.join("Trash"));
+    }
+
+    #[test]
+    fn only_a_direct_child_of_a_trash_counts_as_a_trash_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_home = dir.path().join("data");
+        let home = home_trash(&data_home);
+        let source = dir.path().join("note.txt");
+        fs::write(&source, b"x").unwrap();
+        let item = trash(&source, &home, "2026-08-21T14:32:00").unwrap();
+        let dirs = all_trash_dirs(&data_home, &[]);
+
+        assert_eq!(
+            owning_trash(&item.trashed_path, &dirs).map(TrashDir::root),
+            Some(home.root())
+        );
+        assert_eq!(
+            info_path_of(&item.trashed_path, &home),
+            Some(item.info_path.clone())
+        );
+        for outsider in [
+            dir.path().join("note.txt"),
+            home.files().join("sub/deeper.txt"),
+            home.files().join("../../../etc/passwd"),
+            home.root().to_path_buf(),
+            home.files(),
+        ] {
+            assert!(
+                owning_trash(&outsider, &dirs).is_none(),
+                "{} was accepted as a trash entry",
+                outsider.display()
+            );
+        }
+    }
+
+    #[test]
+    fn emptying_names_the_items_and_their_records_including_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home_trash(&dir.path().join("data"));
+        let source = dir.path().join("note.txt");
+        fs::write(&source, b"x").unwrap();
+        let item = trash(&source, &home, "2026-08-21T14:32:00").unwrap();
+        // A record whose item is gone: the residue of an interrupted restore.
+        let orphan = home.info().join("vanished.txt.trashinfo");
+        fs::write(
+            &orphan,
+            "[Trash Info]\nPath=/gone\nDeletionDate=2026-01-01T00:00:00\n",
+        )
+        .unwrap();
+
+        let everything = everything_in(&home);
+        assert!(everything.contains(&item.trashed_path));
+        assert!(everything.contains(&item.info_path));
+        assert!(everything.contains(&orphan), "an orphan record survives");
+        assert_eq!(everything.len(), 3);
     }
 
     #[test]

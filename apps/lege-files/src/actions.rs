@@ -20,6 +20,14 @@ pub enum ActionId {
     Paste,
     Rename,
     Trash,
+    /// Open the trash: a listing that is not a directory.
+    OpenTrash,
+    /// Put the selected trashed items back where they came from.
+    Restore,
+    /// Remove the selected trashed items for good. No undo.
+    DeletePermanently,
+    /// Empty every trash. No undo.
+    EmptyTrash,
     Undo,
     Properties,
     CancelOperation,
@@ -46,9 +54,58 @@ pub const VISIBLE_ACTIONS: &[ActionId] = &[
     ActionId::Paste,
     ActionId::Rename,
     ActionId::Trash,
+    ActionId::OpenTrash,
     ActionId::Undo,
     ActionId::Properties,
 ];
+
+/// The actions the toolbar offers *instead* while the trash is open. Separate from
+/// [`VISIBLE_ACTIONS`] because they are not operations on a directory and most of that toolbar
+/// means nothing here: there is no paste into the trash, and no rename of something deleted.
+pub const TRASH_ACTIONS: &[ActionId] = &[
+    ActionId::Restore,
+    ActionId::DeletePermanently,
+    ActionId::EmptyTrash,
+];
+
+impl ActionId {
+    /// Whether performing this cannot be undone, so a surface must ask first.
+    pub fn destructive(self) -> bool {
+        matches!(self, Self::DeletePermanently | Self::EmptyTrash)
+    }
+
+    /// What a button or a confirmation calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OpenTrash => "Trash",
+            Self::Restore => "Restore",
+            Self::DeletePermanently => "Delete permanently",
+            Self::EmptyTrash => "Empty trash",
+            Self::Trash => "Move to Trash",
+            other => other.fallback_label(),
+        }
+    }
+
+    fn fallback_label(self) -> &'static str {
+        match self {
+            Self::Back => "Back",
+            Self::Forward => "Forward",
+            Self::Up => "Up",
+            Self::Refresh => "Refresh",
+            Self::Location => "Location",
+            Self::ToggleHidden => "Hidden",
+            Self::Open => "Open",
+            Self::Copy => "Copy",
+            Self::CopyPath => "Copy path",
+            Self::Cut => "Cut",
+            Self::Paste => "Paste",
+            Self::Rename => "Rename",
+            Self::Undo => "Undo",
+            Self::Properties => "Properties",
+            _ => "Action",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -71,6 +128,15 @@ pub fn shortcut(key: &KeyInput, modifiers: Modifiers) -> Option<ActionId> {
     if modifiers.alt && matches!(key, KeyInput::Enter) {
         return Some(ActionId::Properties);
     }
+    // Shift+Delete is the long-standing "skip the trash" gesture; with Control as well it is the
+    // whole trash. Both are matched before the table below, which cannot see Shift.
+    if modifiers.shift && matches!(key, KeyInput::Delete) {
+        return Some(if modifiers.control {
+            ActionId::EmptyTrash
+        } else {
+            ActionId::DeletePermanently
+        });
+    }
     match (key, modifiers.control, modifiers.alt) {
         (KeyInput::Character('l' | 'L'), true, false) => Some(ActionId::Location),
         (KeyInput::Character('h' | 'H'), true, false) => Some(ActionId::ToggleHidden),
@@ -78,6 +144,8 @@ pub fn shortcut(key: &KeyInput, modifiers: Modifiers) -> Option<ActionId> {
         (KeyInput::Character('x' | 'X'), true, false) => Some(ActionId::Cut),
         (KeyInput::Character('v' | 'V'), true, false) => Some(ActionId::Paste),
         (KeyInput::Character('z' | 'Z'), true, false) => Some(ActionId::Undo),
+        (KeyInput::Character('t' | 'T'), true, false) => Some(ActionId::OpenTrash),
+        (KeyInput::Character('r' | 'R'), true, false) => Some(ActionId::Restore),
         (KeyInput::Character('a' | 'A'), true, false) => Some(ActionId::SelectAll),
         (KeyInput::Left, false, true) => Some(ActionId::Back),
         (KeyInput::Right, false, true) => Some(ActionId::Forward),
@@ -165,6 +233,13 @@ mod tests {
             (KeyInput::Function(2), Modifiers::default()),
             (KeyInput::Delete, Modifiers::default()),
             (
+                KeyInput::Character('t'),
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+            ),
+            (
                 KeyInput::Character('z'),
                 Modifiers {
                     control: true,
@@ -186,6 +261,46 @@ mod tests {
         for action in VISIBLE_ACTIONS {
             assert!(mapped.contains(action), "no keyboard route for {action:?}");
         }
+    }
+
+    #[test]
+    fn interaction_every_trash_action_has_a_keyboard_route_and_says_it_is_destructive() {
+        assert_eq!(
+            shortcut(
+                &KeyInput::Character('r'),
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                }
+            ),
+            Some(ActionId::Restore)
+        );
+        assert_eq!(
+            shortcut(
+                &KeyInput::Delete,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                }
+            ),
+            Some(ActionId::DeletePermanently)
+        );
+        assert_eq!(
+            shortcut(
+                &KeyInput::Delete,
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                }
+            ),
+            Some(ActionId::EmptyTrash)
+        );
+        // Trashing stays reversible and unconfirmed; the two that cannot be undone say so.
+        assert!(!ActionId::Trash.destructive());
+        assert!(!ActionId::Restore.destructive());
+        assert!(ActionId::DeletePermanently.destructive());
+        assert!(ActionId::EmptyTrash.destructive());
     }
 
     #[test]

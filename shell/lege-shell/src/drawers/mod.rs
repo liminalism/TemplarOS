@@ -33,6 +33,13 @@ pub struct DrawerFeed {
     pub headline: String,
     /// The listing, one entry per line. Shown from `Representation::Wide` upward.
     pub lines: Vec<String>,
+    /// For a drawer whose rows name something the shell can act on, the target of the row at the
+    /// same index — a trashed item's path, for the Trash drawer's restore-on-click.
+    ///
+    /// Empty for every other drawer, and kept beside the lines rather than parsed back out of
+    /// them: a rendered row is for a person to read and a file name may contain anything, so
+    /// recovering a path from one would be a guess. Same rule as the headline.
+    pub row_targets: Vec<Option<String>>,
     /// Whether the backing service answered. A drawer that cannot reach its service says so
     /// rather than showing a plausible zero.
     pub available: bool,
@@ -43,8 +50,14 @@ impl DrawerFeed {
         DrawerFeed {
             headline: headline.into(),
             lines,
+            row_targets: Vec::new(),
             available: true,
         }
+    }
+
+    /// What clicking the row at `index` should act on, if anything.
+    pub fn row_target(&self, index: usize) -> Option<&str> {
+        self.row_targets.get(index)?.as_deref()
     }
 
     /// A feed for a service that did not answer: the reason is the headline, so it is legible at
@@ -53,6 +66,7 @@ impl DrawerFeed {
         DrawerFeed {
             headline: reason.into(),
             lines: Vec::new(),
+            row_targets: Vec::new(),
             available: false,
         }
     }
