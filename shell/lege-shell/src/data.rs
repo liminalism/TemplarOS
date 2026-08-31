@@ -6,9 +6,10 @@
 //! already have their own toplevel snapshot.
 
 use lege_client::proxies::{
-    AppIdentityProxy, AssociationsProxy, FilesBrowseProxy, FilesOperationsProxy, FilesRecentsProxy,
-    FilesSearchProxy, FilesTrashProxy, FilesVolumesProxy, HomeFieldProxy, LauncherProxy,
-    LifecycleProxy, NotificationsProxy, ProjectsProxy,
+    AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
+    FilesBrowseProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy,
+    FilesVolumesProxy, HomeFieldProxy, LauncherProxy, LifecycleProxy, NotificationsProxy,
+    ProjectsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
 
@@ -318,6 +319,121 @@ pub async fn fetch_notifications_widget() -> crate::surface::widgets::WidgetSnap
         detail,
         available: true,
         refused: Vec::new(),
+    }
+}
+
+/// The battery widget's content.
+///
+/// A machine with no battery is not a failure and must not read as one: the snapshot stays
+/// `available` and says "On mains" or "No battery", because a desktop showing a red unavailable
+/// tile would be reporting a fault that does not exist. Only an unreachable *service* is
+/// unavailable here.
+pub async fn fetch_battery_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
+    let Ok(connection) = session().await else {
+        return WidgetSnapshot::unavailable("Battery — no session bus");
+    };
+    let Ok(proxy) = BatteryProxy::new(&connection).await else {
+        return WidgetSnapshot::unavailable("Battery — service unavailable");
+    };
+    let Ok(json) = proxy.get().await else {
+        return WidgetSnapshot::unavailable("Battery — service unavailable");
+    };
+    let Ok(state) = serde_json::from_str::<lege_client::status::BatteryState>(&json) else {
+        return WidgetSnapshot::unavailable("Battery — unreadable answer");
+    };
+    let mut detail = Vec::new();
+    if state.present {
+        detail.push(state.status.clone());
+        if let Some((word, minutes)) = state.time_remaining() {
+            detail.push(format!(
+                "{} {word}",
+                lege_client::status::duration_minutes(minutes)
+            ));
+        }
+        if state.on_mains && state.status != "charging" {
+            detail.push("On mains".to_owned());
+        }
+    } else {
+        detail.push("This machine has no battery".to_owned());
+    }
+    WidgetSnapshot {
+        headline: state.headline(),
+        detail,
+        available: true,
+        refused: Vec::new(),
+    }
+}
+
+/// The volume widget's content, with its controls refused when there is nothing to control.
+///
+/// `refused` is how a widget says "this button would not work" without removing it — the region
+/// draws inert instead of vanishing, so a person is not left wondering where the control went.
+/// A machine with no WirePlumber gets exactly that: a readable tile whose buttons do not lie.
+pub async fn fetch_volume_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
+    const CONTROLS: [&str; 3] = ["volume.decrease", "volume.increase", "volume.mute"];
+    let Ok(connection) = session().await else {
+        return WidgetSnapshot::unavailable("Volume — no session bus");
+    };
+    let Ok(proxy) = AudioProxy::new(&connection).await else {
+        return WidgetSnapshot::unavailable("Volume — service unavailable");
+    };
+    let Ok(json) = proxy.get().await else {
+        return WidgetSnapshot::unavailable("Volume — service unavailable");
+    };
+    let Ok(state) = serde_json::from_str::<lege_client::status::AudioState>(&json) else {
+        return WidgetSnapshot::unavailable("Volume — unreadable answer");
+    };
+    WidgetSnapshot {
+        headline: state.headline(),
+        detail: if state.present {
+            vec![if state.muted {
+                "Muted".to_owned()
+            } else {
+                "Default output".to_owned()
+            }]
+        } else {
+            vec!["No audio service on this machine".to_owned()]
+        },
+        available: true,
+        refused: if state.present {
+            Vec::new()
+        } else {
+            CONTROLS.iter().map(|id| (*id).to_owned()).collect()
+        },
+    }
+}
+
+/// The brightness widget's content, with its controls refused on a machine with no backlight.
+pub async fn fetch_brightness_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
+    const CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increase"];
+    let Ok(connection) = session().await else {
+        return WidgetSnapshot::unavailable("Brightness — no session bus");
+    };
+    let Ok(proxy) = BacklightProxy::new(&connection).await else {
+        return WidgetSnapshot::unavailable("Brightness — service unavailable");
+    };
+    let Ok(json) = proxy.get().await else {
+        return WidgetSnapshot::unavailable("Brightness — service unavailable");
+    };
+    let Ok(state) = serde_json::from_str::<lege_client::status::BacklightState>(&json) else {
+        return WidgetSnapshot::unavailable("Brightness — unreadable answer");
+    };
+    WidgetSnapshot {
+        headline: state.headline(),
+        detail: if state.present {
+            vec![state.device.clone()]
+        } else {
+            vec!["This display has no backlight control".to_owned()]
+        },
+        available: true,
+        refused: if state.present {
+            Vec::new()
+        } else {
+            CONTROLS.iter().map(|id| (*id).to_owned()).collect()
+        },
     }
 }
 

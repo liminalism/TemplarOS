@@ -96,6 +96,13 @@ enum DataUpdate {
     },
 }
 
+/// How far one press of a level control moves it.
+///
+/// The same five percentage points `lege status louder` uses, and deliberately the same number:
+/// a person who steps the volume from a tile and from a terminal is doing one thing, and two
+/// different step sizes would make the two surfaces disagree about what "one step" means.
+const STEP_PERCENT: i32 = 5;
+
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 
@@ -257,9 +264,12 @@ impl ShellApp {
                 let field_settings = fetch_home_field_settings().await;
                 let projects = crate::data::fetch_projects().await;
                 let browser_sources = crate::data::fetch_browser_sources().await;
-                let (session_widget, notifications_widget) = tokio::join!(
+                let (session_widget, notifications_widget, battery, volume, brightness) = tokio::join!(
                     crate::data::fetch_session_widget(),
                     crate::data::fetch_notifications_widget(),
+                    crate::data::fetch_battery_widget(),
+                    crate::data::fetch_volume_widget(),
+                    crate::data::fetch_brightness_widget(),
                 );
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
@@ -273,6 +283,9 @@ impl ShellApp {
                     "notifications".to_owned(),
                     notifications_widget,
                 ));
+                let _ = tx.send(DataUpdate::Widget("battery".to_owned(), battery));
+                let _ = tx.send(DataUpdate::Widget("volume".to_owned(), volume));
+                let _ = tx.send(DataUpdate::Widget("brightness".to_owned(), brightness));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -936,6 +949,11 @@ impl ShellApp {
             }
             "notifications.clear" => self.spawn_clear_notifications(),
             "trash.empty" => self.confirm_then_empty_trash(),
+            "volume.increase" => self.spawn_volume_step(STEP_PERCENT),
+            "volume.decrease" => self.spawn_volume_step(-STEP_PERCENT),
+            "volume.mute" => self.spawn_volume_mute(),
+            "brightness.increase" => self.spawn_brightness_step(STEP_PERCENT),
+            "brightness.decrease" => self.spawn_brightness_step(-STEP_PERCENT),
             "session.logout" | "session.reboot" | "session.poweroff" | "session.suspend"
             | "session.lock" => self.spawn_lifecycle(id),
             "window.show-all" => {
@@ -1165,6 +1183,63 @@ impl ShellApp {
                 }
                 let _ = proxy_wake.send_event(Wake);
             }
+        });
+    }
+
+    /// One `Audio1` or `Backlight1` call off the event loop, refreshing that widget the moment it
+    /// returns rather than waiting for the next three-second sweep.
+    ///
+    /// Immediate feedback is the whole point of a level control: a volume button whose number
+    /// only moves a beat or two later reads as a button that did not work, and the second press
+    /// that follows is one the person did not mean.
+    fn spawn_level_step<F, Fut>(&self, widget: &'static str, label: &'static str, call: F)
+    where
+        F: FnOnce(zbus::Connection) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
+    {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                call(connection).await
+            }
+            .await;
+            if let Err(error) = result {
+                // A refusal is the interesting case and must not vanish: "this machine has no
+                // backlight" is a real answer a person needs to see, not a click that did nothing.
+                let _ = tx.send(DataUpdate::Notice(format!("{label} — {error:#}")));
+            }
+            let snapshot = match widget {
+                "volume" => crate::data::fetch_volume_widget().await,
+                _ => crate::data::fetch_brightness_widget().await,
+            };
+            let _ = tx.send(DataUpdate::Widget(widget.to_owned(), snapshot));
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    fn spawn_volume_step(&self, delta: i32) {
+        self.spawn_level_step("volume", "Volume", move |connection| async move {
+            let proxy = lege_client::proxies::AudioProxy::new(&connection).await?;
+            proxy.adjust_volume(delta).await?;
+            Ok(())
+        });
+    }
+
+    fn spawn_volume_mute(&self) {
+        self.spawn_level_step("volume", "Mute", |connection| async move {
+            let proxy = lege_client::proxies::AudioProxy::new(&connection).await?;
+            proxy.toggle_muted().await?;
+            Ok(())
+        });
+    }
+
+    fn spawn_brightness_step(&self, delta: i32) {
+        self.spawn_level_step("brightness", "Brightness", move |connection| async move {
+            let proxy = lege_client::proxies::BacklightProxy::new(&connection).await?;
+            proxy.adjust_brightness(delta).await?;
+            Ok(())
         });
     }
 

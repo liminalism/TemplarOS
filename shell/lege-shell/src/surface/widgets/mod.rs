@@ -100,6 +100,23 @@ pub struct WidgetDescriptor {
     /// The tile's heading.
     pub title: &'static str,
     pub regions: &'static [WidgetRegion],
+    /// What a wheel over this widget's body means, as `(scroll up, scroll down)` action ids.
+    ///
+    /// A level is the one kind of widget a wheel is genuinely the right gesture for, and a person
+    /// who has used any other desktop will try it. It stays inside rule 3 all the same: these are
+    /// ids from the same manifest the regions name, so the wheel is another *route* to a declared
+    /// action — as a chord is — and never a behaviour that exists only here. `None` is the normal
+    /// case, and a widget with nothing to step must not silently eat the wheel.
+    pub scroll: Option<(&'static str, &'static str)>,
+    /// The span this widget wants when it is placed, as `(cols, rows)`.
+    ///
+    /// Per widget rather than one figure for every `TileKind::System`, because the class default
+    /// is the launcher's — a list needs rows to be a list — and a battery reading "72%" does not.
+    /// With six system widgets sharing one shelf the difference is the whole desktop: at the
+    /// launcher's 3x2 they take four rows of a seven-row field, which is furniture standing where
+    /// the windows are meant to go. Every system tile keeps the same 2x1 floor it always had, so
+    /// this changes what a widget *arrives* at and never what a person may shrink it to.
+    pub preferred_span: (u16, u16),
 }
 
 /// Every widget the shell can draw.
@@ -128,6 +145,8 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
             WidgetRegion::new("session.reboot", Representation::Large),
             WidgetRegion::new("session.poweroff", Representation::Large),
         ],
+        scroll: None,
+        preferred_span: (3, 2),
     },
     WidgetDescriptor {
         id: "launcher",
@@ -140,6 +159,8 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
             WidgetRegion::new("launcher.search", Representation::Small),
             WidgetRegion::new("launcher.show-all", Representation::Wide),
         ],
+        scroll: None,
+        preferred_span: (3, 2),
     },
     WidgetDescriptor {
         id: "notifications",
@@ -148,6 +169,50 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
             "notifications.clear",
             Representation::Small,
         )],
+        scroll: None,
+        preferred_span: (3, 2),
+    },
+    // Battery, volume and brightness: what the hardware is doing, one widget each because they
+    // are three separate facts and a person watching their charge is not the same person reaching
+    // for the volume. Each is backed by its own service interface, and none of them decides
+    // anything — the snapshot is handed in (`legeos.constraint.services-not-indicators`).
+    WidgetDescriptor {
+        id: "battery",
+        title: "Battery",
+        // No regions at all, and that is the honest shape: nothing a person can do to a battery
+        // from a tile. A control here would have to be either a lie or a power profile, and the
+        // profile belongs to Power1 and to Settings.
+        regions: &[],
+        // One figure and a word: this is the widget that most earns a small floor, and the one
+        // that has least to lose from it.
+        scroll: None,
+        preferred_span: (2, 1),
+    },
+    WidgetDescriptor {
+        id: "volume",
+        title: "Volume",
+        // The two step controls survive to the floor and mute appears above it. That is the way
+        // round it has to be: stepping is what the tile is *for*, and a 2x1 tile has room for two
+        // controls, not three. Mute is also the one of the three with a keyboard key of its own on
+        // most machines, so it is the least costly to put a rung further in.
+        regions: &[
+            WidgetRegion::new("volume.decrease", Representation::Small),
+            WidgetRegion::new("volume.increase", Representation::Small),
+            WidgetRegion::new("volume.mute", Representation::Wide),
+        ],
+        scroll: Some(("volume.increase", "volume.decrease")),
+        // Wide enough for the two step controls to sit side by side and still be hittable.
+        preferred_span: (3, 1),
+    },
+    WidgetDescriptor {
+        id: "brightness",
+        title: "Brightness",
+        regions: &[
+            WidgetRegion::new("brightness.decrease", Representation::Small),
+            WidgetRegion::new("brightness.increase", Representation::Small),
+        ],
+        scroll: Some(("brightness.increase", "brightness.decrease")),
+        preferred_span: (3, 1),
     },
 ];
 
@@ -222,7 +287,31 @@ pub fn draw(
     let refused = snapshot.map_or(&[][..], |snapshot| &snapshot.refused);
     let (body, chosen) = draw_region_strip(ui, content, widget, rung, confirming, refused);
     draw_snapshot(ui, body, snapshot, rung);
-    chosen
+    // A click on a region wins over a wheel in the same frame: the click is the deliberate one.
+    chosen.or_else(|| scrolled_action(ui, body, widget, refused))
+}
+
+/// The action a wheel over `body` asked for, if this widget declares one.
+///
+/// Taken from the body rather than the whole tile so the wheel cannot fight the region strip, and
+/// `take_scroll` claims it, so a wheel over a widget does not also scroll whatever is underneath.
+fn scrolled_action(
+    ui: &mut Ui<'_>,
+    body: Rect,
+    widget: &'static WidgetDescriptor,
+    refused: &[String],
+) -> Option<&'static ActionDecl> {
+    let (up, down) = widget.scroll?;
+    let (_, dy) = ui.input.take_scroll(body);
+    if dy == 0.0 {
+        return None;
+    }
+    // Wheel up is a negative delta, and wheel up means more.
+    let id = if dy < 0.0 { up } else { down };
+    if refused.iter().any(|entry| entry == id) {
+        return None;
+    }
+    action::action(id)
 }
 
 /// Lay out and draw a widget's declared region row along the bottom of `content`, returning the
@@ -329,6 +418,135 @@ fn draw_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_declared_scroll_route_names_a_real_action_and_only_levels_have_one() {
+        for widget in WIDGETS {
+            let Some((up, down)) = widget.scroll else {
+                continue;
+            };
+            for id in [up, down] {
+                assert!(
+                    action::action(id).is_some(),
+                    "{} scrolls to {id}, which is in no action manifest",
+                    widget.id
+                );
+            }
+            assert_ne!(
+                up, down,
+                "{}: a wheel must not do the same thing both ways",
+                widget.id
+            );
+            // A wheel is a level's gesture. Anything else declaring one would be silently eating
+            // the wheel over a tile that has nothing to step.
+            assert!(
+                matches!(widget.id, "volume" | "brightness"),
+                "{} declares a scroll route but is not a level",
+                widget.id
+            );
+        }
+        // The two levels do declare one: a person who has used any other desktop will try it.
+        for id in ["volume", "brightness"] {
+            assert!(
+                descriptor(id).unwrap().scroll.is_some(),
+                "{id} has no wheel"
+            );
+        }
+    }
+
+    #[test]
+    fn the_battery_offers_no_controls_because_there_are_none_to_offer() {
+        let battery = descriptor("battery").expect("the battery widget is declared");
+        assert!(
+            battery.regions.is_empty(),
+            "a control on a battery tile would have to be a lie or a power profile"
+        );
+        assert_eq!(battery.scroll, None);
+    }
+
+    #[test]
+    fn a_readout_arrives_smaller_than_a_launcher_but_keeps_the_same_floor() {
+        // The launcher needs rows to be a list; a battery reading "72%" does not, and six widgets
+        // at the launcher's size are four rows of a seven-row field.
+        assert_eq!(descriptor("launcher").unwrap().preferred_span, (3, 2));
+        assert_eq!(descriptor("battery").unwrap().preferred_span, (2, 1));
+        for id in ["volume", "brightness"] {
+            // Wide enough for two step controls side by side.
+            assert_eq!(descriptor(id).unwrap().preferred_span, (3, 1));
+        }
+    }
+
+    /// A wheel over the body, put through the real `draw` the field screen calls.
+    fn wheel_over(
+        widget: &'static WidgetDescriptor,
+        dy: f32,
+        refused: &[String],
+    ) -> Option<&'static str> {
+        let mut buffer = pixelkit_raster::WindowBuffer::new(240, 160);
+        let mut text = pixelkit_text::TextCache::new(crate::surface::fonts::set());
+        let mut kernel = pixelkit_raster::RasterKernel::new();
+        let mut input = pixelkit_shell::Input::new();
+        let content = Rect::new(0, 0, 240, 160);
+        input.cursor_moved(120.0, 40.0);
+        input.scrolled(0.0, dy);
+        let snapshot = WidgetSnapshot {
+            headline: "45%".to_owned(),
+            detail: Vec::new(),
+            available: true,
+            refused: refused.to_vec(),
+        };
+        let mut ui = Ui::new(
+            pixelkit_raster::Painter::new(&mut buffer),
+            &mut text,
+            &mut input,
+            crate::surface::design::theme(),
+            pixelkit_shell::Scale::ONE,
+            &mut kernel,
+        );
+        draw(
+            &mut ui,
+            content,
+            widget,
+            Some(&snapshot),
+            Representation::Large,
+            None,
+        )
+        .map(|declaration| declaration.id)
+    }
+
+    #[test]
+    fn a_wheel_over_a_level_steps_it_the_way_round_a_person_expects() {
+        let volume = descriptor("volume").unwrap();
+        // Wheel up is a negative delta, and wheel up means more.
+        assert_eq!(wheel_over(volume, -48.0, &[]), Some("volume.increase"));
+        assert_eq!(wheel_over(volume, 48.0, &[]), Some("volume.decrease"));
+        assert_eq!(wheel_over(volume, 0.0, &[]), None);
+    }
+
+    #[test]
+    fn a_refused_level_does_not_step_on_a_wheel_either() {
+        // A machine with no backlight refuses both controls. The region strip already draws them
+        // inert; the wheel has to honour the same answer, or the one route with no visible
+        // control would be the one that still fired.
+        let brightness = descriptor("brightness").unwrap();
+        let refused = vec![
+            "brightness.increase".to_owned(),
+            "brightness.decrease".to_owned(),
+        ];
+        assert_eq!(wheel_over(brightness, -48.0, &refused), None);
+        assert_eq!(wheel_over(brightness, 48.0, &refused), None);
+        // With the hardware present the same wheel does step it.
+        assert_eq!(
+            wheel_over(brightness, -48.0, &[]),
+            Some("brightness.increase")
+        );
+    }
+
+    #[test]
+    fn a_widget_with_no_wheel_route_leaves_the_wheel_alone() {
+        assert_eq!(wheel_over(descriptor("battery").unwrap(), -48.0, &[]), None);
+        assert_eq!(wheel_over(descriptor("session").unwrap(), -48.0, &[]), None);
+    }
 
     #[test]
     fn every_declared_region_names_a_real_action() {
