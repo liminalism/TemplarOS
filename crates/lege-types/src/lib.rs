@@ -15,6 +15,7 @@ pub mod action;
 pub mod app;
 pub mod checkpoint;
 pub mod dbus;
+pub mod file_sort;
 pub mod identity;
 pub mod provider;
 pub mod unit;

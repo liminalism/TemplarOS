@@ -1658,6 +1658,7 @@ dependencies = [
  "clap",
  "futures-util",
  "lege-client",
+ "lege-types",
  "pixelkit-raster",
  "pixelkit-shell",
  "pixelkit-text",

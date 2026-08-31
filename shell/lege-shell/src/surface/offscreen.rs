@@ -80,6 +80,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     let empty_previews = HashMap::new();
     let empty_treemaps = HashMap::new();
     let empty_compositions = HashMap::new();
+    let empty_thumbnails = std::collections::HashMap::new();
     let browser = FileBrowserData {
         sources: &browser_sources,
         listing: None,
@@ -89,6 +90,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         search_query: None,
         search_entries: None,
         search_error: None,
+        thumbnails: &empty_thumbnails,
     };
     let clock_label = crate::surface::app::clock_label_now();
     let data = FieldData {
@@ -210,6 +212,7 @@ mod tests {
         let empty_treemaps = HashMap::new();
         let empty_compositions = HashMap::new();
         let browser_sources = crate::file_browser::BrowserSources::default();
+        let empty_thumbnails = std::collections::HashMap::new();
         let browser = FileBrowserData {
             sources: &browser_sources,
             listing: None,
@@ -219,6 +222,7 @@ mod tests {
             search_query: None,
             search_entries: None,
             search_error: None,
+            thumbnails: &empty_thumbnails,
         };
         let apps = Vec::new();
         let data = FieldData {

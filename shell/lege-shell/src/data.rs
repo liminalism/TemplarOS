@@ -547,6 +547,22 @@ fn add_place(
 }
 
 /// Ask `lege-filed` for one real directory snapshot.
+/// One bounded thumbnail for the browse grid: `Files.Previews1.Render` draws it server-side
+/// and this decodes the PNG here, in the async task — the render thread never sees a file.
+/// `None` for unsupported files, an unreachable service, or an undecodable answer: a grid cell
+/// simply keeps its kind chip.
+pub async fn file_thumbnail(path: &std::path::Path) -> Option<pixelkit_raster::Bitmap> {
+    let connection = session().await.ok()?;
+    let proxy = lege_client::proxies::files::FilesPreviewsProxy::new(&connection)
+        .await
+        .ok()?;
+    let (_, png) = proxy.render(&path.to_string_lossy(), 256).await.ok()?;
+    if png.is_empty() {
+        return None;
+    }
+    pixelkit_raster::png::decode(&png).ok()
+}
+
 pub async fn browse_directory(
     path: &std::path::Path,
     show_hidden: bool,

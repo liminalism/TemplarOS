@@ -8,6 +8,7 @@
 
 pub mod autostart;
 pub mod change_log;
+pub mod file_view;
 pub mod first_run;
 pub mod history;
 pub mod homefield;

@@ -583,4 +583,40 @@ mod tests {
         let (restored, _) = crate::ops::apply(&next, &inverse).expect("undo");
         assert_eq!(restored, doc, "reference removal inverts exactly");
     }
+
+    /// Content inside a folder or pane — entries, previews, thumbnails — is content, never a
+    /// tile: filling a pane changes no tile and nothing placed, so nothing a surface renders
+    /// inside one can ever be persisted as a loose Home file tile.
+    #[test]
+    fn no_loose_file_tiles_pane_contents_never_become_tiles() {
+        let mut doc = FieldDocument::new("eDP-1", 8, 8);
+        doc = crate::ops::apply(
+            &doc,
+            &crate::ops::FieldOp::CreateTray {
+                tray: Tray {
+                    id: TrayId(1),
+                    name: "Shortcuts".to_owned(),
+                    entries: Vec::new(),
+                },
+            },
+        )
+        .expect("create pane")
+        .0;
+        let tiles_before = doc.tiles.clone();
+        let located_before = doc.located.clone();
+        for index in 0..20 {
+            doc = crate::ops::apply(
+                &doc,
+                &crate::ops::FieldOp::AddReference {
+                    tray: TrayId(1),
+                    path: PathBuf::from(format!("/home/a/photo{index:02}.png")),
+                    at: None,
+                },
+            )
+            .expect("add reference")
+            .0;
+        }
+        assert_eq!(doc.tiles, tiles_before, "twenty references, zero new tiles");
+        assert_eq!(doc.located, located_before, "and nothing placed");
+    }
 }

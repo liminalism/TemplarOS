@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 lege-client = { workspace = true }
+lege-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

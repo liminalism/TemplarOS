@@ -419,63 +419,34 @@ fn entry_from(path: PathBuf, name: String, hidden: bool) -> BrowseEntry {
     }
 }
 
+/// The one shared ordering (`lege_types::file_sort`): the service's default listing order is
+/// the contract's default descriptor, so a client re-sorting with the same descriptor can
+/// never disagree with what the service served.
 fn entry_cmp(left: &BrowseEntry, right: &BrowseEntry) -> Ordering {
-    right
-        .is_dir()
-        .cmp(&left.is_dir())
-        .then_with(|| left.hidden.cmp(&right.hidden))
-        .then_with(|| natural_cmp(&left.name, &right.name))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left.path.cmp(&right.path))
+    lege_types::file_sort::compare(
+        &sort_item(left),
+        &sort_item(right),
+        lege_types::file_sort::SortDescriptor::default(),
+    )
 }
 
-/// Deterministic, locale-neutral natural comparison. Case-folded non-numeric text is compared
-/// bytewise; adjacent ASCII digit runs compare by numeric magnitude without integer overflow.
-fn natural_cmp(left: &str, right: &str) -> Ordering {
-    let left = left.to_lowercase();
-    let right = right.to_lowercase();
-    let (a, b) = (left.as_bytes(), right.as_bytes());
-    let (mut ai, mut bi) = (0, 0);
-    while ai < a.len() && bi < b.len() {
-        if a[ai].is_ascii_digit() && b[bi].is_ascii_digit() {
-            let a_end = digit_end(a, ai);
-            let b_end = digit_end(b, bi);
-            let a_significant = significant_digits(&a[ai..a_end]);
-            let b_significant = significant_digits(&b[bi..b_end]);
-            let order = a_significant
-                .len()
-                .cmp(&b_significant.len())
-                .then_with(|| a_significant.cmp(b_significant))
-                .then_with(|| (a_end - ai).cmp(&(b_end - bi)));
-            if order != Ordering::Equal {
-                return order;
-            }
-            ai = a_end;
-            bi = b_end;
-        } else {
-            let order = a[ai].cmp(&b[bi]);
-            if order != Ordering::Equal {
-                return order;
-            }
-            ai += 1;
-            bi += 1;
-        }
+/// `BrowseEntry` as the shared comparator reads it. The kind label is the lowered extension —
+/// the same label the Files app shows in its TYPE column.
+pub fn sort_item(entry: &BrowseEntry) -> lege_types::file_sort::SortItem<'_> {
+    lege_types::file_sort::SortItem {
+        name: &entry.name,
+        path: &entry.path,
+        is_dir: entry.is_dir(),
+        hidden: entry.hidden,
+        kind_label: entry
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or(""),
+        size_bytes: entry.size_bytes,
+        mtime_ms: entry.mtime_ms,
+        manual_index: None,
     }
-    a.len().cmp(&b.len())
-}
-
-fn digit_end(bytes: &[u8], start: usize) -> usize {
-    bytes[start..]
-        .iter()
-        .position(|byte| !byte.is_ascii_digit())
-        .map_or(bytes.len(), |relative| start + relative)
-}
-
-fn significant_digits(digits: &[u8]) -> &[u8] {
-    let first = digits.iter().position(|digit| *digit != b'0');
-    first.map_or(&digits[digits.len().saturating_sub(1)..], |at| {
-        &digits[at..]
-    })
 }
 
 #[cfg(test)]
@@ -663,5 +634,132 @@ mod tests {
             .unwrap();
         assert!(linked.is_symlink);
         assert_eq!(linked.kind, EntryKind::Directory);
+    }
+
+    /// The service's ordering IS the shared contract (`lege_types::file_sort`): every field is
+    /// a deterministic total order with stable tie breakers, direction flips only the primary
+    /// key, and folder-first is an explicit policy — so a client re-sorting with the same
+    /// descriptor can never disagree with a listing this service served.
+    #[test]
+    fn sort_contract_is_shared_total_and_stable_across_fields_and_directions() {
+        use lege_types::file_sort::{SortDescriptor, SortField, compare};
+
+        fn entry(name: &str, dir: bool, hidden: bool, size: u64, mtime: i64) -> BrowseEntry {
+            BrowseEntry {
+                path: PathBuf::from(format!("/fixture/{name}")),
+                name: name.to_owned(),
+                kind: if dir {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
+                is_symlink: false,
+                hidden,
+                size_bytes: size,
+                mtime_ms: mtime,
+            }
+        }
+
+        let entries = vec![
+            entry("file10.txt", false, false, 10, 5),
+            entry("file2.txt", false, false, 200, 5),
+            entry("Alpha", true, false, 0, 9),
+            entry("beta", true, false, 0, 1),
+            entry(".hidden.txt", false, true, 3, 2),
+            entry("same.txt", false, false, 200, 5),
+            entry("archive.zip", false, false, 50, 7),
+        ];
+
+        // The service's own default order equals the shared default descriptor's.
+        let mut by_service = entries.clone();
+        by_service.sort_by(entry_cmp);
+        let mut by_contract = entries.clone();
+        by_contract
+            .sort_by(|a, b| compare(&sort_item(a), &sort_item(b), SortDescriptor::default()));
+        assert_eq!(by_service, by_contract, "one contract, both sides");
+        let names: Vec<&str> = by_service.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Alpha",
+                "beta",
+                "archive.zip",
+                "file2.txt",
+                "file10.txt",
+                "same.txt",
+                ".hidden.txt"
+            ],
+            "folders first, natural order, hidden last"
+        );
+
+        for field in [
+            SortField::NaturalName,
+            SortField::Kind,
+            SortField::Size,
+            SortField::Modified,
+            SortField::Manual,
+        ] {
+            for ascending in [true, false] {
+                for folders_first in [true, false] {
+                    let descriptor = SortDescriptor {
+                        field,
+                        ascending,
+                        folders_first,
+                    };
+                    let mut once = entries.clone();
+                    once.sort_by(|a, b| compare(&sort_item(a), &sort_item(b), descriptor));
+                    let mut twice = once.clone();
+                    twice.reverse();
+                    twice.sort_by(|a, b| compare(&sort_item(a), &sort_item(b), descriptor));
+                    assert_eq!(once, twice, "{descriptor:?} is deterministic in its inputs");
+                    // Totality: no two distinct entries compare equal (the path tie breaker).
+                    for (index, left) in once.iter().enumerate() {
+                        for right in &once[index + 1..] {
+                            assert_ne!(
+                                compare(&sort_item(left), &sort_item(right), descriptor),
+                                std::cmp::Ordering::Equal,
+                                "{descriptor:?}: {left:?} vs {right:?}"
+                            );
+                        }
+                    }
+                    if folders_first {
+                        let last_dir = once.iter().rposition(BrowseEntry::is_dir);
+                        let first_file = once.iter().position(|e| !e.is_dir());
+                        if let (Some(last_dir), Some(first_file)) = (last_dir, first_file) {
+                            assert!(last_dir < first_file, "{descriptor:?}: folders lead");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Direction flips only the primary key: two size-equal files keep their natural-name
+        // tie order in both directions.
+        let descriptor = SortDescriptor {
+            field: SortField::Size,
+            ascending: true,
+            folders_first: true,
+        };
+        let position = |sorted: &[BrowseEntry], name: &str| {
+            sorted.iter().position(|e| e.name == name).unwrap()
+        };
+        let mut ascending = entries.clone();
+        ascending.sort_by(|a, b| compare(&sort_item(a), &sort_item(b), descriptor));
+        let mut descending = entries.clone();
+        descending.sort_by(|a, b| {
+            compare(
+                &sort_item(a),
+                &sort_item(b),
+                SortDescriptor {
+                    ascending: false,
+                    ..descriptor
+                },
+            )
+        });
+        assert!(position(&ascending, "file2.txt") < position(&ascending, "same.txt"));
+        assert!(
+            position(&descending, "file2.txt") < position(&descending, "same.txt"),
+            "equal sizes keep their stable tie order in both directions"
+        );
     }
 }

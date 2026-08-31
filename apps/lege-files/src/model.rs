@@ -2,7 +2,7 @@
 
 use crate::actions::ActionId;
 use lege_client::files::{
-    BrowserSources, DirectoryListing, FileInfo, OperationOptions, OperationRecord,
+    BrowseEntry, BrowserSources, DirectoryListing, FileInfo, OperationOptions, OperationRecord,
     OperationRequest, PreviewMetadata, TrashEntry, VolumeInfo, valid_file_name,
 };
 use pixelkit_raster::Bitmap;
@@ -63,6 +63,13 @@ pub struct PreviewRequest {
     pub path: PathBuf,
 }
 
+/// One bounded thumbnail decode, tagged with the listing generation it was asked for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThumbnailRequest {
+    pub generation: u64,
+    pub path: PathBuf,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlannedOperation {
     pub request: OperationRequest,
@@ -106,6 +113,14 @@ struct PendingBrowse {
 pub struct BrowserModel {
     pub sources: BrowserSources,
     pub listing: Option<DirectoryListing>,
+    /// The one shared ordering contract (`lege_types::file_sort`): the listing is kept sorted
+    /// by this at all times, so rows, selection indices and keyboard focus always agree.
+    pub sort: lege_types::file_sort::SortDescriptor,
+    /// List columns or thumbnail cells. Switching preserves selection and focus.
+    pub view: lege_types::file_sort::ViewMode,
+    /// Thumbnail bitmaps by path, filled boundedly by `begin_thumbnails` — only visible and
+    /// near-visible cells are ever requested, and stale generations are dropped.
+    pub thumbnails: std::collections::HashMap<PathBuf, Bitmap>,
     pub volume: Option<VolumeInfo>,
     pub show_hidden: bool,
     pub selected: BTreeSet<PathBuf>,
@@ -139,6 +154,7 @@ pub struct BrowserModel {
     pending_inspect: Option<InspectRequest>,
     pending_preview: Option<PreviewRequest>,
     requested_initial: Option<PathBuf>,
+    thumbnail_generation: u64,
 }
 
 impl BrowserModel {
@@ -146,6 +162,9 @@ impl BrowserModel {
         Self {
             sources: BrowserSources::default(),
             listing: None,
+            sort: lege_types::file_sort::SortDescriptor::default(),
+            view: lege_types::file_sort::ViewMode::default(),
+            thumbnails: std::collections::HashMap::new(),
             volume: None,
             show_hidden,
             selected: BTreeSet::new(),
@@ -173,6 +192,7 @@ impl BrowserModel {
             pending_inspect: None,
             pending_preview: None,
             requested_initial,
+            thumbnail_generation: 0,
         }
     }
 
@@ -313,7 +333,11 @@ impl BrowserModel {
                     }
                     Navigation::Replace => {}
                 }
-                self.listing = Some(snapshot.listing);
+                let mut listing = snapshot.listing;
+                Self::sort_entries(&mut listing, self.sort);
+                self.thumbnails.clear();
+                self.thumbnail_generation = self.thumbnail_generation.wrapping_add(1);
+                self.listing = Some(listing);
                 self.volume = Some(snapshot.volume);
                 self.selected.clear();
                 self.anchor = None;
@@ -355,6 +379,103 @@ impl BrowserModel {
                     .collect()
             }),
         }
+    }
+
+    /// Apply the shared comparator. The service already serves the default order; any other
+    /// descriptor re-sorts locally with the very same contract, so Home, Files and the service
+    /// can never disagree about the same directory.
+    fn sort_entries(listing: &mut DirectoryListing, sort: lege_types::file_sort::SortDescriptor) {
+        listing.entries.sort_by(|a, b| {
+            lege_types::file_sort::compare(&Self::sort_item(a), &Self::sort_item(b), sort)
+        });
+    }
+
+    fn sort_item(entry: &BrowseEntry) -> lege_types::file_sort::SortItem<'_> {
+        lege_types::file_sort::SortItem {
+            name: &entry.name,
+            path: &entry.path,
+            is_dir: entry.is_dir(),
+            hidden: entry.hidden,
+            kind_label: entry
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or(""),
+            size_bytes: entry.size_bytes,
+            mtime_ms: entry.mtime_ms,
+            manual_index: None,
+        }
+    }
+
+    /// Change the sort descriptor: the listing re-orders in place, the selected path set is
+    /// untouched, and keyboard focus follows the item it was on to its new row.
+    pub fn set_sort(&mut self, sort: lege_types::file_sort::SortDescriptor) {
+        self.sort = sort;
+        let focused = self.focused_path().cloned();
+        if let Some(listing) = &mut self.listing {
+            Self::sort_entries(listing, sort);
+        }
+        if let Some(focused) = focused {
+            let rows = self.row_paths();
+            if let Some(index) = rows.iter().position(|path| *path == focused) {
+                self.focus = index;
+            }
+        }
+    }
+
+    /// Switch between the list and thumbnail presentations. A view is how the same rows are
+    /// drawn: selection, focus and the anchor stay exactly as they are, so toggling back and
+    /// forth loses nothing.
+    pub fn set_view(&mut self, view: lege_types::file_sort::ViewMode) {
+        self.view = view;
+    }
+
+    /// The most thumbnail decodes one call may put in flight. Scrolling calls again with the
+    /// new window; a bounded batch per frame is what keeps a huge directory from flooding the
+    /// preview service.
+    pub const THUMBNAIL_BATCH: usize = 16;
+
+    /// Request thumbnails for the visible (plus one row of lookahead) file entries that have
+    /// none yet — bounded, cancellable, and never decoding anything itself: the returned
+    /// requests are handed to the same off-thread preview backend the inspector uses, and a
+    /// response from before the last listing change is dropped by generation.
+    pub fn begin_thumbnails(&mut self, visible: std::ops::Range<usize>) -> Vec<ThumbnailRequest> {
+        if self.view != lege_types::file_sort::ViewMode::Thumbnails {
+            return Vec::new();
+        }
+        let Some(listing) = &self.listing else {
+            return Vec::new();
+        };
+        let end = visible.end.min(listing.entries.len());
+        let start = visible.start.min(end);
+        listing.entries[start..end]
+            .iter()
+            .filter(|entry| !entry.is_dir())
+            .filter(|entry| !self.thumbnails.contains_key(&entry.path))
+            .take(Self::THUMBNAIL_BATCH)
+            .map(|entry| ThumbnailRequest {
+                generation: self.thumbnail_generation,
+                path: entry.path.clone(),
+            })
+            .collect()
+    }
+
+    /// A thumbnail arrived. A response from a superseded generation — the listing changed under
+    /// it — is dropped, so a slow decode can never paint into the wrong directory.
+    pub fn apply_thumbnail(
+        &mut self,
+        generation: u64,
+        path: &std::path::Path,
+        bitmap: Option<Bitmap>,
+    ) -> bool {
+        if generation != self.thumbnail_generation {
+            return false;
+        }
+        if let Some(bitmap) = bitmap {
+            self.thumbnails.insert(path.to_path_buf(), bitmap);
+            return true;
+        }
+        false
     }
 
     pub fn select(&mut self, index: usize, modifiers: SelectionModifiers) -> bool {
@@ -1070,5 +1191,139 @@ mod tests {
             model.preview.as_ref().unwrap().metadata.kind,
             PreviewKind::Heic
         );
+    }
+
+    fn seeded_model(names: &[&str]) -> BrowserModel {
+        let mut model = BrowserModel::new(None, false);
+        let request = model.navigate("/home/u/docs".into());
+        model.apply_browse(
+            request.id,
+            std::path::Path::new("/home/u/docs"),
+            Ok(snapshot("/home/u/docs", names)),
+        );
+        model
+    }
+
+    /// The app re-sorts with the same shared contract the service serves by, selection is a
+    /// path set that survives re-ordering, and keyboard focus follows its item to its new row.
+    #[test]
+    fn sort_reorders_by_the_shared_contract_and_keeps_selection_and_focus() {
+        let mut model = seeded_model(&["file10.txt", "file2.txt", "alpha.txt"]);
+        // Service default order: natural name.
+        let names: Vec<&str> = model
+            .listing
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha.txt", "file2.txt", "file10.txt"]);
+
+        model.select(1, SelectionModifiers::default());
+        model.select(
+            2,
+            SelectionModifiers {
+                control: true,
+                shift: false,
+            },
+        );
+        let focused = model.focused_path().cloned().unwrap();
+        assert_eq!(focused, PathBuf::from("/home/u/docs/file10.txt"));
+
+        model.set_sort(lege_types::file_sort::SortDescriptor {
+            field: lege_types::file_sort::SortField::NaturalName,
+            ascending: false,
+            folders_first: true,
+        });
+        let names: Vec<&str> = model
+            .listing
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, ["file10.txt", "file2.txt", "alpha.txt"]);
+        assert_eq!(
+            model.selected.len(),
+            2,
+            "the selected path set is untouched"
+        );
+        assert_eq!(
+            model.focused_path().cloned().unwrap(),
+            focused,
+            "focus followed its item to the new row"
+        );
+    }
+
+    /// Switching between list and thumbnails changes only how rows are drawn: the same
+    /// selection, the same focus, back and forth without loss.
+    #[test]
+    fn view_mode_switch_preserves_selection_and_focus() {
+        let mut model = seeded_model(&["a.png", "b.png", "c.png"]);
+        model.select(1, SelectionModifiers::default());
+        let focused = model.focused_path().cloned();
+        let selected = model.selected.clone();
+
+        model.set_view(lege_types::file_sort::ViewMode::Thumbnails);
+        assert_eq!(model.view, lege_types::file_sort::ViewMode::Thumbnails);
+        assert_eq!(model.selected, selected);
+        assert_eq!(model.focused_path().cloned(), focused);
+
+        model.set_view(lege_types::file_sort::ViewMode::List);
+        assert_eq!(model.selected, selected);
+        assert_eq!(model.focused_path().cloned(), focused);
+    }
+
+    /// Thumbnails load boundedly: only the visible window is requested, each batch is capped,
+    /// nothing is requested twice, and a response from before the listing changed is dropped.
+    #[test]
+    fn thumbnail_requests_are_bounded_visible_only_and_stale_responses_are_dropped() {
+        let names: Vec<String> = (0..40)
+            .map(|index| format!("photo{index:02}.png"))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut model = seeded_model(&names);
+        assert!(
+            model.begin_thumbnails(0..10).is_empty(),
+            "list mode requests nothing"
+        );
+
+        model.set_view(lege_types::file_sort::ViewMode::Thumbnails);
+        let requests = model.begin_thumbnails(0..40);
+        assert_eq!(
+            requests.len(),
+            BrowserModel::THUMBNAIL_BATCH,
+            "one bounded batch, however long the directory"
+        );
+        let visible_only = model.begin_thumbnails(0..4);
+        assert!(
+            visible_only.len() <= 4,
+            "only the visible window is asked for"
+        );
+
+        let first = requests[0].clone();
+        assert!(model.apply_thumbnail(first.generation, &first.path, Some(Bitmap::new(1, 1))));
+        assert!(
+            !model
+                .begin_thumbnails(0..40)
+                .iter()
+                .any(|request| request.path == first.path),
+            "a loaded thumbnail is not requested again"
+        );
+
+        // The listing changes: outstanding decodes are from a dead generation.
+        let request = model.navigate("/home/u/other".into());
+        model.apply_browse(
+            request.id,
+            std::path::Path::new("/home/u/other"),
+            Ok(snapshot("/home/u/other", &["x.png"])),
+        );
+        assert!(
+            !model.apply_thumbnail(first.generation, &first.path, Some(Bitmap::new(1, 1))),
+            "a stale response is dropped, not painted into the wrong place"
+        );
+        assert!(model.thumbnails.is_empty());
     }
 }

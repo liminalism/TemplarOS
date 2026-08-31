@@ -122,6 +122,17 @@ fn type_name(value: &SettingValue) -> &'static str {
 pub fn baseline_schema() -> SettingsSchema {
     let mut schema = SettingsSchema::default();
     schema.add(SettingSpec {
+        key: crate::file_view::FILE_VIEW_SETTING.into(),
+        description: "File view preferences: the default sort/view and per-folder overrides, \
+                      as one JSON value managed through crate::file_view"
+            .into(),
+        default: SettingValue::Str(String::new()),
+        choices: vec![],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
         key: "shell.wallpaper.enabled".into(),
         description:
             "Show a wallpaper behind the Home Surface (off by default; never a functional layer)"

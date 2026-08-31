@@ -63,6 +63,14 @@ enum DataUpdate {
     /// Something the user asked for did not happen, in words meant for them. Shown in the field's
     /// notice strip, the same place a successful operation reports itself.
     Notice(String),
+    /// One file thumbnail for the browse grid, rendered by Files.Previews1 and decoded
+    /// off-thread. Tagged with the listing generation it was requested under, so a decode that
+    /// outlives its directory is dropped instead of painted into the wrong one.
+    FileThumbnail {
+        generation: u64,
+        path: PathBuf,
+        bitmap: Option<pixelkit_raster::Bitmap>,
+    },
     /// One application's icon, resolved and decoded off-thread. `None` when nothing was found —
     /// the attempt is already recorded, so the receiver simply has nothing to file.
     Icon(String, Option<pixelkit_raster::Bitmap>),
@@ -178,6 +186,11 @@ struct ShellApp {
     search_results: Option<(Drawer, String, Result<Vec<BrowseEntry>, String>)>,
     browser_sources: BrowserSources,
     browser_listing: Option<(Drawer, bool, DirectoryListing)>,
+    /// Decoded file thumbnails for the browse view's grid mode, keyed by path. Filled from the
+    /// bounded requests the screen hands out; dropped whenever the listing generation moves.
+    file_thumbnails: std::collections::HashMap<PathBuf, pixelkit_raster::Bitmap>,
+    file_thumbnails_generation: u64,
+    file_thumbnails_pending: std::collections::HashSet<PathBuf>,
     browser_pending: Option<(Drawer, bool, PathBuf)>,
     browser_error: Option<(Drawer, PathBuf, String)>,
     browser_status: Option<String>,
@@ -232,6 +245,9 @@ impl ShellApp {
             search_results: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
+            file_thumbnails: std::collections::HashMap::new(),
+            file_thumbnails_generation: 0,
+            file_thumbnails_pending: std::collections::HashSet::new(),
             browser_pending: None,
             browser_error: None,
             browser_status: None,
@@ -339,6 +355,41 @@ impl ShellApp {
         });
     }
 
+    /// Hand the browse grid's bounded thumbnail wants to the preview service. Requests carry
+    /// the screen's listing generation; a decode arriving after the directory changed is
+    /// dropped in the `FileThumbnail` handler. Decoding happens in the async task — the render
+    /// thread never opens a file.
+    fn spawn_thumbnails(&mut self) {
+        let Some((_, _, listing)) = &self.browser_listing else {
+            return;
+        };
+        let screen = &self.field_screen.drawer_view.browser;
+        if !screen.thumbnail_current(self.file_thumbnails_generation) {
+            self.file_thumbnails.clear();
+            self.file_thumbnails_pending.clear();
+            self.file_thumbnails_generation = self.file_thumbnails_generation.wrapping_add(1);
+            while !screen.thumbnail_current(self.file_thumbnails_generation) {
+                self.file_thumbnails_generation = self.file_thumbnails_generation.wrapping_add(1);
+            }
+        }
+        for (generation, path) in screen.begin_thumbnails(&listing.entries, &self.file_thumbnails) {
+            if !self.file_thumbnails_pending.insert(path.clone()) {
+                continue;
+            }
+            let tx = self.data_tx.clone();
+            let proxy = self.wake_proxy.clone();
+            self.runtime.spawn(async move {
+                let bitmap = crate::data::file_thumbnail(&path).await;
+                let _ = tx.send(DataUpdate::FileThumbnail {
+                    generation,
+                    path,
+                    bitmap,
+                });
+                let _ = proxy.send_event(Wake);
+            });
+        }
+    }
+
     fn spawn_browse(&mut self, drawer: Drawer, path: PathBuf, show_hidden: bool) {
         if self.browser_pending.as_ref().is_some_and(
             |(pending_drawer, pending_hidden, pending_path)| {
@@ -374,6 +425,7 @@ impl ShellApp {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     fn drain_updates(&mut self) {
         while let Ok(update) = self.data_rx.try_recv() {
             match update {
@@ -417,6 +469,23 @@ impl ShellApp {
                 DataUpdate::Icon(key, bitmap) => {
                     if let Some(bitmap) = bitmap {
                         self.icons.insert(key, bitmap);
+                    }
+                }
+                DataUpdate::FileThumbnail {
+                    generation,
+                    path,
+                    bitmap,
+                } => {
+                    self.file_thumbnails_pending.remove(&path);
+                    if generation == self.file_thumbnails_generation
+                        && self
+                            .field_screen
+                            .drawer_view
+                            .browser
+                            .thumbnail_current(generation)
+                        && let Some(bitmap) = bitmap
+                    {
+                        self.file_thumbnails.insert(path, bitmap);
                     }
                 }
                 DataUpdate::TreemapsStale => self.treemaps.clear(),
@@ -722,6 +791,7 @@ impl ShellApp {
             search_query,
             search_entries,
             search_error,
+            thumbnails: &self.file_thumbnails,
         };
         let data = FieldData {
             field: &self.field,
@@ -761,6 +831,9 @@ impl ShellApp {
         for action in actions {
             self.perform(action);
         }
+        // The browse grid told us during the draw which cells it can see; hand the bounded
+        // thumbnail work to the preview service now, off-thread.
+        self.spawn_thumbnails();
     }
 
     fn perform(&mut self, action: FieldAction) {

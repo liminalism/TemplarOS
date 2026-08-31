@@ -3,10 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use lege_field::Selection;
+use lege_types::file_sort::{SortDescriptor, SortField, SortItem, ViewMode, compare};
+use pixelkit_raster::Bitmap;
 use pixelkit_raster::Rect;
 use pixelkit_shell::KeyInput;
 use pixelkit_text::{Align, TextStyle};
 use pixelkit_ui::{ScrollState, Ui};
+use std::collections::HashMap;
 
 use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind, RootKind};
 use crate::home_surface::Drawer;
@@ -39,6 +42,9 @@ pub struct FileBrowserData<'a> {
     pub search_query: Option<&'a str>,
     pub search_entries: Option<&'a [BrowseEntry]>,
     pub search_error: Option<&'a str>,
+    /// Decoded thumbnails by path, produced off the render thread by the host from the bounded
+    /// requests [`FileBrowserScreen::begin_thumbnails`] hands it. Drawing only ever reads.
+    pub thumbnails: &'a HashMap<PathBuf, Bitmap>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +64,16 @@ pub struct FileBrowserScreen {
     root_scroll: ScrollState,
     entry_scroll: ScrollState,
     last_directory: Option<PathBuf>,
+    /// The shared ordering contract (`lege_types::file_sort`). The default is exactly the
+    /// order the service serves, so re-sorting is a pure client-side re-view.
+    sort: SortDescriptor,
+    view: ViewMode,
+    /// Bumped whenever the directory changes, so a thumbnail decoded for the old listing is
+    /// recognisably stale and dropped by the host instead of painted into the wrong folder.
+    thumbnail_generation: u64,
+    /// The entry range the last thumbnail draw could see, plus a row of lookahead — the only
+    /// entries [`Self::begin_thumbnails`] will ask for.
+    visible_thumbnails: std::ops::Range<usize>,
 }
 
 impl Default for FileBrowserScreen {
@@ -72,6 +88,10 @@ impl Default for FileBrowserScreen {
             root_scroll: ScrollState::new(),
             entry_scroll: ScrollState::new(),
             last_directory: None,
+            sort: SortDescriptor::default(),
+            view: ViewMode::default(),
+            thumbnail_generation: 0,
+            visible_thumbnails: 0..0,
         }
     }
 }
@@ -113,10 +133,17 @@ impl FileBrowserScreen {
             .or_else(|| listing.map(|listing| listing.directory.as_path()))
             .or_else(|| data.sources.start(drawer));
         let searching = data.search_query.is_some();
+        let ordered: Vec<BrowseEntry>;
         let visible_entries: &[BrowseEntry] = if searching {
             data.search_entries.unwrap_or(&[])
-        } else {
+        } else if self.sort == SortDescriptor::default() {
             listing.map_or(&[], |listing| listing.entries.as_slice())
+        } else {
+            ordered = Self::sorted(
+                listing.map_or(&[], |listing| listing.entries.as_slice()),
+                self.sort,
+            );
+            &ordered
         };
         self.entry_selection
             .retain(|path| visible_entries.iter().any(|entry| &entry.path == path));
@@ -128,6 +155,8 @@ impl FileBrowserScreen {
             self.entry_focus = 0;
             self.entry_selection.clear();
             self.entry_scroll = ScrollState::new();
+            self.thumbnail_generation = self.thumbnail_generation.wrapping_add(1);
+            self.visible_thumbnails = 0..0;
         }
 
         let mut action = if keyboard_enabled {
@@ -187,22 +216,13 @@ impl FileBrowserScreen {
                 Align::Left,
             );
         } else if let Some(listing) = listing {
-            if action.is_none() {
-                action = self.draw_entries(
-                    ui,
-                    entries_area,
-                    drawer,
-                    &listing.entries,
-                    listing.truncated,
-                );
+            let drawn = if self.view == ViewMode::Thumbnails {
+                self.draw_thumbnails(ui, entries_area, drawer, visible_entries, data.thumbnails)
             } else {
-                self.draw_entries(
-                    ui,
-                    entries_area,
-                    drawer,
-                    &listing.entries,
-                    listing.truncated,
-                );
+                self.draw_entries(ui, entries_area, drawer, visible_entries, listing.truncated)
+            };
+            if action.is_none() {
+                action = drawn;
             }
         } else if current.is_none() {
             ui.label(
@@ -245,6 +265,7 @@ impl FileBrowserScreen {
         action
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_keys(
         &mut self,
         ui: &Ui<'_>,
@@ -258,6 +279,11 @@ impl FileBrowserScreen {
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         for key in ui.input.keys() {
             match key {
+                KeyInput::Character('g') if modifiers.control => self.toggle_view(),
+                KeyInput::Character('s') if modifiers.control => self.cycle_sort_field(entries),
+                KeyInput::Character('r') if modifiers.control => {
+                    self.toggle_sort_direction(entries);
+                }
                 KeyInput::Left => self.focus_area = FocusArea::Roots,
                 KeyInput::Right => self.focus_area = FocusArea::Entries,
                 KeyInput::Tab => {
@@ -424,7 +450,39 @@ impl FileBrowserScreen {
     ) -> Option<FileBrowserAction> {
         let (up, rest) = area.split_left(ui.px(64));
         let (refresh, rest) = rest.split_left(ui.px(88));
-        let (hidden, path_area) = rest.split_right(ui.px(116));
+        let (hidden, rest) = rest.split_right(ui.px(116));
+        let (view, rest) = rest.split_right(ui.px(96));
+        let (direction, rest) = rest.split_right(ui.px(72));
+        let (sort, path_area) = rest.split_right(ui.px(110));
+        let entries: &[BrowseEntry] = listing.map_or(&[], |listing| listing.entries.as_slice());
+        let sort_label = format!(
+            "Sort: {}",
+            match self.sort.field {
+                SortField::NaturalName => "name",
+                SortField::Kind => "type",
+                SortField::Size => "size",
+                SortField::Modified => "date",
+                SortField::Manual => "manual",
+            }
+        );
+        if ui.button(sort.inset(ui.px(4)), &sort_label) {
+            self.cycle_sort_field(entries);
+        }
+        if ui.button(
+            direction.inset(ui.px(4)),
+            if self.sort.ascending { "Asc" } else { "Desc" },
+        ) {
+            self.toggle_sort_direction(entries);
+        }
+        if ui.button(
+            view.inset(ui.px(4)),
+            match self.view {
+                ViewMode::List => "View: list",
+                ViewMode::Thumbnails => "View: grid",
+            },
+        ) {
+            self.toggle_view();
+        }
         if ui.button(up.inset(ui.px(4)), "Up")
             && let Some(parent) = listing.and_then(|listing| listing.parent.as_ref())
         {
@@ -503,6 +561,245 @@ impl FileBrowserScreen {
             ui.theme.text_dim,
             Align::Right,
         );
+    }
+
+    /// Entries under the shared contract. The default descriptor is what the service already
+    /// served, so this only runs for a non-default choice.
+    fn sorted(entries: &[BrowseEntry], sort: SortDescriptor) -> Vec<BrowseEntry> {
+        let mut ordered = entries.to_vec();
+        ordered.sort_by(|a, b| compare(&Self::sort_item(a), &Self::sort_item(b), sort));
+        ordered
+    }
+
+    fn sort_item(entry: &BrowseEntry) -> SortItem<'_> {
+        SortItem {
+            name: &entry.name,
+            path: &entry.path,
+            is_dir: entry.is_dir(),
+            hidden: entry.hidden,
+            kind_label: entry
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or(""),
+            size_bytes: entry.size_bytes,
+            mtime_ms: entry.mtime_ms,
+            manual_index: None,
+        }
+    }
+
+    pub fn sort(&self) -> SortDescriptor {
+        self.sort
+    }
+
+    pub fn view(&self) -> ViewMode {
+        self.view
+    }
+
+    /// Change the ordering. The path-keyed selection is untouched, and focus follows the entry
+    /// it was on to its new row — `entries` is the order focus currently indexes into.
+    pub fn set_sort(&mut self, sort: SortDescriptor, entries: &[BrowseEntry]) {
+        let current = if self.sort == SortDescriptor::default() {
+            entries.to_vec()
+        } else {
+            Self::sorted(entries, self.sort)
+        };
+        let focused = current
+            .get(self.entry_focus)
+            .map(|entry| entry.path.clone());
+        self.sort = sort;
+        if let Some(focused) = focused {
+            let next = if sort == SortDescriptor::default() {
+                entries.to_vec()
+            } else {
+                Self::sorted(entries, sort)
+            };
+            if let Some(index) = next.iter().position(|entry| entry.path == focused) {
+                self.entry_focus = index;
+            }
+        }
+    }
+
+    /// The next primary sort field, in a fixed cycle — the toolbar button's action.
+    pub fn cycle_sort_field(&mut self, entries: &[BrowseEntry]) {
+        let field = match self.sort.field {
+            SortField::NaturalName => SortField::Kind,
+            SortField::Kind => SortField::Size,
+            SortField::Size => SortField::Modified,
+            SortField::Modified | SortField::Manual => SortField::NaturalName,
+        };
+        self.set_sort(SortDescriptor { field, ..self.sort }, entries);
+    }
+
+    pub fn toggle_sort_direction(&mut self, entries: &[BrowseEntry]) {
+        self.set_sort(
+            SortDescriptor {
+                ascending: !self.sort.ascending,
+                ..self.sort
+            },
+            entries,
+        );
+    }
+
+    /// Switch between list and thumbnail presentation. A view is how the same rows are drawn:
+    /// selection, focus and scroll context stay exactly as they are.
+    pub fn set_view(&mut self, view: ViewMode) {
+        self.view = view;
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.view = match self.view {
+            ViewMode::List => ViewMode::Thumbnails,
+            ViewMode::Thumbnails => ViewMode::List,
+        };
+    }
+
+    /// The most thumbnail decodes one call may put in flight.
+    pub const THUMBNAIL_BATCH: usize = 16;
+
+    /// Whether `generation` still names the current listing — the host drops a decoded
+    /// thumbnail whose generation this refuses.
+    pub fn thumbnail_current(&self, generation: u64) -> bool {
+        generation == self.thumbnail_generation
+    }
+
+    /// Bounded thumbnail work for the host: only entries the last draw could see (plus its
+    /// lookahead), only files, only ones not already decoded, and at most
+    /// [`Self::THUMBNAIL_BATCH`] per call. Decoding happens in the host's async task — never
+    /// here, never on the render thread.
+    pub fn begin_thumbnails(
+        &self,
+        entries: &[BrowseEntry],
+        have: &HashMap<PathBuf, Bitmap>,
+    ) -> Vec<(u64, PathBuf)> {
+        if self.view != ViewMode::Thumbnails {
+            return Vec::new();
+        }
+        let ordered: Vec<BrowseEntry>;
+        let entries: &[BrowseEntry] = if self.sort == SortDescriptor::default() {
+            entries
+        } else {
+            ordered = Self::sorted(entries, self.sort);
+            &ordered
+        };
+        let end = self.visible_thumbnails.end.min(entries.len());
+        let start = self.visible_thumbnails.start.min(end);
+        entries[start..end]
+            .iter()
+            .filter(|entry| !entry.is_dir())
+            .filter(|entry| !have.contains_key(&entry.path))
+            .take(Self::THUMBNAIL_BATCH)
+            .map(|entry| (self.thumbnail_generation, entry.path.clone()))
+            .collect()
+    }
+
+    /// The thumbnail grid: the same entries, selection and focus as the list, drawn as
+    /// responsive preview cells. Cells without a decoded bitmap show the entry's kind chip; the
+    /// grid itself never reads a file.
+    #[allow(clippy::too_many_lines)]
+    fn draw_thumbnails(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        drawer: Drawer,
+        entries: &[BrowseEntry],
+        thumbnails: &HashMap<PathBuf, Bitmap>,
+    ) -> Option<FileBrowserAction> {
+        if entries.is_empty() {
+            ui.label(
+                area.inset(ui.px(12)),
+                "This folder is empty.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return None;
+        }
+        let cell = ui.px(120).max(40);
+        let columns = ((area.w / cell).max(1)) as usize;
+        let rows = entries.len().div_ceil(columns);
+        let heights = vec![cell; rows];
+        let mut chosen = None;
+        let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+        let mut seen: Option<(usize, usize)> = None;
+        ui.scroll_list(
+            &mut self.entry_scroll,
+            area,
+            &heights,
+            |ui, row_index, row| {
+                for slot in 0..columns {
+                    let index = row_index * columns + slot;
+                    let Some(entry) = entries.get(index) else {
+                        break;
+                    };
+                    seen = Some(match seen {
+                        None => (index, index + 1),
+                        Some((low, high)) => (low.min(index), high.max(index + 1)),
+                    });
+                    let slot_i = i32::try_from(slot).unwrap_or(0);
+                    let tile = Rect::new(row.x + slot_i * cell, row.y, cell, row.h).inset(ui.px(4));
+                    let focused =
+                        self.focus_area == FocusArea::Entries && self.entry_focus == index;
+                    let in_selection = self.entry_selection.contains(&entry.path);
+                    if focused || in_selection {
+                        ui.painter.fill_rect(tile, ui.theme.selection);
+                    } else if ui.input.hovering(tile) {
+                        ui.painter.fill_rect(tile, ui.theme.hover);
+                    } else {
+                        ui.painter.fill_rect(tile, ui.theme.panel_alt);
+                    }
+                    let (image, caption) = tile.split_bottom(ui.px(18));
+                    if let Some(bitmap) = thumbnails.get(&entry.path) {
+                        ui.painter.blit(
+                            bitmap,
+                            image.inset(ui.px(2)),
+                            pixelkit_raster::ScaleFilter::Bilinear,
+                        );
+                    } else {
+                        let chip = entry
+                            .path
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .map_or_else(
+                                || if entry.is_dir() { "FOLDER" } else { "FILE" }.to_owned(),
+                                str::to_uppercase,
+                            );
+                        ui.label(image, &chip, ui.theme.text_dim, Align::Centre);
+                    }
+                    ui.label(
+                        caption.inset(ui.px(2)),
+                        &entry.name,
+                        ui.theme.text,
+                        Align::Centre,
+                    );
+                    if ui.input.take_click(tile) {
+                        self.focus_area = FocusArea::Entries;
+                        let previous = self.entry_focus;
+                        self.entry_focus = index;
+                        let modifiers = ui.input.modifiers();
+                        if modifiers.control {
+                            self.entry_selection.toggle(entry.path.clone());
+                        } else if modifiers.shift {
+                            if self.entry_selection.is_empty()
+                                && let Some(anchor) = entries.get(previous)
+                            {
+                                self.entry_selection.replace(anchor.path.clone());
+                            }
+                            self.entry_selection.extend_to(&order, entry.path.clone());
+                        } else {
+                            self.entry_selection.replace(entry.path.clone());
+                            chosen = Some(entry.clone());
+                        }
+                    }
+                }
+            },
+        );
+        if let Some((low, high)) = seen {
+            // One row of lookahead in each direction, so a slow scroll never shows a beat of
+            // empty cells.
+            self.visible_thumbnails =
+                low.saturating_sub(columns)..(high + columns).min(entries.len());
+        }
+        chosen.map(|entry| action_for_entry(drawer, self.show_hidden, &entry))
     }
 
     fn draw_entries(
@@ -683,6 +980,7 @@ mod tests {
             search_query: Option<&str>,
             search_entries: Option<&[BrowseEntry]>,
         ) -> Option<FileBrowserAction> {
+            let empty_thumbnails = std::collections::HashMap::new();
             let data = FileBrowserData {
                 sources: &self.sources,
                 listing: Some((Drawer::Downloads, false, &self.listing)),
@@ -692,6 +990,7 @@ mod tests {
                 search_query,
                 search_entries,
                 search_error: None,
+                thumbnails: &empty_thumbnails,
             };
             let mut ui = Ui::new(
                 Painter::new(&mut self.buffer),
@@ -830,6 +1129,123 @@ mod tests {
             Some(FileBrowserAction::Open(PathBuf::from(
                 "/home/test/Downloads/paper.pdf"
             )))
+        );
+    }
+
+    /// Switching between the list and the thumbnail grid preserves selection, focus and the
+    /// scroll state — a view is how the same rows are drawn, nothing more.
+    #[test]
+    fn view_mode_switch_preserves_selection_focus_and_scroll() {
+        let mut harness = Harness::new();
+        harness.frame(); // settle the directory
+        harness.screen.entry_focus = 1;
+        harness
+            .screen
+            .entry_selection
+            .replace(harness.listing.entries[1].path.clone());
+        let selected_before = harness.screen.selected_paths();
+        let focus_before = harness.screen.entry_focus;
+
+        harness.screen.toggle_view();
+        assert_eq!(harness.screen.view(), ViewMode::Thumbnails);
+        harness.frame();
+        assert_eq!(harness.screen.selected_paths(), selected_before);
+        assert_eq!(harness.screen.entry_focus, focus_before);
+
+        harness.screen.toggle_view();
+        assert_eq!(harness.screen.view(), ViewMode::List);
+        harness.frame();
+        assert_eq!(harness.screen.selected_paths(), selected_before);
+        assert_eq!(harness.screen.entry_focus, focus_before);
+    }
+
+    /// Re-sorting uses the shared contract, keeps the path-keyed selection, and focus follows
+    /// its entry to the new row.
+    #[test]
+    fn view_mode_sort_keeps_selection_and_focus_follows_its_entry() {
+        let mut harness = Harness::new();
+        harness.frame();
+        // Focus the file (index 1 in default folder-first order), select it.
+        harness.screen.entry_focus = 1;
+        let file = harness.listing.entries[1].path.clone();
+        harness.screen.entry_selection.replace(file.clone());
+
+        harness.screen.set_sort(
+            SortDescriptor {
+                field: SortField::NaturalName,
+                ascending: false,
+                folders_first: false,
+            },
+            &harness.listing.entries,
+        );
+        // Descending, folders no longer first: paper.pdf now leads.
+        let ordered = FileBrowserScreen::sorted(&harness.listing.entries, harness.screen.sort());
+        assert_eq!(ordered[0].path, file);
+        assert_eq!(harness.screen.entry_focus, 0, "focus followed paper.pdf");
+        assert_eq!(harness.screen.selected_paths(), vec![file]);
+    }
+
+    /// The grid asks for thumbnails boundedly: only what the draw could see plus a row of
+    /// lookahead, never a directory, never one it already has, and at most one batch — and a
+    /// directory change makes every outstanding request recognisably stale.
+    #[test]
+    fn thumbnail_requests_are_bounded_deduplicated_and_stale_after_navigation() {
+        let mut harness = Harness::new();
+        // Many files so the visibility bound matters.
+        let root = harness.listing.directory.clone();
+        harness.listing.entries = (0..60)
+            .map(|index| BrowseEntry {
+                path: root.join(format!("photo{index:02}.png")),
+                name: format!("photo{index:02}.png"),
+                kind: EntryKind::File,
+                is_symlink: false,
+                hidden: false,
+                size_bytes: 1,
+                mtime_ms: 0,
+            })
+            .collect();
+        let have = std::collections::HashMap::new();
+
+        assert!(
+            harness
+                .screen
+                .begin_thumbnails(&harness.listing.entries, &have)
+                .is_empty(),
+            "list mode requests nothing"
+        );
+        harness.screen.set_view(ViewMode::Thumbnails);
+        harness.frame();
+        let requests = harness
+            .screen
+            .begin_thumbnails(&harness.listing.entries, &have);
+        assert!(!requests.is_empty(), "the visible cells are asked for");
+        assert!(
+            requests.len() <= FileBrowserScreen::THUMBNAIL_BATCH,
+            "one bounded batch, however long the directory: {}",
+            requests.len()
+        );
+        let generation = requests[0].0;
+        assert!(harness.screen.thumbnail_current(generation));
+
+        let mut have = std::collections::HashMap::new();
+        have.insert(requests[0].1.clone(), Bitmap::new(1, 1));
+        assert!(
+            !harness
+                .screen
+                .begin_thumbnails(&harness.listing.entries, &have)
+                .iter()
+                .any(|(_, path)| *path == requests[0].1),
+            "a decoded thumbnail is not requested again"
+        );
+
+        // Navigating renders the old generation stale: a slow decode cannot land in the new
+        // directory.
+        harness.listing.directory = PathBuf::from("/home/test/Other");
+        harness.listing.entries.clear();
+        harness.frame();
+        assert!(
+            !harness.screen.thumbnail_current(generation),
+            "outstanding requests are from a dead generation"
         );
     }
 }

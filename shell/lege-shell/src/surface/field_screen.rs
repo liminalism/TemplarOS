@@ -2818,6 +2818,7 @@ mod tests {
             let compositions = HashMap::new();
             let widgets = HashMap::new();
             let browser_sources = crate::file_browser::BrowserSources::default();
+            let empty_thumbnails = std::collections::HashMap::new();
             let browser = FileBrowserData {
                 sources: &browser_sources,
                 listing: None,
@@ -2827,6 +2828,7 @@ mod tests {
                 search_query: None,
                 search_entries: None,
                 search_error: None,
+                thumbnails: &empty_thumbnails,
             };
             let data = FieldData {
                 field: &self.doc,
