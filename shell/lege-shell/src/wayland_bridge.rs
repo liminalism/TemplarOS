@@ -73,7 +73,7 @@ use lege_window::{Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Ed
 /// The highest `lege_shell_v1` version this shell speaks (`interfaces/wayland/lege-shell-v1.xml`).
 /// Bound at the lower of this and what the compositor advertises, so a newer shell against an
 /// older compositor still gets version 1's events rather than a protocol error.
-const SHELL_PROTOCOL_VERSION: u32 = 2;
+const SHELL_PROTOCOL_VERSION: u32 = 3;
 
 use crate::protocol::lege_shell_v1::{
     lege_shell_manager_v1::{self, LegeShellManagerV1},
@@ -341,6 +341,23 @@ fn layer_from_wire(wire: lege_shell_manager_v1::Layer) -> Layer {
     }
 }
 
+fn wire_preset(preset: lege_window::ArrangementPreset) -> lege_shell_manager_v1::ArrangementPreset {
+    match preset {
+        lege_window::ArrangementPreset::Focus => lege_shell_manager_v1::ArrangementPreset::Focus,
+        lege_window::ArrangementPreset::Halves => lege_shell_manager_v1::ArrangementPreset::Halves,
+        lege_window::ArrangementPreset::Thirds => lege_shell_manager_v1::ArrangementPreset::Thirds,
+        lege_window::ArrangementPreset::Quarters => {
+            lege_shell_manager_v1::ArrangementPreset::Quarters
+        }
+        lege_window::ArrangementPreset::MainAndStack => {
+            lege_shell_manager_v1::ArrangementPreset::MainAndStack
+        }
+        lege_window::ArrangementPreset::Cushion => {
+            lege_shell_manager_v1::ArrangementPreset::Cushion
+        }
+    }
+}
+
 fn wire_reveal(reveal: RevealHome) -> lege_shell_manager_v1::Reveal {
     match reveal {
         RevealHome::Show => lege_shell_manager_v1::Reveal::Show,
@@ -579,6 +596,29 @@ impl ShellBridge {
         }
         self.manager.reveal_home(wire_reveal(reveal));
         self.connection.flush().context("flushing reveal_home")
+    }
+
+    /// Arrange every eligible open window per the named preset (version 3). The compositor is
+    /// the sole geometry authority; this only names the preset and lets the baseline semantics
+    /// live in `lege_window::WindowService::arrange_windows`.
+    pub fn arrange_windows(&self, preset: lege_window::ArrangementPreset) -> Result<()> {
+        if self.manager.version() < 3 {
+            bail!("the compositor speaks lege_shell_v1 < 3, which has no arrange_windows");
+        }
+        self.manager.arrange_windows(wire_preset(preset));
+        self.connection.flush().context("flushing arrange_windows")
+    }
+
+    /// Return every surviving window exactly to the retained pre-arrangement baseline
+    /// (version 3).
+    pub fn restore_arrangement(&self) -> Result<()> {
+        if self.manager.version() < 3 {
+            bail!("the compositor speaks lege_shell_v1 < 3, which has no restore_arrangement");
+        }
+        self.manager.restore_arrangement();
+        self.connection
+            .flush()
+            .context("flushing restore_arrangement")
     }
 
     /// Whether a "go home" reveal is in effect, as last reported by the compositor.

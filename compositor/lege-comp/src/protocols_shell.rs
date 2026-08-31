@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 2;
+pub const SHELL_PROTOCOL_VERSION: u32 = 3;
 
 /// Bookkeeping for currently-bound `lege_shell_v1` objects.
 #[derive(Debug, Default)]
@@ -151,6 +151,19 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
                     state.reveal_home(reveal);
                 }
             }
+            lege_shell_manager_v1::Request::ArrangeWindows { preset } => {
+                if let WEnum::Value(preset) = preset {
+                    crate::xdg_shell::apply_arrangement(
+                        state,
+                        WindowCommand::ArrangeWindows {
+                            preset: preset_from_wire(preset),
+                        },
+                    );
+                }
+            }
+            lege_shell_manager_v1::Request::RestoreArrangement => {
+                crate::xdg_shell::apply_arrangement(state, WindowCommand::RestoreArrangement);
+            }
         }
     }
 
@@ -170,6 +183,28 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
             .retain(|manager| manager != resource);
         if state.shell_protocol.managers.is_empty() && state.window_service.home_revealed() {
             state.reveal_home(RevealHome::Hide);
+        }
+    }
+}
+
+/// The wire enum's values match `lege_window::ArrangementPreset`'s declaration order
+/// (`interfaces/wayland/lege-shell-v1.xml`'s `arrangement_preset` doc); a test holds them in
+/// agreement.
+pub(crate) fn preset_from_wire(
+    preset: lege_shell_manager_v1::ArrangementPreset,
+) -> lege_window::ArrangementPreset {
+    match preset {
+        lege_shell_manager_v1::ArrangementPreset::Focus => lege_window::ArrangementPreset::Focus,
+        lege_shell_manager_v1::ArrangementPreset::Halves => lege_window::ArrangementPreset::Halves,
+        lege_shell_manager_v1::ArrangementPreset::Thirds => lege_window::ArrangementPreset::Thirds,
+        lege_shell_manager_v1::ArrangementPreset::Quarters => {
+            lege_window::ArrangementPreset::Quarters
+        }
+        lege_shell_manager_v1::ArrangementPreset::MainAndStack => {
+            lege_window::ArrangementPreset::MainAndStack
+        }
+        lege_shell_manager_v1::ArrangementPreset::Cushion => {
+            lege_window::ArrangementPreset::Cushion
         }
     }
 }
@@ -603,5 +638,122 @@ fn wire_layer(layer: Layer) -> lege_shell_manager_v1::Layer {
         Layer::AppOnTop => lege_shell_manager_v1::Layer::AppOnTop,
         Layer::Normal => lege_shell_manager_v1::Layer::Normal,
         Layer::HomeSurface => lege_shell_manager_v1::Layer::HomeSurface,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lege_types::WindowClaims;
+    use lege_window::{ClientKind, Output, WindowService};
+
+    struct NullCache;
+    impl lege_window::IdentityCache for NullCache {
+        fn resolve_cached(
+            &self,
+            _pid: u32,
+            _claims: &WindowClaims,
+        ) -> Option<lege_window::CachedIdentity> {
+            None
+        }
+        fn request_resolution(&self, _window_id: WindowId, _pid: u32, _claims: WindowClaims) {}
+    }
+
+    fn service_with_windows(count: u32) -> (WindowService<NullCache>, Vec<WindowId>) {
+        let outputs = vec![Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)];
+        let mut service = WindowService::new(NullCache, outputs);
+        let ids = (0..count)
+            .map(|index| {
+                service.on_toplevel_mapped(
+                    index + 1,
+                    ClientKind::Application,
+                    WindowClaims::default(),
+                    format!("window {index}"),
+                    Rect::new(100 + 50 * i32::try_from(index).unwrap_or(0), 100, 400, 300),
+                )
+            })
+            .collect();
+        (service, ids)
+    }
+
+    fn trusted(service: &WindowService<NullCache>) -> CommandContext {
+        let _ = service;
+        CommandContext {
+            trusted_shell: true,
+            now_monotonic_ns: 0,
+        }
+    }
+
+    /// The protocol enum's wire values follow `lege_window::ArrangementPreset`'s declaration
+    /// order, as `interfaces/wayland/lege-shell-v1.xml` promises.
+    #[test]
+    fn arrangement_wire_values_match_the_window_service_presets() {
+        for (index, preset) in lege_window::ArrangementPreset::ALL.into_iter().enumerate() {
+            let wire =
+                lege_shell_manager_v1::ArrangementPreset::try_from(u32::try_from(index).unwrap())
+                    .expect("every preset has a wire value");
+            assert_eq!(preset_from_wire(wire), preset);
+        }
+    }
+
+    /// `dynamic-window-set` as the compositor drives it: a closed window is ignored, a newly
+    /// mapped one joins only on the next explicit request, and losing the output repairs the
+    /// restore instead of losing a window.
+    #[test]
+    fn arrangement_requests_ignore_closed_windows_and_join_new_ones_on_the_next_press() {
+        let (mut service, ids) = service_with_windows(2);
+        service
+            .handle_command(
+                lege_window::WindowCommand::ArrangeWindows {
+                    preset: lege_window::ArrangementPreset::Halves,
+                },
+                trusted(&service),
+            )
+            .unwrap();
+        let settled = service.window(ids[1]).unwrap().geometry;
+
+        // A third window maps: nothing moves until the next explicit press, then it joins.
+        let third = service.on_toplevel_mapped(
+            9,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "late".into(),
+            Rect::new(700, 300, 300, 300),
+        );
+        assert_eq!(service.window(ids[1]).unwrap().geometry, settled);
+        let effect = service
+            .handle_command(
+                lege_window::WindowCommand::ArrangeWindows {
+                    preset: lege_window::ArrangementPreset::Halves,
+                },
+                trusted(&service),
+            )
+            .unwrap();
+        let lege_window::CommandEffect::Arranged { moves } = effect else {
+            panic!("expected Arranged");
+        };
+        assert!(moves.iter().any(|(id, _)| *id == third));
+
+        // One closes, and the output shrinks under the baseline: restore skips the departed
+        // and repairs the survivors onto what remains.
+        service.on_toplevel_destroyed(ids[0]);
+        service.on_outputs_changed(vec![Output::new("eDP-1", Rect::new(0, 0, 800, 600), 1000)]);
+        let effect = service
+            .handle_command(
+                lege_window::WindowCommand::RestoreArrangement,
+                trusted(&service),
+            )
+            .unwrap();
+        let lege_window::CommandEffect::Arranged { moves } = effect else {
+            panic!("expected Arranged");
+        };
+        assert!(moves.iter().all(|(id, _)| *id != ids[0]));
+        let outputs = service.outputs().to_vec();
+        for (_, rect) in &moves {
+            assert!(
+                lege_window::is_recoverable(*rect, &outputs),
+                "restored geometry must stay reachable after the topology change: {rect:?}"
+            );
+        }
     }
 }

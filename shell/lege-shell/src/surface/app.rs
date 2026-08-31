@@ -946,6 +946,17 @@ impl ShellApp {
                     bridge.escape_fullscreen_or_modal(None)
                 });
             }
+            "windows.restore-arrangement" => {
+                self.bridge_call("restore_arrangement", ShellBridge::restore_arrangement);
+            }
+            id if id.starts_with("windows.arrange.") => {
+                let name = id.trim_start_matches("windows.arrange.");
+                if let Some(preset) = lege_window::ArrangementPreset::from_name(name) {
+                    self.bridge_call("arrange_windows", |bridge| bridge.arrange_windows(preset));
+                } else {
+                    tracing::warn!(action = %id, "unknown arrangement preset");
+                }
+            }
             other => tracing::warn!(action = %other, "no route for this action yet"),
         }
     }

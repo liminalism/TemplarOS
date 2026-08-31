@@ -84,6 +84,13 @@ impl MenuItem {
 pub const MENU: &[MenuItem] = &[
     MenuItem::new("field.help", MenuScope::Field),
     MenuItem::new("window.park", MenuScope::Window),
+    MenuItem::new("windows.arrange.focus", MenuScope::Field),
+    MenuItem::new("windows.arrange.halves", MenuScope::Field),
+    MenuItem::new("windows.arrange.thirds", MenuScope::Field),
+    MenuItem::new("windows.arrange.quarters", MenuScope::Field),
+    MenuItem::new("windows.arrange.main-and-stack", MenuScope::Field),
+    MenuItem::new("windows.arrange.cushion", MenuScope::Field),
+    MenuItem::new("windows.restore-arrangement", MenuScope::Field),
     MenuItem::new("window.escape-fullscreen", MenuScope::Window),
     MenuItem::new("window.cycle-forward", MenuScope::Window),
     MenuItem::new("window.cycle-backward", MenuScope::Window),

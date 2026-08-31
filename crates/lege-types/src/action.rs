@@ -335,6 +335,73 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Window,
     },
     // ---- Window -----------------------------------------------------------------------
+    // One-press reversible arrangements: the first preset retains the prior layout as the
+    // baseline, switching presets recomputes from it, and restore returns to it exactly
+    // (`lege_window::arrangement`). Buttons only, by design — presets are for auditioning with
+    // a pointer, and the Super chord space stays free for held-gesture semantics.
+    ActionDecl {
+        id: "windows.arrange.focus",
+        label: "Arrange windows: focus",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.arrange.halves",
+        label: "Arrange windows: halves",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.arrange.thirds",
+        label: "Arrange windows: thirds",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.arrange.quarters",
+        label: "Arrange windows: grid",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.arrange.main-and-stack",
+        label: "Arrange windows: main and stack",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.arrange.cushion",
+        label: "Arrange windows: cushion",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "windows.restore-arrangement",
+        label: "Restore window arrangement",
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
     ActionDecl {
         id: "window.show-all",
         label: "Show every window",

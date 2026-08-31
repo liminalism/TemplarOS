@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="2">
+  <interface name="lege_shell_manager_v1" version="3">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -77,6 +77,38 @@
       <entry name="show" value="0"/>
       <entry name="hide" value="1"/>
       <entry name="toggle" value="2"/>
+    </enum>
+    <request name="arrange_windows" since="3">
+      <description summary="arrange every eligible open window per a named preset">
+        User-invoked arrangement, never a standing tiling policy
+        (`lege_window::WindowService::arrange_windows`). The first request retains each eligible
+        window's geometry and maximize state as the one baseline; switching presets recomputes
+        from that baseline and the current eligible set — never from the previous preset's
+        result — so presets can be auditioned by pressing buttons. Windows that closed are
+        ignored; windows that opened join on the next explicit request; fullscreen and shelved
+        windows are never touched. The compositor remains the sole geometry authority: the shell
+        only names the preset and renders the buttons.
+      </description>
+      <arg name="preset" type="uint" enum="arrangement_preset"/>
+    </request>
+    <request name="restore_arrangement" since="3">
+      <description summary="return every surviving window exactly to the retained baseline">
+        Geometry and maximize state come back exactly as they were before the first preset,
+        repaired only where the output topology no longer reaches the old rectangle
+        (`lege_window::repair_window`); the baseline is then spent. A request with no retained
+        baseline does nothing.
+      </description>
+    </request>
+    <enum name="arrangement_preset" since="3">
+      <description summary="the named arrangements, mirroring lege_window::ArrangementPreset">
+        Wire values match `lege_window::ArrangementPreset`'s declaration order.
+      </description>
+      <entry name="focus" value="0"/>
+      <entry name="halves" value="1"/>
+      <entry name="thirds" value="2"/>
+      <entry name="quarters" value="3"/>
+      <entry name="main_and_stack" value="4"/>
+      <entry name="cushion" value="5"/>
     </enum>
     <enum name="edge">
       <entry name="top" value="0"/>

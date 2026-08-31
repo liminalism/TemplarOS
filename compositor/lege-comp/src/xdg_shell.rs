@@ -104,6 +104,45 @@ fn window_for_surface<B: Backend + 'static>(
 /// `xdg_toplevel.set_maximized`/`unset_maximized` (and the same from the shell): let
 /// `WindowService` decide the geometry, then tell the client through its pending state and one
 /// configure. Nothing to send when the window was already in the requested state.
+/// Apply an `ArrangeWindows` / `RestoreArrangement` command and configure every moved window
+/// with its new size — a restore also re-asserts the window's restored maximize state.
+pub fn apply_arrangement<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    command: WindowCommand,
+) {
+    let ctx = CommandContext {
+        trusted_shell: true,
+        now_monotonic_ns: now_monotonic_ns(&state.clock),
+    };
+    let Ok(CommandEffect::Arranged { moves }) = state.window_service.handle_command(command, ctx)
+    else {
+        return;
+    };
+    for (window_id, geometry) in moves {
+        let maximized = state
+            .window_service
+            .window(window_id)
+            .is_some_and(|window| window.maximized);
+        if let Some(window) = crate::space_sync::element_for_window(state, window_id)
+            && let Some(toplevel) = window.toplevel()
+        {
+            toplevel.with_pending_state(|pending| {
+                use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                if maximized {
+                    pending.states.set(State::Maximized);
+                } else {
+                    pending.states.unset(State::Maximized);
+                }
+                pending.size = Some((geometry.width, geometry.height).into());
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+        }
+    }
+    crate::space_sync::sync_after_change(state);
+}
+
 pub fn apply_maximized<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     window_id: WindowId,

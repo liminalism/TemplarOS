@@ -1,6 +1,17 @@
 akr 0.1
 project legeos
 
+record legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 : observation {
+    title "A Trash1 smoke test run against the real session bus emptied the user's actual volume trash"
+    state verified
+    scope [ path "cli/lege/**", path "services/lege-filed/**" ]
+    statement """
+        While smoke-testing `lege trash empty --yes` end to end, the implementing agent constructed TrashApi with TrashMounts::System instead of TrashMounts::Fixed, so the sweep read the machine's real mount table, found /media/dk/4668959A68958977/.Trash-1000, and permanently deleted its one entry — a folder named `target` (a Rust build directory, regenerable) trashed on 2026-08-30. Unrecoverable. The code behaved as designed; the harness choice was the fault: TrashMounts::Fixed exists precisely so tests cannot reach real disks, every committed test uses it, and the offending smoke script was removed rather than left as a trap. Standing rule going forward: any end-to-end exercise of destructive file operations must run against fixture mounts (TrashMounts::Fixed, a throwaway HOME and XDG_DATA_HOME) — never the developer host's real mount table.
+        """
+    observed_at git:d26a90adb035772b2ee2542a5554308987e4cb6f
+    method manual
+}
+
 record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observation {
     title "Hardware Home loads and cursor works, but file panes expose no usable file content"
     state verified
