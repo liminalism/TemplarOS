@@ -37,3 +37,6 @@
 .DS_Store
 /distro/image/mkosi.conf.d/50-seeds.conf
 /distro/image/mkosi.extra/usr/
+
+# Claude Code agent worktrees
+.claude/

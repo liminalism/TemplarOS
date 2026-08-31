@@ -44,7 +44,8 @@ pub enum Key {
     Down,
     /// A function key, by number. F1 is the conventional route to contextual help.
     Function(u8),
-    /// The logo key pressed and released with nothing else — a gesture, not a combination.
+    /// The logo key pressed with nothing else — a gesture, not a combination. Press reveals
+    /// Home immediately and holding keeps it up momentarily; a short tap latches the toggle.
     /// Tracked by `SuperTapTracker` in the compositor; named here so the cheat sheet can show
     /// the primary route to Home rather than only its fallbacks.
     LogoTap,
@@ -158,7 +159,7 @@ impl Chord {
 impl fmt::Display for Chord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.key == Key::LogoTap {
-            return formatter.write_str("Super (tap)");
+            return formatter.write_str("Super (tap or hold)");
         }
         write!(formatter, "{}{}", self.modifiers, self.key)
     }
@@ -694,7 +695,7 @@ mod tests {
             Chord::new(Modifiers::CTRL, Key::Character('z')).to_string(),
             "Ctrl+Z"
         );
-        assert_eq!(Chord::bare(Key::LogoTap).to_string(), "Super (tap)");
+        assert_eq!(Chord::bare(Key::LogoTap).to_string(), "Super (tap or hold)");
         assert_eq!(
             Chord::new(Modifiers::LOGO, Key::Left).to_string(),
             "Super+Left"

@@ -58,7 +58,10 @@ const GROUP_HOPS: u8 = 2;
 /// | Super+Left / Super+Right | previous/next in group  |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
 /// | Ctrl+Alt+P             | park the active window    |
-/// | Super (tap)            | go home (toggle reveal)   |
+/// | Super (press)          | reveal Home immediately   |
+/// | Super (held)           | Home stays, momentarily   |
+/// | Super (tap release)    | latch the toggled reveal  |
+/// | Super (hold release)   | restore pre-press reveal  |
 /// | Super+D                | go home (legacy shortcut) |
 /// | Escape, while revealed | go home (ends the reveal) |
 ///
@@ -115,40 +118,68 @@ pub fn recovery_action(
     None
 }
 
-/// Whether this is either physical Super/logo key. The input handler uses this to implement a
-/// release-time tap: a lone Super toggles Home, while Super held as part of a future chord does
-/// not fire the tap action.
+/// Whether this is either physical Super/logo key. The input handler uses this to implement the
+/// press-and-hold Home reveal: a bare Super shows Home the moment it goes down, while Super held
+/// as part of a chord performs only the chord's action.
 pub fn is_super_key(keysym: Keysym) -> bool {
     matches!(keysym.raw(), keysyms::KEY_Super_L | keysyms::KEY_Super_R)
 }
+
+/// A release this much after the first Super press is a hold (release restores the reveal state
+/// that preceded the press); anything shorter is a tap (release latches the toggled state).
+pub const SUPER_TAP_MS: u32 = 400;
 
 /// Result of feeding one keyboard transition into [`SuperTapTracker`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SuperTapDecision {
     /// This transition is unrelated to the bare-Super gesture and follows the normal key path.
     Forward,
-    /// Consume a Super transition, but do not toggle Home yet.
+    /// A chord began while the momentary reveal was up: restore the pre-press reveal state
+    /// (always hidden — a momentary reveal only ever starts from hidden), then handle the key
+    /// normally. The chord's own action, if it is a reveal toggle, lands after the restore.
+    ForwardEndingReveal,
+    /// Consume a Super transition without changing the reveal.
     Intercept,
-    /// The last held Super key was released without any other key participating.
-    ToggleHome,
+    /// The first Super went down with Home hidden: show Home now, momentarily.
+    Reveal,
+    /// The last held Super was released: set the reveal to exactly this state. A short tap
+    /// latches the toggle of the pre-press state; a hold restores the pre-press state itself.
+    SetReveal(bool),
 }
 
-/// Tracks a bare-Super tap without mistaking Super chords (or two held Super keys) for taps.
+/// Tracks the bare-Super gesture: press reveals Home immediately, holding keeps it as a
+/// momentary surface, a short tap latches the toggle, and any chord key cancels the gesture so
+/// release adds nothing to the chord's action.
 ///
-/// Both physical logo keys are tracked independently. Pressing any non-Super key while either is
-/// down cancels the gesture; releasing the final Super then remains intercepted but does nothing.
+/// Both physical logo keys are tracked independently and behave as one logical hold: the gesture
+/// begins at the first press and resolves when the last of them is released.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SuperTapTracker {
     left_down: bool,
     right_down: bool,
     armed: bool,
+    pressed_at_ms: u32,
+    prior_revealed: bool,
+    momentary: bool,
 }
 
 impl SuperTapTracker {
-    pub fn update(&mut self, state: KeyState, keysym: Keysym) -> SuperTapDecision {
+    /// Feed one keyboard transition. `time_ms` is the input event's millisecond timestamp;
+    /// `home_revealed` is the reveal state as of this transition, sampled on the first Super
+    /// press to become the baseline a hold restores.
+    pub fn update(
+        &mut self,
+        state: KeyState,
+        keysym: Keysym,
+        time_ms: u32,
+        home_revealed: bool,
+    ) -> SuperTapDecision {
         if !is_super_key(keysym) {
             if state == KeyState::Pressed && (self.left_down || self.right_down) {
                 self.armed = false;
+                if std::mem::take(&mut self.momentary) {
+                    return SuperTapDecision::ForwardEndingReveal;
+                }
             }
             return SuperTapDecision::Forward;
         }
@@ -156,13 +187,20 @@ impl SuperTapTracker {
 
         match state {
             KeyState::Pressed => {
-                if !self.left_down && !self.right_down {
-                    self.armed = true;
-                }
+                let first = !self.left_down && !self.right_down;
                 if left {
                     self.left_down = true;
                 } else {
                     self.right_down = true;
+                }
+                if first {
+                    self.armed = true;
+                    self.pressed_at_ms = time_ms;
+                    self.prior_revealed = home_revealed;
+                    if !home_revealed {
+                        self.momentary = true;
+                        return SuperTapDecision::Reveal;
+                    }
                 }
                 SuperTapDecision::Intercept
             }
@@ -172,10 +210,18 @@ impl SuperTapTracker {
                 } else {
                     self.right_down = false;
                 }
-                if !self.left_down && !self.right_down && std::mem::take(&mut self.armed) {
-                    SuperTapDecision::ToggleHome
+                if self.left_down || self.right_down {
+                    return SuperTapDecision::Intercept;
+                }
+                self.momentary = false;
+                if !std::mem::take(&mut self.armed) {
+                    return SuperTapDecision::Intercept;
+                }
+                let held_ms = time_ms.wrapping_sub(self.pressed_at_ms);
+                if held_ms < SUPER_TAP_MS {
+                    SuperTapDecision::SetReveal(!self.prior_revealed)
                 } else {
-                    SuperTapDecision::Intercept
+                    SuperTapDecision::SetReveal(self.prior_revealed)
                 }
             }
         }
@@ -476,45 +522,111 @@ mod tests {
         assert!(!is_super_key(Keysym::new(keysyms::KEY_Control_L)));
     }
 
+    fn super_l() -> Keysym {
+        Keysym::new(keysyms::KEY_Super_L)
+    }
+
+    fn super_r() -> Keysym {
+        Keysym::new(keysyms::KEY_Super_R)
+    }
+
     #[test]
-    fn a_bare_super_press_toggles_only_on_release() {
+    fn bare_super_tap_latches_the_toggle_without_a_second_toggle_on_release() {
         let mut tap = SuperTapTracker::default();
+        // Home hidden: press reveals immediately, a short release latches the reveal on —
+        // one toggle for the whole tap, not one per transition.
         assert_eq!(
-            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L)),
+            tap.update(KeyState::Pressed, super_l(), 0, false),
+            SuperTapDecision::Reveal
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, super_l(), SUPER_TAP_MS - 1, true),
+            SuperTapDecision::SetReveal(true)
+        );
+        // Home latched: the next tap latches it off, and the press adds no second reveal.
+        assert_eq!(
+            tap.update(KeyState::Pressed, super_l(), 1_000, true),
             SuperTapDecision::Intercept
         );
         assert_eq!(
-            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
-            SuperTapDecision::ToggleHome
+            tap.update(KeyState::Released, super_l(), 1_100, true),
+            SuperTapDecision::SetReveal(false)
         );
     }
 
     #[test]
-    fn a_super_chord_cancels_the_tap_without_leaking_super_releases() {
+    fn super_press_reveals_immediately_and_a_held_release_restores_the_prior_state() {
         let mut tap = SuperTapTracker::default();
-        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
+        // Hidden before the press: down shows Home at once, a hold's release hides it again.
         assert_eq!(
-            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_d)),
+            tap.update(KeyState::Pressed, super_l(), 0, false),
+            SuperTapDecision::Reveal
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, super_l(), SUPER_TAP_MS, true),
+            SuperTapDecision::SetReveal(false)
+        );
+        // Already revealed before the press: a hold's release leaves it revealed.
+        assert_eq!(
+            tap.update(KeyState::Pressed, super_l(), 2_000, true),
+            SuperTapDecision::Intercept
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, super_l(), 3_000, true),
+            SuperTapDecision::SetReveal(true)
+        );
+    }
+
+    #[test]
+    fn super_chord_performs_only_its_action_and_ends_the_momentary_reveal() {
+        let mut tap = SuperTapTracker::default();
+        assert_eq!(
+            tap.update(KeyState::Pressed, super_l(), 0, false),
+            SuperTapDecision::Reveal
+        );
+        // The chord key both restores the pre-press reveal state and takes the normal key
+        // path, so the declared accelerator fires from the restored state.
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_d), 50, true),
+            SuperTapDecision::ForwardEndingReveal
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_d), 80, false),
             SuperTapDecision::Forward
         );
+        // Even a quick release after the chord latches nothing extra.
         assert_eq!(
-            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            tap.update(KeyState::Released, super_l(), 100, false),
             SuperTapDecision::Intercept
+        );
+        // A second chord key during the same hold has no reveal left to end.
+        tap.update(KeyState::Pressed, super_l(), 200, false);
+        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_d), 210, true);
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_x), 220, false),
+            SuperTapDecision::Forward
         );
     }
 
     #[test]
-    fn two_held_super_keys_toggle_once_when_the_last_one_is_released() {
+    fn super_hold_spans_both_logo_keys_as_one_logical_hold() {
         let mut tap = SuperTapTracker::default();
-        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
-        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_R));
         assert_eq!(
-            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            tap.update(KeyState::Pressed, super_l(), 0, false),
+            SuperTapDecision::Reveal
+        );
+        assert_eq!(
+            tap.update(KeyState::Pressed, super_r(), 100, true),
             SuperTapDecision::Intercept
         );
         assert_eq!(
-            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_R)),
-            SuperTapDecision::ToggleHome
+            tap.update(KeyState::Released, super_l(), 200, true),
+            SuperTapDecision::Intercept
+        );
+        // The hold is timed from the first press, and resolves only at the last release.
+        assert_eq!(
+            tap.update(KeyState::Released, super_r(), 1_000, true),
+            SuperTapDecision::SetReveal(false)
         );
     }
 
@@ -715,16 +827,27 @@ mod tests {
             None
         );
 
-        // The arrow arriving while Super is held cancels the bare-Super tap, so releasing Super
-        // afterwards does not also toggle Home — the same mechanism `Super+D` already relies on.
+        // The arrow arriving while Super is held cancels the bare-Super tap and ends the
+        // momentary reveal the press started, so releasing Super afterwards does not also
+        // toggle Home — the same mechanism `Super+D` already relies on.
         let mut tap = SuperTapTracker::default();
-        tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Super_L));
-        assert_eq!(
-            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Right)),
-            SuperTapDecision::Forward
+        tap.update(
+            KeyState::Pressed,
+            Keysym::new(keysyms::KEY_Super_L),
+            0,
+            false,
         );
         assert_eq!(
-            tap.update(KeyState::Released, Keysym::new(keysyms::KEY_Super_L)),
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_Right), 50, true),
+            SuperTapDecision::ForwardEndingReveal
+        );
+        assert_eq!(
+            tap.update(
+                KeyState::Released,
+                Keysym::new(keysyms::KEY_Super_L),
+                100,
+                false
+            ),
             SuperTapDecision::Intercept,
             "a Super+Arrow chord must not fall through to a Home toggle"
         );

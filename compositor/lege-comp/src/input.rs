@@ -494,14 +494,31 @@ impl<B: Backend + 'static> LegeCompState<B> {
             time,
             |state, modifiers, handle| {
                 let keysym = handle.modified_sym();
-                match state.super_tap.update(event.state(), keysym) {
+                match state
+                    .super_tap
+                    .update(event.state(), keysym, time, home_revealed)
+                {
                     crate::keybindings::SuperTapDecision::Intercept => {
                         return FilterResult::Intercept(None);
                     }
-                    crate::keybindings::SuperTapDecision::ToggleHome => {
-                        return FilterResult::Intercept(Some(
-                            crate::keybindings::RecoveryAction::RevealHome,
-                        ));
+                    crate::keybindings::SuperTapDecision::Reveal => {
+                        state.pending_super_reveal = Some(lege_window::RevealHome::Show);
+                        return FilterResult::Intercept(None);
+                    }
+                    crate::keybindings::SuperTapDecision::SetReveal(revealed) => {
+                        state.pending_super_reveal = Some(if revealed {
+                            lege_window::RevealHome::Show
+                        } else {
+                            lege_window::RevealHome::Hide
+                        });
+                        return FilterResult::Intercept(None);
+                    }
+                    crate::keybindings::SuperTapDecision::ForwardEndingReveal => {
+                        // A chord key arrived during the momentary reveal: end it first, so the
+                        // chord's own action (which may itself be a reveal toggle, e.g. Super+D)
+                        // computes from the restored state, then let the key take its normal
+                        // path below.
+                        state.pending_super_reveal = Some(lege_window::RevealHome::Hide);
                     }
                     crate::keybindings::SuperTapDecision::Forward => {}
                 }
@@ -514,6 +531,16 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 }
             },
         );
+
+        // Apply the gesture's reveal change before any chord action, so an action that toggles
+        // the reveal itself (Super+D) computes from the restored state. Applied here, not inside
+        // the filter closure: `reveal_home` refocuses the keyboard, which must not re-enter
+        // `keyboard.input`. Dropped while locked, exactly like `run_recovery_action` below.
+        if let Some(reveal) = self.pending_super_reveal.take()
+            && !self.session_lock.locked
+        {
+            self.reveal_home(reveal);
+        }
 
         if let Some(Some(action)) = action {
             // The fallback switcher HUD (`chrome::SwitcherState`) stays up only until something

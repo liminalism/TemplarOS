@@ -121,9 +121,13 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub seat: Seat<Self>,
     pub seat_name: String,
     pub cursor_status: CursorImageStatus,
-    /// A bare Super press is a tap gesture: it is armed on Super-down, cancelled when any
-    /// other key participates in a chord, and toggles Home only on the final Super-up.
+    /// The bare-Super gesture: Super-down reveals Home immediately, holding keeps it up as a
+    /// momentary surface, a short tap latches the toggle, and a chord key cancels the gesture.
     pub super_tap: crate::keybindings::SuperTapTracker,
+    /// A reveal change the gesture tracker decided inside the keyboard filter closure, applied
+    /// by `on_keyboard` after `keyboard.input` returns — `reveal_home` refocuses and syncs the
+    /// space, which must not happen re-entrantly inside the filter.
+    pub pending_super_reveal: Option<lege_window::RevealHome>,
 
     /// Rendering/hit-testing mirror of `window_service`, kept in sync by
     /// `src/space_sync.rs::sync_space` after every call that can change geometry or stacking —
@@ -251,6 +255,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             seat_name: seat_name.to_owned(),
             cursor_status: CursorImageStatus::default_named(),
             super_tap: crate::keybindings::SuperTapTracker::default(),
+            pending_super_reveal: None,
 
             space: Space::default(),
             popups: PopupManager::default(),

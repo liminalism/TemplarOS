@@ -612,20 +612,51 @@ mod tests {
     #[test]
     fn a_reveal_changes_no_window_and_ends_on_activate() {
         let (mut service, id) = service_with_one_window();
-        let before = service.window(id).unwrap().clone();
+        // A maximized and a shelved window alongside the floating one, so the full-struct
+        // equality below covers geometry, activation, maximize and shelf state at once —
+        // momentary and latched reveals alike must be a pure view.
+        let maximized = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "max".into(),
+            Rect::new(200, 200, 400, 300),
+        );
         service
             .handle_command(
-                WindowCommand::RevealHome {
-                    reveal: RevealHome::Show,
+                WindowCommand::SetMaximized {
+                    window_id: maximized,
+                    maximized: true,
                 },
                 trusted(0),
             )
             .unwrap();
-        assert_eq!(
-            service.window(id).unwrap(),
-            &before,
-            "a reveal is a view, not a state"
+        let shelved = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "shelf".into(),
+            Rect::new(300, 300, 400, 300),
         );
+        service
+            .handle_command(WindowCommand::Shelve { window_id: shelved }, trusted(0))
+            .unwrap();
+        let before: Vec<_> = service.windows().cloned().collect();
+        for reveal in [
+            RevealHome::Show,
+            RevealHome::Hide,
+            RevealHome::Toggle,
+            RevealHome::Show,
+        ] {
+            service
+                .handle_command(WindowCommand::RevealHome { reveal }, trusted(0))
+                .unwrap();
+            let after: Vec<_> = service.windows().cloned().collect();
+            assert_eq!(
+                after, before,
+                "a reveal is a view, not a state ({reveal:?})"
+            );
+        }
 
         let result = service.handle_command(
             WindowCommand::Activate {
