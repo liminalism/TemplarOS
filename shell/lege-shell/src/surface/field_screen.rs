@@ -34,6 +34,17 @@ use crate::surface::file_browser::FileBrowserData;
 use crate::surface::home_screen::{HomeSurfaceAction, HomeSurfaceData, HomeSurfaceScreen};
 use crate::surface::widgets::{self, WidgetSnapshot};
 
+/// One typed file drop, ready for the service. The shell never decides what a conflict, a
+/// permission failure or a device boundary means — it names the sources and the destination and
+/// lets `lege-filed` answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileDrop {
+    pub sources: Vec<PathBuf>,
+    pub destination: PathBuf,
+    /// Copy rather than move, as the grammar announced before release.
+    pub copy: bool,
+}
+
 /// What the screen asks its caller to do. Everything that touches a service or the compositor
 /// comes out here; nothing in this module performs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +80,9 @@ pub enum FieldAction {
     /// item — the row the pointer was on. The host hands it to `Files.Trash1.Restore`, which
     /// journals it like any other file operation, so it keeps its own undo.
     RestoreFromTrash(String),
+    /// A drop the grammar named as a real file operation: copy or move these sources into that
+    /// directory, as one journalled `Files.Operations1` operation with one undo.
+    DropFiles(FileDrop),
     RevealHome,
     /// Discard the stored layout and take the current default instead. Not an `Apply`: the
     /// document and its undo log go together, so there is no inverse to keep and the host has to
@@ -1584,6 +1598,13 @@ impl FieldScreen {
                 lifted_for_ms,
             }) => {
                 let _ = ui.input.take_click(ui.painter.bounds());
+                if let Some(drop) = self.file_drop(doc, tile, tile_at, ui) {
+                    self.last_drop = Some((tile, data.now_ms));
+                    actions.push(FieldAction::DropFiles(drop));
+                    // `release` has already cleared the drag; the field document is deliberately
+                    // untouched, because the tile has not moved — the file has.
+                    return;
+                }
                 let group = self.selection.len() > 1 && self.selection.contains(&tile);
                 let op = if group {
                     self.landing_cell(doc, tile, tile_at, ui)
@@ -1715,10 +1736,73 @@ impl FieldScreen {
                     cell: Cell::new(0, 0),
                 },
             },
+            // None of these is a field op.
+            //
             // Opening a file with an app and adding a reference to a tray need services this
             // screen does not reach yet (trays and file tiles arrive with persistence); until
-            // then these are placement only, which is exactly what an unlabelled drop means.
-            Operation::OpenWith { .. } | Operation::AddReference { .. } => return None,
+            // then they are placement only, which is exactly what an unlabelled drop means.
+            //
+            // Copy and move are a different kind of "not a field op": they move a person's data,
+            // so they go to `Files.Operations1` as one journalled operation with its own undo
+            // (see `file_drop`) and the field document is deliberately left exactly as it was.
+            Operation::OpenWith { .. }
+            | Operation::AddReference { .. }
+            | Operation::CopyInto { .. }
+            | Operation::MoveInto { .. } => return None,
+        })
+    }
+
+    /// A drop the grammar named as a real file operation, as one request for the whole
+    /// selection.
+    ///
+    /// One request and not one per file: a person dragging forty photos into a folder performed
+    /// one action and must get one progress bar, one error if it goes wrong and one undo — which
+    /// is what `Files.Operations1` gives for a single operation over many sources and cannot give
+    /// for forty operations over one each.
+    fn file_drop(
+        &self,
+        doc: &FieldDocument,
+        tile: TileId,
+        tile_at: (f32, f32),
+        ui: &Ui<'_>,
+    ) -> Option<FileDrop> {
+        let kind = doc.kind_of(tile)?;
+        let cell = self.landing_cell(doc, tile, tile_at, ui)?;
+        let target = Self::target_at(doc, self.zoomed, tile, cell);
+        let modifiers = lege_field::DropModifiers {
+            copy: ui.input.modifiers().control,
+        };
+        let operation = lege_field::operation_for(tile, kind, &target, modifiers)?;
+        let (folder, copy) = match operation {
+            Operation::CopyInto { folder } => (folder, true),
+            Operation::MoveInto { folder } => (folder, false),
+            _ => return None,
+        };
+        let destination = match doc.kind_of(folder)? {
+            TileKind::Folder { path } => path.clone(),
+            _ => return None,
+        };
+        // Everything the drag was carrying: a multi-selection drags as one, so it lands as one.
+        let dragged: Vec<TileId> = if self.selection.len() > 1 && self.selection.contains(&tile) {
+            self.selection.to_vec()
+        } else {
+            vec![tile]
+        };
+        let sources: Vec<PathBuf> = dragged
+            .iter()
+            .filter_map(|id| match doc.kind_of(*id)? {
+                TileKind::File { path } | TileKind::Folder { path } => Some(path.clone()),
+                _ => None,
+            })
+            .filter(|path| path != &destination)
+            .collect();
+        if sources.is_empty() {
+            return None;
+        }
+        Some(FileDrop {
+            sources,
+            destination,
+            copy,
         })
     }
 
@@ -1733,7 +1817,12 @@ impl FieldScreen {
         let kind = doc.kind_of(tile)?;
         let cell = self.landing_cell(doc, tile, tile_at, ui)?;
         let target = Self::target_at(doc, self.zoomed, tile, cell);
-        let operation = lege_field::operation_for(tile, kind, &target)?;
+        // The modifier the pointer is holding right now: the only place the grammar consults
+        // one, and the difference between copying a file into a folder and moving it there.
+        let modifiers = lege_field::DropModifiers {
+            copy: ui.input.modifiers().control,
+        };
+        let operation = lege_field::operation_for(tile, kind, &target, modifiers)?;
         Self::op_for(doc, tile, &operation).or(Some(FieldOp::Move {
             id: tile,
             landing: Landing {
@@ -1763,7 +1852,12 @@ impl FieldScreen {
         };
         let kind = doc.kind_of(tile)?;
         let target = Self::target_at(doc, self.zoomed, tile, cell);
-        let operation = lege_field::operation_for(tile, kind, &target)?;
+        // The modifier the pointer is holding right now: the only place the grammar consults
+        // one, and the difference between copying a file into a folder and moving it there.
+        let modifiers = lege_field::DropModifiers {
+            copy: ui.input.modifiers().control,
+        };
+        let operation = lege_field::operation_for(tile, kind, &target, modifiers)?;
         let label = operation.label();
         let label_at = match &target {
             Target::Tile { id, .. } | Target::Project { id } => self
@@ -3613,6 +3707,268 @@ mod tests {
         assert_eq!(
             h.frame(),
             vec![FieldAction::RunAction("network.open-control")]
+        );
+    }
+
+    // ---- typed drag and drop ------------------------------------------------------------
+
+    impl Harness {
+        /// Replace the field with just these tiles, so a drop test is about the drop and not
+        /// about what else the default desktop happens to be carrying.
+        fn with_only(&mut self, tiles: Vec<(TileId, TileKind, Cell)>) {
+            let mut doc = FieldDocument::new("test", self.doc.cols, self.doc.rows);
+            for (id, kind, cell) in tiles {
+                let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+                doc = apply(
+                    &doc,
+                    &FieldOp::Place {
+                        tile: Tile {
+                            id,
+                            title: kind.name().to_owned(),
+                            kind,
+                            spans,
+                            accent: None,
+                        },
+                        landing: Landing {
+                            container: None,
+                            cell,
+                        },
+                    },
+                )
+                .expect("the test's own placement fits")
+                .0;
+            }
+            self.doc = doc;
+            self.screen = FieldScreen::default();
+        }
+
+        /// Lift `tile` and carry it to the centre of `onto`, releasing there. `control` is the
+        /// copy modifier the grammar consults.
+        fn drag_onto(&mut self, tile: TileId, onto: TileId, control: bool) -> Vec<FieldAction> {
+            let from = self.rect_of(tile);
+            let to = self.rect_of(onto);
+            // The band is the drag handle: pressing in the body is a click on the tile's own
+            // content, not a lift.
+            let (start_x, start_y) = (from.x + 10, from.y + 8);
+            let (end_x, end_y) = (to.x + to.w / 2, to.y + to.h / 2);
+            self.input.modifiers_changed(Modifiers {
+                control,
+                ..Modifiers::default()
+            });
+            self.input.cursor_moved(start_x as f32, start_y as f32);
+            self.input.mouse(MouseButton::Left, true);
+            self.frame();
+            for step in 1..=10 {
+                let x = start_x + (end_x - start_x) * step / 10;
+                let y = start_y + (end_y - start_y) * step / 10;
+                self.input.cursor_moved(x as f32, y as f32);
+                self.now += 100;
+                self.frame();
+            }
+            self.input.mouse(MouseButton::Left, false);
+            self.frame()
+        }
+    }
+
+    fn file_tile(id: u64, path: &str) -> (TileId, TileKind, Cell) {
+        (
+            TileId(id),
+            TileKind::File {
+                path: PathBuf::from(path),
+            },
+            Cell::new(0, 0),
+        )
+    }
+
+    #[test]
+    fn drag_drop_a_file_onto_a_folder_is_one_journalled_operation_and_moves_no_tile() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/report.pdf"),
+            (
+                TileId(2),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        let before = h.doc.clone();
+        let actions = h.drag_onto(TileId(1), TileId(2), false);
+
+        let drop = actions
+            .iter()
+            .find_map(|action| match action {
+                FieldAction::DropFiles(drop) => Some(drop.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no file drop in {actions:?}"));
+        assert_eq!(drop.sources, vec![PathBuf::from("/home/u/report.pdf")]);
+        assert_eq!(drop.destination, PathBuf::from("/home/u/Documents"));
+        assert!(!drop.copy, "a plain drag moves; Ctrl copies");
+        // The field is untouched: the tile did not move, the file did. Applying any layout op
+        // here would leave a tile pointing at a path that is no longer there.
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, FieldAction::Apply(_))),
+            "a file drop must not also rearrange the field: {actions:?}"
+        );
+        assert_eq!(h.doc, before);
+    }
+
+    #[test]
+    fn drag_drop_with_the_copy_modifier_copies_instead_of_moving() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/report.pdf"),
+            (
+                TileId(2),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        let actions = h.drag_onto(TileId(1), TileId(2), true);
+        let drop = actions
+            .iter()
+            .find_map(|action| match action {
+                FieldAction::DropFiles(drop) => Some(drop.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no file drop in {actions:?}"));
+        assert!(drop.copy);
+    }
+
+    #[test]
+    fn drag_drop_announces_the_exact_operation_before_release() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/report.pdf"),
+            (
+                TileId(2),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        // Mid-drag, holding over the folder: the ghost carries the label the person reads before
+        // deciding to let go, and it names which of the two operations this is.
+        let from = h.rect_of(TileId(1));
+        let to = h.rect_of(TileId(2));
+        for control in [false, true] {
+            h.input.modifiers_changed(Modifiers {
+                control,
+                ..Modifiers::default()
+            });
+            let (start_x, start_y) = (from.x + 10, from.y + 8);
+            h.input.cursor_moved(start_x as f32, start_y as f32);
+            h.input.mouse(MouseButton::Left, true);
+            h.frame();
+            for step in 1..=10 {
+                let x = start_x + ((to.x + to.w / 2) - start_x) * step / 10;
+                let y = start_y + ((to.y + to.h / 2) - start_y) * step / 10;
+                h.input.cursor_moved(x as f32, y as f32);
+                h.now += 100;
+                h.frame();
+            }
+            let ui = Ui::new(
+                Painter::new(&mut h.buffer),
+                &mut h.text,
+                &mut h.input,
+                design::theme(),
+                Scale::ONE,
+                &mut h.kernel,
+            );
+            let ghost = h.screen.ghost(&h.doc, &ui).expect("a ghost while lifted");
+            assert_eq!(
+                ghost.label,
+                Some(if control {
+                    "COPY INTO FOLDER"
+                } else {
+                    "MOVE INTO FOLDER"
+                }),
+                "control={control}"
+            );
+            drop(ui);
+            h.input.mouse(MouseButton::Left, false);
+            h.frame();
+        }
+    }
+
+    #[test]
+    fn drag_drop_carries_a_whole_selection_as_one_operation() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/one.txt"),
+            file_tile(2, "/home/u/two.txt"),
+            (
+                TileId(3),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        h.screen.selection.replace(TileId(1));
+        h.screen.selection.toggle(TileId(2));
+        let actions = h.drag_onto(TileId(1), TileId(3), false);
+        let drop = actions
+            .iter()
+            .find_map(|action| match action {
+                FieldAction::DropFiles(drop) => Some(drop.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no file drop in {actions:?}"));
+        // One operation naming both files, never two operations of one file each: the person
+        // performed one action and gets one progress report, one error and one undo.
+        assert_eq!(drop.sources.len(), 2, "{:?}", drop.sources);
+        assert!(drop.sources.contains(&PathBuf::from("/home/u/one.txt")));
+        assert!(drop.sources.contains(&PathBuf::from("/home/u/two.txt")));
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(action, FieldAction::DropFiles(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn drag_drop_onto_bare_home_moves_the_tile_and_never_touches_the_file() {
+        let mut h = Harness::new();
+        h.with_only(vec![
+            file_tile(1, "/home/u/report.pdf"),
+            (
+                TileId(2),
+                TileKind::Folder {
+                    path: PathBuf::from("/home/u/Documents"),
+                },
+                Cell::new(4, 0),
+            ),
+        ]);
+        // Dropped on empty field rather than on the folder: placement only, which is exactly
+        // what an unlabelled drop means. Bare Home never turns a drop into a file operation.
+        let from = h.rect_of(TileId(1));
+        let (start_x, start_y) = (from.x + 10, from.y + 8);
+        h.input.cursor_moved(start_x as f32, start_y as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        for step in 1..=10 {
+            h.input
+                .cursor_moved(start_x as f32, (start_y + 200 * step / 10) as f32);
+            h.now += 100;
+            h.frame();
+        }
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, FieldAction::DropFiles(_))),
+            "empty field is not a file destination: {actions:?}"
         );
     }
 

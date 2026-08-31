@@ -19,6 +19,7 @@ pub mod file_sort;
 pub mod identity;
 pub mod provider;
 pub mod unit;
+pub mod uri_list;
 
 pub use action::{ActionCategory, ActionDecl, Chord, Key, Modifiers, Requires};
 pub use app::{

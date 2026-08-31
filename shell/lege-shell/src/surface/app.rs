@@ -63,6 +63,12 @@ enum DataUpdate {
     /// Something the user asked for did not happen, in words meant for them. Shown in the field's
     /// notice strip, the same place a successful operation reports itself.
     Notice(String),
+    /// A journalled file operation reached a terminal state: what to say about it, and the undo
+    /// it leaves behind when there is one.
+    FileOperation {
+        undo: Option<FileOperationUndo>,
+        notice: String,
+    },
     /// One file thumbnail for the browse grid, rendered by Files.Previews1 and decoded
     /// off-thread. Tagged with the listing generation it was requested under, so a decode that
     /// outlives its directory is dropped instead of painted into the wrong one.
@@ -102,6 +108,48 @@ enum DataUpdate {
         path: PathBuf,
         result: Result<crate::data::OpenFileResult, String>,
     },
+}
+
+/// `1 item` or `3 items` — what an operation summary calls a path set.
+fn items(count: usize) -> String {
+    if count == 1 {
+        "1 item".to_owned()
+    } else {
+        format!("{count} items")
+    }
+}
+
+/// Whether Ctrl+Z should undo the file operation rather than the last layout change.
+///
+/// The rule, and the whole of it: whichever happened last. Home keeps two undo stacks because the
+/// two things are genuinely different — one puts a tile back, the other puts a *file* back, and
+/// the second is a service transaction with a journal behind it — but a person pressing Ctrl+Z is
+/// not thinking about which stack they are addressing. They mean "undo what I just did".
+///
+/// A file operation with no layout change after it wins even when the field has nothing to undo,
+/// which is the common case: drag some files into a folder on a fresh session and Ctrl+Z must put
+/// them back rather than doing nothing at all.
+fn undo_the_file_operation(
+    file: Option<&FileOperationUndo>,
+    last_field_change: Option<Instant>,
+    has_field_undo: bool,
+) -> bool {
+    let Some(file) = file else {
+        return false;
+    };
+    if !has_field_undo {
+        return true;
+    }
+    last_field_change.is_none_or(|field_at| file.at >= field_at)
+}
+
+/// The most recent journalled file operation, and what to call it when offering to undo it.
+#[derive(Clone, Debug)]
+struct FileOperationUndo {
+    op_id: String,
+    /// What the person did, in their words — "Move 3 items to /home/u/Documents".
+    summary: String,
+    at: Instant,
 }
 
 /// How far one press of a level control moves it.
@@ -168,6 +216,16 @@ struct ShellApp {
     /// Inverses of the user's field ops, most recent last — Ctrl+Z applies the last one when
     /// `HomeField1` is unavailable.
     undo: Vec<FieldOp>,
+    /// When the field document last changed, and the most recent journalled file operation that
+    /// can still be undone.
+    ///
+    /// Home has two undos and they are not interchangeable: the field's own op log puts a tile
+    /// back where it was, and `Files.Operations1` puts a *file* back where it was. Keeping them
+    /// separate internally is right — one is a layout change and the other moves data — but a
+    /// person pressing Ctrl+Z means "undo what I just did", so the surface picks whichever
+    /// happened last and says which one it is undoing before it does.
+    last_field_change_at: Option<Instant>,
+    last_file_operation: Option<FileOperationUndo>,
     field_settings: HomeFieldSettings,
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
@@ -235,6 +293,8 @@ impl ShellApp {
             field: FieldDocument::new(OUTPUT, 16, 8),
             field_synced: None,
             undo: Vec::new(),
+            last_field_change_at: None,
+            last_file_operation: None,
             field_settings: HomeFieldSettings::default(),
             field_requested: false,
             apps: Vec::new(),
@@ -474,6 +534,15 @@ impl ShellApp {
                     self.treemap_pending.remove(&drawer);
                     self.treemaps.insert(drawer, bitmap);
                     self.compositions.insert(drawer, composition);
+                }
+                // A journalled operation finished. This is the one progress-and-error surface
+                // for everything the Home file surfaces do: one operation, one report.
+                DataUpdate::FileOperation { undo, notice } => {
+                    if let Some(undo) = undo {
+                        self.last_file_operation = Some(undo);
+                    }
+                    let now_ms = self.started.elapsed().as_millis() as u64;
+                    self.field_screen.report(notice, now_ms);
                 }
                 DataUpdate::Notice(text) => {
                     let now_ms = self.started.elapsed().as_millis() as u64;
@@ -849,6 +918,7 @@ impl ShellApp {
         self.spawn_thumbnails();
     }
 
+    #[allow(clippy::too_many_lines)]
     fn perform(&mut self, action: FieldAction) {
         match action {
             FieldAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
@@ -874,6 +944,7 @@ impl ShellApp {
             }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
+            FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::RunAction(id) => self.perform_declared(id),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             FieldAction::RevealHome => {
@@ -896,6 +967,7 @@ impl ShellApp {
                     } else {
                         self.undo.push(inverse);
                         self.undo.truncate(64);
+                        self.last_field_change_at = Some(Instant::now());
                     }
                 }
                 Err(error) => tracing::warn!(%error, ?op, "field op refused"),
@@ -939,7 +1011,21 @@ impl ShellApp {
                         at.elapsed().as_millis()
                     ));
                 }
-                if self.field_synced == Some(true) {
+                let has_field_undo = self.field_synced == Some(true) || !self.undo.is_empty();
+                if undo_the_file_operation(
+                    self.last_file_operation.as_ref(),
+                    self.last_field_change_at,
+                    has_field_undo,
+                ) {
+                    // Taken rather than borrowed: an undo is spent whether or not the service
+                    // accepts it, and offering the same one twice would be a second undo the
+                    // person did not ask for.
+                    let undo = self.last_file_operation.take().expect("checked above");
+                    let now_ms = self.started.elapsed().as_millis() as u64;
+                    self.field_screen
+                        .report(format!("Undoing: {}", undo.summary), now_ms);
+                    self.spawn_file_undo(undo.op_id);
+                } else if self.field_synced == Some(true) {
                     self.spawn_field_undo();
                 } else if let Some(inverse) = self.undo.pop() {
                     match lege_field::apply(&self.field, &inverse) {
@@ -1323,6 +1409,104 @@ impl ShellApp {
             let proxy = lege_client::proxies::BacklightProxy::new(&connection).await?;
             proxy.adjust_brightness(delta).await?;
             Ok(())
+        });
+    }
+
+    /// Start one journalled operation for a typed file drop and follow it to its end.
+    fn spawn_file_drop(&self, drop: &crate::surface::field_screen::FileDrop) {
+        let kind = if drop.copy {
+            serde_json::json!({
+                "kind": "copy",
+                "sources": drop.sources,
+                "destination_dir": drop.destination,
+            })
+        } else {
+            serde_json::json!({
+                "kind": "move",
+                "sources": drop.sources,
+                "destination_dir": drop.destination,
+            })
+        };
+        let summary = format!(
+            "{} {} to {}",
+            if drop.copy { "Copy" } else { "Move" },
+            items(drop.sources.len()),
+            drop.destination.display()
+        );
+        self.spawn_file_operation(kind.to_string(), summary);
+    }
+
+    /// Start a `Files.Operations1` operation, follow it, and report it once.
+    ///
+    /// One operation for the whole path set, so a person who moved forty files gets one progress
+    /// report, one error if it fails, and one undo. Following it to a terminal state here is what
+    /// makes a partial failure visible: the service records which sources it skipped and why it
+    /// stopped, and reporting only "started" would turn a half-finished move into apparent
+    /// success.
+    fn spawn_file_operation(&self, kind_json: String, summary: String) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let outcome = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesOperationsProxy::new(&connection).await?;
+                let op_id = proxy
+                    .start(&kind_json, "", crate::data::SHELL_APP_ID)
+                    .await?;
+                let record = crate::data::follow_operation(&proxy, &op_id).await?;
+                Ok::<_, anyhow::Error>((proxy, op_id, record))
+            }
+            .await;
+            let update = match outcome {
+                Ok((proxy, op_id, record)) => {
+                    let notice = crate::data::describe_operation(&summary, &record);
+                    // Only offer an undo the service says it still has. `can_undo` is the
+                    // service's answer, not a guess: a delete has none, and a partly failed move
+                    // may have none either.
+                    let undoable = proxy
+                        .can_undo(&op_id)
+                        .await
+                        .is_ok_and(|(allowed, _)| allowed);
+                    DataUpdate::FileOperation {
+                        undo: undoable.then(|| FileOperationUndo {
+                            op_id,
+                            summary,
+                            at: Instant::now(),
+                        }),
+                        notice,
+                    }
+                }
+                Err(error) => DataUpdate::FileOperation {
+                    undo: None,
+                    notice: format!("{summary} — {error:#}"),
+                },
+            };
+            let _ = tx.send(update);
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Reverse a journalled operation through the service that performed it.
+    fn spawn_file_undo(&self, op_id: String) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let outcome = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = lege_client::proxies::FilesOperationsProxy::new(&connection).await?;
+                let undo_id = proxy.undo(&op_id).await?;
+                let record = crate::data::follow_operation(&proxy, &undo_id).await?;
+                Ok::<_, anyhow::Error>(record)
+            }
+            .await;
+            let notice = match outcome {
+                Ok(record) => crate::data::describe_operation("Undo", &record),
+                Err(error) => format!("Could not undo — {error:#}"),
+            };
+            // An undo that itself leaves an undo would let Ctrl+Z oscillate; the journal keeps
+            // the record either way, and `lege files undo` can reach it.
+            let _ = tx.send(DataUpdate::FileOperation { undo: None, notice });
+            let _ = proxy_wake.send_event(Wake);
         });
     }
 
@@ -1765,6 +1949,56 @@ impl ApplicationHandler<Wake> for ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_undo(at: Instant) -> FileOperationUndo {
+        FileOperationUndo {
+            op_id: "op-1".to_owned(),
+            summary: "Move 3 items to /home/u/Documents".to_owned(),
+            at,
+        }
+    }
+
+    #[test]
+    fn undo_goes_to_whichever_of_the_two_stacks_was_used_last() {
+        let earlier = Instant::now();
+        let later = earlier + Duration::from_secs(5);
+
+        // Nothing to undo at all.
+        assert!(!undo_the_file_operation(None, None, false));
+        assert!(!undo_the_file_operation(None, Some(earlier), true));
+
+        // A file operation and no layout change: Ctrl+Z must put the files back rather than do
+        // nothing, which is the common case on a fresh session.
+        assert!(undo_the_file_operation(
+            Some(&file_undo(earlier)),
+            None,
+            false
+        ));
+        assert!(undo_the_file_operation(
+            Some(&file_undo(earlier)),
+            None,
+            true
+        ));
+
+        // Both available: whichever happened last wins, because that is what "undo what I just
+        // did" means to the person pressing the key.
+        assert!(undo_the_file_operation(
+            Some(&file_undo(later)),
+            Some(earlier),
+            true
+        ));
+        assert!(!undo_the_file_operation(
+            Some(&file_undo(earlier)),
+            Some(later),
+            true
+        ));
+        // A layout change the field can no longer undo does not get to block the file undo.
+        assert!(undo_the_file_operation(
+            Some(&file_undo(earlier)),
+            Some(later),
+            false
+        ));
+    }
 
     #[test]
     fn emptying_the_trash_needs_a_second_press_and_the_arming_expires() {
