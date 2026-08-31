@@ -2016,7 +2016,7 @@ record legeos.work.wayland-clipboard-and-dnd-transport/1 : work {
 
 record legeos.work.window-controls-and-mouse-parity/1 : work {
     title "Window close and resize, and a pointer path for every action that today has only a chord"
-    state active
+    state completed
     scope [
         path "compositor/lege-comp/src/input.rs",
         path "compositor/lege-comp/src/xdg_shell.rs",

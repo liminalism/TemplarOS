@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:cfc74d3d289bfcf0028562d123f9d19aeca6ce4a62a5547ecb9087c51cd790ab"
+    source_graph "sha256:65a02ea511b9db3fe9e4924be05db4a90f2cc040dc73e754d0e9389437088d35"
 }
 
 source ".akr/project.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:b0d957aca8e2a5f8771c02256b86b5115c959e25302a9f24cf24a44bcfa1129c"
+    hash "sha256:5a4b0ea7d4f9be33c5e8a74f00e90c94991d61de1affda4315715d3b3b7a138f"
     records 44
 }
 
@@ -2258,6 +2258,6 @@ seal @legeos.work.trash-that-can-be-seen-and-emptied/1 {
 }
 
 seal @legeos.work.window-controls-and-mouse-parity/1 {
-    state active
-    hash "sha256:21e60a4852fbf468fdd9f9ab6c91694672a31ecf3aefdb36e9dcc7a3b87f05f6"
+    state completed
+    hash "sha256:62d42fdd8d33bc269db85d27fd5b68513872c6fa39e1f8becb10f59734426e03"
 }
