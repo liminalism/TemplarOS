@@ -431,34 +431,6 @@ pub fn describe_operation(summary: &str, record: &lege_client::files::OperationR
 const AUDIO_CONTROLS: [&str; 3] = ["volume.decrease", "volume.increase", "volume.mute"];
 const BACKLIGHT_CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increase"];
 
-/// The battery reading, as one line: the charge, what it is doing, and how long that leaves.
-///
-/// Built on `BatteryState::headline` rather than beside it, because the wording of a charge
-/// belongs to `lege_client::status` — a widget and `lege status battery` must not each invent
-/// their own. A machine with no battery is not a failure and must not read as one: the headline
-/// says "On mains" or "No battery" and nothing is appended to it.
-fn battery_reading(state: &lege_client::status::BatteryState) -> String {
-    let mut line = state.headline();
-    if !state.present {
-        return line;
-    }
-    // The status word: the percentage alone never says whether it is going up or down, which is
-    // the half of a battery reading a person actually acts on.
-    if !state.status.is_empty() && state.status != "unknown" {
-        line.push(' ');
-        line.push_str(&state.status);
-    }
-    if let Some((word, minutes)) = state.time_remaining() {
-        use std::fmt::Write as _;
-        let _ = write!(
-            line,
-            " · {} {word}",
-            lege_client::status::duration_minutes(minutes)
-        );
-    }
-    line
-}
-
 /// The Settings widget's content: the battery, volume and brightness readings on one snapshot,
 /// with the controls of any absent service refused.
 ///
@@ -507,7 +479,9 @@ pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot 
     let unavailable = || "Unavailable".to_owned();
     settings::snapshot(
         [
-            battery.as_ref().map_or_else(unavailable, battery_reading),
+            battery
+                .as_ref()
+                .map_or_else(unavailable, lege_client::status::BatteryState::reading),
             audio
                 .as_ref()
                 .map_or_else(unavailable, lege_client::status::AudioState::headline),

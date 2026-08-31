@@ -153,20 +153,10 @@ pub(crate) fn battery_line(state: Option<&BatteryState>) -> String {
             "No battery detected".to_owned()
         };
     }
-    let mut line = state.headline();
-    if !state.status.is_empty() && state.status != "unknown" {
-        line.push_str(", ");
-        line.push_str(&state.status);
-    }
-    if let Some((word, minutes)) = state.time_remaining() {
-        use std::fmt::Write as _;
-        let _ = write!(
-            line,
-            " — {} {word}",
-            lege_client::status::duration_minutes(minutes)
-        );
-    }
-    line
+    // The wording is `lege_client::status`', not this page's: the Home Field's Settings widget
+    // renders the same fact, and two surfaces that phrase one charge differently are two surfaces
+    // a person has to reconcile.
+    state.reading()
 }
 
 /// The volume's supporting line, and whether its controls can do anything.
@@ -285,7 +275,7 @@ mod tests {
         let state = read(&LAPTOP).await;
         let rendered = render_state(&state);
         assert!(
-            rendered.contains("72%, discharging — 2 h 23 min remaining"),
+            rendered.contains("72% · 2 h 23 min remaining"),
             "{rendered}"
         );
         assert!(rendered.contains("volume     45%"), "{rendered}");
