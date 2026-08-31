@@ -39,12 +39,21 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     // Everything a live shell would have fetched. Each of these degrades on its own when its
     // service is absent, so this works on a machine with no session daemon at all.
-    let (drawer_texts, apps, projects, session_widget, notifications_widget, browser_sources) = tokio::join!(
+    let (
+        drawer_texts,
+        apps,
+        projects,
+        session_widget,
+        notifications_widget,
+        settings_widget,
+        browser_sources,
+    ) = tokio::join!(
         crate::data::fetch_all(12),
         crate::data::fetch_apps(),
         crate::data::fetch_projects(),
         crate::data::fetch_session_widget(),
         crate::data::fetch_notifications_widget(),
+        crate::data::fetch_settings_widget(),
         crate::data::fetch_browser_sources(),
     );
 
@@ -68,6 +77,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     let mut widgets = HashMap::new();
     widgets.insert("session".to_owned(), session_widget);
     widgets.insert("notifications".to_owned(), notifications_widget);
+    widgets.insert("settings".to_owned(), settings_widget);
 
     let drawer_feeds: HashMap<_, crate::drawers::DrawerFeed> = drawer_texts.into_iter().collect();
 

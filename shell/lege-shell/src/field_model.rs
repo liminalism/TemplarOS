@@ -48,18 +48,11 @@ pub const DRAWER_TILES: [Drawer; 8] = [
 /// nothing on the field to open anything with, because application tiles are derived from windows
 /// that already exist (`merge_apps`) and go away with the last one.
 ///
-/// Battery, volume and brightness are the three a laptop is not usable without and that no other
-/// surface offers: LegeOS has no tray and no menu bar by design, so a widget is the only place
-/// they can be. All six land at the 2x1 preferred span, so the shelf stays a strip along the
-/// bottom rather than a second desktop.
-pub const SYSTEM_WIDGETS: [&str; 6] = [
-    "session",
-    "launcher",
-    "notifications",
-    "battery",
-    "volume",
-    "brightness",
-];
+/// Settings is the fourth and last: the battery, the volume and the display brightness on one
+/// tile, with the way into the window that changes the rest of them. LegeOS has no tray and no
+/// menu bar by design, so a widget is the only place those readings can be — but one tile each was
+/// three headings for three numbers, which is a tray by another name.
+pub const SYSTEM_WIDGETS: [&str; 4] = ["session", "launcher", "notifications", "settings"];
 
 const DRAWER_SPAN: u16 = 2;
 
@@ -67,8 +60,9 @@ const DRAWER_SPAN: u16 = 2;
 ///
 /// The same bargain the drawer block strikes with [`DRAWER_WIDTH_SHARE`], and it exists for the
 /// same reason. Home's furniture is there to be reached, not to *be* the desktop: the middle of
-/// the field belongs to windows and applications. Three widgets never came close to this ceiling;
-/// six do on a small field, which is exactly when it matters.
+/// the field belongs to windows and applications. Four widgets at three columns each reach it on
+/// a small field, which is exactly when it matters — and reaching it is how the shelf sheds a
+/// widget rather than the field losing a row of working space.
 const SYSTEM_SHELF_SHARE: u16 = 4;
 
 /// The system widgets that fit on a `cols`x`rows` field, in declaration order.
@@ -1327,9 +1321,8 @@ mod tests {
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
         // Drawers occupy a compact 4×8 block, apps follow it, sessions sit above the system
-        // shelf. On this 16×8 field the shelf is three rows: the three launcher-shaped widgets
-        // and two readouts fill one row of height two, and the last readout wraps to a row of
-        // its own.
+        // shelf. On this 16×8 field the shelf is one row of height two: four widgets of three
+        // columns each fit across the twelve the drawer block leaves.
         let inbox = tile_id_for("drawer:Downloads");
         assert_eq!(doc.location(inbox).unwrap().placement.cell, Cell::new(0, 0));
         // Apps are sorted by id: the Editor (known only from its window) precedes Files.
@@ -1341,7 +1334,7 @@ mod tests {
             Cell::new(4, 0)
         );
         let session = session_tile_for(&doc, &windows[1]).unwrap();
-        assert_eq!(doc.location(session).unwrap().placement.cell.row, 3);
+        assert_eq!(doc.location(session).unwrap().placement.cell.row, 4);
 
         // A second merge with the same state changes nothing.
         let before = doc.clone();

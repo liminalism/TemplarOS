@@ -1,7 +1,7 @@
 //! The widget contract: what a `TileKind::System` tile is, and how it draws.
 //!
-//! Everything the Home Field lacks — a launcher, session power, volume, brightness, battery,
-//! notifications — is meant to arrive as a widget on this one screen rather than as a panel, a
+//! Everything the Home Field lacks — a launcher, session power, notifications, the hardware
+//! readings — is meant to arrive as a widget on this one screen rather than as a panel, a
 //! tray or a menu bar (`docs/generated/ROADMAP.md` M2: taskbar-free, "rather than a permanent
 //! dock"). A widget **shows information first**; its regions can be clicked; opening a window is
 //! a separate, deliberate second step.
@@ -26,6 +26,7 @@
 
 pub mod launcher;
 pub mod notifications;
+pub mod settings;
 
 use lege_field::Representation;
 use lege_types::action::{self, ActionDecl};
@@ -112,11 +113,11 @@ pub struct WidgetDescriptor {
     /// The span this widget wants when it is placed, as `(cols, rows)`.
     ///
     /// Per widget rather than one figure for every `TileKind::System`, because the class default
-    /// is the launcher's — a list needs rows to be a list — and a battery reading "72%" does not.
-    /// With six system widgets sharing one shelf the difference is the whole desktop: at the
-    /// launcher's 3x2 they take four rows of a seven-row field, which is furniture standing where
-    /// the windows are meant to go. Every system tile keeps the same 2x1 floor it always had, so
-    /// this changes what a widget *arrives* at and never what a person may shrink it to.
+    /// is the launcher's — a list needs rows to be a list — and not every widget is a list. With
+    /// several widgets sharing one shelf the difference is the whole desktop: at the class's own
+    /// 4x2 they take rows of a seven-row field that are furniture standing where the windows are
+    /// meant to go. Every system tile keeps the same 2x1 floor it always had, so this changes what
+    /// a widget *arrives* at and never what a person may shrink it to.
     pub preferred_span: (u16, u16),
 }
 
@@ -173,47 +174,34 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
         scroll: None,
         preferred_span: (3, 2),
     },
-    // Battery, volume and brightness: what the hardware is doing, one widget each because they
-    // are three separate facts and a person watching their charge is not the same person reaching
-    // for the volume. Each is backed by its own service interface, and none of them decides
-    // anything — the snapshot is handed in (`legeos.constraint.services-not-indicators`).
+    // What the hardware is doing, and the one way in to changing it. This was three tiles —
+    // Battery, Volume, Brightness — and three tiles is what a tray looks like: three-fifths of the
+    // system shelf spent on three numbers, each with its own heading repeating a word the figure
+    // beside it already implied. One tile carries all three readings on one line each and opens
+    // into a window with room to explain the rest (`settings.open`). Nothing here decides
+    // anything: the readings are handed in (`legeos.constraint.services-not-indicators`).
     WidgetDescriptor {
-        id: "battery",
-        title: "Battery",
-        // No regions at all, and that is the honest shape: nothing a person can do to a battery
-        // from a tile. A control here would have to be either a lie or a power profile, and the
-        // profile belongs to Power1 and to Settings.
-        regions: &[],
-        // One figure and a word: this is the widget that most earns a small floor, and the one
-        // that has least to lose from it.
-        scroll: None,
-        preferred_span: (2, 1),
-    },
-    WidgetDescriptor {
-        id: "volume",
-        title: "Volume",
-        // The two step controls survive to the floor and mute appears above it. That is the way
-        // round it has to be: stepping is what the tile is *for*, and a 2x1 tile has room for two
-        // controls, not three. Mute is also the one of the three with a keyboard key of its own on
-        // most machines, so it is the least costly to put a rung further in.
+        id: "settings",
+        title: "Settings",
+        // The ladder is the point of merging them. At the floor the tile is a readout with one way
+        // in, which is what a glance needs. Grown a rung it becomes the quick controls the three
+        // separate tiles used to offer, and a rung above that the one control with a key of its own
+        // on most keyboards. Stepping is never *only* available up there: the wheel below works at
+        // every rung, so the floor still changes the volume in one gesture.
         regions: &[
-            WidgetRegion::new("volume.decrease", Representation::Small),
-            WidgetRegion::new("volume.increase", Representation::Small),
-            WidgetRegion::new("volume.mute", Representation::Wide),
+            WidgetRegion::new("settings.open", Representation::Small),
+            WidgetRegion::new("volume.decrease", Representation::Wide),
+            WidgetRegion::new("volume.increase", Representation::Wide),
+            WidgetRegion::new("brightness.decrease", Representation::Wide),
+            WidgetRegion::new("brightness.increase", Representation::Wide),
+            WidgetRegion::new("volume.mute", Representation::Large),
         ],
+        // Volume, not brightness: a wheel has one meaning per widget, and of the two levels this
+        // tile reports it is the one a person reaches for without looking.
         scroll: Some(("volume.increase", "volume.decrease")),
-        // Wide enough for the two step controls to sit side by side and still be hittable.
-        preferred_span: (3, 1),
-    },
-    WidgetDescriptor {
-        id: "brightness",
-        title: "Brightness",
-        regions: &[
-            WidgetRegion::new("brightness.decrease", Representation::Small),
-            WidgetRegion::new("brightness.increase", Representation::Small),
-        ],
-        scroll: Some(("brightness.increase", "brightness.decrease")),
-        preferred_span: (3, 1),
+        // Three lines and a control row. Smaller than the launcher's list still, and the same six
+        // cells the three tiles it replaces used to claim between them at their smallest.
+        preferred_span: (3, 2),
     },
 ];
 
@@ -440,41 +428,62 @@ mod tests {
             );
             // A wheel is a level's gesture. Anything else declaring one would be silently eating
             // the wheel over a tile that has nothing to step.
-            assert!(
-                matches!(widget.id, "volume" | "brightness"),
-                "{} declares a scroll route but is not a level",
+            assert_eq!(
+                widget.id, "settings",
+                "{} declares a scroll route but reports no level",
                 widget.id
             );
         }
-        // The two levels do declare one: a person who has used any other desktop will try it.
-        for id in ["volume", "brightness"] {
+        // The one tile that reports a level does declare one: a person who has used any other
+        // desktop will try it, and at the floor rung it is the only way to step without opening
+        // Settings.
+        assert!(
+            descriptor("settings").unwrap().scroll.is_some(),
+            "the settings widget has no wheel"
+        );
+    }
+
+    /// The three separate readouts are gone, and nothing may quietly bring them back: a tile per
+    /// hardware figure is the tray this desktop does not have.
+    #[test]
+    fn the_hardware_readings_share_one_widget_rather_than_one_each() {
+        for gone in ["battery", "volume", "brightness"] {
             assert!(
-                descriptor(id).unwrap().scroll.is_some(),
-                "{id} has no wheel"
+                descriptor(gone).is_none(),
+                "{gone} is a reading on the Settings widget, not a widget of its own"
             );
         }
+        let settings = descriptor("settings").expect("the settings widget is declared");
+        let ids: Vec<&str> = settings
+            .regions
+            .iter()
+            .map(|region| region.action)
+            .collect();
+        assert!(ids.contains(&"volume.increase"));
+        assert!(ids.contains(&"brightness.increase"));
     }
 
     #[test]
-    fn the_battery_offers_no_controls_because_there_are_none_to_offer() {
-        let battery = descriptor("battery").expect("the battery widget is declared");
-        assert!(
-            battery.regions.is_empty(),
-            "a control on a battery tile would have to be a lie or a power profile"
-        );
-        assert_eq!(battery.scroll, None);
-    }
-
-    #[test]
-    fn a_readout_arrives_smaller_than_a_launcher_but_keeps_the_same_floor() {
-        // The launcher needs rows to be a list; a battery reading "72%" does not, and six widgets
-        // at the launcher's size are four rows of a seven-row field.
+    fn a_readout_arrives_no_larger_than_a_launcher() {
+        // The launcher needs rows to be a list. Three readings and a control row need no more,
+        // and the shelf is a strip along the bottom rather than a second desktop.
         assert_eq!(descriptor("launcher").unwrap().preferred_span, (3, 2));
-        assert_eq!(descriptor("battery").unwrap().preferred_span, (2, 1));
-        for id in ["volume", "brightness"] {
-            // Wide enough for two step controls side by side.
-            assert_eq!(descriptor(id).unwrap().preferred_span, (3, 1));
-        }
+        assert_eq!(descriptor("settings").unwrap().preferred_span, (3, 2));
+    }
+
+    /// The way in is the one control that survives every shrink: a tile too small for the steppers
+    /// must still be able to reach the window that has them.
+    #[test]
+    fn the_way_into_settings_survives_to_the_floor() {
+        let settings = descriptor("settings").expect("the settings widget is declared");
+        let floor: Vec<&str> = regions_at(settings, Representation::Small)
+            .iter()
+            .map(|region| region.action)
+            .collect();
+        assert_eq!(floor, vec!["settings.open"]);
+        let wide = regions_at(settings, Representation::Wide).len();
+        let large = regions_at(settings, Representation::Large).len();
+        assert!(floor.len() < wide && wide < large, "1 {wide} {large}");
     }
 
     /// A wheel over the body, put through the real `draw` the field screen calls.
@@ -517,36 +526,35 @@ mod tests {
 
     #[test]
     fn a_wheel_over_a_level_steps_it_the_way_round_a_person_expects() {
-        let volume = descriptor("volume").unwrap();
+        let settings = descriptor("settings").unwrap();
         // Wheel up is a negative delta, and wheel up means more.
-        assert_eq!(wheel_over(volume, -48.0, &[]), Some("volume.increase"));
-        assert_eq!(wheel_over(volume, 48.0, &[]), Some("volume.decrease"));
-        assert_eq!(wheel_over(volume, 0.0, &[]), None);
+        assert_eq!(wheel_over(settings, -48.0, &[]), Some("volume.increase"));
+        assert_eq!(wheel_over(settings, 48.0, &[]), Some("volume.decrease"));
+        assert_eq!(wheel_over(settings, 0.0, &[]), None);
     }
 
     #[test]
     fn a_refused_level_does_not_step_on_a_wheel_either() {
-        // A machine with no backlight refuses both controls. The region strip already draws them
-        // inert; the wheel has to honour the same answer, or the one route with no visible
-        // control would be the one that still fired.
-        let brightness = descriptor("brightness").unwrap();
-        let refused = vec![
-            "brightness.increase".to_owned(),
-            "brightness.decrease".to_owned(),
-        ];
-        assert_eq!(wheel_over(brightness, -48.0, &refused), None);
-        assert_eq!(wheel_over(brightness, 48.0, &refused), None);
+        // A machine with no audio service refuses both step controls. The region strip already
+        // draws them inert; the wheel has to honour the same answer, or the one route with no
+        // visible control would be the one that still fired.
+        let settings = descriptor("settings").unwrap();
+        let refused = vec!["volume.increase".to_owned(), "volume.decrease".to_owned()];
+        assert_eq!(wheel_over(settings, -48.0, &refused), None);
+        assert_eq!(wheel_over(settings, 48.0, &refused), None);
         // With the hardware present the same wheel does step it.
-        assert_eq!(
-            wheel_over(brightness, -48.0, &[]),
-            Some("brightness.increase")
-        );
+        assert_eq!(wheel_over(settings, -48.0, &[]), Some("volume.increase"));
     }
 
     #[test]
     fn a_widget_with_no_wheel_route_leaves_the_wheel_alone() {
-        assert_eq!(wheel_over(descriptor("battery").unwrap(), -48.0, &[]), None);
-        assert_eq!(wheel_over(descriptor("session").unwrap(), -48.0, &[]), None);
+        for id in ["session", "notifications", "launcher"] {
+            assert_eq!(
+                wheel_over(descriptor(id).unwrap(), -48.0, &[]),
+                None,
+                "{id}"
+            );
+        }
     }
 
     #[test]

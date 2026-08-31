@@ -424,119 +424,99 @@ pub fn describe_operation(summary: &str, record: &lege_client::files::OperationR
     }
 }
 
-/// The battery widget's content.
-///
-/// A machine with no battery is not a failure and must not read as one: the snapshot stays
-/// `available` and says "On mains" or "No battery", because a desktop showing a red unavailable
-/// tile would be reporting a fault that does not exist. Only an unreachable *service* is
-/// unavailable here.
-pub async fn fetch_battery_widget() -> crate::surface::widgets::WidgetSnapshot {
-    use crate::surface::widgets::WidgetSnapshot;
-    let Ok(connection) = session().await else {
-        return WidgetSnapshot::unavailable("Battery — no session bus");
-    };
-    let Ok(proxy) = BatteryProxy::new(&connection).await else {
-        return WidgetSnapshot::unavailable("Battery — service unavailable");
-    };
-    let Ok(json) = proxy.get().await else {
-        return WidgetSnapshot::unavailable("Battery — service unavailable");
-    };
-    let Ok(state) = serde_json::from_str::<lege_client::status::BatteryState>(&json) else {
-        return WidgetSnapshot::unavailable("Battery — unreadable answer");
-    };
-    let mut detail = Vec::new();
-    if state.present {
-        detail.push(state.status.clone());
-        if let Some((word, minutes)) = state.time_remaining() {
-            detail.push(format!(
-                "{} {word}",
-                lege_client::status::duration_minutes(minutes)
-            ));
-        }
-        if state.on_mains && state.status != "charging" {
-            detail.push("On mains".to_owned());
-        }
-    } else {
-        detail.push("This machine has no battery".to_owned());
-    }
-    WidgetSnapshot {
-        headline: state.headline(),
-        detail,
-        available: true,
-        refused: Vec::new(),
-    }
-}
-
-/// The volume widget's content, with its controls refused when there is nothing to control.
+/// The controls each service owns, refused together when that service has nothing to control.
 ///
 /// `refused` is how a widget says "this button would not work" without removing it — the region
 /// draws inert instead of vanishing, so a person is not left wondering where the control went.
-/// A machine with no WirePlumber gets exactly that: a readable tile whose buttons do not lie.
-pub async fn fetch_volume_widget() -> crate::surface::widgets::WidgetSnapshot {
-    use crate::surface::widgets::WidgetSnapshot;
-    const CONTROLS: [&str; 3] = ["volume.decrease", "volume.increase", "volume.mute"];
-    let Ok(connection) = session().await else {
-        return WidgetSnapshot::unavailable("Volume — no session bus");
-    };
-    let Ok(proxy) = AudioProxy::new(&connection).await else {
-        return WidgetSnapshot::unavailable("Volume — service unavailable");
-    };
-    let Ok(json) = proxy.get().await else {
-        return WidgetSnapshot::unavailable("Volume — service unavailable");
-    };
-    let Ok(state) = serde_json::from_str::<lege_client::status::AudioState>(&json) else {
-        return WidgetSnapshot::unavailable("Volume — unreadable answer");
-    };
-    WidgetSnapshot {
-        headline: state.headline(),
-        detail: if state.present {
-            vec![if state.muted {
-                "Muted".to_owned()
-            } else {
-                "Default output".to_owned()
-            }]
-        } else {
-            vec!["No audio service on this machine".to_owned()]
-        },
-        available: true,
-        refused: if state.present {
-            Vec::new()
-        } else {
-            CONTROLS.iter().map(|id| (*id).to_owned()).collect()
-        },
+const AUDIO_CONTROLS: [&str; 3] = ["volume.decrease", "volume.increase", "volume.mute"];
+const BACKLIGHT_CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increase"];
+
+/// The battery reading, as one line: the charge, what it is doing, and how long that leaves.
+///
+/// Built on `BatteryState::headline` rather than beside it, because the wording of a charge
+/// belongs to `lege_client::status` — a widget and `lege status battery` must not each invent
+/// their own. A machine with no battery is not a failure and must not read as one: the headline
+/// says "On mains" or "No battery" and nothing is appended to it.
+fn battery_reading(state: &lege_client::status::BatteryState) -> String {
+    let mut line = state.headline();
+    if !state.present {
+        return line;
     }
+    // The status word: the percentage alone never says whether it is going up or down, which is
+    // the half of a battery reading a person actually acts on.
+    if !state.status.is_empty() && state.status != "unknown" {
+        line.push(' ');
+        line.push_str(&state.status);
+    }
+    if let Some((word, minutes)) = state.time_remaining() {
+        use std::fmt::Write as _;
+        let _ = write!(
+            line,
+            " · {} {word}",
+            lege_client::status::duration_minutes(minutes)
+        );
+    }
+    line
 }
 
-/// The brightness widget's content, with its controls refused on a machine with no backlight.
-pub async fn fetch_brightness_widget() -> crate::surface::widgets::WidgetSnapshot {
+/// The Settings widget's content: the battery, volume and brightness readings on one snapshot,
+/// with the controls of any absent service refused.
+///
+/// One fetch over one connection, because it is one tile. Three separate widgets meant three
+/// connections and three chances for the shelf to disagree with itself about whether the session
+/// bus was there.
+pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot {
     use crate::surface::widgets::WidgetSnapshot;
-    const CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increase"];
+    use crate::surface::widgets::settings;
     let Ok(connection) = session().await else {
-        return WidgetSnapshot::unavailable("Brightness — no session bus");
+        return WidgetSnapshot::unavailable("Settings — no session bus");
     };
-    let Ok(proxy) = BacklightProxy::new(&connection).await else {
-        return WidgetSnapshot::unavailable("Brightness — service unavailable");
+
+    let battery = async {
+        let proxy = BatteryProxy::new(&connection).await.ok()?;
+        let json = proxy.get().await.ok()?;
+        serde_json::from_str::<lege_client::status::BatteryState>(&json).ok()
     };
-    let Ok(json) = proxy.get().await else {
-        return WidgetSnapshot::unavailable("Brightness — service unavailable");
+    let audio = async {
+        let proxy = AudioProxy::new(&connection).await.ok()?;
+        let json = proxy.get().await.ok()?;
+        serde_json::from_str::<lege_client::status::AudioState>(&json).ok()
     };
-    let Ok(state) = serde_json::from_str::<lege_client::status::BacklightState>(&json) else {
-        return WidgetSnapshot::unavailable("Brightness — unreadable answer");
+    let backlight = async {
+        let proxy = BacklightProxy::new(&connection).await.ok()?;
+        let json = proxy.get().await.ok()?;
+        serde_json::from_str::<lege_client::status::BacklightState>(&json).ok()
     };
-    WidgetSnapshot {
-        headline: state.headline(),
-        detail: if state.present {
-            vec![state.device.clone()]
-        } else {
-            vec!["This display has no backlight control".to_owned()]
-        },
-        available: true,
-        refused: if state.present {
-            Vec::new()
-        } else {
-            CONTROLS.iter().map(|id| (*id).to_owned()).collect()
-        },
+    let (battery, audio, backlight) = tokio::join!(battery, audio, backlight);
+
+    // Nothing answering at all is a different thing from a machine without a battery, and the
+    // tile has to say which. Only the first is unavailable.
+    if battery.is_none() && audio.is_none() && backlight.is_none() {
+        return WidgetSnapshot::unavailable("Settings — services unavailable");
     }
+
+    let mut refused = Vec::new();
+    if audio.as_ref().is_none_or(|state| !state.present) {
+        refused.extend(AUDIO_CONTROLS.iter().map(|id| (*id).to_owned()));
+    }
+    if backlight.as_ref().is_none_or(|state| !state.present) {
+        refused.extend(BACKLIGHT_CONTROLS.iter().map(|id| (*id).to_owned()));
+    }
+    // "Unavailable" for the one service that did not answer while the others did — a blank line
+    // would read as a reading of nothing, which is the one thing it is not.
+    let unavailable = || "Unavailable".to_owned();
+    settings::snapshot(
+        [
+            battery.as_ref().map_or_else(unavailable, battery_reading),
+            audio
+                .as_ref()
+                .map_or_else(unavailable, lege_client::status::AudioState::headline),
+            backlight
+                .as_ref()
+                .map_or_else(unavailable, lege_client::status::BacklightState::headline),
+        ],
+        refused,
+    )
 }
 
 /// `Projects1.List`, or none when sessiond is absent.
