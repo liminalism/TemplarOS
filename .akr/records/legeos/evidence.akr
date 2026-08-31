@@ -1046,6 +1046,18 @@ record legeos.evidence.standalone-files-workspace-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.super-press-hold-20260831/1 : evidence {
+    title "Super press-and-hold Home reveal: acceptance tests and full gate green"
+    state verified
+    result pass
+    method command
+    observed_at git:25591b2d63d556aacf86b45dbae565354e9b2c53
+    command "cargo test -p lege-comp keybindings::tests::super; cargo test -p lege-comp keybindings::tests::super_chord; cargo test -p lege-comp keybindings::tests::bare_super; cargo test -p lege-window commands::tests::a_reveal_changes_no_window; just check"
+    summary """
+        Super press/hold gesture: press reveals Home immediately, hold is momentary with release restoring the pre-press state, a short tap latches the toggle, chords fire only their action, both logo keys form one logical hold; the lege-window reveal no-mutation test now covers maximized and shelved windows over Show/Hide/Toggle; all four acceptance filters and the full just check gate passed.
+        """
+}
+
 record legeos.evidence.taskbar-free-home-visual-20260824/1 : evidence {
     title "Nested Home is taskbar-free and no longer flooded by Desktop tiles"
     state verified

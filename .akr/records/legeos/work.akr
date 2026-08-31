@@ -1885,7 +1885,7 @@ record legeos.work.standalone-file-manager/3 : work {
 
 record legeos.work.super-press-hold-home-reveal/1 : work {
     title "Super reveals Home on press, stays momentary while held, and keeps chords fast"
-    state proposed
+    state completed
     scope [
         path "compositor/lege-comp/src/keybindings.rs",
         path "crates/lege-types/src/action.rs",
@@ -1904,6 +1904,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
                 """
             method command
             command "cargo test -p lege-comp keybindings::tests::super_chord"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
         }
         check no-window-mutation {
             statement """
@@ -1911,6 +1912,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
                 """
             method command
             command "cargo test -p lege-window commands::tests::a_reveal_changes_no_window"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
         }
         check press-and-hold {
             statement """
@@ -1918,6 +1920,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
                 """
             method command
             command "cargo test -p lege-comp keybindings::tests::super"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
         }
         check tap-still-latches {
             statement """
@@ -1925,6 +1928,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
                 """
             method command
             command "cargo test -p lege-comp keybindings::tests::bare_super"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
         }
     }
     derived_from [ @legeos.work.home-input-and-refinement ]

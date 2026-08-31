@@ -186,6 +186,17 @@ record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut 
     created_at 2026-08-23
 }
 
+record legeos.papercut.just-check-failed-because-xtask-s-check-assets/1 : papercut {
+    title "just check failed because xtask's check-assets walked into…"
+    state verified
+    statement """
+        just check failed because xtask's check-assets walked into .claude/worktrees/ (sibling-repo checkouts kept for agent worktree isolation) and flagged their vendored assets; fixed by skipping every dot-directory in walk_assets_dirs, and .claude/ is now gitignored after git add -A once swept the worktree gitlinks into a commit.
+        """
+    observed_at git:25591b2d63d556aacf86b45dbae565354e9b2c53
+    author "claude"
+    created_at 2026-08-31
+}
+
 record legeos.papercut.just-check-passes-formatting-workspace-clippy/1 : papercut {
     title "`just check` passes formatting, workspace Clippy, and workspace tests,…"
     state verified
