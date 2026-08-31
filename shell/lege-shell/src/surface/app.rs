@@ -290,6 +290,20 @@ impl ShellApp {
         });
     }
 
+    /// Ask the service to discard the stored layout. The reply is the fresh document, which the
+    /// next frame merges the current defaults into — so the reset and the new default arrive
+    /// together and the field is never briefly empty.
+    fn spawn_field_reset(&self, cols: u16, rows: u16) {
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            if let Some(doc) = crate::data::reset_field(OUTPUT, cols, rows).await {
+                let _ = tx.send(DataUpdate::Field(doc));
+                let _ = proxy.send_event(Wake);
+            }
+        });
+    }
+
     fn spawn_search(&self, drawer: Drawer, query: String) {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
@@ -790,6 +804,17 @@ impl ShellApp {
                         metrics.relift,
                         metrics.op
                     ));
+                }
+            }
+            FieldAction::ResetField => {
+                let (cols, rows) = (self.field.cols, self.field.rows);
+                if self.field_synced == Some(true) {
+                    self.spawn_field_reset(cols, rows);
+                } else {
+                    // No service to forget anything: the in-process document is the only copy,
+                    // so emptying it is the whole reset. The merge on the next frame refills it.
+                    self.field = lege_field::FieldDocument::new(OUTPUT, cols, rows);
+                    self.undo.clear();
                 }
             }
             FieldAction::Undo => {

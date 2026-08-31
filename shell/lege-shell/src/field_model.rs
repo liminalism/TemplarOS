@@ -549,6 +549,49 @@ fn try_apply(doc: &mut FieldDocument, op: FieldOp, applied: &mut Vec<FieldOp>) {
     }
 }
 
+/// One op that brings every shelved tile back onto the field, or `None` when the shelf is empty.
+///
+/// Stashing had no inverse. `FieldOp::Stash` keeps the tile in the document with no location, and
+/// only an immediate `field.undo` could reverse it — after a save, a tile on the shelf was
+/// unreachable, and `merge` cannot help because it skips any drawer whose tile already exists and
+/// must not second-guess a deliberate stash. A drawer shelved by accident and one shelved on
+/// purpose look identical once written down, so the way back has to be something the user asks
+/// for.
+///
+/// Each landing is chosen by dry-running the move here rather than guessing: `apply` is
+/// deterministic (the field's own `placement_is_deterministic` property), so the batch replays on
+/// the service exactly as it did locally. A tile with nowhere to go stays on the shelf instead of
+/// failing the whole batch.
+pub fn restore_shelved(doc: &FieldDocument) -> Option<FieldOp> {
+    let shelved: Vec<TileId> = doc.shelved().map(|tile| tile.id).collect();
+    if shelved.is_empty() {
+        return None;
+    }
+    let mut probe = doc.clone();
+    let mut ops = Vec::new();
+    for id in shelved {
+        let landings = (0..probe.rows)
+            .flat_map(|row| (0..probe.cols).map(move |col| Cell::new(col, row)))
+            .map(|cell| Landing {
+                container: None,
+                cell,
+            });
+        for landing in landings {
+            let op = FieldOp::Move { id, landing };
+            if let Ok((next, _)) = apply(&probe, &op) {
+                probe = next;
+                ops.push(op);
+                break;
+            }
+        }
+    }
+    match ops.len() {
+        0 => None,
+        1 => ops.pop(),
+        _ => Some(FieldOp::Batch { ops }),
+    }
+}
+
 /// The tile standing for `window`, if the field has one.
 pub fn session_tile_for(doc: &FieldDocument, toplevel: &ShellToplevel) -> Option<TileId> {
     let identifier = session_identifier(toplevel, None);
@@ -806,6 +849,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Stash is reversible again: what `field.restore` emits puts every shelved tile back, and
+    /// an empty shelf asks for nothing.
+    #[test]
+    fn restoring_brings_every_shelved_tile_back() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let windows = vec![
+            toplevel(1, Some("org.legeos.Files"), "Downloads", false),
+            toplevel(2, Some("org.example.Editor"), "notes.md", true),
+        ];
+        let live = LiveState {
+            toplevels: &windows,
+            projects: &[],
+        };
+        merge(&mut doc, &live);
+        assert!(restore_shelved(&doc).is_none(), "nothing is shelved yet");
+
+        let shelved: Vec<TileId> = [
+            tile_id_for("drawer:Recent"),
+            tile_id_for("drawer:Trash"),
+            tile_id_for("app:org.legeos.Files"),
+        ]
+        .into_iter()
+        .collect();
+        for id in &shelved {
+            doc = apply(&doc, &FieldOp::Stash { id: *id })
+                .expect("the tile was on the field")
+                .0;
+            assert!(doc.location(*id).is_none());
+        }
+        assert_eq!(doc.shelved().count(), shelved.len());
+
+        let op = restore_shelved(&doc).expect("three tiles are on the shelf");
+        let restored = apply(&doc, &op).expect("the restore applies").0;
+        assert_eq!(restored.shelved().count(), 0, "the shelf is empty again");
+        for id in &shelved {
+            assert!(
+                restored.location(*id).is_some(),
+                "{id:?} is back on the field"
+            );
+        }
+        assert!(restore_shelved(&restored).is_none());
     }
 
     #[test]

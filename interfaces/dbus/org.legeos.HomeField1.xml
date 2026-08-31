@@ -27,6 +27,17 @@
       <arg name="output" type="s" direction="in"/>
       <arg name="document_json" type="s" direction="out"/>
     </method>
+    <!-- Discard `output`'s stored document and its undo log, and return a fresh empty one at
+         `cols`x`rows`; the shell's next merge fills it with the current default layout. The one
+         way to adopt a changed default, because merge is add-only and never moves a tile that
+         already has a place. Not undoable: the document and the undo log are discarded together,
+         which is why the action declaring it confirms first. -->
+    <method name="Reset">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="cols" type="q" direction="in"/>
+      <arg name="rows" type="q" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
     <method name="GetRevision">
       <arg name="output" type="s" direction="in"/>
       <arg name="revision" type="t" direction="out"/>

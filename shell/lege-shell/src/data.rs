@@ -347,6 +347,21 @@ pub async fn apply_field_op(output: &str, op: &FieldOp) -> Option<u64> {
     }
 }
 
+/// `HomeField1.Reset`: discard the stored layout and return the fresh document that replaces it.
+/// `None` when the service is unreachable — there is nothing sensible to do locally, because the
+/// point of a reset is that the *stored* document goes away.
+pub async fn reset_field(output: &str, cols: u16, rows: u16) -> Option<FieldDocument> {
+    let connection = session().await.ok()?;
+    let proxy = HomeFieldProxy::new(&connection).await.ok()?;
+    match proxy.reset(output, cols, rows).await {
+        Ok(json) => serde_json::from_str(&json).ok(),
+        Err(error) => {
+            tracing::warn!(%error, "HomeField1.Reset refused");
+            None
+        }
+    }
+}
+
 /// `HomeField1.Undo`: the document after undoing the last op, or `None` if nothing to undo or
 /// the service is unreachable.
 pub async fn undo_field(output: &str) -> Option<FieldDocument> {

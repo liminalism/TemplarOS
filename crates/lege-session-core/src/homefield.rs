@@ -47,6 +47,30 @@ pub fn load_or_create(store: &Store, output: &str, cols: u16, rows: u16) -> Resu
     Ok(doc)
 }
 
+/// Discard `output`'s document and its whole undo log, and store a fresh empty one at
+/// `cols`x`rows`.
+///
+/// The shell's next merge fills it with whatever the current default layout is, which is the only
+/// way to adopt one: `field_model::merge` is add-only by design — it never moves a tile that
+/// already has a place, so a field saved before a layout rule changed keeps the old arrangement
+/// forever, and one the user has pushed into a mess can otherwise only be repaired tile by tile.
+///
+/// The undo log goes with it. Keeping it would leave inverses referring to placements on a
+/// document that no longer exists, so this is deliberately not undoable, and `field.reset`
+/// confirms before it is called.
+pub fn reset(store: &Store, output: &str, cols: u16, rows: u16) -> Result<FieldDocument> {
+    let doc = FieldDocument::new(output, cols, rows);
+    store.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM homefield_undo WHERE output = ?1",
+            params![output],
+        )
+        .context("clearing the home field undo log")?;
+        save_within(tx, &doc)
+    })?;
+    Ok(doc)
+}
+
 /// Insert or update the document (one JSON blob, keyed by output).
 pub fn save_within(tx: &Transaction<'_>, doc: &FieldDocument) -> Result<()> {
     let json = serde_json::to_string(doc).context("serializing the home field")?;

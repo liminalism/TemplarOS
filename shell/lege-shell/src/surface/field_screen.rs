@@ -64,6 +64,10 @@ pub enum FieldAction {
         window: WindowId,
     },
     RevealHome,
+    /// Discard the stored layout and take the current default instead. Not an `Apply`: the
+    /// document and its undo log go together, so there is no inverse to keep and the host has to
+    /// ask the service rather than edit the copy it holds.
+    ResetField,
     /// A field op the user performed; the caller applies it and keeps the inverse for undo.
     Apply(FieldOp),
     Undo,
@@ -1173,7 +1177,14 @@ impl FieldScreen {
         if let Some(id) = tile {
             self.focus = Some(id);
         }
-        self.menu.open_at((cx, cy), MenuTarget { tile, window });
+        self.menu.open_at(
+            (cx, cy),
+            MenuTarget {
+                tile,
+                window,
+                shelved: doc.shelved().next().is_some(),
+            },
+        );
     }
 
     /// Turn one menu row into the same thing its chord does.
@@ -1200,6 +1211,12 @@ impl FieldScreen {
                     actions.push(FieldAction::Apply(FieldOp::Stash { id }));
                 }
             }
+            "field.restore" => {
+                if let Some(op) = field_model::restore_shelved(doc) {
+                    actions.push(FieldAction::Apply(op));
+                }
+            }
+            "field.reset" => actions.push(FieldAction::ResetField),
             "field.move" => {
                 if let Some(id) = tile
                     && let Some(located) = doc.location(id)

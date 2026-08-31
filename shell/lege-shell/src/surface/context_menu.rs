@@ -51,6 +51,10 @@ pub enum MenuScope {
     Tile,
     /// Needs a tile that stands for a live window.
     Window,
+    /// Needs at least one tile on the shelf. Offered on bare background like the other field
+    /// rows, but only when there is actually something to bring back — a permanently visible
+    /// "bring shelved tiles back" would be a row that does nothing almost every time it is read.
+    Shelf,
 }
 
 /// One menu row: an action id and what has to be under the pointer for it to appear.
@@ -87,9 +91,11 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("field.move", MenuScope::Tile),
     MenuItem::new("field.resize", MenuScope::Tile),
     MenuItem::new("field.stash", MenuScope::Tile),
+    MenuItem::new("field.restore", MenuScope::Shelf),
     MenuItem::new("field.undo", MenuScope::Field),
     MenuItem::new("window.show-all", MenuScope::Field),
     MenuItem::new("home.reveal", MenuScope::Field),
+    MenuItem::new("field.reset", MenuScope::Field),
     MenuItem::new("window.close", MenuScope::Window),
 ];
 
@@ -99,6 +105,8 @@ pub struct MenuTarget {
     pub tile: Option<TileId>,
     /// The live window that tile stands for, if it stands for one.
     pub window: Option<WindowId>,
+    /// Whether the field has anything on its shelf right now.
+    pub shelved: bool,
 }
 
 impl MenuTarget {
@@ -107,6 +115,7 @@ impl MenuTarget {
             MenuScope::Field => true,
             MenuScope::Tile => self.tile.is_some(),
             MenuScope::Window => self.window.is_some(),
+            MenuScope::Shelf => self.shelved,
         }
     }
 
@@ -388,10 +397,16 @@ mod tests {
         let tile = MenuTarget {
             tile: Some(TileId(7)),
             window: None,
+            shelved: false,
         };
         let window = MenuTarget {
             tile: Some(TileId(7)),
             window: Some(WindowId(3)),
+            shelved: false,
+        };
+        let shelf = MenuTarget {
+            shelved: true,
+            ..MenuTarget::default()
         };
 
         let ids = |target: MenuTarget| -> Vec<&'static str> {
@@ -411,6 +426,19 @@ mod tests {
             Some(&"window.close"),
             "the destructive row stays at the bottom"
         );
+
+        // Restoring is offered only when there is something on the shelf: a row that reads
+        // "bring shelved tiles back" and does nothing is worse than no row.
+        assert!(
+            !ids(nothing).contains(&"field.restore"),
+            "an empty shelf offers nothing to bring back"
+        );
+        assert!(!ids(tile).contains(&"field.restore"));
+        assert!(ids(shelf).contains(&"field.restore"));
+
+        // Reset is a field row, so it is reachable from bare background — that is the whole
+        // point, since a field can be reset when no tile is worth pointing at.
+        assert!(ids(nothing).contains(&"field.reset"));
     }
 
     #[test]

@@ -93,6 +93,24 @@ impl HomeFieldApi {
         }
     }
 
+    async fn reset(
+        &self,
+        output: &str,
+        cols: u16,
+        rows: u16,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        if output.is_empty() {
+            return Err(fdo::Error::InvalidArgs("output must not be empty".into()));
+        }
+        let doc = homefield::reset(&self.store, output, cols, rows).map_err(failed)?;
+        self.record(format!(
+            "Home Field on {output}: reset to the default layout."
+        ));
+        let _ = emitter.changed(output.to_owned(), doc.revision).await;
+        to_json(&doc)
+    }
+
     async fn get_revision(&self, output: &str) -> fdo::Result<u64> {
         Ok(homefield::load(&self.store, output)
             .map_err(failed)?

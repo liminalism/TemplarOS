@@ -221,6 +221,8 @@ pub enum Requires {
     TrustedShell,
     /// Needs a tile to be focused on the field.
     FocusedTile,
+    /// Needs at least one tile on the shelf — a stash to undo.
+    ShelvedTile,
     /// Needs a live window — a session tile, or the activated window.
     Window,
     /// Needs a selected provider for this role to be installed and launchable.
@@ -388,6 +390,33 @@ pub const MANIFEST: &[ActionDecl] = &[
         cli_verb: None,
         confirm: false,
         requires: Requires::FocusedTile,
+    },
+    // Stash's inverse. Without it the shelf was a one-way door: `field.undo` reversed a stash
+    // only until the next change, and nothing else on any surface could reach a shelved tile.
+    ActionDecl {
+        id: "field.restore",
+        label: "Bring shelved tiles back",
+        category: ActionCategory::Field,
+        // No chord: recovery actions are rare and deliberate, and the context menu is itself
+        // keyboard-navigable, so this is reachable without the pointer without spending an
+        // accelerator on it.
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::ShelvedTile,
+    },
+    // Deliberately destructive, so it confirms: it discards an arrangement the user built, and
+    // unlike every other field action it is not undoable — the stored document and its undo log
+    // go together. It is the only way to adopt a changed default layout, because `merge` is
+    // add-only and will never move a tile that already has a place.
+    ActionDecl {
+        id: "field.reset",
+        label: "Reset the field to its default layout",
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: true,
+        requires: Requires::Always,
     },
     // ---- System -----------------------------------------------------------------------
     ActionDecl {

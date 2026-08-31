@@ -274,6 +274,10 @@ mod homefield {
         /// Undo the most recent op; returns the document afterwards, or `""` if nothing to undo.
         fn undo(&self, output: &str) -> zbus::Result<String>;
 
+        /// Discard the stored document and its undo log; returns a fresh empty one at
+        /// `cols`×`rows`, which the shell's next merge fills with the default layout.
+        fn reset(&self, output: &str, cols: u16, rows: u16) -> zbus::Result<String>;
+
         fn get_revision(&self, output: &str) -> zbus::Result<u64>;
 
         #[zbus(signal)]

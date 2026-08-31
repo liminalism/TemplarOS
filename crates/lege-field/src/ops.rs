@@ -624,6 +624,15 @@ fn moved_back(
 ///
 /// Container interiors are not touched: a project's own grid is its own, and does not change
 /// because the screen did.
+///
+/// Not [`FieldOp::SetGrid`], which the running shell applies when the grid changes under it:
+/// that one disturbs as little as possible, re-placing only the tiles that no longer *fit*, and
+/// inverts exactly so the change can be undone. That is right for a resize the user is watching.
+/// This is for a layout arriving from a display that is not this one, where every cell means
+/// something different and leaving the tiles that happen to fit where they are would scatter the
+/// arrangement rather than preserve it. It is a load-time transformation, not an edit, so it is
+/// deliberately not an op and does not enter the undo log — undoing into a layout shaped for a
+/// screen that is not attached would not be a kindness.
 pub fn reshape(doc: &FieldDocument, cols: u16, rows: u16) -> FieldDocument {
     let (cols, rows) = (cols.max(1), rows.max(1));
     if doc.cols == cols && doc.rows == rows {
