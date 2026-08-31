@@ -3,7 +3,7 @@ project legeos
 
 record legeos.work.accessibility-claimed-but-not-built/1 : work {
     title "Either build the AT-SPI bridge and the high-contrast variant, or stop documenting them as shipped"
-    state proposed
+    state completed
     scope [
         path "distro/seeds/**",
         path "docs/architecture/accessibility.md",
@@ -25,7 +25,7 @@ record legeos.work.accessibility-claimed-but-not-built/1 : work {
 
 record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
     title "Declare every user-facing action once, and generate the menu, the cheat sheet and the CLI verb from it"
-    state proposed
+    state completed
     scope [
         path "cli/lege/**",
         path "compositor/lege-comp/src/keybindings.rs",
