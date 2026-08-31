@@ -664,7 +664,7 @@ record legeos.work.governor-containment/1 : work {
 
 record legeos.work.home-field/1 : work {
     title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
-    state proposed
+    state active
     scope [
         path "compositor/**",
         path "crates/lege-field/**",
@@ -688,6 +688,7 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "cargo test -p lege-shell print_field"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check field-is-keyboard-complete {
             statement """
@@ -695,6 +696,7 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "cargo test -p lege-shell field_keyboard"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check home-is-always-reachable {
             statement """
@@ -708,6 +710,7 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check maximize-fills-work-area {
             statement """
@@ -715,6 +718,7 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "cargo test -p lege-window maximize"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check no-new-toolkit-api {
             statement """
@@ -722,6 +726,7 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "just check"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check reveal-survives-shell-death {
             statement """
@@ -735,13 +740,15 @@ record legeos.work.home-field/1 : work {
                 """
             method command
             command "cargo test -p lege-window -p lege-comp shelving_hides_and_unshelving_shows"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
         check windows-cannot-be-lost {
             statement """
                 No sequence of shelve, reveal-home, activate or maximize leaves a window neither visible nor unshelvable; show-every-window unshelves everything; a reveal changes no window record.
                 """
             method command
-            command "cargo test -p lege-window hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+            command "cargo test -p lege-window -- hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
         }
     }
     depends_on [ @legeos.decision.agplv3-own-code, @legeos.decision.compositor-on-smithay ]

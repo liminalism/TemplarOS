@@ -260,6 +260,18 @@ record legeos.evidence.home-field-clippy-20260823/1 : evidence {
         """
 }
 
+record legeos.evidence.home-field-command-checks-20260831/1 : evidence {
+    title "Home Field umbrella: every command check green; two manual checks await the hands-on run"
+    state verified
+    result pass
+    method command
+    observed_at git:dd6ce9f5249bbbd1a205f5b1f43dc6b84f0efe6b
+    command "cargo test -p lege-shell print_field; cargo test -p lege-shell field_keyboard; cargo test -p lege-field; cargo test -p lege-window maximize; just check; cargo test -p lege-window -p lege-comp shelving_hides_and_unshelving_shows; cargo test -p lege-window -- hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+    summary """
+        All seven command-method checks of the Home Field umbrella pass on the current tree: the text field matches the graphical one, keyboard completeness, layout stability with exact inverses (38 lege-field tests plus property suite), maximize semantics, no pixelkit API change needed (full just check green this session at 2ce3f03 and prior commits), shelving unmaps and unshelving restores in both lege-window and lege-comp, and the windows-cannot-be-lost trio holds. The two manual checks (bare-Super/fallback reveal parity at a real keyboard, and shell death ending a live reveal) remain for a hands-on desktop run — they need physical input and a live compositor.
+        """
+}
+
 record legeos.evidence.home-field-density-and-composition-20260830/1 : evidence {
     title "Home Field density and composition: workspace gates green, two new layout property tests"
     state verified
