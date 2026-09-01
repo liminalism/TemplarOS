@@ -51,5 +51,6 @@ depends = "$auto"
 assets = [
     ["target/release/lege", "usr/bin/lege", "755"],
     # The component matrix travels with the tool that reads it.
-    ["distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
+    # cargo-deb resolves asset paths relative to this crate's directory.
+    ["../../distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
 ]

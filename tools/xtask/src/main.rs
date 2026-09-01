@@ -871,6 +871,7 @@ fn check_packaging(root: &Path) -> Result<()> {
         deb_depends,
         deb_assets,
         maintainerless,
+        missing_asset_sources,
     } = deb_metadata(packages);
 
     let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
@@ -883,6 +884,7 @@ fn check_packaging(root: &Path) -> Result<()> {
         &unit_file_names(root),
     ));
     problems.extend(maintainerless);
+    problems.extend(missing_asset_sources);
     problems.extend(dependency_drift(
         &parse_control_depends(&control_text),
         &deb_depends,
@@ -930,6 +932,7 @@ struct DebMetadata {
     deb_depends: BTreeMap<String, BTreeSet<String>>,
     deb_assets: Vec<(String, String)>,
     maintainerless: Vec<String>,
+    missing_asset_sources: Vec<String>,
 }
 
 fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
@@ -940,6 +943,7 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
     let mut deb_depends = BTreeMap::new();
     let mut deb_assets = Vec::new();
     let mut maintainerless = Vec::new();
+    let mut missing_asset_sources = Vec::new();
     for package in packages {
         if let Some(deb_name) = package["metadata"]["deb"]["name"].as_str() {
             let crate_name = package["name"].as_str().unwrap_or("?");
@@ -968,9 +972,28 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
             let deb_name = package["metadata"]["deb"]["name"]
                 .as_str()
                 .unwrap_or_else(|| package["name"].as_str().unwrap_or("?"));
+            // cargo-deb resolves a static asset source relative to the crate's own directory,
+            // not the workspace root — a mistake `cargo build` never surfaces, only `cargo deb`
+            // at packaging time. Build outputs under target/ don't exist until the build runs,
+            // and glob sources expand at packaging time, so only literal static files are checked.
+            let manifest_dir = Path::new(package["manifest_path"].as_str().unwrap_or(""))
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_owned();
             for asset in assets {
                 if let Some(destination) = asset.get(1).and_then(serde_json::Value::as_str) {
                     deb_assets.push((deb_name.to_owned(), destination.to_owned()));
+                }
+                if let Some(source) = asset.get(0).and_then(serde_json::Value::as_str)
+                    && !source.starts_with("target/")
+                    && !source.contains(['*', '?', '['])
+                    && !manifest_dir.join(source).exists()
+                {
+                    missing_asset_sources.push(format!(
+                        "{deb_name}: asset source {source} does not exist \
+                         (cargo-deb resolves it relative to {})",
+                        manifest_dir.display()
+                    ));
                 }
             }
         }
@@ -981,6 +1004,7 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
         deb_depends,
         deb_assets,
         maintainerless,
+        missing_asset_sources,
     }
 }
 
@@ -2132,5 +2156,28 @@ mod extraction_tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("legeos-ghost"));
         assert!(problems[0].contains("crate lege-ghost"));
+    }
+
+    #[test]
+    fn check_packaging_goes_red_for_a_static_asset_source_that_does_not_exist() {
+        // cargo-deb resolves static sources relative to the crate directory; a path that only
+        // exists relative to the workspace root fails at packaging time, which CI never runs.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("present.conf"), "x").unwrap();
+        let manifest_path = dir.path().join("Cargo.toml").display().to_string();
+        let packages = vec![serde_json::json!({
+            "name": "lege-ghost",
+            "manifest_path": manifest_path,
+            "authors": ["LegeOS"],
+            "metadata": { "deb": { "name": "legeos-ghost", "assets": [
+                ["target/release/lege-ghost", "usr/bin/lege-ghost", "755"],
+                ["present.conf", "etc/legeos/present.conf", "644"],
+                ["distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
+            ]}},
+        })];
+        let missing = crate::deb_metadata(&packages).missing_asset_sources;
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("distro/deploy/components.toml"));
+        assert!(missing[0].contains("legeos-ghost"));
     }
 }
