@@ -234,6 +234,10 @@ fn build_samples(
     now: Instant,
 ) -> (Vec<crate::policy::AppSample>, Vec<InstanceReport>) {
     let weights = ctx.governor.config().victim_weights;
+    // One clock reading for the whole tick: every instance's claim is aged against the same
+    // instant, so two applications that reported at the same moment cannot expire at different
+    // ones. `now_ms` is a vDSO read, not a syscall — safe on this loop (ADR-0002).
+    let now_ms = trace::now_ms();
     let mut samples = Vec::with_capacity(discovered.len());
     let mut instance_reports = Vec::with_capacity(discovered.len());
 
@@ -251,6 +255,14 @@ fn build_samples(
             .map_or(0.0, |psi| psi.full.avg10);
         let enrichment = shared.enrichment_for(instance.instance_id);
 
+        // The claim expires. Until something reports the transition back to saved, an
+        // unbounded claim would excuse an application from containment for the rest of the
+        // session on the strength of one message.
+        let claim_current = crate::policy::unsaved_claim_is_current(
+            enrichment.unsaved_since_ms,
+            now_ms,
+            ctx.governor.config().unsaved_ttl,
+        );
         let sample = crate::policy::AppSample {
             instance_id: instance.instance_id,
             memory_current: current,
@@ -259,7 +271,7 @@ fn build_samples(
             foreground: enrichment.foreground,
             visible: enrichment.visible,
             protected: enrichment.protected,
-            reports_unsaved_state: enrichment.has_unsaved_work,
+            reports_unsaved_state: enrichment.has_unsaved_work && claim_current,
             disposable: enrichment.disposable,
         };
         let breakdown = crate::policy::victim_score_breakdown(&sample, &weights);
@@ -274,6 +286,9 @@ fn build_samples(
             protected: sample.protected,
             disposable: sample.disposable,
             has_unsaved_work: sample.reports_unsaved_state,
+            unsaved_work_age_ms: enrichment
+                .unsaved_since_ms
+                .map(|since| now_ms.saturating_sub(since)),
             victim_score: breakdown.total,
             score_breakdown: breakdown,
         });

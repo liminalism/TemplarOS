@@ -99,6 +99,25 @@ pub async fn run(
         {
             tracing::warn!(%error, %instance_id, "failed to push checkpoint reply back to Resources1");
         }
+
+        // The claim, both ways, with the time it was made. This is the producer the governor's
+        // unsaved-work expiry is a safety net for: an application that answers "no unsaved work"
+        // has that recorded as a fact rather than as the absence of one, and a checkpoint that
+        // succeeded is reported as a checkpoint the governor could actually restore from.
+        let now_ms = lege_state::now_ms();
+        let checkpoint_ok = matches!(response, CheckpointResponse::CheckpointComplete { .. });
+        if let Err(error) = proxy
+            .set_instance_work(
+                &instance_id.to_string(),
+                has_unsaved_work,
+                now_ms,
+                checkpoint_ok,
+                if checkpoint_ok { now_ms } else { 0 },
+            )
+            .await
+        {
+            tracing::debug!(%error, %instance_id, "could not report unsaved work to Resources1");
+        }
     }
 }
 

@@ -49,6 +49,21 @@ pub trait Resources {
         has_unsaved_work: bool,
     ) -> zbus::Result<()>;
 
+    /// Unsaved work and checkpoint freshness, with the times they were true.
+    ///
+    /// Separate from `set_instance_hints` because that method sets four facts at once, so a
+    /// caller that only knows about one of them has to make something up about the other three —
+    /// and the something it makes up about unsaved work erases whatever the last caller said.
+    /// Pass `0` for a timestamp to mean "now".
+    fn set_instance_work(
+        &self,
+        instance_id: &str,
+        has_unsaved_work: bool,
+        as_of_ms: i64,
+        checkpoint_ok: bool,
+        checkpoint_at_ms: i64,
+    ) -> zbus::Result<()>;
+
     /// An instance ended.
     fn forget_instance(&self, instance_id: &str) -> zbus::Result<()>;
 

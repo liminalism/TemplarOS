@@ -333,6 +333,7 @@
         "Report": "()->(s)",
         "SetInstanceHints": "(sbbbb)->()",
         "SetInstanceState": "(sbb)->()",
+        "SetInstanceWork": "(sbxbx)->()",
         "SetStage": "(s)->()",
         "Stage": "()->(s)",
         "Status": "()->(sb)"

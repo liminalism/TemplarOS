@@ -223,6 +223,15 @@ pub struct GovernorConfig {
     /// drops (hysteresis). Escalation is always immediate — only relaxation is debounced.
     pub hysteresis_downgrade_ticks: u32,
 
+    /// How long an unsaved-work claim counts for before it stops protecting an instance.
+    ///
+    /// The claim is a strong protective term — a whole application excused from containment —
+    /// with, until now, no expiry: whoever said it once was protected for the rest of the
+    /// session whether or not it was still true, and nothing in the protocol requires anyone to
+    /// take it back. Ten minutes is a safety net, not the fix: the fix is a producer that
+    /// reports the transition both ways, and this is what limits the damage when one does not.
+    pub unsaved_ttl: Duration,
+
     pub victim_weights: VictimWeights,
 }
 
@@ -296,6 +305,7 @@ impl Default for GovernorConfig {
             emergency_kill_delay: Duration::from_secs(3),
             minimum_high_limit: 512 * MIB,
             hysteresis_downgrade_ticks: 3,
+            unsaved_ttl: Duration::from_secs(10 * 60),
             victim_weights: VictimWeights::default(),
         }
     }
@@ -491,6 +501,28 @@ impl Governor {
     }
 }
 
+/// Whether an unsaved-work claim made at `since_ms` still counts at `now_ms`.
+///
+/// `None` — a claim with no timestamp at all — counts. That is a producer this build has not
+/// taught to stamp its claims, and treating its report as already expired would silently remove
+/// the protection rather than bound it.
+///
+/// A claim from the *future* counts too. Clocks move backwards (an NTP step, a laptop resuming
+/// with a dead RTC), and the reading of "the claim is 4 hours in the future, therefore expired"
+/// would drop protection from every application at once, at exactly the moment the machine is
+/// least well understood.
+#[must_use]
+pub fn unsaved_claim_is_current(since_ms: Option<i64>, now_ms: i64, ttl: Duration) -> bool {
+    let Some(since_ms) = since_ms else {
+        return true;
+    };
+    let age_ms = now_ms.saturating_sub(since_ms);
+    if age_ms < 0 {
+        return true;
+    }
+    u128::try_from(age_ms).unwrap_or(0) <= ttl.as_millis()
+}
+
 /// Decomposition of [`victim_score`] into its weighted terms, so `ExplainInstance` and `lege res`
 /// can say *why* rather than just *how much* (planning doc 01 §5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -569,6 +601,45 @@ pub fn victim_score(app: &AppSample, weights: &VictimWeights) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsaved_work_claim_stops_counting_after_the_ttl() {
+        let ttl = Duration::from_secs(600);
+        assert!(unsaved_claim_is_current(Some(0), 599_000, ttl));
+        assert!(unsaved_claim_is_current(Some(0), 600_000, ttl));
+        assert!(!unsaved_claim_is_current(Some(0), 600_001, ttl));
+    }
+
+    #[test]
+    fn an_unstamped_claim_still_counts() {
+        // A producer this build has not taught to stamp its claims. Treating its report as
+        // already expired would silently remove protection rather than bound it.
+        assert!(unsaved_claim_is_current(
+            None,
+            10_000_000,
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn a_claim_from_the_future_counts_rather_than_expiring_everything_at_once() {
+        // Clocks move backwards — an NTP step, a laptop resuming with a dead RTC. Reading "this
+        // claim is four hours in the future, therefore expired" would drop protection from every
+        // application simultaneously, at the moment the machine is least well understood.
+        assert!(unsaved_claim_is_current(
+            Some(4 * 60 * 60 * 1000),
+            0,
+            Duration::from_secs(600)
+        ));
+    }
+
+    #[test]
+    fn the_default_ttl_is_ten_minutes() {
+        assert_eq!(
+            GovernorConfig::default().unsaved_ttl,
+            Duration::from_secs(600)
+        );
+    }
 
     #[test]
     fn the_reference_machine_reproduces_the_calibrated_reserve_exactly() {

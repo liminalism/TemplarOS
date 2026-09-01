@@ -29,6 +29,8 @@ pub struct ConfigFile {
     pub emergency_kill_delay_ms: Option<u64>,
     pub minimum_high_limit: Option<u64>,
     pub hysteresis_downgrade_ticks: Option<u32>,
+    /// How long an unsaved-work claim protects an instance, in milliseconds.
+    pub unsaved_ttl_ms: Option<u64>,
     #[serde(default)]
     pub victim_weights: VictimWeightsFile,
 }
@@ -64,6 +66,9 @@ impl ConfigFile {
             hysteresis_downgrade_ticks: self
                 .hysteresis_downgrade_ticks
                 .unwrap_or(base.hysteresis_downgrade_ticks),
+            unsaved_ttl: self
+                .unsaved_ttl_ms
+                .map_or(base.unsaved_ttl, Duration::from_millis),
             victim_weights: VictimWeights {
                 memory_gib: self
                     .victim_weights
