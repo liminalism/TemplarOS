@@ -1,6 +1,7 @@
 target/release/lege-hostd usr/libexec/
 session/units/system/lege-hostd.service usr/lib/systemd/system/
 distro/policy/polkit/org.legeos.host.policy usr/share/polkit-1/actions/
+distro/policy/polkit/50-legeos-root-services.rules usr/share/polkit-1/rules.d/
 distro/policy/dbus/org.legeos.Host.conf usr/share/dbus-1/system.d/
 distro/policy/apparmor/usr.libexec.lege-hostd etc/apparmor.d/
 distro/policy/udev/60-legeos-nvidia-pm.rules usr/lib/udev/rules.d/
