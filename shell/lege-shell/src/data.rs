@@ -495,6 +495,17 @@ pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot 
 }
 
 /// `Projects1.List`, or none when sessiond is absent.
+/// The subset of `interfaces/schemas/project.schema.json` the shell reads. Permissive by
+/// construction: every field defaults, so a daemon that predates or postdates this still hands
+/// back something usable.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ProjectPayload {
+    name: String,
+    root: String,
+    state: String,
+}
+
 pub async fn fetch_projects() -> Vec<crate::field_model::ProjectInfo> {
     let Ok(connection) = session().await else {
         return Vec::new();
@@ -502,12 +513,26 @@ pub async fn fetch_projects() -> Vec<crate::field_model::ProjectInfo> {
     let Ok(proxy) = ProjectsProxy::new(&connection).await else {
         return Vec::new();
     };
+    // One round trip for every project, rather than a list plus a Describe apiece. The payload
+    // is the schema in `interfaces/schemas/project.schema.json`, and every field of it is
+    // optional on read: a shell talking to a daemon that predates or postdates it degrades to a
+    // name rather than to nothing.
+    let current = proxy.get_current().await.unwrap_or_default();
     proxy
-        .list()
+        .list_detailed()
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|(id, name, _root, is_open)| crate::field_model::ProjectInfo { id, name, is_open })
+        .map(|(id, json)| {
+            let payload: ProjectPayload = serde_json::from_str(&json).unwrap_or_default();
+            crate::field_model::ProjectInfo {
+                is_open: !id.is_empty() && id == current,
+                archived: payload.state == "archived",
+                name: payload.name,
+                root: payload.root,
+                id,
+            }
+        })
         .collect()
 }
 

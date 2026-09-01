@@ -104,12 +104,20 @@ pub fn grid_for(width: i32, height: i32, tile_size: i32) -> (u16, u16) {
     (cols, rows)
 }
 
-/// One project as `Projects1.List` reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One project as `Projects1.ListDetailed` reports it.
+///
+/// Read permissively: every field of the project object is optional on the wire, so a shell
+/// talking to an older or newer daemon degrades to a name and an id rather than to nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectInfo {
     pub id: String,
     pub name: String,
+    /// The directory the project is rooted at, empty when it declares none.
+    pub root: String,
+    /// The project the session is currently working in (`Projects1.GetCurrent`).
     pub is_open: bool,
+    /// Archived projects stay searchable and openable — the state is a badge, never a lock.
+    pub archived: bool,
 }
 
 /// What the field is merged against.
@@ -1773,6 +1781,7 @@ mod tests {
             id: "thesis".into(),
             name: "Thesis".into(),
             is_open: false,
+            ..ProjectInfo::default()
         }];
         merge(
             &mut doc,
@@ -1817,6 +1826,7 @@ mod tests {
             id: "competing-project".into(),
             name: "Competing project".into(),
             is_open: true,
+            ..ProjectInfo::default()
         }];
         merge(
             &mut doc,

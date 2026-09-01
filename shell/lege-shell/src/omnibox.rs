@@ -262,7 +262,15 @@ fn projects(projects: &[ProjectInfo], needle: &str) -> Vec<Row> {
                         id: project.id.clone(),
                     },
                     label,
-                    detail: if project.is_open { "Open" } else { "Closed" }.to_owned(),
+                    // Where it lives, which is what tells two similarly named projects apart —
+                    // with its state only when the state is worth saying. An archived project is
+                    // still searchable and still openable; the badge is a note, not a lock.
+                    detail: match (project.root.as_str(), project.archived) {
+                        ("", false) => "Project".to_owned(),
+                        ("", true) => "Project · archived".to_owned(),
+                        (root, false) => root.to_owned(),
+                        (root, true) => format!("{root} · archived"),
+                    },
                     kind,
                 })
         })
@@ -373,6 +381,7 @@ mod tests {
             id: id.to_owned(),
             name: name.to_owned(),
             is_open: open,
+            ..ProjectInfo::default()
         }
     }
 

@@ -184,6 +184,7 @@ mod tests {
             id: "legeos".to_owned(),
             name: "LegeOS".to_owned(),
             is_open: true,
+            ..field_model::ProjectInfo::default()
         }];
         let live = LiveState {
             toplevels: &[],
