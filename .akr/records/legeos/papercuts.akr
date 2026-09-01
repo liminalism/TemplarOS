@@ -185,6 +185,17 @@ record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut
     created_at 2026-08-26
 }
 
+record legeos.papercut.first-user-run-of-the-deploy-path-failed-at/1 : papercut {
+    title "First user run of the deploy path failed at cargo deb -p lege: the…"
+    state verified
+    statement """
+        First user run of the deploy path failed at cargo deb -p lege: the components.toml asset was workspace-root-relative but cargo-deb resolves static assets against the crate dir, and no CI stage runs cargo-deb, so 'just check' was green throughout. Fixed the path and added an asset-source existence check to check-packaging; also 'cargo xtask' was documented but the alias never existed (.cargo/config.toml now defines it).
+        """
+    observed_at git:223c1761dba27a030f4a14e64f61a38eebe42b73
+    author "claude"
+    created_at 2026-09-01
+}
+
 record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut {
     title "Inspecting freshly built cargo-deb archives with tar paths prefixed by…"
     state verified

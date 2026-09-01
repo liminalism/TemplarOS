@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:951aabad3966911c093c77ee3c1fda70da22e36cd29ebc4a3d7ae8cb1fd0b9ba"
+    source_graph "sha256:0b7c86b36485a0d745b09e3927e9d32ac503cc089c48f3b9b2548d38e1fb573a"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:66ffabe8d460e3a3bc57f19b7c7ad57f9be02940fee368c2665f1240b69776ed"
-    records 63
+    hash "sha256:34e607eb7ed936d0cc4b332d02da5a85efe588505ff27305a3e3505c3c6546f6"
+    records 64
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -2214,6 +2214,11 @@ seal @legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 {
 seal @legeos.papercut.every-reported-home-field-failure-slow-lossy/1 {
     state verified
     hash "sha256:092a2aff00c614aaa2836aebcf8be9f05c550dffec140fde89c0e0970f596d5d"
+}
+
+seal @legeos.papercut.first-user-run-of-the-deploy-path-failed-at/1 {
+    state verified
+    hash "sha256:e80074c2a73884a9f4a82760c760db1c15211814d2736adcfcb1167079fd8de8"
 }
 
 seal @legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 {
