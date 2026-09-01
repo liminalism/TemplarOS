@@ -31,6 +31,14 @@ pub struct Enrichment {
     pub disposable: bool,
     pub supports_checkpoint: bool,
     pub has_unsaved_work: bool,
+    /// When the unsaved-work claim was made, in milliseconds since the epoch.
+    ///
+    /// `has_unsaved_work` on its own is a claim with no expiry: an application that says "I have
+    /// unsaved work" once is protected by that claim for the rest of the session, whether or not
+    /// it is still true — and there is nothing in the protocol that requires it ever to say
+    /// otherwise. A timestamp makes the claim something that can go out of date, which is what a
+    /// claim of that shape has to be.
+    pub unsaved_since_ms: Option<i64>,
 }
 
 impl Default for Enrichment {
@@ -44,7 +52,26 @@ impl Default for Enrichment {
             disposable: false,
             supports_checkpoint: false,
             has_unsaved_work: false,
+            unsaved_since_ms: None,
         }
+    }
+}
+
+impl Enrichment {
+    /// Record an unsaved-work claim, stamping it the first time it becomes true.
+    ///
+    /// Stamped on the transition rather than on every call, so a producer that re-asserts the
+    /// same claim every second does not keep it permanently fresh — which would be the same
+    /// unexpiring claim with extra steps.
+    pub fn set_unsaved_work(&mut self, has_unsaved_work: bool, now_ms: i64) {
+        if has_unsaved_work {
+            if !self.has_unsaved_work {
+                self.unsaved_since_ms = Some(now_ms);
+            }
+        } else {
+            self.unsaved_since_ms = None;
+        }
+        self.has_unsaved_work = has_unsaved_work;
     }
 }
 
@@ -61,7 +88,13 @@ pub struct InstanceReport {
     pub visible: bool,
     pub protected: bool,
     pub disposable: bool,
+    /// Whether the instance's unsaved-work claim was still current at this tick.
     pub has_unsaved_work: bool,
+    /// How old that claim is, in milliseconds — `None` when there is no claim. Reported so
+    /// `ExplainInstance` can say "unsaved work reported 4 minutes ago" rather than making a
+    /// six-hour-old assertion sound like a fresh one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsaved_work_age_ms: Option<i64>,
     pub victim_score: f64,
     pub score_breakdown: ScoreBreakdown,
 }
@@ -95,6 +128,21 @@ pub struct Explanation {
     pub would_be_selected: bool,
     pub top_candidate_app_id: Option<AppId>,
     pub summary: String,
+}
+
+/// "4 minutes ago" — how old a claim is, in the words a person would use.
+///
+/// The point of printing it at all is that "this application has unsaved work" and "this
+/// application said it had unsaved work six hours ago" are very different statements, and the
+/// governor was making the second one while sounding like the first.
+fn ago(age_ms: i64) -> String {
+    let seconds = age_ms.max(0) / 1000;
+    match seconds {
+        0..=59 => "just now".to_owned(),
+        60..=3599 => format!("{} minute(s) ago", seconds / 60),
+        3600..=86_399 => format!("{} hour(s) ago", seconds / 3600),
+        _ => format!("{} day(s) ago", seconds / 86_400),
+    }
 }
 
 impl Report {
@@ -179,6 +227,17 @@ impl Report {
                 ),
                 None => format!("{} would not be selected.", found.app_id),
             }
+        };
+
+        let summary = match found.unsaved_work_age_ms {
+            Some(age) if found.has_unsaved_work => {
+                format!("{summary} Unsaved work was reported {}.", ago(age))
+            }
+            Some(age) => format!(
+                "{summary} Its unsaved-work claim, made {}, has expired and no longer protects it.",
+                ago(age)
+            ),
+            None => summary,
         };
 
         Explanation {
@@ -285,6 +344,74 @@ fn persist_stage_file(path: &Path, stage: Stage) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_unsaved_work_claim_is_stamped_when_it_first_becomes_true() {
+        let mut enrichment = Enrichment::default();
+        enrichment.set_unsaved_work(true, 1_000);
+        assert_eq!(enrichment.unsaved_since_ms, Some(1_000));
+
+        // Re-asserting the same claim must not refresh it, or a producer that repeats itself
+        // every second would keep an unexpiring claim by another route.
+        enrichment.set_unsaved_work(true, 500_000);
+        assert_eq!(enrichment.unsaved_since_ms, Some(1_000));
+
+        enrichment.set_unsaved_work(false, 600_000);
+        assert_eq!(enrichment.unsaved_since_ms, None);
+        assert!(!enrichment.has_unsaved_work);
+
+        enrichment.set_unsaved_work(true, 700_000);
+        assert_eq!(enrichment.unsaved_since_ms, Some(700_000));
+    }
+
+    #[test]
+    fn explain_says_how_old_an_unsaved_work_claim_is() {
+        // "This application has unsaved work" and "it said so six hours ago" are very different
+        // statements, and the governor was making the second while sounding like the first.
+        let mut fresh = instance(5.0, false);
+        fresh.has_unsaved_work = true;
+        fresh.unsaved_work_age_ms = Some(4 * 60 * 1000);
+        let snapshot = report(vec![fresh.clone()], PressureLevel::Severe);
+        let explanation = snapshot.explain(fresh.instance_id);
+        assert!(
+            explanation.summary.contains("reported 4 minute(s) ago"),
+            "{}",
+            explanation.summary
+        );
+    }
+
+    #[test]
+    fn explain_says_when_a_claim_has_expired() {
+        let mut stale = instance(5.0, false);
+        stale.has_unsaved_work = false;
+        stale.unsaved_work_age_ms = Some(6 * 60 * 60 * 1000);
+        let snapshot = report(vec![stale.clone()], PressureLevel::Severe);
+        let explanation = snapshot.explain(stale.instance_id);
+        assert!(
+            explanation.summary.contains("has expired"),
+            "{}",
+            explanation.summary
+        );
+        assert!(
+            explanation.summary.contains("6 hour(s) ago"),
+            "{}",
+            explanation.summary
+        );
+    }
+
+    #[test]
+    fn an_age_is_printed_in_the_units_a_person_would_use() {
+        assert_eq!(ago(0), "just now");
+        assert_eq!(ago(59_000), "just now");
+        assert_eq!(ago(60_000), "1 minute(s) ago");
+        assert_eq!(ago(3_600_000), "1 hour(s) ago");
+        assert_eq!(ago(90_000_000), "1 day(s) ago");
+        assert_eq!(
+            ago(-5),
+            "just now",
+            "a clock that went backwards is not the future"
+        );
+    }
+
     fn instance(score: f64, protected: bool) -> InstanceReport {
         InstanceReport {
             instance_id: InstanceId::new(),
@@ -297,6 +424,7 @@ mod tests {
             protected,
             disposable: false,
             has_unsaved_work: false,
+            unsaved_work_age_ms: None,
             victim_score: score,
             score_breakdown: ScoreBreakdown::default(),
         }

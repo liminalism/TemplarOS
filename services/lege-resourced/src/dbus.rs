@@ -108,7 +108,11 @@ impl ResourcesApi {
         entry.protected = protected;
         entry.disposable = disposable;
         entry.supports_checkpoint = supports_checkpoint;
-        entry.has_unsaved_work = has_unsaved_work;
+        // Through the setter, so the claim is stamped when it first becomes true and can
+        // therefore expire. The wire signature is untouched: freshness is bookkeeping this side
+        // of the bus, and it applies to the producer that already exists rather than waiting for
+        // one that reports a timestamp.
+        entry.set_unsaved_work(has_unsaved_work, crate::trace::now_ms());
         Ok(())
     }
 
