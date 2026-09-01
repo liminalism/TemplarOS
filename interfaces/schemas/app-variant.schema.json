@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/app-variant.schema.json",
+  "title": "LegeOS application provenance",
+  "description": "Where one installed copy of an application came from. Mirrors lege_types::variant::AppProvenance, carried on AppManifest.provenance and returned as the provenance_json column of AppIdentity1.ListVariants. Every field is optional on read: a manifest written before provenance existed still parses, and an origin that cannot be determined is Unknown rather than a guess.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "origin": {
+      "description": "Which kind of place this copy came from. Not a taxonomy of vendors — a taxonomy of who can write the file.",
+      "enum": ["native-manifest", "native-user-manifest", "distro-package", "flatpak", "user-desktop-entry", "unknown"],
+      "default": "unknown"
+    },
+    "trust": {
+      "description": "Derived from the origin, never declared by the application. System means the copy is owned by something with administrative rights over the machine (a package, a system manifest, a Flatpak installation); User means a file the person's own account can rewrite at will. Only a System variant may take an exclusive provider role.",
+      "enum": ["system", "user"],
+      "default": "user"
+    },
+    "source_path": {
+      "type": "string",
+      "description": "The .desktop file or manifest this variant was derived from, absolute."
+    },
+    "package_ref": {
+      "type": "string",
+      "description": "The packaging system's own name for this copy: a Debian package name, a Flatpak application ref. Empty when nothing owns it."
+    },
+    "version": {
+      "type": "string",
+      "description": "The version the origin reports, verbatim. Displayed, never compared."
+    },
+    "desktop_entry_id": {
+      "type": "string",
+      "description": "The merged desktop-entry id this copy exports, e.g. firefox.desktop. Two variants sharing one is strong evidence they are the same application.",
+      "pattern": "\\.desktop$"
+    },
+    "launch": {
+      "description": "How the copy is started. Direct is an executable; FlatpakExport is one of Flatpak's export wrappers; Wrapper is a script that starts something else.",
+      "enum": ["direct", "flatpak-export", "wrapper", "unknown"],
+      "default": "unknown"
+    },
+    "executable": {
+      "type": "string",
+      "description": "The resolved executable, absolute. Evidence for grouping; never a root of trust."
+    },
+    "sandboxed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether the copy runs inside a sandbox the system did not build (Flatpak's). Reported so a person can see it, not acted on here."
+    },
+    "update_owner": {
+      "description": "Who is expected to update this copy — which is the honest answer to 'why is my browser still old'.",
+      "enum": ["distro", "flatpak", "user", "unknown"],
+      "default": "unknown"
+    },
+    "declared_privileges": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "What the copy's own metadata claims it needs. Inert provenance: a claim is a thing to display and to compare against grants, never a grant."
+    },
+    "provider_claims": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Exclusive roles the copy's metadata says it can fill. Also inert: Providers1 decides, and it checks trust first."
+    },
+    "logical": {
+      "type": "string",
+      "description": "The logical application this copy belongs to, when the copy's own metadata declares one (a native manifest's logical_app). Grouping otherwise comes from evidence, not from a claim."
+    },
+    "first_seen_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix milliseconds when this variant was first recorded. Stable across re-scans; it is what makes 'the older copy' a meaningful phrase."
+    }
+  }
+}

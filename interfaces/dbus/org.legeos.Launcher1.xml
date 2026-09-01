@@ -10,5 +10,17 @@
       <arg name="activation_token" type="s" direction="in"/>
       <arg name="instance_id" type="s" direction="out"/>
     </method>
+    <!-- Launch a logical application: "open Firefox", not "open the Flatpak Firefox". With
+         `preferred_variant` empty the daemon picks the default variant, which is a trust decision
+         (a packaged copy outranks a user's own .desktop file) and therefore belongs here rather
+         than in every caller. `app_id` on Launch stays a variant id; a launch is always a launch
+         of one particular copy, and the cgroup records which. -->
+    <method name="LaunchLogical">
+      <arg name="logical_app_id" type="s" direction="in"/>
+      <arg name="preferred_variant" type="s" direction="in"/>
+      <arg name="arguments" type="as" direction="in"/>
+      <arg name="activation_token" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="out"/>
+    </method>
   </interface>
 </node>
