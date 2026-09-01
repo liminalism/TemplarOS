@@ -9,7 +9,7 @@
 //! README. A green run here is evidence about *stability*, never about calibration.
 
 use lege_resourced::{
-    policy::{GIB, GovernorConfig},
+    policy::{GIB, GovernorConfig, VictimWeights},
     replay,
 };
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ fn the_checked_in_traces_replay_identically_through_this_build() {
     let dir = fixtures();
     assert!(dir.is_dir(), "replay fixtures missing at {}", dir.display());
     let reports = replay::replay_path(&dir, GovernorConfig::default()).expect("reading fixtures");
-    assert_eq!(reports.len(), 5, "five scenarios are checked in");
+    assert_eq!(reports.len(), 6, "six scenarios are checked in");
 
     let mut diff = String::new();
     for report in &reports {
@@ -57,6 +57,7 @@ fn the_fixtures_still_cover_the_four_situations_they_were_written_for() {
             "03-severe-foreground-runaway.jsonl",
             "04-critical-then-recovery.jsonl",
             "05-low-memory-no-stall.jsonl",
+            "06-attention-and-intent.jsonl",
         ]
     );
 
@@ -108,4 +109,56 @@ fn the_same_traces_decide_differently_on_a_small_machine() {
         "the divergence must be about the pressure level:\n{}",
         severe.render()
     );
+}
+
+#[test]
+fn attention_and_intent_change_which_instance_is_chosen() {
+    // The evidence for the richer signals, produced the same way as the memory-scaling one:
+    // replay the recorded inputs through a configuration where the new weights are zero — which
+    // is the policy as it stood before them — and read the diff.
+    //
+    // `06-attention-and-intent` is a Severe tick with three candidates: a document the user is
+    // typing in, the biggest process on the machine which the user pinned, and a terminal
+    // untouched for three quarters of an hour that can be checkpointed and restarted. With the
+    // new signals the terminal is chosen. Without them the browser is, on size alone — the user
+    // having asked to keep it, and the terminal having been abandoned for forty-five minutes,
+    // being facts the score could not see.
+    let before = GovernorConfig {
+        victim_weights: VictimWeights {
+            idle_bonus_per_minute: 0.0,
+            idle_bonus_cap: 0.0,
+            project_protection: 0.0,
+            checkpoint_capable_bonus: 0.0,
+            fresh_checkpoint_bonus: 0.0,
+            pinned_protection: 0.0,
+            ..VictimWeights::default()
+        },
+        ..GovernorConfig::default()
+    };
+    let reports = replay::replay_path(&fixtures(), before).expect("fixtures");
+    let attention = reports
+        .iter()
+        .find(|report| report.source.starts_with("06-"))
+        .expect("the attention fixture");
+    assert!(
+        !attention.agrees(),
+        "the new weights must change something, or they are decoration:\n{}",
+        attention.render()
+    );
+    assert!(
+        attention
+            .divergences
+            .iter()
+            .all(replay::Divergence::victim_changed),
+        "the change should be about who is chosen, not about the pressure level:\n{}",
+        attention.render()
+    );
+
+    // And the other five are untouched by the same configuration: none of them carries an
+    // attention or intent signal, so zeroing those weights can have no effect on them.
+    for report in &reports {
+        if !report.source.starts_with("06-") {
+            assert!(report.agrees(), "{}", report.render());
+        }
+    }
 }

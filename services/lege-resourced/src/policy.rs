@@ -103,6 +103,22 @@ pub struct AppSample {
     pub protected: bool,
     pub reports_unsaved_state: bool,
     pub disposable: bool,
+
+    /// How long since the user last interacted with this instance. `None` means nobody has said
+    /// — which is not the same as "a long time", and must not be scored as if it were.
+    pub last_interaction_age: Option<Duration>,
+    /// The instance belongs to a project the user marked important.
+    pub project_important: bool,
+    /// The instance serves `org.legeos.Checkpoint1` and can be asked to save and be restarted.
+    ///
+    /// This has existed as enrichment since the beginning and never reached the score. It is the
+    /// difference between an application that can be *contained* and one that can only be
+    /// killed, which is exactly the kind of thing choosing a victim should weigh.
+    pub supports_checkpoint: bool,
+    /// How long ago its last successful checkpoint was taken.
+    pub checkpoint_age: Option<Duration>,
+    /// The user asked for this one to be kept.
+    pub user_pinned: bool,
 }
 
 /// What the governor wants done. The executor applies it (or only logs it, at a stage that does
@@ -191,6 +207,28 @@ pub struct VictimWeights {
     pub foreground_protection: f64,
     /// Flat term (expected negative — protective) when `reports_unsaved_state`.
     pub unsaved_protection: f64,
+
+    /// Per minute since the user last touched the instance, capped by `idle_bonus_cap`.
+    ///
+    /// Capped rather than unbounded because an application left open for a week is not a
+    /// thousand times better a victim than one left for an hour — after a while, "idle" is just
+    /// idle, and an uncapped term would eventually outweigh every other consideration including
+    /// unsaved work.
+    pub idle_bonus_per_minute: f64,
+    pub idle_bonus_cap: f64,
+    /// Flat term (expected negative) for an instance belonging to an important project.
+    pub project_protection: f64,
+    /// Flat bonus for an instance that can be asked to checkpoint at all.
+    pub checkpoint_capable_bonus: f64,
+    /// Additional bonus when its last checkpoint is recent enough to restore from.
+    pub fresh_checkpoint_bonus: f64,
+    /// Flat term (expected strongly negative) when the user pinned the instance.
+    ///
+    /// **A weight, not an exclusion.** `protected` stays the only hard exclusion, so a pinned
+    /// application that starts consuming the machine can still be contained. Making a user pin
+    /// unbreakable would mean the one way to make a desktop unrecoverable is to ask for
+    /// something reasonable.
+    pub pinned_protection: f64,
 }
 
 impl Default for VictimWeights {
@@ -203,9 +241,28 @@ impl Default for VictimWeights {
             visible_protection: -20.0,
             foreground_protection: -80.0,
             unsaved_protection: -60.0,
+            // Declared guesses, like every number above them, and to be recalibrated from real
+            // traces. Their *relative* placement is the part that is reasoned: idle saturates
+            // below a disposable application's bonus, because being unused is weaker evidence
+            // than being declared throwaway; a pinned instance outranks the foreground one,
+            // because the user asking for something is stronger than the user looking at it; and
+            // a fresh checkpoint is worth less than disposability, because being restorable is
+            // not the same as being expendable.
+            idle_bonus_per_minute: 2.0,
+            idle_bonus_cap: 40.0,
+            project_protection: -40.0,
+            checkpoint_capable_bonus: 8.0,
+            fresh_checkpoint_bonus: 25.0,
+            pinned_protection: -120.0,
         }
     }
 }
+
+/// How recent a checkpoint has to be to count as one the governor could restore from.
+///
+/// Five minutes: long enough that an application checkpointed during the last pressure episode
+/// still counts, short enough that a checkpoint from before the user's current work does not.
+pub const FRESH_CHECKPOINT_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GovernorConfig {
@@ -534,6 +591,14 @@ pub struct ScoreBreakdown {
     pub visible_term: f64,
     pub foreground_term: f64,
     pub unsaved_term: f64,
+    #[serde(default)]
+    pub idle_term: f64,
+    #[serde(default)]
+    pub project_term: f64,
+    #[serde(default)]
+    pub checkpoint_term: f64,
+    #[serde(default)]
+    pub pinned_term: f64,
     pub total: f64,
 }
 
@@ -573,6 +638,37 @@ pub fn victim_score_breakdown(app: &AppSample, weights: &VictimWeights) -> Score
     } else {
         0.0
     };
+    // `None` is "nobody has told us", not "zero minutes" and not "forever": an instance nothing
+    // reports activity for scores exactly as it did before any of this existed.
+    let idle_term = app.last_interaction_age.map_or(0.0, |age| {
+        let minutes = age.as_secs_f64() / 60.0;
+        (minutes * weights.idle_bonus_per_minute).min(weights.idle_bonus_cap)
+    });
+    let project_term = if app.project_important {
+        weights.project_protection
+    } else {
+        0.0
+    };
+    // Capability and freshness are one term because they are one idea: how cheaply this instance
+    // can be put down and brought back. An application that could checkpoint but has not is
+    // partway there; one with a checkpoint from a minute ago is most of the way.
+    let checkpoint_term = if app.supports_checkpoint {
+        let fresh = app
+            .checkpoint_age
+            .is_some_and(|age| age <= FRESH_CHECKPOINT_WINDOW);
+        if fresh {
+            weights.checkpoint_capable_bonus + weights.fresh_checkpoint_bonus
+        } else {
+            weights.checkpoint_capable_bonus
+        }
+    } else {
+        0.0
+    };
+    let pinned_term = if app.user_pinned {
+        weights.pinned_protection
+    } else {
+        0.0
+    };
 
     let total = memory_term
         + growth_term
@@ -580,7 +676,11 @@ pub fn victim_score_breakdown(app: &AppSample, weights: &VictimWeights) -> Score
         + disposable_term
         + visible_term
         + foreground_term
-        + unsaved_term;
+        + unsaved_term
+        + idle_term
+        + project_term
+        + checkpoint_term
+        + pinned_term;
 
     ScoreBreakdown {
         memory_term,
@@ -590,6 +690,10 @@ pub fn victim_score_breakdown(app: &AppSample, weights: &VictimWeights) -> Score
         visible_term,
         foreground_term,
         unsaved_term,
+        idle_term,
+        project_term,
+        checkpoint_term,
+        pinned_term,
         total,
     }
 }
@@ -601,6 +705,127 @@ pub fn victim_score(app: &AppSample, weights: &VictimWeights) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_instance_is_protected_but_not_excluded() {
+        // The line this weight walks. A pin must count for a great deal — more than the user
+        // merely looking at something — and must still be losable, because an unbreakable pin
+        // would make asking for something reasonable the way to render a desktop unrecoverable.
+        let weights = VictimWeights::default();
+        let mut pinned = sample(4);
+        pinned.user_pinned = true;
+        let ordinary = sample(4);
+        assert!(victim_score(&pinned, &weights) < victim_score(&ordinary, &weights));
+        assert!(
+            weights.pinned_protection < weights.foreground_protection,
+            "a pin the user asked for should outweigh the window they happen to be looking at"
+        );
+
+        // A runaway pinned application is still reachable: it is a weight, not an exclusion.
+        let mut runaway = sample(64);
+        runaway.user_pinned = true;
+        let small = sample(1);
+        let mut governor = Governor::new(GovernorConfig::default());
+        let actions = governor.decide(
+            Instant::now(),
+            PressureLevel::Elevated,
+            &[runaway.clone(), small],
+        );
+        assert_eq!(
+            actions.first().map(Action::instance_id),
+            Some(runaway.instance_id),
+            "a pinned instance consuming 64 GiB must still be containable"
+        );
+    }
+
+    #[test]
+    fn only_protected_excludes_anything() {
+        // `protected` is the one hard exclusion, enforced structurally by filtering the pool.
+        let mut protected = sample(64);
+        protected.protected = true;
+        let small = sample(1);
+        let mut governor = Governor::new(GovernorConfig::default());
+        let actions = governor.decide(
+            Instant::now(),
+            PressureLevel::Elevated,
+            &[protected, small.clone()],
+        );
+        assert_eq!(
+            actions.first().map(Action::instance_id),
+            Some(small.instance_id)
+        );
+    }
+
+    #[test]
+    fn the_idle_bonus_is_capped_rather_than_growing_for_ever() {
+        // An application left open for a week is not a thousand times better a victim than one
+        // left for an hour; an uncapped term would eventually outweigh unsaved work itself.
+        let weights = VictimWeights::default();
+        let score_at = |minutes: u64| {
+            let mut app = sample(1);
+            app.last_interaction_age = Some(Duration::from_secs(minutes * 60));
+            victim_score_breakdown(&app, &weights).idle_term
+        };
+        assert!((score_at(10) - 20.0).abs() < f64::EPSILON);
+        assert!((score_at(20) - weights.idle_bonus_cap).abs() < f64::EPSILON);
+        assert!((score_at(10_000) - weights.idle_bonus_cap).abs() < f64::EPSILON);
+        assert!(
+            weights.idle_bonus_cap < weights.disposable_bonus,
+            "being unused is weaker evidence than being declared throwaway"
+        );
+    }
+
+    #[test]
+    fn nobody_having_said_is_not_the_same_as_a_long_time_ago() {
+        // The default for every new signal. An instance nothing reports must score exactly as it
+        // did before these signals existed, or the change is a silent policy shift on every
+        // machine whose senders are not wired up yet.
+        let weights = VictimWeights::default();
+        let unreported = sample(4);
+        let breakdown = victim_score_breakdown(&unreported, &weights);
+        assert!((breakdown.idle_term - 0.0).abs() < f64::EPSILON);
+        assert!((breakdown.checkpoint_term - 0.0).abs() < f64::EPSILON);
+        assert!((breakdown.project_term - 0.0).abs() < f64::EPSILON);
+        assert!((breakdown.pinned_term - 0.0).abs() < f64::EPSILON);
+        assert!(
+            (breakdown.total - 32.0).abs() < f64::EPSILON,
+            "{breakdown:?}"
+        );
+    }
+
+    #[test]
+    fn a_restorable_instance_is_a_better_candidate_than_one_that_can_only_be_killed() {
+        let weights = VictimWeights::default();
+        let plain = sample(2);
+
+        let mut capable = sample(2);
+        capable.supports_checkpoint = true;
+        let mut fresh = capable.clone();
+        fresh.checkpoint_age = Some(Duration::from_secs(60));
+        let mut stale = capable.clone();
+        stale.checkpoint_age = Some(FRESH_CHECKPOINT_WINDOW + Duration::from_secs(1));
+
+        assert!(victim_score(&capable, &weights) > victim_score(&plain, &weights));
+        assert!(victim_score(&fresh, &weights) > victim_score(&capable, &weights));
+        assert!(
+            (victim_score(&stale, &weights) - victim_score(&capable, &weights)).abs()
+                < f64::EPSILON,
+            "a checkpoint older than the window buys nothing extra"
+        );
+        assert!(
+            weights.checkpoint_capable_bonus + weights.fresh_checkpoint_bonus
+                < weights.disposable_bonus,
+            "being restorable is not the same as being expendable"
+        );
+    }
+
+    #[test]
+    fn an_important_project_protects_the_instances_it_launched() {
+        let weights = VictimWeights::default();
+        let mut in_project = sample(4);
+        in_project.project_important = true;
+        assert!(victim_score(&in_project, &weights) < victim_score(&sample(4), &weights));
+    }
 
     #[test]
     fn an_unsaved_work_claim_stops_counting_after_the_ttl() {
@@ -729,6 +954,11 @@ mod tests {
             protected: false,
             reports_unsaved_state: false,
             disposable: false,
+            last_interaction_age: None,
+            project_important: false,
+            supports_checkpoint: false,
+            checkpoint_age: None,
+            user_pinned: false,
         }
     }
 

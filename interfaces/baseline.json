@@ -331,6 +331,7 @@
         "ForgetInstance": "(s)->()",
         "RecentTraces": "(u)->(s)",
         "Report": "()->(s)",
+        "SetInstanceActivity": "(sxbb)->()",
         "SetInstanceHints": "(sbbbb)->()",
         "SetInstanceState": "(sbb)->()",
         "SetInstanceWork": "(sbxbx)->()",

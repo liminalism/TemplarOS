@@ -64,6 +64,16 @@ pub trait Resources {
         checkpoint_at_ms: i64,
     ) -> zbus::Result<()>;
 
+    /// Attention and intent: when the user last touched this instance, whether they pinned it,
+    /// and whether its project is important. Pass `0` for "never reported".
+    fn set_instance_activity(
+        &self,
+        instance_id: &str,
+        last_interaction_ms: i64,
+        user_pinned: bool,
+        project_important: bool,
+    ) -> zbus::Result<()>;
+
     /// An instance ended.
     fn forget_instance(&self, instance_id: &str) -> zbus::Result<()>;
 

@@ -45,6 +45,12 @@ pub struct VictimWeightsFile {
     pub visible_protection: Option<f64>,
     pub foreground_protection: Option<f64>,
     pub unsaved_protection: Option<f64>,
+    pub idle_bonus_per_minute: Option<f64>,
+    pub idle_bonus_cap: Option<f64>,
+    pub project_protection: Option<f64>,
+    pub checkpoint_capable_bonus: Option<f64>,
+    pub fresh_checkpoint_bonus: Option<f64>,
+    pub pinned_protection: Option<f64>,
 }
 
 impl ConfigFile {
@@ -98,6 +104,30 @@ impl ConfigFile {
                     .victim_weights
                     .unsaved_protection
                     .unwrap_or(base.victim_weights.unsaved_protection),
+                idle_bonus_per_minute: self
+                    .victim_weights
+                    .idle_bonus_per_minute
+                    .unwrap_or(base.victim_weights.idle_bonus_per_minute),
+                idle_bonus_cap: self
+                    .victim_weights
+                    .idle_bonus_cap
+                    .unwrap_or(base.victim_weights.idle_bonus_cap),
+                project_protection: self
+                    .victim_weights
+                    .project_protection
+                    .unwrap_or(base.victim_weights.project_protection),
+                checkpoint_capable_bonus: self
+                    .victim_weights
+                    .checkpoint_capable_bonus
+                    .unwrap_or(base.victim_weights.checkpoint_capable_bonus),
+                fresh_checkpoint_bonus: self
+                    .victim_weights
+                    .fresh_checkpoint_bonus
+                    .unwrap_or(base.victim_weights.fresh_checkpoint_bonus),
+                pinned_protection: self
+                    .victim_weights
+                    .pinned_protection
+                    .unwrap_or(base.victim_weights.pinned_protection),
             },
         }
     }

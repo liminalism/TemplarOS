@@ -34,6 +34,19 @@ pub struct InstanceTrace {
     pub protected: bool,
     pub disposable: bool,
     pub has_unsaved_work: bool,
+    /// The signals that reached scoring after the first four. Every one is `#[serde(default)]`,
+    /// which is the additive-fields rule doing its job: a trace recorded before these existed
+    /// replays as "nobody said", which is exactly what was true when it was recorded.
+    #[serde(default)]
+    pub last_interaction_age_ms: Option<u64>,
+    #[serde(default)]
+    pub project_important: bool,
+    #[serde(default)]
+    pub supports_checkpoint: bool,
+    #[serde(default)]
+    pub checkpoint_age_ms: Option<u64>,
+    #[serde(default)]
+    pub user_pinned: bool,
     pub victim_score: f64,
     pub score_breakdown: ScoreBreakdown,
 }

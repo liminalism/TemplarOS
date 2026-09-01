@@ -151,6 +151,27 @@ impl ResourcesApi {
         Ok(())
     }
 
+    /// Attention and intent: when the user last touched this instance, whether they pinned it,
+    /// and whether its project is important.
+    ///
+    /// An instance nobody reports is scored exactly as it was before this existed. A zero
+    /// timestamp means "never reported", not 1970.
+    async fn set_instance_activity(
+        &self,
+        instance_id: &str,
+        last_interaction_ms: i64,
+        user_pinned: bool,
+        project_important: bool,
+    ) -> fdo::Result<()> {
+        let id = parse_instance_id(instance_id)?;
+        let mut enrichment = self.shared.enrichment.write();
+        let entry = enrichment.entry(id).or_default();
+        entry.last_interaction_ms = (last_interaction_ms > 0).then_some(last_interaction_ms);
+        entry.user_pinned = user_pinned;
+        entry.project_important = project_important;
+        Ok(())
+    }
+
     /// An instance ended; drop its record and any temporary limits (applied by the loop on its
     /// next tick — see `crate::state`'s module doc comment).
     async fn forget_instance(&self, instance_id: &str) -> fdo::Result<()> {
