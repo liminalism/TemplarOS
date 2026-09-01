@@ -194,6 +194,18 @@ enum DevCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Publish, install, activate and report — the whole deployment.
+    Deploy {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+        /// Print the whole pipeline and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Put the previous set back without asking if a component fails its health gate.
+        #[arg(long)]
+        auto_rollback: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -525,6 +537,19 @@ fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) 
             dev::install_set(repo, root, build_set.as_deref(), dry_run)
         }
         DevCommand::Rollback { dry_run } => dev::rollback(repo, root, dry_run),
+        DevCommand::Deploy {
+            build_set,
+            dry_run,
+            auto_rollback,
+        } => dev::deploy(
+            repo,
+            root,
+            &dev::DeployOptions {
+                build_set,
+                dry_run,
+                auto_rollback,
+            },
+        ),
     }
 }
 

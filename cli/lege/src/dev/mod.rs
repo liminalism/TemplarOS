@@ -5,11 +5,13 @@
 //! sessiond, and every failure that followed read as an application bug. `lege dev status` is the
 //! answer to "is what I built what is running?", asked of the machine rather than of memory.
 
+pub mod activate;
 pub mod cmd;
 pub mod converge;
 pub mod install;
 pub mod repo;
 pub mod report;
+pub mod systemd;
 
 use anyhow::{Context, Result, bail};
 use converge::Observation;
@@ -304,6 +306,123 @@ installed {} package(s)",
         let _ = writeln!(out, "  roll back with: sudo lege dev rollback");
     }
     out.push_str("  `lege dev status` says what still needs restarting\n");
+    Ok(out)
+}
+
+/// What a deployment run should do.
+#[derive(Clone, Debug)]
+pub struct DeployOptions {
+    /// The manifest `cargo xtask build-set` wrote.
+    pub build_set: PathBuf,
+    /// Print the whole pipeline and change nothing.
+    pub dry_run: bool,
+    /// On a failed health gate, put the previous set back without asking.
+    pub auto_rollback: bool,
+}
+
+/// `lege dev deploy` — publish, install, activate, report.
+///
+/// Deliberately **not** the build step. `cargo xtask build-set` is run by the developer as
+/// themselves; a deployment needs root for apt, and building as root leaves a target directory
+/// nobody can write to afterwards and a cargo cache in the wrong home. So this starts from the
+/// manifest that build produced, and says so when it is missing.
+///
+/// # Errors
+/// If the set was never built, apt refuses it, or a component fails its health gate — in which
+/// case the rollback command is printed, or run for you with `--auto-rollback`.
+pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Result<String> {
+    let (set, _) = lege_build::BuildSet::read(&options.build_set).with_context(|| {
+        format!(
+            "reading {} — run `cargo xtask build-set` first",
+            options.build_set.display()
+        )
+    })?;
+    let matrix = load_matrix(root);
+    let mut out = format!("deploying build set {}\n", set.id);
+
+    if options.dry_run {
+        let installer = open_installer(repo_root.clone(), root);
+        let _ = writeln!(out, "\n1. publish {} package(s)", set.packages.len());
+        match installer.plan(&set.id) {
+            Ok(plan) => {
+                let _ = writeln!(out, "2. {}", plan.command_line());
+            }
+            Err(_) => {
+                let _ = writeln!(
+                    out,
+                    "2. apt-get install … (the set is not in the archive yet)"
+                );
+            }
+        }
+        // Against the machine *as it would be after the install*, not as it is now: before the
+        // install every package reads as not installed, and an activation plan of thirteen
+        // "the set is incomplete" lines answers a question nobody asked.
+        let mut observation = observe(root, &matrix);
+        for package in &set.packages {
+            observation
+                .installed
+                .insert(package.package.clone(), set.id.clone());
+        }
+        let convergence = converge::converge(&matrix, &observation, Some(&set.id));
+        let plan = activate::plan(&matrix, &convergence, &activate::Conditions::default());
+        out.push_str("3. activate:\n");
+        out.push_str(&report::render_activation_plan(&plan));
+        out.push_str("\ndry run: nothing was published, installed or restarted\n");
+        return Ok(out);
+    }
+
+    let published = repo_publish(repo_root.clone(), &options.build_set)?;
+    out.push_str(&published);
+
+    if !install::is_root(root) {
+        bail!("deploying changes package state and restarts units; run this as root");
+    }
+    let installer = open_installer(repo_root.clone(), root);
+    let install_plan = installer.plan(&set.id)?;
+    installer.install(&install_plan)?;
+    let _ = writeln!(out, "installed {} package(s)", install_plan.pinned.len());
+
+    let convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
+    let plan = activate::plan(&matrix, &convergence, &activate::Conditions::default());
+    let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
+    let systemctl = systemd::RealSystemctl {
+        runner: runner.clone(),
+        dir: root.to_path_buf(),
+    };
+    let bus = systemd::RealBusProbe {
+        runner,
+        dir: root.to_path_buf(),
+    };
+    let activation = activate::execute(
+        &plan,
+        &matrix,
+        &activate::Effects {
+            systemctl: &systemctl,
+            bus: &bus,
+            clock: &systemd::RealClock,
+            stamps: &systemd::RealStamps,
+        },
+    );
+    out.push_str(&report::render_activation(&activation));
+
+    if let Some((component, reason)) = activation.failure() {
+        let _ = writeln!(out, "\n{component} did not come back: {reason}");
+        if options.auto_rollback {
+            let previous = rollback(repo_root, root, false)?;
+            out.push_str(&previous);
+            bail!("{out}");
+        }
+        let _ = writeln!(out, "roll back with: sudo lege dev rollback");
+        bail!("{out}");
+    }
+
+    let final_convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
+    out.push('\n');
+    out.push_str(&report::render(&final_convergence));
+    if let Some(previous) = open_repo(repo_root).previous()? {
+        let _ = writeln!(out, "\nprevious set retained: {previous}");
+        out.push_str("roll back with: sudo lege dev rollback\n");
+    }
     Ok(out)
 }
 
