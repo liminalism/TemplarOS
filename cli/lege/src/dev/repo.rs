@@ -54,6 +54,13 @@ pub struct SetManifest {
     pub build_set: String,
     pub published_at_ms: u64,
     pub packages: Vec<PublishedPackage>,
+    /// The set's shipped D-Bus signatures, carried so a later deployment can compare against
+    /// them without a source checkout. Absent for a set published before this was recorded.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub interfaces: std::collections::BTreeMap<String, lege_build::interfaces::InterfaceSignatures>,
+    /// What the set's binaries make of each persistent store.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub schemas: std::collections::BTreeMap<String, lege_build::StoreSchema>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,6 +81,13 @@ impl SetManifest {
             .map(|package| format!("{}={}", package.package, package.version))
             .collect()
     }
+}
+
+/// The compatibility facts a build set carries into the archive.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Compatibility {
+    pub interfaces: std::collections::BTreeMap<String, lege_build::interfaces::InterfaceSignatures>,
+    pub schemas: std::collections::BTreeMap<String, lege_build::StoreSchema>,
 }
 
 /// The archive.
@@ -267,6 +281,19 @@ impl Repo {
         packages: &[(String, String, PathBuf)],
         build_set: &str,
     ) -> Result<SetManifest> {
+        self.publish_with(packages, build_set, &Compatibility::default())
+    }
+
+    /// [`Repo::publish`], also recording the set's compatibility facts.
+    ///
+    /// # Errors
+    /// As [`Repo::publish`].
+    pub fn publish_with(
+        &self,
+        packages: &[(String, String, PathBuf)],
+        build_set: &str,
+        compatibility: &Compatibility,
+    ) -> Result<SetManifest> {
         if packages.is_empty() {
             bail!("refusing to publish an empty set");
         }
@@ -298,6 +325,8 @@ impl Repo {
             build_set: build_set.to_owned(),
             published_at_ms: now_ms(),
             packages: published,
+            interfaces: compatibility.interfaces.clone(),
+            schemas: compatibility.schemas.clone(),
         };
         let set_dir = self.sets().join(build_set);
         fs::create_dir_all(&set_dir).context("creating the set directory")?;

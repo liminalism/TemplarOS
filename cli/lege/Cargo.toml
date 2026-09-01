@@ -27,6 +27,7 @@ lege-filed = { workspace = true }
 lege-resourced = { workspace = true }
 lege-session-core = { workspace = true }
 lege-state = { workspace = true }
+rusqlite = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

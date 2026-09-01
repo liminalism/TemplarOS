@@ -8,6 +8,7 @@
 pub mod activate;
 pub mod cmd;
 pub mod converge;
+pub mod gates;
 pub mod install;
 pub mod repo;
 pub mod report;
@@ -171,7 +172,14 @@ pub fn repo_publish(root: PathBuf, manifest_path: &Path) -> Result<String> {
         })
         .collect();
     let repo = open_repo(root);
-    let published = repo.publish(&packages, &set.id)?;
+    let published = repo.publish_with(
+        &packages,
+        &set.id,
+        &repo::Compatibility {
+            interfaces: set.interfaces.clone(),
+            schemas: set.schemas.clone(),
+        },
+    )?;
     let mut out = format!(
         "published {} package(s) as build set {}\n",
         published.packages.len(),
@@ -318,6 +326,8 @@ pub struct DeployOptions {
     pub dry_run: bool,
     /// On a failed health gate, put the previous set back without asking.
     pub auto_rollback: bool,
+    /// Copy the state stores before installing a set that could not otherwise be rolled back.
+    pub snapshot_state: bool,
 }
 
 /// `lege dev deploy` — publish, install, activate, report.
@@ -341,49 +351,49 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     let mut out = format!("deploying build set {}\n", set.id);
 
     if options.dry_run {
-        let installer = open_installer(repo_root.clone(), root);
-        let _ = writeln!(out, "\n1. publish {} package(s)", set.packages.len());
-        match installer.plan(&set.id) {
-            Ok(plan) => {
-                let _ = writeln!(out, "2. {}", plan.command_line());
-            }
-            Err(_) => {
-                let _ = writeln!(
-                    out,
-                    "2. apt-get install … (the set is not in the archive yet)"
-                );
-            }
+        return Ok(deploy_plan(
+            &repo_root,
+            root,
+            &set,
+            &matrix,
+            options.snapshot_state,
+            out,
+        ));
+    }
+
+    if !install::is_root(root) {
+        bail!("deploying changes package state and restarts units; run this as root");
+    }
+
+    // The gates run before the install, not after: refusing a set that could not be rolled back
+    // is only useful while it is still true that nothing has changed.
+    let deployed = gates::deployed_set(&open_repo(repo_root.clone()))?;
+    if options.snapshot_state {
+        for path in gates::snapshot_stores(root, &set.id)? {
+            let _ = writeln!(out, "snapshot: {}", path.display());
         }
-        // Against the machine *as it would be after the install*, not as it is now: before the
-        // install every package reads as not installed, and an activation plan of thirteen
-        // "the set is incomplete" lines answers a question nobody asked.
-        let mut observation = observe(root, &matrix);
-        for package in &set.packages {
-            observation
-                .installed
-                .insert(package.package.clone(), set.id.clone());
-        }
-        let convergence = converge::converge(&matrix, &observation, Some(&set.id));
-        let plan = activate::plan(&matrix, &convergence, &activate::Conditions::default());
-        out.push_str("3. activate:\n");
-        out.push_str(&report::render_activation_plan(&plan));
-        out.push_str("\ndry run: nothing was published, installed or restarted\n");
-        return Ok(out);
+    }
+    let gate = gates::run(
+        &matrix,
+        &set,
+        deployed.as_ref(),
+        gates::hostd_busy(root),
+        options.snapshot_state,
+    )?;
+    for note in &gate.notes {
+        let _ = writeln!(out, "  {note}");
     }
 
     let published = repo_publish(repo_root.clone(), &options.build_set)?;
     out.push_str(&published);
 
-    if !install::is_root(root) {
-        bail!("deploying changes package state and restarts units; run this as root");
-    }
     let installer = open_installer(repo_root.clone(), root);
     let install_plan = installer.plan(&set.id)?;
     installer.install(&install_plan)?;
     let _ = writeln!(out, "installed {} package(s)", install_plan.pinned.len());
 
     let convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
-    let plan = activate::plan(&matrix, &convergence, &activate::Conditions::default());
+    let plan = activate::plan(&matrix, &convergence, &gate.conditions);
     let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
     let systemctl = systemd::RealSystemctl {
         runner: runner.clone(),
@@ -424,6 +434,65 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
         out.push_str("roll back with: sudo lege dev rollback\n");
     }
     Ok(out)
+}
+
+/// `--dry-run`: the whole pipeline, stated, with nothing changed.
+fn deploy_plan(
+    repo_root: &Path,
+    root: &Path,
+    set: &lege_build::BuildSet,
+    matrix: &lege_build::components::Matrix,
+    snapshot_state: bool,
+    mut out: String,
+) -> String {
+    let installer = open_installer(repo_root.to_path_buf(), root);
+    let _ = writeln!(out, "\n1. publish {} package(s)", set.packages.len());
+    match installer.plan(&set.id) {
+        Ok(plan) => {
+            let _ = writeln!(out, "2. {}", plan.command_line());
+        }
+        Err(_) => {
+            let _ = writeln!(
+                out,
+                "2. apt-get install … (the set is not in the archive yet)"
+            );
+        }
+    }
+    // Against the machine *as it would be after the install*, not as it is now: before the
+    // install every package reads as not installed, and an activation plan of thirteen
+    // "the set is incomplete" lines answers a question nobody asked.
+    let mut observation = observe(root, matrix);
+    for package in &set.packages {
+        observation
+            .installed
+            .insert(package.package.clone(), set.id.clone());
+    }
+    let convergence = converge::converge(matrix, &observation, Some(&set.id));
+    let repo = open_repo(repo_root.to_path_buf());
+    let deployed = gates::deployed_set(&repo).unwrap_or(None);
+    let gate = gates::run(
+        matrix,
+        set,
+        deployed.as_ref(),
+        gates::hostd_busy(root),
+        snapshot_state,
+    );
+    match &gate {
+        Ok(report) => {
+            for note in &report.notes {
+                let _ = writeln!(out, "   {note}");
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "   refused: {error}");
+        }
+    }
+    let conditions = gate.map(|report| report.conditions).unwrap_or_default();
+    let plan = activate::plan(matrix, &convergence, &conditions);
+    out.push_str("3. activate:\n");
+    out.push_str(&report::render_activation_plan(&plan));
+    out.push_str("\ndry run: nothing was published, installed or restarted\n");
+    out
 }
 
 #[cfg(test)]

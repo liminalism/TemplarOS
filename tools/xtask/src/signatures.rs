@@ -23,6 +23,7 @@
 //! the code agrees with itself.
 
 use anyhow::{Context, Result, bail};
+use lege_build::interfaces::{Baseline, Change, InterfaceSignatures, diff, method_signature};
 use quick_xml::events::Event;
 use std::{
     collections::BTreeMap,
@@ -31,34 +32,6 @@ use std::{
 
 /// Where the frozen signatures live.
 pub const BASELINE: &str = "interfaces/baseline.json";
-
-/// Every member of one interface, by kind, each mapped to its signature.
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct InterfaceSignatures {
-    #[serde(default)]
-    pub methods: BTreeMap<String, String>,
-    #[serde(default)]
-    pub signals: BTreeMap<String, String>,
-    #[serde(default)]
-    pub properties: BTreeMap<String, String>,
-}
-
-/// The committed baseline.
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Baseline {
-    pub version: u32,
-    pub interfaces: BTreeMap<String, InterfaceSignatures>,
-}
-
-/// How a member's signature is written down.
-///
-/// `In(types)->(out types)` for a method, `(types)` for a signal, `type access` for a property —
-/// D-Bus type codes throughout, which is what a client is actually compiled against. Argument
-/// *names* are deliberately excluded: renaming an argument breaks no caller, and a check that
-/// failed on it would train people to ignore it.
-fn method_signature(inputs: &str, outputs: &str) -> String {
-    format!("({inputs})->({outputs})")
-}
 
 /// Parses every `interfaces/dbus/*.xml` into signatures.
 ///
@@ -224,123 +197,6 @@ fn attribute(element: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<S
         (attribute.key.as_ref() == key.as_bytes())
             .then(|| String::from_utf8_lossy(&attribute.value).into_owned())
     })
-}
-
-/// What changed between the baseline and the tree.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Change {
-    /// A whole interface that was not there before. Fine.
-    InterfaceAdded(String),
-    /// A member that was not there before. Fine — additive growth on a shipped version.
-    MemberAdded { interface: String, member: String },
-    /// A member whose arguments changed. Breaks every client built against the old one.
-    SignatureChanged {
-        interface: String,
-        member: String,
-        was: String,
-        now: String,
-    },
-    /// A member that is gone.
-    MemberRemoved { interface: String, member: String },
-    /// A whole interface that is gone.
-    InterfaceRemoved(String),
-}
-
-impl Change {
-    /// Whether this change breaks a client compiled against the shipped interface.
-    #[must_use]
-    pub fn is_breaking(&self) -> bool {
-        matches!(
-            self,
-            Self::SignatureChanged { .. } | Self::MemberRemoved { .. } | Self::InterfaceRemoved(_)
-        )
-    }
-
-    /// What to tell the person who made it.
-    #[must_use]
-    pub fn describe(&self) -> String {
-        match self {
-            Self::InterfaceAdded(interface) => format!("{interface}: new interface"),
-            Self::MemberAdded { interface, member } => format!("{interface}.{member}: new member"),
-            Self::SignatureChanged {
-                interface,
-                member,
-                was,
-                now,
-            } => format!(
-                "{interface}.{member}: signature changed from {was} to {now} — this breaks every \
-                 client built against it. {}",
-                bump_advice(interface)
-            ),
-            Self::MemberRemoved { interface, member } => format!(
-                "{interface}.{member}: removed — clients still call it. {}",
-                bump_advice(interface)
-            ),
-            Self::InterfaceRemoved(interface) => format!(
-                "{interface}: the whole interface is gone. {}",
-                bump_advice(interface)
-            ),
-        }
-    }
-}
-
-/// "Bump to `org.legeos.Files.Browse2`" — the actual next name, not a general instruction.
-fn bump_advice(interface: &str) -> String {
-    let trimmed = interface.trim_end_matches(|c: char| c.is_ascii_digit());
-    let version: u32 = interface[trimmed.len()..].parse().unwrap_or(1);
-    format!("Add {trimmed}{} instead.", version + 1)
-}
-
-/// Every difference between a baseline and a parsed tree, in a stable order.
-#[must_use]
-pub fn diff(
-    baseline: &BTreeMap<String, InterfaceSignatures>,
-    current: &BTreeMap<String, InterfaceSignatures>,
-) -> Vec<Change> {
-    let mut changes = Vec::new();
-    for (interface, was) in baseline {
-        let Some(now) = current.get(interface) else {
-            changes.push(Change::InterfaceRemoved(interface.clone()));
-            continue;
-        };
-        for (kind_was, kind_now) in [
-            (&was.methods, &now.methods),
-            (&was.signals, &now.signals),
-            (&was.properties, &now.properties),
-        ] {
-            for (member, signature) in kind_was {
-                match kind_now.get(member) {
-                    None => changes.push(Change::MemberRemoved {
-                        interface: interface.clone(),
-                        member: member.clone(),
-                    }),
-                    Some(current) if current != signature => {
-                        changes.push(Change::SignatureChanged {
-                            interface: interface.clone(),
-                            member: member.clone(),
-                            was: signature.clone(),
-                            now: current.clone(),
-                        });
-                    }
-                    Some(_) => {}
-                }
-            }
-            for member in kind_now.keys() {
-                if !kind_was.contains_key(member) {
-                    changes.push(Change::MemberAdded {
-                        interface: interface.clone(),
-                        member: member.clone(),
-                    });
-                }
-            }
-        }
-    }
-    for interface in current.keys() {
-        if !baseline.contains_key(interface) {
-            changes.push(Change::InterfaceAdded(interface.clone()));
-        }
-    }
-    changes
 }
 
 /// `cargo xtask interface-baseline` — freeze today's signatures.
@@ -573,17 +429,5 @@ mod tests {
                 "{name} parsed to no members at all"
             );
         }
-    }
-
-    #[test]
-    fn the_bump_advice_names_the_next_version_of_a_multi_digit_interface() {
-        assert_eq!(
-            bump_advice("org.legeos.Files.Browse1"),
-            "Add org.legeos.Files.Browse2 instead."
-        );
-        assert_eq!(
-            bump_advice("org.legeos.Thing9"),
-            "Add org.legeos.Thing10 instead."
-        );
     }
 }

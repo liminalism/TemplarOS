@@ -74,12 +74,25 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
     reject_mixed_set(&matrix, &packages, &id)?;
     reject_stale_build_scripts(root, &matrix, &id)?;
 
+    // The compatibility facts travel with the set: at deployment time there is no source
+    // checkout to consult, and the gate that decides whether these daemons can be restarted
+    // under the clients the previous set left running has to be able to answer without one.
     let set = BuildSet {
         id: id.clone(),
         git_sha,
         dirty,
         epoch,
         packages,
+        interfaces: crate::signatures::parse_tree(root)?,
+        schemas: [(
+            "session".to_owned(),
+            lege_build::StoreSchema {
+                version: lege_state::schema_version(),
+                min_reader_version: lege_state::min_reader_version(),
+            },
+        )]
+        .into_iter()
+        .collect(),
     };
     let manifest = deb_dir.join("build-set.json");
     fs::write(&manifest, serde_json::to_vec_pretty(&set)?).context("writing build-set.json")?;
