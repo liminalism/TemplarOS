@@ -14,8 +14,10 @@
 //! silently been — one *variant*, one installed copy from one origin — and the logical
 //! application it is a copy of.
 
-pub const MIGRATIONS: &[(&str, &str)] = &[
-    (
+use super::Migration;
+
+pub const MIGRATIONS: &[Migration] = &[
+    Migration::additive(
         "0002-session-domains",
         r"
         CREATE TABLE settings_values (
@@ -69,7 +71,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
 ",
     ),
-    (
+    Migration::additive(
         "0003-background-declarations",
         r"
         -- What the last autostart scan found this application declaring (planning doc 01 §7):
@@ -84,7 +86,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
 ",
     ),
-    (
+    Migration::additive(
         "0004-homefield",
         r"
         -- The Home Field: one document per output (`lege_field::FieldDocument`, one JSON blob,
@@ -107,7 +109,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX homefield_undo_output ON homefield_undo (output, id);
 ",
     ),
-    (
+    Migration::additive(
         "0005-notification-details",
         r"
         -- `notifications_active` used to be only an ID ledger.  The notification server is the
@@ -122,7 +124,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE notifications_active ADD COLUMN expires_ms INTEGER;
 ",
     ),
-    (
+    Migration::additive(
         "0006-app-variants",
         r"
         -- Every app_id already in this database names one *variant*: one installed copy of an

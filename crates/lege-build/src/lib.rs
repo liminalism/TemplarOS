@@ -180,6 +180,22 @@ pub struct RunningStamp {
     pub schema_versions: BTreeMap<String, u32>,
 }
 
+impl RunningStamp {
+    /// A stamp for this process, with no schema versions.
+    #[must_use]
+    fn new(component: &str, identity: &BuildIdentity, pid: u32, now_ms: u64) -> Self {
+        Self {
+            component: component.to_owned(),
+            build_set: identity.build_set.clone(),
+            git_sha: identity.git_sha.clone(),
+            dirty: identity.dirty,
+            pid,
+            started_at_ms: now_ms,
+            schema_versions: BTreeMap::new(),
+        }
+    }
+}
+
 /// Where stamps live for this process.
 ///
 /// `LEGEOS_BUILD_STAMP_DIR` overrides everything (tests, and `lege dev status --stamps`);
@@ -205,13 +221,30 @@ pub fn stamp_dir() -> PathBuf {
 /// # Errors
 /// If the stamp directory cannot be created, or the file cannot be written or renamed.
 pub fn write_stamp(component: &str) -> io::Result<PathBuf> {
-    write_stamp_in(
-        &stamp_dir(),
+    write_stamp_with(component, BTreeMap::new())
+}
+
+/// [`write_stamp`] for a component that also carries schema versions.
+///
+/// A component that owns or reads a versioned store records what generation of it this build
+/// speaks, so a deployment can refuse to install a set whose stores the *previous* set could not
+/// read back — the check that makes a rollback safe, made from the running system's own claims
+/// rather than from a table someone has to keep up to date.
+///
+/// # Errors
+/// As [`write_stamp`].
+pub fn write_stamp_with(
+    component: &str,
+    schema_versions: BTreeMap<String, u32>,
+) -> io::Result<PathBuf> {
+    let mut stamp = RunningStamp::new(
         component,
         &BuildIdentity::current(),
         std::process::id(),
         now_ms(),
-    )
+    );
+    stamp.schema_versions = schema_versions;
+    write_stamp_value(&stamp_dir(), &stamp)
 }
 
 /// [`write_stamp`] with every ambient input passed in — the whole of it is testable.
@@ -229,26 +262,24 @@ pub fn write_stamp_in(
     pid: u32,
     now_ms: u64,
 ) -> io::Result<PathBuf> {
+    write_stamp_value(dir, &RunningStamp::new(component, identity, pid, now_ms))
+}
+
+/// Writes a prepared stamp.
+fn write_stamp_value(dir: &Path, stamp: &RunningStamp) -> io::Result<PathBuf> {
+    let component = stamp.component.as_str();
+    let pid = stamp.pid;
     if !is_plain_component_name(component) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{component:?} is not a plain component name"),
         ));
     }
-    let stamp = RunningStamp {
-        component: component.to_owned(),
-        build_set: identity.build_set.clone(),
-        git_sha: identity.git_sha.clone(),
-        dirty: identity.dirty,
-        pid,
-        started_at_ms: now_ms,
-        schema_versions: BTreeMap::new(),
-    };
 
     fs::create_dir_all(dir)?;
     let final_path = dir.join(format!("{component}.json"));
     let temp_path = dir.join(format!(".{component}.{pid}.tmp"));
-    let body = serde_json::to_vec_pretty(&stamp).map_err(io::Error::other)?;
+    let body = serde_json::to_vec_pretty(stamp).map_err(io::Error::other)?;
     {
         let mut file = fs::File::create(&temp_path)?;
         file.write_all(&body)?;

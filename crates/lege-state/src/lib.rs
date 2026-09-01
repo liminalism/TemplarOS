@@ -22,9 +22,34 @@ use std::{
 
 pub mod migrations;
 
+pub use migrations::Migration;
+
 /// Ordered schema migrations. Append-only; never edit a shipped entry.
-pub fn all_migrations() -> Vec<(&'static str, &'static str)> {
+#[must_use]
+pub fn all_migrations() -> Vec<Migration> {
     migrations::all()
+}
+
+/// The schema version this build understands: how many migrations it ships.
+///
+/// A plain count rather than a hand-maintained constant, so it cannot drift from the list. It is
+/// what a database's recorded reader floor is compared against.
+#[must_use]
+pub fn schema_version() -> u32 {
+    u32::try_from(all_migrations().len()).unwrap_or(u32::MAX)
+}
+
+/// The oldest schema version that can still read a fully migrated database.
+///
+/// The highest floor any applied migration raises; `0` while every migration is additive, which
+/// is the state today and the state the policy tests keep it in for as long as possible.
+#[must_use]
+pub fn min_reader_version() -> u32 {
+    all_migrations()
+        .iter()
+        .map(|migration| migration.min_reader_version)
+        .max()
+        .unwrap_or(0)
 }
 
 /// Default database path for the current user.
@@ -60,8 +85,73 @@ pub fn open(path: &Path) -> Result<Connection> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    refuse_if_too_new(&connection, &path.display().to_string())?;
     migrate(&connection)?;
     Ok(connection)
+}
+
+/// Refuse a database a newer build migrated past this one's reach.
+///
+/// This is the case a rollback creates: the previous binaries are reinstalled against a database
+/// the newer ones already migrated. Opening it anyway would have SQLite happily run queries
+/// against a schema that no longer means what this build thinks it means, which is how a rollback
+/// turns a broken shell into lost data. Refusing costs a session; the alternative does not stop
+/// at a session.
+fn refuse_if_too_new(connection: &Connection, path: &str) -> Result<()> {
+    let Some(required) = read_meta(connection, "min_reader_version") else {
+        // No `schema_meta` at all: either a fresh database or one from before this bookkeeping
+        // existed, and in both cases there is nothing here a build of this generation cannot read.
+        return Ok(());
+    };
+    let ours = schema_version();
+    if required <= ours {
+        return Ok(());
+    }
+    let written_by = read_meta(connection, "schema_version").unwrap_or(required);
+    anyhow::bail!(
+        "{path} was migrated by a newer LegeOS (schema version {written_by}) and needs a reader \
+         that understands at least schema version {required}; this build understands {ours}. \
+         Nothing has been changed. Install the newer build set again — `lege dev status` says \
+         which one — or restore the snapshot taken before that upgrade."
+    )
+}
+
+/// One integer out of `schema_meta`, or `None` if the table or key is not there.
+fn read_meta(connection: &Connection, key: &str) -> Option<u32> {
+    connection
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = ?1",
+            [key],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+/// Copies a consistent snapshot of the database to `path` — `VACUUM INTO`, which SQLite performs
+/// as one read transaction, so it is safe against a live connection and needs no separate lock.
+///
+/// This is the other half of the backward-readability policy: a migration that raises the reader
+/// floor makes a rollback past it impossible, so the upgrade that carries one has to leave
+/// something behind to roll back *to*.
+///
+/// # Errors
+/// If `path` already exists, or the copy fails.
+pub fn snapshot_to(connection: &Connection, path: &Path) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "{} already exists; refusing to overwrite a snapshot",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    connection
+        .execute("VACUUM INTO ?1", [path.display().to_string()])
+        .with_context(|| format!("snapshotting the state store to {}", path.display()))?;
+    Ok(())
 }
 
 /// In-memory store (tests, dry runs).
@@ -75,10 +165,12 @@ pub fn open_in_memory() -> Result<Connection> {
 /// Apply every migration not yet recorded in `schema_migrations`.
 pub fn migrate(connection: &Connection) -> Result<usize> {
     connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_ms INTEGER NOT NULL);",
+        "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_ms INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
     )?;
     let mut applied = 0;
-    for (name, sql) in all_migrations() {
+    for migration in all_migrations() {
+        let name = migration.name;
         let done: bool = connection.query_row(
             "SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
             [name],
@@ -89,7 +181,7 @@ pub fn migrate(connection: &Connection) -> Result<usize> {
         }
         tracing::info!(migration = name, "applying");
         connection.execute_batch("BEGIN;")?;
-        if let Err(error) = connection.execute_batch(sql) {
+        if let Err(error) = connection.execute_batch(migration.sql) {
             let _ = connection.execute_batch("ROLLBACK;");
             return Err(error).with_context(|| format!("migration {name}"));
         }
@@ -100,7 +192,28 @@ pub fn migrate(connection: &Connection) -> Result<usize> {
         connection.execute_batch("COMMIT;")?;
         applied += 1;
     }
+    write_meta(connection)?;
     Ok(applied)
+}
+
+/// Records what this build made of the database, so the next build to open it can tell whether it
+/// is allowed to.
+///
+/// Written on every `migrate`, not only when something was applied: a database created before
+/// this bookkeeping existed gets its `schema_meta` filled in the first time a build that has this
+/// code opens it, rather than staying silent until the next migration happens to land.
+fn write_meta(connection: &Connection) -> Result<()> {
+    for (key, value) in [
+        ("schema_version", schema_version()),
+        ("min_reader_version", min_reader_version()),
+    ] {
+        connection.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, i64::from(value)],
+        )?;
+    }
+    Ok(())
 }
 
 /// A migrated connection shared by every domain repository in a daemon.
@@ -138,6 +251,14 @@ impl Store {
         self.connection.lock()
     }
 
+    /// Copy a consistent snapshot of this store to `path`.
+    ///
+    /// # Errors
+    /// If `path` already exists, or the copy fails.
+    pub fn snapshot_to(&self, path: &Path) -> Result<()> {
+        snapshot_to(&self.lock(), path)
+    }
+
     /// Run `body` inside one transaction, committing on `Ok` and rolling back on `Err`.
     pub fn transaction<T>(
         &self,
@@ -171,12 +292,135 @@ mod tests {
 
     #[test]
     fn migration_names_are_unique_and_ordered() {
-        let names: Vec<&str> = all_migrations().iter().map(|(name, _)| *name).collect();
+        let names: Vec<&str> = all_migrations().iter().map(|m| m.name).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), names.len(), "duplicate migration name");
         assert_eq!(names.first(), Some(&"0001-initial"));
+    }
+
+    #[test]
+    fn the_schema_stays_readable_by_the_previous_generation() {
+        // The one-generation rollback rule, as a build-time assertion rather than a convention.
+        // A floor equal to the current version would mean the newest schema can only be read by
+        // the newest binary — which is exactly when a rollback is most likely to be needed.
+        assert!(
+            min_reader_version() < schema_version(),
+            "the reader floor is {} against schema version {}: rolling back one build set would \
+             leave the previous binaries unable to open the database",
+            min_reader_version(),
+            schema_version()
+        );
+    }
+
+    #[test]
+    fn a_migration_that_raises_the_floor_names_its_own_position() {
+        // A breaking migration may only demand a reader that has reached *it* — never some later
+        // version it has no way to know about, and never an earlier one, which would be a floor
+        // that does not actually protect the change it belongs to.
+        for (index, migration) in all_migrations().iter().enumerate() {
+            let position = u32::try_from(index + 1).unwrap();
+            assert!(
+                migration.min_reader_version == 0 || migration.min_reader_version == position,
+                "{} declares min_reader_version {} but sits at position {position}",
+                migration.name,
+                migration.min_reader_version
+            );
+        }
+    }
+
+    #[test]
+    fn declared_reader_floors_never_go_backwards() {
+        let mut highest = 0;
+        for migration in all_migrations() {
+            assert!(
+                migration.min_reader_version == 0 || migration.min_reader_version >= highest,
+                "{} lowers the reader floor",
+                migration.name
+            );
+            highest = highest.max(migration.min_reader_version);
+        }
+    }
+
+    #[test]
+    fn migrating_records_what_this_build_made_of_the_database() {
+        let connection = open_in_memory().unwrap();
+        assert_eq!(
+            read_meta(&connection, "schema_version"),
+            Some(schema_version())
+        );
+        assert_eq!(
+            read_meta(&connection, "min_reader_version"),
+            Some(min_reader_version())
+        );
+    }
+
+    #[test]
+    fn a_database_that_needs_a_newer_reader_is_refused_untouched() {
+        // What a rollback looks like from the old binary's side. Opening it anyway would run
+        // queries against a schema that no longer means what this build thinks it means.
+        let connection = open_in_memory().unwrap();
+        connection
+            .execute(
+                "UPDATE schema_meta SET value = ?1 WHERE key = 'min_reader_version'",
+                [i64::from(schema_version() + 5)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE schema_meta SET value = ?1 WHERE key = 'schema_version'",
+                [i64::from(schema_version() + 5)],
+            )
+            .unwrap();
+        let error = refuse_if_too_new(&connection, "session.db").unwrap_err();
+        let text = format!("{error}");
+        assert!(text.contains("newer LegeOS"), "{text}");
+        assert!(text.contains("Nothing has been changed"), "{text}");
+        assert!(
+            text.contains("lege dev status") && text.contains("snapshot"),
+            "the refusal must say how to get out of it: {text}"
+        );
+    }
+
+    #[test]
+    fn a_database_from_before_this_bookkeeping_opens_normally() {
+        let connection = open_in_memory().unwrap();
+        connection.execute_batch("DROP TABLE schema_meta;").unwrap();
+        refuse_if_too_new(&connection, "session.db").expect("an older database is readable");
+    }
+
+    #[test]
+    fn a_snapshot_is_a_complete_readable_copy() {
+        let store = Store::in_memory().unwrap();
+        store
+            .lock()
+            .execute(
+                "INSERT INTO mime_defaults (mime, app_id) VALUES ('application/pdf', 'org.legeos.Viewer')",
+                [],
+            )
+            .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("lege-state-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("before-upgrade.db");
+        store.snapshot_to(&path).unwrap();
+
+        let restored = Store::open(&path).unwrap();
+        let app: String = restored
+            .lock()
+            .query_row(
+                "SELECT app_id FROM mime_defaults WHERE mime = 'application/pdf'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(app, "org.legeos.Viewer");
+
+        // A snapshot that silently overwrote the previous one would destroy the very thing it
+        // exists to preserve.
+        assert!(store.snapshot_to(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
