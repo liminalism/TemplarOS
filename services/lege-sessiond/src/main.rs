@@ -201,9 +201,17 @@ fn load_services(cli: &Cli) -> Result<Services> {
                 tracing::warn!(%error, "desktop-entry import failed");
                 0
             });
+    let grouped = background::desktop_import::regroup_and_persist(&registry, &store)
+        .unwrap_or_else(|error| {
+            // Grouping is presentation: losing it costs one Firefox showing as two, never a
+            // session.
+            tracing::warn!(%error, "grouping applications into logical apps failed");
+            0
+        });
     tracing::info!(
         native = native_count,
         imported = imported_count,
+        variants = grouped,
         "application registry ready"
     );
 

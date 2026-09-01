@@ -1,12 +1,14 @@
 //! Registry of manifests and live instances; PID → cgroup → instance → canonical app.
 
+use crate::variants::{LogicalIndex, PersistedLogical};
 use anyhow::{Context, Result};
 use lege_types::{
-    AppCatalog, AppId, AppManifest, IdentityConfidence, InstanceId, WindowClaims, unit,
+    AppCatalog, AppId, AppManifest, AppVariantId, IdentityConfidence, InstanceId, LogicalAppId,
+    WindowClaims, unit,
 };
 use parking_lot::RwLock;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -38,6 +40,12 @@ pub struct IdentityResolution {
 pub struct Registry {
     manifests: RwLock<HashMap<AppId, Arc<AppManifest>>>,
     instances: RwLock<HashMap<InstanceId, InstanceRecord>>,
+    /// Which installed copies are copies of the same application. Presentation only: nothing
+    /// keyed here grants anything, and it is recomputed whenever the installed set changes.
+    logical: RwLock<LogicalIndex>,
+    /// Variant ids that used to name something else. Consulted on lookup; never written back into
+    /// the tables that hold stored ids.
+    aliases: RwLock<BTreeMap<AppVariantId, AppVariantId>>,
 }
 
 impl Registry {
@@ -57,6 +65,56 @@ impl Registry {
 
     pub fn instance(&self, instance: InstanceId) -> Option<InstanceRecord> {
         self.instances.read().get(&instance).cloned()
+    }
+
+    /// Recompute the logical grouping over everything currently installed, keeping whatever a
+    /// previous run (or a person) already decided.
+    pub fn regroup(&self, persisted: &BTreeMap<AppVariantId, PersistedLogical>) -> LogicalIndex {
+        let index = crate::variants::group_catalog(self, persisted);
+        *self.logical.write() = index.clone();
+        index
+    }
+
+    /// The current grouping.
+    pub fn logical_index(&self) -> LogicalIndex {
+        self.logical.read().clone()
+    }
+
+    /// The logical application a variant belongs to, resolving a stale id through the alias table
+    /// first.
+    pub fn logical_of(&self, variant: &AppVariantId) -> Option<LogicalAppId> {
+        let variant = self.resolve_variant(variant);
+        self.logical.read().logical_of(&variant).cloned()
+    }
+
+    /// Replace the alias table (old variant id -> current one).
+    ///
+    /// An alias whose *old* id is itself an installed variant is dropped: a live copy always
+    /// answers for its own id. That case is real — the Flatpak export of `firefox.desktop` moved
+    /// off `desktop-import.firefox.desktop`, and the distribution's package may now be sitting on
+    /// exactly that id.
+    pub fn set_variant_aliases(&self, aliases: BTreeMap<AppVariantId, AppVariantId>) {
+        let installed = self.manifests.read();
+        *self.aliases.write() = aliases
+            .into_iter()
+            .filter(|(alias, _)| !installed.contains_key(alias))
+            .collect();
+    }
+
+    /// The id a possibly-stale variant id names today. An id with no alias is returned unchanged,
+    /// so this is safe to call on every lookup.
+    pub fn resolve_variant(&self, variant: &AppVariantId) -> AppVariantId {
+        self.aliases
+            .read()
+            .get(variant)
+            .cloned()
+            .unwrap_or_else(|| variant.clone())
+    }
+
+    /// The manifest for `id`, following an alias when the stored id has been superseded.
+    pub fn manifest_resolved(&self, id: &AppId) -> Option<Arc<AppManifest>> {
+        self.manifest(id)
+            .or_else(|| self.manifest(&self.resolve_variant(id)))
     }
 
     pub fn list_instances(&self) -> Vec<InstanceRecord> {
@@ -209,6 +267,7 @@ mod tests {
             categories: std::collections::BTreeSet::default(),
             keywords: std::collections::BTreeSet::default(),
             no_display: false,
+            provenance: None,
         }
     }
 
