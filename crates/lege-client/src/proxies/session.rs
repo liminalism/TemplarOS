@@ -293,6 +293,43 @@ mod projects {
         fn remove_app(&self, project_id: &str, app_id: &str) -> zbus::Result<()>;
 
         fn remove(&self, project_id: &str) -> zbus::Result<()>;
+
+        /// The whole project as JSON — `interfaces/schemas/project.schema.json`.
+        fn describe(&self, project_id: &str) -> zbus::Result<String>;
+
+        /// `(project_id, project_json)` for every project, in one round-trip.
+        fn list_detailed(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        /// Merge a partial project object. Only the user-editable keys are accepted; an unknown
+        /// key is refused rather than dropped.
+        fn update(&self, project_id: &str, changes_json: &str) -> zbus::Result<()>;
+
+        /// The project the session is working in, or `""`.
+        fn get_current(&self) -> zbus::Result<String>;
+
+        /// Set (or clear, with `""`) the current project.
+        fn set_current(&self, project_id: &str) -> zbus::Result<()>;
+
+        /// `"active"` or `"archived"`. Archived stays searchable and openable.
+        fn set_state(&self, project_id: &str, state: &str) -> zbus::Result<()>;
+
+        /// Remember a logical application rather than one copy of it. Pass an empty
+        /// `preferred_variant` to mean "whichever copy is default when the project opens".
+        fn add_logical_app(
+            &self,
+            project_id: &str,
+            logical_app_id: &str,
+            preferred_variant: &str,
+            arguments: Vec<String>,
+        ) -> zbus::Result<()>;
+
+        /// This project changed; re-read it with `Describe`.
+        #[zbus(signal)]
+        fn changed(&self, project_id: String) -> zbus::Result<()>;
+
+        /// The current project changed (`""` when cleared).
+        #[zbus(signal)]
+        fn current_changed(&self, project_id: String) -> zbus::Result<()>;
     }
 }
 

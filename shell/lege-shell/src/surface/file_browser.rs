@@ -1,18 +1,23 @@
-//! The expanded Home file surface: real service entries, places/drives and direct navigation.
+//! The Files object's browse view: real service entries, the pinned locations, and direct
+//! navigation.
+//!
+//! It owns no state about *where* it is or what is selected — all of that lives in
+//! [`FilesSurfaceState`], which outlives every collapse of the object, so this is a view over
+//! that state and nothing more. What it still owns is the one piece of genuinely transient UI:
+//! the rename dialogue, which exists only while a question is on screen.
 
 use std::path::{Path, PathBuf};
 
-use lege_field::Selection;
-use lege_types::file_sort::{SortDescriptor, SortField, SortItem, ViewMode, compare};
+use lege_types::file_sort::{SortDescriptor, SortField, ViewMode};
 use pixelkit_raster::Bitmap;
 use pixelkit_raster::Rect;
 use pixelkit_shell::KeyInput;
 use pixelkit_text::{Align, TextStyle};
-use pixelkit_ui::{ScrollState, Ui};
+use pixelkit_ui::Ui;
 use std::collections::HashMap;
 
-use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, RootKind};
-use crate::home_surface::Drawer;
+use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing};
+use crate::files_surface::{FilesLocation, FilesSurfaceState, FocusArea, PinnedKind};
 
 const ROOTS_WIDTH: i32 = 220;
 const ROOT_ROW_HEIGHT: i32 = 46;
@@ -119,9 +124,10 @@ pub struct FileRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileBrowserAction {
-    Browse {
-        drawer: Drawer,
-        path: PathBuf,
+    /// Fetch what the surface's current location needs. Navigation itself is not an action —
+    /// the view moves [`FilesSurfaceState`] and the host simply keeps up with where it is.
+    Load {
+        location: FilesLocation,
         show_hidden: bool,
     },
     Open(PathBuf),
@@ -137,45 +143,24 @@ pub enum FileBrowserAction {
 #[derive(Debug)]
 pub struct FileBrowserData<'a> {
     pub sources: &'a BrowserSources,
-    pub listing: Option<(Drawer, bool, &'a DirectoryListing)>,
-    pub pending: Option<(Drawer, bool, &'a Path)>,
-    pub error: Option<(Drawer, &'a Path, &'a str)>,
+    pub listing: Option<(&'a FilesLocation, bool, &'a DirectoryListing)>,
+    pub pending: Option<(&'a FilesLocation, bool)>,
+    pub error: Option<(&'a FilesLocation, &'a str)>,
     pub status: Option<&'a str>,
     pub search_query: Option<&'a str>,
     pub search_entries: Option<&'a [BrowseEntry]>,
     pub search_error: Option<&'a str>,
+    /// The rows a feed location shows, already rendered by `crate::drawers`.
+    pub feeds: &'a HashMap<crate::home_surface::Drawer, crate::drawers::DrawerFeed>,
     /// Decoded thumbnails by path, produced off the render thread by the host from the bounded
     /// requests [`FileBrowserScreen::begin_thumbnails`] hands it. Drawing only ever reads.
     pub thumbnails: &'a HashMap<PathBuf, Bitmap>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FocusArea {
-    Roots,
-    Entries,
-}
-
-#[derive(Debug)]
-pub struct FileBrowserScreen {
-    drawer: Option<Drawer>,
-    show_hidden: bool,
-    focus_area: FocusArea,
-    root_focus: usize,
-    entry_focus: usize,
-    entry_selection: Selection<PathBuf>,
-    root_scroll: ScrollState,
-    entry_scroll: ScrollState,
-    last_directory: Option<PathBuf>,
-    /// The shared ordering contract (`lege_types::file_sort`). The default is exactly the
-    /// order the service serves, so re-sorting is a pure client-side re-view.
-    sort: SortDescriptor,
-    view: ViewMode,
-    /// Bumped whenever the directory changes, so a thumbnail decoded for the old listing is
-    /// recognisably stale and dropped by the host instead of painted into the wrong folder.
-    thumbnail_generation: u64,
-    /// The entry range the last thumbnail draw could see, plus a row of lookahead — the only
-    /// entries [`Self::begin_thumbnails`] will ask for.
-    visible_thumbnails: std::ops::Range<usize>,
+/// The browse view. Everything durable it draws lives in [`FilesSurfaceState`]; this holds only
+/// the dialogue that is on screen right now.
+#[derive(Debug, Default)]
+pub struct FilesBrowseView {
     /// The open rename dialogue, if any.
     rename: Option<RenameDialog>,
 }
@@ -230,116 +215,69 @@ impl RenameDialog {
     }
 }
 
-impl Default for FileBrowserScreen {
-    fn default() -> Self {
-        Self {
-            drawer: None,
-            show_hidden: false,
-            focus_area: FocusArea::Entries,
-            root_focus: 0,
-            entry_focus: 0,
-            entry_selection: Selection::default(),
-            root_scroll: ScrollState::new(),
-            entry_scroll: ScrollState::new(),
-            last_directory: None,
-            sort: SortDescriptor::default(),
-            view: ViewMode::default(),
-            thumbnail_generation: 0,
-            visible_thumbnails: 0..0,
-            rename: None,
-        }
-    }
-}
-
-impl FileBrowserScreen {
-    /// Paths currently selected in deterministic order, ready for a caller's bulk file action.
-    pub fn selected_paths(&self) -> Vec<PathBuf> {
-        self.entry_selection.to_vec()
-    }
-
+impl FilesBrowseView {
     #[allow(clippy::too_many_lines)]
     pub fn draw(
         &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
-        drawer: Drawer,
+        state: &mut FilesSurfaceState,
         data: &FileBrowserData<'_>,
         keyboard_enabled: bool,
     ) -> Option<FileBrowserAction> {
-        if self.drawer != Some(drawer) {
-            self.drawer = Some(drawer);
-            self.show_hidden = false;
-            self.focus_area = FocusArea::Entries;
-            self.entry_focus = 0;
-            self.entry_selection.clear();
-            self.entry_scroll = ScrollState::new();
-            self.last_directory = None;
-        }
-
+        let here = state.location().clone();
         let listing = data
             .listing
-            .filter(|(owner, hidden, _)| *owner == drawer && *hidden == self.show_hidden)
+            .filter(|(owner, hidden, _)| **owner == here && *hidden == state.show_hidden)
             .map(|(_, _, listing)| listing);
         let pending = data
             .pending
-            .filter(|(owner, hidden, _)| *owner == drawer && *hidden == self.show_hidden)
-            .map(|(_, _, path)| path);
-        let current = pending
-            .or_else(|| listing.map(|listing| listing.directory.as_path()))
-            .or_else(|| data.sources.start(drawer));
-        let searching = data.search_query.is_some();
+            .is_some_and(|(owner, hidden)| *owner == here && hidden == state.show_hidden);
+        let searching = matches!(here, FilesLocation::Search { .. });
+        // A feed location's rows are already rendered text, not entries: nothing to select and
+        // nothing to sort, so it takes the simple path and returns early.
+        if let Some(drawer) = here.feed() {
+            Self::draw_feed(ui, area, state, drawer, data);
+            return None;
+        }
         let ordered: Vec<BrowseEntry>;
         let visible_entries: &[BrowseEntry] = if searching {
             data.search_entries.unwrap_or(&[])
-        } else if self.sort == SortDescriptor::default() {
+        } else if state.sort == SortDescriptor::default() {
             listing.map_or(&[], |listing| listing.entries.as_slice())
         } else {
-            ordered = Self::sorted(
+            ordered = FilesSurfaceState::sorted(
                 listing.map_or(&[], |listing| listing.entries.as_slice()),
-                self.sort,
+                state.sort,
             );
             &ordered
         };
-        self.entry_selection
-            .retain(|path| visible_entries.iter().any(|entry| &entry.path == path));
-
-        if listing.map(|listing| &listing.directory) != self.last_directory.as_ref()
-            && pending.is_none()
-        {
-            self.last_directory = listing.map(|listing| listing.directory.clone());
-            self.entry_focus = 0;
-            self.entry_selection.clear();
-            self.entry_scroll = ScrollState::new();
-            self.thumbnail_generation = self.thumbnail_generation.wrapping_add(1);
-            self.visible_thumbnails = 0..0;
+        state.retain_selection(visible_entries);
+        if !pending {
+            state.observe(listing.map(|listing| listing.directory.as_path()));
         }
 
         // The rename dialogue owns the frame while it is open: it takes the keys, so nothing
         // underneath can act on a keystroke meant for the name being typed.
         let renaming = self.rename.is_some();
         let mut action = if keyboard_enabled && !renaming {
-            self.handle_keys(ui, drawer, data.sources, listing, visible_entries)
+            self.handle_keys(ui, state, data.sources, listing, visible_entries)
         } else {
             None
         };
 
         ui.panel(area);
         let (roots_area, browser_area) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
-        if action.is_none() {
-            action = self.draw_roots(ui, roots_area, drawer, data.sources, current);
-        } else {
-            self.draw_roots(ui, roots_area, drawer, data.sources, current);
-        }
+        Self::draw_pinned(ui, roots_area, state, data.sources);
 
         let browser_area = browser_area.inset(ui.px(8));
         let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT));
+        let toolbar_action = Self::draw_toolbar(ui, toolbar, state, listing, searching);
         if action.is_none() {
-            action = self.draw_toolbar(ui, toolbar, drawer, current, listing, data.search_query);
-        } else {
-            self.draw_toolbar(ui, toolbar, drawer, current, listing, data.search_query);
+            action = toolbar_action;
         }
         let (verbs, below_verbs) = below_toolbar.split_top(ui.px(TOOLBAR_HEIGHT));
-        let verb_action = self.draw_file_verbs(ui, verbs, listing);
+        let verb_action = self.draw_file_verbs(ui, verbs, state, listing);
         if action.is_none() {
             action = verb_action;
         }
@@ -348,8 +286,8 @@ impl FileBrowserScreen {
 
         let error = data.search_error.or_else(|| {
             data.error
-                .filter(|(owner, path, _)| *owner == drawer && Some(*path) == current)
-                .map(|(_, _, message)| message)
+                .filter(|(owner, _)| **owner == here)
+                .map(|(_, message)| message)
         });
         if let Some(error) = error {
             ui.label(
@@ -366,34 +304,28 @@ impl FileBrowserScreen {
                     ui.theme.text_dim,
                     Align::Left,
                 );
-            } else if action.is_none() {
-                action = self.draw_entries(ui, entries_area, drawer, visible_entries, false);
             } else {
-                self.draw_entries(ui, entries_area, drawer, visible_entries, false);
+                let drawn = Self::draw_entries(ui, entries_area, state, visible_entries, false);
+                if action.is_none() {
+                    action = drawn;
+                }
             }
-        } else if let Some(path) = pending {
+        } else if pending {
             ui.label(
                 entries_area.inset(ui.px(12)),
-                &format!("Loading {}…", path.display()),
+                &format!("Loading {}…", here.label()),
                 ui.theme.text_dim,
                 Align::Left,
             );
         } else if let Some(listing) = listing {
-            let drawn = if self.view == ViewMode::Thumbnails {
-                self.draw_thumbnails(ui, entries_area, drawer, visible_entries, data.thumbnails)
+            let drawn = if state.view == ViewMode::Thumbnails {
+                Self::draw_thumbnails(ui, entries_area, state, visible_entries, data.thumbnails)
             } else {
-                self.draw_entries(ui, entries_area, drawer, visible_entries, listing.truncated)
+                Self::draw_entries(ui, entries_area, state, visible_entries, listing.truncated)
             };
             if action.is_none() {
                 action = drawn;
             }
-        } else if current.is_none() {
-            ui.label(
-                entries_area.inset(ui.px(12)),
-                "No local folder or mounted drive is available.",
-                ui.theme.text_dim,
-                Align::Left,
-            );
         }
 
         if let Some(status) = data.status {
@@ -412,30 +344,74 @@ impl FileBrowserScreen {
             );
         }
 
-        // Drawn last so it sits over the listing, and consulted before the automatic browse
+        // Drawn last so it sits over the listing, and consulted before the automatic load
         // below: a dialogue waiting for an answer must not be reloaded out from under itself.
         let directory = listing.map(|listing| listing.directory.as_path());
-        if let Some(renamed) = self.draw_rename(ui, entries_area, directory) {
+        if let Some(renamed) = self.draw_rename(ui, entries_area, state, directory) {
             return Some(renamed);
         }
         if self.rename.is_some() {
             return action;
         }
 
-        if action.is_none()
-            && let Some(path) = current
-            && listing.is_none_or(|listing| listing.directory != path)
-            && pending.is_none()
-            && error.is_none()
-            && !searching
-        {
-            action = Some(FileBrowserAction::Browse {
-                drawer,
-                path: path.to_path_buf(),
-                show_hidden: self.show_hidden,
+        // Wherever the surface says it is, that is what the host fetches. Navigation is a move
+        // of `state`, never a request in itself, so Back and a fresh click take the same path.
+        let settled = state.location() == &here;
+        if action.is_none() && (!settled || (listing.is_none() && !pending && error.is_none())) {
+            action = Some(FileBrowserAction::Load {
+                location: state.location().clone(),
+                show_hidden: state.show_hidden,
             });
         }
         action
+    }
+
+    /// A feed location — Recent, Drives, Trash, Operations — as the rows `crate::drawers`
+    /// already rendered. One place, one listing: these are not a different kind of surface, only
+    /// a location whose rows come from a service that counts rather than from a directory.
+    fn draw_feed(
+        ui: &mut Ui<'_>,
+        area: Rect,
+        state: &mut FilesSurfaceState,
+        drawer: crate::home_surface::Drawer,
+        data: &FileBrowserData<'_>,
+    ) {
+        ui.panel(area);
+        let (roots_area, body) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
+        Self::draw_pinned(ui, roots_area, state, data.sources);
+        let body = body.inset(ui.px(8));
+        let feed = data.feeds.get(&drawer);
+        let (heading, rows) = body.split_top(ui.px(26));
+        ui.label(
+            heading,
+            feed.map_or("…", |feed| feed.headline.as_str()),
+            ui.theme.text,
+            Align::Left,
+        );
+        let lines = feed.map_or(&[][..], |feed| feed.lines.as_slice());
+        if lines.is_empty() {
+            ui.label(
+                Rect::new(rows.x, rows.y, rows.w, ui.px(ENTRY_HEIGHT)),
+                "Nothing here.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        }
+        let heights = vec![ui.px(ENTRY_HEIGHT); lines.len()];
+        ui.scroll_list(&mut state.entry_scroll, rows, &heights, |ui, index, row| {
+            if ui.input.hovering(row) {
+                ui.painter.fill_rect(row, ui.theme.hover);
+            } else if index % 2 == 1 {
+                ui.painter.fill_rect(row, ui.theme.panel_alt);
+            }
+            ui.label(
+                row.inset(ui.px(7)),
+                &lines[index],
+                ui.theme.text,
+                Align::Left,
+            );
+        });
     }
 
     #[allow(clippy::too_many_lines)]
@@ -451,9 +427,14 @@ impl FileBrowserScreen {
     /// the verb row calls the availability check once per button per frame to decide what to grey
     /// out. A query that performs the action is a query that opened the rename dialogue sixty
     /// times a second and swallowed every keystroke aimed at the listing underneath it.
-    fn request(&mut self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
+    fn request(
+        &mut self,
+        verb: FileVerb,
+        state: &FilesSurfaceState,
+        directory: Option<&Path>,
+    ) -> Option<FileBrowserAction> {
         if verb == FileVerb::Rename {
-            let selected = self.entry_selection.to_vec();
+            let selected = state.selection.to_vec();
             let [only] = selected.as_slice() else {
                 return None;
             };
@@ -461,12 +442,16 @@ impl FileBrowserScreen {
             self.rename = Some(RenameDialog::new(only.clone()));
             return None;
         }
-        self.can_request(verb, directory)
+        Self::can_request(verb, state, directory)
     }
 
     /// Whether `verb` applies right now, and the request it would make. No side effects.
-    fn can_request(&self, verb: FileVerb, directory: Option<&Path>) -> Option<FileBrowserAction> {
-        let paths = self.entry_selection.to_vec();
+    fn can_request(
+        verb: FileVerb,
+        state: &FilesSurfaceState,
+        directory: Option<&Path>,
+    ) -> Option<FileBrowserAction> {
+        let paths = state.selection.to_vec();
         if verb.needs_selection() && paths.is_empty() {
             return None;
         }
@@ -494,7 +479,7 @@ impl FileBrowserScreen {
     fn handle_keys(
         &mut self,
         ui: &Ui<'_>,
-        drawer: Drawer,
+        state: &mut FilesSurfaceState,
         sources: &BrowserSources,
         listing: Option<&DirectoryListing>,
         entries: &[BrowseEntry],
@@ -509,121 +494,91 @@ impl FileBrowserScreen {
                 // Ctrl+S beneath them: these are not compositor-reserved chords, so they cost
                 // the recovery keys nothing and work only where a file surface has focus.
                 KeyInput::Character('c' | 'C') if modifiers.control && modifiers.shift => {
-                    action = action.or_else(|| self.request(FileVerb::CopyPath, directory));
+                    action = action.or_else(|| self.request(FileVerb::CopyPath, state, directory));
                 }
                 KeyInput::Character('c' | 'C') if modifiers.control => {
-                    action = action.or_else(|| self.request(FileVerb::Copy, directory));
+                    action = action.or_else(|| self.request(FileVerb::Copy, state, directory));
                 }
                 KeyInput::Character('x' | 'X') if modifiers.control => {
-                    action = action.or_else(|| self.request(FileVerb::Cut, directory));
+                    action = action.or_else(|| self.request(FileVerb::Cut, state, directory));
                 }
                 KeyInput::Character('v' | 'V') if modifiers.control => {
-                    action = action.or_else(|| self.request(FileVerb::Paste, directory));
+                    action = action.or_else(|| self.request(FileVerb::Paste, state, directory));
                 }
                 KeyInput::Character('n' | 'N') if modifiers.control && modifiers.shift => {
-                    action = action.or_else(|| self.request(FileVerb::NewFolder, directory));
+                    action = action.or_else(|| self.request(FileVerb::NewFolder, state, directory));
                 }
                 KeyInput::Delete => {
-                    action = action.or_else(|| self.request(FileVerb::Trash, directory));
+                    action = action.or_else(|| self.request(FileVerb::Trash, state, directory));
                 }
                 KeyInput::Function(2) => {
-                    action = action.or_else(|| self.request(FileVerb::Rename, directory));
+                    action = action.or_else(|| self.request(FileVerb::Rename, state, directory));
                 }
                 KeyInput::Enter if modifiers.alt => {
-                    action = action.or_else(|| self.request(FileVerb::Properties, directory));
+                    action =
+                        action.or_else(|| self.request(FileVerb::Properties, state, directory));
                 }
-                KeyInput::Character('g') if modifiers.control => self.toggle_view(),
-                KeyInput::Character('s') if modifiers.control => self.cycle_sort_field(entries),
+                KeyInput::Character('g') if modifiers.control => state.toggle_view(),
+                KeyInput::Character('s') if modifiers.control => state.cycle_sort_field(entries),
                 KeyInput::Character('r') if modifiers.control => {
-                    self.toggle_sort_direction(entries);
+                    state.toggle_sort_direction(entries);
                 }
-                KeyInput::Left => self.focus_area = FocusArea::Roots,
-                KeyInput::Right => self.focus_area = FocusArea::Entries,
+                KeyInput::Left => state.focus_area = FocusArea::Pinned,
+                KeyInput::Right => state.focus_area = FocusArea::Entries,
                 KeyInput::Tab => {
-                    self.focus_area = match self.focus_area {
-                        FocusArea::Roots => FocusArea::Entries,
-                        FocusArea::Entries => FocusArea::Roots,
+                    state.focus_area = match state.focus_area {
+                        FocusArea::Pinned => FocusArea::Entries,
+                        FocusArea::Entries => FocusArea::Pinned,
                     };
                 }
-                KeyInput::Up => match self.focus_area {
-                    FocusArea::Roots => self.root_focus = self.root_focus.saturating_sub(1),
-                    FocusArea::Entries => {
-                        let previous = self.entry_focus;
-                        self.entry_focus = self.entry_focus.saturating_sub(1);
-                        if let Some(path) = entries.get(self.entry_focus).map(|e| e.path.clone()) {
-                            if modifiers.shift {
-                                if self.entry_selection.is_empty()
-                                    && let Some(anchor) = entries.get(previous)
-                                {
-                                    self.entry_selection.replace(anchor.path.clone());
-                                }
-                                self.entry_selection.extend_to(&order, path);
-                            } else {
-                                self.entry_selection.replace(path);
-                            }
-                        }
-                    }
-                },
-                KeyInput::Down => match self.focus_area {
-                    FocusArea::Roots => {
-                        self.root_focus =
-                            (self.root_focus + 1).min(sources.roots.len().saturating_sub(1));
+                KeyInput::Up => match state.focus_area {
+                    FocusArea::Pinned => {
+                        state.pinned_focus = state.pinned_focus.saturating_sub(1);
                     }
                     FocusArea::Entries => {
-                        let previous = self.entry_focus;
-                        self.entry_focus =
-                            (self.entry_focus + 1).min(entries.len().saturating_sub(1));
-                        if let Some(path) = entries.get(self.entry_focus).map(|e| e.path.clone()) {
-                            if modifiers.shift {
-                                if self.entry_selection.is_empty()
-                                    && let Some(anchor) = entries.get(previous)
-                                {
-                                    self.entry_selection.replace(anchor.path.clone());
-                                }
-                                self.entry_selection.extend_to(&order, path);
-                            } else {
-                                self.entry_selection.replace(path);
-                            }
-                        }
+                        let to = state.focus.saturating_sub(1);
+                        state.focus_entry(to, entries, modifiers.shift);
                     }
                 },
-                KeyInput::Home => match self.focus_area {
-                    FocusArea::Roots => self.root_focus = 0,
-                    FocusArea::Entries => self.entry_focus = 0,
-                },
-                KeyInput::End => match self.focus_area {
-                    FocusArea::Roots => self.root_focus = sources.roots.len().saturating_sub(1),
+                KeyInput::Down => match state.focus_area {
+                    FocusArea::Pinned => {
+                        state.pinned_focus =
+                            (state.pinned_focus + 1).min(sources.pinned.len().saturating_sub(1));
+                    }
                     FocusArea::Entries => {
-                        self.entry_focus = entries.len().saturating_sub(1);
+                        let to = state.focus + 1;
+                        state.focus_entry(to, entries, modifiers.shift);
+                    }
+                },
+                KeyInput::Home => match state.focus_area {
+                    FocusArea::Pinned => state.pinned_focus = 0,
+                    FocusArea::Entries => state.focus = 0,
+                },
+                KeyInput::End => match state.focus_area {
+                    FocusArea::Pinned => {
+                        state.pinned_focus = sources.pinned.len().saturating_sub(1);
+                    }
+                    FocusArea::Entries => {
+                        state.focus = entries.len().saturating_sub(1);
                     }
                 },
                 KeyInput::Backspace => {
-                    if let Some(parent) = listing.and_then(|listing| listing.parent.as_ref()) {
-                        action = Some(FileBrowserAction::Browse {
-                            drawer,
-                            path: parent.clone(),
-                            show_hidden: self.show_hidden,
-                        });
-                    }
+                    state.go_up(listing.and_then(|listing| listing.parent.as_deref()));
                 }
                 KeyInput::Character('a' | 'A') if modifiers.control => {
-                    self.entry_selection.select_all(&order);
-                    self.entry_focus = 0;
-                    self.focus_area = FocusArea::Entries;
+                    state.selection.select_all(&order);
+                    state.focus = 0;
+                    state.focus_area = FocusArea::Entries;
                 }
-                KeyInput::Enter if !modifiers.alt => match self.focus_area {
-                    FocusArea::Roots => {
-                        if let Some(root) = sources.roots.get(self.root_focus) {
-                            action = Some(FileBrowserAction::Browse {
-                                drawer,
-                                path: root.path.clone(),
-                                show_hidden: self.show_hidden,
-                            });
+                KeyInput::Enter if !modifiers.alt => match state.focus_area {
+                    FocusArea::Pinned => {
+                        if let Some(pinned) = sources.pinned.get(state.pinned_focus) {
+                            state.go_to(pinned.location.clone());
                         }
                     }
                     FocusArea::Entries => {
-                        if let Some(entry) = entries.get(self.entry_focus) {
-                            action = Some(action_for_entry(drawer, self.show_hidden, entry));
+                        if let Some(entry) = entries.get(state.focus) {
+                            action = activate(state, entry);
                         }
                     }
                 },
@@ -633,74 +588,82 @@ impl FileBrowserScreen {
         action
     }
 
-    fn draw_roots(
-        &mut self,
+    /// The pinned locations: the machine's own file feeds and every place and volume worth one
+    /// press. Drawn only at the expanded rung, where there is room for it to be a list rather
+    /// than a squeeze.
+    fn draw_pinned(
         ui: &mut Ui<'_>,
         area: Rect,
-        drawer: Drawer,
+        state: &mut FilesSurfaceState,
         sources: &BrowserSources,
-        current: Option<&Path>,
-    ) -> Option<FileBrowserAction> {
+    ) {
         ui.painter.fill_rect(area, ui.theme.panel_alt);
         let (title, body) = area.inset(ui.px(6)).split_top(ui.px(30));
         ui.label_styled(
             title,
-            "PLACES & DRIVES",
+            "LOCATIONS",
             TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
             ui.theme.text_dim,
             Align::Left,
         );
-        let heights = vec![ui.px(ROOT_ROW_HEIGHT); sources.roots.len()];
-        let mut selected = None;
-        ui.scroll_list(&mut self.root_scroll, body, &heights, |ui, index, row| {
-            let root = &sources.roots[index];
-            let focused = self.focus_area == FocusArea::Roots && self.root_focus == index;
-            let active = current.is_some_and(|path| path == root.path);
-            if focused || active {
-                ui.painter.fill_rect(row, ui.theme.selection);
-            } else if ui.input.hovering(row) {
-                ui.painter.fill_rect(row, ui.theme.hover);
-            }
-            let marker = match root.kind {
-                RootKind::Place => "PLACE",
-                RootKind::Drive => "DRIVE",
-            };
-            let (name_row, detail_row) = row.inset(ui.px(5)).split_top(ui.px(21));
-            ui.label(
-                name_row,
-                &format!("{marker}  {}", root.label),
-                ui.theme.text,
-                Align::Left,
-            );
-            ui.label_styled(
-                detail_row,
-                &root.detail,
-                TextStyle::new(ui.theme.body.face, 11.0),
-                ui.theme.text_dim,
-                Align::Left,
-            );
-            if ui.input.take_click(row) {
-                self.focus_area = FocusArea::Roots;
-                self.root_focus = index;
-                selected = Some(root.path.clone());
-            }
-        });
-        selected.map(|path| FileBrowserAction::Browse {
-            drawer,
-            path,
-            show_hidden: self.show_hidden,
-        })
+        let heights = vec![ui.px(ROOT_ROW_HEIGHT); sources.pinned.len()];
+        let mut chosen = None;
+        let here = state.location().clone();
+        let focus_area = state.focus_area;
+        let pinned_focus = state.pinned_focus;
+        ui.scroll_list(
+            &mut state.pinned_scroll,
+            body,
+            &heights,
+            |ui, index, row| {
+                let pinned = &sources.pinned[index];
+                let focused = focus_area == FocusArea::Pinned && pinned_focus == index;
+                let active = pinned.location == here;
+                if focused || active {
+                    ui.painter.fill_rect(row, ui.theme.selection);
+                } else if ui.input.hovering(row) {
+                    ui.painter.fill_rect(row, ui.theme.hover);
+                }
+                let marker = match pinned.kind {
+                    PinnedKind::Place => "PLACE",
+                    PinnedKind::Drive => "DRIVE",
+                    PinnedKind::Feed => "",
+                };
+                let (name_row, detail_row) = row.inset(ui.px(5)).split_top(ui.px(21));
+                let name = if marker.is_empty() {
+                    pinned.label.clone()
+                } else {
+                    format!("{marker}  {}", pinned.label)
+                };
+                ui.label(name_row, &name, ui.theme.text, Align::Left);
+                ui.label_styled(
+                    detail_row,
+                    &pinned.detail,
+                    TextStyle::new(ui.theme.body.face, 11.0),
+                    ui.theme.text_dim,
+                    Align::Left,
+                );
+                if ui.input.take_click(row) {
+                    chosen = Some(index);
+                }
+            },
+        );
+        if let Some(index) = chosen {
+            state.focus_area = FocusArea::Pinned;
+            state.pinned_focus = index;
+            state.go_to(sources.pinned[index].location.clone());
+        }
     }
 
     fn draw_toolbar(
-        &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
-        drawer: Drawer,
-        current: Option<&Path>,
+        state: &mut FilesSurfaceState,
         listing: Option<&DirectoryListing>,
-        search_query: Option<&str>,
+        searching: bool,
     ) -> Option<FileBrowserAction> {
+        let current = state.directory().map(Path::to_path_buf);
+        let current = current.as_deref();
         let (up, rest) = area.split_left(ui.px(64));
         let (refresh, rest) = rest.split_left(ui.px(88));
         let (files, rest) = rest.split_left(ui.px(72));
@@ -711,7 +674,7 @@ impl FileBrowserScreen {
         let entries: &[BrowseEntry] = listing.map_or(&[], |listing| listing.entries.as_slice());
         let sort_label = format!(
             "Sort: {}",
-            match self.sort.field {
+            match state.sort.field {
                 SortField::NaturalName => "name",
                 SortField::Kind => "type",
                 SortField::Size => "size",
@@ -720,40 +683,30 @@ impl FileBrowserScreen {
             }
         );
         if ui.button(sort.inset(ui.px(4)), &sort_label) {
-            self.cycle_sort_field(entries);
+            state.cycle_sort_field(entries);
         }
         if ui.button(
             direction.inset(ui.px(4)),
-            if self.sort.ascending { "Asc" } else { "Desc" },
+            if state.sort.ascending { "Asc" } else { "Desc" },
         ) {
-            self.toggle_sort_direction(entries);
+            state.toggle_sort_direction(entries);
         }
         if ui.button(
             view.inset(ui.px(4)),
-            match self.view {
+            match state.view {
                 ViewMode::List => "View: list",
                 ViewMode::Thumbnails => "View: grid",
             },
         ) {
-            self.toggle_view();
+            state.toggle_view();
         }
-        if ui.button(up.inset(ui.px(4)), "Up")
-            && let Some(parent) = listing.and_then(|listing| listing.parent.as_ref())
-        {
-            return Some(FileBrowserAction::Browse {
-                drawer,
-                path: parent.clone(),
-                show_hidden: self.show_hidden,
-            });
+        // Back and Forward share the slot Up had: the history is the gesture people reach for,
+        // and Up is still Backspace and still the breadcrumb's own parent step.
+        if ui.button(up.inset(ui.px(4)), "Back") {
+            state.go_back();
         }
-        if ui.button(refresh.inset(ui.px(4)), "Refresh")
-            && let Some(path) = current
-        {
-            return Some(FileBrowserAction::Browse {
-                drawer,
-                path: path.to_path_buf(),
-                show_hidden: self.show_hidden,
-            });
+        if ui.button(refresh.inset(ui.px(4)), "Forward") {
+            state.go_forward();
         }
         if ui.button(files.inset(ui.px(4)), "Files")
             && let Some(path) = current
@@ -762,25 +715,24 @@ impl FileBrowserScreen {
         }
         if ui.button(
             hidden.inset(ui.px(4)),
-            if self.show_hidden {
+            if state.show_hidden {
                 "Hidden: on"
             } else {
                 "Hidden: off"
             },
         ) {
-            self.show_hidden = !self.show_hidden;
+            state.show_hidden = !state.show_hidden;
             if let Some(path) = current {
-                return Some(FileBrowserAction::Browse {
-                    drawer,
-                    path: path.to_path_buf(),
-                    show_hidden: self.show_hidden,
+                return Some(FileBrowserAction::Load {
+                    location: FilesLocation::Directory(path.to_path_buf()),
+                    show_hidden: state.show_hidden,
                 });
             }
         }
-        if let Some(query) = search_query {
+        if searching {
             ui.label(
                 path_area.inset(ui.px(8)),
-                &format!("Search · {query}"),
+                &state.location().label(),
                 ui.theme.text,
                 Align::Left,
             );
@@ -795,20 +747,15 @@ impl FileBrowserScreen {
             );
             return None;
         };
-        self.draw_breadcrumb(ui, path_area, drawer, path)
+        Self::draw_breadcrumb(ui, path_area, state, path);
+        None
     }
 
     /// The location as a row of its ancestors, each one a step the pointer can take — the
     /// answer to "how do I get to a specific folder" being the path itself. When the row is
     /// deeper than the space, the leading ancestors give way: the folders nearest to where the
     /// person is are the ones worth a button.
-    fn draw_breadcrumb(
-        &self,
-        ui: &mut Ui<'_>,
-        area: Rect,
-        drawer: Drawer,
-        path: &Path,
-    ) -> Option<FileBrowserAction> {
+    fn draw_breadcrumb(ui: &mut Ui<'_>, area: Rect, state: &mut FilesSurfaceState, path: &Path) {
         let mut prefixes: Vec<(String, PathBuf)> = Vec::new();
         let mut prefix = PathBuf::new();
         for component in path.components() {
@@ -834,7 +781,7 @@ impl FileBrowserScreen {
         // Always show at least the folder itself, however long its name.
         first_shown = first_shown.min(prefixes.len().saturating_sub(1));
         let mut x = area.x;
-        let mut action = None;
+        let mut chosen = None;
         for (index, (label, target)) in prefixes.iter().enumerate().skip(first_shown) {
             let width = (pad + ui.px(7) * i32::try_from(label.chars().count()).unwrap_or(24))
                 .min(area.right() - x);
@@ -846,15 +793,13 @@ impl FileBrowserScreen {
             if last {
                 ui.label(slot.inset(ui.px(4)), label, ui.theme.text, Align::Centre);
             } else if ui.button(slot.inset(ui.px(4)), label) {
-                action = Some(FileBrowserAction::Browse {
-                    drawer,
-                    path: target.clone(),
-                    show_hidden: self.show_hidden,
-                });
+                chosen = Some(target.clone());
             }
             x += width;
         }
-        action
+        if let Some(target) = chosen {
+            state.go_to(FilesLocation::Directory(target));
+        }
     }
 
     /// The rename dialogue: a name field, a refusal, and two buttons.
@@ -865,6 +810,7 @@ impl FileBrowserScreen {
         &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
+        _state: &FilesSurfaceState,
         directory: Option<&Path>,
     ) -> Option<FileBrowserAction> {
         let dialog = self.rename.as_mut()?;
@@ -959,6 +905,7 @@ impl FileBrowserScreen {
         &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
+        state: &mut FilesSurfaceState,
         listing: Option<&DirectoryListing>,
     ) -> Option<FileBrowserAction> {
         let directory = listing.map(|listing| listing.directory.as_path());
@@ -979,7 +926,7 @@ impl FileBrowserScreen {
             cursor = rest;
             // The availability query, never the performing one: this runs for every button on
             // every frame.
-            let enabled = self.can_request(verb, directory).is_some();
+            let enabled = Self::can_request(verb, state, directory).is_some();
             if enabled {
                 if ui.button(button.inset(ui.px(4)), verb.label()) {
                     pressed = Some(verb);
@@ -998,7 +945,7 @@ impl FileBrowserScreen {
             }
         }
         // Performed after the loop, so the one verb with a side effect has one chance to run.
-        self.request(pressed?, directory)
+        self.request(pressed?, state, directory)
     }
 
     fn draw_columns(ui: &mut Ui<'_>, area: Rect) {
@@ -1029,145 +976,14 @@ impl FileBrowserScreen {
         );
     }
 
-    /// Entries under the shared contract. The default descriptor is what the service already
-    /// served, so this only runs for a non-default choice.
-    fn sorted(entries: &[BrowseEntry], sort: SortDescriptor) -> Vec<BrowseEntry> {
-        let mut ordered = entries.to_vec();
-        ordered.sort_by(|a, b| compare(&Self::sort_item(a), &Self::sort_item(b), sort));
-        ordered
-    }
-
-    fn sort_item(entry: &BrowseEntry) -> SortItem<'_> {
-        SortItem {
-            name: &entry.name,
-            path: &entry.path,
-            is_dir: entry.is_dir(),
-            hidden: entry.hidden,
-            kind_label: entry
-                .path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or(""),
-            size_bytes: entry.size_bytes,
-            mtime_ms: entry.mtime_ms,
-            manual_index: None,
-        }
-    }
-
-    pub fn sort(&self) -> SortDescriptor {
-        self.sort
-    }
-
-    pub fn view(&self) -> ViewMode {
-        self.view
-    }
-
-    /// Change the ordering. The path-keyed selection is untouched, and focus follows the entry
-    /// it was on to its new row — `entries` is the order focus currently indexes into.
-    pub fn set_sort(&mut self, sort: SortDescriptor, entries: &[BrowseEntry]) {
-        let current = if self.sort == SortDescriptor::default() {
-            entries.to_vec()
-        } else {
-            Self::sorted(entries, self.sort)
-        };
-        let focused = current
-            .get(self.entry_focus)
-            .map(|entry| entry.path.clone());
-        self.sort = sort;
-        if let Some(focused) = focused {
-            let next = if sort == SortDescriptor::default() {
-                entries.to_vec()
-            } else {
-                Self::sorted(entries, sort)
-            };
-            if let Some(index) = next.iter().position(|entry| entry.path == focused) {
-                self.entry_focus = index;
-            }
-        }
-    }
-
-    /// The next primary sort field, in a fixed cycle — the toolbar button's action.
-    pub fn cycle_sort_field(&mut self, entries: &[BrowseEntry]) {
-        let field = match self.sort.field {
-            SortField::NaturalName => SortField::Kind,
-            SortField::Kind => SortField::Size,
-            SortField::Size => SortField::Modified,
-            SortField::Modified | SortField::Manual => SortField::NaturalName,
-        };
-        self.set_sort(SortDescriptor { field, ..self.sort }, entries);
-    }
-
-    pub fn toggle_sort_direction(&mut self, entries: &[BrowseEntry]) {
-        self.set_sort(
-            SortDescriptor {
-                ascending: !self.sort.ascending,
-                ..self.sort
-            },
-            entries,
-        );
-    }
-
-    /// Switch between list and thumbnail presentation. A view is how the same rows are drawn:
-    /// selection, focus and scroll context stay exactly as they are.
-    pub fn set_view(&mut self, view: ViewMode) {
-        self.view = view;
-    }
-
-    pub fn toggle_view(&mut self) {
-        self.view = match self.view {
-            ViewMode::List => ViewMode::Thumbnails,
-            ViewMode::Thumbnails => ViewMode::List,
-        };
-    }
-
-    /// The most thumbnail decodes one call may put in flight.
-    pub const THUMBNAIL_BATCH: usize = 16;
-
-    /// Whether `generation` still names the current listing — the host drops a decoded
-    /// thumbnail whose generation this refuses.
-    pub fn thumbnail_current(&self, generation: u64) -> bool {
-        generation == self.thumbnail_generation
-    }
-
-    /// Bounded thumbnail work for the host: only entries the last draw could see (plus its
-    /// lookahead), only files, only ones not already decoded, and at most
-    /// [`Self::THUMBNAIL_BATCH`] per call. Decoding happens in the host's async task — never
-    /// here, never on the render thread.
-    pub fn begin_thumbnails(
-        &self,
-        entries: &[BrowseEntry],
-        have: &HashMap<PathBuf, Bitmap>,
-    ) -> Vec<(u64, PathBuf)> {
-        if self.view != ViewMode::Thumbnails {
-            return Vec::new();
-        }
-        let ordered: Vec<BrowseEntry>;
-        let entries: &[BrowseEntry] = if self.sort == SortDescriptor::default() {
-            entries
-        } else {
-            ordered = Self::sorted(entries, self.sort);
-            &ordered
-        };
-        let end = self.visible_thumbnails.end.min(entries.len());
-        let start = self.visible_thumbnails.start.min(end);
-        entries[start..end]
-            .iter()
-            .filter(|entry| !entry.is_dir())
-            .filter(|entry| !have.contains_key(&entry.path))
-            .take(Self::THUMBNAIL_BATCH)
-            .map(|entry| (self.thumbnail_generation, entry.path.clone()))
-            .collect()
-    }
-
     /// The thumbnail grid: the same entries, selection and focus as the list, drawn as
     /// responsive preview cells. Cells without a decoded bitmap show the entry's kind chip; the
     /// grid itself never reads a file.
     #[allow(clippy::too_many_lines)]
     fn draw_thumbnails(
-        &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
-        drawer: Drawer,
+        state: &mut FilesSurfaceState,
         entries: &[BrowseEntry],
         thumbnails: &HashMap<PathBuf, Bitmap>,
     ) -> Option<FileBrowserAction> {
@@ -1188,7 +1004,7 @@ impl FileBrowserScreen {
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         let mut seen: Option<(usize, usize)> = None;
         ui.scroll_list(
-            &mut self.entry_scroll,
+            &mut state.entry_scroll,
             area,
             &heights,
             |ui, row_index, row| {
@@ -1203,9 +1019,8 @@ impl FileBrowserScreen {
                     });
                     let slot_i = i32::try_from(slot).unwrap_or(0);
                     let tile = Rect::new(row.x + slot_i * cell, row.y, cell, row.h).inset(ui.px(4));
-                    let focused =
-                        self.focus_area == FocusArea::Entries && self.entry_focus == index;
-                    let in_selection = self.entry_selection.contains(&entry.path);
+                    let focused = state.focus_area == FocusArea::Entries && state.focus == index;
+                    let in_selection = state.selection.contains(&entry.path);
                     if focused || in_selection {
                         ui.painter.fill_rect(tile, ui.theme.selection);
                     } else if ui.input.hovering(tile) {
@@ -1251,21 +1066,21 @@ impl FileBrowserScreen {
                         Align::Centre,
                     );
                     if ui.input.take_click(tile) {
-                        self.focus_area = FocusArea::Entries;
-                        let previous = self.entry_focus;
-                        self.entry_focus = index;
+                        state.focus_area = FocusArea::Entries;
+                        let previous = state.focus;
+                        state.focus = index;
                         let modifiers = ui.input.modifiers();
                         if modifiers.control {
-                            self.entry_selection.toggle(entry.path.clone());
+                            state.selection.toggle(entry.path.clone());
                         } else if modifiers.shift {
-                            if self.entry_selection.is_empty()
+                            if state.selection.is_empty()
                                 && let Some(anchor) = entries.get(previous)
                             {
-                                self.entry_selection.replace(anchor.path.clone());
+                                state.selection.replace(anchor.path.clone());
                             }
-                            self.entry_selection.extend_to(&order, entry.path.clone());
+                            state.selection.extend_to(&order, entry.path.clone());
                         } else {
-                            self.entry_selection.replace(entry.path.clone());
+                            state.selection.replace(entry.path.clone());
                             chosen = Some(entry.clone());
                         }
                     }
@@ -1275,17 +1090,15 @@ impl FileBrowserScreen {
         if let Some((low, high)) = seen {
             // One row of lookahead in each direction, so a slow scroll never shows a beat of
             // empty cells.
-            self.visible_thumbnails =
-                low.saturating_sub(columns)..(high + columns).min(entries.len());
+            state.saw_thumbnails(low.saturating_sub(columns)..(high + columns).min(entries.len()));
         }
-        chosen.map(|entry| action_for_entry(drawer, self.show_hidden, &entry))
+        chosen.and_then(|entry| activate(state, &entry))
     }
 
     fn draw_entries(
-        &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
-        drawer: Drawer,
+        state: &mut FilesSurfaceState,
         entries: &[BrowseEntry],
         truncated: bool,
     ) -> Option<FileBrowserAction> {
@@ -1301,10 +1114,10 @@ impl FileBrowserScreen {
         let heights = vec![ui.px(ENTRY_HEIGHT); entries.len()];
         let mut selected = None;
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
-        ui.scroll_list(&mut self.entry_scroll, area, &heights, |ui, index, row| {
+        ui.scroll_list(&mut state.entry_scroll, area, &heights, |ui, index, row| {
             let entry = &entries[index];
-            let focused = self.focus_area == FocusArea::Entries && self.entry_focus == index;
-            let in_selection = self.entry_selection.contains(&entry.path);
+            let focused = state.focus_area == FocusArea::Entries && state.focus == index;
+            let in_selection = state.selection.contains(&entry.path);
             if focused || in_selection {
                 ui.painter.fill_rect(row, ui.theme.selection);
             } else if ui.input.hovering(row) {
@@ -1344,21 +1157,21 @@ impl FileBrowserScreen {
                 Align::Right,
             );
             if ui.input.take_click(row) {
-                self.focus_area = FocusArea::Entries;
-                let previous = self.entry_focus;
-                self.entry_focus = index;
+                state.focus_area = FocusArea::Entries;
+                let previous = state.focus;
+                state.focus = index;
                 let modifiers = ui.input.modifiers();
                 if modifiers.control {
-                    self.entry_selection.toggle(entry.path.clone());
+                    state.selection.toggle(entry.path.clone());
                 } else if modifiers.shift {
-                    if self.entry_selection.is_empty()
+                    if state.selection.is_empty()
                         && let Some(anchor) = entries.get(previous)
                     {
-                        self.entry_selection.replace(anchor.path.clone());
+                        state.selection.replace(anchor.path.clone());
                     }
-                    self.entry_selection.extend_to(&order, entry.path.clone());
+                    state.selection.extend_to(&order, entry.path.clone());
                 } else {
-                    self.entry_selection.replace(entry.path.clone());
+                    state.selection.replace(entry.path.clone());
                     selected = Some(entry.clone());
                 }
             }
@@ -1373,31 +1186,32 @@ impl FileBrowserScreen {
                 Align::Right,
             );
         }
-        selected.map(|entry| action_for_entry(drawer, self.show_hidden, &entry))
+        selected.and_then(|entry| activate(state, &entry))
     }
 }
 
-fn action_for_entry(drawer: Drawer, show_hidden: bool, entry: &BrowseEntry) -> FileBrowserAction {
+/// Activating one row: a folder is somewhere to go, and going there is a move of the surface's
+/// own state rather than an action for the host. A file is a thing to open, which the host does.
+fn activate(state: &mut FilesSurfaceState, entry: &BrowseEntry) -> Option<FileBrowserAction> {
     if entry.is_dir() {
-        FileBrowserAction::Browse {
-            drawer,
-            path: entry.path.clone(),
-            show_hidden,
-        }
+        state.go_to(FilesLocation::Directory(entry.path.clone()));
+        None
     } else {
-        FileBrowserAction::Open(entry.path.clone())
+        Some(FileBrowserAction::Open(entry.path.clone()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_browser::{BrowserRoot, EntryKind};
+    use crate::file_browser::EntryKind;
+    use crate::files_surface::PinnedLocation;
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
 
     struct Harness {
-        screen: FileBrowserScreen,
+        screen: FilesBrowseView,
+        state: FilesSurfaceState,
         sources: BrowserSources,
         listing: DirectoryListing,
         buffer: WindowBuffer,
@@ -1409,16 +1223,18 @@ mod tests {
     impl Harness {
         fn new() -> Self {
             let root = PathBuf::from("/home/test/Downloads");
+            let mut state = FilesSurfaceState::default();
+            state.go_to(FilesLocation::Directory(root.clone()));
             Self {
-                screen: FileBrowserScreen::default(),
+                screen: FilesBrowseView::default(),
+                state,
                 sources: BrowserSources {
-                    roots: vec![BrowserRoot {
+                    pinned: vec![PinnedLocation {
                         label: "Downloads".into(),
-                        path: root.clone(),
                         detail: "Standard folder".into(),
-                        kind: RootKind::Place,
+                        location: FilesLocation::Directory(root.clone()),
+                        kind: PinnedKind::Place,
                     }],
-                    starts: [(Drawer::Downloads, root.clone())].into(),
                 },
                 listing: DirectoryListing {
                     directory: root.clone(),
@@ -1459,15 +1275,27 @@ mod tests {
             search_entries: Option<&[BrowseEntry]>,
         ) -> Option<FileBrowserAction> {
             let empty_thumbnails = std::collections::HashMap::new();
+            let empty_feeds = std::collections::HashMap::new();
+            let here = FilesLocation::Directory(self.listing.directory.clone());
+            let searching = search_query.map(|query| FilesLocation::Search {
+                root: self.listing.directory.clone(),
+                query: query.to_owned(),
+            });
+            if let Some(searching) = searching {
+                self.state.replace(searching);
+            } else {
+                self.state.replace(here.clone());
+            }
             let data = FileBrowserData {
                 sources: &self.sources,
-                listing: Some((Drawer::Downloads, false, &self.listing)),
+                listing: Some((&here, self.state.show_hidden, &self.listing)),
                 pending: None,
                 error: None,
                 status: None,
                 search_query,
                 search_entries,
                 search_error: None,
+                feeds: &empty_feeds,
                 thumbnails: &empty_thumbnails,
             };
             let mut ui = Ui::new(
@@ -1481,7 +1309,7 @@ mod tests {
             let action = self.screen.draw(
                 &mut ui,
                 Rect::new(0, 0, 1000, 600),
-                Drawer::Downloads,
+                &mut self.state,
                 &data,
                 true,
             );
@@ -1512,10 +1340,16 @@ mod tests {
         }
 
         fn select(&mut self, paths: &[&str]) {
-            self.screen.entry_selection.clear();
+            self.state.selection.clear();
             for path in paths {
-                self.screen.entry_selection.toggle(PathBuf::from(path));
+                self.state.selection.toggle(PathBuf::from(path));
             }
+        }
+
+        /// Where the surface says it is now — navigation is a move of the state, so this is what
+        /// a gesture that used to return a `Browse` action is asserted against.
+        fn here(&self) -> FilesLocation {
+            self.state.location().clone()
         }
     }
 
@@ -1542,19 +1376,16 @@ mod tests {
     }
 
     /// The toolbar's location is a breadcrumb: each shown ancestor is a button, and pressing
-    /// one browses there. With the 146px the fixture leaves the row, "/home/test/Downloads"
-    /// keeps its last two segments — "test" is the clickable ancestor.
+    /// one goes there. With the 146px the fixture leaves the row, "/home/test/Downloads" keeps
+    /// its last two segments — "test" is the clickable ancestor.
     #[test]
     fn toolbar_breadcrumb_navigates_to_an_ancestor() {
         let mut harness = Harness::new();
         harness.frame();
+        harness.click(470.0, 29.0);
         assert_eq!(
-            harness.click(470.0, 29.0),
-            Some(FileBrowserAction::Browse {
-                drawer: Drawer::Downloads,
-                path: PathBuf::from("/home/test"),
-                show_hidden: false,
-            })
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test"))
         );
     }
 
@@ -1803,13 +1634,10 @@ mod tests {
         harness.frame();
         // Browser begins after the 220 px roots rail; entries begin below the toolbar, the
         // file-verb row and the column header — 42 + 42 + 28 px.
+        harness.click(400.0, 130.0);
         assert_eq!(
-            harness.click(400.0, 130.0),
-            Some(FileBrowserAction::Browse {
-                drawer: Drawer::Downloads,
-                path: PathBuf::from("/home/test/Downloads/Folder"),
-                show_hidden: false,
-            })
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test/Downloads/Folder"))
         );
         assert_eq!(
             harness.click(400.0, 168.0),
@@ -1823,10 +1651,11 @@ mod tests {
     fn file_browser_keyboard_navigates_entries_roots_and_parent() {
         let mut harness = Harness::new();
         harness.input.key(KeyInput::Enter);
-        assert!(matches!(
-            harness.frame(),
-            Some(FileBrowserAction::Browse { path, .. }) if path.ends_with("Folder")
-        ));
+        harness.frame();
+        assert_eq!(
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test/Downloads/Folder"))
+        );
 
         harness.input.key(KeyInput::Down);
         harness.input.key(KeyInput::Enter);
@@ -1836,22 +1665,42 @@ mod tests {
         ));
 
         harness.input.key(KeyInput::Backspace);
+        harness.frame();
         assert_eq!(
-            harness.frame(),
-            Some(FileBrowserAction::Browse {
-                drawer: Drawer::Downloads,
-                path: PathBuf::from("/home/test"),
-                show_hidden: false,
-            })
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test"))
         );
 
         harness.input.key(KeyInput::Left);
         harness.input.key(KeyInput::Enter);
-        assert!(matches!(
-            harness.frame(),
-            Some(FileBrowserAction::Browse { path, .. })
-                if path == Path::new("/home/test/Downloads")
-        ));
+        harness.frame();
+        assert_eq!(
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test/Downloads"))
+        );
+    }
+
+    /// The history the whole object is built on: three folders deep, Back walks out and Forward
+    /// walks back in, and the surface never asks the host for anything to do it.
+    #[test]
+    fn navigation_history_walks_back_and_forward_without_a_service() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.state.go_to(FilesLocation::Directory("/a".into()));
+        harness.state.go_to(FilesLocation::Directory("/a/b".into()));
+        harness
+            .state
+            .go_to(FilesLocation::Directory("/a/b/c".into()));
+        assert!(harness.state.go_back());
+        assert_eq!(
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/a/b"))
+        );
+        assert!(harness.state.go_forward());
+        assert_eq!(
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/a/b/c"))
+        );
     }
 
     #[test]
@@ -1866,7 +1715,7 @@ mod tests {
         harness.input.key(KeyInput::Down);
         assert_eq!(harness.frame(), None);
         assert_eq!(
-            harness.screen.selected_paths(),
+            harness.state.selected_paths(),
             vec![
                 PathBuf::from("/home/test/Downloads/Folder"),
                 PathBuf::from("/home/test/Downloads/paper.pdf"),
@@ -1882,13 +1731,13 @@ mod tests {
         harness.input.mouse(MouseButton::Left, false);
         assert_eq!(harness.frame(), None);
         assert_eq!(
-            harness.screen.selected_paths(),
+            harness.state.selected_paths(),
             vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
         );
 
         harness.input.key(KeyInput::Character('a'));
         assert_eq!(harness.frame(), None);
-        assert_eq!(harness.screen.selected_paths().len(), 2);
+        assert_eq!(harness.state.selected_paths().len(), 2);
     }
 
     #[test]
@@ -1913,25 +1762,25 @@ mod tests {
     fn view_mode_switch_preserves_selection_focus_and_scroll() {
         let mut harness = Harness::new();
         harness.frame(); // settle the directory
-        harness.screen.entry_focus = 1;
+        harness.state.focus = 1;
         harness
-            .screen
-            .entry_selection
+            .state
+            .selection
             .replace(harness.listing.entries[1].path.clone());
-        let selected_before = harness.screen.selected_paths();
-        let focus_before = harness.screen.entry_focus;
+        let selected_before = harness.state.selected_paths();
+        let focus_before = harness.state.focus;
 
-        harness.screen.toggle_view();
-        assert_eq!(harness.screen.view(), ViewMode::Thumbnails);
+        harness.state.toggle_view();
+        assert_eq!(harness.state.view, ViewMode::Thumbnails);
         harness.frame();
-        assert_eq!(harness.screen.selected_paths(), selected_before);
-        assert_eq!(harness.screen.entry_focus, focus_before);
+        assert_eq!(harness.state.selected_paths(), selected_before);
+        assert_eq!(harness.state.focus, focus_before);
 
-        harness.screen.toggle_view();
-        assert_eq!(harness.screen.view(), ViewMode::List);
+        harness.state.toggle_view();
+        assert_eq!(harness.state.view, ViewMode::List);
         harness.frame();
-        assert_eq!(harness.screen.selected_paths(), selected_before);
-        assert_eq!(harness.screen.entry_focus, focus_before);
+        assert_eq!(harness.state.selected_paths(), selected_before);
+        assert_eq!(harness.state.focus, focus_before);
     }
 
     /// Re-sorting uses the shared contract, keeps the path-keyed selection, and focus follows
@@ -1941,11 +1790,11 @@ mod tests {
         let mut harness = Harness::new();
         harness.frame();
         // Focus the file (index 1 in default folder-first order), select it.
-        harness.screen.entry_focus = 1;
+        harness.state.focus = 1;
         let file = harness.listing.entries[1].path.clone();
-        harness.screen.entry_selection.replace(file.clone());
+        harness.state.selection.replace(file.clone());
 
-        harness.screen.set_sort(
+        harness.state.set_sort(
             SortDescriptor {
                 field: SortField::NaturalName,
                 ascending: false,
@@ -1954,10 +1803,10 @@ mod tests {
             &harness.listing.entries,
         );
         // Descending, folders no longer first: paper.pdf now leads.
-        let ordered = FileBrowserScreen::sorted(&harness.listing.entries, harness.screen.sort());
+        let ordered = FilesSurfaceState::sorted(&harness.listing.entries, harness.state.sort);
         assert_eq!(ordered[0].path, file);
-        assert_eq!(harness.screen.entry_focus, 0, "focus followed paper.pdf");
-        assert_eq!(harness.screen.selected_paths(), vec![file]);
+        assert_eq!(harness.state.focus, 0, "focus followed paper.pdf");
+        assert_eq!(harness.state.selected_paths(), vec![file]);
     }
 
     /// The grid asks for thumbnails boundedly: only what the draw could see plus a row of
@@ -1983,30 +1832,30 @@ mod tests {
 
         assert!(
             harness
-                .screen
+                .state
                 .begin_thumbnails(&harness.listing.entries, &have)
                 .is_empty(),
             "list mode requests nothing"
         );
-        harness.screen.set_view(ViewMode::Thumbnails);
+        harness.state.view = ViewMode::Thumbnails;
         harness.frame();
         let requests = harness
-            .screen
+            .state
             .begin_thumbnails(&harness.listing.entries, &have);
         assert!(!requests.is_empty(), "the visible cells are asked for");
         assert!(
-            requests.len() <= FileBrowserScreen::THUMBNAIL_BATCH,
+            requests.len() <= FilesSurfaceState::THUMBNAIL_BATCH,
             "one bounded batch, however long the directory: {}",
             requests.len()
         );
         let generation = requests[0].0;
-        assert!(harness.screen.thumbnail_current(generation));
+        assert!(harness.state.thumbnail_current(generation));
 
         let mut have = std::collections::HashMap::new();
         have.insert(requests[0].1.clone(), Bitmap::new(1, 1));
         assert!(
             !harness
-                .screen
+                .state
                 .begin_thumbnails(&harness.listing.entries, &have)
                 .iter()
                 .any(|(_, path)| *path == requests[0].1),
@@ -2019,7 +1868,7 @@ mod tests {
         harness.listing.entries.clear();
         harness.frame();
         assert!(
-            !harness.screen.thumbnail_current(generation),
+            !harness.state.thumbnail_current(generation),
             "outstanding requests are from a dead generation"
         );
     }

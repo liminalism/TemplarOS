@@ -25,11 +25,12 @@ use lege_types::action;
 use lege_window::RevealHome;
 
 use crate::clipboard::Clipboard;
-use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState, ProjectInfo};
 use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind};
+use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
+use crate::omnibox::Scope;
 use crate::settings::{self, HomeFieldSettings, PreviewMode};
 use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
@@ -98,15 +99,16 @@ enum DataUpdate {
     /// `HomeField1` is not reachable: the field stays in-session.
     FieldUnavailable,
     SearchResults {
-        drawer: Drawer,
+        scope: Scope,
         query: String,
         result: Result<Vec<BrowseEntry>, String>,
     },
+    /// The copies of one logical application, resolved off the event loop.
+    AppVariants(String, Vec<(String, String, String)>),
     BrowserSources(BrowserSources),
     BrowserListing {
-        drawer: Drawer,
+        location: FilesLocation,
         show_hidden: bool,
-        path: PathBuf,
         result: Result<DirectoryListing, String>,
     },
     FileOpened {
@@ -247,6 +249,9 @@ struct ShellApp {
     /// Whether the last `ListApplications` succeeded.
     apps_available: bool,
     projects: Vec<ProjectInfo>,
+    /// The copies of each logical application that has more than one, keyed by logical id.
+    /// Refreshed with the application list, and empty for nearly every application there is.
+    app_variants: HashMap<String, Vec<(String, String, String)>>,
     /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
@@ -264,9 +269,13 @@ struct ShellApp {
     started: Instant,
 
     drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
-    search_results: Option<(Drawer, String, Result<Vec<BrowseEntry>, String>)>,
+    search_results: Option<(Scope, String, Result<Vec<BrowseEntry>, String>)>,
+    /// The question typed but not yet asked. A keystroke is not a search: the shell waits for
+    /// the typing to stop before spending a round trip, and 180ms is about the gap between two
+    /// keystrokes of ordinary typing.
+    search_pending: Option<(Scope, String, Instant)>,
     browser_sources: BrowserSources,
-    browser_listing: Option<(Drawer, bool, DirectoryListing)>,
+    browser_listing: Option<(FilesLocation, bool, DirectoryListing)>,
     /// Decoded file thumbnails for the browse view's grid mode, keyed by path. Filled from the
     /// bounded requests the screen hands out; dropped whenever the listing generation moves.
     file_thumbnails: std::collections::HashMap<PathBuf, pixelkit_raster::Bitmap>,
@@ -285,8 +294,8 @@ struct ShellApp {
     /// `None` until the first fetch: whatever was already active at startup is old news and
     /// only sets the watermark.
     last_toasted_id: Option<u32>,
-    browser_pending: Option<(Drawer, bool, PathBuf)>,
-    browser_error: Option<(Drawer, PathBuf, String)>,
+    browser_pending: Option<(FilesLocation, bool)>,
+    browser_error: Option<(FilesLocation, String)>,
     browser_status: Option<String>,
     icons: HashMap<String, pixelkit_raster::Bitmap>,
     icon_attempted: HashSet<String>,
@@ -331,6 +340,7 @@ impl ShellApp {
             apps: Vec::new(),
             apps_available: false,
             projects: Vec::new(),
+            app_variants: HashMap::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
@@ -341,6 +351,7 @@ impl ShellApp {
             started: Instant::now(),
             drawer_feeds: HashMap::new(),
             search_results: None,
+            search_pending: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
             file_thumbnails: std::collections::HashMap::new(),
@@ -447,13 +458,56 @@ impl ShellApp {
         });
     }
 
-    fn spawn_search(&self, drawer: Drawer, query: String) {
+    /// The debounce interval: long enough that ordinary typing costs one search rather than one
+    /// per keystroke, short enough that a person who stopped typing does not notice waiting.
+    const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
+
+    /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
+    fn note_search(&mut self, scope: Scope, query: String) {
+        if query.trim().is_empty() {
+            self.search_pending = None;
+            self.search_results = None;
+            return;
+        }
+        self.search_pending = Some((scope, query, Instant::now()));
+    }
+
+    /// Ask the question, if it has been still for long enough.
+    fn flush_search(&mut self) {
+        let ready = self
+            .search_pending
+            .as_ref()
+            .is_some_and(|(_, _, at)| at.elapsed() >= Self::SEARCH_DEBOUNCE);
+        if !ready {
+            return;
+        }
+        let Some((scope, query, _)) = self.search_pending.take() else {
+            return;
+        };
+        // Everywhere means every pinned directory: the same places the Files object offers, so a
+        // federated search never looks somewhere the object itself does not go.
+        let roots: Vec<String> = match &scope {
+            Scope::Location(location) => location
+                .directory()
+                .map(|path| vec![path.display().to_string()])
+                .unwrap_or_default(),
+            Scope::Everything => self
+                .browser_sources
+                .pinned
+                .iter()
+                .filter_map(|pinned| pinned.location.directory())
+                .map(|path| path.display().to_string())
+                .collect(),
+        };
+        if roots.is_empty() {
+            return;
+        }
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
-            let result = run_search(drawer, &query).await;
+            let result = run_search(roots, &query).await;
             let _ = tx.send(DataUpdate::SearchResults {
-                drawer,
+                scope,
                 query,
                 result,
             });
@@ -469,7 +523,7 @@ impl ShellApp {
         let Some((_, _, listing)) = &self.browser_listing else {
             return;
         };
-        let screen = &self.field_screen.drawer_view.browser;
+        let screen = &self.field_screen.files;
         if !screen.thumbnail_current(self.file_thumbnails_generation) {
             self.file_thumbnails.clear();
             self.file_thumbnails_pending.clear();
@@ -496,24 +550,28 @@ impl ShellApp {
         }
     }
 
-    fn spawn_browse(&mut self, drawer: Drawer, path: PathBuf, show_hidden: bool) {
-        if self.browser_pending.as_ref().is_some_and(
-            |(pending_drawer, pending_hidden, pending_path)| {
-                (*pending_drawer, *pending_hidden, pending_path) == (drawer, show_hidden, &path)
-            },
-        ) {
+    /// Fetch what one location needs. A feed location needs nothing — its rows are the drawer
+    /// feeds the background refresh already carries — so only a directory reaches the service.
+    fn spawn_browse(&mut self, location: FilesLocation, show_hidden: bool) {
+        let Some(path) = location.directory().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        if self
+            .browser_pending
+            .as_ref()
+            .is_some_and(|pending| *pending == (location.clone(), show_hidden))
+        {
             return;
         }
-        self.browser_pending = Some((drawer, show_hidden, path.clone()));
+        self.browser_pending = Some((location.clone(), show_hidden));
         self.browser_error = None;
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
             let result = crate::data::browse_directory(&path, show_hidden).await;
             let _ = tx.send(DataUpdate::BrowserListing {
-                drawer,
+                location,
                 show_hidden,
-                path,
                 result,
             });
             let _ = proxy.send_event(Wake);
@@ -543,13 +601,39 @@ impl ShellApp {
                 }
                 DataUpdate::Apps(apps) => match apps {
                     Some(apps) => {
+                        // Only an application installed more than once has a choice to offer, so
+                        // only those cost a call — and their copies are asked for once per
+                        // refresh rather than once per menu, because a context menu opening is
+                        // not a moment to be waiting on a bus.
+                        let wanted: Vec<String> = apps
+                            .iter()
+                            .filter(|entry| entry.variants > 1 && !entry.logical.is_empty())
+                            .map(|entry| entry.logical.clone())
+                            .collect();
                         self.apps = apps;
                         self.apps_available = true;
+                        self.app_variants
+                            .retain(|logical, _| wanted.contains(logical));
+                        for logical in wanted {
+                            if self.app_variants.contains_key(&logical) {
+                                continue;
+                            }
+                            let tx = self.data_tx.clone();
+                            let proxy = self.wake_proxy.clone();
+                            self.runtime.spawn(async move {
+                                let variants = crate::data::fetch_variants(&logical).await;
+                                let _ = tx.send(DataUpdate::AppVariants(logical, variants));
+                                let _ = proxy.send_event(Wake);
+                            });
+                        }
                     }
                     // Keep the last good inventory rather than blanking the launcher on one
                     // failed poll; the flag is what the widget reports.
                     None => self.apps_available = false,
                 },
+                DataUpdate::AppVariants(logical, variants) => {
+                    self.app_variants.insert(logical, variants);
+                }
                 DataUpdate::Projects(projects) => self.projects = projects,
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
@@ -595,11 +679,7 @@ impl ShellApp {
                 } => {
                     self.file_thumbnails_pending.remove(&path);
                     if generation == self.file_thumbnails_generation
-                        && self
-                            .field_screen
-                            .drawer_view
-                            .browser
-                            .thumbnail_current(generation)
+                        && self.field_screen.files.thumbnail_current(generation)
                         && let Some(bitmap) = bitmap
                     {
                         self.file_thumbnails.insert(path, bitmap);
@@ -633,36 +713,33 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::SearchResults {
-                    drawer,
+                    scope,
                     query,
                     result,
                 } => {
-                    self.search_results = Some((drawer, query, result));
+                    self.search_results = Some((scope, query, result));
                 }
                 DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
                 DataUpdate::BrowserListing {
-                    drawer,
+                    location,
                     show_hidden,
-                    path,
                     result,
                 } => {
-                    let is_current = self.browser_pending.as_ref().is_some_and(
-                        |(pending_drawer, pending_hidden, pending_path)| {
-                            (*pending_drawer, *pending_hidden, pending_path)
-                                == (drawer, show_hidden, &path)
-                        },
-                    );
+                    let is_current = self
+                        .browser_pending
+                        .as_ref()
+                        .is_some_and(|pending| *pending == (location.clone(), show_hidden));
                     if !is_current {
                         continue;
                     }
                     self.browser_pending = None;
                     match result {
                         Ok(listing) => {
-                            self.browser_listing = Some((drawer, show_hidden, listing));
+                            self.browser_listing = Some((location, show_hidden, listing));
                             self.browser_error = None;
                         }
                         Err(error) => {
-                            self.browser_error = Some((drawer, path, error));
+                            self.browser_error = Some((location, error));
                         }
                     }
                 }
@@ -872,6 +949,7 @@ impl ShellApp {
             .retain(|id, _| toplevels.iter().any(|t| t.window_id == *id));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn redraw_home(&mut self) {
         let toplevels = self
             .bridge
@@ -889,16 +967,38 @@ impl ShellApp {
         self.refresh_field(logical.width as i32, logical.height as i32, &toplevels);
         let network_control_available = network_control_app(&self.apps).is_some();
         let clock_label = local_clock_label(std::time::SystemTime::now());
+        self.flush_search();
 
         let Some(home) = &mut self.home else { return };
         if !home.prepare() {
             return;
         }
         let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
-        let active_search = self.search_results.as_ref().filter(|(drawer, query, _)| {
-            Some(*drawer) == self.field_screen.expanded
-                && query == self.field_screen.drawer_view.search.text()
-        });
+        // A search result is shown only while it still answers the question on screen: the same
+        // scope and the same query. The staleness guard is the one it always was, keyed on the
+        // scope now that a drawer is not a thing.
+        let scope = if self.field_screen.files_expanded {
+            Scope::Location(self.field_screen.files.location().clone())
+        } else {
+            Scope::Everything
+        };
+        let active_search = self
+            .search_results
+            .as_ref()
+            .filter(|(had, _, _)| *had == scope);
+        let file_search = self
+            .search_results
+            .as_ref()
+            .and_then(|(_, query, result)| {
+                result
+                    .as_ref()
+                    .ok()
+                    .map(|entries| crate::omnibox::FileResults {
+                        query,
+                        entries: entries.as_slice(),
+                    })
+            })
+            .filter(|_| active_search.is_some());
         let search_query = active_search.map(|(_, query, _)| query.as_str());
         let search_entries = active_search
             .and_then(|(_, _, result)| result.as_ref().ok())
@@ -911,19 +1011,20 @@ impl ShellApp {
             listing: self
                 .browser_listing
                 .as_ref()
-                .map(|(drawer, hidden, listing)| (*drawer, *hidden, listing)),
+                .map(|(location, hidden, listing)| (location, *hidden, listing)),
             pending: self
                 .browser_pending
                 .as_ref()
-                .map(|(drawer, hidden, path)| (*drawer, *hidden, path.as_path())),
+                .map(|(location, hidden)| (location, *hidden)),
             error: self
                 .browser_error
                 .as_ref()
-                .map(|(drawer, path, error)| (*drawer, path.as_path(), error.as_str())),
+                .map(|(location, error)| (location, error.as_str())),
             status: self.browser_status.as_deref(),
             search_query,
             search_entries,
             search_error,
+            feeds: &self.drawer_feeds,
             thumbnails: &self.file_thumbnails,
         };
         let data = FieldData {
@@ -942,6 +1043,10 @@ impl ShellApp {
             apps: &self.apps,
             apps_available: self.apps_available,
             widgets: &self.widgets,
+            variants: &self.app_variants,
+            projects: &self.projects,
+            actions: lege_types::action::MANIFEST,
+            file_search,
             clock_label: &clock_label,
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
@@ -989,8 +1094,22 @@ impl ShellApp {
                 });
             }
 
-            FieldAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
+            FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
             FieldAction::Launch(app_id) => self.spawn_launch(app_id),
+            // Named on purpose, so it goes straight to `Launcher1.Launch` for that exact copy
+            // rather than back through the daemon's default-variant policy.
+            FieldAction::LaunchVariant(app_id) => {
+                self.runtime.spawn(async move {
+                    let Ok(connection) = crate::data::session().await else {
+                        return;
+                    };
+                    if let Ok(proxy) = LauncherProxy::new(&connection).await
+                        && let Err(error) = proxy.launch(&app_id.to_string(), Vec::new(), "").await
+                    {
+                        tracing::warn!(%error, %app_id, "launching a chosen copy failed");
+                    }
+                });
+            }
             FieldAction::Activate(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
             }
@@ -1000,16 +1119,10 @@ impl ShellApp {
             FieldAction::Restore(window_id) => {
                 self.bridge_call("unshelve", |bridge| bridge.unshelve(window_id));
             }
-            FieldAction::BrowseDirectory {
-                drawer,
-                path,
+            FieldAction::BrowseLocation {
+                location,
                 show_hidden,
-            } => {
-                self.search_results = None;
-                self.field_screen.drawer_view.search = pixelkit_ui::TextFieldState::new();
-                self.field_screen.drawer_view.search_focused = false;
-                self.spawn_browse(drawer, path, show_hidden);
-            }
+            } => self.spawn_browse(location, show_hidden),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
                 Ok(app_id) => {
@@ -1189,9 +1302,14 @@ impl ShellApp {
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
             "launcher.search" => self.field_screen.search_focused = true,
+            // "Show all" is the omnibox with nothing typed in it: an empty query is not "match
+            // nothing", it is every application, which is exactly the list the launcher tile
+            // used to be. Focused, because a list nobody can type into is a list you cannot
+            // narrow.
             "launcher.show-all" => {
                 self.field_screen.search.set_text("");
-                self.field_screen.search_focused = false;
+                self.field_screen.omnibox.highlighted = 0;
+                self.field_screen.search_focused = true;
             }
             "notifications.clear" => self.spawn_clear_notifications(),
             "settings.open" => self.spawn_settings(),
@@ -2070,6 +2188,15 @@ impl ShellApp {
     }
 
     fn spawn_launch_with_args(&self, app_id: AppId, arguments: Vec<String>) {
+        // Which copy of an application to start is trust policy, and trust policy lives in the
+        // daemon. When the shell knows the logical application it names *that* and lets sessiond
+        // pick; only an application it cannot group is launched by its variant id directly.
+        let logical = self
+            .apps
+            .iter()
+            .find(|entry| entry.id == app_id)
+            .map(|entry| entry.logical.clone())
+            .filter(|logical| !logical.is_empty());
         self.runtime.spawn(async move {
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
@@ -2080,8 +2207,18 @@ impl ShellApp {
             };
             match LauncherProxy::new(&connection).await {
                 Ok(proxy) => {
-                    if let Err(error) = proxy.launch(&app_id.to_string(), arguments, "").await {
-                        tracing::warn!(%error, %app_id, "Launcher1.Launch failed");
+                    let launched = match &logical {
+                        Some(logical) => proxy
+                            .launch_logical(logical, "", arguments, "")
+                            .await
+                            .map(|_| ()),
+                        None => proxy
+                            .launch(&app_id.to_string(), arguments, "")
+                            .await
+                            .map(|_| ()),
+                    };
+                    if let Err(error) = launched {
+                        tracing::warn!(%error, %app_id, ?logical, "launching failed");
                     }
                 }
                 Err(error) => tracing::warn!(%error, "Launcher1 unavailable"),
@@ -2253,28 +2390,7 @@ struct SearchEntry {
     mime: Option<String>,
 }
 
-/// `Files.Search1.Search`'s roots for `drawer` — the same directories `standard_paths::render`
-/// already resolves for its text form, so a search never looks somewhere the drawer itself
-/// disagrees about.
-fn search_roots(drawer: Drawer) -> Vec<String> {
-    let Some(home) = standard_paths::home_dir() else {
-        return Vec::new();
-    };
-    let user_dirs = standard_paths::read_user_dirs(&home)
-        .map(|text| standard_paths::parse_user_dirs(&text, &home))
-        .unwrap_or_default();
-    let standard = match drawer {
-        Drawer::Downloads => StandardDrawer::Downloads,
-        Drawer::Documents => StandardDrawer::Documents,
-        _ => StandardDrawer::Media,
-    };
-    standard_paths::directories_for(standard, &user_dirs, &home)
-        .into_iter()
-        .map(|path| path.display().to_string())
-        .collect()
-}
-
-async fn run_search(drawer: Drawer, query: &str) -> Result<Vec<BrowseEntry>, String> {
+async fn run_search(roots: Vec<String>, query: &str) -> Result<Vec<BrowseEntry>, String> {
     let connection = match crate::data::session().await {
         Ok(connection) => connection,
         Err(message) => return Err(format!("Search — {message}")),
@@ -2283,7 +2399,6 @@ async fn run_search(drawer: Drawer, query: &str) -> Result<Vec<BrowseEntry>, Str
         Ok(proxy) => proxy,
         Err(error) => return Err(format!("Search — service unavailable: {error}")),
     };
-    let roots = search_roots(drawer);
     match proxy.search(query, roots, 50).await {
         Ok(json) => parse_hits(&json),
         Err(error) => Err(format!("Search — service unavailable: {error}")),
@@ -2621,6 +2736,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 

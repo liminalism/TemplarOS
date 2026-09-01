@@ -57,6 +57,10 @@ pub enum MenuScope {
     Shelf,
 }
 
+/// The declared action a copy-of-an-application row performs. One declaration for every copy:
+/// which copy is the row's own payload, not a second action id.
+pub const LAUNCH_VARIANT: &str = "app.launch-variant";
+
 /// One menu row: an action id and what has to be under the pointer for it to appear.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MenuItem {
@@ -137,12 +141,27 @@ impl MenuTarget {
     }
 }
 
+/// One extra row, offered for this target only: a copy of an application to start, named by the
+/// variant id that starts it.
+///
+/// Declared rows cannot express this — an application with three copies installed needs three
+/// rows and the manifest has one action for all of them — so a choice carries its own label and
+/// the id it stands for, and performs the one declared action `app.launch-variant`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MenuChoice {
+    pub label: String,
+    pub detail: String,
+    pub id: String,
+}
+
 /// One row the user picked. The screen above turns this into an action; the menu never performs
 /// anything itself.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Chosen {
     pub action: &'static str,
     pub target: MenuTarget,
+    /// Which copy, for a row that named one. `None` for every declared row.
+    pub choice: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,6 +169,8 @@ struct Open {
     at: (i32, i32),
     target: MenuTarget,
     rows: Vec<&'static MenuItem>,
+    /// The copies of this application, when it has more than one. Drawn under the declared rows.
+    choices: Vec<MenuChoice>,
     /// A `confirm: true` row pressed once and waiting for its second press.
     armed: Option<&'static str>,
     /// Keyboard cursor, so the menu itself is not pointer-only either.
@@ -181,14 +202,21 @@ impl ContextMenu {
     /// Open over `target` at the pointer. A target with no rows at all opens nothing, rather
     /// than flashing an empty box.
     pub fn open_at(&mut self, at: (i32, i32), target: MenuTarget) {
+        self.open_at_with(at, target, Vec::new());
+    }
+
+    /// The same, plus a row per copy of the application under the pointer. An application with
+    /// one copy — which is nearly all of them — gets no extra rows and reads exactly as before.
+    pub fn open_at_with(&mut self, at: (i32, i32), target: MenuTarget, choices: Vec<MenuChoice>) {
         let rows = target.rows();
-        if rows.is_empty() {
+        if rows.is_empty() && choices.is_empty() {
             return;
         }
         self.open = Some(Open {
             at,
             target,
             rows,
+            choices,
             armed: None,
             highlighted: None,
         });
@@ -203,7 +231,8 @@ impl ContextMenu {
     pub fn rect(&self, ui: &Ui<'_>, area: Rect) -> Option<Rect> {
         let open = self.open.as_ref()?;
         let width = ui.px(WIDTH).min(area.w.max(1));
-        let height = ui.px(PADDING) * 2 + ui.px(ROW_HEIGHT) * open.rows.len() as i32;
+        let height =
+            ui.px(PADDING) * 2 + ui.px(ROW_HEIGHT) * (open.rows.len() + open.choices.len()) as i32;
         let height = height.min(area.h.max(1));
         let x = open.at.0.min(area.right() - width).max(area.x);
         let y = open.at.1.min(area.bottom() - height).max(area.y);
@@ -216,7 +245,7 @@ impl ContextMenu {
     pub fn row(&self, ui: &Ui<'_>, area: Rect, index: usize) -> Option<Rect> {
         let rect = self.rect(ui, area)?;
         let open = self.open.as_ref()?;
-        (index < open.rows.len()).then(|| Self::row_rect(rect, ui, index))
+        (index < open.rows.len() + open.choices.len()).then(|| Self::row_rect(rect, ui, index))
     }
 
     fn row_rect(rect: Rect, ui: &Ui<'_>, index: usize) -> Rect {
@@ -239,7 +268,7 @@ impl ContextMenu {
         // dismissed the menu must not also reach the field behind it and clear its focus.
         let keys = ui.input.take_keys();
         let open = self.open.as_mut()?;
-        let count = open.rows.len();
+        let count = open.rows.len() + open.choices.len();
 
         let mut committed = false;
         for key in keys {
@@ -264,27 +293,39 @@ impl ContextMenu {
 
         let mut picked = None;
         if committed && let Some(index) = open.highlighted {
-            picked = open.rows.get(index).copied();
+            picked = Some(index);
         }
-        for (index, item) in open.rows.iter().enumerate() {
+        for index in 0..count {
             let row = Self::row_rect(rect, ui, index);
             if ui.input.take_click(row) {
-                picked = Some(item);
+                picked = Some(index);
             }
         }
 
-        if let Some(item) = picked {
-            let confirms = item.declaration().is_some_and(|decl| decl.confirm);
-            if confirms && open.armed != Some(item.action) {
-                open.armed = Some(item.action);
-                return None;
+        if let Some(index) = picked {
+            if let Some(item) = open.rows.get(index).copied() {
+                let confirms = item.declaration().is_some_and(|decl| decl.confirm);
+                if confirms && open.armed != Some(item.action) {
+                    open.armed = Some(item.action);
+                    return None;
+                }
+                let chosen = Chosen {
+                    action: item.action,
+                    target: open.target,
+                    choice: None,
+                };
+                self.open = None;
+                return Some(chosen);
             }
-            let chosen = Chosen {
-                action: item.action,
-                target: open.target,
-            };
-            self.open = None;
-            return Some(chosen);
+            if let Some(choice) = open.choices.get(index - open.rows.len()) {
+                let chosen = Chosen {
+                    action: LAUNCH_VARIANT,
+                    target: open.target,
+                    choice: Some(choice.id.clone()),
+                };
+                self.open = None;
+                return Some(chosen);
+            }
         }
 
         // Anywhere else: dismiss, and swallow the press.
@@ -361,12 +402,102 @@ impl ContextMenu {
                 );
             }
         }
+
+        // The copies, under the declared rows: which one, and where it came from. They are the
+        // only rows the manifest does not name, and they say so by looking like what they are —
+        // a name and a provenance, not a verb.
+        for (offset, choice) in open.choices.iter().enumerate() {
+            let index = open.rows.len() + offset;
+            let row = Self::row_rect(rect, ui, index);
+            if ui.input.hovering(row) || open.highlighted == Some(index) {
+                ui.painter
+                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), design::ACCENT_SOFT);
+            }
+            let (detail, label) = row.split_right(ui.px(120).min(row.w / 2));
+            ui.label_styled(
+                Rect::new(
+                    label.x + ui.px(8),
+                    label.y,
+                    (label.w - ui.px(8)).max(0),
+                    label.h,
+                ),
+                &choice.label,
+                design::title_style(ui),
+                design::TEXT,
+                Align::Left,
+            );
+            ui.label_styled(
+                Rect::new(detail.x, detail.y, (detail.w - ui.px(8)).max(0), detail.h),
+                &choice.detail,
+                TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+                design::TEXT_FAINT,
+                Align::Right,
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copy-of-an-application row is offered under the declared ones, carries which copy it
+    /// stands for, and performs the one declared action for all of them. An application with a
+    /// single copy has no such rows at all, which is nearly every application.
+    #[test]
+    fn a_copy_row_names_its_variant_and_performs_one_declared_action() {
+        assert!(
+            action::action(LAUNCH_VARIANT).is_some(),
+            "the copy row performs an undeclared action"
+        );
+        let target = MenuTarget {
+            tile: Some(lege_field::TileId(7)),
+            ..MenuTarget::default()
+        };
+        let mut menu = ContextMenu::default();
+        menu.open_at((10, 10), target);
+        let declared = menu.open.as_ref().expect("open").rows.len();
+
+        menu.open_at_with(
+            (10, 10),
+            target,
+            vec![
+                MenuChoice {
+                    label: "Firefox".into(),
+                    detail: "DistroPackage 128".into(),
+                    id: "desktop-import.firefox.desktop".into(),
+                },
+                MenuChoice {
+                    label: "Firefox".into(),
+                    detail: "Flatpak 129".into(),
+                    id: "flatpak.org.mozilla.firefox".into(),
+                },
+            ],
+        );
+        let open = menu.open.as_ref().expect("open");
+        assert_eq!(open.rows.len(), declared, "the declared rows changed");
+        assert_eq!(open.choices.len(), 2);
+        // And the copies come after every declared row, so a habit built on the menu's order
+        // does not break when an application gains a second copy.
+        assert!(
+            menu.row(
+                &Ui::new(
+                    pixelkit_raster::Painter::new(&mut pixelkit_raster::WindowBuffer::new(
+                        400, 400
+                    )),
+                    &mut pixelkit_text::TextCache::new(crate::surface::fonts::set()),
+                    &mut pixelkit_shell::Input::new(),
+                    design::theme(),
+                    pixelkit_shell::Scale::ONE,
+                    &mut pixelkit_raster::RasterKernel::new(),
+                ),
+                Rect::new(0, 0, 400, 400),
+                declared + 1,
+            )
+            .is_some(),
+            "the second copy has no row"
+        );
+    }
 
     #[test]
     fn every_row_names_a_declared_action() {

@@ -28,6 +28,13 @@ pub struct AppEntry {
     pub keywords: Vec<String>,
     /// `NoDisplay=true`: launchable, but never to be *offered*.
     pub no_display: bool,
+    /// The logical application this is a copy of (`AppIdentity1.ListLogicalApps`), or empty when
+    /// the registry does not group applications. One Firefox in a search, however many copies of
+    /// it are installed.
+    pub logical: String,
+    /// How many copies of that logical application are installed. One is the ordinary case, and
+    /// the only case worth saying anything about is more than one.
+    pub variants: u32,
 }
 
 impl AppEntry {
@@ -205,6 +212,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 

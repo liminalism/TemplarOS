@@ -475,6 +475,24 @@ enum ProjectCommand {
     Remove {
         project_id: String,
     },
+    /// Everything one project holds: its root, directories, applications and importance.
+    Show {
+        project_id: String,
+    },
+    /// Change one thing about a project.
+    Set {
+        project_id: String,
+        /// name | root | importance | state | directories | terminal_directories | mounts |
+        /// references
+        key: String,
+        /// The new value. List-valued keys take a comma-separated list.
+        value: String,
+    },
+    /// The project the session is working in. With no argument, print it; with one, switch to it;
+    /// with `none`, clear it.
+    Current {
+        project_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1485,6 +1503,84 @@ async fn project_command(command: ProjectCommand, json: bool) -> Result<()> {
                 &format!("removed project {project_id}"),
             )
         }
+        other => project_detail_command(&proxy, other, json).await,
+    }
+}
+
+/// The three project subcommands that read or edit one project's semantics, split out so
+/// `project_command` stays a short list of named steps.
+async fn project_detail_command(
+    proxy: &ProjectsProxy<'_>,
+    command: ProjectCommand,
+    json: bool,
+) -> Result<()> {
+    match command {
+        ProjectCommand::Show { project_id } => {
+            let payload = project::ProjectsClient::describe(proxy, &project_id).await?;
+            let current = project::ProjectsClient::get_current(proxy)
+                .await
+                .unwrap_or_default();
+            let view = project::parse_project(&payload)?;
+            let rendered = project::render_show(&view, current == project_id);
+            // `--json` hands back the daemon's own payload verbatim; the human form never does.
+            if json {
+                println!("{payload}");
+                Ok(())
+            } else {
+                println!("{rendered}");
+                Ok(())
+            }
+        }
+        ProjectCommand::Set {
+            project_id,
+            key,
+            value,
+        } => {
+            // `state` has its own method, because archiving is a transition and not a field edit.
+            if key == "state" {
+                project::ProjectsClient::set_state(proxy, &project_id, &value).await?;
+            } else {
+                let changes = project::changes_json(&key, &value)?;
+                project::ProjectsClient::update(proxy, &project_id, &changes).await?;
+            }
+            emit(
+                json,
+                &serde_json::json!({"project": project_id, "set": key, "to": value}),
+                &format!("{project_id}: {key} is now {value}"),
+            )
+        }
+        ProjectCommand::Current { project_id } => match project_id {
+            None => {
+                let current = project::ProjectsClient::get_current(proxy).await?;
+                emit(
+                    json,
+                    &serde_json::json!({"current": current}),
+                    &if current.is_empty() {
+                        "no current project".to_owned()
+                    } else {
+                        current.clone()
+                    },
+                )
+            }
+            Some(project_id) => {
+                let target = if project_id == "none" {
+                    String::new()
+                } else {
+                    project_id
+                };
+                project::ProjectsClient::set_current(proxy, &target).await?;
+                emit(
+                    json,
+                    &serde_json::json!({"current": target}),
+                    &if target.is_empty() {
+                        "cleared the current project".to_owned()
+                    } else {
+                        format!("working in {target}")
+                    },
+                )
+            }
+        },
+        _ => unreachable!("project_command handles the other subcommands itself"),
     }
 }
 

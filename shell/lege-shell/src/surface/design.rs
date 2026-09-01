@@ -44,7 +44,18 @@ pub const HOME_WIDTH: i32 = 104;
 pub const TILE_RADIUS: i32 = 8;
 pub const WELL_RADIUS: i32 = 5;
 pub const CHIP_RADIUS: i32 = 4;
-pub const GRAB_BAND_HEIGHT: i32 = 34;
+/// The heading a tile large enough to have one carries: its name, and the controls that act on
+/// the whole tile. Reserved from the body, because at this size there is room to spend on it.
+pub const HEADING_HEIGHT: i32 = 30;
+/// At the compact rungs there is no heading. A strip this tall along the top edge is grabbable
+/// for a move, and it is *not* taken away from the body — a 1x1 application tile spending a
+/// third of itself on a band with its own name in it was the single worst trade on the field.
+pub const EDGE_GRAB_HEIGHT: i32 = 10;
+/// What hovering or focusing a compact tile reveals: a strip over the top of its body carrying
+/// the controls the heading would have held. Identity is never hidden — only manipulation.
+pub const REVEAL_HEIGHT: i32 = 20;
+/// One line of a compact tile's body, which is where its title goes.
+pub const COMPACT_TITLE_HEIGHT: i32 = 18;
 pub const ACTIVITY_EDGE_WIDTH: i32 = 5;
 pub const FILE_SPINE_WIDTH: i32 = 8;
 pub const COMPOSITION_BAND_HEIGHT: i32 = 5;
@@ -84,7 +95,7 @@ pub fn theme() -> Theme {
     theme.accent_soft = ACCENT_SOFT;
     theme.hover = 0x00ff_ffff;
     theme.selection = ACCENT_SOFT;
-    theme.row_height = GRAB_BAND_HEIGHT;
+    theme.row_height = HEADING_HEIGHT;
     theme.body = theme.body.with_size(13.0);
     theme.heading = theme.heading.with_size(32.0);
     theme.padding = 12;
