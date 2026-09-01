@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask <check>` — the invocation the docs use for the repository gates.
+xtask = "run -q -p xtask --"
