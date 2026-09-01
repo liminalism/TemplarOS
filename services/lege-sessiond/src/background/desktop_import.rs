@@ -105,7 +105,41 @@ pub fn import(
             continue;
         };
 
-        registry.insert_manifest(derived.manifest.clone());
+        let mut manifest = derived.manifest;
+        let origin = manifest
+            .provenance
+            .as_ref()
+            .map_or(lege_types::AppOriginKind::Unknown, |p| p.origin);
+        // A variant seen before keeps the moment it was first seen: it is what makes "the copy
+        // that has been here longest" a real answer rather than "whichever was scanned first".
+        if let Some(first_seen) = appd_store::variant_first_seen(store, &manifest.id)
+            && let Some(provenance) = manifest.provenance.as_mut()
+        {
+            provenance.first_seen_ms = first_seen;
+        }
+
+        // A Flatpak export used to be imported as `desktop-import.<desktop id>`. Its id has moved,
+        // so record where the old one now points. Nothing stored elsewhere is rewritten: a MIME
+        // default or a project holding the old id resolves through this alias on read, and a
+        // rolled-back binary reads exactly the rows it wrote.
+        if origin == lege_types::AppOriginKind::Flatpak {
+            let previous = desktop_entry::derive_app_id(&desktop_id);
+            if previous != manifest.id {
+                let current = manifest.id.clone();
+                store
+                    .transaction(|tx| {
+                        appd_store::save_variant_alias_within(
+                            tx,
+                            &previous,
+                            &current,
+                            "flatpak-export-renamed",
+                        )
+                    })
+                    .with_context(|| format!("recording the variant alias for {desktop_id}"))?;
+            }
+        }
+
+        registry.insert_manifest(manifest.clone());
         store
             .transaction(|tx| {
                 appd_store::record_desktop_import_within(
@@ -113,13 +147,42 @@ pub fn import(
                     &desktop_id,
                     &path,
                     mtime_ms,
-                    &derived.manifest.id,
+                    &manifest.id,
+                    origin,
                 )
             })
             .with_context(|| format!("recording desktop_import bookkeeping for {desktop_id}"))?;
         imported += 1;
     }
     Ok(imported)
+}
+
+/// Group everything installed into logical applications and persist the result, then load the
+/// alias table onto the registry.
+///
+/// Run after every scan that could change the installed set. Grouping is presentation, so a
+/// failure here is logged and the session continues with whatever grouping it had.
+pub fn regroup_and_persist(registry: &Registry, store: &Store) -> Result<usize> {
+    let persisted = appd_store::load_variants(store).context("loading recorded app variants")?;
+    let index = registry.regroup(&persisted);
+
+    let rows = index.rows();
+    store
+        .transaction(|tx| {
+            for (variant, logical, source) in &rows {
+                let provenance = registry
+                    .manifest(variant)
+                    .and_then(|manifest| manifest.provenance.clone())
+                    .unwrap_or_default();
+                appd_store::save_variant_within(tx, variant, logical, *source, &provenance)?;
+            }
+            Ok(())
+        })
+        .context("persisting app variants")?;
+
+    let aliases = appd_store::load_variant_aliases(store).context("loading variant aliases")?;
+    registry.set_variant_aliases(aliases);
+    Ok(rows.len())
 }
 
 #[cfg(test)]
@@ -311,5 +374,71 @@ mod tests {
             flatpak.provenance.as_ref().unwrap().origin,
             lege_types::AppOriginKind::Flatpak
         );
+    }
+
+    #[test]
+    fn grouping_persists_and_the_moved_flatpak_id_leaves_an_alias_behind() {
+        let system_dir = tempfile::tempdir().unwrap();
+        let flatpak_root = tempfile::tempdir().unwrap();
+        let flatpak_dir = flatpak_root
+            .path()
+            .join("flatpak/exports/share/applications");
+        std::fs::create_dir_all(&flatpak_dir).unwrap();
+        write_desktop_file(
+            system_dir.path(),
+            "firefox.desktop",
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nStartupWMClass=firefox\n",
+        );
+        write_desktop_file(
+            &flatpak_dir,
+            "firefox.desktop",
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/flatpak run org.mozilla.firefox %u\nStartupWMClass=Firefox\nX-Flatpak=org.mozilla.firefox\n",
+        );
+
+        let registry = Registry::default();
+        let store = Store::in_memory().unwrap();
+        let resolver = FlatpakAwareResolver {
+            programs: HashMap::from([("firefox", "/usr/bin/firefox")]),
+            flatpaks: HashMap::from([(
+                "org.mozilla.firefox",
+                "/var/lib/flatpak/exports/bin/org.mozilla.firefox",
+            )]),
+        };
+        import(
+            &registry,
+            &store,
+            &[system_dir.path().to_path_buf(), flatpak_dir.clone()],
+            &resolver,
+        )
+        .unwrap();
+        let rows = regroup_and_persist(&registry, &store).unwrap();
+        assert_eq!(rows, 2, "two variants were recorded");
+
+        // One Firefox, two copies of it.
+        let index = registry.logical_index();
+        assert_eq!(index.logical_apps().count(), 1);
+        let distro: lege_types::AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        let flatpak: lege_types::AppId = "flatpak.org.mozilla.firefox".parse().unwrap();
+        assert_eq!(registry.logical_of(&distro), registry.logical_of(&flatpak));
+
+        // The Flatpak's old id is recorded as an alias, but the distribution's package is
+        // *installed* under exactly that id — so the live copy answers for it, and the alias must
+        // not shadow it.
+        let aliases = appd_store::load_variant_aliases(&store).unwrap();
+        assert_eq!(
+            aliases.get(&distro),
+            Some(&flatpak),
+            "the id the Flatpak used to have is recorded"
+        );
+        assert_eq!(
+            registry.resolve_variant(&distro),
+            distro,
+            "an installed variant always answers for its own id"
+        );
+
+        // A second run over an unchanged system changes nothing.
+        let before = index.rows();
+        regroup_and_persist(&registry, &store).unwrap();
+        assert_eq!(registry.logical_index().rows(), before);
     }
 }

@@ -20,6 +20,8 @@ pub mod launcher;
 pub mod manifests;
 pub mod store;
 pub mod systemd1;
+pub mod variants;
 
 pub use identity::{IdentityResolution, InstanceRecord, Registry};
 pub use lege_types::IdentityConfidence;
+pub use variants::{LogicalIndex, LogicalSource, PersistedLogical};
