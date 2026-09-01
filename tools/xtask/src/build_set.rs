@@ -17,39 +17,13 @@
 //!   checked for the id it was supposed to have been given.
 
 use anyhow::{Context, Result, bail};
-use lege_build::components::Matrix;
+use lege_build::{BuildSet, BuiltPackage, components::Matrix};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command as Process,
     time::{SystemTime, UNIX_EPOCH},
 };
-
-/// What one build set produced. Written to `target/debian/build-set.json`, read by
-/// `lege dev repo` when it publishes the set.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct BuildSet {
-    /// The build-set id: the Debian version every package in the set carries.
-    pub id: String,
-    pub git_sha: String,
-    pub dirty: bool,
-    /// Seconds since the Unix epoch — the `<epoch>` inside the id, so the id can be checked
-    /// without re-parsing it.
-    pub epoch: u64,
-    pub packages: Vec<BuiltPackage>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct BuiltPackage {
-    pub component: String,
-    pub package: String,
-    #[serde(rename = "crate")]
-    pub crate_name: String,
-    pub version: String,
-    /// Path to the `.deb`, relative to the repository root.
-    pub file: String,
-    pub size_bytes: u64,
-}
 
 pub struct Options {
     /// Print the plan and exit without building.
@@ -152,7 +126,11 @@ fn build_packages(
             package: component.package.clone(),
             crate_name: component.crate_name.clone(),
             version: id.to_owned(),
-            file: relative(root, &file),
+            file: file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
             size_bytes,
         });
     }
@@ -265,11 +243,4 @@ fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
-}
-
-fn relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
 }

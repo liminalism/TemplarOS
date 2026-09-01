@@ -5,13 +5,15 @@
 //! sessiond, and every failure that followed read as an application bug. `lege dev status` is the
 //! answer to "is what I built what is running?", asked of the machine rather than of memory.
 
+pub mod cmd;
 pub mod converge;
+pub mod repo;
 pub mod report;
 
 use anyhow::{Context, Result};
 use converge::Observation;
 use lege_build::components::Matrix;
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, fmt::Write as _, path::Path, path::PathBuf, sync::Arc};
 
 /// Loads the component matrix.
 ///
@@ -112,6 +114,113 @@ pub fn status(root: &Path, target: Option<&str>, json: bool) -> Result<String> {
     } else {
         Ok(report::render(&convergence))
     }
+}
+
+/// Opens the local archive with a real command runner.
+#[must_use]
+pub fn open_repo(root: PathBuf) -> repo::Repo {
+    repo::Repo::new(root, Arc::new(cmd::RealCommandRunner::default()))
+}
+
+/// `lege dev repo init`.
+///
+/// # Errors
+/// If the archive cannot be created or its key generated; and, with `install_source`, if `/etc`
+/// cannot be written — which means "run this step as root", and says so.
+pub fn repo_init(root: PathBuf, sysroot: &Path, install_source: bool) -> Result<String> {
+    let repo = open_repo(root);
+    let mut out = repo.init()?;
+    out.push('\n');
+    if install_source {
+        let written = repo.install_source(sysroot)?;
+        for path in written {
+            let _ = writeln!(out, "  wrote {}", path.display());
+        }
+    } else {
+        let _ = writeln!(
+            out,
+            "  apt is not yet pointed at it; run `sudo lege dev repo init --install-source`"
+        );
+    }
+    Ok(out)
+}
+
+/// `lege dev repo publish`: takes a `build-set.json` and puts that whole set in the archive.
+///
+/// # Errors
+/// If the manifest cannot be read, a `.deb` it names is missing, or an archive tool fails.
+pub fn repo_publish(root: PathBuf, manifest_path: &Path) -> Result<String> {
+    let (set, dir) = lege_build::BuildSet::read(manifest_path).with_context(|| {
+        format!(
+            "reading {} — run `cargo xtask build-set` first",
+            manifest_path.display()
+        )
+    })?;
+    let packages: Vec<(String, String, PathBuf)> = set
+        .packages
+        .iter()
+        .map(|package| {
+            (
+                package.package.clone(),
+                package.version.clone(),
+                dir.join(&package.file),
+            )
+        })
+        .collect();
+    let repo = open_repo(root);
+    let published = repo.publish(&packages, &set.id)?;
+    let mut out = format!(
+        "published {} package(s) as build set {}\n",
+        published.packages.len(),
+        published.build_set
+    );
+    if let Some(previous) = repo.previous()? {
+        let _ = writeln!(out, "  previous set retained: {previous}");
+        let _ = writeln!(out, "  roll back with: lege dev rollback");
+    }
+    Ok(out)
+}
+
+/// `lege dev repo status`.
+///
+/// # Errors
+/// If the archive cannot be read.
+pub fn repo_status(root: PathBuf) -> Result<String> {
+    let repo = open_repo(root);
+    let mut out = format!("{}\n", repo.root.display());
+    let _ = writeln!(
+        out,
+        "  current   {}",
+        repo.current()?.unwrap_or_else(|| "(none)".to_owned())
+    );
+    let _ = writeln!(
+        out,
+        "  previous  {}",
+        repo.previous()?.unwrap_or_else(|| "(none)".to_owned())
+    );
+    let sets = repo.published_sets()?;
+    let _ = writeln!(out, "  retained  {} set(s)", sets.len());
+    for set in &sets {
+        let _ = writeln!(out, "    {set}");
+    }
+    Ok(out)
+}
+
+/// `lege dev repo prune`.
+///
+/// # Errors
+/// If the archive cannot be read or a file cannot be removed.
+pub fn repo_prune(root: PathBuf, keep: usize) -> Result<String> {
+    let dropped = open_repo(root).prune(keep)?;
+    Ok(if dropped.is_empty() {
+        format!("nothing to prune; keeping {keep} set(s)\n")
+    } else {
+        format!(
+            "removed {} old set(s): {}\n",
+            dropped.len(),
+            dropped.join(", ")
+        )
+    })
 }
 
 #[cfg(test)]

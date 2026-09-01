@@ -169,6 +169,40 @@ enum DevCommand {
         #[arg(long, default_value = "/")]
         root: PathBuf,
     },
+    /// The local package archive this machine installs build sets from.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+        /// Where the archive lives.
+        #[arg(long, default_value = lege::dev::repo::DEFAULT_ROOT, global = true)]
+        repo: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RepoCommand {
+    /// Create the archive and its per-machine signing key. Idempotent.
+    Init {
+        /// Also write apt's keyring and deb822 source. Needs root.
+        #[arg(long)]
+        install_source: bool,
+        /// Write those under this root instead of `/`.
+        #[arg(long, default_value = "/")]
+        sysroot: PathBuf,
+    },
+    /// Publish a built set into the archive.
+    Publish {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+    },
+    /// What the archive holds, and what a rollback would go back to.
+    Status,
+    /// Drop all but the newest sets (never the current or previous one).
+    Prune {
+        #[arg(long, default_value_t = lege::dev::repo::DEFAULT_KEEP)]
+        keep: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -455,14 +489,31 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
     Ok(())
 }
 
+/// `lege dev`, whose subcommands are all synchronous — no bus, no session, just the filesystem
+/// and a few external tools.
+fn run_dev(command: Option<DevCommand>, json: bool) -> Result<String> {
+    let command = command.unwrap_or(DevCommand::Status {
+        target: None,
+        root: PathBuf::from("/"),
+    });
+    match command {
+        DevCommand::Status { target, root } => dev::status(&root, target.as_deref(), json),
+        DevCommand::Repo { command, repo } => match command {
+            RepoCommand::Init {
+                install_source,
+                sysroot,
+            } => dev::repo_init(repo, &sysroot, install_source),
+            RepoCommand::Publish { build_set } => dev::repo_publish(repo, &build_set),
+            RepoCommand::Status => dev::repo_status(repo),
+            RepoCommand::Prune { keep } => dev::repo_prune(repo, keep),
+        },
+    }
+}
+
 async fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Dev { command, json } => {
-            let DevCommand::Status { target, root } = command.unwrap_or(DevCommand::Status {
-                target: None,
-                root: PathBuf::from("/"),
-            });
-            print!("{}", dev::status(&root, target.as_deref(), json)?);
+            print!("{}", run_dev(command, json)?);
             if json {
                 println!();
             }
