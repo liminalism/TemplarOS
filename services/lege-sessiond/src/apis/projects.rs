@@ -170,6 +170,38 @@ impl ProjectsApi {
     }
 }
 
+/// Which installed copy a remembered application should open as.
+///
+/// The copy the project names comes first — a person who chose one meant that one. Then the copy
+/// that actually ran last time, which is the sibling a previous open already substituted. Then the
+/// logical application's current default. `None` means nothing is installed to open it with, and
+/// the caller says so and moves on rather than failing the whole project: one missing application
+/// must not cost a person the other six.
+fn resolve_project_app(
+    registry: &Registry,
+    app: &ProjectApp,
+) -> Option<(AppId, std::sync::Arc<lege_types::AppManifest>)> {
+    let mut candidates = vec![app.app_id.clone()];
+    if let Some(last) = &app.last_variant {
+        candidates.push(last.clone());
+    }
+    if let Some(logical) = &app.logical_app
+        && let Some(default) = registry.logical_index().default_variant(logical)
+    {
+        candidates.push(default.clone());
+    }
+    candidates.into_iter().find_map(|candidate| {
+        let resolved = registry.resolve_variant(&candidate);
+        registry
+            .manifest(&resolved)
+            .map(|manifest| (resolved, manifest))
+    })
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 fn parse_app_id(app_id: &str) -> fdo::Result<AppId> {
     app_id
         .parse()
@@ -208,8 +240,25 @@ impl ProjectsApi {
     async fn open(&self, project_id: &str) -> fdo::Result<()> {
         let mut project = self.load(project_id)?;
         for app in &mut project.apps {
-            let Some(manifest) = self.registry.manifest(&app.app_id) else {
-                tracing::warn!(app = %app.app_id, "project references an app with no installed manifest; skipped");
+            let Some((chosen, manifest)) = resolve_project_app(&self.registry, app) else {
+                tracing::warn!(
+                    app = %app.app_id,
+                    logical = ?app.logical_app.as_ref().map(ToString::to_string),
+                    "project remembers an application that is no longer installed; skipped"
+                );
+                self.record(
+                    project_id,
+                    EventKind::Launch,
+                    Some(app.app_id.clone()),
+                    None,
+                    format!(
+                        "{} is remembered by project {} but is not installed, so it was not opened.",
+                        app.logical_app
+                            .as_ref()
+                            .map_or_else(|| app.app_id.to_string(), ToString::to_string),
+                        project.name
+                    ),
+                );
                 continue;
             };
             let previous_instance = app.last_instance;
@@ -243,17 +292,20 @@ impl ProjectsApi {
                     self.record(
                         project_id,
                         EventKind::Launch,
-                        Some(app.app_id.clone()),
+                        Some(chosen.clone()),
                         Some(record.id),
                         format!(
-                            "{} was restored while opening project {}.",
-                            app.app_id, project.name
+                            "{chosen} was restored while opening project {}.",
+                            project.name
                         ),
                     );
                     app.last_instance = Some(record.id);
+                    // What actually ran, so next time the project reopens the copy the person was
+                    // using rather than whatever is default that day.
+                    app.last_variant = Some(chosen);
                 }
                 Err(error) => {
-                    tracing::warn!(app = %app.app_id, %error, "failed to relaunch project application");
+                    tracing::warn!(app = %chosen, %error, "failed to relaunch project application");
                 }
             }
         }
@@ -354,6 +406,61 @@ impl ProjectsApi {
         if self.current().as_deref() == Some(project_id) {
             self.store_current(None)?;
         }
+        Ok(())
+    }
+
+    /// Remember a *logical* application rather than one copy of it, so a project opened after the
+    /// Flatpak replaced the distribution package still opens the same application.
+    ///
+    /// `preferred_variant` may be empty to mean "whichever copy is default when the project
+    /// opens". A named variant that is not a copy of that application is refused: it would be a
+    /// different program than the one asked for.
+    async fn add_logical_app(
+        &self,
+        project_id: &str,
+        logical_app_id: &str,
+        preferred_variant: &str,
+        arguments: Vec<String>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let logical: lege_types::LogicalAppId = logical_app_id
+            .parse()
+            .map_err(|error: lege_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let index = self.registry.logical_index();
+        let variants = index.variants_of(&logical);
+        if variants.is_empty() {
+            return Err(fdo::Error::FileNotFound(format!(
+                "no application {logical} is installed"
+            )));
+        }
+        let preferred = match nonempty(preferred_variant) {
+            None => variants[0].clone(),
+            Some(named) => {
+                let named = self.registry.resolve_variant(&parse_app_id(&named)?);
+                if !variants.contains(&named) {
+                    return Err(fdo::Error::InvalidArgs(format!(
+                        "{named} is not a copy of {logical}."
+                    )));
+                }
+                named
+            }
+        };
+
+        let mut project = self.load(project_id)?;
+        project
+            .apps
+            .retain(|app| app.logical_app.as_ref() != Some(&logical) && app.app_id != preferred);
+        project.apps.push(ProjectApp {
+            app_id: preferred,
+            logical_app: Some(logical),
+            last_variant: None,
+            arguments,
+            last_instance: None,
+            checkpoint_token: None,
+        });
+        project.updated_ms = lege_state::now_ms();
+        self.save(&project)?;
+        let _ = emitter.changed(project_id.to_owned()).await;
         Ok(())
     }
 
@@ -495,4 +602,182 @@ impl ProjectsApi {
         signal_emitter: &SignalEmitter<'_>,
         project_id: String,
     ) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lege_types::{AppAliases, AppManifest, AppOriginKind, AppProvenance, ResourceClass};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn manifest(id: &str, name: &str, wm_class: &str, origin: AppOriginKind) -> AppManifest {
+        AppManifest {
+            id: id.parse().unwrap(),
+            display_name: name.into(),
+            primary_desktop_file_id: format!("{id}.desktop"),
+            executable: PathBuf::from(format!("/usr/bin/{id}")),
+            aliases: AppAliases {
+                startup_wm_classes: [wm_class.to_owned()].into(),
+                ..AppAliases::default()
+            },
+            mime_types: BTreeSet::default(),
+            resource_class: ResourceClass::Interactive,
+            supports_checkpoint: false,
+            icon: None,
+            categories: BTreeSet::default(),
+            keywords: BTreeSet::default(),
+            no_display: false,
+            provenance: Some(AppProvenance::from_origin(origin)),
+        }
+    }
+
+    /// The two Firefoxes, grouped.
+    fn registry_with(installed: &[AppManifest]) -> Arc<Registry> {
+        let registry = Arc::new(Registry::default());
+        for manifest in installed {
+            registry.insert_manifest(manifest.clone());
+        }
+        registry.regroup(&BTreeMap::new());
+        registry
+    }
+
+    #[test]
+    fn a_project_reopens_the_copy_it_named_while_that_copy_exists() {
+        let distro = manifest(
+            "desktop-import.firefox.desktop",
+            "Firefox",
+            "firefox",
+            AppOriginKind::DistroPackage,
+        );
+        let flatpak = manifest(
+            "flatpak.org.mozilla.firefox",
+            "Firefox",
+            "firefox",
+            AppOriginKind::Flatpak,
+        );
+        let registry = registry_with(&[distro.clone(), flatpak.clone()]);
+        let logical = registry.logical_of(&distro.id).unwrap();
+
+        let app = ProjectApp {
+            app_id: flatpak.id.clone(),
+            logical_app: Some(logical),
+            last_variant: None,
+            arguments: vec![],
+            last_instance: None,
+            checkpoint_token: None,
+        };
+        let (chosen, _) = resolve_project_app(&registry, &app).unwrap();
+        assert_eq!(
+            chosen, flatpak.id,
+            "the copy the project named wins over the logical default"
+        );
+    }
+
+    #[test]
+    fn a_project_still_opens_when_the_copy_it_named_was_uninstalled() {
+        // The acceptance case: the project was created against the distribution's Firefox, the
+        // person replaced it with the Flatpak, and the project must still open Firefox.
+        let distro = manifest(
+            "desktop-import.firefox.desktop",
+            "Firefox",
+            "firefox",
+            AppOriginKind::DistroPackage,
+        );
+        let flatpak = manifest(
+            "flatpak.org.mozilla.firefox",
+            "Firefox",
+            "firefox",
+            AppOriginKind::Flatpak,
+        );
+        let both = registry_with(&[distro.clone(), flatpak.clone()]);
+        let logical = both.logical_of(&distro.id).unwrap();
+
+        let app = ProjectApp {
+            app_id: distro.id.clone(),
+            logical_app: Some(logical.clone()),
+            last_variant: None,
+            arguments: vec![],
+            last_instance: None,
+            checkpoint_token: None,
+        };
+
+        // Only the Flatpak remains.
+        let after = registry_with(std::slice::from_ref(&flatpak));
+        assert_eq!(
+            after.logical_of(&flatpak.id),
+            Some(logical),
+            "the logical id has to survive the uninstall, or nothing can be found by it"
+        );
+        let (chosen, _) = resolve_project_app(&after, &app).unwrap();
+        assert_eq!(chosen, flatpak.id);
+    }
+
+    #[test]
+    fn what_actually_ran_is_preferred_over_todays_default() {
+        let distro = manifest(
+            "desktop-import.firefox.desktop",
+            "Firefox",
+            "firefox",
+            AppOriginKind::DistroPackage,
+        );
+        let flatpak = manifest(
+            "flatpak.org.mozilla.firefox",
+            "Firefox",
+            "firefox",
+            AppOriginKind::Flatpak,
+        );
+        let registry = registry_with(&[distro.clone(), flatpak.clone()]);
+        let logical = registry.logical_of(&distro.id).unwrap();
+
+        let app = ProjectApp {
+            // A copy that is not installed any more.
+            app_id: "desktop-import.firefox-esr.desktop".parse().unwrap(),
+            logical_app: Some(logical),
+            last_variant: Some(flatpak.id.clone()),
+            arguments: vec![],
+            last_instance: None,
+            checkpoint_token: None,
+        };
+        let (chosen, _) = resolve_project_app(&registry, &app).unwrap();
+        assert_eq!(
+            chosen, flatpak.id,
+            "the copy that ran last time beats the default the machine would pick today"
+        );
+    }
+
+    #[test]
+    fn nothing_installed_means_skip_and_say_so_not_fail_the_project() {
+        let registry = registry_with(&[]);
+        let app = ProjectApp::variant("org.example.Gone".parse().unwrap(), vec![]);
+        assert!(resolve_project_app(&registry, &app).is_none());
+    }
+
+    #[test]
+    fn a_renamed_variant_is_followed_through_its_alias() {
+        let flatpak = manifest(
+            "flatpak.org.mozilla.firefox",
+            "Firefox",
+            "firefox",
+            AppOriginKind::Flatpak,
+        );
+        let registry = registry_with(std::slice::from_ref(&flatpak));
+        registry.set_variant_aliases(
+            [(
+                "desktop-import.org.mozilla.firefox.desktop"
+                    .parse()
+                    .unwrap(),
+                flatpak.id.clone(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let app = ProjectApp::variant(
+            "desktop-import.org.mozilla.firefox.desktop"
+                .parse()
+                .unwrap(),
+            vec![],
+        );
+        let (chosen, _) = resolve_project_app(&registry, &app).unwrap();
+        assert_eq!(chosen, flatpak.id, "the same copy, under its new id");
+    }
 }

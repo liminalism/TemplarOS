@@ -313,6 +313,16 @@ mod projects {
         /// `"active"` or `"archived"`. Archived stays searchable and openable.
         fn set_state(&self, project_id: &str, state: &str) -> zbus::Result<()>;
 
+        /// Remember a logical application rather than one copy of it. Pass an empty
+        /// `preferred_variant` to mean "whichever copy is default when the project opens".
+        fn add_logical_app(
+            &self,
+            project_id: &str,
+            logical_app_id: &str,
+            preferred_variant: &str,
+            arguments: Vec<String>,
+        ) -> zbus::Result<()>;
+
         /// This project changed; re-read it with `Describe`.
         #[zbus(signal)]
         fn changed(&self, project_id: String) -> zbus::Result<()>;
