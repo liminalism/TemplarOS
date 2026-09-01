@@ -105,6 +105,7 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("window.show-all", MenuScope::Field),
     MenuItem::new("home.reveal", MenuScope::Field),
     MenuItem::new("field.reset", MenuScope::Field),
+    MenuItem::new("home.pin-app", MenuScope::Window),
     MenuItem::new("window.close", MenuScope::Window),
 ];
 

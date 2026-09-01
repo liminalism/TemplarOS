@@ -1047,6 +1047,14 @@ impl ShellApp {
                 }
                 Err(error) => tracing::warn!(%error, ?op, "field op refused"),
             },
+            // Pinning is a field edit like any other, so it goes back through `perform` as the
+            // ops it produced: one route to the document, one undo entry, one thing to persist.
+            FieldAction::PinApp(app_id) => {
+                let mut doc = self.field.clone();
+                for op in field_model::pin_app(&mut doc, &app_id) {
+                    self.perform(FieldAction::Apply(op));
+                }
+            }
             FieldAction::NeedTreemap {
                 path,
                 width,

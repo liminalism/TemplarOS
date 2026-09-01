@@ -202,19 +202,27 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     merge_sessions(doc, live, &mut wanted, &mut applied);
     merge_projects(doc, live, &mut applied);
     merge_system(doc, &mut applied);
-    merge_apps(doc, live, &mut wanted, &mut applied);
     merge_panels(doc, &mut applied);
     adopt_loose_files(doc, &mut applied);
 
     // Windows that closed take their tiles with them; everything else the user placed stays.
+    //
+    // `ParkedSession` and nothing else, and this is load-bearing — please do not "fix" it by
+    // widening the match back out. A session tile is the only kind whose subject can cease to
+    // exist without anyone asking: the window closed. An application tile is on Home because
+    // someone pinned it (`pin_app`), and a widget is on Home because Home put it there; sweeping
+    // either because this refresh did not happen to ask for it would delete a person's own
+    // arrangement every time a service failed to answer.
+    //
+    // The cost is that a tile naming a widget kind a future build no longer draws is stranded
+    // rather than swept. That is deliberate: a migration is how a retired widget leaves a saved
+    // field (`migrate_hardware_tiles`, `migrate_drawer_tiles`), because only a migration knows
+    // what should take its place.
     let gone: Vec<TileId> = doc
         .tiles
         .iter()
         .filter(|tile| {
-            matches!(
-                tile.kind,
-                TileKind::ParkedSession { .. } | TileKind::App { .. } | TileKind::Widget { .. }
-            ) && !wanted.contains(&tile.id)
+            matches!(tile.kind, TileKind::ParkedSession { .. }) && !wanted.contains(&tile.id)
         })
         .map(|tile| tile.id)
         .collect();
@@ -806,48 +814,44 @@ fn merge_projects(doc: &mut FieldDocument, live: &LiveState<'_>, applied: &mut V
     }
 }
 
-/// Active applications fill the field in reading order, sorted by id.
-/// Installed-but-idle applications belong in search/launcher results, not as hundreds of
-/// automatic 1×1 Home tiles.
-fn merge_apps(
-    doc: &mut FieldDocument,
-    live: &LiveState<'_>,
-    wanted: &mut BTreeSet<TileId>,
-    applied: &mut Vec<FieldOp>,
-) {
-    let mut app_ids: Vec<AppId> = Vec::new();
-    for toplevel in live.toplevels {
-        if let Some(app_id) = &toplevel.canonical_app_id
-            && !app_ids.contains(app_id)
-        {
-            app_ids.push(app_id.clone());
-        }
+/// The tile id an application's Home tile always has, pinned or inherited from an older layout.
+pub fn app_tile_id(app_id: &AppId) -> TileId {
+    tile_id_for(&format!("app:{app_id}"))
+}
+
+/// Keep this application on Home: one tile, placed where it will fit, that outlives the window
+/// it was pinned from.
+///
+/// Home used to grow an application tile for every window that opened and drop it again with the
+/// last one, which meant a badge that duplicated the session tile beside it and vanished exactly
+/// when a person might have wanted to relaunch. An application belongs on Home because someone
+/// put it there, and for no other reason — everything else is what search is for.
+///
+/// Add-only and idempotent: pinning something already pinned asks for nothing.
+pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let id = app_tile_id(app_id);
+    if doc.tile(id).is_some() {
+        return applied;
     }
-    app_ids.sort();
-    app_ids.dedup();
-    let app_cols = doc.cols.max(1);
-    for (index, app_id) in app_ids.iter().enumerate() {
-        let id = tile_id_for(&format!("app:{app_id}"));
-        wanted.insert(id);
-        if doc.tile(id).is_some() {
-            continue;
-        }
-        let tile = Tile {
-            id,
-            kind: TileKind::App {
-                app_id: app_id.clone(),
-            },
-            title: short_name(app_id),
-            spans: SpanRange::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
-            accent: None,
-        };
-        let index = index as u16;
-        let landing = Landing {
-            container: None,
-            cell: Cell::new(index % app_cols, index / app_cols),
-        };
-        try_apply(doc, FieldOp::Place { tile, landing }, applied);
-    }
+    let tile = Tile {
+        id,
+        kind: TileKind::App {
+            app_id: app_id.clone(),
+        },
+        title: short_name(app_id),
+        spans: SpanRange::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
+        accent: None,
+    };
+    // The top-left corner of the working area, where the reflow will find it the nearest free
+    // cell: a pinned tile is small, and hunting for one that landed in a far corner is worse
+    // than having it appear near where the eye already is.
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(0, 0),
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, &mut applied);
+    applied
 }
 
 /// How many rows the system shelf occupies across `available_cols`, at the class floor its tiles
@@ -1124,9 +1128,10 @@ mod tests {
             projects: &[],
         };
         merge(&mut doc, &live);
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
 
-        // An application tile, which sits in the open part of the field rather than inside the
-        // packed drawer block, so the resize has somewhere to go.
+        // A pinned application tile, which sits in the open part of the field, so the resize has
+        // somewhere to go.
         let subject = tile_id_for("app:org.legeos.Files");
         let before = doc.location(subject).unwrap().placement.span;
         doc = lege_field::apply(
@@ -1379,6 +1384,7 @@ mod tests {
         merge(&mut doc, &live);
         assert!(restore_shelved(&doc).is_none(), "nothing is shelved yet");
 
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
         let shelved: Vec<TileId> = [
             files_tile_id(),
             tile_id_for("system:notifications"),
@@ -1474,11 +1480,18 @@ mod tests {
             projects: &[],
         };
         let ops = merge(&mut doc, &live);
-        // One Files object, two apps, two sessions, and the system widgets Home always offers —
-        // plus one op for the system shelf panel.
-        let expected = 1 + 2 + 2 + SYSTEM_WIDGETS.len();
+        // One Files object, two sessions, and the system widgets Home always offers — plus one
+        // op for the system shelf panel. No application tiles: a running window is a session,
+        // and an application is on Home only because someone pinned it.
+        let expected = 1 + 2 + SYSTEM_WIDGETS.len();
         assert_eq!(ops.len(), expected + 1);
         assert_eq!(doc.tiles.len(), expected);
+        assert!(
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::App { .. })),
+            "two open windows grew an application badge apiece"
+        );
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
         let files = files_tile_id();
@@ -1491,8 +1504,9 @@ mod tests {
         assert!(merge(&mut doc, &live).is_empty());
         assert_eq!(doc, before);
 
-        // The user moves a tile; the next refresh keeps it there.
+        // The user pins an application and moves its tile; the next refresh keeps it there.
         let app = tile_id_for("app:org.legeos.Files");
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
         doc = apply(
             &doc,
             &FieldOp::Move {
@@ -1747,6 +1761,79 @@ mod tests {
             doc.tile(project_tile_id("competing-project")).is_none(),
             "a generated project shortcut yields when only live-window space remains"
         );
+    }
+
+    /// The one route to an application tile, and the only reason one exists: someone pinned it.
+    /// It outlives every window of that application, survives the refresh, and pinning twice
+    /// asks for nothing.
+    #[test]
+    fn a_pinned_application_outlives_its_windows_and_pins_only_once() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let windows = vec![toplevel(1, Some("org.legeos.Files"), "Downloads", false)];
+        let live = LiveState {
+            toplevels: &windows,
+            projects: &[],
+        };
+        merge(&mut doc, &live);
+        let app: AppId = "org.legeos.Files".parse().unwrap();
+        let id = app_tile_id(&app);
+        assert!(doc.tile(id).is_none(), "a running window is not a pin");
+
+        assert_eq!(pin_app(&mut doc, &app).len(), 1);
+        let placed = doc.location(id).expect("the pinned tile is placed");
+        assert!(
+            pin_app(&mut doc, &app).is_empty(),
+            "pinning twice is a no-op"
+        );
+
+        // Every window of that application closes: the session tiles go, the pin stays.
+        merge(&mut doc, &LiveState::default());
+        assert_eq!(
+            doc.location(id),
+            Some(placed),
+            "the pin went away with the last window"
+        );
+        assert_eq!(doc.tile(id).map(|tile| tile.title.as_str()), Some("Files"));
+    }
+
+    /// The refresh removes exactly one thing: the tile of a window that closed. Everything else
+    /// on the field is there because a person or Home put it there, and a merge that could not
+    /// reach a service must not take it away.
+    #[test]
+    fn a_refresh_never_removes_a_placed_tile_that_is_not_a_closed_window() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        merge(&mut doc, &LiveState::default());
+        pin_app(&mut doc, &"org.example.Editor".parse().unwrap());
+        // A widget kind no build knows: stranded on purpose, because only a migration knows what
+        // should replace one, and sweeping it would delete a person's arrangement instead.
+        let orphan = tile_id_for("widget:from-the-future");
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: orphan,
+                    kind: TileKind::Widget {
+                        widget: "from-the-future".to_owned(),
+                        scope: None,
+                    },
+                    title: "Future".to_owned(),
+                    spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(4, 4)),
+                    accent: None,
+                },
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(8, 6),
+                },
+            },
+        )
+        .expect("the unknown widget places")
+        .0;
+
+        let before = doc.clone();
+        for _ in 0..3 {
+            merge(&mut doc, &LiveState::default());
+        }
+        assert_eq!(doc, before, "a refresh took something away");
     }
 
     #[test]

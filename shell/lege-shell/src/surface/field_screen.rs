@@ -54,6 +54,9 @@ pub enum FieldAction {
         query: String,
     },
     Launch(AppId),
+    /// Keep this application on Home for good, as a tile of its own. The one route to an
+    /// application tile: Home no longer grows one per running window.
+    PinApp(AppId),
     Activate(WindowId),
     Park(WindowId),
     Restore(WindowId),
@@ -1016,24 +1019,38 @@ impl FieldScreen {
             design::EDGE,
         );
 
+        // The counts are a fallback, not a readout. When every live window already has a tile of
+        // its own on the field, saying "3 LIVE" beside three visible tiles is a number that
+        // repeats what the eye can already see — so it is only drawn when the field is *not*
+        // showing the whole story, which is exactly when a person needs to be told.
         let live = data
             .toplevels
             .iter()
             .filter(|window| !window.shelved)
             .count();
-        let parked = data.toplevels.len().saturating_sub(live);
-        let summary = if activity.w >= ui.px(170) {
-            format!("{live} LIVE    {parked} PARKED")
-        } else {
-            format!("{live}L  {parked}P")
-        };
-        ui.label_styled(
-            activity.inset(ui.px(8)),
-            &summary,
-            design::state_style(ui),
-            design::TEXT_DIM,
-            Align::Centre,
-        );
+        let all_accounted_for =
+            data.toplevels
+                .iter()
+                .filter(|window| !window.shelved)
+                .all(|window| {
+                    field_model::session_tile_for(data.field, window)
+                        .is_some_and(|tile| data.field.location(tile).is_some())
+                });
+        if !all_accounted_for {
+            let parked = data.toplevels.len().saturating_sub(live);
+            let summary = if activity.w >= ui.px(170) {
+                format!("{live} LIVE    {parked} PARKED")
+            } else {
+                format!("{live}L  {parked}P")
+            };
+            ui.label_styled(
+                activity.inset(ui.px(8)),
+                &summary,
+                design::state_style(ui),
+                design::TEXT_DIM,
+                Align::Centre,
+            );
+        }
         ui.painter.fill_rect(
             Rect::new(clock.x, status.y + ui.px(9), 1, status.h - ui.px(18)),
             design::EDGE,
@@ -1579,6 +1596,20 @@ impl FieldScreen {
                     && let Some(next) = group_step(data.toplevels, from, chosen.action)
                 {
                     actions.push(FieldAction::Activate(next));
+                }
+            }
+            "home.pin-app" => {
+                // The window's own application, not the tile's title: the tile may be a session
+                // tile, and what is being pinned is the application behind it.
+                if let Some(app_id) = window
+                    .and_then(|window| {
+                        data.toplevels
+                            .iter()
+                            .find(|toplevel| toplevel.window_id == window)
+                    })
+                    .and_then(|toplevel| toplevel.canonical_app_id.clone())
+                {
+                    actions.push(FieldAction::PinApp(app_id));
                 }
             }
             "window.escape-fullscreen" | "window.close" => {
@@ -2890,6 +2921,11 @@ mod tests {
                     projects: &[],
                 },
             );
+            // Home no longer grows an application tile per running window, so the two these
+            // tests aim at are pinned the way a person would pin them.
+            for app in ["org.legeos.Files", "org.example.Editor"] {
+                field_model::pin_app(&mut doc, &app.parse().unwrap());
+            }
             Harness {
                 screen: FieldScreen::default(),
                 doc,
