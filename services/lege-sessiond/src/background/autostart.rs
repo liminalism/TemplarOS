@@ -5,7 +5,7 @@
 
 use lege_appd::{
     Registry,
-    desktop_entry::{self, DesktopEntry, ExecResolver},
+    desktop_entry::{self, DesktopEntry, ExecResolver, SourceContext},
     launcher::{self, LaunchBackend},
 };
 use lege_session_core::{
@@ -33,8 +33,13 @@ pub fn autostart_dirs() -> Vec<PathBuf> {
 
 /// Read every `.desktop` file under `dirs`, later directories overriding earlier ones for the
 /// same desktop ID; `Hidden=true` entries (the standard "masked" signal) are dropped.
-pub fn scan_entries(dirs: &[PathBuf]) -> Vec<(String, DesktopEntry)> {
-    let mut by_id: BTreeMap<String, DesktopEntry> = BTreeMap::new();
+///
+/// Each entry carries the [`SourceContext`] it was read from, so an autostart entry that has to be
+/// imported gets the provenance — and therefore the trust tier — of the directory it came from.
+/// `/etc/xdg/autostart` is the system's; `~/.config/autostart` is the person's, and a file there
+/// must not inherit a packaged application's standing.
+pub fn scan_entries(dirs: &[PathBuf]) -> Vec<(String, DesktopEntry, SourceContext)> {
+    let mut by_id: BTreeMap<String, (DesktopEntry, SourceContext)> = BTreeMap::new();
     for dir in dirs {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
             continue;
@@ -57,12 +62,13 @@ pub fn scan_entries(dirs: &[PathBuf]) -> Vec<(String, DesktopEntry)> {
             let Some(parsed) = desktop_entry::parse(&text) else {
                 continue;
             };
-            by_id.insert(desktop_id, parsed);
+            by_id.insert(desktop_id, (parsed, SourceContext::for_file(dir, path)));
         }
     }
     by_id
         .into_iter()
-        .filter(|(_, entry)| !entry.hidden)
+        .filter(|(_, (entry, _))| !entry.hidden)
+        .map(|(id, (entry, source))| (id, entry, source))
         .collect()
 }
 
@@ -119,7 +125,7 @@ pub async fn run(
     };
 
     let mut entries: Vec<(AutostartEntry, autostart::Approval)> = Vec::new();
-    for (desktop_id, entry) in scan_entries(&dirs) {
+    for (desktop_id, entry, source) in scan_entries(&dirs) {
         let existing = registry
             .manifests()
             .into_iter()
@@ -131,7 +137,7 @@ pub async fn run(
         let app_id = if let Some(id) = existing {
             id
         } else if let Some(derived) =
-            desktop_entry::derive_manifest(&entry, &desktop_id, resolver.as_ref())
+            desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver.as_ref())
         {
             let id = derived.manifest.id.clone();
             registry.insert_manifest(derived.manifest);

@@ -7,15 +7,17 @@
 use anyhow::{Context, Result};
 use lege_appd::{
     Registry,
-    desktop_entry::{self, ExecResolver},
+    desktop_entry::{self, ExecResolver, OriginNamespace, SourceContext},
     store as appd_store,
 };
 use lege_state::Store;
 use lege_types::AppCatalog;
 use std::{collections::BTreeSet, path::PathBuf};
 
-/// Every directory that may hold `.desktop` application entries, later ones taking priority
-/// over earlier ones for the same desktop ID (the usual XDG precedence: user over system).
+/// Every directory that may hold `.desktop` application entries. Within the XDG chain later ones
+/// take priority over earlier ones for the same desktop ID (the usual precedence: user over
+/// system); the Flatpak export trees are a separate namespace and neither shadow it nor are
+/// shadowed by it.
 pub fn application_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![
         PathBuf::from("/usr/share/applications"),
@@ -49,8 +51,13 @@ pub fn import(
         })
         .collect();
 
-    // Later directories override earlier ones for the same desktop ID.
-    let mut candidates: std::collections::BTreeMap<String, PathBuf> =
+    // Keyed on (origin namespace, desktop id), not on the desktop id alone. Within the XDG chain a
+    // later directory still shadows an earlier one — a person's own `firefox.desktop` is *meant* to
+    // replace the system's. Across namespaces it must not: keyed on the id alone, a Flatpak export
+    // and a distribution package that share `firefox.desktop` collapse into one candidate, and
+    // whichever directory happened to be scanned last erased the other application from the
+    // registry entirely. They are two copies of a program; they get two entries.
+    let mut candidates: std::collections::BTreeMap<(OriginNamespace, String), SourceContext> =
         std::collections::BTreeMap::new();
     for dir in dirs {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
@@ -68,12 +75,14 @@ pub fn import(
             else {
                 continue;
             };
-            candidates.insert(desktop_id, path);
+            let source = SourceContext::for_file(dir, path);
+            candidates.insert((source.namespace, desktop_id), source);
         }
     }
 
     let mut imported = 0;
-    for (desktop_id, path) in candidates {
+    for ((_namespace, desktop_id), source) in candidates {
+        let path = source.path.clone();
         if native_ids.contains(&desktop_id) {
             continue;
         }
@@ -91,7 +100,8 @@ pub fn import(
         let Some(entry) = desktop_entry::parse(&text) else {
             continue;
         };
-        let Some(derived) = desktop_entry::derive_manifest(&entry, &desktop_id, resolver) else {
+        let Some(derived) = desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver)
+        else {
             continue;
         };
 
@@ -119,6 +129,20 @@ mod tests {
     use std::collections::HashMap;
 
     struct StaticResolver(HashMap<&'static str, &'static str>);
+
+    struct FlatpakAwareResolver {
+        programs: HashMap<&'static str, &'static str>,
+        flatpaks: HashMap<&'static str, &'static str>,
+    }
+
+    impl ExecResolver for FlatpakAwareResolver {
+        fn resolve_program(&self, name_or_path: &str) -> Option<PathBuf> {
+            self.programs.get(name_or_path).map(PathBuf::from)
+        }
+        fn resolve_flatpak(&self, flatpak_id: &str) -> Option<PathBuf> {
+            self.flatpaks.get(flatpak_id).map(PathBuf::from)
+        }
+    }
 
     impl ExecResolver for StaticResolver {
         fn resolve_program(&self, name_or_path: &str) -> Option<PathBuf> {
@@ -161,6 +185,7 @@ mod tests {
             categories: std::collections::BTreeSet::default(),
             keywords: std::collections::BTreeSet::default(),
             no_display: false,
+            provenance: None,
         });
 
         let store = Store::in_memory().unwrap();
@@ -229,5 +254,62 @@ mod tests {
             .manifest(&"desktop-import.org.example.Tool.desktop".parse().unwrap())
             .unwrap();
         assert_eq!(manifest.display_name, "User Tool");
+    }
+
+    #[test]
+    fn a_flatpak_and_a_distro_package_sharing_a_desktop_id_are_two_applications() {
+        // The live bug this fixes: keyed on the desktop id alone, these two collapsed into one
+        // candidate and whichever directory was scanned last erased the other from the registry.
+        // A person with both installed simply lost one of them, silently.
+        let system_dir = tempfile::tempdir().unwrap();
+        let flatpak_dir = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join("flatpak/exports/share/applications");
+        std::fs::create_dir_all(&flatpak_dir).unwrap();
+        write_desktop_file(
+            system_dir.path(),
+            "firefox.desktop",
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\n",
+        );
+        write_desktop_file(
+            &flatpak_dir,
+            "firefox.desktop",
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/flatpak run org.mozilla.firefox %u\nX-Flatpak=org.mozilla.firefox\n",
+        );
+
+        let registry = Registry::default();
+        let store = Store::in_memory().unwrap();
+        let resolver = FlatpakAwareResolver {
+            programs: HashMap::from([("firefox", "/usr/bin/firefox")]),
+            flatpaks: HashMap::from([(
+                "org.mozilla.firefox",
+                "/var/lib/flatpak/exports/bin/org.mozilla.firefox",
+            )]),
+        };
+        let imported = import(
+            &registry,
+            &store,
+            &[system_dir.path().to_path_buf(), flatpak_dir.clone()],
+            &resolver,
+        )
+        .unwrap();
+
+        assert_eq!(imported, 2, "both copies must import");
+        let distro = registry
+            .manifest(&"desktop-import.firefox.desktop".parse().unwrap())
+            .expect("the distribution package survives the Flatpak being installed");
+        assert_eq!(distro.executable, PathBuf::from("/usr/bin/firefox"));
+        let flatpak = registry
+            .manifest(&"flatpak.org.mozilla.firefox".parse().unwrap())
+            .expect("the Flatpak gets an id of its own");
+        assert_eq!(
+            flatpak.executable,
+            PathBuf::from("/var/lib/flatpak/exports/bin/org.mozilla.firefox")
+        );
+        assert_eq!(
+            flatpak.provenance.as_ref().unwrap().origin,
+            lege_types::AppOriginKind::Flatpak
+        );
     }
 }

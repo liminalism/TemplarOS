@@ -209,6 +209,7 @@ mod tests {
             categories: std::collections::BTreeSet::default(),
             keywords: std::collections::BTreeSet::default(),
             no_display: false,
+            provenance: None,
         }
     }
 

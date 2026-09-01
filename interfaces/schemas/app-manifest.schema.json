@@ -33,6 +33,10 @@
     "background": {
       "type": "array", "description": "Background permissions requested",
       "items": { "enum": ["login-autostart", "continuous-background", "network-while-hidden", "global-shortcuts", "screen-capture", "input-monitoring", "notifications", "removable-media"] }
+    },
+    "provenance": {
+      "$ref": "app-variant.schema.json",
+      "description": "Where this copy came from. Derived by the registry for an imported .desktop entry; a hand-authored manifest normally sets only `logical`, to say which logical application this copy is a copy of."
     }
   }
 }
