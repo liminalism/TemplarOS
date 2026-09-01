@@ -26,6 +26,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod components;
+
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

@@ -17,6 +17,8 @@ fn main() {
     // The environment authority, and the two git facts the fallback needs. Without these
     // rerun-if lines cargo would happily hand back yesterday's identity after a commit.
     println!("cargo:rerun-if-env-changed=LEGEOS_BUILD_SET_ID");
+    // The component matrix is compiled in, so a change to it must rebuild this crate.
+    println!("cargo:rerun-if-changed=../../distro/deploy/components.toml");
     for path in git_watch_paths() {
         println!("cargo:rerun-if-changed={path}");
     }

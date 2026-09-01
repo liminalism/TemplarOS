@@ -1492,6 +1492,7 @@ dependencies = [
  "clap",
  "lege-appd",
  "lege-associationd",
+ "lege-build",
  "lege-client",
  "lege-filed",
  "lege-hwdetect",
@@ -1567,6 +1568,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -4864,6 +4866,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lege-build",
+ "serde",
  "serde_json",
 ]
 

@@ -1,5 +1,7 @@
 //! `cargo xtask <command>` — repository checks that must not drift.
 
+mod build_set;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::{
@@ -36,6 +38,25 @@ enum Command {
     CheckActions,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
     Copyright,
+    /// Build every package in the component matrix as one identified set.
+    BuildSet {
+        /// Print the plan and exit without building anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the build-set id this invocation would use, and nothing else.
+        #[arg(long)]
+        print_id: bool,
+        /// Override the epoch in the id (reproducible builds, tests).
+        #[arg(long)]
+        epoch: Option<u64>,
+    },
+    /// Print the component matrix — one field per component, for the shell scripts that used to
+    /// keep their own copy of the package list.
+    Components {
+        /// Which field to print: `name`, `package`, `crate`, `unit` or `activation`.
+        #[arg(long, default_value = "package")]
+        field: String,
+    },
 }
 
 /// How a shell surface declares that an action is reachable by pointer. Each is a literal
@@ -345,7 +366,42 @@ fn main() -> Result<()> {
         Command::CheckAssets => check_assets(&root),
         Command::CheckActions => check_actions(&root),
         Command::Copyright => copyright(&root),
+        Command::BuildSet {
+            dry_run,
+            print_id,
+            epoch,
+        } => build_set::run(
+            &root,
+            &build_set::Options {
+                dry_run,
+                print_id,
+                epoch,
+            },
+        ),
+        Command::Components { field } => components(&root, &field),
     }
+}
+
+/// One field of every component, one per line. The shell scripts that install or reinstall
+/// LegeOS need the package list and nothing else; letting them ask keeps
+/// `distro/deploy/components.toml` the only place it is written down.
+fn components(root: &Path, field: &str) -> Result<()> {
+    let matrix = lege_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
+        .context("reading the component matrix")?;
+    for component in &matrix.components {
+        let value = match field {
+            "name" => component.name.clone(),
+            "package" => component.package.clone(),
+            "crate" => component.crate_name.clone(),
+            "unit" => component.unit.clone().unwrap_or_default(),
+            "activation" => format!("{:?}", component.activation),
+            other => bail!("unknown --field {other:?} (name, package, crate, unit, activation)"),
+        };
+        if !value.is_empty() {
+            println!("{value}");
+        }
+    }
+    Ok(())
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -803,6 +859,73 @@ fn check_packaging(root: &Path) -> Result<()> {
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     let packages = metadata["packages"].as_array().context("packages")?;
 
+    let DebMetadata {
+        deb_name_to_crate,
+        deb_depends,
+        deb_assets,
+        maintainerless,
+    } = deb_metadata(packages);
+
+    let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
+    let matrix = lege_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
+        .context("reading the component matrix")?;
+    problems.extend(component_matrix_problems(
+        &matrix,
+        &control_packages,
+        &deb_name_to_crate,
+        &unit_file_names(root),
+    ));
+    problems.extend(maintainerless);
+    problems.extend(dependency_drift(
+        &parse_control_depends(&control_text),
+        &deb_depends,
+        &deb_name_to_crate,
+    ));
+    let units = unit_exec_starts(root)?;
+    let shipped = shipped_destinations(root, &deb_assets)?;
+    let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
+    problems.extend(unshipped_unit_binaries(&units, &installed));
+    problems.extend(colliding_destinations(&shipped));
+    problems.extend(dangling_manifest_executables(
+        root,
+        &installed,
+        &fork_packages(root)?,
+    )?);
+    let seeds = read_seeds(root)?;
+    let built = built_package_names(root, &control_packages)?;
+    problems.extend(seed_problems(&seeds, &built));
+    let metapackages = metapackage_controls(root)?;
+    problems.extend(metapackage_dependency_problems(&metapackages, &built));
+    if !problems.is_empty() {
+        for problem in &problems {
+            eprintln!("check-packaging: {problem}");
+        }
+        bail!("{} packaging mismatch(es)", problems.len());
+    }
+
+    println!(
+        "check-packaging: {} debian/control package(s) all have matching crate metadata; \
+         {} component matrix row(s) agree with them; \
+         {} unit ExecStart binary/ies all installed by a package; \
+         {} seed(s) and {} metapackage(s) name only packages that exist",
+        control_packages.len(),
+        matrix.components.len(),
+        units.len(),
+        seeds.len(),
+        metapackages.len()
+    );
+    Ok(())
+}
+
+/// Everything `check-packaging` needs out of `[package.metadata.deb]`, gathered in one pass.
+struct DebMetadata {
+    deb_name_to_crate: BTreeMap<String, String>,
+    deb_depends: BTreeMap<String, BTreeSet<String>>,
+    deb_assets: Vec<(String, String)>,
+    maintainerless: Vec<String>,
+}
+
+fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
     // cargo metadata's `metadata` field is cargo's own parse of `[package.metadata.*]`, so this
     // reads the same `[package.metadata.deb]` table `cargo deb` reads — never a hand-rolled scan
     // of Cargo.toml that could drift from what cargo-deb actually sees.
@@ -846,45 +969,87 @@ fn check_packaging(root: &Path) -> Result<()> {
         }
     }
 
-    let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
-    problems.extend(maintainerless);
-    problems.extend(dependency_drift(
-        &parse_control_depends(&control_text),
-        &deb_depends,
-        &deb_name_to_crate,
-    ));
-    let units = unit_exec_starts(root)?;
-    let shipped = shipped_destinations(root, &deb_assets)?;
-    let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
-    problems.extend(unshipped_unit_binaries(&units, &installed));
-    problems.extend(colliding_destinations(&shipped));
-    problems.extend(dangling_manifest_executables(
-        root,
-        &installed,
-        &fork_packages(root)?,
-    )?);
-    let seeds = read_seeds(root)?;
-    let built = built_package_names(root, &control_packages)?;
-    problems.extend(seed_problems(&seeds, &built));
-    let metapackages = metapackage_controls(root)?;
-    problems.extend(metapackage_dependency_problems(&metapackages, &built));
-    if !problems.is_empty() {
-        for problem in &problems {
-            eprintln!("check-packaging: {problem}");
-        }
-        bail!("{} packaging mismatch(es)", problems.len());
+    DebMetadata {
+        deb_name_to_crate,
+        deb_depends,
+        deb_assets,
+        maintainerless,
     }
+}
 
-    println!(
-        "check-packaging: {} debian/control package(s) all have matching crate metadata; \
-         {} unit ExecStart binary/ies all installed by a package; \
-         {} seed(s) and {} metapackage(s) name only packages that exist",
-        control_packages.len(),
-        units.len(),
-        seeds.len(),
-        metapackages.len()
-    );
-    Ok(())
+/// Every unit file this repository ships, by file name.
+fn unit_file_names(root: &Path) -> BTreeSet<String> {
+    ["system", "user"]
+        .iter()
+        .flat_map(|scope| std::fs::read_dir(root.join("session/units").join(scope)))
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The component matrix must name exactly the build set, and name it correctly.
+///
+/// `distro/deploy/components.toml` is what `cargo xtask build-set` builds, what the reinstall
+/// script installs, what `lege doctor` checks for coherence and what `lege dev` activates. Four
+/// consumers of one list is only an improvement over four copies of it if the list cannot be
+/// wrong, so: every `debian/control` package is a matrix row, every matrix row is a
+/// `debian/control` package, and every row's `crate` is the crate that actually builds that
+/// package according to `[package.metadata.deb]`.
+fn component_matrix_problems(
+    matrix: &lege_build::components::Matrix,
+    control_packages: &[String],
+    deb_name_to_crate: &BTreeMap<String, String>,
+    unit_files: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut problems = matrix
+        .problems()
+        .into_iter()
+        .map(|problem| format!("distro/deploy/components.toml: {problem}"))
+        .collect::<Vec<_>>();
+    let rows: BTreeMap<&str, &str> = matrix
+        .components
+        .iter()
+        .map(|component| (component.package.as_str(), component.crate_name.as_str()))
+        .collect();
+    for package in control_packages {
+        if !rows.contains_key(package.as_str()) {
+            problems.push(format!(
+                "{package}: in debian/control but not in distro/deploy/components.toml, so it \
+                 would be left out of every build set"
+            ));
+        }
+    }
+    for component in &matrix.components {
+        if let Some(unit) = &component.unit
+            && !unit_files.contains(unit)
+        {
+            problems.push(format!(
+                "{}: the component matrix names the unit {unit}, which is not in session/units/",
+                component.name
+            ));
+        }
+    }
+    for (package, crate_name) in &rows {
+        if !control_packages.iter().any(|p| p == package) {
+            problems.push(format!(
+                "{package}: a component matrix row with no debian/control Package: stanza"
+            ));
+            continue;
+        }
+        match deb_name_to_crate.get(*package) {
+            Some(actual) if actual == crate_name => {}
+            Some(actual) => problems.push(format!(
+                "{package}: the component matrix says crate {crate_name}, but \
+                 [package.metadata.deb] says {actual}"
+            )),
+            None => problems.push(format!(
+                "{package}: the component matrix names crate {crate_name}, which has no \
+                 [package.metadata.deb] table"
+            )),
+        }
+    }
+    problems
 }
 
 /// Compare `debian/control`'s `Package:` stanzas against the `[package.metadata.deb] name` of

@@ -49,9 +49,13 @@ doctor *ARGS:
 preview-codecs:
     ./scripts/build-preview-codecs.sh
 
+# One identified build set: every package in distro/deploy/components.toml at one version.
 deb: preview-codecs
-    for p in lege-sessiond lege-resourced lege-filed lege-hostd lege-boot-health lege-session lege-comp lege-greeter lege-shell lege-settings lege-files xdg-desktop-portal-lege lege; do cargo deb -p "$p" -q; done
-    ls -1 target/debian/*.deb
+    cargo run -q -p xtask -- build-set
+
+# What `just deb` would build, and under which id.
+deb-plan:
+    cargo run -q -p xtask -- build-set --dry-run
 
 # Vendor dependencies for the offline archive build (debian/rules)
 vendor:

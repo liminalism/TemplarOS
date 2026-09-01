@@ -145,26 +145,21 @@ fn exec_start_binaries(unit: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every package `scripts/reinstall-legeos-desktop.sh` installs, keyed by its dpkg name. This has
-/// to be an explicit set rather than "everything starting with `legeos-`" or "everything the
-/// reinstall script's package list happens to mention": `legeos-nvidia-open` and
-/// `legeos-nvidia-proprietary` also carry that prefix and are flavour packages with nothing to do
-/// with build skew, and `lege-files` breaks the naming pattern entirely.
-const LEGEOS_PACKAGES: [&str; 13] = [
-    "legeos-sessiond",
-    "legeos-resourced",
-    "legeos-filed",
-    "legeos-hostd",
-    "legeos-boot-health",
-    "legeos-session",
-    "legeos-comp",
-    "legeos-greeter",
-    "legeos-shell",
-    "legeos-settings",
-    "legeos-portal",
-    "legeos-cli",
-    "lege-files",
-];
+/// Every Debian package in a LegeOS build set, keyed by its dpkg name.
+///
+/// This has to be an explicit set rather than "everything starting with `legeos-`":
+/// `legeos-nvidia-open` and `legeos-nvidia-proprietary` also carry that prefix and are driver
+/// flavour packages with nothing to do with build skew, and `lege-files` breaks the naming
+/// pattern entirely. The set is not written down *here*, though — it comes from the component
+/// matrix (`distro/deploy/components.toml`), which is also what `cargo xtask build-set` builds and
+/// what the reinstall script installs, so the three can no longer disagree about what LegeOS is.
+fn legeos_packages() -> Vec<String> {
+    lege_build::components::Matrix::embedded()
+        .packages()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+}
 
 /// How far apart two LegeOS packages' build dates are allowed to be before that is a fault rather
 /// than the ordinary spread of a single build run.
@@ -214,17 +209,18 @@ impl Check for PackageAgesConsistent {
             );
         }
 
-        let dated: Vec<(&str, SystemTime)> = installed
+        let dated: Vec<(String, SystemTime)> = installed
             .into_iter()
-            .filter_map(|package| {
-                let binary = primary_binary(context, package)?;
+            .filter_map(|(package, _)| {
+                let binary = primary_binary(context, &package)?;
                 let modified = fs::metadata(&binary).ok()?.modified().ok()?;
                 Some((package, modified))
             })
             .collect();
         // Fewer than two dated binaries means there is nothing to compare — a missing binary is
         // `unit-binaries`' or `app-manifests`' fault to report, not this check's.
-        let Some(&(newest_package, newest)) = dated.iter().max_by_key(|(_, time)| *time) else {
+        let Some((newest_package, newest)) = dated.iter().max_by_key(|(_, time)| *time).cloned()
+        else {
             return finding(
                 self,
                 Outcome::Skipped,
@@ -233,15 +229,15 @@ impl Check for PackageAgesConsistent {
             );
         };
 
-        let mut lagging: Vec<(&str, SystemTime)> = dated
+        let mut lagging: Vec<(String, SystemTime)> = dated
             .iter()
-            .copied()
             .filter(|(package, time)| {
                 *package != newest_package
                     && newest
                         .duration_since(*time)
                         .is_ok_and(|behind| behind > MAX_BUILD_SKEW)
             })
+            .cloned()
             .collect();
         if lagging.is_empty() {
             return finding(
@@ -279,9 +275,10 @@ impl Check for PackageAgesConsistent {
     }
 }
 
-/// Every package in [`LEGEOS_PACKAGES`] that `status_text` (a dpkg `status` file) marks as
-/// installed.
-fn installed_legeos_packages(status_text: &str) -> Vec<&'static str> {
+/// Every package in [`legeos_packages`] that `status_text` (a dpkg `status` file) marks as
+/// installed, with the version dpkg records for it.
+fn installed_legeos_packages(status_text: &str) -> Vec<(String, String)> {
+    let known = legeos_packages();
     status_text
         .split("\n\n")
         .filter_map(|stanza| {
@@ -291,10 +288,14 @@ fn installed_legeos_packages(status_text: &str) -> Vec<&'static str> {
             let installed = stanza
                 .lines()
                 .any(|line| line.starts_with("Status:") && line.contains("installed"));
-            if !installed {
+            if !installed || !known.iter().any(|package| package == name) {
                 return None;
             }
-            LEGEOS_PACKAGES.iter().copied().find(|known| *known == name)
+            let version = stanza
+                .lines()
+                .find_map(|line| line.strip_prefix("Version: "))
+                .unwrap_or_default();
+            Some((name.to_owned(), version.trim().to_owned()))
         })
         .collect()
 }
