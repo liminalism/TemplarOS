@@ -12,10 +12,12 @@ repository.workspace = true
 [dependencies]
 lege-types = { workspace = true }
 serde = { workspace = true }
+# For `migrate`: a document written by an older build has a shape `FieldDocument` cannot
+# represent, so a migration step has to work on the parsed JSON rather than on the struct.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true
