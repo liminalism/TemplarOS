@@ -239,6 +239,44 @@ impl Project {
     }
 }
 
+/// What `lege-resourced` is told about one instance.
+///
+/// The governor's contract is four booleans on `Resources1.SetInstanceHints`; this is the three of
+/// them a project has an opinion about (`has_unsaved_work` belongs to the checkpoint protocol, not
+/// to a project).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResourceHints {
+    pub protected: bool,
+    pub disposable: bool,
+    pub supports_checkpoint: bool,
+}
+
+/// The hints for one instance a project launched.
+///
+/// Pure, and deliberately small: importance reaches the governor as `protected`, which is a channel
+/// that already exists and already means something. A graded weight would need a governor that has
+/// something to multiply it by, and it does not have one yet — inventing the channel first is how
+/// `priority_boost` came to sit in this file for a year doing nothing.
+///
+/// An Important project that is *open* protects what it launched. Closing it, or demoting it, hands
+/// the instance back to whatever its own manifest says, which is why this takes the manifest rather
+/// than only the importance: the answer on the way down has to be the manifest's, not `false`.
+pub fn hints_for(
+    manifest: &lege_types::AppManifest,
+    importance: ProjectImportance,
+    project_open: bool,
+) -> ResourceHints {
+    use lege_types::ResourceClass;
+    let by_project = project_open && importance == ProjectImportance::Important;
+    ResourceHints {
+        protected: by_project || manifest.resource_class == ResourceClass::SessionCritical,
+        // Protecting something and calling it disposable in the same breath is not a policy. While
+        // an Important project holds it, it is not first to go.
+        disposable: !by_project && manifest.resource_class == ResourceClass::Disposable,
+        supports_checkpoint: manifest.supports_checkpoint,
+    }
+}
+
 /// Load every persisted project, ordered by ID.
 pub fn load_all(store: &Store) -> Result<Vec<Project>> {
     let connection = store.lock();
@@ -406,5 +444,51 @@ mod tests {
             ProjectImportance::Normal,
             "nothing was changed"
         );
+    }
+
+    #[test]
+    fn importance_reaches_the_governor_only_while_the_project_is_open() {
+        use lege_types::{AppAliases, AppManifest, ResourceClass};
+        let ordinary = AppManifest {
+            id: "org.legeos.Viewer".parse().unwrap(),
+            display_name: "Viewer".into(),
+            primary_desktop_file_id: "org.legeos.Viewer.desktop".into(),
+            executable: PathBuf::from("/usr/bin/lege-viewer"),
+            aliases: AppAliases::default(),
+            mime_types: std::collections::BTreeSet::default(),
+            resource_class: ResourceClass::Normal,
+            supports_checkpoint: true,
+            icon: None,
+            categories: std::collections::BTreeSet::default(),
+            keywords: std::collections::BTreeSet::default(),
+            no_display: false,
+            provenance: None,
+        };
+
+        let closed = hints_for(&ordinary, ProjectImportance::Important, false);
+        assert!(!closed.protected, "a closed project protects nothing");
+        assert!(closed.supports_checkpoint);
+
+        let open = hints_for(&ordinary, ProjectImportance::Important, true);
+        assert!(open.protected);
+
+        let normal = hints_for(&ordinary, ProjectImportance::Normal, true);
+        assert!(!normal.protected, "an open Normal project changes nothing");
+
+        // Demotion has to hand back the manifest's own answer, not `false`.
+        let critical = AppManifest {
+            resource_class: ResourceClass::SessionCritical,
+            ..ordinary.clone()
+        };
+        assert!(hints_for(&critical, ProjectImportance::Normal, false).protected);
+
+        // Protected and disposable at once is not a policy.
+        let disposable = AppManifest {
+            resource_class: ResourceClass::Disposable,
+            ..ordinary
+        };
+        assert!(hints_for(&disposable, ProjectImportance::Normal, true).disposable);
+        let held = hints_for(&disposable, ProjectImportance::Important, true);
+        assert!(held.protected && !held.disposable);
     }
 }

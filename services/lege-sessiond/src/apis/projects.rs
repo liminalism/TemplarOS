@@ -10,7 +10,7 @@ use crate::{apis::failed, checkpoint::CheckpointTransport};
 use lege_appd::{Registry, launcher::LaunchBackend};
 use lege_session_core::{
     history::{Event, EventId, EventKind, HistoryStore, SqliteHistory},
-    projects::{self, Project, ProjectApp, ProjectId, ProjectState},
+    projects::{self, Project, ProjectApp, ProjectId, ProjectState, hints_for},
 };
 use lege_state::Store;
 use lege_types::{
@@ -96,6 +96,38 @@ impl ProjectsApi {
         };
         if let Err(error) = self.history.append(event) {
             tracing::warn!(%error, "failed to record project history event");
+        }
+    }
+
+    /// Tell the governor what this project's importance means for the instances it launched.
+    ///
+    /// `open` is whether the project is (still) open. Best-effort, like every other
+    /// `SetInstanceHints` caller: `lege-resourced` treats an instance it has no hints for as an
+    /// ordinary one, and a governor that is not answering must not stop a project from closing.
+    async fn push_project_hints(&self, project: &Project, open: bool) {
+        let Ok(proxy) = lege_client::proxies::ResourcesProxy::new(&self.connection).await else {
+            return;
+        };
+        for app in &project.apps {
+            let Some(instance) = app.last_instance else {
+                continue;
+            };
+            let Some((_, manifest)) = resolve_project_app(&self.registry, app) else {
+                continue;
+            };
+            let hints = hints_for(&manifest, project.importance, open);
+            if let Err(error) = proxy
+                .set_instance_hints(
+                    &instance.to_string(),
+                    hints.protected,
+                    hints.disposable,
+                    hints.supports_checkpoint,
+                    false,
+                )
+                .await
+            {
+                tracing::debug!(%error, %instance, "could not push this project's resource hints");
+            }
         }
     }
 
@@ -312,6 +344,8 @@ impl ProjectsApi {
         project.last_opened_ms = lege_state::now_ms();
         self.save(&project)?;
         self.open_projects.write().insert(project_id.to_owned());
+        // An Important project protects what it launched, for as long as it is open.
+        self.push_project_hints(&project, true).await;
         // Recent-file and last-directory suggestions should follow the work.
         self.tell_files_the_project(Some(&project), None).await;
         Ok(())
@@ -374,6 +408,8 @@ impl ProjectsApi {
         }
         self.save(&project)?;
         self.open_projects.write().remove(project_id);
+        // Hand every instance back to what its own manifest says.
+        self.push_project_hints(&project, false).await;
         self.tell_files_the_project(None, Some(project_id)).await;
         Ok(())
     }
@@ -512,6 +548,10 @@ impl ProjectsApi {
         self.save(&project)?;
 
         if project.importance != previous_importance {
+            // A promotion or a demotion changes what the governor is told, immediately — waiting
+            // for the next open would make the setting feel like it had not taken.
+            let open = self.open_projects.read().contains(project_id);
+            self.push_project_hints(&project, open).await;
             self.record(
                 project_id,
                 EventKind::SettingChange,
