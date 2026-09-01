@@ -105,12 +105,19 @@ impl Repo {
         self.root.join("legeos-dev.gpg")
     }
 
+    /// The archive's own copy of its apt source, so `apt-get update` can be pointed at this
+    /// archive alone instead of refreshing every source on the machine.
+    #[must_use]
+    pub fn apt_dir(&self) -> PathBuf {
+        self.root.join("apt")
+    }
+
     /// Creates the archive and its signing key if they are not there already. Idempotent.
     ///
     /// # Errors
     /// If a directory cannot be created, or `gpg` cannot generate or export the key.
     pub fn init(&self) -> Result<String> {
-        for dir in [self.root.clone(), self.pool(), self.sets()] {
+        for dir in [self.root.clone(), self.pool(), self.sets(), self.apt_dir()] {
             fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
             // 0755: `_apt` has to be able to read every one of these. See the module comment.
             let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
@@ -122,6 +129,10 @@ impl Repo {
 
         let created = self.ensure_key()?;
         self.export_key()?;
+        write_public(
+            &self.apt_dir().join("legeos-dev.sources"),
+            self.source_stanza(&self.public_key()).as_bytes(),
+        )?;
         Ok(if created {
             format!("{} — created, with a new signing key", self.root.display())
         } else {
@@ -438,7 +449,7 @@ impl Repo {
     pub fn manifest(&self, build_set: &str) -> Result<SetManifest> {
         let path = self.sets().join(build_set).join("manifest.json");
         let body = fs::read(&path)
-            .with_context(|| format!("{build_set} was not published to this archive"))?;
+            .with_context(|| format!("{build_set} was never published to this archive"))?;
         serde_json::from_slice(&body).with_context(|| format!("parsing {}", path.display()))
     }
 

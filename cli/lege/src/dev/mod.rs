@@ -7,10 +7,11 @@
 
 pub mod cmd;
 pub mod converge;
+pub mod install;
 pub mod repo;
 pub mod report;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use converge::Observation;
 use lege_build::components::Matrix;
 use std::{collections::BTreeMap, fmt::Write as _, path::Path, path::PathBuf, sync::Arc};
@@ -221,6 +222,89 @@ pub fn repo_prune(root: PathBuf, keep: usize) -> Result<String> {
             dropped.join(", ")
         )
     })
+}
+
+/// `lege dev install` — put a published build set on this machine.
+///
+/// `build_set` defaults to the archive's current set, which is what `lege dev repo publish` just
+/// wrote, so the ordinary sequence is `cargo xtask build-set` → publish → install.
+///
+/// # Errors
+/// If the archive holds no such set, or apt refuses it, or the machine is not at that set
+/// afterwards.
+pub fn install_set(
+    repo_root: PathBuf,
+    root: &Path,
+    build_set: Option<&str>,
+    dry_run: bool,
+) -> Result<String> {
+    let installer = open_installer(repo_root, root);
+    let target = match build_set {
+        Some(set) => set.to_owned(),
+        None => installer
+            .repo
+            .current()?
+            .context("the archive holds no set; run `lege dev repo publish` first")?,
+    };
+    run_install(&installer, &target, dry_run)
+}
+
+/// `lege dev rollback` — put the previous set back.
+///
+/// The same code path as an install, with the previous set instead of the current one. That is
+/// deliberate: a rollback that took a different path from an install would be the one path never
+/// exercised until the moment it has to work.
+///
+/// # Errors
+/// If there is no previous set, or the install fails.
+pub fn rollback(repo_root: PathBuf, root: &Path, dry_run: bool) -> Result<String> {
+    let installer = open_installer(repo_root, root);
+    let previous = installer.repo.previous()?.context(
+        "there is no previous set to roll back to; this archive has only ever published one",
+    )?;
+    run_install(&installer, &previous, dry_run)
+}
+
+fn open_installer(repo_root: PathBuf, root: &Path) -> install::Installer {
+    let runner = Arc::new(cmd::RealCommandRunner::default());
+    install::Installer::new(
+        repo::Repo::new(repo_root, runner.clone()),
+        runner,
+        root.to_path_buf(),
+    )
+}
+
+fn run_install(installer: &install::Installer, target: &str, dry_run: bool) -> Result<String> {
+    let plan = installer.plan(target)?;
+    let mut out = format!(
+        "build set {target}
+"
+    );
+    let _ = writeln!(out, "  {}", plan.command_line());
+    if dry_run {
+        out.push_str(
+            "
+dry run: nothing was installed
+",
+        );
+        return Ok(out);
+    }
+    if !install::is_root(&installer.root) {
+        bail!("installing a build set changes package state; run this as root");
+    }
+    installer.install(&plan)?;
+    let _ = writeln!(
+        out,
+        "
+installed {} package(s)",
+        plan.pinned.len()
+    );
+    if let Some(previous) = &plan.rollback_to {
+        let _ = writeln!(out, "  previous set retained: {previous}");
+        let _ = writeln!(out, "  roll back with: sudo lege dev rollback");
+    }
+    out.push_str("  `lege dev status` says what still needs restarting\n");
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -23,7 +23,10 @@ use lege_client::proxies::{
     ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
-use std::{fmt::Write as _, path::PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 /// The LegeOS command line.
 #[derive(Debug, Parser)]
@@ -136,6 +139,12 @@ enum Command {
     Dev {
         #[command(subcommand)]
         command: Option<DevCommand>,
+        /// The local archive build sets are published to and installed from.
+        #[arg(long, global = true, default_value = lege::dev::repo::DEFAULT_ROOT)]
+        repo: PathBuf,
+        /// Act on an unpacked root instead of `/`.
+        #[arg(long, global = true, default_value = "/")]
+        root: PathBuf,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -165,17 +174,25 @@ enum DevCommand {
         /// Compare against this build set instead of the newest one installed.
         #[arg(long)]
         target: Option<String>,
-        /// Check an unpacked image root instead of `/`.
-        #[arg(long, default_value = "/")]
-        root: PathBuf,
     },
     /// The local package archive this machine installs build sets from.
     Repo {
         #[command(subcommand)]
         command: RepoCommand,
-        /// Where the archive lives.
-        #[arg(long, default_value = lege::dev::repo::DEFAULT_ROOT, global = true)]
-        repo: PathBuf,
+    },
+    /// Install a published build set — one pinned apt transaction for all of it.
+    Install {
+        /// Which set; defaults to the archive's current one.
+        build_set: Option<String>,
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Put the previous build set back.
+    Rollback {
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -491,14 +508,11 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
 
 /// `lege dev`, whose subcommands are all synchronous — no bus, no session, just the filesystem
 /// and a few external tools.
-fn run_dev(command: Option<DevCommand>, json: bool) -> Result<String> {
-    let command = command.unwrap_or(DevCommand::Status {
-        target: None,
-        root: PathBuf::from("/"),
-    });
+fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) -> Result<String> {
+    let command = command.unwrap_or(DevCommand::Status { target: None });
     match command {
-        DevCommand::Status { target, root } => dev::status(&root, target.as_deref(), json),
-        DevCommand::Repo { command, repo } => match command {
+        DevCommand::Status { target } => dev::status(root, target.as_deref(), json),
+        DevCommand::Repo { command } => match command {
             RepoCommand::Init {
                 install_source,
                 sysroot,
@@ -507,13 +521,22 @@ fn run_dev(command: Option<DevCommand>, json: bool) -> Result<String> {
             RepoCommand::Status => dev::repo_status(repo),
             RepoCommand::Prune { keep } => dev::repo_prune(repo, keep),
         },
+        DevCommand::Install { build_set, dry_run } => {
+            dev::install_set(repo, root, build_set.as_deref(), dry_run)
+        }
+        DevCommand::Rollback { dry_run } => dev::rollback(repo, root, dry_run),
     }
 }
 
 async fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Dev { command, json } => {
-            print!("{}", run_dev(command, json)?);
+        Command::Dev {
+            command,
+            repo,
+            root,
+            json,
+        } => {
+            print!("{}", run_dev(command, repo, &root, json)?);
             if json {
                 println!();
             }
