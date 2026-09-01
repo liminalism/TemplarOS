@@ -40,6 +40,16 @@
 //!
 //! `lege-sessiond` reports session health at readiness and probes the public Wayland socket before
 //! reporting compositor activity. The `*_REPORT_WIRED` switches below keep those claims explicit.
+//!
+//! ## Acting on the verdict
+//!
+//! Reporting was, until now, all this binary did. The promotion loop was open on both boot
+//! backends: nothing anywhere called `Deployments1.MarkGood`, so a candidate that booted perfectly
+//! stayed unblessed until a human ran the CLI, and nothing called `Deployments1.Rollback`, so a
+//! candidate that came up broken was left to `FailureAction=reboot-force` and the boot counter
+//! running out. Both halves are closed here: a healthy trial boot blesses, an unhealthy one rolls
+//! back to the known-good deployment, and [`PROMOTION_WIRED`] plus `--report-only` keep it
+//! possible to run this binary without moving the boot default.
 
 use anyhow::Result;
 use clap::Parser;
@@ -151,7 +161,42 @@ struct Report {
     /// or "genuinely unhealthy" without having to know the binary's source.
     session_healthy_report_wired: bool,
     compositor_active_report_wired: bool,
+    /// Mirrors [`PROMOTION_WIRED`], for the same reason the two above do.
+    promotion_wired: bool,
+    /// What this run did about the candidate deployment, if anything.
+    promotion: Promotion,
     checks: Vec<Check>,
+}
+
+/// Whether this binary is allowed to *act* on its verdict, rather than only report it.
+///
+/// The promotion loop has been open on both boot backends since the beginning: nothing ever
+/// called `Deployments1.MarkGood`, so a candidate deployment could boot perfectly and still never
+/// be blessed — only a human running `lege update` ever closed it. And nothing ever called
+/// `Rollback`, so a candidate that came up broken relied entirely on `FailureAction=reboot-force`
+/// and the boot counter running out, which is the blunt instrument, not the plan.
+///
+/// This is a switch rather than an unconditional call for the same reason
+/// [`SESSION_HEALTHY_REPORT_WIRED`] is: acting here changes what the machine boots next time, so
+/// which side of the switch the code is on should be readable in one line rather than inferred
+/// from a call graph. `--report-only` also suppresses it, unconditionally, so `lege doctor` and
+/// anyone debugging can run this binary without moving the boot default.
+const PROMOTION_WIRED: bool = true;
+
+/// What this run did about the deployment on trial.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "outcome", content = "detail")]
+enum Promotion {
+    /// Not a trial boot, or acting is switched off: nothing to decide.
+    NotAttempted(&'static str),
+    /// The candidate came up healthy and was blessed.
+    MarkedGood,
+    /// The candidate came up unhealthy and the previous known-good deployment was made default.
+    RolledBack(String),
+    /// It should have acted and could not — hostd unreachable, no known-good deployment to go
+    /// back to, polkit refusing. Reported, never silently swallowed: an unattended probe that
+    /// fails quietly is indistinguishable from one that was never wired up.
+    Failed(String),
 }
 
 /// Whether the process should ask systemd to force a reboot
@@ -173,7 +218,31 @@ fn evaluate(root: &Path, timeout: Duration, trial: bool) -> Report {
         trial,
         session_healthy_report_wired: SESSION_HEALTHY_REPORT_WIRED,
         compositor_active_report_wired: COMPOSITOR_ACTIVE_REPORT_WIRED,
+        promotion_wired: PROMOTION_WIRED,
+        promotion: Promotion::NotAttempted("not decided yet"),
         checks,
+    }
+}
+
+/// What this run should do about the deployment on trial. Pure, so every branch is testable
+/// without a bus.
+fn intended_promotion(report: &Report, report_only: bool, wired: bool) -> Option<bool> {
+    if report_only || !wired || !report.trial {
+        return None;
+    }
+    Some(report.healthy)
+}
+
+/// The reason nothing was attempted, for the report.
+fn not_attempted(report: &Report, report_only: bool, wired: bool) -> &'static str {
+    if report_only {
+        "--report-only"
+    } else if !wired {
+        "acting on the verdict is switched off"
+    } else if !report.trial {
+        "not a trial boot: no candidate to bless or roll back"
+    } else {
+        "not decided yet"
     }
 }
 
@@ -224,7 +293,19 @@ async fn main() -> Result<()> {
     let timeout = Duration::from_secs(cli.timeout_secs.max(1));
 
     let trial = query_is_trial_boot(timeout).await;
-    let report = evaluate(&cli.root, timeout, trial);
+    let mut report = evaluate(&cli.root, timeout, trial);
+
+    // Close the loop: a candidate that came up healthy is blessed here rather than waiting for a
+    // human to run `lege update mark-good`, and one that came up broken is rolled back here
+    // rather than left to the boot counter and a forced reboot.
+    report.promotion = match intended_promotion(&report, cli.report_only, PROMOTION_WIRED) {
+        None => Promotion::NotAttempted(not_attempted(&report, cli.report_only, PROMOTION_WIRED)),
+        Some(healthy) => match tokio::time::timeout(timeout, decide_deployment(healthy)).await {
+            Ok(promotion) => promotion,
+            Err(_) => Promotion::Failed("lege-hostd did not answer in time".to_owned()),
+        },
+    };
+
     print_human_summary(&report);
     println!("{}", serde_json::to_string_pretty(&report)?);
 
@@ -233,6 +314,90 @@ async fn main() -> Result<()> {
     } else {
         std::process::exit(1)
     }
+}
+
+/// Bless or roll back the deployment on trial, through `lege-hostd`.
+///
+/// Every failure is reported rather than propagated: this runs before `boot-complete.target`, and
+/// a probe that returns an error here takes the boot down over a bookkeeping call. If the
+/// rollback could not be made, `should_force_reboot` still arms the reboot the way it always did
+/// — the blunt instrument is still there, it is just no longer the only one.
+async fn decide_deployment(healthy: bool) -> Promotion {
+    let Ok(connection) = zbus::Connection::system().await else {
+        return Promotion::Failed("no system bus".to_owned());
+    };
+    if healthy {
+        return match call_deployments(&connection, "MarkGood", &()).await {
+            Ok(()) => Promotion::MarkedGood,
+            Err(error) => Promotion::Failed(format!("MarkGood failed: {error}")),
+        };
+    }
+    let Some(target) = known_good_deployment(&connection).await else {
+        return Promotion::Failed(
+            "unhealthy trial boot with no known-good deployment to return to".to_owned(),
+        );
+    };
+    match call_deployments(&connection, "Rollback", &(target.as_str(),)).await {
+        Ok(()) => Promotion::RolledBack(target),
+        Err(error) => Promotion::Failed(format!("Rollback failed: {error}")),
+    }
+}
+
+async fn call_deployments<A>(
+    connection: &zbus::Connection,
+    method: &str,
+    args: &A,
+) -> Result<(), String>
+where
+    A: serde::ser::Serialize + zbus::zvariant::DynamicType,
+{
+    connection
+        .call_method(
+            Some("org.legeos.Host"),
+            "/org/legeos/Host",
+            Some("org.legeos.Host.Deployments1"),
+            method,
+            args,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// The id of the deployment marked known-good, from `Deployments1.List`.
+///
+/// This is what a rollback returns *to*. There is deliberately no fallback to "whatever is first
+/// in the list": rolling back to a deployment nobody has ever confirmed boots would turn one bad
+/// boot into two.
+async fn known_good_deployment(connection: &zbus::Connection) -> Option<String> {
+    let reply = connection
+        .call_method(
+            Some("org.legeos.Host"),
+            "/org/legeos/Host",
+            Some("org.legeos.Host.Deployments1"),
+            "List",
+            &(),
+        )
+        .await
+        .ok()?;
+    let json: String = reply.body().deserialize().ok()?;
+    known_good_from_deployments_json(&json)
+}
+
+/// The known-good deployment's id in a `Deployments1.List` reply. Split out so the choice is
+/// testable without a bus.
+fn known_good_from_deployments_json(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    value
+        .as_array()?
+        .iter()
+        .find(|deployment| {
+            deployment
+                .get("known_good")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        })
+        .and_then(|deployment| Some(deployment.get("id")?.as_str()?.to_owned()))
 }
 
 /// Asks `lege-hostd` whether the current transaction is in `Phase::Trial`. Bounded by `timeout`
@@ -308,6 +473,16 @@ fn print_human_summary(report: &Report) {
             Status::Skipped => "SKIP",
         };
         eprintln!("  [{marker}] {:<20} {}", check.name, check.detail);
+    }
+    // The deployment decision goes on its own line, not in the parenthesised list: it is the one
+    // thing in this output that changed the machine.
+    match &report.promotion {
+        Promotion::NotAttempted(reason) => eprintln!("  deployment: nothing to decide ({reason})"),
+        Promotion::MarkedGood => {
+            eprintln!("  deployment: blessed — this candidate is now the default");
+        }
+        Promotion::RolledBack(id) => eprintln!("  deployment: rolled back to {id}"),
+        Promotion::Failed(reason) => eprintln!("  deployment: COULD NOT ACT — {reason}"),
     }
 }
 
@@ -650,19 +825,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_force_reboot_only_when_trial_and_unhealthy() {
-        let report = |healthy: bool, trial: bool| Report {
+    fn report_of(healthy: bool, trial: bool) -> Report {
+        Report {
             healthy,
             trial,
             session_healthy_report_wired: true,
             compositor_active_report_wired: true,
+            promotion_wired: true,
+            promotion: Promotion::NotAttempted("test"),
             checks: vec![],
-        };
-        assert!(!should_force_reboot(&report(true, true)));
-        assert!(!should_force_reboot(&report(true, false)));
-        assert!(!should_force_reboot(&report(false, false)));
-        assert!(should_force_reboot(&report(false, true)));
+        }
+    }
+
+    #[test]
+    fn should_force_reboot_only_when_trial_and_unhealthy() {
+        assert!(!should_force_reboot(&report_of(true, true)));
+        assert!(!should_force_reboot(&report_of(true, false)));
+        assert!(!should_force_reboot(&report_of(false, false)));
+        assert!(should_force_reboot(&report_of(false, true)));
+    }
+
+    #[test]
+    fn a_healthy_trial_boot_blesses_and_an_unhealthy_one_rolls_back() {
+        // The loop this closes: nothing in the tree ever called MarkGood, so a candidate could
+        // boot perfectly and still never become the default unless a human ran the CLI.
+        assert_eq!(
+            intended_promotion(&report_of(true, true), false, true),
+            Some(true)
+        );
+        assert_eq!(
+            intended_promotion(&report_of(false, true), false, true),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_boot_never_touches_the_deployment() {
+        // Blessing on every boot would mark whatever is running good, which is exactly the
+        // property a trial is supposed to establish rather than assume.
+        assert_eq!(
+            intended_promotion(&report_of(true, false), false, true),
+            None
+        );
+        assert_eq!(
+            not_attempted(&report_of(true, false), false, true),
+            "not a trial boot: no candidate to bless or roll back"
+        );
+    }
+
+    #[test]
+    fn report_only_and_the_switch_both_suppress_acting() {
+        assert_eq!(intended_promotion(&report_of(true, true), true, true), None);
+        assert_eq!(
+            not_attempted(&report_of(true, true), true, true),
+            "--report-only"
+        );
+        assert_eq!(
+            intended_promotion(&report_of(true, true), false, false),
+            None
+        );
+        assert_eq!(
+            not_attempted(&report_of(true, true), false, false),
+            "acting on the verdict is switched off"
+        );
+    }
+
+    #[test]
+    fn a_rollback_target_is_the_known_good_deployment_and_nothing_else() {
+        // Rolling back to a deployment nobody has confirmed boots turns one bad boot into two.
+        let json = r#"[
+            {"id":"cand2","known_good":false},
+            {"id":"base1","known_good":true},
+            {"id":"cand1","known_good":false}
+        ]"#;
+        assert_eq!(
+            known_good_from_deployments_json(json).as_deref(),
+            Some("base1")
+        );
+        assert_eq!(
+            known_good_from_deployments_json(r#"[{"id":"cand2","known_good":false}]"#),
+            None,
+            "no known-good deployment means no rollback target, not a guess"
+        );
+        assert_eq!(known_good_from_deployments_json("[]"), None);
+        assert_eq!(known_good_from_deployments_json("not json"), None);
     }
 
     #[test]

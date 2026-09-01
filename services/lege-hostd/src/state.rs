@@ -44,6 +44,73 @@ pub struct HostdState {
     /// hostd's own `RuntimeDirectory` (`/run/legeos` in production) — the only place the
     /// `Session1` report markers `lege-boot-health` reads are ever written.
     pub run_dir: PathBuf,
+    /// `/proc/cmdline`. The only thing on the machine that says which deployment actually booted.
+    pub cmdline_path: PathBuf,
+}
+
+/// What [`HostdState::reconcile_boot`] found at startup.
+///
+/// An enum rather than a `Result<()>` because every one of these is a normal outcome that a
+/// person reading the journal after a failed update needs to be able to tell apart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BootReconciliation {
+    /// No candidate staged, or a backend that counts its own attempts.
+    NoCandidate,
+    /// The kernel command line does not say which deployment booted.
+    CannotTell,
+    /// This boot *is* the trial. Nothing to account for — boot-health decides it.
+    BootedTheCandidate { candidate: String },
+    /// The candidate did not boot; one attempt spent, some left.
+    AttemptSpent { candidate: String, remaining: u8 },
+    /// The candidate ran out of attempts and the known-good deployment is the default again.
+    RolledBack { candidate: String, to: String },
+    /// It should have rolled back and could not.
+    CouldNotRollBack { candidate: String, reason: String },
+    /// The boot state could not be read at all.
+    Unreadable(String),
+}
+
+impl BootReconciliation {
+    /// One line for the journal.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            Self::NoCandidate => "no candidate deployment is staged".to_owned(),
+            Self::CannotTell => {
+                "the kernel command line does not name a deployment; boot attempts are not \
+                 being counted"
+                    .to_owned()
+            }
+            Self::BootedTheCandidate { candidate } => {
+                format!("this boot is the trial of {candidate}")
+            }
+            Self::AttemptSpent {
+                candidate,
+                remaining,
+            } => format!("{candidate} did not boot; {remaining} attempt(s) left"),
+            Self::RolledBack { candidate, to } => {
+                format!("{candidate} never booted; rolled back to {to}")
+            }
+            Self::CouldNotRollBack { candidate, reason } => {
+                format!("{candidate} is out of attempts and could not be rolled back: {reason}")
+            }
+            Self::Unreadable(reason) => format!("could not read the boot state: {reason}"),
+        }
+    }
+}
+
+/// The value of `legeos.deployment=` on a kernel command line.
+///
+/// Split out from the daemon so the parsing is testable, and written as an exact-key scan rather
+/// than a substring search: `xlegeos.deployment=` and `legeos.deployment_backup=` must not match,
+/// because the answer decides whether a boot attempt is spent.
+#[must_use]
+pub fn booted_deployment_from_cmdline(cmdline: &str) -> Option<String> {
+    cmdline
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("legeos.deployment="))
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// Everything [`HostdState::new`] needs to wire up — real backends in `main`, fakes in tests.
@@ -64,6 +131,7 @@ pub struct HostdConfig {
     pub apt_root: PathBuf,
     pub etc_dir: PathBuf,
     pub run_dir: PathBuf,
+    pub cmdline_path: PathBuf,
 }
 
 impl HostdState {
@@ -92,6 +160,7 @@ impl HostdState {
             apt_root: config.apt_root,
             etc_dir: config.etc_dir,
             run_dir: config.run_dir,
+            cmdline_path: config.cmdline_path,
         })
     }
 
@@ -239,6 +308,103 @@ impl HostdState {
         self.drive_pipeline();
     }
 
+    /// Account for a trial boot that did not happen.
+    ///
+    /// GRUB has no boot-assessment counter of its own: `grub-reboot` sets a one-shot default and
+    /// nothing counts the attempts, which is why hostd keeps that counter — and why hostd has to
+    /// be the thing that advances it. `Grub::decrement` has existed since the boot work landed
+    /// and was never called by anything; it carried a `#[allow(dead_code)]` saying as much. The
+    /// consequence was a staged candidate that failed to boot at all leaving its counter at its
+    /// original value for ever, so "three tries" meant three tries only if each of them got far
+    /// enough to run userspace.
+    ///
+    /// Daemon startup is the one moment this can be observed: a candidate is staged, and the
+    /// kernel command line says the machine booted something else. That means an attempt was
+    /// spent — GRUB's one-shot default was consumed, the entry failed, and the firmware fell back
+    /// — so the counter comes down, and at zero the candidate is abandoned for the known-good
+    /// deployment.
+    ///
+    /// Every failure is reported rather than propagated: this runs before the daemon serves
+    /// anything, and a bookkeeping problem must not stop hostd from starting.
+    pub fn reconcile_boot(&self) -> BootReconciliation {
+        let staged = match self.boot.staged_candidate() {
+            Ok(Some(staged)) => staged,
+            Ok(None) => return BootReconciliation::NoCandidate,
+            Err(error) => return BootReconciliation::Unreadable(error.to_string()),
+        };
+        let (candidate, tries) = staged;
+
+        let Some(booted) = self.booted_deployment_id() else {
+            // Without knowing what booted, decrementing would be a guess — and the guess is
+            // wrong in exactly the common case, the trial boot itself, where it would burn an
+            // attempt on a candidate that is running fine.
+            return BootReconciliation::CannotTell;
+        };
+        if booted == candidate {
+            return BootReconciliation::BootedTheCandidate { candidate };
+        }
+
+        let remaining = match self.boot.consume_try() {
+            Ok(Some(remaining)) => remaining,
+            Ok(None) => return BootReconciliation::NoCandidate,
+            Err(error) => return BootReconciliation::Unreadable(error.to_string()),
+        };
+        tracing::warn!(
+            candidate,
+            booted,
+            tries,
+            remaining,
+            "a staged candidate did not boot; one attempt spent"
+        );
+        if remaining > 0 {
+            return BootReconciliation::AttemptSpent {
+                candidate,
+                remaining,
+            };
+        }
+        match self.abandon_candidate(&candidate) {
+            Ok(target) => BootReconciliation::RolledBack {
+                candidate,
+                to: target,
+            },
+            Err(error) => BootReconciliation::CouldNotRollBack {
+                candidate,
+                reason: error.to_string(),
+            },
+        }
+    }
+
+    /// Make the known-good deployment the default again and close the transaction.
+    fn abandon_candidate(&self, candidate: &str) -> Result<String> {
+        let known_good = {
+            let deployments = self.deployments.lock().expect("poisoned");
+            deployments
+                .iter()
+                .find(|deployment| deployment.known_good)
+                .cloned()
+                .context("no known-good deployment to return to")?
+        };
+        self.boot.rollback(&known_good)?;
+        if let Some(txn) = self.engine.current()
+            && txn.phase == Phase::Trial
+        {
+            self.engine.roll_back(format!(
+                "candidate {candidate} exhausted its boot attempts without ever booting"
+            ))?;
+        }
+        Ok(known_good.id)
+    }
+
+    /// The deployment id the running kernel was booted from, out of `/proc/cmdline`.
+    ///
+    /// LegeOS's own boot entries carry `legeos.deployment=<id>`. Anything else — an entry someone
+    /// wrote by hand, a rescue boot, a machine that has never had a deployment staged — yields
+    /// `None`, and reconciliation does nothing rather than guessing.
+    fn booted_deployment_id(&self) -> Option<String> {
+        let cmdline = std::fs::read_to_string(&self.cmdline_path).ok()?;
+        booted_deployment_from_cmdline(&cmdline)
+    }
+
     // -- Deployments ----------------------------------------------------------------------------
 
     pub fn backend_name(&self) -> &'static str {
@@ -363,7 +529,164 @@ mod tests {
             apt_root: dir.join("root"),
             etc_dir: dir.join("etc/legeos/hardware"),
             run_dir: dir.join("run/legeos"),
+            cmdline_path: dir.join("proc/cmdline"),
         }
+    }
+
+    /// The same configuration with the GRUB backend, whose boot counter hostd owns.
+    fn grub_config(dir: &Path) -> HostdConfig {
+        let mut config = config(dir);
+        config.boot = Arc::new(crate::deploy::Grub {
+            commands: Arc::new(FakeCommandRunner::default()),
+            state_dir: dir.join("grub"),
+        });
+        config
+    }
+
+    fn write_cmdline(dir: &Path, cmdline: &str) {
+        let path = dir.join("proc/cmdline");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, cmdline).unwrap();
+    }
+
+    fn deployment(id: &str, known_good: bool) -> Deployment {
+        Deployment {
+            id: id.to_owned(),
+            subvolume: format!("@deployments/{id}"),
+            esp_dir: format!("/EFI/legeos/{id}"),
+            kernel: None,
+            nvidia_modules: None,
+            known_good,
+        }
+    }
+
+    #[test]
+    fn a_kernel_command_line_names_its_deployment_exactly() {
+        assert_eq!(
+            booted_deployment_from_cmdline("ro quiet legeos.deployment=cand1 splash").as_deref(),
+            Some("cand1")
+        );
+        // Not a substring search: the answer decides whether a boot attempt is spent.
+        assert_eq!(
+            booted_deployment_from_cmdline("xlegeos.deployment=cand1"),
+            None
+        );
+        assert_eq!(
+            booted_deployment_from_cmdline("legeos.deployment_backup=cand1"),
+            None
+        );
+        assert_eq!(booted_deployment_from_cmdline("legeos.deployment="), None);
+        assert_eq!(booted_deployment_from_cmdline("ro quiet"), None);
+    }
+
+    #[test]
+    fn nothing_is_counted_when_no_candidate_is_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostdState::new(grub_config(dir.path())).unwrap();
+        write_cmdline(dir.path(), "ro legeos.deployment=base1");
+        assert_eq!(state.reconcile_boot(), BootReconciliation::NoCandidate);
+    }
+
+    #[test]
+    fn the_trial_boot_itself_does_not_spend_an_attempt() {
+        // The failure mode of guessing: decrementing here would burn an attempt on a candidate
+        // that is running perfectly well, every time it booted.
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostdState::new(grub_config(dir.path())).unwrap();
+        state
+            .boot
+            .stage_candidate(&deployment("cand1", false), 3)
+            .unwrap();
+        write_cmdline(dir.path(), "ro legeos.deployment=cand1");
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::BootedTheCandidate {
+                candidate: "cand1".to_owned()
+            }
+        );
+        assert_eq!(
+            state.boot.staged_candidate().unwrap(),
+            Some(("cand1".to_owned(), 3)),
+            "the counter must not move"
+        );
+    }
+
+    #[test]
+    fn a_candidate_that_did_not_boot_spends_one_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostdState::new(grub_config(dir.path())).unwrap();
+        state
+            .boot
+            .stage_candidate(&deployment("cand1", false), 3)
+            .unwrap();
+        write_cmdline(dir.path(), "ro legeos.deployment=base1");
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::AttemptSpent {
+                candidate: "cand1".to_owned(),
+                remaining: 2
+            }
+        );
+        assert_eq!(
+            state.boot.staged_candidate().unwrap(),
+            Some(("cand1".to_owned(), 2))
+        );
+    }
+
+    #[test]
+    fn a_candidate_out_of_attempts_is_abandoned_for_the_known_good_deployment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = grub_config(dir.path());
+        config.deployments_path = dir.path().join("deployments.json");
+        crate::deploy::save_deployments(
+            &config.deployments_path,
+            &[deployment("base1", true), deployment("cand1", false)],
+        )
+        .unwrap();
+        let state = HostdState::new(config).unwrap();
+        state
+            .boot
+            .stage_candidate(&deployment("cand1", false), 1)
+            .unwrap();
+        write_cmdline(dir.path(), "ro legeos.deployment=base1");
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::RolledBack {
+                candidate: "cand1".to_owned(),
+                to: "base1".to_owned()
+            }
+        );
+        assert_eq!(
+            state.boot.staged_candidate().unwrap(),
+            None,
+            "a rollback clears the counter"
+        );
+    }
+
+    #[test]
+    fn an_unknown_command_line_counts_nothing_rather_than_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostdState::new(grub_config(dir.path())).unwrap();
+        state
+            .boot
+            .stage_candidate(&deployment("cand1", false), 3)
+            .unwrap();
+        write_cmdline(dir.path(), "ro quiet splash");
+        assert_eq!(state.reconcile_boot(), BootReconciliation::CannotTell);
+        assert_eq!(
+            state.boot.staged_candidate().unwrap(),
+            Some(("cand1".to_owned(), 3))
+        );
+    }
+
+    #[test]
+    fn systemd_boot_counts_its_own_attempts_and_this_does_nothing() {
+        // The loader decrements the +tries suffix itself, before any userspace runs; counting
+        // again here would spend two attempts per boot.
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostdState::new(config(dir.path())).unwrap();
+        write_cmdline(dir.path(), "ro legeos.deployment=base1");
+        assert_eq!(state.reconcile_boot(), BootReconciliation::NoCandidate);
     }
 
     fn changes() -> ChangeSet {

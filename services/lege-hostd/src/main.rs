@@ -69,6 +69,7 @@ fn real_config(root: &std::path::Path, connection: zbus::Connection) -> HostdCon
         // lege-hostd's own RuntimeDirectory (`session/units/system/lege-hostd.service`); the two
         // markers `lege-boot-health` reads live here, written only through Session1.
         run_dir: root.join("run/legeos"),
+        cmdline_path: root.join("proc/cmdline"),
         caller_identity: Arc::new(session_report::SystemCallerIdentity::new(connection)),
     }
 }
@@ -103,6 +104,11 @@ async fn main() -> Result<()> {
         HostdState::new(real_config(&cli.root, connection.clone()))
             .context("initializing hostd state")?,
     );
+    // Before anything is served: a candidate that was staged and never booted has spent an
+    // attempt, and this is the only moment userspace can tell.
+    let reconciliation = state.reconcile_boot();
+    tracing::info!(boot = %reconciliation.summary(), "boot reconciliation");
+
     state.resume();
 
     connection
