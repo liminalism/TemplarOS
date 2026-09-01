@@ -2,4 +2,6 @@
 //! enabled). The governor never opens SQLite on its own loop (ADR-0002); `lege-sessiond`
 //! ingests traces on its behalf.
 
-pub const MIGRATIONS: &[(&str, &str)] = &[];
+use super::Migration;
+
+pub const MIGRATIONS: &[Migration] = &[];

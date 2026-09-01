@@ -5,7 +5,9 @@
 //! service needs to survive its own crash: undo records that outlive a committed operation, the
 //! recent-file list the Home Surface reads, and the search index.
 
-pub const MIGRATIONS: &[(&str, &str)] = &[(
+use super::Migration;
+
+pub const MIGRATIONS: &[Migration] = &[Migration::additive(
     "0003-files",
     r"
         -- Progress and provenance for a journalled operation. The journal itself stays in

@@ -109,9 +109,15 @@ async fn main() -> Result<()> {
         tracing::info!(resumed, "resumed journalled operations");
     }
 
-    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
-    // written must never keep lege-filed from starting.
-    if let Err(error) = lege_build::write_stamp("lege-filed") {
+    // Say which build is running, and which generation of the state schema it speaks — the
+    // second is what lets a deployment refuse a set the previous one could not read back.
+    // Diagnostic only: a stamp that cannot be written must never keep lege-filed from starting.
+    if let Err(error) = lege_build::write_stamp_with(
+        "lege-filed",
+        [("session".to_owned(), lege_state::schema_version())]
+            .into_iter()
+            .collect(),
+    ) {
         tracing::warn!(%error, "could not write the build stamp");
     }
     let connection = connection::Builder::session()?

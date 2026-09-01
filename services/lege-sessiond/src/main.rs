@@ -691,9 +691,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
-    // written must never keep lege-sessiond from starting.
-    if let Err(error) = lege_build::write_stamp("lege-sessiond") {
+    // Say which build is running, and which generation of the state schema it speaks — the
+    // second is what lets a deployment refuse a set the previous one could not read back.
+    // Diagnostic only: a stamp that cannot be written must never keep lege-sessiond from starting.
+    if let Err(error) = lege_build::write_stamp_with(
+        "lege-sessiond",
+        [("session".to_owned(), lege_state::schema_version())]
+            .into_iter()
+            .collect(),
+    ) {
         tracing::warn!(%error, "could not write the build stamp");
     }
     let connection = zbus::connection::Builder::session()?

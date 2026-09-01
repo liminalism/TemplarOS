@@ -16,15 +16,15 @@ fn pre_0006() -> Connection {
             "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_ms INTEGER NOT NULL);",
         )
         .unwrap();
-    for (name, sql) in lege_state::all_migrations() {
-        if name == "0006-app-variants" {
+    for migration in lege_state::all_migrations() {
+        if migration.name == "0006-app-variants" {
             continue;
         }
-        connection.execute_batch(sql).unwrap();
+        connection.execute_batch(migration.sql).unwrap();
         connection
             .execute(
                 "INSERT INTO schema_migrations (name, applied_ms) VALUES (?1, 0)",
-                [name],
+                [migration.name],
             )
             .unwrap();
     }
