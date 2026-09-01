@@ -63,6 +63,27 @@
       <arg name="has_unsaved_work" type="b" direction="in"/>
     </method>
 
+    <!-- Unsaved work and checkpoint freshness, with the times they were true.
+         Separate from SetInstanceHints on purpose. SetInstanceHints sets four facts at once, so
+         every caller has to supply a value for all of them — and the callers that know about
+         protection and disposability know nothing about unsaved work, so they pass `false` and
+         silently erase a claim another caller made. Splitting it also gives the claim a
+         timestamp, which is what lets it expire: "this application has unsaved work" and "this
+         application said so six hours ago" are different statements, and the governor was making
+         the second while sounding like the first.
+
+         as_of_ms is when the claim became true (milliseconds since the Unix epoch, 0 = now).
+         checkpoint_ok says the instance has a usable checkpoint, and checkpoint_at_ms when it was
+         taken — an application that can be restored from a recent checkpoint is a very different
+         proposition to one that can only be killed. -->
+    <method name="SetInstanceWork">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="has_unsaved_work" type="b" direction="in"/>
+      <arg name="as_of_ms" type="x" direction="in"/>
+      <arg name="checkpoint_ok" type="b" direction="in"/>
+      <arg name="checkpoint_at_ms" type="x" direction="in"/>
+    </method>
+
     <!-- An instance ended; drop its record and any temporary limits. -->
     <method name="ForgetInstance">
       <arg name="instance_id" type="s" direction="in"/>

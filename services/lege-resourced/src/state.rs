@@ -39,6 +39,15 @@ pub struct Enrichment {
     /// otherwise. A timestamp makes the claim something that can go out of date, which is what a
     /// claim of that shape has to be.
     pub unsaved_since_ms: Option<i64>,
+    /// Whether the instance has a usable checkpoint to be restored from.
+    ///
+    /// Distinct from `supports_checkpoint`, which says only that it *could* be asked. An
+    /// application that can be restored from a checkpoint taken a minute ago is a very different
+    /// proposition to one that can only be killed, and the difference is not a capability but a
+    /// fact about right now.
+    pub checkpoint_ok: bool,
+    /// When that checkpoint was taken, in milliseconds since the epoch.
+    pub checkpoint_at_ms: Option<i64>,
 }
 
 impl Default for Enrichment {
@@ -53,6 +62,8 @@ impl Default for Enrichment {
             supports_checkpoint: false,
             has_unsaved_work: false,
             unsaved_since_ms: None,
+            checkpoint_ok: false,
+            checkpoint_at_ms: None,
         }
     }
 }
@@ -72,6 +83,25 @@ impl Enrichment {
             self.unsaved_since_ms = None;
         }
         self.has_unsaved_work = has_unsaved_work;
+    }
+
+    /// Record an unsaved-work claim that carries its own timestamps.
+    ///
+    /// The producer said when the work became unsaved, so that time is kept rather than the
+    /// moment the message happened to arrive — a claim relayed a minute late is still a claim
+    /// about a minute ago.
+    pub fn set_work(
+        &mut self,
+        has_unsaved_work: bool,
+        as_of_ms: Option<i64>,
+        checkpoint_ok: bool,
+        checkpoint_at_ms: Option<i64>,
+        now_ms: i64,
+    ) {
+        self.has_unsaved_work = has_unsaved_work;
+        self.unsaved_since_ms = has_unsaved_work.then(|| as_of_ms.unwrap_or(now_ms));
+        self.checkpoint_ok = checkpoint_ok;
+        self.checkpoint_at_ms = checkpoint_ok.then(|| checkpoint_at_ms.unwrap_or(now_ms));
     }
 }
 
@@ -361,6 +391,35 @@ mod tests {
 
         enrichment.set_unsaved_work(true, 700_000);
         assert_eq!(enrichment.unsaved_since_ms, Some(700_000));
+    }
+
+    #[test]
+    fn a_timestamped_claim_keeps_the_time_the_producer_gave_it() {
+        // A claim relayed a minute late is still a claim about a minute ago; taking the arrival
+        // time instead would quietly refresh every claim that took a while to get here.
+        let mut enrichment = Enrichment::default();
+        enrichment.set_work(true, Some(1_000), true, Some(900), 60_000);
+        assert_eq!(enrichment.unsaved_since_ms, Some(1_000));
+        assert!(enrichment.checkpoint_ok);
+        assert_eq!(enrichment.checkpoint_at_ms, Some(900));
+    }
+
+    #[test]
+    fn a_timestamped_claim_can_say_the_work_is_saved() {
+        // The thing SetInstanceHints cannot do, and the reason the new method exists.
+        let mut enrichment = Enrichment::default();
+        enrichment.set_unsaved_work(true, 1_000);
+        enrichment.set_work(false, None, true, None, 60_000);
+        assert!(!enrichment.has_unsaved_work);
+        assert_eq!(enrichment.unsaved_since_ms, None);
+    }
+
+    #[test]
+    fn a_claim_with_no_time_of_its_own_is_stamped_on_arrival() {
+        let mut enrichment = Enrichment::default();
+        enrichment.set_work(true, None, false, None, 60_000);
+        assert_eq!(enrichment.unsaved_since_ms, Some(60_000));
+        assert_eq!(enrichment.checkpoint_at_ms, None, "no checkpoint, no time");
     }
 
     #[test]

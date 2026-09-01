@@ -108,11 +108,46 @@ impl ResourcesApi {
         entry.protected = protected;
         entry.disposable = disposable;
         entry.supports_checkpoint = supports_checkpoint;
-        // Through the setter, so the claim is stamped when it first becomes true and can
-        // therefore expire. The wire signature is untouched: freshness is bookkeeping this side
-        // of the bus, and it applies to the producer that already exists rather than waiting for
-        // one that reports a timestamp.
-        entry.set_unsaved_work(has_unsaved_work, crate::trace::now_ms());
+        // Deliberately asymmetric: this method can *raise* an unsaved-work claim but not clear
+        // one. Its callers set four facts at once, so every one of them has to supply a value
+        // for all four — and the callers that know about protection and disposability know
+        // nothing about unsaved work. `Projects1` passes `false` here when a project opens or
+        // closes, which used to erase a claim the checkpoint relay had just made. `false` from
+        // this method therefore means "I have nothing to say about it", which is what its
+        // callers actually mean; `SetInstanceWork` is the method that can say the work is saved,
+        // and the claim's own expiry stops a stuck one lasting the session.
+        if has_unsaved_work {
+            entry.set_unsaved_work(true, crate::trace::now_ms());
+        }
+        Ok(())
+    }
+
+    /// Unsaved work and checkpoint freshness, with the times they were true.
+    ///
+    /// Separate from `SetInstanceHints` because a claim that any caller can erase, and that
+    /// carries no time, is not a claim the governor can act on: see the asymmetry note above and
+    /// the interface XML.
+    async fn set_instance_work(
+        &self,
+        instance_id: &str,
+        has_unsaved_work: bool,
+        as_of_ms: i64,
+        checkpoint_ok: bool,
+        checkpoint_at_ms: i64,
+    ) -> fdo::Result<()> {
+        let id = parse_instance_id(instance_id)?;
+        let now_ms = crate::trace::now_ms();
+        let mut enrichment = self.shared.enrichment.write();
+        let entry = enrichment.entry(id).or_default();
+        // Zero means "now": a producer that has the fact but not a clock reading for it should
+        // not have to invent one, and 1970 would read as an infinitely stale claim.
+        entry.set_work(
+            has_unsaved_work,
+            (as_of_ms > 0).then_some(as_of_ms),
+            checkpoint_ok,
+            (checkpoint_at_ms > 0).then_some(checkpoint_at_ms),
+            now_ms,
+        );
         Ok(())
     }
 
