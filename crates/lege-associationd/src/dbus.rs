@@ -123,12 +123,13 @@ impl AssociationApi {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         let app_id = parse_app_id(app_id)?;
+        let logical = self.catalog.logical_app_of(&app_id);
         self.engine
             .read()
             .validate_mime_default(mime, &app_id)
             .map_err(failed)?;
         self.store
-            .transaction(|tx| store::set_mime_default_within(tx, mime, &app_id))
+            .transaction(|tx| store::set_mime_default_within(tx, mime, &app_id, logical.as_ref()))
             .map_err(failed)?;
         self.engine.write().apply_mime_default(mime, app_id);
         self.regenerate_mimeapps();
@@ -145,6 +146,7 @@ impl AssociationApi {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         let app_id = parse_app_id(app_id)?;
+        let logical = self.catalog.logical_app_of(&app_id);
         let rule = ExtensionRule {
             app_id,
             override_specific_mime,
@@ -154,7 +156,9 @@ impl AssociationApi {
             .validate_extension_default(&rule)
             .map_err(failed)?;
         self.store
-            .transaction(|tx| store::set_extension_default_within(tx, extension, &rule))
+            .transaction(|tx| {
+                store::set_extension_default_within(tx, extension, &rule, logical.as_ref())
+            })
             .map_err(failed)?;
         let normalized = extension
             .trim()
@@ -182,12 +186,21 @@ impl AssociationApi {
             ));
         }
         let app_id = parse_app_id(app_id)?;
+        let logical = self.catalog.logical_app_of(&app_id);
         self.engine
             .read()
             .validate_project_mime_default(project_id, mime, &app_id)
             .map_err(failed)?;
         self.store
-            .transaction(|tx| store::set_project_mime_default_within(tx, project_id, mime, &app_id))
+            .transaction(|tx| {
+                store::set_project_mime_default_within(
+                    tx,
+                    project_id,
+                    mime,
+                    &app_id,
+                    logical.as_ref(),
+                )
+            })
             .map_err(failed)?;
         self.engine
             .write()
@@ -331,6 +344,11 @@ fn explain_decision(path: &str, mime: &str, decision: &crate::engine::OpenDecisi
         crate::engine::DecisionReason::GenericExtensionFallback => {
             format!(
                 "{path} opens with {app}: its content looks generic ({mime}), so the rule for its extension was used instead."
+            )
+        }
+        crate::engine::DecisionReason::VariantSubstituted => {
+            format!(
+                "{path} (detected as {mime}) opens with {app}: the copy of that application you had chosen is no longer installed, so another copy of it was used."
             )
         }
         crate::engine::DecisionReason::AskUser => {

@@ -261,6 +261,25 @@ pub trait AppCatalog: Send + Sync {
 
     /// Every installed manifest (order unspecified).
     fn manifests(&self) -> Vec<std::sync::Arc<AppManifest>>;
+
+    /// The id `stored` names today. A stored id whose variant was renamed — a Flatpak export
+    /// moving to `flatpak.<app id>` — resolves here rather than being rewritten in place, which is
+    /// what keeps the rename reversible. A catalog with no notion of variants returns `stored`.
+    fn resolve_alias(&self, stored: &AppId) -> AppId {
+        stored.clone()
+    }
+
+    /// The logical application `id` is a copy of, if the catalog groups variants at all.
+    fn logical_app_of(&self, _id: &AppId) -> Option<crate::variant::LogicalAppId> {
+        None
+    }
+
+    /// Other installed copies of the same application as `id`, best first, excluding `id` itself.
+    /// Consulted only when the stored copy is gone: a person who chose one copy gets that copy for
+    /// as long as it exists.
+    fn sibling_variants(&self, _id: &AppId) -> Vec<AppId> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

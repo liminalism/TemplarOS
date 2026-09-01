@@ -332,7 +332,16 @@ async fn serve_launch_and_association_interfaces(
     object_server
         .at(
             names::PROVIDERS_PATH,
-            apis::providers::ProvidersApi::new(services.providers.clone(), services.store.clone()),
+            apis::providers::ProvidersApi::new(
+                services.providers.clone(),
+                services.store.clone(),
+                services.registry.clone(),
+                Arc::new(apis::providers::PeerCgroupVariant::new(
+                    connection.clone(),
+                    services.registry.clone(),
+                )),
+                services.history.clone(),
+            ),
         )
         .await
         .context("serving Providers1")?;
