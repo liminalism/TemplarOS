@@ -340,6 +340,7 @@ fn record_trace(
         return;
     }
     shared.traces.lock().append(&TraceRecord {
+        trace_version: crate::replay::TRACE_VERSION,
         timestamp_ms: trace::now_ms(),
         level: report.level,
         stage: report.stage,
