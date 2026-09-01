@@ -1377,3 +1377,244 @@ record legeos.evidence.window-controls-20260825/1 : evidence {
         Window controls and mouse parity implemented: interactive resize on both routes (xdg_shell.rs resize_request and X11 _NET_WM_MOVERESIZE, plus a painted compositor-owned bottom-right grip for no-CSD windows, minimum size keeps band+grip grabbable), window.close reachable via a new shell context menu with two-step confirm, secondary-click context menu carries all previously keyboard-only actions with chords as accelerators, and check-actions now fails any declared action with a chord and no pointer route (self-expiring exemption list, currently empty). Latent grab bug fixed: band grabs are primary-button-only. Workspace tests, clippy -D warnings, and all seven xtask checks pass on the combined tree.
         """
 }
+
+record legeos.evidence.ws1-drawer-migration-20260901/1 : evidence {
+    title "45 passed: a saved field of drawer tiles becomes one Files object in their place, an already-migrated field only loses leftovers, the migration is silent when never needed, inverts exactly (op batch replayed backwards to the original document), and the legacy parser still knows every drawer."
+    state verified
+    result pass
+    method command
+    observed_at git:7e6f22c29df8b3615170eb250006a30ca4d73b54
+    command "cargo test -p lege-shell --lib drawer"
+    summary """
+        45 passed: a saved field of drawer tiles becomes one Files object in their place, an already-migrated field only loses leftovers, the migration is silent when never needed, inverts exactly (op batch replayed backwards to the original document), and the legacy parser still knows every drawer.
+        """
+}
+
+record legeos.evidence.ws1-field-ladder-tests-20260901/1 : evidence {
+    title "47+22 passed at the WS1 merge: RungFloor/RungLadder proptested monotone in both axes over the 64x64 grid, ladder well-formedness, reachability of every declared floor, agreement with the old area-only ladder at aspect <= 1:3, explicit sliver rung-down cases; --render baseline unchanged at the phase-0 commit."
+    state verified
+    result pass
+    method command
+    observed_at git:7e6f22c29df8b3615170eb250006a30ca4d73b54
+    command "cargo test -p lege-field"
+    summary """
+        47+22 passed at the WS1 merge: RungFloor/RungLadder proptested monotone in both axes over the 64x64 grid, ladder well-formedness, reachability of every declared floor, agreement with the old area-only ladder at aspect <= 1:3, explicit sliver rung-down cases; --render baseline unchanged at the phase-0 commit.
+        """
+}
+
+record legeos.evidence.ws1-no-auto-app-tiles-20260901/1 : evidence {
+    title "A pinned application outlives its windows and pins only once; a refresh never removes a placed tile that is not a closed window (including an unknown widget kind across three merges)."
+    state verified
+    result pass
+    method command
+    observed_at git:7e6f22c29df8b3615170eb250006a30ca4d73b54
+    command "cargo test -p lege-shell --lib -- pinned refresh_never"
+    summary """
+        A pinned application outlives its windows and pins only once; a refresh never removes a placed tile that is not a closed window (including an unknown widget kind across three merges).
+        """
+}
+
+record legeos.evidence.ws2-omnibox-unit-tests-20260901/1 : evidence {
+    title "14 passed: strength before source, project before app on ties, per-source caps before the merge, the staleness gate reading as still-searching, directory before file, the escape row always last and absent on bare Home, empty query = all apps in stable order, the total cap, actions findable by name."
+    state verified
+    result pass
+    method command
+    observed_at git:b7df9926293647c91fe326fd3e0fd7e8629da135
+    command "cargo test -p lege-shell --lib omnibox"
+    summary """
+        14 passed: strength before source, project before app on ties, per-source caps before the merge, the staleness gate reading as still-searching, directory before file, the escape row always last and absent on bare Home, empty query = all apps in stable order, the total cap, actions findable by name.
+        """
+}
+
+record legeos.evidence.ws2-one-search-control-20260901/1 : evidence {
+    title "18 file-browser tests pass after the port; home_screen.rs and the launcher widget are deleted; field-screen tests cover launch-by-row, narrowing, no-match launches nothing, one file-service ask per query, and Tab widening a scoped search to the whole desktop."
+    state verified
+    result pass
+    method command
+    observed_at git:b7df9926293647c91fe326fd3e0fd7e8629da135
+    command "cargo test -p lege-shell --lib file_browser"
+    summary """
+        18 file-browser tests pass after the port; home_screen.rs and the launcher widget are deleted; field-screen tests cover launch-by-row, narrowing, no-match launches nothing, one file-service ask per query, and Tab widening a scoped search to the whole desktop.
+        """
+}
+
+record legeos.evidence.ws2-state-continuity-20260901/1 : evidence {
+    title "7 passed: expanding again lands exactly where the object was left (three folders deep, selection, focus survive collapse/expand), and observing the same directory keeps the selection while a new one clears it."
+    state verified
+    result pass
+    method command
+    observed_at git:b7df9926293647c91fe326fd3e0fd7e8629da135
+    command "cargo test -p lege-shell --lib files_surface"
+    summary """
+        7 passed: expanding again lands exactly where the object was left (three folders deep, selection, focus survive collapse/expand), and observing the same directory keeps the selection while a new one clears it.
+        """
+}
+
+record legeos.evidence.ws3-expansion-interpolation-20260901/1 : evidence {
+    title "Endpoint-exact, monotone and terminating over every millisecond of the 140ms interval; reduced motion arrives immediately rather than quickly; the round trip grows out of the tile and falls back into it; the rung during animation is asked of the ladder at the interpolated size, so the cross-fade happens exactly where a hand-drag would put it."
+    state verified
+    result pass
+    method command
+    observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
+    command "cargo test -p lege-shell --lib expansion"
+    summary """
+        Endpoint-exact, monotone and terminating over every millisecond of the 140ms interval; reduced motion arrives immediately rather than quickly; the round trip grows out of the tile and falls back into it; the rung during animation is asked of the ladder at the interpolated size, so the cross-fade happens exactly where a hand-drag would put it.
+        """
+}
+
+record legeos.evidence.ws3-grip-overlap-all-rungs-20260901/1 : evidence {
+    title "Every rung against every tile shape down to 40x30: the grip never overlaps the grab band, the body never starts above what was taken from it, compact rungs pay nothing for the edge, and the strip is capped at two thirds of the tile's height."
+    state verified
+    result pass
+    method command
+    observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
+    command "cargo test -p lege-shell --lib the_grip_never_overlaps_the_move_band_at_any_rung"
+    summary """
+        Every rung against every tile shape down to 40x30: the grip never overlaps the grab band, the body never starts above what was taken from it, compact rungs pay nothing for the edge, and the strip is capped at two thirds of the tile's height.
+        """
+}
+
+record legeos.evidence.ws4-blob-compat-20260901/1 : evidence {
+    title "7 passed at the WS4 merge: an old blob still carrying priority_boost parses with new fields defaulted, and a struct shaped like the previous release deserializes today's blob — the project JSON blob is serde-additive in both directions."
+    state verified
+    result pass
+    method command
+    observed_at git:8b7dcac1dc3843e784abeebe506e9a3b798573eb
+    command "cargo test -p lege-session-core projects"
+    summary """
+        7 passed at the WS4 merge: an old blob still carrying priority_boost parses with new fields defaulted, and a struct shaped like the previous release deserializes today's blob — the project JSON blob is serde-additive in both directions.
+        """
+}
+
+record legeos.evidence.ws4-update-roundtrip-20260901/1 : evidence {
+    title "Update accepts exactly the nine editable keys and refuses everything else by name; a malformed value is refused rather than half-applied; an edit survives save -> apply_changes -> save -> load_all with apps and created_ms untouched."
+    state verified
+    result pass
+    method command
+    observed_at git:8b7dcac1dc3843e784abeebe506e9a3b798573eb
+    command "cargo test -p lege-session-core projects"
+    summary """
+        Update accepts exactly the nine editable keys and refuses everything else by name; a malformed value is refused rather than half-applied; an edit survives save -> apply_changes -> save -> load_all with apps and created_ms untouched.
+        """
+}
+
+record legeos.evidence.ws4-variant-reopen-20260901/1 : evidence {
+    title "5 passed at the WS4 merge: a project created against the Debian Firefox opens the Flathub one after the package is removed; the named copy wins while installed; what actually ran is preferred over today's default; a renamed variant is followed through its alias; nothing installed means skip-and-say-so, not project failure."
+    state verified
+    result pass
+    method command
+    observed_at git:8b7dcac1dc3843e784abeebe506e9a3b798573eb
+    command "cargo test -p lege-sessiond projects"
+    summary """
+        5 passed at the WS4 merge: a project created against the Debian Firefox opens the Flathub one after the package is removed; the named copy wins while installed; what actually ran is preferred over today's default; a renamed variant is followed through its alias; nothing installed means skip-and-say-so, not project failure.
+        """
+}
+
+record legeos.evidence.ws5-collision-regression-20260901/1 : evidence {
+    title "A Flatpak export and a distro package sharing a desktop id are two applications: the import scan keys candidates on (origin namespace, desktop id), fixing the live bug where the distro app silently vanished from the registry."
+    state verified
+    result pass
+    method command
+    observed_at git:23d124deed310c37713cbb241b08e627e72eed2e
+    command "cargo test -p lege-sessiond desktop_import"
+    summary """
+        A Flatpak export and a distro package sharing a desktop id are two applications: the import scan keys candidates on (origin namespace, desktop id), fixing the live bug where the distro app silently vanished from the registry.
+        """
+}
+
+record legeos.evidence.ws5-migration-fixture-20260901/1 : evidence {
+    title "Pre-0006 rows read identically after the migration and an older binary's column-named inserts still work afterwards; migration 0006 is additive (reader floor 0)."
+    state verified
+    result pass
+    method command
+    observed_at git:23d124deed310c37713cbb241b08e627e72eed2e
+    command "cargo test -p lege-state --test migration_0006"
+    summary """
+        Pre-0006 rows read identically after the migration and an older binary's column-named inserts still work afterwards; migration 0006 is additive (reader floor 0).
+        """
+}
+
+record legeos.evidence.ws5-one-firefox-20260901/1 : evidence {
+    title "Fixture: two installed Firefoxes are offered as one logical app with variant_count 2. Live nested session on the dev host: 210 variants collapse to 162 logical apps (17 with more than one copy); the shell lists one row per application, launches through LaunchLogical, and offers copies as context rows after every declared one."
+    state verified
+    result pass
+    method command
+    observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
+    command "cargo test -p lege-appd dbus && scripts/nested-session.sh start (live check via ListLogicalApps)"
+    summary """
+        Fixture: two installed Firefoxes are offered as one logical app with variant_count 2. Live nested session on the dev host: 210 variants collapse to 162 logical apps (17 with more than one copy); the shell lists one row per application, launches through LaunchLogical, and offers copies as context rows after every declared one.
+        """
+}
+
+record legeos.evidence.ws5-trust-gates-20260901/1 : evidence {
+    title "A user-owned desktop file cannot take an exclusive role, an application may not declare a role for a different one, an unidentifiable caller is refused rather than trusted, a user file taking over a package's desktop id loses the package's rights with a history event, and association resolution follows aliases before substituting a sibling variant with its own explained reason."
+    state verified
+    result pass
+    method command
+    observed_at git:be2532ed1e8272568290a95a94ca615bd602b6a4
+    command "cargo test -p lege-sessiond providers && cargo test -p lege-sessiond desktop_import && cargo test -p lege-associationd"
+    summary """
+        A user-owned desktop file cannot take an exclusive role, an application may not declare a role for a different one, an unidentifiable caller is refused rather than trusted, a user file taking over a package's desktop id loses the package's rights with a history event, and association resolution follows aliases before substituting a sibling variant with its own explained reason.
+        """
+}
+
+record legeos.evidence.ws6-convergence-report-20260901/1 : evidence {
+    title "69 tests over the pure converge()/plan()/gates: one per Verdict, pruning never drops the set a rollback would need, an apt success that did not take is a failure, a unit that comes back running the old build is not activated (exactly one retry), a failure stops the run, the first deployment passes every gate, and the dry run prints the publish, pinned apt line, gate lines and per-component plan."
+    state verified
+    result pass
+    method command
+    observed_at git:035cd6d5070eb07d5ecd9532a7964fcae22ff328
+    command "cargo test -p lege dev::"
+    summary """
+        69 tests over the pure converge()/plan()/gates: one per Verdict, pruning never drops the set a rollback would need, an apt success that did not take is a failure, a unit that comes back running the old build is not activated (exactly one retry), a failure stops the run, the first deployment passes every gate, and the dry run prints the publish, pinned apt line, gate lines and per-component plan.
+        """
+}
+
+record legeos.evidence.ws6-protect-never-lowers-20260901/1 : evidence {
+    title "protect_never_lowers_an_existing_memory_low (fails against the previous code), an unset memory.low is raised to the unit's own value, unlimited is never reduced to a number, and every protected unit's value agrees with the unit file that declares it; the old code wrote values below every unit file unconditionally each tick."
+    state verified
+    result pass
+    method command
+    observed_at git:035cd6d5070eb07d5ecd9532a7964fcae22ff328
+    command "cargo test -p lege-resourced protect"
+    summary """
+        protect_never_lowers_an_existing_memory_low (fails against the previous code), an unset memory.low is raised to the unit's own value, unlimited is never reduced to a number, and every protected unit's value agrees with the unit file that declares it; the old code wrote values below every unit file unconditionally each tick.
+        """
+}
+
+record legeos.evidence.ws6-replay-fidelity-20260901/1 : evidence {
+    title "All five hand-authored fixture traces replay identically through the real policy code; the per-field round-trip test catches a hardcoded reconstruction by field name; trace_version is additive-only (removed and never-seen fields both still replay); E1 exposed that the original four fixtures reached pressure only through PSI, so fixture 05 isolates the memory leg and a test asserts the same trace decides differently on a 4 GiB machine."
+    state verified
+    result pass
+    method command
+    observed_at git:035cd6d5070eb07d5ecd9532a7964fcae22ff328
+    command "cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay"
+    artifact "tests/fixtures/resources/replay/README.md"
+    summary """
+        All five hand-authored fixture traces replay identically through the real policy code; the per-field round-trip test catches a hardcoded reconstruction by field name; trace_version is additive-only (removed and never-seen fields both still replay); E1 exposed that the original four fixtures reached pressure only through PSI, so fixture 05 isolates the memory leg and a test asserts the same trace decides differently on a 4 GiB machine.
+        """
+}
+
+record legeos.evidence.ws6-rollback-fixture-half-20260901/1 : evidence {
+    title "The fixture half of rollback acceptance: pruning never drops the set a rollback would need, rolling back is the same path with the previous set, an apt success that did not take is a failure, a unit that comes back running the old build is not activated (one retry then stop and offer rollback), and the dry run prints the publish, pinned apt line, gate verdicts and per-component plan against a scratch build set. The live half — break lege-shell deliberately, confirm the health gate refuses before logout, lege dev rollback restores without rebuilding — is a hands-on user step still pending."
+    state verified
+    result pass
+    method command
+    observed_at git:da57d5726d6f47c48c4494f54cf263ed0ed2e020
+    command "cargo test -p lege dev:: && cargo run -q -p lege -- dev deploy --dry-run --repo <scratch>/repo --root <scratch>/root --build-set <scratch>/debs/build-set.json"
+    summary """
+        The fixture half of rollback acceptance: pruning never drops the set a rollback would need, rolling back is the same path with the previous set, an apt success that did not take is a failure, a unit that comes back running the old build is not activated (one retry then stop and offer rollback), and the dry run prints the publish, pinned apt line, gate verdicts and per-component plan against a scratch build set. The live half — break lege-shell deliberately, confirm the health gate refuses before logout, lege dev rollback restores without rebuilding — is a hands-on user step still pending.
+        """
+}
+
+record legeos.evidence.ws6-signature-gate-20260901/1 : evidence {
+    title "166 shipped members across 32 interfaces frozen into interfaces/baseline.json and checked in just check-interfaces, ci/run.sh and cargo test; negative proof by editing the XML: a changed signature and a removed member both fail with instructions to bump the interface name; B4 wires the same diff into lege dev deploy's pre-activation gate, holding the restartable set for a new session on a breaking change."
+    state verified
+    result pass
+    method command
+    observed_at git:035cd6d5070eb07d5ecd9532a7964fcae22ff328
+    command "cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        166 shipped members across 32 interfaces frozen into interfaces/baseline.json and checked in just check-interfaces, ci/run.sh and cargo test; negative proof by editing the XML: a changed signature and a removed member both fail with instructions to bump the interface name; B4 wires the same diff into lege dev deploy's pre-activation gate, holding the restartable set for a new session on a breaking change.
+        """
+}

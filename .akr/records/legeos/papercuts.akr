@@ -163,6 +163,17 @@ record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercu
     created_at 2026-08-24
 }
 
+record legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 : papercut {
+    title "cli/lege/src/dev/cmd.rs knowingly duplicates…"
+    state verified
+    statement """
+        cli/lege/src/dev/cmd.rs knowingly duplicates services/lege-hostd/src/cmd.rs (CommandRunner + fake). Two consumers did not justify a shared crate and hostd's copy carries a transaction timeout the CLI should not inherit; if a third consumer appears, extract. Commented at the top of the file.
+        """
+    observed_at git:cd6563649c3c85e3c23b92adb22d60de7ce90e44
+    author "claude"
+    created_at 2026-09-01
+}
+
 record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut {
     title "Every reported Home Field failure — slow/lossy typing, a dead…"
     state verified
@@ -255,6 +266,17 @@ record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     created_at 2026-08-24
 }
 
+record legeos.papercut.lege-build-s-tests-created-a-scratch-directory/1 : papercut {
+    title "lege-build's tests created a scratch directory under /tmp and removed…"
+    state verified
+    statement """
+        lege-build's tests created a scratch directory under /tmp and removed it at the start of the NEXT run — one run behind — so 287 stale directories had accumulated on the dev machine before anyone noticed. Fixed by moving to tempfile (a full cargo test --workspace now leaves nothing behind, verified by counting), but the pattern is worth watching for in other test code.
+        """
+    observed_at git:da57d5726d6f47c48c4494f54cf263ed0ed2e020
+    author "claude"
+    created_at 2026-09-01
+}
+
 record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : papercut {
     title "`lege doctor` exited 1 on every developer install and made…"
     state verified
@@ -322,6 +344,17 @@ record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercu
     created_at 2026-08-17
 }
 
+record legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 : papercut {
+    title "scripts/nested-session.sh stop leaves lege-sessiond and lege-filed…"
+    state verified
+    statement """
+        scripts/nested-session.sh stop leaves lege-sessiond and lege-filed running — the pidfiles are there but the processes survive and a stale sessiond keeps holding org.legeos.Session after an apparently clean stop; they had to be killed by hand during the WS3 nested run.
+        """
+    observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
+    author "claude"
+    created_at 2026-09-01
+}
+
 record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     title "systemd-analyze --user verify accepted the session units but warned…"
     state verified
@@ -332,6 +365,28 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     about "systemd-analyze"
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-app-manifest-schema-and-both-shipped-distro/1 : papercut {
+    title "The app-manifest schema and both shipped distro/app-manifests/*.json…"
+    state verified
+    statement """
+        The app-manifest schema and both shipped distro/app-manifests/*.json declare `provides`, but lege_types::AppManifest has no provides field and no code reads it — a manifest declaring a provider role is silently ignored. Documented contract with no implementation; found during the WS5 pre-gate autostart audit.
+        """
+    observed_at git:cd6563649c3c85e3c23b92adb22d60de7ce90e44
+    author "claude"
+    created_at 2026-09-01
+}
+
+record legeos.papercut.the-browsermodel-navigation-duplication-is-now/1 : papercut {
+    title "The BrowserModel navigation duplication is now real:…"
+    state verified
+    statement """
+        The BrowserModel navigation duplication is now real: shell/lege-shell/src/files_surface.rs carries the same back/forward/selection logic as apps/lege-files/src/model.rs, documented at the top of the module. Two consumers do not justify a shared crate and the shell must not depend on the application; when a third consumer appears, this is the pair to extract.
+        """
+    observed_at git:b7df9926293647c91fe326fd3e0fd7e8629da135
+    author "claude"
+    created_at 2026-09-01
 }
 
 record legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 : papercut {
@@ -543,6 +598,17 @@ record legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 : papercut {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.while-building-the-files-object-s-last-touched/1 : papercut {
+    title "While building the Files object's last-touched-file line, only the…"
+    state verified
+    statement """
+        While building the Files object's last-touched-file line, only the Trash and Recent DrawerFeeds populate row_target; the other drawer renderers return padded, column-formatted display strings, so a consumer wanting structure can only show them verbatim. Feeds should carry structured targets everywhere; phase 3's FilesSurfaceState supersedes the need, but the feed asymmetry remains a trap.
+        """
+    observed_at git:7e6f22c29df8b3615170eb250006a30ca4d73b54
+    author "claude"
+    created_at 2026-09-01
 }
 
 record legeos.papercut.while-checking-two-focused-lege-filed-filters-i/1 : papercut {

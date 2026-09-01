@@ -55,7 +55,7 @@ record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
 
 record legeos.work.adaptive-files-and-omnibox/1 : work {
     title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
-    state proposed
+    state completed
     scope [ path "shell/lege-shell/**" ]
     intent """
         Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
@@ -70,18 +70,21 @@ record legeos.work.adaptive-files-and-omnibox/1 : work {
                 """
             method command
             command "cargo test -p lege-shell omnibox"
+            verified_by [ @legeos.evidence.ws2-omnibox-unit-tests-20260901/1 ]
         }
         check one-search-control {
             statement """
                 Exactly one search field exists in every Home state; typing on bare Home yields federated app, project and file results in deterministic order; late file results never reorder visible rows.
                 """
             method manual
+            verified_by [ @legeos.evidence.ws2-one-search-control-20260901/1 ]
         }
         check state-continuity {
             statement """
                 Expanding Files, navigating three directories deep, selecting entries, collapsing and re-expanding lands in the same directory with the same selection and scroll.
                 """
             method manual
+            verified_by [ @legeos.evidence.ws2-state-continuity-20260901/1 ]
         }
     }
     depends_on [ @legeos.work.home-presentation-subtraction ]
@@ -1466,7 +1469,7 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
 
 record legeos.work.home-presentation-subtraction/1 : work {
     title "WS1 — Home subtraction: shape-aware floors, one Files object, pinned-only App tiles"
-    state proposed
+    state completed
     scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
     intent """
         Shell phases 0-2 of the consolidation plan. Phase 0: replace Representation::for_span's cell-count match with a declared RungFloor/RungLadder (cols, rows, cells floors per rung; highest admitted rung wins; monotone by construction), values chosen so no span reachable in today's default layout changes rung (System Large keeps rows floor 2 for the 7x2 Settings tile); reflow's aspect_distortion untouched; the --render baseline must not change in this phase. Phase 1: delete DRAWER_TILES, drawer_grid, drawer_reserved_cols, merge_drawers and the drawers panel group; add files_tile_id, merge_files (TileKind::Widget widget="files", span 2x2 floor / 4x3 preferred / widget-class ceiling) and migrate_drawer_tiles (all ten legacy drawer tiles kind-checked, first cell and largest span inherited, panel removed, idempotent, exact-inverse FieldOps); new surface/files_screen.rs renders Small and Wide from existing DrawerFeeds with conditional Downloads/Trash/Operations rows; DOCUMENT_VERSION stays 1. Phase 2: delete merge_apps; narrow the gone sweep to ParkedSession only (commented as load-bearing); add pin_app, FieldAction::PinApp, a Keep-on-Home session context row and the declared home.pin-app action; LIVE/PARKED hidden when every non-shelved toplevel has a located session tile.
@@ -1481,6 +1484,7 @@ record legeos.work.home-presentation-subtraction/1 : work {
                 """
             method command
             command "cargo test -p lege-shell field_model"
+            verified_by [ @legeos.evidence.ws1-drawer-migration-20260901/1 ]
         }
         check field-ladder-tests {
             statement """
@@ -1488,12 +1492,14 @@ record legeos.work.home-presentation-subtraction/1 : work {
                 """
             method command
             command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.ws1-field-ladder-tests-20260901/1 ]
         }
         check no-auto-app-tiles {
             statement """
                 A running session produces a session tile and no App tile; a pinned App tile survives a shell restart; a field refresh never removes a placed tile other than a closed window's session tile.
                 """
             method manual
+            verified_by [ @legeos.evidence.ws1-no-auto-app-tiles-20260901/1 ]
         }
     }
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
@@ -1837,7 +1843,7 @@ record legeos.work.host-update-transaction/1 : work {
 
 record legeos.work.logical-app-and-variant-identity/1 : work {
     title "WS5 — logical app + variant identity: provenance, trust tiers, variant-keyed rights"
-    state proposed
+    state completed
     scope [
         path "crates/lege-appd/**",
         path "crates/lege-associationd/**",
@@ -1861,6 +1867,7 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
                 """
             method command
             command "cargo test -p lege-appd"
+            verified_by [ @legeos.evidence.ws5-collision-regression-20260901/1 ]
         }
         check migration-fixture {
             statement """
@@ -1868,12 +1875,14 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
                 """
             method command
             command "cargo test -p lege-state"
+            verified_by [ @legeos.evidence.ws5-migration-fixture-20260901/1 ]
         }
         check one-firefox {
             statement """
                 With two variants installed the shell search shows one application whose details offer the variant choice, and an association whose stored variant was uninstalled resolves to a sibling with reason variant-substituted.
                 """
             method manual
+            verified_by [ @legeos.evidence.ws5-one-firefox-20260901/1 ]
         }
         check trust-gates {
             statement """
@@ -1881,6 +1890,7 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
                 """
             method command
             command "cargo test -p lege-sessiond providers"
+            verified_by [ @legeos.evidence.ws5-trust-gates-20260901/1 ]
         }
     }
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
@@ -1889,7 +1899,7 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
 
 record legeos.work.project-semantic-service/1 : work {
     title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
-    state proposed
+    state completed
     scope [
         path "cli/lege/**",
         path "crates/lege-client/**",
@@ -1911,6 +1921,7 @@ record legeos.work.project-semantic-service/1 : work {
                 """
             method command
             command "cargo test -p lege-session-core projects"
+            verified_by [ @legeos.evidence.ws4-blob-compat-20260901/1 ]
         }
         check update-roundtrip {
             statement """
@@ -1918,12 +1929,14 @@ record legeos.work.project-semantic-service/1 : work {
                 """
             method command
             command "cargo test -p lege-sessiond projects"
+            verified_by [ @legeos.evidence.ws4-update-roundtrip-20260901/1 ]
         }
         check variant-reopen {
             statement """
                 A project whose pinned flatpak variant was uninstalled reopens on the sibling variant and says so in history.
                 """
             method manual
+            verified_by [ @legeos.evidence.ws4-variant-reopen-20260901/1 ]
         }
     }
     depends_on [ @legeos.work.logical-app-and-variant-identity ]
