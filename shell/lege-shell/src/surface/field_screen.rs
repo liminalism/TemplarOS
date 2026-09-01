@@ -31,7 +31,7 @@ use crate::home_surface::Drawer;
 use crate::surface::context_menu::{Chosen, ContextMenu, MenuTarget};
 use crate::surface::design::{self, Elevation};
 use crate::surface::file_browser::FileBrowserData;
-use crate::surface::home_screen::{HomeSurfaceAction, HomeSurfaceData, HomeSurfaceScreen};
+use crate::surface::file_browser::FilesBrowseView;
 use crate::surface::widgets::{self, WidgetSnapshot};
 
 /// One typed file drop, ready for the service. The shell never decides what a conflict, a
@@ -50,7 +50,7 @@ pub struct FileDrop {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldAction {
     RunSearch {
-        drawer: Drawer,
+        location: crate::files_surface::FilesLocation,
         query: String,
     },
     Launch(AppId),
@@ -60,9 +60,10 @@ pub enum FieldAction {
     Activate(WindowId),
     Park(WindowId),
     Restore(WindowId),
-    BrowseDirectory {
-        drawer: Drawer,
-        path: PathBuf,
+    /// Fetch what the Files surface's current location needs. Same staleness guards as before,
+    /// keyed on the location rather than on a drawer that no longer exists.
+    BrowseLocation {
+        location: crate::files_surface::FilesLocation,
         show_hidden: bool,
     },
     OpenFile(PathBuf),
@@ -211,13 +212,16 @@ pub struct FieldScreen {
     pub resize: Option<(TileId, Span)>,
     /// `r` on a focused tile: resized by keyboard, arrows growing and shrinking the request.
     pub keyboard_resize: Option<(TileId, Span)>,
-    /// A drawer opened to its full body, over the field.
-    pub expanded: Option<Drawer>,
+    /// Whether the Files object is expanded over the field. Where it is expanded *to* is
+    /// `files`, which outlives every collapse — that is what makes reopening it continuous.
+    pub files_expanded: bool,
+    /// The Files object's one state, at every rung.
+    pub files: crate::files_surface::FilesSurfaceState,
     /// A project zoomed to fill the field: its interior grid is what is drawn and edited, with
     /// a breadcrumb back. The document is untouched by zoom — it is a view, never a hidden
     /// desktop (`docs/homefield.md`, "Do not recreate virtual desktops under another name").
     pub zoomed: Option<TileId>,
-    pub drawer_view: HomeSurfaceScreen,
+    pub files_view: FilesBrowseView,
     pub search: TextFieldState,
     pub search_focused: bool,
     /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
@@ -248,9 +252,10 @@ impl Default for FieldScreen {
             keyboard_move: None,
             resize: None,
             keyboard_resize: None,
-            expanded: None,
+            files_expanded: false,
+            files: crate::files_surface::FilesSurfaceState::default(),
             zoomed: None,
-            drawer_view: HomeSurfaceScreen::default(),
+            files_view: FilesBrowseView::default(),
             search: TextFieldState::new(),
             search_focused: false,
             help_open: false,
@@ -457,8 +462,8 @@ impl FieldScreen {
             (below_bar.h - gap).max(0),
         );
 
-        if let Some(drawer) = self.expanded {
-            self.draw_expanded(ui, rest, drawer, data, &mut actions);
+        if self.files_expanded {
+            self.draw_expanded(ui, rest, data, &mut actions);
             self.draw_notice(ui, rest);
             return actions;
         }
@@ -745,8 +750,8 @@ impl FieldScreen {
             Align::Centre,
         );
         if ui.input.take_click(home) {
-            if self.expanded.is_some() {
-                self.expanded = None;
+            if self.files_expanded {
+                self.files_expanded = false;
             } else {
                 actions.push(FieldAction::RevealHome);
             }
@@ -779,19 +784,10 @@ impl FieldScreen {
         if ui.input.take_click(search_area) {
             self.search_focused = true;
         }
-        let searchable = self.expanded.is_some_and(|drawer| {
-            matches!(
-                drawer,
-                Drawer::Downloads | Drawer::Documents | Drawer::Media
-            )
-        });
-        // On the field itself the bar searches applications: it filters the launcher widget as
-        // the user types, and Enter launches the best match. It said "Search files, applications
-        // and projects" and did nothing at all unless a searchable drawer happened to be open.
-        let placeholder = if let Some(drawer) = self.expanded.filter(|_| searchable) {
-            format!("Search {}", drawer.name())
-        } else if self.expanded.is_some() {
-            "Search files, applications and projects".to_owned()
+        // Scope is derived from where the surface is, never chosen: on bare Home the bar
+        // searches applications, and inside the expanded Files object it searches that location.
+        let placeholder = if self.files_expanded {
+            format!("Search {}", self.files.location().label())
         } else {
             // The launcher tile carries the running count of what the query matches; this line
             // only has to say what typing here does.
@@ -815,12 +811,14 @@ impl FieldScreen {
         if !enter || self.search.text().trim().is_empty() {
             return;
         }
-        if searchable && let Some(drawer) = self.expanded {
+        if self.files_expanded {
+            let query = self.search.text().to_owned();
+            self.files.search(&query);
             actions.push(FieldAction::RunSearch {
-                drawer,
-                query: self.search.text().to_owned(),
+                location: self.files.location().clone(),
+                query,
             });
-        } else if self.expanded.is_none() {
+        } else {
             // On the field, Enter launches. The `launcher.launch` action declares this
             // capability; the app id it needs is the query's best match, which is why it travels
             // as `Launch` rather than as a payload-free `RunAction`.
@@ -1064,11 +1062,16 @@ impl FieldScreen {
         );
     }
 
+    /// The Files object over the whole field: one breadcrumb band and the object's own body.
+    ///
+    /// One nesting level, where there used to be three — a breadcrumb band, then a surface with
+    /// its own rail and its own second search field, then a browser with its own places sidebar
+    /// and its own toolbar breadcrumb. The rail is the pinned list inside the body now, and the
+    /// second search field is the one at the top of the screen.
     fn draw_expanded(
         &mut self,
         ui: &mut Ui<'_>,
         rest: Rect,
-        drawer: Drawer,
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
@@ -1078,46 +1081,41 @@ impl FieldScreen {
             crumb.inset(ui.px(6)),
             &format!(
                 "HOME  ▸  {}   (Escape returns)",
-                drawer.name().to_uppercase()
+                self.files.location().label().to_uppercase()
             ),
             style,
             ui.theme.text_dim,
             Align::Left,
         );
         if !self.search_focused && ui.input.keys().contains(&KeyInput::Escape) {
-            self.expanded = None;
+            self.files_expanded = false;
             return;
         }
-        self.drawer_view.selected = drawer;
-        let inner = HomeSurfaceData {
-            drawer_feeds: data.drawer_feeds,
-            toplevels: data.toplevels,
-            connected: data.connected,
-            browser: data.browser,
-        };
-        match self.drawer_view.draw(ui, body, &inner) {
-            HomeSurfaceAction::RunSearch { drawer, query } => {
-                actions.push(FieldAction::RunSearch { drawer, query });
-            }
-            HomeSurfaceAction::RestoreWindow(window_id) => {
-                actions.push(FieldAction::Restore(window_id));
-            }
-            HomeSurfaceAction::BrowseDirectory {
-                drawer,
-                path,
+        match self.files_view.draw(
+            ui,
+            body,
+            &mut self.files,
+            data.browser,
+            !self.search_focused,
+        ) {
+            Some(crate::surface::file_browser::FileBrowserAction::Load {
+                location,
                 show_hidden,
-            } => actions.push(FieldAction::BrowseDirectory {
-                drawer,
-                path,
+            }) => actions.push(FieldAction::BrowseLocation {
+                location,
                 show_hidden,
             }),
-            HomeSurfaceAction::OpenFile(path) => actions.push(FieldAction::OpenFile(path)),
-            HomeSurfaceAction::OpenInFiles(path) => actions.push(FieldAction::OpenInFiles(path)),
-            HomeSurfaceAction::File(request) => actions.push(FieldAction::FileVerb(request)),
-            HomeSurfaceAction::None => {}
+            Some(crate::surface::file_browser::FileBrowserAction::Open(path)) => {
+                actions.push(FieldAction::OpenFile(path));
+            }
+            Some(crate::surface::file_browser::FileBrowserAction::OpenInFiles(path)) => {
+                actions.push(FieldAction::OpenInFiles(path));
+            }
+            Some(crate::surface::file_browser::FileBrowserAction::File(request)) => {
+                actions.push(FieldAction::FileVerb(request));
+            }
+            None => {}
         }
-        // The rail inside the drawer view may have switched drawers; follow it.
-        self.expanded = Some(self.drawer_view.selected);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2042,8 +2040,7 @@ impl FieldScreen {
             }
             TileKind::Widget { widget, .. } => {
                 if widget == field_model::FILES_WIDGET {
-                    self.expanded = Some(Drawer::Recent);
-                    self.drawer_view.scroll = pixelkit_ui::ScrollState::new();
+                    self.files_expanded = true;
                 }
             }
             TileKind::Project { .. } => {
@@ -2306,6 +2303,7 @@ impl FieldScreen {
                 if widget == field_model::FILES_WIDGET {
                     let files = crate::surface::files_screen::FilesData {
                         feeds: data.drawer_feeds,
+                        sources: data.browser.sources,
                     };
                     match crate::surface::files_screen::draw(
                         ui,
@@ -2313,9 +2311,9 @@ impl FieldScreen {
                         representation_of(data.field, tile),
                         files,
                     ) {
-                        crate::surface::files_screen::FilesAction::Open(drawer) => {
-                            self.expanded = Some(drawer);
-                            self.drawer_view.scroll = pixelkit_ui::ScrollState::new();
+                        crate::surface::files_screen::FilesAction::Open(location) => {
+                            self.files.go_to(location);
+                            self.files_expanded = true;
                         }
                         crate::surface::files_screen::FilesAction::Run(id) => {
                             actions.push(FieldAction::RunAction(id));
@@ -2975,6 +2973,7 @@ mod tests {
                 search_query: None,
                 search_entries: None,
                 search_error: None,
+                feeds: &drawer_feeds,
                 thumbnails: &empty_thumbnails,
             };
             let data = FieldData {
@@ -3197,9 +3196,9 @@ mod tests {
         let files = field_model::files_tile_id();
         let rect = h.rect_of(files);
         h.click(rect.x + rect.w / 2, rect.bottom() - 10);
-        assert_eq!(h.screen.expanded, Some(Drawer::Recent));
+        assert!(h.screen.files_expanded);
         h.key(KeyInput::Escape);
-        assert_eq!(h.screen.expanded, None);
+        assert!(!h.screen.files_expanded);
     }
 
     #[test]
@@ -3210,9 +3209,9 @@ mod tests {
         h.key(KeyInput::Right);
         assert_eq!(h.screen.focus, Some(field_model::files_tile_id()));
         h.key(KeyInput::Enter);
-        assert_eq!(h.screen.expanded, Some(Drawer::Recent));
+        assert!(h.screen.files_expanded);
         h.key(KeyInput::Escape);
-        assert_eq!(h.screen.expanded, None);
+        assert!(!h.screen.files_expanded);
 
         // Walk right to the Files app tile and launch it with Enter.
         let files = tile_id_for("app:org.legeos.Files");
@@ -3724,7 +3723,7 @@ mod tests {
         let grip = grip_of(&mut h, downloads);
         h.click(grip.x + 2, grip.y + 2);
         assert!(
-            h.screen.expanded.is_none(),
+            !h.screen.files_expanded,
             "the drawer must not have opened from a grip press"
         );
     }

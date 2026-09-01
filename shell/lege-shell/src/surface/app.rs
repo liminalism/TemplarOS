@@ -25,9 +25,9 @@ use lege_types::action;
 use lege_window::RevealHome;
 
 use crate::clipboard::Clipboard;
-use crate::drawers::standard_paths::{self, StandardDrawer};
 use crate::field_model::{self, LiveState, ProjectInfo};
 use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKind};
+use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::settings::{self, HomeFieldSettings, PreviewMode};
@@ -98,15 +98,14 @@ enum DataUpdate {
     /// `HomeField1` is not reachable: the field stays in-session.
     FieldUnavailable,
     SearchResults {
-        drawer: Drawer,
+        location: FilesLocation,
         query: String,
         result: Result<Vec<BrowseEntry>, String>,
     },
     BrowserSources(BrowserSources),
     BrowserListing {
-        drawer: Drawer,
+        location: FilesLocation,
         show_hidden: bool,
-        path: PathBuf,
         result: Result<DirectoryListing, String>,
     },
     FileOpened {
@@ -264,9 +263,9 @@ struct ShellApp {
     started: Instant,
 
     drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
-    search_results: Option<(Drawer, String, Result<Vec<BrowseEntry>, String>)>,
+    search_results: Option<(FilesLocation, String, Result<Vec<BrowseEntry>, String>)>,
     browser_sources: BrowserSources,
-    browser_listing: Option<(Drawer, bool, DirectoryListing)>,
+    browser_listing: Option<(FilesLocation, bool, DirectoryListing)>,
     /// Decoded file thumbnails for the browse view's grid mode, keyed by path. Filled from the
     /// bounded requests the screen hands out; dropped whenever the listing generation moves.
     file_thumbnails: std::collections::HashMap<PathBuf, pixelkit_raster::Bitmap>,
@@ -285,8 +284,8 @@ struct ShellApp {
     /// `None` until the first fetch: whatever was already active at startup is old news and
     /// only sets the watermark.
     last_toasted_id: Option<u32>,
-    browser_pending: Option<(Drawer, bool, PathBuf)>,
-    browser_error: Option<(Drawer, PathBuf, String)>,
+    browser_pending: Option<(FilesLocation, bool)>,
+    browser_error: Option<(FilesLocation, String)>,
     browser_status: Option<String>,
     icons: HashMap<String, pixelkit_raster::Bitmap>,
     icon_attempted: HashSet<String>,
@@ -447,13 +446,20 @@ impl ShellApp {
         });
     }
 
-    fn spawn_search(&self, drawer: Drawer, query: String) {
+    fn spawn_search(&self, location: FilesLocation, query: String) {
+        if query.trim().is_empty() {
+            return;
+        }
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
+        let roots = location
+            .directory()
+            .map(|path| vec![path.display().to_string()])
+            .unwrap_or_default();
         self.runtime.spawn(async move {
-            let result = run_search(drawer, &query).await;
+            let result = run_search(roots, &query).await;
             let _ = tx.send(DataUpdate::SearchResults {
-                drawer,
+                location,
                 query,
                 result,
             });
@@ -469,7 +475,7 @@ impl ShellApp {
         let Some((_, _, listing)) = &self.browser_listing else {
             return;
         };
-        let screen = &self.field_screen.drawer_view.browser;
+        let screen = &self.field_screen.files;
         if !screen.thumbnail_current(self.file_thumbnails_generation) {
             self.file_thumbnails.clear();
             self.file_thumbnails_pending.clear();
@@ -496,24 +502,28 @@ impl ShellApp {
         }
     }
 
-    fn spawn_browse(&mut self, drawer: Drawer, path: PathBuf, show_hidden: bool) {
-        if self.browser_pending.as_ref().is_some_and(
-            |(pending_drawer, pending_hidden, pending_path)| {
-                (*pending_drawer, *pending_hidden, pending_path) == (drawer, show_hidden, &path)
-            },
-        ) {
+    /// Fetch what one location needs. A feed location needs nothing — its rows are the drawer
+    /// feeds the background refresh already carries — so only a directory reaches the service.
+    fn spawn_browse(&mut self, location: FilesLocation, show_hidden: bool) {
+        let Some(path) = location.directory().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        if self
+            .browser_pending
+            .as_ref()
+            .is_some_and(|pending| *pending == (location.clone(), show_hidden))
+        {
             return;
         }
-        self.browser_pending = Some((drawer, show_hidden, path.clone()));
+        self.browser_pending = Some((location.clone(), show_hidden));
         self.browser_error = None;
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
             let result = crate::data::browse_directory(&path, show_hidden).await;
             let _ = tx.send(DataUpdate::BrowserListing {
-                drawer,
+                location,
                 show_hidden,
-                path,
                 result,
             });
             let _ = proxy.send_event(Wake);
@@ -595,11 +605,7 @@ impl ShellApp {
                 } => {
                     self.file_thumbnails_pending.remove(&path);
                     if generation == self.file_thumbnails_generation
-                        && self
-                            .field_screen
-                            .drawer_view
-                            .browser
-                            .thumbnail_current(generation)
+                        && self.field_screen.files.thumbnail_current(generation)
                         && let Some(bitmap) = bitmap
                     {
                         self.file_thumbnails.insert(path, bitmap);
@@ -633,36 +639,33 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::SearchResults {
-                    drawer,
+                    location,
                     query,
                     result,
                 } => {
-                    self.search_results = Some((drawer, query, result));
+                    self.search_results = Some((location, query, result));
                 }
                 DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
                 DataUpdate::BrowserListing {
-                    drawer,
+                    location,
                     show_hidden,
-                    path,
                     result,
                 } => {
-                    let is_current = self.browser_pending.as_ref().is_some_and(
-                        |(pending_drawer, pending_hidden, pending_path)| {
-                            (*pending_drawer, *pending_hidden, pending_path)
-                                == (drawer, show_hidden, &path)
-                        },
-                    );
+                    let is_current = self
+                        .browser_pending
+                        .as_ref()
+                        .is_some_and(|pending| *pending == (location.clone(), show_hidden));
                     if !is_current {
                         continue;
                     }
                     self.browser_pending = None;
                     match result {
                         Ok(listing) => {
-                            self.browser_listing = Some((drawer, show_hidden, listing));
+                            self.browser_listing = Some((location, show_hidden, listing));
                             self.browser_error = None;
                         }
                         Err(error) => {
-                            self.browser_error = Some((drawer, path, error));
+                            self.browser_error = Some((location, error));
                         }
                     }
                 }
@@ -895,10 +898,14 @@ impl ShellApp {
             return;
         }
         let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
-        let active_search = self.search_results.as_ref().filter(|(drawer, query, _)| {
-            Some(*drawer) == self.field_screen.expanded
-                && query == self.field_screen.drawer_view.search.text()
-        });
+        // A search result is shown only while it still answers the question on screen: the
+        // same location and the same query. The staleness guard is the one it always was, keyed
+        // on the location now that a drawer is not a thing.
+        let here = self.field_screen.files.location().clone();
+        let active_search = self
+            .search_results
+            .as_ref()
+            .filter(|(location, _, _)| *location == here);
         let search_query = active_search.map(|(_, query, _)| query.as_str());
         let search_entries = active_search
             .and_then(|(_, _, result)| result.as_ref().ok())
@@ -911,19 +918,20 @@ impl ShellApp {
             listing: self
                 .browser_listing
                 .as_ref()
-                .map(|(drawer, hidden, listing)| (*drawer, *hidden, listing)),
+                .map(|(location, hidden, listing)| (location, *hidden, listing)),
             pending: self
                 .browser_pending
                 .as_ref()
-                .map(|(drawer, hidden, path)| (*drawer, *hidden, path.as_path())),
+                .map(|(location, hidden)| (location, *hidden)),
             error: self
                 .browser_error
                 .as_ref()
-                .map(|(drawer, path, error)| (*drawer, path.as_path(), error.as_str())),
+                .map(|(location, error)| (location, error.as_str())),
             status: self.browser_status.as_deref(),
             search_query,
             search_entries,
             search_error,
+            feeds: &self.drawer_feeds,
             thumbnails: &self.file_thumbnails,
         };
         let data = FieldData {
@@ -989,7 +997,7 @@ impl ShellApp {
                 });
             }
 
-            FieldAction::RunSearch { drawer, query } => self.spawn_search(drawer, query),
+            FieldAction::RunSearch { location, query } => self.spawn_search(location, query),
             FieldAction::Launch(app_id) => self.spawn_launch(app_id),
             FieldAction::Activate(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
@@ -1000,16 +1008,10 @@ impl ShellApp {
             FieldAction::Restore(window_id) => {
                 self.bridge_call("unshelve", |bridge| bridge.unshelve(window_id));
             }
-            FieldAction::BrowseDirectory {
-                drawer,
-                path,
+            FieldAction::BrowseLocation {
+                location,
                 show_hidden,
-            } => {
-                self.search_results = None;
-                self.field_screen.drawer_view.search = pixelkit_ui::TextFieldState::new();
-                self.field_screen.drawer_view.search_focused = false;
-                self.spawn_browse(drawer, path, show_hidden);
-            }
+            } => self.spawn_browse(location, show_hidden),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
                 Ok(app_id) => {
@@ -2253,28 +2255,7 @@ struct SearchEntry {
     mime: Option<String>,
 }
 
-/// `Files.Search1.Search`'s roots for `drawer` — the same directories `standard_paths::render`
-/// already resolves for its text form, so a search never looks somewhere the drawer itself
-/// disagrees about.
-fn search_roots(drawer: Drawer) -> Vec<String> {
-    let Some(home) = standard_paths::home_dir() else {
-        return Vec::new();
-    };
-    let user_dirs = standard_paths::read_user_dirs(&home)
-        .map(|text| standard_paths::parse_user_dirs(&text, &home))
-        .unwrap_or_default();
-    let standard = match drawer {
-        Drawer::Downloads => StandardDrawer::Downloads,
-        Drawer::Documents => StandardDrawer::Documents,
-        _ => StandardDrawer::Media,
-    };
-    standard_paths::directories_for(standard, &user_dirs, &home)
-        .into_iter()
-        .map(|path| path.display().to_string())
-        .collect()
-}
-
-async fn run_search(drawer: Drawer, query: &str) -> Result<Vec<BrowseEntry>, String> {
+async fn run_search(roots: Vec<String>, query: &str) -> Result<Vec<BrowseEntry>, String> {
     let connection = match crate::data::session().await {
         Ok(connection) => connection,
         Err(message) => return Err(format!("Search — {message}")),
@@ -2283,7 +2264,6 @@ async fn run_search(drawer: Drawer, query: &str) -> Result<Vec<BrowseEntry>, Str
         Ok(proxy) => proxy,
         Err(error) => return Err(format!("Search — service unavailable: {error}")),
     };
-    let roots = search_roots(drawer);
     match proxy.search(query, roots, 50).await {
         Ok(json) => parse_hits(&json),
         Err(error) => Err(format!("Search — service unavailable: {error}")),

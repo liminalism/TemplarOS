@@ -99,6 +99,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         search_query: None,
         search_entries: None,
         search_error: None,
+        feeds: &drawer_feeds,
         thumbnails: &empty_thumbnails,
     };
     let clock_label = crate::surface::app::clock_label_now();
@@ -232,7 +233,48 @@ mod tests {
             ),
         );
         let empty_bitmaps = HashMap::new();
-        let browser_sources = crate::file_browser::BrowserSources::default();
+        // Fixed pinned locations, so the baseline reviews the Files object's real chip row and
+        // the expanded surface's real sidebar rather than the degraded form of both.
+        let browser_sources = crate::file_browser::BrowserSources {
+            pinned: vec![
+                crate::files_surface::PinnedLocation {
+                    label: "Recent".to_owned(),
+                    detail: "Lately opened and saved".to_owned(),
+                    location: crate::files_surface::FilesLocation::Recent,
+                    kind: crate::files_surface::PinnedKind::Feed,
+                },
+                crate::files_surface::PinnedLocation {
+                    label: "Home".to_owned(),
+                    detail: "Personal files".to_owned(),
+                    location: crate::files_surface::FilesLocation::Directory(
+                        "/home/fixture".into(),
+                    ),
+                    kind: crate::files_surface::PinnedKind::Place,
+                },
+                crate::files_surface::PinnedLocation {
+                    label: "Documents".to_owned(),
+                    detail: "Standard folder".to_owned(),
+                    location: crate::files_surface::FilesLocation::Directory(
+                        "/home/fixture/Documents".into(),
+                    ),
+                    kind: crate::files_surface::PinnedKind::Place,
+                },
+                crate::files_surface::PinnedLocation {
+                    label: "Downloads".to_owned(),
+                    detail: "Standard folder".to_owned(),
+                    location: crate::files_surface::FilesLocation::Directory(
+                        "/home/fixture/Downloads".into(),
+                    ),
+                    kind: crate::files_surface::PinnedKind::Place,
+                },
+                crate::files_surface::PinnedLocation {
+                    label: "Trash".to_owned(),
+                    detail: "Restorable".to_owned(),
+                    location: crate::files_surface::FilesLocation::Trash,
+                    kind: crate::files_surface::PinnedKind::Feed,
+                },
+            ],
+        };
         let empty_thumbnails = std::collections::HashMap::new();
         let browser = FileBrowserData {
             sources: &browser_sources,
@@ -243,6 +285,7 @@ mod tests {
             search_query: None,
             search_entries: None,
             search_error: None,
+            feeds: &drawer_feeds,
             thumbnails: &empty_thumbnails,
         };
         let apps = Vec::new();
@@ -297,7 +340,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xdb83_7151_24cd_63b9,
+            hash, 0xe585_9d12_a1f9_0990,
             "review the Home Field pixels before updating this baseline"
         );
     }
