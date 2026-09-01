@@ -34,6 +34,10 @@ pub enum DecisionReason {
     ExplicitExtensionOverride,
     GlobalMimeDefault,
     GenericExtensionFallback,
+    /// The stored default named a copy of an application that is no longer installed, and another
+    /// copy of the same application answered instead. Said out loud rather than silently: the file
+    /// opened, and the person should be able to find out why it opened in the Flatpak this time.
+    VariantSubstituted,
     AskUser,
 }
 
@@ -44,6 +48,7 @@ impl DecisionReason {
             Self::ExplicitExtensionOverride => "explicit-extension-override",
             Self::GlobalMimeDefault => "global-mime-default",
             Self::GenericExtensionFallback => "generic-extension-fallback",
+            Self::VariantSubstituted => "variant-substituted",
             Self::AskUser => "ask-user",
         }
     }
@@ -96,17 +101,18 @@ impl AssociationEngine {
         project_id: Option<&str>,
     ) -> OpenDecision {
         if let Some(project_id) = project_id
-            && let Some(app_id) = self
+            && let Some(stored) = self
                 .db
                 .project_mime_defaults
                 .get(project_id)
                 .and_then(|rules| rules.get(detected_mime))
-            && self.app_supports(app_id, detected_mime)
+            && let Some(handler) =
+                self.live_handler(stored, |id| self.app_supports(id, detected_mime))
         {
             return decision(
-                app_id.clone(),
+                handler.app_id.clone(),
                 detected_mime,
-                DecisionReason::ProjectMimeDefault,
+                handler.reason(DecisionReason::ProjectMimeDefault),
             );
         }
 
@@ -121,34 +127,35 @@ impl AssociationEngine {
 
         if let Some(rule) = extension_rule
             && rule.override_specific_mime
-            && self.app_exists(&rule.app_id)
+            && let Some(handler) = self.live_handler(&rule.app_id, |id| self.app_exists(id))
         {
             return decision(
-                rule.app_id.clone(),
+                handler.app_id.clone(),
                 detected_mime,
-                DecisionReason::ExplicitExtensionOverride,
+                handler.reason(DecisionReason::ExplicitExtensionOverride),
             );
         }
 
-        if let Some(app_id) = self.db.mime_defaults.get(detected_mime)
-            && self.app_supports(app_id, detected_mime)
+        if let Some(stored) = self.db.mime_defaults.get(detected_mime)
+            && let Some(handler) =
+                self.live_handler(stored, |id| self.app_supports(id, detected_mime))
         {
             return decision(
-                app_id.clone(),
+                handler.app_id.clone(),
                 detected_mime,
-                DecisionReason::GlobalMimeDefault,
+                handler.reason(DecisionReason::GlobalMimeDefault),
             );
         }
 
         let generic_type = matches!(detected_mime, "application/octet-stream" | "text/plain");
         if generic_type
             && let Some(rule) = extension_rule
-            && self.app_exists(&rule.app_id)
+            && let Some(handler) = self.live_handler(&rule.app_id, |id| self.app_exists(id))
         {
             return decision(
-                rule.app_id.clone(),
+                handler.app_id.clone(),
                 detected_mime,
-                DecisionReason::GenericExtensionFallback,
+                handler.reason(DecisionReason::GenericExtensionFallback),
             );
         }
 
@@ -321,6 +328,53 @@ impl AssociationEngine {
             .manifest(app_id)
             .is_some_and(|manifest| manifest.supports_mime(mime))
     }
+
+    /// The copy that will actually open this, given a stored choice that may name a copy which has
+    /// since been uninstalled.
+    ///
+    /// A person who chose one copy gets that copy for as long as it exists — the stored id is
+    /// tried first and unchanged. Only when it is gone does the search widen: through the alias
+    /// table, then to a sibling copy of the same application. Replacing the deb with the Flatpak
+    /// should not make every PDF stop opening.
+    fn live_handler(&self, stored: &AppId, test: impl Fn(&AppId) -> bool) -> Option<Substituted> {
+        if test(stored) {
+            return Some(Substituted {
+                app_id: stored.clone(),
+                substituted: false,
+            });
+        }
+        let resolved = self.catalog.resolve_alias(stored);
+        if resolved != *stored && test(&resolved) {
+            return Some(Substituted {
+                app_id: resolved,
+                substituted: true,
+            });
+        }
+        self.catalog
+            .sibling_variants(&resolved)
+            .into_iter()
+            .find(|sibling| test(sibling))
+            .map(|app_id| Substituted {
+                app_id,
+                substituted: true,
+            })
+    }
+}
+
+/// A resolved handler, and whether it is the copy the person actually chose.
+struct Substituted {
+    app_id: AppId,
+    substituted: bool,
+}
+
+impl Substituted {
+    fn reason(&self, original: DecisionReason) -> DecisionReason {
+        if self.substituted {
+            DecisionReason::VariantSubstituted
+        } else {
+            original
+        }
+    }
 }
 
 fn decision(app_id: AppId, detected_mime: &str, reason: DecisionReason) -> OpenDecision {
@@ -365,7 +419,13 @@ pub(crate) mod tests {
     use std::collections::HashMap;
 
     #[derive(Default)]
-    pub(crate) struct StaticCatalog(pub RwLock<HashMap<AppId, Arc<AppManifest>>>);
+    pub(crate) struct StaticCatalog {
+        pub manifests: RwLock<HashMap<AppId, Arc<AppManifest>>>,
+        /// Old id -> current id, as the registry's alias table would answer.
+        pub aliases: RwLock<HashMap<AppId, AppId>>,
+        /// Variant -> the other copies of the same application, best first.
+        pub siblings: RwLock<HashMap<AppId, Vec<AppId>>>,
+    }
 
     impl StaticCatalog {
         pub(crate) fn with(ids: &[(&str, &[&str])]) -> Arc<Self> {
@@ -384,9 +444,10 @@ pub(crate) mod tests {
                     categories: std::collections::BTreeSet::default(),
                     keywords: std::collections::BTreeSet::default(),
                     no_display: false,
+                    provenance: None,
                 };
                 catalog
-                    .0
+                    .manifests
                     .write()
                     .insert(manifest.id.clone(), Arc::new(manifest));
             }
@@ -396,10 +457,20 @@ pub(crate) mod tests {
 
     impl AppCatalog for StaticCatalog {
         fn manifest(&self, id: &AppId) -> Option<Arc<AppManifest>> {
-            self.0.read().get(id).cloned()
+            self.manifests.read().get(id).cloned()
         }
         fn manifests(&self) -> Vec<Arc<AppManifest>> {
-            self.0.read().values().cloned().collect()
+            self.manifests.read().values().cloned().collect()
+        }
+        fn resolve_alias(&self, stored: &AppId) -> AppId {
+            self.aliases
+                .read()
+                .get(stored)
+                .cloned()
+                .unwrap_or_else(|| stored.clone())
+        }
+        fn sibling_variants(&self, id: &AppId) -> Vec<AppId> {
+            self.siblings.read().get(id).cloned().unwrap_or_default()
         }
     }
 
@@ -531,7 +602,7 @@ pub(crate) mod tests {
         engine
             .set_mime_default("application/pdf", "org.legeos.Viewer".parse().unwrap())
             .unwrap();
-        catalog.0.write().clear(); // "uninstall"
+        catalog.manifests.write().clear(); // "uninstall"
         let removed = engine.prune_stale();
         assert_eq!(removed.len(), 1);
         assert!(engine.database().mime_defaults.is_empty());
@@ -587,5 +658,98 @@ pub(crate) mod tests {
         );
         assert!(engine.database().mime_defaults.is_empty());
         assert!(engine.database().extension_defaults.is_empty());
+    }
+
+    #[test]
+    fn a_default_still_opens_when_the_chosen_copy_is_replaced_by_another_of_the_same_app() {
+        // The person chose the distribution's Firefox. They then removed the package and kept the
+        // Flatpak. Their PDFs should not stop opening, and the substitution should be sayable.
+        let distro: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        let flatpak: AppId = "flatpak.org.mozilla.firefox".parse().unwrap();
+        let catalog = StaticCatalog::with(&[("flatpak.org.mozilla.firefox", &["application/pdf"])]);
+        catalog
+            .siblings
+            .write()
+            .insert(distro.clone(), vec![flatpak.clone()]);
+
+        let mut db = AssociationDb::default();
+        db.mime_defaults
+            .insert("application/pdf".into(), distro.clone());
+        let engine = AssociationEngine::new(db, catalog);
+
+        let decision = engine.resolve(Path::new("/tmp/a.pdf"), "application/pdf", None);
+        assert_eq!(decision.app_id.as_ref(), Some(&flatpak));
+        assert_eq!(decision.reason, DecisionReason::VariantSubstituted);
+    }
+
+    #[test]
+    fn the_copy_a_person_chose_is_used_for_as_long_as_it_exists() {
+        let distro: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        let flatpak: AppId = "flatpak.org.mozilla.firefox".parse().unwrap();
+        let catalog = StaticCatalog::with(&[
+            ("desktop-import.firefox.desktop", &["application/pdf"]),
+            ("flatpak.org.mozilla.firefox", &["application/pdf"]),
+        ]);
+        catalog
+            .siblings
+            .write()
+            .insert(distro.clone(), vec![flatpak]);
+
+        let mut db = AssociationDb::default();
+        db.mime_defaults
+            .insert("application/pdf".into(), distro.clone());
+        let engine = AssociationEngine::new(db, catalog);
+
+        let decision = engine.resolve(Path::new("/tmp/a.pdf"), "application/pdf", None);
+        assert_eq!(decision.app_id.as_ref(), Some(&distro));
+        assert_eq!(
+            decision.reason,
+            DecisionReason::GlobalMimeDefault,
+            "no substitution happened, so nothing should say one did"
+        );
+    }
+
+    #[test]
+    fn a_renamed_variant_resolves_through_its_alias_before_any_sibling_is_considered() {
+        let old: AppId = "desktop-import.org.mozilla.firefox.desktop"
+            .parse()
+            .unwrap();
+        let new: AppId = "flatpak.org.mozilla.firefox".parse().unwrap();
+        let other: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        let catalog = StaticCatalog::with(&[
+            ("flatpak.org.mozilla.firefox", &["application/pdf"]),
+            ("desktop-import.firefox.desktop", &["application/pdf"]),
+        ]);
+        catalog.aliases.write().insert(old.clone(), new.clone());
+        catalog.siblings.write().insert(new.clone(), vec![other]);
+
+        let mut db = AssociationDb::default();
+        db.mime_defaults.insert("application/pdf".into(), old);
+        let engine = AssociationEngine::new(db, catalog);
+
+        let decision = engine.resolve(Path::new("/tmp/a.pdf"), "application/pdf", None);
+        assert_eq!(
+            decision.app_id.as_ref(),
+            Some(&new),
+            "the same copy under its new id, not a different copy"
+        );
+        assert_eq!(decision.reason, DecisionReason::VariantSubstituted);
+    }
+
+    #[test]
+    fn no_sibling_that_handles_the_type_still_means_ask() {
+        let distro: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        let catalog = StaticCatalog::with(&[("org.example.Editor", &["text/plain"])]);
+        catalog
+            .siblings
+            .write()
+            .insert(distro.clone(), vec!["org.example.Editor".parse().unwrap()]);
+        let mut db = AssociationDb::default();
+        db.mime_defaults.insert("application/pdf".into(), distro);
+        let engine = AssociationEngine::new(db, catalog);
+
+        let decision = engine.resolve(Path::new("/tmp/a.pdf"), "application/pdf", None);
+        assert_eq!(decision.reason, DecisionReason::AskUser);
+        assert!(decision.app_id.is_none());
     }
 }

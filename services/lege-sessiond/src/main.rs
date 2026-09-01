@@ -201,9 +201,17 @@ fn load_services(cli: &Cli) -> Result<Services> {
                 tracing::warn!(%error, "desktop-entry import failed");
                 0
             });
+    let grouped = background::desktop_import::regroup_and_persist(&registry, &store)
+        .unwrap_or_else(|error| {
+            // Grouping is presentation: losing it costs one Firefox showing as two, never a
+            // session.
+            tracing::warn!(%error, "grouping applications into logical apps failed");
+            0
+        });
     tracing::info!(
         native = native_count,
         imported = imported_count,
+        variants = grouped,
         "application registry ready"
     );
 
@@ -324,7 +332,16 @@ async fn serve_launch_and_association_interfaces(
     object_server
         .at(
             names::PROVIDERS_PATH,
-            apis::providers::ProvidersApi::new(services.providers.clone(), services.store.clone()),
+            apis::providers::ProvidersApi::new(
+                services.providers.clone(),
+                services.store.clone(),
+                services.registry.clone(),
+                Arc::new(apis::providers::PeerCgroupVariant::new(
+                    connection.clone(),
+                    services.registry.clone(),
+                )),
+                services.history.clone(),
+            ),
         )
         .await
         .context("serving Providers1")?;

@@ -84,13 +84,14 @@ enum DataUpdate {
     /// One application's icon, resolved and decoded off-thread. `None` when nothing was found —
     /// the attempt is already recorded, so the receiver simply has nothing to file.
     Icon(String, Option<pixelkit_raster::Bitmap>),
-    /// A drawer directory's treemap and composition, rasterized off-thread.
+    /// The Files object's current directory as a treemap and a composition, rasterized
+    /// off-thread.
     Treemap {
-        drawer: Drawer,
+        path: PathBuf,
         bitmap: pixelkit_raster::Bitmap,
         composition: Vec<(u32, f32)>,
     },
-    /// Every five minutes: drop the cached treemaps so the next frame asks for fresh ones.
+    /// Every five minutes: drop the cached treemap so the next frame asks for a fresh one.
     TreemapsStale,
     /// The persisted document arrived from `HomeField1` (startup, or after an undo).
     Field(FieldDocument),
@@ -252,10 +253,12 @@ struct ShellApp {
     preview_requested: HashMap<lege_window::WindowId, Instant>,
     /// Each widget's latest content, keyed by `TileKind::System`'s probe.
     widgets: HashMap<String, crate::surface::widgets::WidgetSnapshot>,
-    treemaps: HashMap<Drawer, pixelkit_raster::Bitmap>,
-    compositions: HashMap<Drawer, Vec<(u32, f32)>>,
-    /// Drawers with a scan in flight, so one request per drawer at a time.
-    treemap_pending: HashSet<Drawer>,
+    /// The Files object's current directory, its treemap and its composition. One directory,
+    /// because there is one Files object.
+    treemap: Option<(PathBuf, pixelkit_raster::Bitmap)>,
+    composition: Vec<(u32, f32)>,
+    /// The directory with a scan in flight, so one request is outstanding at a time.
+    treemap_pending: Option<PathBuf>,
     /// When the last pointer drop happened, for the experiment's undo-within-5-s measure.
     last_drop_at: Option<Instant>,
     started: Instant,
@@ -331,9 +334,9 @@ impl ShellApp {
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
-            treemaps: HashMap::new(),
-            compositions: HashMap::new(),
-            treemap_pending: HashSet::new(),
+            treemap: None,
+            composition: Vec::new(),
+            treemap_pending: None,
             last_drop_at: None,
             started: Instant::now(),
             drawer_feeds: HashMap::new(),
@@ -557,13 +560,15 @@ impl ShellApp {
                         settings.throw && !settings.reduced_motion;
                 }
                 DataUpdate::Treemap {
-                    drawer,
+                    path,
                     bitmap,
                     composition,
                 } => {
-                    self.treemap_pending.remove(&drawer);
-                    self.treemaps.insert(drawer, bitmap);
-                    self.compositions.insert(drawer, composition);
+                    if self.treemap_pending.as_deref() == Some(path.as_path()) {
+                        self.treemap_pending = None;
+                    }
+                    self.treemap = Some((path, bitmap));
+                    self.composition = composition;
                 }
                 // A journalled operation finished. This is the one progress-and-error surface
                 // for everything the Home file surfaces do: one operation, one report.
@@ -616,7 +621,7 @@ impl ShellApp {
                     }
                     self.notification_rows = rows;
                 }
-                DataUpdate::TreemapsStale => self.treemaps.clear(),
+                DataUpdate::TreemapsStale => self.treemap = None,
                 DataUpdate::Field(doc) => {
                     self.field = doc;
                     self.field_synced = Some(true);
@@ -928,8 +933,8 @@ impl ShellApp {
             icons: &self.icons,
             previews: &self.previews,
             drawer_feeds: &self.drawer_feeds,
-            treemaps: &self.treemaps,
-            compositions: &self.compositions,
+            treemap: self.treemap.as_ref().map(|(_, bitmap)| bitmap),
+            composition: &self.composition,
             browser: &browser_data,
             connected: self.bridge.is_some(),
             home_revealed,
@@ -1042,11 +1047,19 @@ impl ShellApp {
                 }
                 Err(error) => tracing::warn!(%error, ?op, "field op refused"),
             },
+            // Pinning is a field edit like any other, so it goes back through `perform` as the
+            // ops it produced: one route to the document, one undo entry, one thing to persist.
+            FieldAction::PinApp(app_id) => {
+                let mut doc = self.field.clone();
+                for op in field_model::pin_app(&mut doc, &app_id) {
+                    self.perform(FieldAction::Apply(op));
+                }
+            }
             FieldAction::NeedTreemap {
-                drawer,
+                path,
                 width,
                 height,
-            } => self.spawn_treemap(drawer, width, height),
+            } => self.spawn_treemap(path, width, height),
             FieldAction::DropMetrics(metrics) => {
                 self.last_drop_at = Some(Instant::now());
                 if self.field_settings.throw && !self.field_settings.reduced_motion {
@@ -1139,19 +1152,19 @@ impl ShellApp {
         });
     }
 
-    /// Scan the drawer's first directory (bounded: `lege_treemap::ScanLimits`), lay it out and
-    /// rasterize it at the tile's size, off the event loop. One in flight per drawer.
-    fn spawn_treemap(&mut self, drawer: Drawer, width: u32, height: u32) {
-        if !self.treemap_pending.insert(drawer) {
+    /// Scan a directory (bounded: `lege_treemap::ScanLimits`), lay it out and rasterize it at
+    /// the tile's size, off the event loop. One scan in flight at a time.
+    fn spawn_treemap(&mut self, path: PathBuf, width: u32, height: u32) {
+        if self.treemap_pending.is_some() {
             return;
         }
+        self.treemap_pending = Some(path.clone());
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
-        let roots = search_roots(drawer);
         self.runtime.spawn_blocking(move || {
-            let (bitmap, composition) = rasterize_drawer(&roots, width, height);
+            let (bitmap, composition) = rasterize_directory(&path, width, height);
             let _ = tx.send(DataUpdate::Treemap {
-                drawer,
+                path,
                 bitmap,
                 composition,
             });
@@ -2136,19 +2149,16 @@ fn format_clock_fields(weekday: i32, day: i32, month: i32, hour: i32, minute: i3
     format!("{weekday} {day:02} {month} {hour:02}:{minute:02}")
 }
 
-/// The cushion treemap of the first directory in `roots` at `width`×`height`, plus its
-/// composition band. An unreadable or empty directory yields a flat, dim bitmap and no band.
-fn rasterize_drawer(
-    roots: &[String],
+/// The cushion treemap of `root` at `width`×`height`, plus its composition band. An unreadable
+/// or empty directory yields a flat, dim bitmap and no band.
+fn rasterize_directory(
+    root: &std::path::Path,
     width: u32,
     height: u32,
 ) -> (pixelkit_raster::Bitmap, Vec<(u32, f32)>) {
     use lege_treemap::{ColorSettings, CushionConfig, LayoutConfig, ScanLimits};
     let (width, height) = (width.max(1), height.max(1));
-    let Some(root) = roots.first() else {
-        return (pixelkit_raster::Bitmap::new(width, height), Vec::new());
-    };
-    let entries = lege_treemap::scan(std::path::Path::new(root), ScanLimits::default());
+    let entries = lege_treemap::scan(root, ScanLimits::default());
     let tree = lege_treemap::build_tree(&entries);
     let colours = ColorSettings::default();
     let layout = lege_treemap::compute_layout_in_rect(

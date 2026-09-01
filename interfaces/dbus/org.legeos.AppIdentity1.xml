@@ -31,5 +31,39 @@
     <method name="ListApplications">
       <arg name="applications" type="a(ssssasasb)" direction="out"/>
     </method>
+
+    <!-- Every id above names a *variant*: one installed copy of an application from one origin (a
+         distribution package, a Flatpak, a user's own .desktop file). A person sees one Firefox;
+         the system may hold three. These four members expose that second, logical layer.
+         ResolveWindow deliberately does not: a launch is a variant launch, and the cgroup names
+         which one ran. Rights key on the variant too — a grant belongs to the copy that earned
+         it, so a wrong grouping is a presentation mistake and never a privilege one.
+         See interfaces/schemas/app-variant.schema.json.
+
+         (logical_app_id, display_name, icon, variant_count, default_variant) -->
+    <method name="ListLogicalApps">
+      <arg name="applications" type="a(sssus)" direction="out"/>
+    </method>
+    <!-- The variants of one logical application, default first.
+         (variant_app_id, display_name, provenance_json) -->
+    <method name="ListVariants">
+      <arg name="logical_app_id" type="s" direction="in"/>
+      <arg name="variants" type="a(sss)" direction="out"/>
+    </method>
+    <!-- The logical application a variant belongs to. A variant with no grouping evidence is its
+         own logical application, so this is empty only for a variant that is not installed. -->
+    <method name="LogicalAppOf">
+      <arg name="variant_app_id" type="s" direction="in"/>
+      <arg name="logical_app_id" type="s" direction="out"/>
+    </method>
+    <!-- ListInstances with the logical id alongside the variant, so a caller grouping windows by
+         application does not ask LogicalAppOf once per instance.
+         (instance_id, variant_app_id, logical_app_id, systemd_unit, control_group) -->
+    <method name="ListInstancesDetailed">
+      <arg name="instances" type="a(sssss)" direction="out"/>
+    </method>
+
+    <!-- The installed set changed (an import, an uninstall, a re-scan); re-read the listings. -->
+    <signal name="ApplicationsChanged"/>
   </interface>
 </node>

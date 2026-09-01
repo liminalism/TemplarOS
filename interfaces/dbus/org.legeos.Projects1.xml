@@ -36,5 +36,59 @@
     <method name="Remove">
       <arg name="project_id" type="s" direction="in"/>
     </method>
+
+    <!-- The whole project as JSON (interfaces/schemas/project.schema.json): root, directories,
+         remembered applications, environment, terminal directories, mounts, importance, state and
+         timestamps. `List` answers "which projects exist"; this answers "what is this one".
+         Rich payloads travel as JSON strings here for the same reason they do on Providers1.Report
+         and HomeField1.Get: project semantics keep growing, and a struct signature cannot. -->
+    <method name="Describe">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="project_json" type="s" direction="out"/>
+    </method>
+    <!-- (project_id, project_json) for every project — one round-trip instead of List + N
+         Describes, which is what a launcher or an omnibox actually needs. -->
+    <method name="ListDetailed">
+      <arg name="projects" type="a(ss)" direction="out"/>
+    </method>
+    <!-- Merge `changes_json` (a partial project object) into the stored project. Only the
+         user-editable keys are accepted; any other key is refused rather than silently dropped,
+         so a client never believes it changed something it did not. -->
+    <method name="Update">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="changes_json" type="s" direction="in"/>
+    </method>
+    <!-- The project the session is currently working in, or "" for none. -->
+    <method name="GetCurrent">
+      <arg name="project_id" type="s" direction="out"/>
+    </method>
+    <!-- Set (or clear, with "") the current project. -->
+    <method name="SetCurrent">
+      <arg name="project_id" type="s" direction="in"/>
+    </method>
+    <!-- "active" or "archived". An archived project stays searchable and openable; it is simply
+         out of the way. -->
+    <method name="SetState">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="state" type="s" direction="in"/>
+    </method>
+    <!-- Remember a *logical* application rather than one variant of it, so a project opened after
+         the Flatpak replaced the distro package still opens the same application.
+         `preferred_variant` may be "" to mean "whichever variant is the default at open time". -->
+    <method name="AddLogicalApp">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="logical_app_id" type="s" direction="in"/>
+      <arg name="preferred_variant" type="s" direction="in"/>
+      <arg name="arguments" type="as" direction="in"/>
+    </method>
+
+    <!-- This project changed; re-read it with Describe. -->
+    <signal name="Changed">
+      <arg name="project_id" type="s"/>
+    </signal>
+    <!-- The current project changed ("" when it was cleared). -->
+    <signal name="CurrentChanged">
+      <arg name="project_id" type="s"/>
+    </signal>
   </interface>
 </node>

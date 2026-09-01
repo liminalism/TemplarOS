@@ -3,7 +3,11 @@
 <!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Associations.
      The one authoritative "which application opens this?" broker. reason is one of
      project-mime-default | explicit-extension-override | global-mime-default |
-     generic-extension-fallback | ask-user. An empty canonical_app_id means "ask".
+     generic-extension-fallback | variant-substituted | ask-user. An empty canonical_app_id means
+     "ask". `variant-substituted` means the stored default named a variant that is no longer
+     installed and a sibling variant of the same logical application answered instead — the
+     Flatpak took over from the distribution package, and the file still opens. Defaults are
+     stored against a variant, always: a person chose that copy.
      Implemented in crates/lege-associationd/src/dbus.rs. -->
 <node>
   <interface name="org.legeos.Associations1">

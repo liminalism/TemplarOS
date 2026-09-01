@@ -4,11 +4,12 @@
 //! one).
 
 use crate::identity::InstanceRecord;
+use crate::variants::{LogicalSource, PersistedLogical};
 use anyhow::{Context, Result};
 use lege_state::Store;
-use lege_types::{AppId, InstanceId};
+use lege_types::{AppId, AppProvenance, AppVariantId, InstanceId, LogicalAppId};
 use rusqlite::{Transaction, params};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Load every instance row (used at startup, before reconciling against systemd's live units).
 pub fn load_instances(store: &Store) -> Result<Vec<InstanceRecord>> {
@@ -113,28 +114,184 @@ pub fn load_desktop_imports(store: &Store) -> Result<Vec<DesktopImportRecord>> {
 }
 
 /// Record (or update) one import.
+///
+/// Keyed on the desktop id alone, as it has always been. Two origins that export the same desktop
+/// id therefore share one bookkeeping row (last scan wins) even though they are two applications in
+/// the registry — the row records only "when did we last read this file", and widening its primary
+/// key would break an older binary's `ON CONFLICT (desktop_id)` upsert, which the one-generation
+/// rollback rule forbids. `origin` says which copy the row describes.
 pub fn record_desktop_import_within(
     tx: &Transaction<'_>,
     desktop_id: &str,
     path: &std::path::Path,
     mtime_ms: i64,
     app_id: &AppId,
+    origin: lege_types::AppOriginKind,
 ) -> Result<()> {
     tx.execute(
-        "INSERT INTO desktop_import (desktop_id, path, mtime_ms, app_id, imported_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO desktop_import (desktop_id, path, mtime_ms, app_id, imported_ms, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (desktop_id) DO UPDATE SET
             path = excluded.path, mtime_ms = excluded.mtime_ms, app_id = excluded.app_id,
-            imported_ms = excluded.imported_ms",
+            imported_ms = excluded.imported_ms, origin = excluded.origin",
         params![
             desktop_id,
             path.to_string_lossy(),
             mtime_ms,
             app_id.as_str(),
-            lege_state::now_ms()
+            lege_state::now_ms(),
+            origin.as_str(),
         ],
     )
     .context("recording desktop_import")?;
+    Ok(())
+}
+
+/// Every variant the registry has recorded, with the logical application it was grouped under.
+pub fn load_variants(store: &Store) -> Result<BTreeMap<AppVariantId, PersistedLogical>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT variant, logical, logical_source FROM app_variants")
+        .context("preparing app_variants query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .context("reading app_variants")?;
+    let mut variants = BTreeMap::new();
+    for row in rows {
+        let (variant, logical, source) = row?;
+        let (Ok(variant), Ok(logical)) = (
+            variant.parse::<AppVariantId>(),
+            logical.parse::<LogicalAppId>(),
+        ) else {
+            // An unreadable row is re-derived on this scan rather than failing the daemon's
+            // startup: grouping is presentation, and losing it must never cost a session.
+            tracing::warn!(%variant, %logical, "unreadable app_variants row; re-deriving");
+            continue;
+        };
+        variants.insert(
+            variant,
+            PersistedLogical {
+                logical,
+                source: LogicalSource::from_str_or_derived(&source),
+            },
+        );
+    }
+    Ok(variants)
+}
+
+/// Record one variant: its logical application, its origin, and the provenance behind both.
+///
+/// `first_seen_ms` is written once and never updated — it is what makes "the copy that has been
+/// here longest" answerable, and a re-scan must not reset it.
+pub fn save_variant_within(
+    tx: &Transaction<'_>,
+    variant: &AppVariantId,
+    logical: &LogicalAppId,
+    source: LogicalSource,
+    provenance: &AppProvenance,
+) -> Result<()> {
+    let provenance_json = serde_json::to_string(provenance).context("serializing provenance")?;
+    tx.execute(
+        "INSERT INTO app_variants
+            (variant, logical, origin, trust, provenance, logical_source, first_seen_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT (variant) DO UPDATE SET
+            logical = excluded.logical, origin = excluded.origin, trust = excluded.trust,
+            provenance = excluded.provenance, logical_source = excluded.logical_source",
+        params![
+            variant.as_str(),
+            logical.as_str(),
+            provenance.origin.as_str(),
+            provenance.effective_trust().as_str(),
+            provenance_json,
+            source.as_str(),
+            if provenance.first_seen_ms > 0 {
+                provenance.first_seen_ms
+            } else {
+                lege_state::now_ms()
+            },
+        ],
+    )
+    .context("persisting app variant")?;
+    Ok(())
+}
+
+/// The trust tier recorded for this variant the last time it was scanned, if it was.
+///
+/// Used to notice a variant's provenance *moving* — the case where a `.desktop` file in the
+/// person's own data directory takes over a desktop id a package used to own, and would otherwise
+/// silently inherit that package's provider declarations and autostart approval.
+pub fn variant_trust(store: &Store, variant: &AppVariantId) -> Option<lege_types::TrustTier> {
+    let connection = store.lock();
+    connection
+        .query_row(
+            "SELECT trust FROM app_variants WHERE variant = ?1",
+            params![variant.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|value| lege_types::TrustTier::from_str_or_user(&value))
+}
+
+/// When this variant was first recorded, if it has been seen before.
+pub fn variant_first_seen(store: &Store, variant: &AppVariantId) -> Option<i64> {
+    let connection = store.lock();
+    connection
+        .query_row(
+            "SELECT first_seen_ms FROM app_variants WHERE variant = ?1",
+            params![variant.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+}
+
+/// Old variant id -> current one. Read on every lookup of a stored id; stored ids themselves are
+/// never rewritten, which is what keeps a rollback readable.
+pub fn load_variant_aliases(store: &Store) -> Result<BTreeMap<AppVariantId, AppVariantId>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT alias, variant FROM app_variant_aliases")
+        .context("preparing app_variant_aliases query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .context("reading app_variant_aliases")?;
+    let mut aliases = BTreeMap::new();
+    for row in rows {
+        let (alias, variant) = row?;
+        if let (Ok(alias), Ok(variant)) = (alias.parse(), variant.parse()) {
+            aliases.insert(alias, variant);
+        }
+    }
+    Ok(aliases)
+}
+
+/// Record that `alias` used to name what is now `variant`.
+pub fn save_variant_alias_within(
+    tx: &Transaction<'_>,
+    alias: &AppVariantId,
+    variant: &AppVariantId,
+    reason: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO app_variant_aliases (alias, variant, reason, created_ms)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (alias) DO UPDATE SET variant = excluded.variant, reason = excluded.reason",
+        params![
+            alias.as_str(),
+            variant.as_str(),
+            reason,
+            lege_state::now_ms()
+        ],
+    )
+    .context("persisting app variant alias")?;
     Ok(())
 }
 
@@ -201,6 +358,7 @@ mod tests {
                     std::path::Path::new("/usr/share/applications/firefox.desktop"),
                     12345,
                     &app_id,
+                    lege_types::AppOriginKind::DistroPackage,
                 )
             })
             .unwrap();

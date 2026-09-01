@@ -16,7 +16,13 @@
       <arg name="app_id" type="s" direction="in"/>
     </method>
     <!-- An application (or its manifest/autostart-entry import) declares it can fill a role.
-         priority: distribution defaults use 100, third parties 50. -->
+         priority: distribution defaults use 100, third parties 50.
+         `app_id` names a *variant*, and a caller may only declare for itself: the peer's PID is
+         resolved through its cgroup exactly as ResolveWindow does, and a mismatch is refused. A
+         variant whose provenance is a user-owned file (trust tier User) may not take an exclusive
+         role at all — a .desktop file dropped into ~/.local/share/applications must not become the
+         session's notification server. Refusals are recorded in History1 so the person can see
+         what asked and why it was turned down. -->
     <method name="Declare">
       <arg name="app_id" type="s" direction="in"/>
       <arg name="role" type="s" direction="in"/>

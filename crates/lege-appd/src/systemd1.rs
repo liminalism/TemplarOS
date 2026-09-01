@@ -299,6 +299,7 @@ mod tests {
             categories: BTreeSet::new(),
             keywords: BTreeSet::new(),
             no_display: false,
+            provenance: None,
         }
     }
 

@@ -65,6 +65,12 @@
 
 * One instance ⇔ one canonical AppId ⇔ one cgroup ⇔ one resource record ⇔ N windows.
 * A window's identity comes from its cgroup; claims only raise `claim_mismatch`.
+* Every `AppId` names a **variant** — one installed copy from one origin. Grouping variants into
+  a logical application is presentation; rights (MIME defaults, provider declarations, autostart
+  approvals, instances) stay keyed on the variant, so a wrong grouping can never widen a grant.
+* Trust is derived from provenance, never declared: a user-writable copy may not take an
+  exclusive provider role, and a desktop id whose provenance moves from a packaged copy to a user
+  file loses the grants the packaged copy had earned.
 * After every drag/output change, `is_recoverable(window)` holds (proptest, 2000 cases).
 * Detected MIME beats extension unless the user created an explicit override.
 * Exactly one provider per exclusive role may autostart.
