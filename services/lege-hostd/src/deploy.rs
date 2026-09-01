@@ -42,6 +42,23 @@ pub trait BootManager: Send + Sync + std::fmt::Debug {
     fn rollback(&self, previous: &Deployment) -> Result<()>;
     /// Human-readable backend name for `lege doctor`.
     fn name(&self) -> &'static str;
+
+    /// `(candidate id, tries remaining)` for a backend whose boot counter *this daemon* keeps.
+    ///
+    /// systemd-boot returns `None`: its counter lives in the entry's file name and the loader
+    /// decrements it itself, on every attempt, before any userspace runs. GRUB has no equivalent
+    /// — `grub-reboot` sets a one-shot default and nothing counts the attempts — which is why
+    /// hostd keeps that counter, and why it has to be the thing that advances it.
+    fn staged_candidate(&self) -> Result<Option<(String, u8)>> {
+        Ok(None)
+    }
+
+    /// Record that one trial attempt was spent without a `mark_good`, returning the tries left.
+    ///
+    /// `None` from a backend that counts its own attempts.
+    fn consume_try(&self) -> Result<Option<u8>> {
+        Ok(None)
+    }
 }
 
 /// Copy a candidate deployment's kernel image and initramfs from its snapshot into the
@@ -102,8 +119,12 @@ impl BootManager for SystemdBoot {
         if let Some(parent) = entry.parent() {
             fs::create_dir_all(parent)?;
         }
+        // `legeos.deployment=` is what lets userspace answer "which deployment am I running?"
+        // after the fact — the question `HostdState::reconcile_boot` has to answer to decide
+        // whether a staged candidate ever booted. Nothing else on the command line carries it:
+        // the root filesystem label is the same for every deployment by construction.
         let mut body = format!(
-            "title LegeOS ({id})\nlinux /EFI/legeos/{id}/vmlinuz\ninitrd /EFI/legeos/{id}/initrd.img\noptions root=LABEL=legeos-root rw\n",
+            "title LegeOS ({id})\nlinux /EFI/legeos/{id}/vmlinuz\ninitrd /EFI/legeos/{id}/initrd.img\noptions root=LABEL=legeos-root rw legeos.deployment={id}\n",
             id = candidate.id,
         );
         if let Some(modules) = &candidate.nvidia_modules {
@@ -172,12 +193,10 @@ impl Grub {
     }
 
     /// One more failed trial boot happened without a `mark_good`. Returns the tries remaining
-    /// after decrementing (0 means the caller should roll back). Not automatically invoked —
-    /// something must drive the boot-attempt reconciliation across reboots; see the module docs.
-    #[allow(
-        dead_code,
-        reason = "real API, not yet wired to a live reboot loop — see module docs"
-    )]
+    /// after decrementing (0 means the caller should roll back).
+    ///
+    /// Driven by `HostdState::reconcile_boot` at daemon startup: the only moment userspace can
+    /// observe "a candidate was staged, and this is not it".
     pub fn decrement(&self) -> Result<u8> {
         let Some((id, tries)) = self.staged()? else {
             bail!("no candidate is staged");
@@ -219,6 +238,14 @@ impl BootManager for Grub {
 
     fn name(&self) -> &'static str {
         "grub"
+    }
+
+    fn staged_candidate(&self) -> Result<Option<(String, u8)>> {
+        self.staged()
+    }
+
+    fn consume_try(&self) -> Result<Option<u8>> {
+        self.decrement().map(Some)
     }
 }
 
