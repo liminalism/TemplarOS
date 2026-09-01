@@ -192,63 +192,181 @@ pub enum Representation {
     Full,
 }
 
-impl Representation {
-    /// The rung a tile of `kind` occupies at `span`. Monotone: growing a span never lowers the
-    /// rung (property-tested).
-    pub fn for_span(kind: &TileKind, span: Span) -> Self {
-        let cells = span.cells();
-        match kind {
-            TileKind::Project { .. } => match cells {
-                0..=15 => Self::Small,
-                16..=35 => Self::Wide,
-                _ => Self::Large,
-            },
-            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => {
-                if cells <= 4 {
-                    Self::Small
-                } else if cells <= 8 {
-                    Self::Wide
-                } else {
-                    Self::Large
-                }
-            }
-            TileKind::ParkedSession { .. } => match cells {
-                0..=3 => Self::Wide,
-                _ => Self::Large,
-            },
-            TileKind::App { .. } => {
-                if cells == 1 {
-                    Self::Micro
-                } else {
-                    Self::Small
-                }
-            }
-            TileKind::File { .. } => {
-                if cells == 1 {
-                    Self::Micro
-                } else {
-                    Self::Wide
-                }
-            }
-            TileKind::System { .. } => {
-                // Three rungs, not two: a system tile's controls are declared per rung
-                // (`lege-shell`'s widget contract), and jumping straight from its 3x2 floor to
-                // everything-at-once left the middle sizes with nothing to say.
-                if cells <= 6 {
-                    Self::Small
-                } else if cells <= 12 {
-                    Self::Wide
-                } else {
-                    Self::Large
-                }
+/// The smallest span that admits a rung: a width, a height, and an area, all of which must be
+/// met. Shape, not area alone — a 6×1 sliver has the cells of a 3×2 block and room for none of
+/// the same content, and the old area-only ladder had no way to say so.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RungFloor {
+    pub cols: u16,
+    pub rows: u16,
+    pub cells: u32,
+}
+
+impl RungFloor {
+    /// A floor every span meets — for a rung a kind starts at rather than climbs to.
+    pub const ANY: Self = Self {
+        cols: 1,
+        rows: 1,
+        cells: 1,
+    };
+
+    pub const fn new(cols: u16, rows: u16, cells: u32) -> Self {
+        Self { cols, rows, cells }
+    }
+
+    /// Whether `span` reaches this floor. A conjunction of `>=` in every axis, which is what
+    /// makes [`Representation::for_span`] monotone by construction: growing a span can only turn
+    /// a `false` here into a `true`, never the other way round.
+    pub fn admits(self, span: Span) -> bool {
+        span.cols >= self.cols && span.rows >= self.rows && span.cells() >= self.cells
+    }
+
+    /// Componentwise `<=`, the ordering a well-formed ladder's floors obey.
+    pub fn at_most(self, other: Self) -> bool {
+        self.cols <= other.cols && self.rows <= other.rows && self.cells <= other.cells
+    }
+}
+
+/// The rungs one kind of tile climbs, as declared floors.
+///
+/// `base` is what the kind shows below every floor — the rung it is never smaller than. A `None`
+/// floor means the kind never reaches that rung; `None`s only ever form a suffix, so the ladder
+/// stays ordered. Two rungs may share a floor, which is how a kind *skips* one: a file tile's
+/// `small` and `wide` are the same span, so growing a 1×1 file past one cell lands it on Wide
+/// without a Small in between.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RungLadder {
+    pub base: Representation,
+    pub small: Option<RungFloor>,
+    pub wide: Option<RungFloor>,
+    pub large: Option<RungFloor>,
+}
+
+impl RungLadder {
+    /// The floors, lowest rung first, paired with the rung each admits.
+    pub fn steps(self) -> [(Representation, Option<RungFloor>); 3] {
+        [
+            (Representation::Small, self.small),
+            (Representation::Wide, self.wide),
+            (Representation::Large, self.large),
+        ]
+    }
+
+    /// The rung `span` earns: the highest declared floor it reaches, never below `base`.
+    pub fn rung_for(self, span: Span) -> Representation {
+        let mut rung = self.base;
+        for (candidate, floor) in self.steps() {
+            if floor.is_some_and(|floor| floor.admits(span)) && candidate > rung {
+                rung = candidate;
             }
         }
+        rung
+    }
+
+    /// The ladder for a kind. These are declared shapes, not derived ones: the floors say what a
+    /// rung's content *needs*, so the same numbers can be read next to the drawing code.
+    pub fn for_kind(kind: &TileKind) -> Self {
+        match kind {
+            // A project is never smaller than 4×4, so its floors are its own minimum and the
+            // point at which a quadrant becomes a full pane. Area does the work here; a project
+            // cannot be a sliver.
+            TileKind::Project { .. } => Self {
+                base: Representation::Small,
+                small: Some(RungFloor::ANY),
+                wide: Some(RungFloor::new(4, 4, 16)),
+                large: Some(RungFloor::new(4, 4, 36)),
+            },
+            // Containers and instruments: Wide is a row and Large is a body, and neither is a
+            // line of text. Both floors demand two cells in *each* axis, which is the whole
+            // point of the shape ladder — an 8×1 strip has the area of a 4×2 block and room for
+            // none of the same content, so it stays at Small rather than being handed a body
+            // that has to be truncated away again.
+            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => Self {
+                base: Representation::Small,
+                small: Some(RungFloor::ANY),
+                wide: Some(RungFloor::new(2, 2, 6)),
+                large: Some(RungFloor::new(2, 2, 9)),
+            },
+            // A parked window is a title and a preview: it starts at Wide because there is
+            // nothing smaller worth showing, and earns the preview at two rows.
+            TileKind::ParkedSession { .. } => Self {
+                base: Representation::Wide,
+                small: Some(RungFloor::ANY),
+                wide: Some(RungFloor::ANY),
+                large: Some(RungFloor::new(2, 2, 4)),
+            },
+            // An application is an icon, and a name once there is a second cell to put it in.
+            // It never climbs further: the ceiling is 2×2.
+            TileKind::App { .. } => Self {
+                base: Representation::Micro,
+                small: Some(RungFloor::new(1, 1, 2)),
+                wide: None,
+                large: None,
+            },
+            // A file skips Small: one cell is the icon, two is the name beside it, and the
+            // ceiling is 2×1 so there is no third form.
+            TileKind::File { .. } => Self {
+                base: Representation::Micro,
+                small: Some(RungFloor::new(1, 1, 2)),
+                wide: Some(RungFloor::new(1, 1, 2)),
+                large: None,
+            },
+            // Three rungs, not two: a system tile's controls are declared per rung
+            // (`lege-shell`'s widget contract), and jumping straight from its 3×2 floor to
+            // everything-at-once left the middle sizes with nothing to say.
+            //
+            // The rows floor stays at 2 all the way up on purpose. A system widget's controls
+            // lay out in a row, so a 7×2 Settings tile is a Large — demanding height for the
+            // top rung would take the controls off the one shape the shelf actually places.
+            TileKind::System { .. } => Self {
+                base: Representation::Small,
+                small: Some(RungFloor::ANY),
+                wide: Some(RungFloor::new(3, 2, 7)),
+                large: Some(RungFloor::new(4, 2, 13)),
+            },
+        }
+    }
+}
+
+impl Representation {
+    /// The rung a tile of `kind` occupies at `span`. Monotone: growing a span never lowers the
+    /// rung (property-tested), which holds by construction — see [`RungFloor::admits`].
+    pub fn for_span(kind: &TileKind, span: Span) -> Self {
+        RungLadder::for_kind(kind).rung_for(span)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// One of every kind, for the ladder properties. The payloads are irrelevant — the ladder is
+    /// declared per kind, never per instance.
+    fn every_kind() -> Vec<TileKind> {
+        vec![
+            TileKind::Project {
+                project_id: "p".into(),
+            },
+            TileKind::App {
+                app_id: "org.legeos.Files".parse().unwrap(),
+            },
+            TileKind::ParkedSession {
+                app_id: None,
+                identifier: "window:1".into(),
+            },
+            TileKind::Tray { tray_id: TrayId(1) },
+            TileKind::Folder { path: "x".into() },
+            TileKind::Widget {
+                widget: "calendar".into(),
+                scope: None,
+            },
+            TileKind::File { path: "x".into() },
+            TileKind::System {
+                probe: "drives".into(),
+            },
+        ]
+    }
 
     #[test]
     fn spans_are_never_zero() {
@@ -362,6 +480,190 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A ladder is only meaningful if its floors are ordered: a rung may never be cheaper than
+    /// the one below it, and a kind that stops climbing stops for good — the gaps are a suffix,
+    /// never a hole in the middle.
+    #[test]
+    fn every_ladder_is_ordered_and_its_gaps_form_a_suffix() {
+        for kind in every_kind() {
+            let ladder = RungLadder::for_kind(&kind);
+            let mut previous: Option<RungFloor> = None;
+            let mut stopped = false;
+            for (rung, floor) in ladder.steps() {
+                match floor {
+                    None => stopped = true,
+                    Some(floor) => {
+                        assert!(!stopped, "{kind:?}: {rung:?} sits above an undeclared rung");
+                        if let Some(previous) = previous {
+                            assert!(
+                                previous.at_most(floor),
+                                "{kind:?}: {rung:?} floor {floor:?} is below {previous:?}"
+                            );
+                        }
+                        previous = Some(floor);
+                    }
+                }
+                // A rung at or below the base is one the kind is never smaller than, so the only
+                // floor it may carry is the one every span meets. Anything else would read as a
+                // threshold that does nothing.
+                if rung <= ladder.base {
+                    assert_eq!(
+                        floor,
+                        Some(RungFloor::ANY),
+                        "{kind:?}: {rung:?} is at or below the base rung {:?} but declares a floor",
+                        ladder.base
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every rung a kind declares must be one a tile of that kind can actually be given. A floor
+    /// above the class ceiling is dead drawing code that nobody will ever see fail.
+    #[test]
+    fn every_declared_floor_fits_inside_the_kinds_ceiling() {
+        for kind in every_kind() {
+            let range = SpanRange::for_kind(&kind, 24, 13);
+            let ceiling = range.max;
+            for (rung, floor) in RungLadder::for_kind(&kind).steps() {
+                let Some(floor) = floor else { continue };
+                assert!(
+                    floor.cols <= ceiling.cols
+                        && floor.rows <= ceiling.rows
+                        && floor.cells <= ceiling.cells(),
+                    "{kind:?}: {rung:?} floor {floor:?} is above the {ceiling:?} ceiling"
+                );
+                assert!(
+                    floor.admits(Span::new(ceiling.cols, ceiling.rows)),
+                    "{kind:?}: {rung:?} floor {floor:?} is unreachable at the ceiling"
+                );
+            }
+            // And the base is what the floor of the class shows.
+            assert!(
+                Representation::for_span(&kind, range.min) >= RungLadder::for_kind(&kind).base,
+                "{kind:?}: the class minimum falls below the base rung"
+            );
+        }
+    }
+
+    /// The ladder the old area-only `match span.cells()` expressed, kept here as the reference
+    /// the shape ladder is compared against.
+    fn rung_by_area_alone(kind: &TileKind, span: Span) -> Representation {
+        let cells = span.cells();
+        match kind {
+            TileKind::Project { .. } => match cells {
+                0..=15 => Representation::Small,
+                16..=35 => Representation::Wide,
+                _ => Representation::Large,
+            },
+            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => {
+                match cells {
+                    0..=4 => Representation::Small,
+                    5..=8 => Representation::Wide,
+                    _ => Representation::Large,
+                }
+            }
+            TileKind::ParkedSession { .. } => match cells {
+                0..=3 => Representation::Wide,
+                _ => Representation::Large,
+            },
+            TileKind::App { .. } => {
+                if cells == 1 {
+                    Representation::Micro
+                } else {
+                    Representation::Small
+                }
+            }
+            TileKind::File { .. } => {
+                if cells == 1 {
+                    Representation::Micro
+                } else {
+                    Representation::Wide
+                }
+            }
+            TileKind::System { .. } => match cells {
+                0..=6 => Representation::Small,
+                7..=12 => Representation::Wide,
+                _ => Representation::Large,
+            },
+        }
+    }
+
+    /// On every shape a tile is ordinarily given — inside its class range, and no more distorted
+    /// than 1:3 — the shape ladder says exactly what the area ladder said. The change is confined
+    /// to slivers, which is the only place area was lying.
+    #[test]
+    fn the_shape_ladder_agrees_with_the_area_ladder_on_every_ordinary_shape() {
+        for kind in every_kind() {
+            let range = SpanRange::for_kind(&kind, 24, 13);
+            for cols in 1..=24u16 {
+                for rows in 1..=13u16 {
+                    let span = Span::new(cols, rows);
+                    if !range.accepts(span) {
+                        continue;
+                    }
+                    let (long, short) = (cols.max(rows), cols.min(rows));
+                    if u32::from(long) > 3 * u32::from(short) {
+                        continue;
+                    }
+                    assert_eq!(
+                        Representation::for_span(&kind, span),
+                        rung_by_area_alone(&kind, span),
+                        "{kind:?} at {cols}x{rows}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// And where it disagrees, it disagrees downwards, for the reason the ladder exists: a strip
+    /// one cell tall has no room for the body its area would have bought it.
+    #[test]
+    fn a_sliver_settles_for_a_lower_rung_than_its_area_would_buy() {
+        let widget = TileKind::Widget {
+            widget: "calendar".into(),
+            scope: None,
+        };
+        let session = TileKind::ParkedSession {
+            app_id: None,
+            identifier: "window:1".into(),
+        };
+        let cases = [
+            (&widget, Span::new(6, 1), Representation::Small),
+            (&widget, Span::new(8, 1), Representation::Small),
+            (&widget, Span::new(1, 6), Representation::Small),
+            (&session, Span::new(4, 1), Representation::Wide),
+            (&session, Span::new(8, 1), Representation::Wide),
+        ];
+        for (kind, span, expected) in cases {
+            let now = Representation::for_span(kind, span);
+            assert_eq!(now, expected, "{kind:?} at {span:?}");
+            assert!(
+                now < rung_by_area_alone(kind, span),
+                "{kind:?} at {span:?} was supposed to step down from the area ladder"
+            );
+        }
+    }
+
+    proptest! {
+        /// Monotonicity, over the whole grid rather than the 6×6 corner the hand-written test
+        /// covers: growing a tile in either axis never takes content away from it. This is what
+        /// keeps a resize from flickering between two forms, and it holds by construction —
+        /// every floor is a conjunction of `>=`.
+        #[test]
+        fn growing_a_span_in_either_axis_never_lowers_the_rung(
+            kind_index in 0usize..8,
+            cols in 1u16..64,
+            rows in 1u16..64,
+        ) {
+            let kinds = every_kind();
+            let kind = &kinds[kind_index];
+            let here = Representation::for_span(kind, Span::new(cols, rows));
+            prop_assert!(Representation::for_span(kind, Span::new(cols + 1, rows)) >= here);
+            prop_assert!(Representation::for_span(kind, Span::new(cols, rows + 1)) >= here);
         }
     }
 }

@@ -52,7 +52,9 @@ pub use ops::{FieldError, FieldOp, apply, reshape};
 pub use panel::{Arrangement, Edge, Orientation, Panel, PanelId, arrangement_layout, panel_id_for};
 pub use reflow::{LayoutCost, Reflow};
 pub use selection::Selection;
-pub use tile::{Representation, Span, SpanRange, Tile, TileId, TileKind, TrayId};
+pub use tile::{
+    Representation, RungFloor, RungLadder, Span, SpanRange, Tile, TileId, TileKind, TrayId,
+};
 
 /// The document format version this crate reads and writes. `FieldDocument::version` must equal
 /// it; a persisted document from another version is refused rather than guessed at.

@@ -49,6 +49,21 @@ pub const ACTIVITY_EDGE_WIDTH: i32 = 5;
 pub const FILE_SPINE_WIDTH: i32 = 8;
 pub const COMPOSITION_BAND_HEIGHT: i32 = 5;
 
+// The Files object. It is the most-looked-at rectangle on the desktop, so its spacing is named
+// here beside the rest of the language rather than spelled out inside its draw code.
+/// The margin between the Files object's shell and anything inside it.
+pub const FILES_PAD: i32 = 12;
+/// One line of the object: a fact, a condition, or a changed file.
+pub const FILES_ROW_HEIGHT: i32 = 18;
+/// A pinned location's chip.
+pub const FILES_CHIP_HEIGHT: i32 = 22;
+pub const FILES_CHIP_GAP: i32 = 6;
+/// Between the object's parts — heading, locations, conditions, listing. Larger than the gap
+/// inside a part, which is what makes them read as parts at all.
+pub const FILES_SECTION_GAP: i32 = 10;
+/// The bar under a running operation's line. Thin on purpose: it is a state mark, not a control.
+pub const FILES_PROGRESS_HEIGHT: i32 = 3;
+
 /// The light Home Field palette expressed through Pixelkit's existing semantic roles.
 ///
 /// Pixelkit's default stays untouched because its dark operations-console palette is correct for
@@ -160,6 +175,12 @@ pub fn measurement_style(ui: &Ui<'_>) -> TextStyle {
     // The embedded set currently has one DejaVu face; this still centralises the 12/16 role so
     // adding DejaVu Sans Mono to the set later does not require changing every tile renderer.
     TextStyle::new(ui.theme.body.face, 12.0)
+}
+
+/// The label over one part of a tile's body — smaller than the tile's own title and tracked, so
+/// it reads as a divider rather than as another row of content.
+pub fn section_label_style(ui: &Ui<'_>) -> TextStyle {
+    TextStyle::tracked(ui.theme.body.face, 10.0, 0.12)
 }
 
 pub fn system_label_style(ui: &Ui<'_>) -> TextStyle {

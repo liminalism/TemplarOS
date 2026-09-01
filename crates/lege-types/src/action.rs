@@ -299,6 +299,17 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::TrustedShell,
     },
     ActionDecl {
+        id: "home.pin-app",
+        label: "Keep on Home",
+        category: ActionCategory::Navigation,
+        // No chord: it applies to *this* application, and a payload-free chord has no way to say
+        // which. The pointer route is the session tile's own menu row, which knows.
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",
         category: ActionCategory::Navigation,

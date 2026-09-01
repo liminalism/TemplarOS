@@ -27,19 +27,12 @@ pub const TILE_SIZE: i32 = 104;
 /// Logical pixels between tiles.
 pub const GAP: i32 = 6;
 
-/// The drawers that appear as tiles on the field: real file locations first, then recent work
-/// and the system's own measurements. Documents and Media used to exist only inside the expanded
-/// rail, leaving Home sparse and hiding useful file surfaces from pointer users.
-pub const DRAWER_TILES: [Drawer; 8] = [
-    Drawer::Downloads,
-    Drawer::Recent,
-    Drawer::Projects,
-    Drawer::Drives,
-    Drawer::Operations,
-    Drawer::Trash,
-    Drawer::Documents,
-    Drawer::Media,
-];
+/// The widget name the one Files object carries (`TileKind::Widget::widget`).
+///
+/// A widget rather than a new `TileKind`: it keeps the widget class's 8×6 ceiling, so the object
+/// that is the way into every file on the machine still cannot cover the field and become a
+/// maximised window wearing a tile's clothes.
+pub const FILES_WIDGET: &str = "files";
 
 /// The `TileKind::System` probes Home places for itself. Each must be a widget the shell knows
 /// (`crate::surface::widgets::WIDGETS`), which a test asserts.
@@ -63,12 +56,9 @@ pub const SYSTEM_WIDGETS: [&str; 4] = ["session", "launcher", "notifications", "
 /// them into the one tile they became.
 const LEGACY_HARDWARE_WIDGETS: [&str; 3] = ["battery", "volume", "brightness"];
 
-const DRAWER_SPAN: u16 = 2;
-
 /// The share of the field the system shelf may claim, as a divisor: at most one cell in this many.
 ///
-/// The same bargain the drawer block strikes with [`DRAWER_WIDTH_SHARE`], and it exists for the
-/// same reason. Home's furniture is there to be reached, not to *be* the desktop: the middle of
+/// Home's furniture is there to be reached, not to *be* the desktop: the middle of
 /// the field belongs to windows and applications. Four widgets at three columns each reach it on
 /// a small field, which is exactly when it matters — and reaching it is how the shelf sheds a
 /// widget rather than the field losing a row of working space.
@@ -97,42 +87,6 @@ fn system_widgets_that_fit(cols: u16, rows: u16) -> Vec<&'static str> {
         }
     }
     fitted
-}
-
-/// The share of the field's width the drawer block may claim. The drawers are shortcuts, not the
-/// desktop: past a third of the screen they start costing the launcher and the window previews
-/// more than they are worth.
-const DRAWER_WIDTH_SHARE: u16 = 3;
-
-/// The shape of the drawer block on a `cols`×`rows` field: the span of one drawer, how many stack
-/// in a column, and how many columns that needs.
-///
-/// The grid used to be a fixed two columns of 2×2, which needs eight rows for the eight drawers —
-/// one more than a 1200×800 field has. The last drawers overflowed, the reflow scattered them
-/// along the bottom, and the system shelf was displaced up into the area application tiles land
-/// in. Deriving the shape from the field keeps the block whole; falling back to 1×1 drawers when
-/// the 2×2 block would exceed [`DRAWER_WIDTH_SHARE`] keeps it from crowding out everything else
-/// on a small field. A roomy field is unaffected: 2×2 still fits the share there.
-fn drawer_grid(cols: u16, rows: u16) -> (u16, u16, u16) {
-    let len = u16::try_from(DRAWER_TILES.len()).unwrap_or(u16::MAX);
-    let budget = (cols / DRAWER_WIDTH_SHARE).max(1);
-    for span in [DRAWER_SPAN, 1] {
-        let fit = (rows / span).max(1);
-        let columns = len.div_ceil(fit);
-        if columns * span <= budget || span == 1 {
-            // Spread over the columns the height forced rather than filling each to the brim:
-            // eight drawers in two columns is four and four, not five and three with a notch cut
-            // out of the second.
-            return (span, len.div_ceil(columns), columns);
-        }
-    }
-    unreachable!("the loop returns on its last iteration")
-}
-
-/// The columns the drawer block occupies, always leaving at least one column for everything else.
-fn drawer_reserved_cols(cols: u16, rows: u16) -> u16 {
-    let (span, _, columns) = drawer_grid(cols, rows);
-    (columns * span).min(cols.saturating_sub(1))
 }
 
 /// How many cells a field of `width`×`height` logical pixels has at `tile_size` pixels a cell,
@@ -179,13 +133,18 @@ pub fn project_spans(cols: u16, rows: u16) -> SpanRange {
     )
 }
 
-/// The widget name a drawer tile carries (`TileKind::Widget::widget`).
-pub fn drawer_widget(drawer: Drawer) -> String {
-    format!("drawer:{}", drawer.name().to_ascii_lowercase())
+/// The tile id the one Files object always has.
+pub fn files_tile_id() -> TileId {
+    tile_id_for("widget:files")
 }
 
-/// The drawer a widget tile stands for, if it is one.
-pub fn widget_drawer(widget: &str) -> Option<Drawer> {
+/// The drawer a widget tile stood for, back when each drawer was its own tile.
+///
+/// Nothing places one of these any more — [`merge_files`] places the single Files object instead —
+/// but a saved document written before that is still out there, and this is how
+/// [`migrate_drawer_tiles`] recognises one. It stays for as long as such a document might exist,
+/// which is to say for good.
+pub fn legacy_drawer_widget(widget: &str) -> Option<Drawer> {
     let name = widget.strip_prefix("drawer:")?;
     Drawer::DEFAULT
         .into_iter()
@@ -231,7 +190,11 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     // already existed by the time the old three were found, and the migration would have nowhere
     // to put it but the shelf's default corner — losing the place a person had chosen.
     migrate_hardware_tiles(doc, &mut applied);
-    merge_drawers(doc, &mut wanted, &mut applied);
+    // Same rule, one object further: the eight drawer tiles are superseded by the single Files
+    // object, and the migration has to run before `merge_files` so the replacement can inherit
+    // the place the block held instead of landing in the default corner.
+    migrate_drawer_tiles(doc, &mut applied);
+    merge_files(doc, &mut wanted, &mut applied);
     // A Home overview must never sacrifice a real open window to a project shortcut or redundant
     // application badge when space is tight, so sessions get first claim after the utility block.
     // The system shelf still always lands, because its tiles may compact to 2x1 — see
@@ -239,19 +202,27 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     merge_sessions(doc, live, &mut wanted, &mut applied);
     merge_projects(doc, live, &mut applied);
     merge_system(doc, &mut applied);
-    merge_apps(doc, live, &mut wanted, &mut applied);
     merge_panels(doc, &mut applied);
     adopt_loose_files(doc, &mut applied);
 
     // Windows that closed take their tiles with them; everything else the user placed stays.
+    //
+    // `ParkedSession` and nothing else, and this is load-bearing — please do not "fix" it by
+    // widening the match back out. A session tile is the only kind whose subject can cease to
+    // exist without anyone asking: the window closed. An application tile is on Home because
+    // someone pinned it (`pin_app`), and a widget is on Home because Home put it there; sweeping
+    // either because this refresh did not happen to ask for it would delete a person's own
+    // arrangement every time a service failed to answer.
+    //
+    // The cost is that a tile naming a widget kind a future build no longer draws is stranded
+    // rather than swept. That is deliberate: a migration is how a retired widget leaves a saved
+    // field (`migrate_hardware_tiles`, `migrate_drawer_tiles`), because only a migration knows
+    // what should take its place.
     let gone: Vec<TileId> = doc
         .tiles
         .iter()
         .filter(|tile| {
-            matches!(
-                tile.kind,
-                TileKind::ParkedSession { .. } | TileKind::App { .. } | TileKind::Widget { .. }
-            ) && !wanted.contains(&tile.id)
+            matches!(tile.kind, TileKind::ParkedSession { .. }) && !wanted.contains(&tile.id)
         })
         .map(|tile| tile.id)
         .collect();
@@ -459,50 +430,35 @@ fn adopt_loose_files(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     }
 }
 
-/// The panel every drawer belongs to, and the panel the system shelf belongs to. Both are the
-/// hard-coded landings of [`merge_drawers`] and [`merge_system`] made adjustable: the panels are
-/// created add-only (a user's move, resize or re-orientation survives every merge), start as
-/// `Arrangement::Custom` over the block the landing heuristics build, and pick up newly added
-/// drawer or system tiles as members without moving anything.
+/// The panel the eight drawer tiles used to belong to. Nothing creates it any more; the id
+/// survives so [`migrate_drawer_tiles`] can take it off a saved field along with its members.
 pub fn drawer_panel_id() -> PanelId {
     panel_id_for("panel:drawers")
 }
 
+/// The panel the system shelf belongs to: [`merge_system`]'s hard-coded landings made
+/// adjustable. Created add-only (a user's move, resize or re-orientation survives every merge),
+/// starting as `Arrangement::Custom` over the block the landing heuristics build, and picking up
+/// newly added system tiles as members without moving anything.
 pub fn system_panel_id() -> PanelId {
     panel_id_for("panel:system")
 }
 
 fn merge_panels(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
-    let drawers: Vec<TileId> = DRAWER_TILES
-        .iter()
-        .map(|drawer| tile_id_for(&format!("drawer:{}", drawer.name())))
-        .collect();
     let systems: Vec<TileId> = system_widgets_that_fit(doc.cols, doc.rows)
         .iter()
         .map(|widget| tile_id_for(&format!("system:{widget}")))
         .collect();
-    let reserved = drawer_reserved_cols(doc.cols, doc.rows);
     let shelf_rows = 2u16.min(doc.rows);
-    let groups = [
-        (
-            drawer_panel_id(),
-            "Drawers",
-            drawers,
-            Placement::new(Cell::new(0, 0), Span::new(reserved.max(1), doc.rows)),
+    let groups = [(
+        system_panel_id(),
+        "System shelf",
+        systems,
+        Placement::new(
+            Cell::new(0, doc.rows - shelf_rows),
+            Span::new(doc.cols.max(1), shelf_rows),
         ),
-        (
-            system_panel_id(),
-            "System shelf",
-            systems,
-            Placement::new(
-                Cell::new(
-                    reserved.min(doc.cols.saturating_sub(1)),
-                    doc.rows - shelf_rows,
-                ),
-                Span::new(doc.cols.saturating_sub(reserved).max(1), shelf_rows),
-            ),
-        ),
-    ];
+    )];
     for (id, title, members, region) in groups {
         match doc.panel(id).cloned() {
             None => {
@@ -534,49 +490,136 @@ fn merge_panels(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     }
 }
 
-/// Compact drawers form a utility block along the left edge, shaped by [`drawer_grid`]. They do
-/// not demand the widget class's 4×4 instrument view on first sight; the user grows the ones that
-/// matter, and the block gives way to 1×1 shortcuts on a field too small to spare the width.
-fn merge_drawers(
-    doc: &mut FieldDocument,
-    wanted: &mut BTreeSet<TileId>,
-    applied: &mut Vec<FieldOp>,
-) {
-    let (span, per_column, _) = drawer_grid(doc.cols, doc.rows);
-    for (index, drawer) in DRAWER_TILES.iter().enumerate() {
-        let id = tile_id_for(&format!("drawer:{}", drawer.name()));
-        wanted.insert(id);
-        if doc.tile(id).is_some() {
-            continue;
-        }
-        let kind = TileKind::Widget {
-            widget: drawer_widget(*drawer),
-            scope: None,
-        };
-        let tile = Tile {
-            id,
-            kind,
-            title: drawer.name().to_owned(),
-            // Compact by default, but the ceiling is the widget class's, not the default size:
-            // a drawer the user grows is how Downloads becomes a real treemap instead of a
-            // colour band, and it was previously capped one step above its own preferred size.
-            //
-            // The floor is below the preferred size on purpose. With floor and preferred both at
-            // 2x2 the drawer block was rigid: every neighbour of a resize was already at its
-            // minimum, so the clamp rule reduced every grow request to nothing and the field's
-            // headline gesture did nothing on the default layout. A drawer that can compact to a
-            // single cell is also what lets a busy field seat the system shelf and every open
-            // window instead of leaving one of them unplaced.
-            spans: SpanRange::new(Span::new(1, 1), Span::new(span, span), Span::new(8, 6)),
-            accent: None,
-        };
-        let index = u16::try_from(index).unwrap_or(u16::MAX);
-        let landing = Landing {
-            container: None,
-            cell: Cell::new((index / per_column) * span, (index % per_column) * span),
-        };
-        try_apply(doc, FieldOp::Place { tile, landing }, applied);
+/// The span range the Files object accepts: a 2×2 floor so a busy field can compact it, a 4×3
+/// preferred size — wide enough for the pinned locations to sit beside the recent list — and the
+/// widget class's own 8×6 ceiling.
+fn files_spans(doc: &FieldDocument) -> SpanRange {
+    let class = SpanRange::for_kind(&files_kind(), doc.cols, doc.rows);
+    SpanRange::new(Span::new(2, 2), Span::new(4, 3), class.max)
+}
+
+fn files_kind() -> TileKind {
+    TileKind::Widget {
+        widget: FILES_WIDGET.to_owned(),
+        scope: None,
     }
+}
+
+/// The one Files object, in the corner the eight drawers used to fill between them.
+///
+/// One object with many sizes of representation, rather than eight shortcuts to the same file
+/// service: Downloads, Recent, Documents, Media, Drives, Operations, Trash and Projects were
+/// eight headings for one thing, and the block of them was a third of the field's width before a
+/// single window existed.
+fn merge_files(doc: &mut FieldDocument, wanted: &mut BTreeSet<TileId>, applied: &mut Vec<FieldOp>) {
+    let id = files_tile_id();
+    wanted.insert(id);
+    if doc.tile(id).is_some() {
+        return;
+    }
+    let tile = Tile {
+        id,
+        kind: files_kind(),
+        title: "Files".to_owned(),
+        spans: files_spans(doc),
+        accent: None,
+    };
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(0, 0),
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, applied);
+}
+
+/// Turn a saved field's drawer tiles into the one Files object that replaced them, in the first
+/// place any of them held, and take the drawer panel with them.
+///
+/// The same shape as [`migrate_hardware_tiles`] and for the same reason: these tiles name a
+/// widget the shell no longer draws, so leaving them alone means up to ten rectangles reading
+/// "no such widget" for the life of the layout. All ten `Drawer` variants are collected, not
+/// just the eight that were ever placed by default — Network and Windows could reach the field
+/// by hand, and a migration that left two of them behind would be worse than none.
+///
+/// Kind-checked like its predecessor: a tile id is a hash, and removing something that merely
+/// collided with one would be the worst possible outcome. Expressed as ordinary ops through
+/// [`try_apply`], so every removal and the placement invert exactly.
+fn migrate_drawer_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let legacy: Vec<TileId> = Drawer::DEFAULT
+        .into_iter()
+        .map(|drawer| tile_id_for(&format!("drawer:{}", drawer.name())))
+        .filter(|id| {
+            doc.tile(*id).is_some_and(|tile| {
+                matches!(&tile.kind, TileKind::Widget { widget, .. }
+                    if legacy_drawer_widget(widget).is_some())
+            })
+        })
+        .collect();
+    let had_panel = doc.panel(drawer_panel_id()).is_some();
+    if legacy.is_empty() {
+        // The panel outlives its members only on a field where every drawer was stashed and then
+        // removed by hand; sweeping it here keeps that field from carrying an empty group for good.
+        if had_panel {
+            try_apply(
+                doc,
+                FieldOp::RemovePanel {
+                    id: drawer_panel_id(),
+                },
+                applied,
+            );
+        }
+        return;
+    }
+    // The first of their positions in the order Home originally placed them, and the largest
+    // span any of them had grown to: a person who made Downloads a full-width treemap gets a
+    // Files object that size rather than the default corner tile.
+    let placements: Vec<Placement> = legacy
+        .iter()
+        .filter_map(|id| doc.location(*id))
+        .map(|located| located.placement)
+        .collect();
+    let inherited = placements.first().map(|first| {
+        let largest = placements
+            .iter()
+            .map(|placement| placement.span)
+            .max_by_key(|span| span.cells())
+            .unwrap_or(first.span);
+        (first.cell, largest)
+    });
+    for id in legacy {
+        try_apply(doc, FieldOp::Remove { id }, applied);
+    }
+    if had_panel {
+        try_apply(
+            doc,
+            FieldOp::RemovePanel {
+                id: drawer_panel_id(),
+            },
+            applied,
+        );
+    }
+    if doc.tile(files_tile_id()).is_some() {
+        // A field that already carries the replacement wanted only the leftovers gone; placing a
+        // second one is impossible anyway, and asking would move the tile in use.
+        return;
+    }
+    let Some((cell, span)) = inherited else {
+        // Every drawer was on the shelf: nothing to inherit, and `merge_files` lands the
+        // replacement in its own corner.
+        return;
+    };
+    let spans = files_spans(doc);
+    let tile = Tile {
+        id: files_tile_id(),
+        kind: files_kind(),
+        title: "Files".to_owned(),
+        spans: SpanRange::new(spans.min, span.clamp(spans.min, spans.max), spans.max),
+        accent: None,
+    };
+    let landing = Landing {
+        container: None,
+        cell,
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, applied);
 }
 
 /// The system widgets Home always offers: Session, which is the only route out of a running
@@ -704,7 +747,7 @@ fn migrate_hardware_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
 }
 
 /// System widgets form a shelf in the bottom-right corner, packed right to left in declaration
-/// order and stacking upward once the row is full, never left of the drawer block.
+/// order and stacking upward once the row is full.
 ///
 /// The rule used to alternate bottom-left and bottom-right, which has room for exactly two: a
 /// third widget landed on the first one's cell and the reflow scattered it, moving every tile
@@ -717,8 +760,7 @@ fn migrate_hardware_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
 fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange, placed: usize) -> Cell {
     let width = spans.preferred.cols.max(1);
     let height = spans.preferred.rows.max(1);
-    let first_col = drawer_reserved_cols(doc.cols, doc.rows);
-    let per_row = (doc.cols.saturating_sub(first_col) / width).max(1);
+    let per_row = (doc.cols / width).max(1);
     // How many are actually being placed, not how many exist: a field too small for every widget
     // packs the ones it has, and counting the absent ones would leave a gap where they would be.
     let len = u16::try_from(placed).unwrap_or(u16::MAX);
@@ -729,7 +771,7 @@ fn system_landing(index: usize, doc: &FieldDocument, spans: SpanRange, placed: u
         .min(len.saturating_sub((index / per_row) * per_row))
         .max(1);
     let from_right = in_row.saturating_sub(index % per_row).saturating_mul(width);
-    let col = doc.cols.saturating_sub(from_right).max(first_col);
+    let col = doc.cols.saturating_sub(from_right);
     let row = doc
         .rows
         .saturating_sub(height)
@@ -772,49 +814,44 @@ fn merge_projects(doc: &mut FieldDocument, live: &LiveState<'_>, applied: &mut V
     }
 }
 
-/// Active applications fill after the compact drawer block, in reading order, sorted by id.
-/// Installed-but-idle applications belong in search/launcher results, not as hundreds of
-/// automatic 1×1 Home tiles.
-fn merge_apps(
-    doc: &mut FieldDocument,
-    live: &LiveState<'_>,
-    wanted: &mut BTreeSet<TileId>,
-    applied: &mut Vec<FieldOp>,
-) {
-    let mut app_ids: Vec<AppId> = Vec::new();
-    for toplevel in live.toplevels {
-        if let Some(app_id) = &toplevel.canonical_app_id
-            && !app_ids.contains(app_id)
-        {
-            app_ids.push(app_id.clone());
-        }
+/// The tile id an application's Home tile always has, pinned or inherited from an older layout.
+pub fn app_tile_id(app_id: &AppId) -> TileId {
+    tile_id_for(&format!("app:{app_id}"))
+}
+
+/// Keep this application on Home: one tile, placed where it will fit, that outlives the window
+/// it was pinned from.
+///
+/// Home used to grow an application tile for every window that opened and drop it again with the
+/// last one, which meant a badge that duplicated the session tile beside it and vanished exactly
+/// when a person might have wanted to relaunch. An application belongs on Home because someone
+/// put it there, and for no other reason — everything else is what search is for.
+///
+/// Add-only and idempotent: pinning something already pinned asks for nothing.
+pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let id = app_tile_id(app_id);
+    if doc.tile(id).is_some() {
+        return applied;
     }
-    app_ids.sort();
-    app_ids.dedup();
-    let start_col = drawer_reserved_cols(doc.cols, doc.rows);
-    let app_cols = doc.cols.saturating_sub(start_col).max(1);
-    for (index, app_id) in app_ids.iter().enumerate() {
-        let id = tile_id_for(&format!("app:{app_id}"));
-        wanted.insert(id);
-        if doc.tile(id).is_some() {
-            continue;
-        }
-        let tile = Tile {
-            id,
-            kind: TileKind::App {
-                app_id: app_id.clone(),
-            },
-            title: short_name(app_id),
-            spans: SpanRange::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
-            accent: None,
-        };
-        let index = index as u16;
-        let landing = Landing {
-            container: None,
-            cell: Cell::new(start_col + index % app_cols, index / app_cols),
-        };
-        try_apply(doc, FieldOp::Place { tile, landing }, applied);
-    }
+    let tile = Tile {
+        id,
+        kind: TileKind::App {
+            app_id: app_id.clone(),
+        },
+        title: short_name(app_id),
+        spans: SpanRange::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
+        accent: None,
+    };
+    // The top-left corner of the working area, where the reflow will find it the nearest free
+    // cell: a pinned tile is small, and hunting for one that landed in a far corner is worse
+    // than having it appear near where the eye already is.
+    let landing = Landing {
+        container: None,
+        cell: Cell::new(0, 0),
+    };
+    try_apply(doc, FieldOp::Place { tile, landing }, &mut applied);
+    applied
 }
 
 /// How many rows the system shelf occupies across `available_cols`, at the class floor its tiles
@@ -846,11 +883,11 @@ fn system_shelf_rows(available_cols: u16, cols: u16, rows: u16) -> u16 {
     total.saturating_add(row_height)
 }
 
-/// The largest common overview span that lets every live session fit in the field area to the
-/// right of the drawer block and above the system shelf. Large previews remain the normal case;
+/// The largest common overview span that lets every live session fit in the field area above the
+/// system shelf. Large previews remain the normal case;
 /// busy workspaces step down through still-legible shapes before reaching the 2×1 session floor.
 fn session_overview_span(cols: u16, rows: u16, session_count: usize) -> Span {
-    let available_cols = cols.saturating_sub(drawer_reserved_cols(cols, rows));
+    let available_cols = cols;
     let rows = rows
         .saturating_sub(system_shelf_rows(available_cols, cols, rows))
         .max(1);
@@ -892,8 +929,7 @@ fn merge_sessions(
         .collect();
     toplevels.sort_by_key(|toplevel| std::cmp::Reverse(toplevel.window_id));
     let overview_span = session_overview_span(doc.cols, doc.rows, toplevels.len());
-    let start_col = drawer_reserved_cols(doc.cols, doc.rows);
-    let available_cols = doc.cols.saturating_sub(start_col);
+    let available_cols = doc.cols;
     let per_row = available_cols
         .checked_div(overview_span.cols)
         .unwrap_or(0)
@@ -941,7 +977,7 @@ fn merge_sessions(
         );
         let landing = Landing {
             container: None,
-            cell: Cell::new(start_col + (slot % per_row) * overview_span.cols, row),
+            cell: Cell::new((slot % per_row) * overview_span.cols, row),
         };
         try_apply(doc, FieldOp::Place { tile, landing }, applied);
     }
@@ -1092,9 +1128,10 @@ mod tests {
             projects: &[],
         };
         merge(&mut doc, &live);
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
 
-        // An application tile, which sits in the open part of the field rather than inside the
-        // packed drawer block, so the resize has somewhere to go.
+        // A pinned application tile, which sits in the open part of the field, so the resize has
+        // somewhere to go.
         let subject = tile_id_for("app:org.legeos.Files");
         let before = doc.location(subject).unwrap().placement.span;
         doc = lege_field::apply(
@@ -1276,57 +1313,11 @@ mod tests {
         );
     }
 
-    /// The drawer block's shape, over every field the grid can produce: it holds all eight
-    /// drawers, its columns differ by at most one, and it never takes more than a third of the
-    /// width unless a single column already does.
+    /// The shelf sits in the bottom-right corner, in bounds, and with one tile per cell — the
+    /// failure the alternating-corners rule had when a third widget arrived was two tiles
+    /// landing on the same cell.
     #[test]
-    fn the_drawer_block_fits_its_field_and_its_columns_are_balanced() {
-        for cols in 4..=64u16 {
-            for rows in 4..=64u16 {
-                let (span, per_column, columns) = drawer_grid(cols, rows);
-                let len = u16::try_from(DRAWER_TILES.len()).unwrap();
-                assert!(
-                    per_column * columns >= len,
-                    "{cols}x{rows}: {columns} columns of {per_column} hold fewer than {len}"
-                );
-                assert!(
-                    per_column * span <= rows,
-                    "{cols}x{rows}: a column of {per_column} at span {span} overflows {rows} rows"
-                );
-                // Balanced: dropping one from any column would no longer fit them all.
-                assert!(
-                    (per_column - 1) * columns < len,
-                    "{cols}x{rows}: {columns}x{per_column} is taller than it needs to be"
-                );
-                let width = drawer_reserved_cols(cols, rows);
-                assert!(
-                    width < cols,
-                    "{cols}x{rows}: the block leaves no room beside it"
-                );
-                if span == DRAWER_SPAN {
-                    assert!(
-                        width <= cols / DRAWER_WIDTH_SHARE,
-                        "{cols}x{rows}: a 2x2 block claims {width} of {cols} columns"
-                    );
-                } else {
-                    // Already down to 1x1: as narrow as eight drawers can be on a field this
-                    // short, which on a very small one still exceeds the share. Nothing left
-                    // to give.
-                    assert_eq!(
-                        columns,
-                        len.div_ceil(rows),
-                        "{cols}x{rows}: a 1x1 block is wider than it has to be"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The shelf sits in the bottom-right corner, in bounds, clear of the drawer block, and with
-    /// one tile per cell — the failure the alternating-corners rule had when a third widget
-    /// arrived was two tiles landing on the same cell.
-    #[test]
-    fn the_system_shelf_lands_in_the_corner_without_overlapping_the_drawers() {
+    fn the_system_shelf_lands_in_the_corner() {
         for cols in 4..=64u16 {
             for rows in 4..=64u16 {
                 let doc = FieldDocument::new("eDP-1", cols, rows);
@@ -1335,23 +1326,18 @@ mod tests {
                 };
                 let class = SpanRange::for_kind(&kind, cols, rows);
                 let spans = SpanRange::new(Span::new(2, 1), class.min, class.max);
-                let reserved = drawer_reserved_cols(cols, rows);
-                let per_row = (cols.saturating_sub(reserved) / spans.preferred.cols.max(1)).max(1);
+                let per_row = (cols / spans.preferred.cols.max(1)).max(1);
                 let cells: Vec<Cell> = (0..SYSTEM_WIDGETS.len())
                     .map(|index| system_landing(index, &doc, spans, SYSTEM_WIDGETS.len()))
                     .collect();
                 for cell in &cells {
                     assert!(
-                        cell.col + spans.preferred.cols <= cols || cell.col == reserved,
+                        cell.col + spans.preferred.cols <= cols || cell.col == 0,
                         "{cols}x{rows}: {cell:?} runs off the right edge"
                     );
                     assert!(
                         cell.row + spans.preferred.rows <= rows,
                         "{cols}x{rows}: {cell:?} runs off the bottom"
-                    );
-                    assert!(
-                        cell.col >= reserved,
-                        "{cols}x{rows}: {cell:?} lands inside the drawer block"
                     );
                 }
                 // Distinct landings wherever the shelf can actually be seated. On a field too
@@ -1370,7 +1356,7 @@ mod tests {
                 }
                 // The rightmost tile of the bottom row reaches the field's right edge, so the
                 // shelf reads as anchored to the corner rather than trailing off mid-field.
-                if cols.saturating_sub(reserved) >= spans.preferred.cols {
+                if cols >= spans.preferred.cols {
                     let right = cells.iter().map(|cell| cell.col).max().unwrap();
                     assert_eq!(
                         right + spans.preferred.cols,
@@ -1398,9 +1384,10 @@ mod tests {
         merge(&mut doc, &live);
         assert!(restore_shelved(&doc).is_none(), "nothing is shelved yet");
 
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
         let shelved: Vec<TileId> = [
-            tile_id_for("drawer:Recent"),
-            tile_id_for("drawer:Trash"),
+            files_tile_id(),
+            tile_id_for("system:notifications"),
             tile_id_for("app:org.legeos.Files"),
         ]
         .into_iter()
@@ -1482,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_adds_a_tile_per_drawer_app_and_window_and_keeps_places_on_refresh() {
+    fn merge_adds_the_files_object_a_tile_per_app_and_window_and_keeps_places_on_refresh() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         let windows = vec![
             toplevel(1, Some("org.legeos.Files"), "Downloads", false),
@@ -1493,39 +1480,37 @@ mod tests {
             projects: &[],
         };
         let ops = merge(&mut doc, &live);
-        // Eight drawers, two apps, two sessions, and the system widgets Home always offers —
-        // plus one op per default panel grouping the drawers and the system shelf.
-        let expected = DRAWER_TILES.len() + 2 + 2 + SYSTEM_WIDGETS.len();
-        assert_eq!(ops.len(), expected + 2);
+        // One Files object, two sessions, and the system widgets Home always offers — plus one
+        // op for the system shelf panel. No application tiles: a running window is a session,
+        // and an application is on Home only because someone pinned it.
+        let expected = 1 + 2 + SYSTEM_WIDGETS.len();
+        assert_eq!(ops.len(), expected + 1);
         assert_eq!(doc.tiles.len(), expected);
+        assert!(
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::App { .. })),
+            "two open windows grew an application badge apiece"
+        );
         assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
 
-        // Drawers occupy a compact 4×8 block, apps follow it, sessions sit above the system
-        // shelf. On this 16×8 field the shelf is one row of height two: four widgets of three
-        // columns each fit across the twelve the drawer block leaves.
-        let inbox = tile_id_for("drawer:Downloads");
-        assert_eq!(doc.location(inbox).unwrap().placement.cell, Cell::new(0, 0));
-        // Apps are sorted by id: the Editor (known only from its window) precedes Files.
-        let files = tile_id_for("app:org.legeos.Files");
-        assert_eq!(doc.location(files).unwrap().placement.cell, Cell::new(5, 0));
-        let editor = tile_id_for("app:org.example.Editor");
-        assert_eq!(
-            doc.location(editor).unwrap().placement.cell,
-            Cell::new(4, 0)
-        );
-        let session = session_tile_for(&doc, &windows[1]).unwrap();
-        assert_eq!(doc.location(session).unwrap().placement.cell.row, 4);
+        let files = files_tile_id();
+        let located = doc.location(files).expect("the Files object is placed");
+        assert_eq!(located.placement.cell, Cell::new(0, 0));
+        assert_eq!(located.placement.span, Span::new(4, 3));
 
         // A second merge with the same state changes nothing.
         let before = doc.clone();
         assert!(merge(&mut doc, &live).is_empty());
         assert_eq!(doc, before);
 
-        // The user moves a tile; the next refresh keeps it there.
-        let moved = apply(
+        // The user pins an application and moves its tile; the next refresh keeps it there.
+        let app = tile_id_for("app:org.legeos.Files");
+        pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
+        doc = apply(
             &doc,
             &FieldOp::Move {
-                id: files,
+                id: app,
                 landing: Landing {
                     container: None,
                     cell: Cell::new(10, 1),
@@ -1534,12 +1519,175 @@ mod tests {
         )
         .unwrap()
         .0;
-        doc = moved;
         merge(&mut doc, &live);
+        assert_eq!(doc.location(app).unwrap().placement.cell, Cell::new(10, 1));
+    }
+
+    /// A field saved when Home had a tile per drawer, wherever the person left them, with the
+    /// panel that grouped them.
+    fn field_with_the_old_drawer_tiles(cells: &[(Drawer, Cell, Span)]) -> FieldDocument {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let mut members = Vec::new();
+        for (drawer, cell, span) in cells {
+            let id = tile_id_for(&format!("drawer:{}", drawer.name()));
+            members.push(id);
+            let tile = Tile {
+                id,
+                kind: TileKind::Widget {
+                    widget: format!("drawer:{}", drawer.name().to_ascii_lowercase()),
+                    scope: None,
+                },
+                title: drawer.name().to_owned(),
+                spans: SpanRange::new(Span::new(1, 1), *span, Span::new(8, 6)),
+                accent: None,
+            };
+            doc = apply(
+                &doc,
+                &FieldOp::Place {
+                    tile,
+                    landing: Landing {
+                        container: None,
+                        cell: *cell,
+                    },
+                },
+            )
+            .expect("the old drawer tile places")
+            .0;
+        }
+        doc = apply(
+            &doc,
+            &FieldOp::CreatePanel {
+                panel: Panel {
+                    id: drawer_panel_id(),
+                    title: "Drawers".to_owned(),
+                    region: Placement::new(Cell::new(0, 0), Span::new(4, 10)),
+                    arrangement: Arrangement::Custom,
+                    members,
+                    baseline: None,
+                },
+            },
+        )
+        .expect("the old drawer panel")
+        .0;
+        doc
+    }
+
+    /// Every drawer tile becomes the one Files object, in the first place any of them held and
+    /// at the largest size any of them had grown to; the panel that grouped them goes too.
+    #[test]
+    fn a_saved_field_of_drawer_tiles_becomes_one_files_object_in_their_place() {
+        // Recent is first in `Drawer::DEFAULT`, so its cell is the one the replacement takes;
+        // the largest span among them all is the one it grows to.
+        let seeded = [
+            (Drawer::Downloads, Cell::new(6, 2), Span::new(2, 2)),
+            (Drawer::Recent, Cell::new(6, 4), Span::new(4, 3)),
+            (Drawer::Trash, Cell::new(10, 2), Span::new(2, 2)),
+            (Drawer::Network, Cell::new(10, 4), Span::new(2, 2)),
+            (Drawer::WindowShelf, Cell::new(12, 2), Span::new(2, 2)),
+        ];
+        let mut doc = field_with_the_old_drawer_tiles(&seeded);
+        merge(&mut doc, &LiveState::default());
+
+        for (drawer, _, _) in seeded {
+            assert!(
+                doc.tile(tile_id_for(&format!("drawer:{}", drawer.name())))
+                    .is_none(),
+                "{drawer:?} is a location inside Files now, not a tile"
+            );
+        }
+        assert!(doc.panel(drawer_panel_id()).is_none(), "the panel went too");
+        let located = doc.location(files_tile_id()).expect("the Files object");
         assert_eq!(
-            doc.location(files).unwrap().placement.cell,
-            Cell::new(10, 1)
+            located.placement.cell,
+            Cell::new(6, 4),
+            "the replacement did not inherit the first of their places"
         );
+        assert_eq!(
+            located.placement.span,
+            Span::new(4, 3),
+            "the replacement did not inherit the largest of their sizes"
+        );
+        // Idempotent: a second merge of the same state asks for nothing.
+        assert!(merge(&mut doc, &LiveState::default()).is_empty());
+    }
+
+    /// A field that already carries the Files object keeps it exactly where it is and only loses
+    /// the leftovers.
+    #[test]
+    fn a_field_that_already_has_files_only_loses_the_leftover_drawers() {
+        let mut doc =
+            field_with_the_old_drawer_tiles(&[(Drawer::Recent, Cell::new(6, 2), Span::new(2, 2))]);
+        let chosen = Cell::new(10, 6);
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: files_tile_id(),
+                    kind: files_kind(),
+                    title: "Files".to_owned(),
+                    spans: files_spans(&doc),
+                    accent: None,
+                },
+                landing: Landing {
+                    container: None,
+                    cell: chosen,
+                },
+            },
+        )
+        .expect("the Files object places")
+        .0;
+
+        merge(&mut doc, &LiveState::default());
+        assert!(
+            doc.tile(tile_id_for("drawer:Recent")).is_none(),
+            "the leftover drawer is gone"
+        );
+        assert_eq!(
+            doc.location(files_tile_id())
+                .map(|located| located.placement.cell),
+            Some(chosen),
+            "the tile a person is already using was moved"
+        );
+    }
+
+    /// The migration touches nothing on a field that never had drawer tiles, and never runs
+    /// twice.
+    #[test]
+    fn the_drawer_migration_is_silent_on_a_field_that_never_had_them() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        merge(&mut doc, &LiveState::default());
+        let mut ops = Vec::new();
+        migrate_drawer_tiles(&mut doc, &mut ops);
+        assert!(ops.is_empty(), "{ops:?}");
+        assert!(merge(&mut doc, &LiveState::default()).is_empty());
+    }
+
+    /// Every op the migration applies inverts exactly, like any other field edit: the removals
+    /// and the placement replay backwards onto the document they started from.
+    #[test]
+    fn the_drawer_migration_inverts_exactly() {
+        let doc = field_with_the_old_drawer_tiles(&[
+            (Drawer::Downloads, Cell::new(6, 2), Span::new(2, 2)),
+            (Drawer::Trash, Cell::new(10, 2), Span::new(2, 2)),
+        ]);
+        let before = doc.clone();
+        let mut after = doc;
+        let mut ops = Vec::new();
+        migrate_drawer_tiles(&mut after, &mut ops);
+        assert!(!ops.is_empty());
+
+        let mut inverses = Vec::new();
+        let mut replay = before.clone();
+        for op in &ops {
+            let (next, inverse) = apply(&replay, op).expect("the migration op replays");
+            replay = next;
+            inverses.push(inverse);
+        }
+        assert_eq!(replay, after, "the ops describe exactly what happened");
+        for inverse in inverses.into_iter().rev() {
+            replay = apply(&replay, &inverse).expect("the inverse applies").0;
+        }
+        assert_eq!(replay, before, "the migration did not invert exactly");
     }
 
     #[test]
@@ -1615,6 +1763,79 @@ mod tests {
         );
     }
 
+    /// The one route to an application tile, and the only reason one exists: someone pinned it.
+    /// It outlives every window of that application, survives the refresh, and pinning twice
+    /// asks for nothing.
+    #[test]
+    fn a_pinned_application_outlives_its_windows_and_pins_only_once() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let windows = vec![toplevel(1, Some("org.legeos.Files"), "Downloads", false)];
+        let live = LiveState {
+            toplevels: &windows,
+            projects: &[],
+        };
+        merge(&mut doc, &live);
+        let app: AppId = "org.legeos.Files".parse().unwrap();
+        let id = app_tile_id(&app);
+        assert!(doc.tile(id).is_none(), "a running window is not a pin");
+
+        assert_eq!(pin_app(&mut doc, &app).len(), 1);
+        let placed = doc.location(id).expect("the pinned tile is placed");
+        assert!(
+            pin_app(&mut doc, &app).is_empty(),
+            "pinning twice is a no-op"
+        );
+
+        // Every window of that application closes: the session tiles go, the pin stays.
+        merge(&mut doc, &LiveState::default());
+        assert_eq!(
+            doc.location(id),
+            Some(placed),
+            "the pin went away with the last window"
+        );
+        assert_eq!(doc.tile(id).map(|tile| tile.title.as_str()), Some("Files"));
+    }
+
+    /// The refresh removes exactly one thing: the tile of a window that closed. Everything else
+    /// on the field is there because a person or Home put it there, and a merge that could not
+    /// reach a service must not take it away.
+    #[test]
+    fn a_refresh_never_removes_a_placed_tile_that_is_not_a_closed_window() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        merge(&mut doc, &LiveState::default());
+        pin_app(&mut doc, &"org.example.Editor".parse().unwrap());
+        // A widget kind no build knows: stranded on purpose, because only a migration knows what
+        // should replace one, and sweeping it would delete a person's arrangement instead.
+        let orphan = tile_id_for("widget:from-the-future");
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: orphan,
+                    kind: TileKind::Widget {
+                        widget: "from-the-future".to_owned(),
+                        scope: None,
+                    },
+                    title: "Future".to_owned(),
+                    spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(4, 4)),
+                    accent: None,
+                },
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(8, 6),
+                },
+            },
+        )
+        .expect("the unknown widget places")
+        .0;
+
+        let before = doc.clone();
+        for _ in 0..3 {
+            merge(&mut doc, &LiveState::default());
+        }
+        assert_eq!(doc, before, "a refresh took something away");
+    }
+
     #[test]
     fn a_closed_window_takes_its_tile_with_it() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
@@ -1664,12 +1885,16 @@ mod tests {
         assert_eq!(doc.located, located);
     }
 
+    /// The legacy parser still recognises every drawer a saved field could be carrying — all ten
+    /// variants, not just the eight that were ever placed by default — and nothing else.
     #[test]
-    fn drawer_widgets_round_trip() {
-        for drawer in DRAWER_TILES {
-            assert_eq!(widget_drawer(&drawer_widget(drawer)), Some(drawer));
+    fn the_legacy_drawer_parser_still_knows_every_drawer() {
+        for drawer in Drawer::DEFAULT {
+            let widget = format!("drawer:{}", drawer.name().to_ascii_lowercase());
+            assert_eq!(legacy_drawer_widget(&widget), Some(drawer));
         }
-        assert_eq!(widget_drawer("clock"), None);
+        assert_eq!(legacy_drawer_widget("clock"), None);
+        assert_eq!(legacy_drawer_widget(FILES_WIDGET), None);
     }
 
     #[test]
@@ -1680,81 +1905,29 @@ mod tests {
         assert_eq!(short_name(&simple), "nm-tray");
     }
 
-    /// The default drawer block and system shelf arrive as adjustable panels: created by the
-    /// merge, grouping exactly the drawer and system tiles, and add-only — a second merge
-    /// changes nothing, and a user's configuration survives.
+    /// The system shelf arrives as an adjustable panel: created by the merge, grouping exactly
+    /// the system tiles, and add-only — a second merge changes nothing, and a user's
+    /// configuration survives. Home creates no other panel; the drawer block that had one is
+    /// gone, and the Files object is a single tile with nothing to group.
     #[test]
-    fn panel_layout_default_panels_group_drawers_and_system_tiles() {
+    fn panel_layout_groups_the_system_shelf_and_nothing_else() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         let live = LiveState::default();
         merge(&mut doc, &live);
 
-        let drawers = doc.panel(drawer_panel_id()).expect("drawer panel");
-        for drawer in DRAWER_TILES {
-            let id = tile_id_for(&format!("drawer:{}", drawer.name()));
-            assert!(drawers.members.contains(&id), "{drawer:?} not grouped");
-        }
         let system = doc.panel(system_panel_id()).expect("system panel");
         for widget in SYSTEM_WIDGETS {
             let id = tile_id_for(&format!("system:{widget}"));
             assert!(system.members.contains(&id), "{widget} not grouped");
         }
-        assert_eq!(drawers.arrangement, Arrangement::Custom);
+        assert_eq!(system.arrangement, Arrangement::Custom);
+        assert!(doc.panel(drawer_panel_id()).is_none());
+        assert_eq!(doc.panels.len(), 1);
 
         let before = doc.clone();
         let applied = merge(&mut doc, &live);
         assert_eq!(doc, before, "the second merge is a no-op");
         assert!(applied.is_empty());
-    }
-
-    /// Panel ops make the block adjustable without touching what the tiles are: re-orienting
-    /// the drawer panel as a right-edge rail moves every drawer to the right edge and changes
-    /// no tile's identity, and restoring the custom arrangement puts every drawer back exactly.
-    #[test]
-    fn panel_layout_reorienting_the_drawer_panel_moves_but_never_changes_tiles() {
-        let mut doc = FieldDocument::new("eDP-1", 16, 8);
-        merge(&mut doc, &LiveState::default());
-        let tiles_before = doc.tiles.clone();
-        let custom: Vec<_> = DRAWER_TILES
-            .iter()
-            .map(|drawer| {
-                let id = tile_id_for(&format!("drawer:{}", drawer.name()));
-                (id, doc.location(id))
-            })
-            .collect();
-
-        // The top edge: the one edge nothing else occupies on the default field (drawers are
-        // the members themselves, and the system shelf holds the bottom corner — arranging over
-        // an occupied edge is refused with NotFree rather than displacing a bystander).
-        let (mut doc, _) = apply(
-            &doc,
-            &FieldOp::ArrangePanel {
-                id: drawer_panel_id(),
-                arrangement: Arrangement::Rail(lege_field::Edge::Top),
-            },
-        )
-        .expect("rail arrangement");
-        assert_eq!(doc.tiles, tiles_before, "identity and contents untouched");
-        for (id, _) in &custom {
-            let location = doc.location(*id).expect("every drawer fits the top rail");
-            assert_eq!(
-                location.placement.cell.row, 0,
-                "{id:?} not on the top rail: {location:?}"
-            );
-        }
-
-        (doc, _) = apply(
-            &doc,
-            &FieldOp::ArrangePanel {
-                id: drawer_panel_id(),
-                arrangement: Arrangement::Custom,
-            },
-        )
-        .expect("restore custom");
-        for (id, location) in &custom {
-            assert_eq!(&doc.location(*id), location, "exact prior placement");
-        }
-        assert_eq!(doc.tiles, tiles_before);
     }
 
     /// The XDG Desktop directory appears as one placeable Home folder object when it exists,
