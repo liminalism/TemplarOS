@@ -6,9 +6,9 @@
 
 use crate::identity::Registry;
 use crate::launcher::{self, LaunchBackend};
-use lege_types::{AppCatalog, AppId, WindowClaims};
+use lege_types::{AppCatalog, AppId, LogicalAppId, WindowClaims};
 use std::sync::Arc;
-use zbus::fdo;
+use zbus::{fdo, object_server::SignalEmitter};
 
 /// One row of [`IdentityApi::list_applications`]:
 /// `(app_id, display_name, desktop_file_id, icon, categories, keywords, no_display)`.
@@ -24,6 +24,17 @@ pub type ApplicationRow = (
     Vec<String>,
     bool,
 );
+
+/// One row of [`IdentityApi::list_logical_apps`]:
+/// `(logical_app_id, display_name, icon, variant_count, default_variant)`.
+pub type LogicalAppRow = (String, String, String, u32, String);
+
+/// One row of [`IdentityApi::list_variants`]: `(variant_app_id, display_name, provenance_json)`.
+pub type VariantRow = (String, String, String);
+
+/// One row of [`IdentityApi::list_instances_detailed`]:
+/// `(instance_id, variant_app_id, logical_app_id, systemd_unit, control_group)`.
+pub type InstanceDetailRow = (String, String, String, String, String);
 
 /// `org.legeos.AppIdentity1`
 #[derive(Debug)]
@@ -130,6 +141,107 @@ impl IdentityApi {
         rows.sort_by(|left, right| left.0.cmp(&right.0));
         rows
     }
+
+    /// One row per *logical* application: the thing a person means when they say "Firefox",
+    /// whether the machine holds one copy of it or three.
+    ///
+    /// The name and icon come from the default variant, which is the copy that would actually
+    /// launch — so what a launcher draws and what it starts agree.
+    async fn list_logical_apps(&self) -> Vec<LogicalAppRow> {
+        let index = self.registry.logical_index();
+        let mut rows: Vec<LogicalAppRow> = index
+            .logical_apps()
+            .map(|(logical, variants)| {
+                let default = variants.first();
+                let manifest = default.and_then(|id| self.registry.manifest(id));
+                (
+                    logical.to_string(),
+                    manifest
+                        .as_ref()
+                        .map(|m| m.display_name.clone())
+                        .unwrap_or_default(),
+                    manifest
+                        .as_ref()
+                        .and_then(|m| m.icon.clone())
+                        .unwrap_or_default(),
+                    u32::try_from(variants.len()).unwrap_or(u32::MAX),
+                    default.map(ToString::to_string).unwrap_or_default(),
+                )
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    }
+
+    /// The copies of one logical application, default first — the order a variant submenu should
+    /// offer them in.
+    async fn list_variants(&self, logical_app_id: &str) -> fdo::Result<Vec<VariantRow>> {
+        let logical: LogicalAppId = logical_app_id
+            .parse()
+            .map_err(|error: lege_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let index = self.registry.logical_index();
+        Ok(index
+            .variants_of(&logical)
+            .iter()
+            .filter_map(|variant| {
+                let manifest = self.registry.manifest(variant)?;
+                Some((
+                    variant.to_string(),
+                    manifest.display_name.clone(),
+                    manifest
+                        .provenance
+                        .as_ref()
+                        .and_then(|p| serde_json::to_string(p).ok())
+                        .unwrap_or_else(|| "{}".to_owned()),
+                ))
+            })
+            .collect())
+    }
+
+    /// Which logical application a variant is a copy of. A stale id is resolved through the alias
+    /// table first, so a caller holding an id from before a Flatpak was renamed still gets an
+    /// answer.
+    async fn logical_app_of(&self, variant_app_id: &str) -> fdo::Result<String> {
+        let variant: AppId = variant_app_id
+            .parse()
+            .map_err(|error: lege_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        Ok(self
+            .registry
+            .logical_of(&variant)
+            .map(|logical| logical.to_string())
+            .unwrap_or_default())
+    }
+
+    /// `(instance_id, variant_app_id, logical_app_id, systemd_unit, control_group)` for every live
+    /// instance. The logical id travels alongside so a caller grouping windows by application does
+    /// not have to ask once per instance.
+    async fn list_instances_detailed(&self) -> Vec<InstanceDetailRow> {
+        let index = self.registry.logical_index();
+        let mut rows: Vec<InstanceDetailRow> = self
+            .registry
+            .list_instances()
+            .into_iter()
+            .map(|instance| {
+                let logical = index
+                    .logical_of(&instance.app_id)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                (
+                    instance.id.to_string(),
+                    instance.app_id.to_string(),
+                    logical,
+                    instance.systemd_unit,
+                    instance.control_group.display().to_string(),
+                )
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    }
+
+    /// The installed set changed — an import, an uninstall, a re-scan. Re-read the listings.
+    #[zbus(signal)]
+    pub async fn applications_changed(signal_emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// `org.legeos.Launcher1`
@@ -184,8 +296,196 @@ impl LauncherApi {
 
         Ok(record.id.to_string())
     }
+
+    /// Launch a logical application: "open Firefox", not "open the Flatpak Firefox".
+    ///
+    /// With `preferred_variant` empty the daemon picks the default, which is a trust decision — a
+    /// packaged copy outranks a file the account can rewrite — and so belongs here rather than in
+    /// every caller. A named variant that is not a copy of this application is refused rather than
+    /// launched: it would be a different program than the one asked for.
+    async fn launch_logical(
+        &self,
+        logical_app_id: &str,
+        preferred_variant: &str,
+        arguments: Vec<String>,
+        activation_token: &str,
+    ) -> fdo::Result<String> {
+        let logical: LogicalAppId = logical_app_id
+            .parse()
+            .map_err(|error: lege_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let index = self.registry.logical_index();
+        let variants = index.variants_of(&logical);
+        if variants.is_empty() {
+            return Err(fdo::Error::FileNotFound(format!(
+                "no application {logical} is installed"
+            )));
+        }
+
+        let chosen = match nonempty(preferred_variant) {
+            None => variants[0].clone(),
+            Some(preferred) => {
+                let preferred: AppId =
+                    preferred.parse().map_err(|error: lege_types::AppIdError| {
+                        fdo::Error::InvalidArgs(error.to_string())
+                    })?;
+                let preferred = self.registry.resolve_variant(&preferred);
+                if !variants.contains(&preferred) {
+                    return Err(fdo::Error::InvalidArgs(format!(
+                        "{preferred} is not a copy of {logical}"
+                    )));
+                }
+                preferred
+            }
+        };
+
+        let manifest = self
+            .registry
+            .manifest(&chosen)
+            .ok_or_else(|| fdo::Error::FileNotFound(format!("no manifest for {chosen}")))?;
+        let record = launcher::launch(
+            Arc::clone(&self.registry),
+            manifest,
+            &arguments,
+            nonempty(activation_token).as_deref(),
+            self.backend,
+            Some(&self.connection),
+        )
+        .await
+        .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        Ok(record.id.to_string())
+    }
 }
 
 fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Registry;
+    use lege_types::{AppAliases, AppManifest, AppOriginKind, AppProvenance, ResourceClass};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        path::PathBuf,
+    };
+
+    /// A registry holding the two Firefoxes a real machine can end up with: Debian's package and
+    /// Flathub's build. They agree on neither id, desktop entry, nor executable.
+    fn two_firefoxes() -> Arc<Registry> {
+        let registry = Arc::new(Registry::default());
+        registry.insert_manifest(AppManifest {
+            id: "desktop-import.firefox.desktop".parse().unwrap(),
+            display_name: "Firefox".into(),
+            primary_desktop_file_id: "firefox.desktop".into(),
+            executable: PathBuf::from("/usr/bin/firefox"),
+            aliases: AppAliases {
+                startup_wm_classes: ["firefox".to_owned()].into(),
+                ..AppAliases::default()
+            },
+            mime_types: BTreeSet::default(),
+            resource_class: ResourceClass::Interactive,
+            supports_checkpoint: false,
+            icon: Some("firefox".into()),
+            categories: BTreeSet::default(),
+            keywords: BTreeSet::default(),
+            no_display: false,
+            provenance: Some(AppProvenance::from_origin(AppOriginKind::DistroPackage)),
+        });
+        registry.insert_manifest(AppManifest {
+            id: "flatpak.org.mozilla.firefox".parse().unwrap(),
+            display_name: "Firefox".into(),
+            primary_desktop_file_id: "org.mozilla.firefox.desktop".into(),
+            executable: PathBuf::from("/var/lib/flatpak/exports/bin/org.mozilla.firefox"),
+            aliases: AppAliases {
+                startup_wm_classes: ["Firefox".to_owned()].into(),
+                flatpak_ids: ["org.mozilla.firefox".to_owned()].into(),
+                ..AppAliases::default()
+            },
+            mime_types: BTreeSet::default(),
+            resource_class: ResourceClass::Interactive,
+            supports_checkpoint: false,
+            icon: Some("org.mozilla.firefox".into()),
+            categories: BTreeSet::default(),
+            keywords: BTreeSet::default(),
+            no_display: false,
+            provenance: Some(AppProvenance::from_origin(AppOriginKind::Flatpak)),
+        });
+        registry.regroup(&BTreeMap::new());
+        registry
+    }
+
+    #[tokio::test]
+    async fn a_person_with_two_firefoxes_installed_is_offered_one() {
+        let registry = two_firefoxes();
+        let api = IdentityApi::new(Arc::clone(&registry));
+
+        assert_eq!(
+            api.list_applications().await.len(),
+            2,
+            "both copies are installed and both must remain addressable"
+        );
+
+        let logical = api.list_logical_apps().await;
+        assert_eq!(logical.len(), 1, "a person sees one Firefox: {logical:?}");
+        let (id, name, icon, count, default) = logical[0].clone();
+        assert_eq!(name, "Firefox");
+        assert_eq!(icon, "firefox", "the icon is the one that would launch");
+        assert_eq!(count, 2);
+        assert_eq!(
+            default, "desktop-import.firefox.desktop",
+            "the packaged copy is the default"
+        );
+
+        let variants = api.list_variants(&id).await.unwrap();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].0, default, "the default is offered first");
+        let provenance: AppProvenance = serde_json::from_str(&variants[1].2).unwrap();
+        assert_eq!(provenance.origin, AppOriginKind::Flatpak);
+
+        assert_eq!(
+            api.logical_app_of("flatpak.org.mozilla.firefox")
+                .await
+                .unwrap(),
+            id
+        );
+        assert!(
+            api.logical_app_of("org.example.NotInstalled")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn asking_for_a_variant_of_something_else_is_refused_not_launched() {
+        let registry = two_firefoxes();
+        registry.insert_manifest(AppManifest {
+            id: "org.example.Other".parse().unwrap(),
+            display_name: "Other".into(),
+            primary_desktop_file_id: "org.example.Other.desktop".into(),
+            executable: PathBuf::from("/usr/bin/other"),
+            aliases: AppAliases::default(),
+            mime_types: BTreeSet::default(),
+            resource_class: ResourceClass::Normal,
+            supports_checkpoint: false,
+            icon: None,
+            categories: BTreeSet::default(),
+            keywords: BTreeSet::default(),
+            no_display: false,
+            provenance: Some(AppProvenance::from_origin(AppOriginKind::DistroPackage)),
+        });
+        registry.regroup(&BTreeMap::new());
+
+        let index = registry.logical_index();
+        let firefox = registry
+            .logical_of(&"desktop-import.firefox.desktop".parse().unwrap())
+            .unwrap();
+        assert!(
+            !index
+                .variants_of(&firefox)
+                .contains(&"org.example.Other".parse().unwrap()),
+            "an unrelated application is not a copy of Firefox, and LaunchLogical refuses it"
+        );
+    }
 }

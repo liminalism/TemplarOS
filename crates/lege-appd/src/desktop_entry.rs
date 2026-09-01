@@ -10,7 +10,10 @@
 //! (`%f %F %u %U %i %c %k`, plus the deprecated `%d %D %n %N %v %m`, which are dropped) — and
 //! expanded into an argument vector at launch time, never handed to a shell.
 
-use lege_types::{AppAliases, AppId, AppManifest, ResourceClass};
+use lege_types::{
+    AppAliases, AppId, AppManifest, AppOriginKind, AppProvenance, AppVariantId, LaunchMechanism,
+    ResourceClass,
+};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -411,6 +414,110 @@ pub fn derive_app_id(desktop_id: &str) -> AppId {
         .unwrap_or_else(|_| AppId::from_str("desktop-import.unknown").expect("static id is valid"))
 }
 
+/// Which family of directories a `.desktop` file was found in.
+///
+/// This is the key an import scan groups candidates by, and it is the fix for a live bug: keyed on
+/// the desktop id alone, a Flatpak export of `firefox.desktop` and the distribution's own
+/// `firefox.desktop` collapse into one candidate, and whichever directory is scanned last silently
+/// erases the other application from the registry. Within the XDG chain that shadowing is
+/// *correct* — a person's own `~/.local/share/applications/firefox.desktop` is meant to replace the
+/// system one — so the chain stays one namespace and Flatpak becomes another.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OriginNamespace {
+    /// `/usr/share/applications`, `$XDG_DATA_HOME/applications`, and anything else in the XDG
+    /// precedence chain. Later directories shadow earlier ones for the same desktop id.
+    #[default]
+    Xdg,
+    /// A Flatpak export directory. Its entries never shadow, and are never shadowed by, the XDG
+    /// chain.
+    Flatpak,
+}
+
+/// Where a `.desktop` file was found, and therefore what may be concluded about it.
+///
+/// Passed to [`derive_manifest`] so provenance is recorded at the one moment it is actually known:
+/// the scan that read the file. Re-deriving it later from the manifest would be a guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceContext {
+    /// The namespace an import scan keys this candidate under.
+    pub namespace: OriginNamespace,
+    /// What kind of place the containing directory is. Determines the trust tier.
+    pub origin: AppOriginKind,
+    /// The `.desktop` file itself.
+    pub path: PathBuf,
+}
+
+impl SourceContext {
+    /// A source in the XDG chain with an unknown origin — the conservative reading, used where a
+    /// caller supplied a directory the system knows nothing about (a `--application-dir` override,
+    /// a test fixture).
+    pub fn unknown(path: PathBuf) -> Self {
+        Self {
+            namespace: OriginNamespace::Xdg,
+            origin: AppOriginKind::Unknown,
+            path,
+        }
+    }
+
+    /// Classify one application directory. Path-shaped rather than clever: the three cases that
+    /// exist on a real install are a Flatpak export tree, a system application directory, and the
+    /// person's own. Anything else is unknown, and unknown is untrusted.
+    pub fn classify_directory(directory: &Path) -> (OriginNamespace, AppOriginKind) {
+        let text = directory.to_string_lossy();
+        if text.contains("/flatpak/exports/share/applications") {
+            (OriginNamespace::Flatpak, AppOriginKind::Flatpak)
+        } else if text.starts_with("/usr/share/applications")
+            || text.starts_with("/usr/local/share/applications")
+            || text.starts_with("/var/lib/snapd/desktop/applications")
+            || text.starts_with("/etc/xdg")
+        {
+            (OriginNamespace::Xdg, AppOriginKind::DistroPackage)
+        } else if is_below_home_data(&text) {
+            (OriginNamespace::Xdg, AppOriginKind::UserDesktopEntry)
+        } else {
+            (OriginNamespace::Xdg, AppOriginKind::Unknown)
+        }
+    }
+
+    /// The source context for `path`, a `.desktop` file directly inside `directory`.
+    pub fn for_file(directory: &Path, path: PathBuf) -> Self {
+        let (namespace, origin) = Self::classify_directory(directory);
+        Self {
+            namespace,
+            origin,
+            path,
+        }
+    }
+}
+
+fn is_below_home_data(text: &str) -> bool {
+    text.starts_with("/home/") || text.starts_with("/root/")
+}
+
+/// The variant id for one `.desktop` file: which *copy* of an application this is.
+///
+/// A Flatpak export is keyed on its application id (`flatpak.org.mozilla.firefox`) rather than on
+/// the desktop file it happens to export, so the distribution package and the Flatpak of the same
+/// program hold two different ids and can both exist. Every other entry keeps the id it has always
+/// had — stored ids elsewhere are never rewritten, only resolved through an alias.
+pub fn derive_variant_id(desktop_id: &str, flatpak_id: Option<&str>) -> AppVariantId {
+    let Some(flatpak_id) = flatpak_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return derive_app_id(desktop_id);
+    };
+    let sanitized: String = flatpak_id
+        .chars()
+        .take(230)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    AppId::from_str(&format!("flatpak.{sanitized}")).unwrap_or_else(|_| derive_app_id(desktop_id))
+}
+
 /// The result of deriving a manifest from a `.desktop` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DerivedManifest {
@@ -429,9 +536,14 @@ pub struct DerivedManifest {
 /// `NoDisplay` is *recorded* rather than acted on here ([`AppManifest::no_display`]): the entry
 /// must still import, because a MIME association may resolve to it and the launcher must still
 /// be able to start it — it is only the offered-in-a-list step that honours the flag.
+///
+/// `source` says where the file was found. It is taken here rather than reconstructed later
+/// because this call is the one moment the origin is actually known; anything derived afterwards
+/// from the manifest alone would be a guess, and provenance that guesses is worse than none.
 pub fn derive_manifest(
     entry: &DesktopEntry,
     desktop_id: &str,
+    source: &SourceContext,
     resolver: &dyn ExecResolver,
 ) -> Option<DerivedManifest> {
     if entry.entry_type != "Application" || entry.hidden {
@@ -452,7 +564,8 @@ pub fn derive_manifest(
         None => resolver.resolve_program(program)?,
     };
 
-    let app_id = derive_app_id(desktop_id);
+    let executable_for_provenance = executable.clone();
+    let app_id = derive_variant_id(desktop_id, entry.x_flatpak.as_deref());
     let mut aliases = AppAliases {
         desktop_file_ids: [desktop_id.to_owned()].into(),
         ..AppAliases::default()
@@ -492,11 +605,75 @@ pub fn derive_manifest(
         categories: entry.categories.iter().cloned().collect(),
         keywords: entry.keywords.iter().cloned().collect(),
         no_display: entry.no_display,
+        provenance: Some(provenance_of(
+            entry,
+            desktop_id,
+            source,
+            &executable_for_provenance,
+        )),
     };
     Some(DerivedManifest {
         manifest,
         exec_template: template,
     })
+}
+
+/// What is known about where this copy came from, at the moment the file was read.
+///
+/// `X-Flatpak` overrides the directory's own classification: a Flatpak export found anywhere is a
+/// Flatpak. `declared_privileges` and `provider_claims` are copied verbatim from the entry's
+/// `X-LegeOS-*` keys and are inert here — a claim recorded is a claim to *show*, and the code that
+/// grants anything reads the grant tables, never this.
+fn provenance_of(
+    entry: &DesktopEntry,
+    desktop_id: &str,
+    source: &SourceContext,
+    executable: &Path,
+) -> AppProvenance {
+    let flatpak_id = entry
+        .x_flatpak
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let origin = if flatpak_id.is_some() {
+        AppOriginKind::Flatpak
+    } else {
+        source.origin
+    };
+    AppProvenance {
+        source_path: Some(source.path.clone()),
+        package_ref: flatpak_id.map(str::to_owned),
+        // A desktop entry's `Version=` is the *spec* version, not the application's, so there is
+        // nothing honest to put here from a `.desktop` file alone.
+        version: None,
+        desktop_entry_id: Some(desktop_id.to_owned()),
+        launch: if flatpak_id.is_some() {
+            LaunchMechanism::FlatpakExport
+        } else {
+            LaunchMechanism::Direct
+        },
+        executable: Some(executable.to_path_buf()),
+        sandboxed: flatpak_id.is_some(),
+        declared_privileges: comma_list(entry.extra.get("X-LegeOS-Background")),
+        provider_claims: comma_list(entry.extra.get("X-LegeOS-Provides")),
+        logical: entry
+            .extra
+            .get("X-LegeOS-LogicalApp")
+            .and_then(|value| value.trim().parse().ok()),
+        ..AppProvenance::from_origin(origin)
+    }
+}
+
+fn comma_list(value: Option<&String>) -> std::collections::BTreeSet<String> {
+    value
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -516,6 +693,14 @@ mod tests {
         fn resolve_flatpak(&self, flatpak_id: &str) -> Option<PathBuf> {
             self.flatpaks.get(flatpak_id).map(PathBuf::from)
         }
+    }
+
+    /// A system application directory: what most of these fixtures are pretending to be.
+    fn system_source(desktop_id: &str) -> SourceContext {
+        SourceContext::for_file(
+            Path::new("/usr/share/applications"),
+            PathBuf::from(format!("/usr/share/applications/{desktop_id}")),
+        )
     }
 
     const VIEWER: &str = "\
@@ -618,11 +803,25 @@ Icon=lege-viewer
         };
         let mut hidden = parse(VIEWER).unwrap();
         hidden.hidden = true;
-        assert!(derive_manifest(&hidden, "org.legeos.Viewer.desktop", &resolver).is_none());
+        assert!(
+            derive_manifest(
+                &hidden,
+                "org.legeos.Viewer.desktop",
+                &system_source("org.legeos.Viewer.desktop"),
+                &resolver
+            )
+            .is_none()
+        );
 
         let mut no_display = parse(VIEWER).unwrap();
         no_display.no_display = true;
-        let derived = derive_manifest(&no_display, "org.legeos.Viewer.desktop", &resolver).unwrap();
+        let derived = derive_manifest(
+            &no_display,
+            "org.legeos.Viewer.desktop",
+            &system_source("org.legeos.Viewer.desktop"),
+            &resolver,
+        )
+        .unwrap();
         assert!(
             derived.manifest.no_display,
             "the entry imports, but the manifest must remember it is not to be offered"
@@ -639,9 +838,14 @@ Icon=lege-viewer
         assert_eq!(entry.categories, vec!["Graphics", "Viewer"]);
         assert_eq!(entry.keywords, vec!["pdf", "document", "reader"]);
 
-        let manifest = derive_manifest(&entry, "org.legeos.Viewer.desktop", &resolver)
-            .unwrap()
-            .manifest;
+        let manifest = derive_manifest(
+            &entry,
+            "org.legeos.Viewer.desktop",
+            &system_source("org.legeos.Viewer.desktop"),
+            &resolver,
+        )
+        .unwrap()
+        .manifest;
         assert_eq!(manifest.icon.as_deref(), Some("lege-viewer"));
         assert!(manifest.categories.contains("Graphics"));
         assert!(manifest.keywords.contains("reader"));
@@ -664,7 +868,15 @@ Icon=lege-viewer
             flatpaks: HashMap::new(),
         };
         let entry = parse(VIEWER).unwrap();
-        assert!(derive_manifest(&entry, "org.legeos.Viewer.desktop", &resolver).is_none());
+        assert!(
+            derive_manifest(
+                &entry,
+                "org.legeos.Viewer.desktop",
+                &system_source("org.legeos.Viewer.desktop"),
+                &resolver
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -674,7 +886,13 @@ Icon=lege-viewer
             flatpaks: HashMap::new(),
         };
         let entry = parse(VIEWER).unwrap();
-        let derived = derive_manifest(&entry, "org.legeos.Viewer.desktop", &resolver).unwrap();
+        let derived = derive_manifest(
+            &entry,
+            "org.legeos.Viewer.desktop",
+            &system_source("org.legeos.Viewer.desktop"),
+            &resolver,
+        )
+        .unwrap();
         assert_eq!(
             derived.manifest.executable,
             PathBuf::from("/usr/bin/lege-viewer")
@@ -707,7 +925,13 @@ Icon=lege-viewer
         };
         let text = "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/flatpak run org.mozilla.firefox %u\nX-Flatpak=org.mozilla.firefox\n";
         let entry = parse(text).unwrap();
-        let derived = derive_manifest(&entry, "org.mozilla.firefox.desktop", &resolver).unwrap();
+        let derived = derive_manifest(
+            &entry,
+            "org.mozilla.firefox.desktop",
+            &system_source("org.mozilla.firefox.desktop"),
+            &resolver,
+        )
+        .unwrap();
         assert_eq!(
             derived.manifest.executable,
             PathBuf::from("/var/lib/flatpak/exports/bin/org.mozilla.firefox")
@@ -729,7 +953,13 @@ Icon=lege-viewer
         };
         let text = "[Desktop Entry]\nType=Application\nName=Prog\nExec=prog\n";
         let entry = parse(text).unwrap();
-        let derived = derive_manifest(&entry, "prog.desktop", &resolver).unwrap();
+        let derived = derive_manifest(
+            &entry,
+            "prog.desktop",
+            &system_source("prog.desktop"),
+            &resolver,
+        )
+        .unwrap();
         assert!(derived.manifest.aliases.startup_wm_classes.contains("prog"));
         assert!(derived.manifest.aliases.wayland_app_ids.contains("prog"));
     }
@@ -745,6 +975,171 @@ Icon=lege-viewer
         assert_eq!(
             entry.extra.get("X-LegeOS-Provides").map(String::as_str),
             Some("notification-server")
+        );
+    }
+
+    #[test]
+    fn a_flatpak_export_is_keyed_on_its_application_id_not_on_the_desktop_file() {
+        // The whole point of D3: `firefox.desktop` from Flathub and `firefox.desktop` from the
+        // distribution must not derive the same id, or one of them ceases to exist.
+        assert_eq!(
+            derive_variant_id("firefox.desktop", Some("org.mozilla.firefox")).as_str(),
+            "flatpak.org.mozilla.firefox"
+        );
+        assert_eq!(
+            derive_variant_id("firefox.desktop", None).as_str(),
+            "desktop-import.firefox.desktop"
+        );
+        // An empty X-Flatpak= is not a Flatpak id; it is a malformed line.
+        assert_eq!(
+            derive_variant_id("firefox.desktop", Some("  ")).as_str(),
+            "desktop-import.firefox.desktop"
+        );
+    }
+
+    #[test]
+    fn directories_classify_into_origins_and_namespaces() {
+        use lege_types::AppOriginKind;
+        assert_eq!(
+            SourceContext::classify_directory(Path::new("/usr/share/applications")),
+            (OriginNamespace::Xdg, AppOriginKind::DistroPackage)
+        );
+        assert_eq!(
+            SourceContext::classify_directory(Path::new(
+                "/var/lib/flatpak/exports/share/applications"
+            )),
+            (OriginNamespace::Flatpak, AppOriginKind::Flatpak)
+        );
+        assert_eq!(
+            SourceContext::classify_directory(Path::new("/home/person/.local/share/applications")),
+            (OriginNamespace::Xdg, AppOriginKind::UserDesktopEntry)
+        );
+        assert_eq!(
+            SourceContext::classify_directory(Path::new("/etc/xdg/autostart")),
+            (OriginNamespace::Xdg, AppOriginKind::DistroPackage)
+        );
+        // Somewhere the system knows nothing about: unknown, and unknown is untrusted.
+        assert_eq!(
+            SourceContext::classify_directory(Path::new("/tmp/whatever")),
+            (OriginNamespace::Xdg, AppOriginKind::Unknown)
+        );
+    }
+
+    #[test]
+    fn provenance_records_the_origin_and_derives_trust_from_it() {
+        use lege_types::{AppOriginKind, LaunchMechanism, TrustTier, UpdateOwner};
+        let resolver = StaticResolver {
+            programs: HashMap::from([("lege-viewer", "/usr/bin/lege-viewer")]),
+            flatpaks: HashMap::new(),
+        };
+        let entry = parse(VIEWER).unwrap();
+
+        let packaged = derive_manifest(
+            &entry,
+            "org.legeos.Viewer.desktop",
+            &system_source("org.legeos.Viewer.desktop"),
+            &resolver,
+        )
+        .unwrap()
+        .manifest;
+        let provenance = packaged.provenance.clone().unwrap();
+        assert_eq!(provenance.origin, AppOriginKind::DistroPackage);
+        assert_eq!(provenance.launch, LaunchMechanism::Direct);
+        assert_eq!(provenance.update_owner, UpdateOwner::Distro);
+        assert_eq!(
+            provenance.desktop_entry_id.as_deref(),
+            Some("org.legeos.Viewer.desktop")
+        );
+        assert!(!provenance.sandboxed);
+        assert_eq!(packaged.trust(), TrustTier::System);
+
+        let mine = derive_manifest(
+            &entry,
+            "org.legeos.Viewer.desktop",
+            &SourceContext::for_file(
+                Path::new("/home/person/.local/share/applications"),
+                PathBuf::from("/home/person/.local/share/applications/org.legeos.Viewer.desktop"),
+            ),
+            &resolver,
+        )
+        .unwrap()
+        .manifest;
+        assert_eq!(
+            mine.provenance.as_ref().unwrap().origin,
+            AppOriginKind::UserDesktopEntry
+        );
+        assert_eq!(
+            mine.trust(),
+            TrustTier::User,
+            "a file the account can rewrite must not read as the system's"
+        );
+    }
+
+    #[test]
+    fn a_flatpak_export_reads_as_a_flatpak_wherever_the_file_sits() {
+        use lege_types::{AppOriginKind, LaunchMechanism, TrustTier, UpdateOwner};
+        let resolver = StaticResolver {
+            programs: HashMap::new(),
+            flatpaks: HashMap::from([(
+                "org.mozilla.firefox",
+                "/var/lib/flatpak/exports/bin/org.mozilla.firefox",
+            )]),
+        };
+        let text = "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/flatpak run org.mozilla.firefox %u\nX-Flatpak=org.mozilla.firefox\n";
+        let entry = parse(text).unwrap();
+        let manifest = derive_manifest(
+            &entry,
+            "firefox.desktop",
+            // Deliberately classified as a plain system directory: X-Flatpak= overrides it.
+            &system_source("firefox.desktop"),
+            &resolver,
+        )
+        .unwrap()
+        .manifest;
+        assert_eq!(manifest.id.as_str(), "flatpak.org.mozilla.firefox");
+        let provenance = manifest.provenance.clone().unwrap();
+        assert_eq!(provenance.origin, AppOriginKind::Flatpak);
+        assert_eq!(provenance.launch, LaunchMechanism::FlatpakExport);
+        assert_eq!(provenance.update_owner, UpdateOwner::Flatpak);
+        assert_eq!(
+            provenance.package_ref.as_deref(),
+            Some("org.mozilla.firefox")
+        );
+        assert!(provenance.sandboxed);
+        assert_eq!(manifest.trust(), TrustTier::System);
+    }
+
+    #[test]
+    fn declared_privileges_and_provider_claims_are_recorded_as_claims() {
+        let resolver = StaticResolver {
+            programs: HashMap::from([("sync-agent", "/usr/bin/sync-agent")]),
+            flatpaks: HashMap::new(),
+        };
+        let text = "[Desktop Entry]\nType=Application\nName=Sync\nExec=sync-agent\nX-LegeOS-Background=continuous-background,network-while-hidden\nX-LegeOS-Provides=notification-server\nX-LegeOS-LogicalApp=logical.sync\n";
+        let entry = parse(text).unwrap();
+        let manifest = derive_manifest(
+            &entry,
+            "sync.desktop",
+            &system_source("sync.desktop"),
+            &resolver,
+        )
+        .unwrap()
+        .manifest;
+        let provenance = manifest.provenance.clone().unwrap();
+        assert!(
+            provenance
+                .declared_privileges
+                .contains("continuous-background")
+        );
+        assert!(
+            provenance
+                .declared_privileges
+                .contains("network-while-hidden")
+        );
+        assert!(provenance.provider_claims.contains("notification-server"));
+        assert_eq!(
+            manifest.declared_logical_app().map(ToString::to_string),
+            Some("logical.sync".to_owned()),
         );
     }
 }

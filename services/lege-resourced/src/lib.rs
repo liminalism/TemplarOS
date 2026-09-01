@@ -22,6 +22,7 @@ pub mod nonmemory;
 pub mod policy;
 pub mod protect;
 pub mod psi;
+pub mod replay;
 pub mod scan;
 pub mod state;
 pub mod trace;

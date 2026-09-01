@@ -28,6 +28,8 @@ Repository-specific gates (all run by `just check`; each is also a standalone re
 cargo run -q -p xtask -- tree-check         # directory layout matches ARCHITECTURE.md
 cargo run -q -p xtask -- deps-check         # e.g. lege-window/lege-field stay free of tokio/zbus
 cargo run -q -p xtask -- check-interfaces   # code matches interfaces/ (the contract source of truth)
+cargo run -q -p xtask -- check-interface-signatures  # no shipped D-Bus signature changed
+cargo run -q -p xtask -- interface-baseline # re-freeze interfaces/baseline.json after an addition
 cargo run -q -p xtask -- check-proxies      # lege-client proxies match the D-Bus XML
 cargo run -q -p xtask -- check-packaging    # debian/ + distro/ package facts
 cargo run -q -p xtask -- check-assets
@@ -57,8 +59,9 @@ scripts/reinstall-legeos-desktop.sh         # build + reinstall + reload the des
 
 ## Toolchain
 
-Development is on Rust **1.97.1** (`rust-toolchain.toml`); the archive build must work on
-Ubuntu 26.04's **1.93**, which is the MSRV enforced by `just msrv` and CI (ADR-0008).
+Development is on Rust **1.97.1** (`rust-toolchain.toml`); the workspace MSRV is **1.97**
+(`rust-version` in `Cargo.toml`), enforced by `just msrv` and CI (ADR-0008 raised it from
+Ubuntu 26.04's 1.93 because the resolved dependency graph requires 1.97).
 Edition 2024. Clippy runs `pedantic` workspace-wide with `-D warnings`.
 `#![forbid(unsafe_code)]` unless the crate documents why not.
 
@@ -101,7 +104,7 @@ a Debian package.
   must become pinned git deps before packaging.
 - **Preview codecs are a separate toolchain.** `helpers/lege-preview-codecs` builds under
   Rust 1.97 via `scripts/build-preview-codecs.sh` (`just preview-codecs`, a prerequisite of
-  `just deb`) to keep its dependency graph out of the 1.93 service. Its lockfile drifts when
+  `just deb`) to keep its heavier dependency graph out of the service build. Its lockfile drifts when
   sibling repos change deps; refresh with `cargo +1.97.1 update --workspace --offline`.
 - **Forks are never vendored.** Add to `distro/forks/manifest.toml`, keep `upstream` and
   `legeos` branches (`just forks-fetch`).

@@ -25,8 +25,8 @@ Ctrl+C/X/V (copy/cut/paste), Ctrl+Shift+C (copy path), Alt+Enter (properties), F
 Still-image and document previews use the user's own Rust code: `bpg-rs` handles BPG and
 HEIC/HEIF, image-rs handles ordinary rasters, JPXL handles JPEG XL, and the Lege CPU renderer
 paints the first PDF page. JPXL and the Lege renderer are compiled into the packaged
-`lege-preview-codecs` companion because they require Rust 1.97 while the main OS workspace keeps
-its Rust 1.93 archive baseline. `LEGEOS_PREVIEW_CODECS` can select a development build. Video is
+`lege-preview-codecs` companion, which keeps their heavy dependency graph and lockfile out of the
+main OS workspace. `LEGEOS_PREVIEW_CODECS` can select a development build. Video is
 the deliberate ffmpeg route: ffprobe supplies the duration and ffmpeg seeks to 3% before taking
 one bounded frame. No still image or PDF is routed through ffmpeg. `lege-files` depends on
 `wl-clipboard` so Copy path has a real compositor clipboard provider rather than an

@@ -183,6 +183,13 @@ pub struct AppManifest {
     /// launcher listing that ignores it drowns in entries no person ever means to click.
     #[serde(default)]
     pub no_display: bool,
+
+    /// Where this copy came from (see [`crate::variant`]). Every installed `AppId` names one
+    /// *variant* — one copy, from one origin — and this is what is known about that origin.
+    /// `None` on a manifest written before provenance existed, or hand-authored without it; that
+    /// reads as an unknown origin, and an unknown origin is untrusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::variant::AppProvenance>,
 }
 
 /// What a client *claims* about itself. Claims are checked, never trusted.
@@ -194,6 +201,21 @@ pub struct WindowClaims {
 }
 
 impl AppManifest {
+    /// How far this copy may be trusted. A manifest with no provenance has an unknown origin, and
+    /// an unknown origin is untrusted — the same answer a hostile file would get, which is the
+    /// point.
+    pub fn trust(&self) -> crate::variant::TrustTier {
+        self.provenance.as_ref().map_or(
+            crate::variant::TrustTier::User,
+            crate::variant::AppProvenance::effective_trust,
+        )
+    }
+
+    /// The logical application this copy *declares* it belongs to, if it declares one.
+    pub fn declared_logical_app(&self) -> Option<&crate::variant::LogicalAppId> {
+        self.provenance.as_ref()?.logical.as_ref()
+    }
+
     /// Checks whether at least one supplied compatibility claim belongs to this canonical
     /// application. This does not prove identity — the registered launch cgroup does.
     pub fn accepts_window_claims(&self, claims: &WindowClaims) -> bool {
@@ -239,6 +261,25 @@ pub trait AppCatalog: Send + Sync {
 
     /// Every installed manifest (order unspecified).
     fn manifests(&self) -> Vec<std::sync::Arc<AppManifest>>;
+
+    /// The id `stored` names today. A stored id whose variant was renamed — a Flatpak export
+    /// moving to `flatpak.<app id>` — resolves here rather than being rewritten in place, which is
+    /// what keeps the rename reversible. A catalog with no notion of variants returns `stored`.
+    fn resolve_alias(&self, stored: &AppId) -> AppId {
+        stored.clone()
+    }
+
+    /// The logical application `id` is a copy of, if the catalog groups variants at all.
+    fn logical_app_of(&self, _id: &AppId) -> Option<crate::variant::LogicalAppId> {
+        None
+    }
+
+    /// Other installed copies of the same application as `id`, best first, excluding `id` itself.
+    /// Consulted only when the stored copy is gone: a person who chose one copy gets that copy for
+    /// as long as it exists.
+    fn sibling_variants(&self, _id: &AppId) -> Vec<AppId> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -278,6 +319,7 @@ mod tests {
             categories: ["Graphics".to_owned(), "Viewer".to_owned()].into(),
             keywords: ["pdf".to_owned()].into(),
             no_display: false,
+            provenance: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -304,6 +346,12 @@ mod tests {
         assert!(manifest.categories.is_empty());
         assert!(manifest.keywords.is_empty());
         assert!(!manifest.no_display, "absent NoDisplay means displayable");
+        assert!(manifest.provenance.is_none());
+        assert_eq!(
+            manifest.trust(),
+            crate::variant::TrustTier::User,
+            "a manifest that says nothing about where it came from is not the system's"
+        );
     }
 
     #[test]
@@ -324,6 +372,7 @@ mod tests {
             categories: BTreeSet::new(),
             keywords: BTreeSet::new(),
             no_display: false,
+            provenance: None,
         };
 
         let claims = WindowClaims {

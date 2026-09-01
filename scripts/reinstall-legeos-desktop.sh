@@ -149,21 +149,13 @@ if ((skip_nm_tray2 == 0 && dry_run == 0)); then
         die "nm-tray2 is not configured in $nm_tray2_build; rerun without --skip-build"
 fi
 
-expected_packages=(
-    legeos-sessiond
-    legeos-resourced
-    legeos-filed
-    legeos-hostd
-    legeos-boot-health
-    legeos-session
-    legeos-comp
-    legeos-greeter
-    legeos-shell
-    legeos-settings
-    lege-files
-    legeos-portal
-    legeos-cli
-)
+# The package list is not written down here. distro/deploy/components.toml is the one place it
+# lives; cargo xtask, lege doctor and lege dev all read the same file, so a package added to the
+# build set cannot be silently left out of a reinstall.
+components_toml="$repo_root/distro/deploy/components.toml"
+[[ -f "$components_toml" ]] || die "component matrix not found at $components_toml"
+mapfile -t expected_packages < <(sed -n 's/^package = "\(.*\)"$/\1/p' "$components_toml")
+((${#expected_packages[@]} > 0)) || die "no packages listed in $components_toml"
 
 deb_dir="$repo_root/target/debian"
 debs=()

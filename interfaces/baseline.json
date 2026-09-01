@@ -1,0 +1,377 @@
+{
+  "version": 1,
+  "interfaces": {
+    "org.legeos.AppIdentity1": {
+      "methods": {
+        "ListApplications": "()->(a(ssssasasb))",
+        "ListApps": "()->(as)",
+        "ListInstances": "()->(a(ssss))",
+        "ListInstancesDetailed": "()->(a(sssss))",
+        "ListLogicalApps": "()->(a(sssus))",
+        "ListVariants": "(s)->(a(sss))",
+        "LogicalAppOf": "(s)->(s)",
+        "ResolveWindow": "(usss)->(ssyb)"
+      },
+      "signals": {
+        "ApplicationsChanged": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.Associations1": {
+      "methods": {
+        "Explain": "(ss)->(s)",
+        "Forget": "(sss)->(b)",
+        "ListMimeDefaults": "()->(a(ss))",
+        "ResolveFile": "(ss)->(sss)",
+        "ResolveUri": "(ss)->(sss)",
+        "SetExtensionDefault": "(ssb)->()",
+        "SetMimeDefault": "(ss)->()",
+        "SetProjectDefault": "(sss)->()"
+      },
+      "signals": {
+        "DefaultsChanged": "(ss)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Audio1": {
+      "methods": {
+        "AdjustVolume": "(i)->(u)",
+        "Get": "()->(s)",
+        "SetMuted": "(b)->()",
+        "SetVolume": "(u)->()",
+        "ToggleMuted": "()->(b)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.Background1": {
+      "methods": {
+        "Grant": "(s)->()",
+        "List": "()->(a(sssbs))",
+        "Revoke": "(s)->()"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Backlight1": {
+      "methods": {
+        "AdjustBrightness": "(i)->(u)",
+        "Get": "()->(s)",
+        "SetBrightness": "(u)->()"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.Battery1": {
+      "methods": {
+        "Get": "()->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Checkpoint1": {
+      "methods": {
+        "Request": "(s)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Actions1": {
+      "methods": {
+        "Forms": "()->(as)",
+        "Render": "(ss)->(s)",
+        "TerminalDirectory": "(s)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Browse1": {
+      "methods": {
+        "CreateDirectory": "(ss)->(s)",
+        "Inspect": "(s)->(s)",
+        "ListDirectory": "(sbu)->(s)",
+        "Roots": "()->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Operations1": {
+      "methods": {
+        "CanUndo": "(s)->(bs)",
+        "Cancel": "(s)->()",
+        "Get": "(s)->(s)",
+        "Recent": "(u)->(s)",
+        "Start": "(sss)->(s)",
+        "Undo": "(s)->(s)"
+      },
+      "signals": {
+        "Finished": "(sss)",
+        "Progress": "(sstttt)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Files.Previews1": {
+      "methods": {
+        "Render": "(su)->(say)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Recents1": {
+      "methods": {
+        "ClearProject": "(s)->()",
+        "Forget": "(s)->()",
+        "List": "(su)->(s)",
+        "PruneMissing": "()->(u)",
+        "Record": "(ssss)->()",
+        "RecordDirectory": "(sss)->()",
+        "SetProject": "(ss)->()",
+        "SuggestDirectory": "(ss)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Search1": {
+      "methods": {
+        "ForgetRoot": "(s)->()",
+        "IndexRoot": "(s)->(u)",
+        "Roots": "()->(as)",
+        "SaveQuery": "(ssas)->()",
+        "SavedQueries": "()->(s)",
+        "Search": "(sasu)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Files.Trash1": {
+      "methods": {
+        "DeletePermanently": "(ass)->(s)",
+        "Empty": "(s)->(s)",
+        "List": "()->(s)",
+        "Restore": "(ass)->(s)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.Files.Volumes1": {
+      "methods": {
+        "CheckReserve": "(st)->(ss)",
+        "InfoForPath": "(s)->(s)",
+        "List": "()->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.History1": {
+      "methods": {
+        "Append": "(ssssssb)->(s)",
+        "Recent": "(u)->(as)",
+        "Search": "(su)->(as)",
+        "Undo": "(s)->(b)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.HomeField1": {
+      "methods": {
+        "Apply": "(ss)->(t)",
+        "Get": "(sqq)->(s)",
+        "GetRevision": "(s)->(t)",
+        "Reset": "(sqq)->(s)",
+        "Undo": "(s)->(s)"
+      },
+      "signals": {
+        "Changed": "(st)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Host.Deployments1": {
+      "methods": {
+        "Backend": "()->(s)",
+        "List": "()->(s)",
+        "MarkGood": "()->()",
+        "Rollback": "(s)->()",
+        "Stage": "(sy)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Host.Drivers1": {
+      "methods": {
+        "Plan": "()->(s)",
+        "Repair": "()->(s)",
+        "Violations": "()->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Host.Hardware1": {
+      "methods": {
+        "GpuMode": "()->(s)",
+        "GraphicsProfile": "()->(s)",
+        "SetGpuMode": "(s)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Host.Session1": {
+      "methods": {
+        "ReportCompositorActive": "()->()",
+        "ReportSessionHealthy": "()->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Host.Storage1": {
+      "methods": {
+        "Enforce": "(s)->(s)",
+        "TrimOrder": "()->(as)",
+        "Usage": "(s)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Host.Updates1": {
+      "methods": {
+        "Current": "()->(s)",
+        "History": "()->(s)",
+        "Plan": "(s)->(s)",
+        "Transaction": "(s)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Launcher1": {
+      "methods": {
+        "Launch": "(sass)->(s)",
+        "LaunchLogical": "(ssass)->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Location1": {
+      "methods": {
+        "ClearManualOverride": "(s)->()",
+        "Decide": "(ss)->(s)",
+        "ManualOverrides": "()->(a(ss))",
+        "SetManualOverride": "(ss)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Notifications1": {
+      "methods": {
+        "ClearAll": "()->(u)",
+        "Dismiss": "(u)->(b)",
+        "Invoke": "(us)->(b)",
+        "ListActive": "()->(as)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
+    "org.legeos.Power1": {
+      "methods": {
+        "GetProfile": "(s)->(s)",
+        "ResetProfile": "(s)->()",
+        "SetProfile": "(ss)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Projects1": {
+      "methods": {
+        "AddApp": "(ssas)->()",
+        "AddLogicalApp": "(sssas)->()",
+        "Close": "(s)->()",
+        "Create": "(sss)->()",
+        "Describe": "(s)->(s)",
+        "GetCurrent": "()->(s)",
+        "List": "()->(a(sssb))",
+        "ListDetailed": "()->(a(ss))",
+        "Open": "(s)->()",
+        "Remove": "(s)->()",
+        "RemoveApp": "(ss)->()",
+        "SetCurrent": "(s)->()",
+        "SetState": "(ss)->()",
+        "Update": "(ss)->()"
+      },
+      "signals": {
+        "Changed": "(s)",
+        "CurrentChanged": "(s)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Providers1": {
+      "methods": {
+        "Declare": "(ssu)->()",
+        "Report": "()->(a(ss))",
+        "Select": "(ss)->()",
+        "Undeclare": "(s)->()"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Resources1": {
+      "methods": {
+        "ExplainInstance": "(s)->(s)",
+        "ForgetInstance": "(s)->()",
+        "RecentTraces": "(u)->(s)",
+        "Report": "()->(s)",
+        "SetInstanceHints": "(sbbbb)->()",
+        "SetInstanceState": "(sbb)->()",
+        "SetStage": "(s)->()",
+        "Stage": "()->(s)",
+        "Status": "()->(sb)"
+      },
+      "signals": {
+        "NonMemoryStall": "(ss)",
+        "PressureAction": "(ssbss)",
+        "PressureChanged": "(ss)"
+      },
+      "properties": {}
+    },
+    "org.legeos.Session.Lifecycle1": {
+      "methods": {
+        "CanPowerOff": "()->(s)",
+        "CanReboot": "()->(s)",
+        "CanSuspend": "()->(s)",
+        "Lock": "()->()",
+        "Logout": "()->()",
+        "PowerOff": "()->()",
+        "Reboot": "()->()",
+        "Suspend": "()->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.legeos.Settings1": {
+      "methods": {
+        "Changes": "(u)->(as)",
+        "Get": "(s)->(s)",
+        "List": "()->(a(ss))",
+        "Reset": "(ss)->()",
+        "Schema": "()->(a(sssb))",
+        "SchemaDetails": "()->(as)",
+        "Set": "(sss)->()"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    }
+  }
+}

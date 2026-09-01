@@ -1,6 +1,8 @@
 //! Migration `0001-initial` — the founding schema. **Shipped: never edit this string.**
 
-pub const MIGRATIONS: &[(&str, &str)] = &[(
+use super::Migration;
+
+pub const MIGRATIONS: &[Migration] = &[Migration::additive(
     "0001-initial",
     r"
         CREATE TABLE instances (

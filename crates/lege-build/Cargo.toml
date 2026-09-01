@@ -1,0 +1,17 @@
+[package]
+name = "lege-build"
+description = "Build identity: the one BuildSetId string every package shares, and the runtime stamp files that say which build is actually running"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

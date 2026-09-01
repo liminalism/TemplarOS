@@ -4,8 +4,8 @@ This is the bounded JPEG XL and PDF preview companion for `lege-filed`. It links
 decoder and Lege PDF renderer directly and emits a private `LPV1` RGBA wire image; it is not a
 general command-line converter and is not installed on `PATH`.
 
-The nested workspace is intentional. JPXL and the Lege renderer require Rust 1.97, while the main
-LegeOS workspace retains Rust 1.93 for the Ubuntu archive. Build, test, stage, and self-check the
+The nested workspace is intentional: it keeps JPXL's and the Lege renderer's heavy dependency graph
+and its own lockfile out of the main LegeOS workspace. Build, test, stage, and self-check the
 companion with:
 
 ```sh

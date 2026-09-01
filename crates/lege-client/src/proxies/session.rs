@@ -47,6 +47,18 @@ mod app_identity {
         bool,
     );
 
+    /// `(logical_app_id, display_name, icon, variant_count, default_variant)` — the wire shape of
+    /// `AppIdentity1.ListLogicalApps`.
+    pub type LogicalAppRow = (String, String, String, u32, String);
+
+    /// `(variant_app_id, display_name, provenance_json)` — the wire shape of
+    /// `AppIdentity1.ListVariants`. The JSON matches `interfaces/schemas/app-variant.schema.json`.
+    pub type VariantRow = (String, String, String);
+
+    /// `(instance_id, variant_app_id, logical_app_id, systemd_unit, control_group)` — the wire
+    /// shape of `AppIdentity1.ListInstancesDetailed`.
+    pub type InstanceDetailRow = (String, String, String, String, String);
+
     #[proxy(
         interface = "org.legeos.AppIdentity1",
         default_service = "org.legeos.Session",
@@ -66,8 +78,26 @@ mod app_identity {
 
         fn list_apps(&self) -> zbus::Result<Vec<String>>;
 
-        /// One [`ApplicationRow`] per installed manifest.
+        /// One [`ApplicationRow`] per installed manifest. Every id there names one *variant*:
+        /// one installed copy, from one origin.
         fn list_applications(&self) -> zbus::Result<Vec<ApplicationRow>>;
+
+        /// One [`LogicalAppRow`] per application a person would name — one Firefox, however many
+        /// copies of it are installed.
+        fn list_logical_apps(&self) -> zbus::Result<Vec<LogicalAppRow>>;
+
+        /// The copies of one logical application, default first.
+        fn list_variants(&self, logical_app_id: &str) -> zbus::Result<Vec<VariantRow>>;
+
+        /// Which logical application a variant is a copy of; empty if it is not installed.
+        fn logical_app_of(&self, variant_app_id: &str) -> zbus::Result<String>;
+
+        /// One [`InstanceDetailRow`] per live instance.
+        fn list_instances_detailed(&self) -> zbus::Result<Vec<InstanceDetailRow>>;
+
+        /// The installed set changed; re-read the listings.
+        #[zbus(signal)]
+        fn applications_changed(&self) -> zbus::Result<()>;
     }
 }
 
@@ -80,9 +110,20 @@ mod launcher {
         default_path = "/org/legeos/Session/Launcher"
     )]
     pub trait Launcher {
+        /// Launch one variant — one particular installed copy.
         fn launch(
             &self,
             app_id: &str,
+            arguments: Vec<String>,
+            activation_token: &str,
+        ) -> zbus::Result<String>;
+
+        /// Launch a logical application, letting the daemon choose which copy. Pass an empty
+        /// `preferred_variant` to mean "whichever is the default".
+        fn launch_logical(
+            &self,
+            logical_app_id: &str,
+            preferred_variant: &str,
             arguments: Vec<String>,
             activation_token: &str,
         ) -> zbus::Result<String>;
@@ -252,6 +293,43 @@ mod projects {
         fn remove_app(&self, project_id: &str, app_id: &str) -> zbus::Result<()>;
 
         fn remove(&self, project_id: &str) -> zbus::Result<()>;
+
+        /// The whole project as JSON — `interfaces/schemas/project.schema.json`.
+        fn describe(&self, project_id: &str) -> zbus::Result<String>;
+
+        /// `(project_id, project_json)` for every project, in one round-trip.
+        fn list_detailed(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        /// Merge a partial project object. Only the user-editable keys are accepted; an unknown
+        /// key is refused rather than dropped.
+        fn update(&self, project_id: &str, changes_json: &str) -> zbus::Result<()>;
+
+        /// The project the session is working in, or `""`.
+        fn get_current(&self) -> zbus::Result<String>;
+
+        /// Set (or clear, with `""`) the current project.
+        fn set_current(&self, project_id: &str) -> zbus::Result<()>;
+
+        /// `"active"` or `"archived"`. Archived stays searchable and openable.
+        fn set_state(&self, project_id: &str, state: &str) -> zbus::Result<()>;
+
+        /// Remember a logical application rather than one copy of it. Pass an empty
+        /// `preferred_variant` to mean "whichever copy is default when the project opens".
+        fn add_logical_app(
+            &self,
+            project_id: &str,
+            logical_app_id: &str,
+            preferred_variant: &str,
+            arguments: Vec<String>,
+        ) -> zbus::Result<()>;
+
+        /// This project changed; re-read it with `Describe`.
+        #[zbus(signal)]
+        fn changed(&self, project_id: String) -> zbus::Result<()>;
+
+        /// The current project changed (`""` when cleared).
+        #[zbus(signal)]
+        fn current_changed(&self, project_id: String) -> zbus::Result<()>;
     }
 }
 
@@ -450,7 +528,9 @@ mod location {
     }
 }
 
-pub use app_identity::AppIdentityProxy;
+pub use app_identity::{
+    AppIdentityProxy, ApplicationRow, InstanceDetailRow, LogicalAppRow, VariantRow,
+};
 pub use associations::AssociationsProxy;
 pub use audio::AudioProxy;
 pub use background::BackgroundProxy;

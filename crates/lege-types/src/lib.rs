@@ -20,6 +20,7 @@ pub mod identity;
 pub mod provider;
 pub mod unit;
 pub mod uri_list;
+pub mod variant;
 
 pub use action::{ActionCategory, ActionDecl, Chord, Key, Modifiers, Requires};
 pub use app::{
@@ -27,3 +28,7 @@ pub use app::{
 };
 pub use identity::IdentityConfidence;
 pub use provider::{ProviderCapability, ProviderRole};
+pub use variant::{
+    AppOriginKind, AppProvenance, AppVariantId, LaunchMechanism, LogicalAppId, TrustTier,
+    UpdateOwner,
+};

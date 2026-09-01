@@ -340,6 +340,7 @@ fn record_trace(
         return;
     }
     shared.traces.lock().append(&TraceRecord {
+        trace_version: crate::replay::TRACE_VERSION,
         timestamp_ms: trace::now_ms(),
         level: report.level,
         stage: report.stage,
@@ -562,6 +563,12 @@ pub fn default_state_dir() -> PathBuf {
 
 /// Serve `org.legeos.Resources1` and run the sampling loop on its own thread. Blocks forever.
 pub async fn serve(interval: Duration, config_path: &Path, state_dir: &Path) -> Result<()> {
+    // Before `lock_memory`, deliberately: the stamp is one small write to a tmpfs, and doing it
+    // while the address space is still ordinary keeps the locked region to what the loop needs.
+    // `--once` does not stamp — it is a smoke test, not a running governor.
+    if let Err(error) = lege_build::write_stamp("lege-resourced") {
+        tracing::warn!(%error, "could not write the build stamp");
+    }
     lock_memory();
 
     let config =

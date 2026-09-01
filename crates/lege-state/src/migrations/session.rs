@@ -10,10 +10,14 @@
 //! import bookkeeping (so re-scans are incremental and a later native manifest can be detected),
 //! and the `systemd-coredump` journal cursor. `0003` adds persisted background-permission
 //! declarations, so `org.legeos.Background1` can answer "what does this app want and why is it
-//! running" without a fresh `.desktop` scan.
+//! running" without a fresh `.desktop` scan. `0006` records what every `app_id` here has always
+//! silently been — one *variant*, one installed copy from one origin — and the logical
+//! application it is a copy of.
 
-pub const MIGRATIONS: &[(&str, &str)] = &[
-    (
+use super::Migration;
+
+pub const MIGRATIONS: &[Migration] = &[
+    Migration::additive(
         "0002-session-domains",
         r"
         CREATE TABLE settings_values (
@@ -67,7 +71,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
 ",
     ),
-    (
+    Migration::additive(
         "0003-background-declarations",
         r"
         -- What the last autostart scan found this application declaring (planning doc 01 §7):
@@ -82,7 +86,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
 ",
     ),
-    (
+    Migration::additive(
         "0004-homefield",
         r"
         -- The Home Field: one document per output (`lege_field::FieldDocument`, one JSON blob,
@@ -105,7 +109,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         CREATE INDEX homefield_undo_output ON homefield_undo (output, id);
 ",
     ),
-    (
+    Migration::additive(
         "0005-notification-details",
         r"
         -- `notifications_active` used to be only an ID ledger.  The notification server is the
@@ -118,6 +122,52 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         ALTER TABLE notifications_active ADD COLUMN category TEXT NOT NULL DEFAULT '';
         ALTER TABLE notifications_active ADD COLUMN actions_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE notifications_active ADD COLUMN expires_ms INTEGER;
+",
+    ),
+    Migration::additive(
+        "0006-app-variants",
+        r"
+        -- Every app_id already in this database names one *variant*: one installed copy of an
+        -- application, from one origin. Nothing recorded which. This table does, and it is the
+        -- only place a variant's provenance is stored — the rights tables keep keying on the
+        -- variant id itself, because a grant belongs to the copy that earned it.
+        CREATE TABLE app_variants (
+            variant        TEXT PRIMARY KEY,
+            logical        TEXT NOT NULL,
+            origin         TEXT NOT NULL,
+            trust          TEXT NOT NULL,
+            provenance     TEXT NOT NULL,
+            -- 'derived' (evidence grouped it) or 'user' (a person split or merged it by hand).
+            -- The column exists so that a manual override, when it lands, is distinguishable from
+            -- a rule's guess and is never silently overwritten by one.
+            logical_source TEXT NOT NULL DEFAULT 'derived',
+            first_seen_ms  INTEGER NOT NULL
+        );
+        CREATE INDEX app_variants_logical ON app_variants (logical);
+
+        -- Old id -> current id. A Flatpak export's variant id moved from `desktop-import.<desktop
+        -- id>` to `flatpak.<app id>`, and the migration for that is to *resolve* through this
+        -- table on read, never to rewrite what is stored elsewhere. A rolled-back binary then
+        -- reads exactly the rows it wrote, which is what makes the change reversible at all.
+        CREATE TABLE app_variant_aliases (
+            alias      TEXT PRIMARY KEY,
+            variant    TEXT NOT NULL,
+            reason     TEXT NOT NULL,
+            created_ms INTEGER NOT NULL
+        );
+        CREATE INDEX app_variant_aliases_variant ON app_variant_aliases (variant);
+
+        -- The logical application alongside the variant on each association table. Nullable and
+        -- unread by an older binary: every INSERT in the tree names its columns, so these are
+        -- invisible to one. They are a read model for 'which application did this choice mean',
+        -- never the key a default resolves by.
+        ALTER TABLE mime_defaults ADD COLUMN logical_app_id TEXT;
+        ALTER TABLE extension_defaults ADD COLUMN logical_app_id TEXT;
+        ALTER TABLE project_mime_defaults ADD COLUMN logical_app_id TEXT;
+
+        -- Which origin the recorded import came from, so a re-scan can tell a package's entry
+        -- from a Flatpak's without re-reading and re-classifying every file.
+        ALTER TABLE desktop_import ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown';
 ",
     ),
 ];

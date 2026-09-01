@@ -12,7 +12,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lege::{bus, doctor, files, history, open, power, project, providers, res, settings, update};
+use lege::{
+    bus, dev, doctor, files, history, open, power, project, providers, res, settings, update,
+};
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
     FilesActionsProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy,
@@ -21,7 +23,10 @@ use lege_client::proxies::{
     ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
-use std::{fmt::Write as _, path::PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 /// The LegeOS command line.
 #[derive(Debug, Parser)]
@@ -130,6 +135,19 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// Developer deployment: what is installed, what is running, and the gap between them.
+    Dev {
+        #[command(subcommand)]
+        command: Option<DevCommand>,
+        /// The local archive build sets are published to and installed from.
+        #[arg(long, global = true, default_value = lege::dev::repo::DEFAULT_ROOT)]
+        repo: PathBuf,
+        /// Act on an unpacked root instead of `/`.
+        #[arg(long, global = true, default_value = "/")]
+        root: PathBuf,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Integration checks (runtime, image root, or hardware matrix).
     Doctor {
         /// Check an unpacked image root instead of `/`.
@@ -146,6 +164,73 @@ enum Command {
         profile: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DevCommand {
+    /// Per-component convergence: installed set against running builds (the default).
+    Status {
+        /// Compare against this build set instead of the newest one installed.
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// The local package archive this machine installs build sets from.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+    /// Install a published build set — one pinned apt transaction for all of it.
+    Install {
+        /// Which set; defaults to the archive's current one.
+        build_set: Option<String>,
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Put the previous build set back.
+    Rollback {
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Publish, install, activate and report — the whole deployment.
+    Deploy {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+        /// Print the whole pipeline and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Put the previous set back without asking if a component fails its health gate.
+        #[arg(long)]
+        auto_rollback: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RepoCommand {
+    /// Create the archive and its per-machine signing key. Idempotent.
+    Init {
+        /// Also write apt's keyring and deb822 source. Needs root.
+        #[arg(long)]
+        install_source: bool,
+        /// Write those under this root instead of `/`.
+        #[arg(long, default_value = "/")]
+        sysroot: PathBuf,
+    },
+    /// Publish a built set into the archive.
+    Publish {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+    },
+    /// What the archive holds, and what a rollback would go back to.
+    Status,
+    /// Drop all but the newest sets (never the current or previous one).
+    Prune {
+        #[arg(long, default_value_t = lege::dev::repo::DEFAULT_KEEP)]
+        keep: usize,
     },
 }
 
@@ -387,6 +472,24 @@ enum ProjectCommand {
     Remove {
         project_id: String,
     },
+    /// Everything one project holds: its root, directories, applications and importance.
+    Show {
+        project_id: String,
+    },
+    /// Change one thing about a project.
+    Set {
+        project_id: String,
+        /// name | root | importance | state | directories | terminal_directories | mounts |
+        /// references
+        key: String,
+        /// The new value. List-valued keys take a comma-separated list.
+        value: String,
+    },
+    /// The project the session is working in. With no argument, print it; with one, switch to it;
+    /// with `none`, clear it.
+    Current {
+        project_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -433,8 +536,55 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
     Ok(())
 }
 
+/// `lege dev`, whose subcommands are all synchronous — no bus, no session, just the filesystem
+/// and a few external tools.
+fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) -> Result<String> {
+    let command = command.unwrap_or(DevCommand::Status { target: None });
+    match command {
+        DevCommand::Status { target } => dev::status(root, target.as_deref(), json),
+        DevCommand::Repo { command } => match command {
+            RepoCommand::Init {
+                install_source,
+                sysroot,
+            } => dev::repo_init(repo, &sysroot, install_source),
+            RepoCommand::Publish { build_set } => dev::repo_publish(repo, &build_set),
+            RepoCommand::Status => dev::repo_status(repo),
+            RepoCommand::Prune { keep } => dev::repo_prune(repo, keep),
+        },
+        DevCommand::Install { build_set, dry_run } => {
+            dev::install_set(repo, root, build_set.as_deref(), dry_run)
+        }
+        DevCommand::Rollback { dry_run } => dev::rollback(repo, root, dry_run),
+        DevCommand::Deploy {
+            build_set,
+            dry_run,
+            auto_rollback,
+        } => dev::deploy(
+            repo,
+            root,
+            &dev::DeployOptions {
+                build_set,
+                dry_run,
+                auto_rollback,
+            },
+        ),
+    }
+}
+
 async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Dev {
+            command,
+            repo,
+            root,
+            json,
+        } => {
+            print!("{}", run_dev(command, repo, &root, json)?);
+            if json {
+                println!();
+            }
+            Ok(())
+        }
         Command::Doctor {
             root,
             hardware,
@@ -1348,6 +1498,84 @@ async fn project_command(command: ProjectCommand, json: bool) -> Result<()> {
                 &format!("removed project {project_id}"),
             )
         }
+        other => project_detail_command(&proxy, other, json).await,
+    }
+}
+
+/// The three project subcommands that read or edit one project's semantics, split out so
+/// `project_command` stays a short list of named steps.
+async fn project_detail_command(
+    proxy: &ProjectsProxy<'_>,
+    command: ProjectCommand,
+    json: bool,
+) -> Result<()> {
+    match command {
+        ProjectCommand::Show { project_id } => {
+            let payload = project::ProjectsClient::describe(proxy, &project_id).await?;
+            let current = project::ProjectsClient::get_current(proxy)
+                .await
+                .unwrap_or_default();
+            let view = project::parse_project(&payload)?;
+            let rendered = project::render_show(&view, current == project_id);
+            // `--json` hands back the daemon's own payload verbatim; the human form never does.
+            if json {
+                println!("{payload}");
+                Ok(())
+            } else {
+                println!("{rendered}");
+                Ok(())
+            }
+        }
+        ProjectCommand::Set {
+            project_id,
+            key,
+            value,
+        } => {
+            // `state` has its own method, because archiving is a transition and not a field edit.
+            if key == "state" {
+                project::ProjectsClient::set_state(proxy, &project_id, &value).await?;
+            } else {
+                let changes = project::changes_json(&key, &value)?;
+                project::ProjectsClient::update(proxy, &project_id, &changes).await?;
+            }
+            emit(
+                json,
+                &serde_json::json!({"project": project_id, "set": key, "to": value}),
+                &format!("{project_id}: {key} is now {value}"),
+            )
+        }
+        ProjectCommand::Current { project_id } => match project_id {
+            None => {
+                let current = project::ProjectsClient::get_current(proxy).await?;
+                emit(
+                    json,
+                    &serde_json::json!({"current": current}),
+                    &if current.is_empty() {
+                        "no current project".to_owned()
+                    } else {
+                        current.clone()
+                    },
+                )
+            }
+            Some(project_id) => {
+                let target = if project_id == "none" {
+                    String::new()
+                } else {
+                    project_id
+                };
+                project::ProjectsClient::set_current(proxy, &target).await?;
+                emit(
+                    json,
+                    &serde_json::json!({"current": target}),
+                    &if target.is_empty() {
+                        "cleared the current project".to_owned()
+                    } else {
+                        format!("working in {target}")
+                    },
+                )
+            }
+        },
+        _ => unreachable!("project_command handles the other subcommands itself"),
     }
 }
 

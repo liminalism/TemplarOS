@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://legeos.org/schemas/project.schema.json",
+  "title": "LegeOS project",
+  "description": "A project session: the files, applications, directories and environment a person works in, instead of a numbered virtual desktop. Mirrors lege_session_core::projects::Project, and is the payload of Projects1.Describe and Projects1.ListDetailed. Stored as one JSON blob and read additively in both directions: an older binary ignores keys it does not know, and a newer one defaults keys an older writer omitted.",
+  "type": "object",
+  "required": ["id", "name", "root"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "description": "Stable identifier, chosen at creation." },
+    "name": { "type": "string", "description": "What the person calls it." },
+    "root": { "type": "string", "description": "The project's home directory, absolute." },
+    "directories": {
+      "type": "array", "items": { "type": "string" }, "default": [],
+      "description": "Further directories that belong to the project, beyond the root."
+    },
+    "apps": {
+      "type": "array", "default": [],
+      "description": "The applications the project remembers, restored when it opens.",
+      "items": {
+        "type": "object",
+        "required": ["app_id"],
+        "properties": {
+          "app_id": { "type": "string", "description": "The variant to launch when no logical app is recorded, or the variant the logical app resolved to when it was added." },
+          "logical_app": { "type": "string", "description": "The logical application, when the project remembers one. Preferred over app_id at open time, so a project survives the Flatpak replacing the package." },
+          "last_variant": { "type": "string", "description": "The variant that actually launched last time. Recorded so the project reopens what the person was using, not merely what is default today." },
+          "arguments": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "last_instance": { "type": ["string", "null"], "description": "The instance id from the last open, if it is still meaningful." },
+          "checkpoint_token": { "type": ["string", "null"], "description": "Opaque token the application returned when it was checkpointed." }
+        }
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": { "type": "string" }, "default": {},
+      "description": "Environment variables applied to applications the project launches."
+    },
+    "terminal_directories": {
+      "type": "array", "items": { "type": "string" }, "default": [],
+      "description": "Where terminals opened in this project start."
+    },
+    "mounts": {
+      "type": "array", "items": { "type": "string" }, "default": [],
+      "description": "Filesystems the project expects to be present."
+    },
+    "references": {
+      "type": "array", "items": { "type": "string" }, "default": [],
+      "description": "Things the project points at that are not its own files: a URL, a document elsewhere, an issue tracker. Kept as opaque strings — the project is a place to work, not a link database."
+    },
+    "importance": {
+      "enum": ["normal", "important"], "default": "normal",
+      "description": "Two values, because a person can honestly answer 'does this one matter more than the others' and cannot honestly answer 'is this a 7 or an 8'. An Important project that is open asks the resource governor to protect the applications it launched; closing it, or demoting it, hands them back."
+    },
+    "state": {
+      "enum": ["active", "archived"], "default": "active",
+      "description": "An archived project is out of the way, not gone: it stays searchable and it still opens."
+    },
+    "created_ms": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when the project was created." },
+    "updated_ms": { "type": "integer", "minimum": 0, "description": "Unix milliseconds of the last change to the project itself." },
+    "last_opened_ms": { "type": "integer", "minimum": 0, "description": "Unix milliseconds of the last Open. Zero (or absent) means never." }
+  },
+  "$comment": "Projects1.Update accepts a partial object of the user-editable keys only: name, root, directories, environment, terminal_directories, mounts, references, importance, state. `id`, `apps` and the timestamps are owned by the daemon and are refused rather than ignored."
+}

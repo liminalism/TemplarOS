@@ -13,6 +13,7 @@ name = "lege-sessiond"
 path = "src/main.rs"
 
 [dependencies]
+lege-build = { workspace = true }
 lege-types = { workspace = true }
 lege-appd = { workspace = true }
 lege-associationd = { workspace = true }
