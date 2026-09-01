@@ -119,6 +119,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         apps: &apps,
         apps_available,
         widgets: &widgets,
+        variants: &HashMap::new(),
         projects: &projects,
         actions: lege_types::action::MANIFEST,
         file_search: None,
@@ -310,6 +311,8 @@ mod tests {
                         categories: Vec::new(),
                         keywords: Vec::new(),
                         no_display: false,
+                        logical: String::new(),
+                        variants: 1,
                     })
                     .collect()
             } else {
@@ -331,6 +334,7 @@ mod tests {
             apps: &apps,
             apps_available: true,
             widgets: &widgets,
+            variants: &HashMap::new(),
             projects: &projects,
             actions: lege_types::action::MANIFEST,
             file_search: None,

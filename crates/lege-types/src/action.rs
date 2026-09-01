@@ -544,6 +544,18 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Always,
     },
     ActionDecl {
+        id: "app.launch-variant",
+        label: "Start this copy",
+        category: ActionCategory::System,
+        // No accelerator, for the same reason `launcher.launch` has none: *which* copy is a
+        // choice, and a chord cannot carry one. The pointer route is the application tile's own
+        // menu, which lists the copies that exist.
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
         id: "launcher.search",
         label: "Find an application",
         category: ActionCategory::System,

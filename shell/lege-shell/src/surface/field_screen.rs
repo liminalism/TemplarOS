@@ -59,6 +59,9 @@ pub enum FieldAction {
     /// Keep this application on Home for good, as a tile of its own. The one route to an
     /// application tile: Home no longer grows one per running window.
     PinApp(AppId),
+    /// Start exactly this copy of an application, rather than whichever one the daemon would
+    /// choose. The only route that names a variant on purpose.
+    LaunchVariant(AppId),
     Activate(WindowId),
     Park(WindowId),
     Restore(WindowId),
@@ -167,6 +170,9 @@ pub struct FieldData<'a> {
     /// Every installed application (`AppIdentity1.ListApplications`): one of the omnibox's
     /// sources. Empty is ambiguous on its own, hence `apps_available`.
     pub apps: &'a [crate::app_search::AppEntry],
+    /// The copies of each logical application that has more than one, keyed by logical id. Empty
+    /// for the overwhelming majority: one application, one copy, no choice to offer.
+    pub variants: &'a HashMap<String, Vec<(String, String, String)>>,
     /// Every project `Projects1` knows, and every declared action — the omnibox's other two
     /// in-memory sources.
     pub projects: &'a [field_model::ProjectInfo],
@@ -1914,13 +1920,40 @@ impl FieldScreen {
                 self.selection.replace(id);
             }
         }
-        self.menu.open_at(
+        // An application installed more than once offers the copies it has. Everything else gets
+        // the declared rows and nothing more, which is nearly everything.
+        let choices = tile
+            .and_then(|id| doc.tile(id))
+            .and_then(|tile| match &tile.kind {
+                TileKind::App { app_id } => data
+                    .apps
+                    .iter()
+                    .find(|entry| entry.id == *app_id)
+                    .filter(|entry| entry.variants > 1)
+                    .map(|entry| entry.logical.as_str()),
+                _ => None,
+            })
+            .and_then(|logical| data.variants.get(logical))
+            .map_or_else(Vec::new, |variants| {
+                variants
+                    .iter()
+                    .map(
+                        |(id, name, origin)| crate::surface::context_menu::MenuChoice {
+                            label: name.clone(),
+                            detail: origin.clone(),
+                            id: id.clone(),
+                        },
+                    )
+                    .collect()
+            });
+        self.menu.open_at_with(
             (cx, cy),
             MenuTarget {
                 tile,
                 window,
                 shelved: doc.shelved().next().is_some(),
             },
+            choices,
         );
     }
 
@@ -1941,6 +1974,15 @@ impl FieldScreen {
     ) {
         let window = chosen.target.window;
         let tile = chosen.target.tile;
+        // A copy-of-an-application row carries which copy; every declared row carries none.
+        if let Some(variant) = chosen.choice
+            && chosen.action == crate::surface::context_menu::LAUNCH_VARIANT
+        {
+            if let Ok(app_id) = variant.parse() {
+                actions.push(FieldAction::LaunchVariant(app_id));
+            }
+            return;
+        }
         match chosen.action {
             "field.help" => self.help_open = true,
             "field.undo" => actions.push(FieldAction::Undo),
@@ -3301,6 +3343,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 
@@ -3309,6 +3353,7 @@ mod tests {
         doc: FieldDocument,
         toplevels: Vec<ShellToplevel>,
         apps: Vec<crate::app_search::AppEntry>,
+        variants: HashMap<String, Vec<(String, String, String)>>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
         buffer: WindowBuffer,
@@ -3347,6 +3392,7 @@ mod tests {
                         "GNU Image Manipulation Program",
                     ),
                 ],
+                variants: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, H as u32),
@@ -3404,6 +3450,7 @@ mod tests {
                 apps: &self.apps,
                 apps_available: true,
                 widgets: &widgets,
+                variants: &self.variants,
                 projects: &[],
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
@@ -4118,6 +4165,70 @@ mod tests {
         assert!(
             !h.screen.files_expanded,
             "the drawer must not have opened from a grip press"
+        );
+    }
+
+    /// An application installed twice offers both copies from its own tile's menu, and choosing
+    /// one starts *that* copy rather than whichever the daemon would have picked.
+    #[test]
+    fn an_application_with_two_copies_offers_both_from_its_tile() {
+        let mut h = Harness::new();
+        let firefox: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        h.apps.push(crate::app_search::AppEntry {
+            id: firefox.clone(),
+            name: "Firefox".to_owned(),
+            desktop_file_id: "firefox.desktop".to_owned(),
+            icon: String::new(),
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            no_display: false,
+            logical: "logical.firefox".to_owned(),
+            variants: 2,
+        });
+        h.variants.insert(
+            "logical.firefox".to_owned(),
+            vec![
+                (
+                    "desktop-import.firefox.desktop".to_owned(),
+                    "Firefox".to_owned(),
+                    "DistroPackage 128".to_owned(),
+                ),
+                (
+                    "flatpak.org.mozilla.firefox".to_owned(),
+                    "Firefox".to_owned(),
+                    "Flatpak 129".to_owned(),
+                ),
+            ],
+        );
+        h.doc = apply(
+            &h.doc,
+            &FieldOp::Stash {
+                id: field_model::files_tile_id(),
+            },
+        )
+        .expect("stash applies")
+        .0;
+        field_model::pin_app(&mut h.doc, &firefox);
+        let rect = h.rect_of(field_model::app_tile_id(&firefox));
+
+        h.secondary_click(rect.x + rect.w / 2, rect.y + rect.h / 2);
+        // The Files tile is on the shelf, so the field's restore row is offered too.
+        let declared = MenuTarget {
+            tile: Some(field_model::app_tile_id(&firefox)),
+            shelved: true,
+            ..MenuTarget::default()
+        }
+        .rows()
+        .len();
+        // The second copy: the row after every declared one, and after the first copy.
+        let row = h.menu_row(declared + 1);
+        let actions = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        assert_eq!(
+            actions,
+            vec![FieldAction::LaunchVariant(
+                "flatpak.org.mozilla.firefox".parse().unwrap()
+            )],
+            "choosing a copy did not start that copy"
         );
     }
 
