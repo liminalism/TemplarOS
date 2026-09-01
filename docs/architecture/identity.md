@@ -16,6 +16,18 @@ mechanism, update owner — and `crates/lege-appd/src/variants.rs` groups copies
 origins, a flatpak id named in another's aliases, a shared `StartupWMClass` *and* name, or a shared
 resolved executable. Minted logical ids are persisted, so they survive an uninstall.
 
+The last two rules are resemblance rather than identity, and a *suite* resembles itself completely:
+a settings application ships one entry per destination, all with one window class and one binary.
+An installed entry whose desktop id extends another installed entry's by a dotted segment is a panel
+of it, and the resemblance rules do not apply to it — thirty-two panels stay thirty-two
+destinations. The identity rules still do, so a Flatpak and a package of the same panel merge.
+
+The **default variant** is what launches when a caller names only the application, and it is the
+entry a launcher draws the row from. Displayability comes first in that election: an entry its own
+author marked `NoDisplay` — a URL handler, a MIME shim — must never be the face of an application
+that has a displayable sibling. Then trust, then origin, then the copy that has been installed
+longest, then the id.
+
 Grouping is presentation. Every right — MIME defaults, provider declarations, autostart approvals,
 instances — keys on the variant, because a grant belongs to the copy that earned it. A wrong merge
 therefore shows two applications as one; it can never hand one copy's permissions to another.
