@@ -129,3 +129,12 @@ implicit_hasher = "allow"
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+[profile.debug-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+[profile.release-final]
+inherits = "release"
+lto = "thin"
