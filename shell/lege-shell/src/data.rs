@@ -216,22 +216,105 @@ pub async fn fetch_apps() -> Option<Vec<crate::app_search::AppEntry>> {
     let connection = session().await.ok()?;
     let proxy = AppIdentityProxy::new(&connection).await.ok()?;
     let rows = proxy.list_applications().await.ok()?;
-    Some(
-        rows.into_iter()
-            .filter_map(|row| {
-                let (id, name, desktop_file_id, icon, categories, keywords, no_display) = row;
-                Some(crate::app_search::AppEntry {
-                    id: id.parse().ok()?,
-                    name,
-                    desktop_file_id,
-                    icon,
-                    categories,
-                    keywords,
-                    no_display,
-                })
+    let mut variants: Vec<crate::app_search::AppEntry> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let (id, name, desktop_file_id, icon, categories, keywords, no_display) = row;
+            Some(crate::app_search::AppEntry {
+                id: id.parse().ok()?,
+                name,
+                desktop_file_id,
+                icon,
+                categories,
+                keywords,
+                no_display,
+                logical: String::new(),
+                variants: 1,
             })
-            .collect(),
-    )
+        })
+        .collect();
+    // One row per application a person would name, rather than one per copy installed. A Firefox
+    // from the distribution and a Firefox from Flathub are two variants of one thing, and a
+    // search that offers both is a search asking a question nobody wanted asked. Everything a
+    // *rank* is computed from — keywords, categories, the desktop id — still comes from the
+    // default variant's own entry, because that is where the registry keeps it.
+    let Ok(logical) = proxy.list_logical_apps().await else {
+        // A daemon that does not group applications yet: the flat list is the honest answer.
+        return Some(variants);
+    };
+    let mut grouped: Vec<crate::app_search::AppEntry> = Vec::new();
+    let mut absorbed: Vec<String> = Vec::new();
+    for (logical_id, name, icon, count, default_variant) in logical {
+        let Some(entry) = variants
+            .iter()
+            .find(|entry| entry.id.as_str() == default_variant)
+        else {
+            continue;
+        };
+        let mut row = entry.clone();
+        if !name.is_empty() {
+            row.name = name;
+        }
+        if !icon.is_empty() {
+            row.icon = icon;
+        }
+        row.variants = count.max(1);
+        absorbed.push(default_variant);
+        // Only a logical app with more than one copy costs a round trip, and only to learn which
+        // other rows it speaks for. One copy is the overwhelmingly common case and asks nothing.
+        if row.variants > 1
+            && let Ok(rows) = proxy.list_variants(&logical_id).await
+        {
+            absorbed.extend(rows.into_iter().map(|(variant, _, _)| variant));
+        }
+        row.logical = logical_id;
+        grouped.push(row);
+    }
+    if grouped.is_empty() {
+        return Some(variants);
+    }
+    // Anything the grouping did not speak for stays reachable under its own name: a variant that
+    // belongs to no logical app is still an application somebody installed.
+    variants.retain(|entry| !absorbed.iter().any(|id| id == entry.id.as_str()));
+    grouped.extend(variants);
+    Some(grouped)
+}
+
+/// The copies of one logical application, default first, as `AppIdentity1.ListVariants` reports
+/// them: the variant id, its display name, and where it came from.
+///
+/// Provenance is read for one key — `origin` — because that is the whole of what a person needs
+/// to tell two copies of the same application apart in a menu. The rest of the object is there
+/// for surfaces that have room for it.
+pub async fn fetch_variants(logical: &str) -> Vec<(String, String, String)> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Provenance {
+        origin: String,
+        version: String,
+    }
+    let Ok(connection) = session().await else {
+        return Vec::new();
+    };
+    let Ok(proxy) = AppIdentityProxy::new(&connection).await else {
+        return Vec::new();
+    };
+    proxy
+        .list_variants(logical)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(variant, name, provenance_json)| {
+            let provenance: Provenance = serde_json::from_str(&provenance_json).unwrap_or_default();
+            let origin = match (provenance.origin.as_str(), provenance.version.as_str()) {
+                ("", "") => String::new(),
+                ("", version) => version.to_owned(),
+                (origin, "") => origin.to_owned(),
+                (origin, version) => format!("{origin} {version}"),
+            };
+            (variant, name, origin)
+        })
+        .collect()
 }
 
 /// The Session widget's content: whether this machine will actually log out, restart, shut down

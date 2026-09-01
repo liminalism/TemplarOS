@@ -373,6 +373,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 

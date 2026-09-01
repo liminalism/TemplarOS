@@ -103,6 +103,8 @@ enum DataUpdate {
         query: String,
         result: Result<Vec<BrowseEntry>, String>,
     },
+    /// The copies of one logical application, resolved off the event loop.
+    AppVariants(String, Vec<(String, String, String)>),
     BrowserSources(BrowserSources),
     BrowserListing {
         location: FilesLocation,
@@ -247,6 +249,9 @@ struct ShellApp {
     /// Whether the last `ListApplications` succeeded.
     apps_available: bool,
     projects: Vec<ProjectInfo>,
+    /// The copies of each logical application that has more than one, keyed by logical id.
+    /// Refreshed with the application list, and empty for nearly every application there is.
+    app_variants: HashMap<String, Vec<(String, String, String)>>,
     /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
@@ -335,6 +340,7 @@ impl ShellApp {
             apps: Vec::new(),
             apps_available: false,
             projects: Vec::new(),
+            app_variants: HashMap::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
@@ -595,13 +601,39 @@ impl ShellApp {
                 }
                 DataUpdate::Apps(apps) => match apps {
                     Some(apps) => {
+                        // Only an application installed more than once has a choice to offer, so
+                        // only those cost a call — and their copies are asked for once per
+                        // refresh rather than once per menu, because a context menu opening is
+                        // not a moment to be waiting on a bus.
+                        let wanted: Vec<String> = apps
+                            .iter()
+                            .filter(|entry| entry.variants > 1 && !entry.logical.is_empty())
+                            .map(|entry| entry.logical.clone())
+                            .collect();
                         self.apps = apps;
                         self.apps_available = true;
+                        self.app_variants
+                            .retain(|logical, _| wanted.contains(logical));
+                        for logical in wanted {
+                            if self.app_variants.contains_key(&logical) {
+                                continue;
+                            }
+                            let tx = self.data_tx.clone();
+                            let proxy = self.wake_proxy.clone();
+                            self.runtime.spawn(async move {
+                                let variants = crate::data::fetch_variants(&logical).await;
+                                let _ = tx.send(DataUpdate::AppVariants(logical, variants));
+                                let _ = proxy.send_event(Wake);
+                            });
+                        }
                     }
                     // Keep the last good inventory rather than blanking the launcher on one
                     // failed poll; the flag is what the widget reports.
                     None => self.apps_available = false,
                 },
+                DataUpdate::AppVariants(logical, variants) => {
+                    self.app_variants.insert(logical, variants);
+                }
                 DataUpdate::Projects(projects) => self.projects = projects,
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
@@ -1011,6 +1043,7 @@ impl ShellApp {
             apps: &self.apps,
             apps_available: self.apps_available,
             widgets: &self.widgets,
+            variants: &self.app_variants,
             projects: &self.projects,
             actions: lege_types::action::MANIFEST,
             file_search,
@@ -1063,6 +1096,20 @@ impl ShellApp {
 
             FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
             FieldAction::Launch(app_id) => self.spawn_launch(app_id),
+            // Named on purpose, so it goes straight to `Launcher1.Launch` for that exact copy
+            // rather than back through the daemon's default-variant policy.
+            FieldAction::LaunchVariant(app_id) => {
+                self.runtime.spawn(async move {
+                    let Ok(connection) = crate::data::session().await else {
+                        return;
+                    };
+                    if let Ok(proxy) = LauncherProxy::new(&connection).await
+                        && let Err(error) = proxy.launch(&app_id.to_string(), Vec::new(), "").await
+                    {
+                        tracing::warn!(%error, %app_id, "launching a chosen copy failed");
+                    }
+                });
+            }
             FieldAction::Activate(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
             }
@@ -2141,6 +2188,15 @@ impl ShellApp {
     }
 
     fn spawn_launch_with_args(&self, app_id: AppId, arguments: Vec<String>) {
+        // Which copy of an application to start is trust policy, and trust policy lives in the
+        // daemon. When the shell knows the logical application it names *that* and lets sessiond
+        // pick; only an application it cannot group is launched by its variant id directly.
+        let logical = self
+            .apps
+            .iter()
+            .find(|entry| entry.id == app_id)
+            .map(|entry| entry.logical.clone())
+            .filter(|logical| !logical.is_empty());
         self.runtime.spawn(async move {
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
@@ -2151,8 +2207,18 @@ impl ShellApp {
             };
             match LauncherProxy::new(&connection).await {
                 Ok(proxy) => {
-                    if let Err(error) = proxy.launch(&app_id.to_string(), arguments, "").await {
-                        tracing::warn!(%error, %app_id, "Launcher1.Launch failed");
+                    let launched = match &logical {
+                        Some(logical) => proxy
+                            .launch_logical(logical, "", arguments, "")
+                            .await
+                            .map(|_| ()),
+                        None => proxy
+                            .launch(&app_id.to_string(), arguments, "")
+                            .await
+                            .map(|_| ()),
+                    };
+                    if let Err(error) = launched {
+                        tracing::warn!(%error, %app_id, ?logical, "launching failed");
                     }
                 }
                 Err(error) => tracing::warn!(%error, "Launcher1 unavailable"),
@@ -2670,6 +2736,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 

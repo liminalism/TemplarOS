@@ -59,6 +59,9 @@ pub enum FieldAction {
     /// Keep this application on Home for good, as a tile of its own. The one route to an
     /// application tile: Home no longer grows one per running window.
     PinApp(AppId),
+    /// Start exactly this copy of an application, rather than whichever one the daemon would
+    /// choose. The only route that names a variant on purpose.
+    LaunchVariant(AppId),
     Activate(WindowId),
     Park(WindowId),
     Restore(WindowId),
@@ -167,6 +170,9 @@ pub struct FieldData<'a> {
     /// Every installed application (`AppIdentity1.ListApplications`): one of the omnibox's
     /// sources. Empty is ambiguous on its own, hence `apps_available`.
     pub apps: &'a [crate::app_search::AppEntry],
+    /// The copies of each logical application that has more than one, keyed by logical id. Empty
+    /// for the overwhelming majority: one application, one copy, no choice to offer.
+    pub variants: &'a HashMap<String, Vec<(String, String, String)>>,
     /// Every project `Projects1` knows, and every declared action — the omnibox's other two
     /// in-memory sources.
     pub projects: &'a [field_model::ProjectInfo],
@@ -224,6 +230,11 @@ pub struct FieldScreen {
     /// Whether the Files object is expanded over the field. Where it is expanded *to* is
     /// `files`, which outlives every collapse — that is what makes reopening it continuous.
     pub files_expanded: bool,
+    /// The expansion in flight, if the object is between its tile and the field right now.
+    pub expansion: Option<Expansion>,
+    /// An expansion asked for mid-frame, started once this frame's layout is known — the tile it
+    /// grows out of is only knowable after the field has been laid out.
+    pending_expand: Option<u64>,
     /// The Files object's one state, at every rung.
     pub files: crate::files_surface::FilesSurfaceState,
     /// A project zoomed to fill the field: its interior grid is what is drawn and edited, with
@@ -272,6 +283,8 @@ impl Default for FieldScreen {
             resize: None,
             keyboard_resize: None,
             files_expanded: false,
+            expansion: None,
+            pending_expand: None,
             files: crate::files_surface::FilesSurfaceState::default(),
             zoomed: None,
             files_view: FilesBrowseView::default(),
@@ -294,6 +307,67 @@ impl Default for FieldScreen {
 }
 
 const CRUMB_HEIGHT: i32 = 30;
+/// How long the Files object takes to grow into the field, or to fall back into its tile.
+///
+/// Short enough that nobody waits for it and long enough that the eye follows the object rather
+/// than being handed a new screen. `reduced_motion` sets it to zero, which is not a shorter
+/// animation but no animation at all: the surface is simply there.
+const EXPAND_MS: u64 = 140;
+
+/// The Files object on its way between its tile and the whole field.
+///
+/// Expansion is spatial: the same object gets larger, in the place it already was, rather than a
+/// different surface appearing over the top of it. That is the whole of why this exists — a tile
+/// that vanishes and a pane that appears are two objects, and the field has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Expansion {
+    /// Where the object started: its tile, or the whole field when it is on the way back.
+    pub from: Rect,
+    pub started_ms: u64,
+    pub collapsing: bool,
+}
+
+impl Expansion {
+    /// How far along, from 0 at the first frame to 1 when it is over. Eased with a smoothstep,
+    /// which is monotone on [0, 1] — the object never doubles back on itself.
+    pub fn progress(self, now_ms: u64, duration_ms: u64) -> f32 {
+        if duration_ms == 0 {
+            return 1.0;
+        }
+        let elapsed = now_ms.saturating_sub(self.started_ms);
+        if elapsed >= duration_ms {
+            return 1.0;
+        }
+        // `elapsed < duration_ms` here, so the ratio is in [0, 1).
+        let linear = elapsed as f32 / duration_ms as f32;
+        linear * linear * (3.0 - 2.0 * linear)
+    }
+
+    pub fn finished(self, now_ms: u64, duration_ms: u64) -> bool {
+        duration_ms == 0 || now_ms.saturating_sub(self.started_ms) >= duration_ms
+    }
+
+    /// Where the object is right now, between [`Self::from`] and `to`. Exact at both ends: the
+    /// first frame is the tile it left and the last is the rectangle it was going to, with no
+    /// rounding drift to leave a one-pixel jump at the end.
+    pub fn rect(self, to: Rect, now_ms: u64, duration_ms: u64) -> Rect {
+        let t = self.progress(now_ms, duration_ms);
+        if t <= 0.0 {
+            return self.from;
+        }
+        if t >= 1.0 {
+            return to;
+        }
+        let lerp = |a: i32, b: i32| a + ((f64::from(b - a)) * f64::from(t)).round() as i32;
+        Rect::new(
+            lerp(self.from.x, to.x),
+            lerp(self.from.y, to.y),
+            lerp(self.from.w, to.w),
+            lerp(self.from.h, to.h),
+        )
+    }
+}
+
 const NOTICE_LIFETIME_MS: u64 = 4_000;
 /// A failure stays up longer than a confirmation: it is the only account of what happened, and a
 /// person who looks up a moment late has missed it for good.
@@ -304,7 +378,7 @@ const GRIP_SIZE: i32 = 18;
 impl FieldScreen {
     /// Whether the caller should keep redrawing on a timer: only while something is lifted.
     pub fn animating(&self) -> bool {
-        self.drag.is_lifted()
+        self.drag.is_lifted() || self.expansion.is_some()
     }
 
     /// Confirm one applied operation. The caller invokes this only after `lege_field::apply`
@@ -457,9 +531,41 @@ impl FieldScreen {
         ))
     }
 
-    pub fn band(rect: Rect, ui: &Ui<'_>) -> Rect {
-        rect.split_top(ui.px(design::GRAB_BAND_HEIGHT).min(rect.h))
-            .0
+    /// How a tile is grabbed, and what that costs its body — one answer, consulted by the
+    /// painter and by the pointer, so the strip a person aims at and the strip that reacts can
+    /// never be two different rectangles.
+    ///
+    /// Above the compact rungs a tile has a heading: its name and the controls that act on the
+    /// whole of it, in a band the body does not get. At Micro and Small it has none. A tile that
+    /// small spending a third of itself on a band containing its own name was the worst trade on
+    /// the field; instead the top edge stays grabbable without being *taken*, the name is drawn
+    /// as the first line of the body, and the controls appear only when the tile is hovered or
+    /// focused. Identity is never hidden — only manipulation.
+    pub fn grab_strip(rect: Rect, rung: Representation, ui: &Ui<'_>) -> GrabStrip {
+        // Never into the bottom third, whatever the tile's height: that is where the resize grip
+        // lives, and two gestures sharing a pixel is the one thing neither of them survives.
+        let ceiling = (rect.h * 2 / 3).max(0);
+        if rung >= Representation::Wide {
+            let (heading, body) = rect.split_top(ui.px(design::HEADING_HEIGHT).min(ceiling));
+            return GrabStrip {
+                grab: heading,
+                heading: Some(heading),
+                body,
+            };
+        }
+        let grab = rect
+            .split_top(ui.px(design::EDGE_GRAB_HEIGHT).min(ceiling))
+            .0;
+        GrabStrip {
+            grab,
+            heading: None,
+            body: rect,
+        }
+    }
+
+    /// The same, for a tile the document has placed.
+    pub fn strip_of(doc: &FieldDocument, tile: &Tile, rect: Rect, ui: &Ui<'_>) -> GrabStrip {
+        Self::grab_strip(rect, representation_of(doc, tile), ui)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -488,6 +594,38 @@ impl FieldScreen {
             (below_bar.h - gap).max(0),
         );
 
+        self.bounds = rest;
+        // An expansion asked for mid-frame starts now, when the field's layout — and so the
+        // tile it grows out of — is finally known.
+        if let Some(at) = self.pending_expand.take() {
+            self.expand_files(data.field, ui, at);
+        }
+        if self.files_expanded {
+            let duration = Self::expand_ms(data);
+            match self.expansion {
+                // Still on the way. The object is drawn as itself at the size it currently is —
+                // the rung ladder does the cross-fade, so a small rectangle gets the Wide body
+                // and a large one the Large body, exactly as a tile of that size would.
+                Some(expansion) if !expansion.finished(data.now_ms, duration) => {
+                    let to = if expansion.collapsing {
+                        self.tile_rect(data.field, field_model::files_tile_id(), ui)
+                            .unwrap_or(expansion.from)
+                    } else {
+                        rest
+                    };
+                    Self::draw_growing(ui, expansion.rect(to, data.now_ms, duration), data);
+                    self.draw_notice(ui, rest);
+                    return actions;
+                }
+                Some(expansion) => {
+                    self.expansion = None;
+                    if expansion.collapsing {
+                        self.files_expanded = false;
+                    }
+                }
+                None => {}
+            }
+        }
         if self.files_expanded {
             self.draw_expanded(ui, rest, data, &mut actions);
             self.draw_notice(ui, rest);
@@ -780,7 +918,7 @@ impl FieldScreen {
         );
         if ui.input.take_click(home) {
             if self.files_expanded {
-                self.files_expanded = false;
+                self.collapse_files(data.now_ms);
             } else {
                 actions.push(FieldAction::RevealHome);
             }
@@ -886,7 +1024,7 @@ impl FieldScreen {
         self.omnibox_files = crate::omnibox::file_state(data.file_search, &query);
         self.omnibox_committed = committed;
         if widen {
-            self.widen();
+            self.widen(data.now_ms);
         }
     }
 
@@ -920,9 +1058,11 @@ impl FieldScreen {
             outcome => Some(outcome),
         };
         match chosen {
-            Some(crate::surface::omnibox_screen::OmniboxOutcome::Widen) => self.widen(),
+            Some(crate::surface::omnibox_screen::OmniboxOutcome::Widen) => {
+                self.widen(data.now_ms);
+            }
             Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) => {
-                self.choose(hit, actions);
+                self.choose(hit, data, actions);
             }
             _ => {}
         }
@@ -942,6 +1082,94 @@ impl FieldScreen {
         )
     }
 
+    /// The Files object mid-flight: its own shell and its own body, at whatever size it has
+    /// reached, clipped so nothing spills past the rectangle it currently occupies.
+    ///
+    /// The rung is asked of the ladder rather than chosen here — the interpolated rectangle is
+    /// converted back to a span and put through `Representation::for_span`, so the cross-fade
+    /// between the Wide body and the Large one happens at exactly the size it happens at when a
+    /// person drags the tile to that size by hand. There is one answer to "how much does this
+    /// object show", and growth is not a special case of it.
+    fn draw_growing(ui: &mut Ui<'_>, rect: Rect, data: &FieldData<'_>) {
+        let cell = ui.px(field_model::TILE_SIZE + GAP).max(1);
+        let span = Span::new(
+            u16::try_from((rect.w / cell).max(1)).unwrap_or(u16::MAX),
+            u16::try_from((rect.h / cell).max(1)).unwrap_or(u16::MAX),
+        );
+        let kind = TileKind::Widget {
+            widget: field_model::FILES_WIDGET.to_owned(),
+            scope: None,
+        };
+        let rung = Representation::for_span(&kind, span);
+        design::shell(
+            ui,
+            rect,
+            design::SHELL,
+            design::EDGE_STRONG,
+            Elevation::Lifted,
+        );
+        ui.painter.push_clip(rect);
+        let strip = Self::grab_strip(rect, rung, ui);
+        if let Some(heading) = strip.heading {
+            ui.label_styled(
+                Rect::new(heading.x + ui.px(12), heading.y, heading.w, heading.h),
+                "FILES",
+                design::system_label_style(ui),
+                design::TEXT,
+                Align::Left,
+            );
+        }
+        crate::surface::files_screen::draw(
+            ui,
+            strip.body,
+            rung,
+            crate::surface::files_screen::FilesData {
+                feeds: data.drawer_feeds,
+                sources: data.browser.sources,
+            },
+        );
+        ui.painter.pop_clip();
+    }
+
+    /// Open the Files object over the field, growing out of wherever its tile is.
+    ///
+    /// The object does not appear; it gets bigger. If its tile is not on screen — stashed, or on
+    /// a field that has not been laid out yet — there is nothing to grow out of and it is simply
+    /// there, which is the honest degradation rather than a slide from an invented corner.
+    fn expand_files(&mut self, doc: &FieldDocument, ui: &Ui<'_>, now_ms: u64) {
+        if self.files_expanded {
+            return;
+        }
+        self.files_expanded = true;
+        self.expansion = self
+            .tile_rect(doc, field_model::files_tile_id(), ui)
+            .map(|from| Expansion {
+                from,
+                started_ms: now_ms,
+                collapsing: false,
+            });
+    }
+
+    /// Put it back. The same motion in reverse, and the surface stays drawn until it has
+    /// finished falling into the tile — a pane that blinks out is a pane that went somewhere
+    /// nobody saw.
+    fn collapse_files(&mut self, now_ms: u64) {
+        if !self.files_expanded {
+            return;
+        }
+        self.expansion = Some(Expansion {
+            from: self.bounds,
+            started_ms: now_ms,
+            collapsing: true,
+        });
+    }
+
+    /// How long an expansion takes here. `reduced_motion` makes it nothing at all, which is not
+    /// a faster animation but no animation: the surface is simply where it was going.
+    fn expand_ms(data: &FieldData<'_>) -> u64 {
+        if data.reduced_motion { 0 } else { EXPAND_MS }
+    }
+
     /// Where the question is being asked from. Derived, never chosen.
     fn scope(&self) -> crate::omnibox::Scope {
         if self.files_expanded {
@@ -953,13 +1181,18 @@ impl FieldScreen {
 
     /// The escape from a scoped search: stop being inside the Files object and ask the desktop.
     /// The query survives, because the question did not change — only who is being asked.
-    fn widen(&mut self) {
-        self.files_expanded = false;
+    fn widen(&mut self, now_ms: u64) {
+        self.collapse_files(now_ms);
         self.omnibox.highlighted = 0;
     }
 
     /// Act on one omnibox row.
-    fn choose(&mut self, hit: crate::omnibox::Hit, actions: &mut Vec<FieldAction>) {
+    fn choose(
+        &mut self,
+        hit: crate::omnibox::Hit,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
         use crate::omnibox::Hit;
         self.search_focused = false;
         match hit {
@@ -971,7 +1204,7 @@ impl FieldScreen {
             Hit::Directory { path } => {
                 self.files
                     .go_to(crate::files_surface::FilesLocation::Directory(path));
-                self.files_expanded = true;
+                self.pending_expand = Some(data.now_ms);
             }
             Hit::Project { id } => {
                 // A project is a container on the field: choosing one zooms into it, which is
@@ -982,7 +1215,7 @@ impl FieldScreen {
                 self.keyboard_move = None;
             }
             Hit::Action { id } => actions.push(FieldAction::RunAction(id)),
-            Hit::Everything => self.widen(),
+            Hit::Everything => self.widen(data.now_ms),
         }
     }
 
@@ -1245,7 +1478,7 @@ impl FieldScreen {
             Align::Left,
         );
         if !self.search_focused && ui.input.keys().contains(&KeyInput::Escape) {
-            self.files_expanded = false;
+            self.collapse_files(data.now_ms);
             return;
         }
         match self.files_view.draw(
@@ -1592,7 +1825,9 @@ impl FieldScreen {
                     let grabbed = if Self::body_draggable(doc, *id) {
                         rect.contains(cx, cy)
                     } else {
-                        Self::band(*rect, ui).contains(cx, cy)
+                        doc.tile(*id).is_some_and(|tile| {
+                            Self::strip_of(doc, tile, *rect, ui).grab.contains(cx, cy)
+                        })
                     };
                     if grabbed {
                         hit = Some((*id, *rect));
@@ -1685,13 +1920,40 @@ impl FieldScreen {
                 self.selection.replace(id);
             }
         }
-        self.menu.open_at(
+        // An application installed more than once offers the copies it has. Everything else gets
+        // the declared rows and nothing more, which is nearly everything.
+        let choices = tile
+            .and_then(|id| doc.tile(id))
+            .and_then(|tile| match &tile.kind {
+                TileKind::App { app_id } => data
+                    .apps
+                    .iter()
+                    .find(|entry| entry.id == *app_id)
+                    .filter(|entry| entry.variants > 1)
+                    .map(|entry| entry.logical.as_str()),
+                _ => None,
+            })
+            .and_then(|logical| data.variants.get(logical))
+            .map_or_else(Vec::new, |variants| {
+                variants
+                    .iter()
+                    .map(
+                        |(id, name, origin)| crate::surface::context_menu::MenuChoice {
+                            label: name.clone(),
+                            detail: origin.clone(),
+                            id: id.clone(),
+                        },
+                    )
+                    .collect()
+            });
+        self.menu.open_at_with(
             (cx, cy),
             MenuTarget {
                 tile,
                 window,
                 shelved: doc.shelved().next().is_some(),
             },
+            choices,
         );
     }
 
@@ -1712,6 +1974,15 @@ impl FieldScreen {
     ) {
         let window = chosen.target.window;
         let tile = chosen.target.tile;
+        // A copy-of-an-application row carries which copy; every declared row carries none.
+        if let Some(variant) = chosen.choice
+            && chosen.action == crate::surface::context_menu::LAUNCH_VARIANT
+        {
+            if let Ok(app_id) = variant.parse() {
+                actions.push(FieldAction::LaunchVariant(app_id));
+            }
+            return;
+        }
         match chosen.action {
             "field.help" => self.help_open = true,
             "field.undo" => actions.push(FieldAction::Undo),
@@ -2205,7 +2476,7 @@ impl FieldScreen {
             }
             TileKind::Widget { widget, .. } => {
                 if widget == field_model::FILES_WIDGET {
-                    self.files_expanded = true;
+                    self.pending_expand = Some(data.now_ms);
                 }
             }
             TileKind::Project { .. } => {
@@ -2284,7 +2555,7 @@ impl FieldScreen {
             draw_composition_band(ui, rect, composition);
         }
 
-        let band = Self::band(rect, ui);
+        let strip = Self::strip_of(data.field, tile, rect, ui);
         let child_count = data.field.count_in(Some(tile.id));
         let controls_width = match &tile.kind {
             TileKind::ParkedSession { .. } if window.is_some_and(|window| !window.shelved) => 64,
@@ -2292,8 +2563,6 @@ impl FieldScreen {
             TileKind::Project { .. } if child_count > 0 => 64,
             _ => 0,
         };
-        // `split_right` hands back the right strip first.
-        let (band_controls, title_area) = band.split_right(ui.px(controls_width).min(band.w / 2));
         let display_title = match &tile.kind {
             TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
             // The Files object wears the system label, like the instruments: it is furniture the
@@ -2318,6 +2587,49 @@ impl FieldScreen {
             }
             _ => 0,
         };
+        let title_colour = if matches!(&tile.kind, TileKind::Project { .. }) {
+            design::ACCENT
+        } else {
+            design::TEXT
+        };
+
+        // Where the name goes, and where the controls go. With a heading they share it; without
+        // one the name is the body's first line and the controls wait for a hover or a focus.
+        let revealed = visual.hovered || visual.focused || visual.lifted;
+        let mut content = strip.body;
+        let (band_controls, title_area) = if let Some(heading) = strip.heading {
+            // `split_right` hands back the right strip first.
+            heading.split_right(ui.px(controls_width).min(heading.w / 2))
+        } else {
+            {
+                // The name is the first line of the body, not a band over it: the tile keeps
+                // saying what it is at every size, and pays one line rather than a third of
+                // itself for the privilege.
+                let line = ui.px(design::COMPACT_TITLE_HEIGHT).min(content.h);
+                let (name_line, below) = content.split_top(line + ui.px(4));
+                content = below;
+                if !revealed || controls_width == 0 {
+                    (Rect::new(rect.right(), rect.y, 0, 0), name_line)
+                } else {
+                    // Manipulation, and only manipulation, waits for attention: a strip fades in
+                    // over the top of the body carrying what a heading would have held. Focus
+                    // counts as attention, so this is reachable without a pointer.
+                    let reveal = Rect::new(
+                        rect.x,
+                        rect.y,
+                        rect.w,
+                        ui.px(design::REVEAL_HEIGHT).min(rect.h),
+                    );
+                    ui.painter.blend_rect(reveal, design::SHELL_LOW, 225);
+                    (
+                        reveal
+                            .split_right(ui.px(controls_width).min(reveal.w / 2))
+                            .0,
+                        name_line,
+                    )
+                }
+            }
+        };
         let title_area = Rect::new(
             title_area.x + ui.px(left_mark + 12),
             title_area.y,
@@ -2328,36 +2640,32 @@ impl FieldScreen {
             title_area,
             &display_title,
             title_style,
-            if matches!(&tile.kind, TileKind::Project { .. }) {
-                design::ACCENT
-            } else {
-                design::TEXT
-            },
+            title_colour,
             Align::Left,
         );
-        match &tile.kind {
-            TileKind::App { .. } if running > 0 => {
-                let badge = band_controls.inset(ui.px(6));
-                ui.badge(
-                    badge,
-                    &running.to_string(),
-                    design::TEXT,
-                    design::ACTIVITY_SOFT,
-                    design::ACTIVITY,
-                );
+        if band_controls.w > 0 {
+            match &tile.kind {
+                TileKind::App { .. } if running > 0 => {
+                    ui.badge(
+                        band_controls.inset(ui.px(4)),
+                        &running.to_string(),
+                        design::TEXT,
+                        design::ACTIVITY_SOFT,
+                        design::ACTIVITY,
+                    );
+                }
+                TileKind::Project { .. } if child_count > 0 => {
+                    ui.label_styled(
+                        band_controls.inset(ui.px(6)),
+                        &format!("{child_count} tiles"),
+                        design::state_style(ui),
+                        design::ACCENT,
+                        Align::Right,
+                    );
+                }
+                _ => {}
             }
-            TileKind::Project { .. } if child_count > 0 => {
-                ui.label_styled(
-                    band_controls.inset(ui.px(6)),
-                    &format!("{child_count} tiles"),
-                    design::state_style(ui),
-                    design::ACCENT,
-                    Align::Right,
-                );
-            }
-            _ => {}
         }
-        let content = Rect::new(rect.x, band.bottom(), rect.w, (rect.h - band.h).max(0));
 
         match &tile.kind {
             TileKind::App { app_id } => {
@@ -2478,7 +2786,7 @@ impl FieldScreen {
                     ) {
                         crate::surface::files_screen::FilesAction::Open(location) => {
                             self.files.go_to(location);
-                            self.files_expanded = true;
+                            self.pending_expand = Some(data.now_ms);
                         }
                         crate::surface::files_screen::FilesAction::Run(id) => {
                             actions.push(FieldAction::RunAction(id));
@@ -2915,6 +3223,17 @@ fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
     near(bitmap.width, wanted.0) && near(bitmap.height, wanted.1)
 }
 
+/// How one tile is grabbed and where its body starts. See [`FieldScreen::grab_strip`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GrabStrip {
+    /// Where a move gesture starts.
+    pub grab: Rect,
+    /// The heading, when the tile is large enough to have one. `None` at the compact rungs.
+    pub heading: Option<Rect>,
+    /// What is left for the tile's content — the whole rect when there is no heading.
+    pub body: Rect,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TileVisual {
     hovered: bool,
@@ -3024,6 +3343,8 @@ mod tests {
             categories: Vec::new(),
             keywords: Vec::new(),
             no_display: false,
+            logical: String::new(),
+            variants: 1,
         }
     }
 
@@ -3032,6 +3353,7 @@ mod tests {
         doc: FieldDocument,
         toplevels: Vec<ShellToplevel>,
         apps: Vec<crate::app_search::AppEntry>,
+        variants: HashMap<String, Vec<(String, String, String)>>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
         buffer: WindowBuffer,
@@ -3070,6 +3392,7 @@ mod tests {
                         "GNU Image Manipulation Program",
                     ),
                 ],
+                variants: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, H as u32),
@@ -3127,6 +3450,7 @@ mod tests {
                 apps: &self.apps,
                 apps_available: true,
                 widgets: &widgets,
+                variants: &self.variants,
                 projects: &[],
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
@@ -3209,7 +3533,12 @@ mod tests {
             Scale::ONE,
             &mut h.kernel,
         );
-        assert_eq!(FieldScreen::band(rect, &ui).h, design::GRAB_BAND_HEIGHT);
+        assert_eq!(
+            FieldScreen::grab_strip(rect, Representation::Large, &ui)
+                .heading
+                .map(|heading| heading.h),
+            Some(design::HEADING_HEIGHT)
+        );
     }
 
     #[test]
@@ -3360,6 +3689,8 @@ mod tests {
         h.screen.search_focused = true;
         h.screen.search.set_text("report");
         h.key(KeyInput::Tab);
+        h.now += EXPAND_MS + 1;
+        h.frame();
         assert!(
             !h.screen.files_expanded,
             "Tab did not leave the scoped search"
@@ -3837,11 +4168,181 @@ mod tests {
         );
     }
 
+    /// An application installed twice offers both copies from its own tile's menu, and choosing
+    /// one starts *that* copy rather than whichever the daemon would have picked.
     #[test]
-    fn the_grip_never_overlaps_the_move_band() {
+    fn an_application_with_two_copies_offers_both_from_its_tile() {
         let mut h = Harness::new();
-        let downloads = downloads_tile();
-        let rect = h.rect_of(downloads);
+        let firefox: AppId = "desktop-import.firefox.desktop".parse().unwrap();
+        h.apps.push(crate::app_search::AppEntry {
+            id: firefox.clone(),
+            name: "Firefox".to_owned(),
+            desktop_file_id: "firefox.desktop".to_owned(),
+            icon: String::new(),
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            no_display: false,
+            logical: "logical.firefox".to_owned(),
+            variants: 2,
+        });
+        h.variants.insert(
+            "logical.firefox".to_owned(),
+            vec![
+                (
+                    "desktop-import.firefox.desktop".to_owned(),
+                    "Firefox".to_owned(),
+                    "DistroPackage 128".to_owned(),
+                ),
+                (
+                    "flatpak.org.mozilla.firefox".to_owned(),
+                    "Firefox".to_owned(),
+                    "Flatpak 129".to_owned(),
+                ),
+            ],
+        );
+        h.doc = apply(
+            &h.doc,
+            &FieldOp::Stash {
+                id: field_model::files_tile_id(),
+            },
+        )
+        .expect("stash applies")
+        .0;
+        field_model::pin_app(&mut h.doc, &firefox);
+        let rect = h.rect_of(field_model::app_tile_id(&firefox));
+
+        h.secondary_click(rect.x + rect.w / 2, rect.y + rect.h / 2);
+        // The Files tile is on the shelf, so the field's restore row is offered too.
+        let declared = MenuTarget {
+            tile: Some(field_model::app_tile_id(&firefox)),
+            shelved: true,
+            ..MenuTarget::default()
+        }
+        .rows()
+        .len();
+        // The second copy: the row after every declared one, and after the first copy.
+        let row = h.menu_row(declared + 1);
+        let actions = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        assert_eq!(
+            actions,
+            vec![FieldAction::LaunchVariant(
+                "flatpak.org.mozilla.firefox".parse().unwrap()
+            )],
+            "choosing a copy did not start that copy"
+        );
+    }
+
+    /// The expansion's interpolation: exact at both ends, monotone in between, and finished when
+    /// it says it is. A motion that overshoots or that never quite arrives is a motion a person
+    /// waits for, which is the one thing this must never be.
+    #[test]
+    fn expansion_is_endpoint_exact_monotone_and_terminates() {
+        let from = Rect::new(20, 60, 96, 90);
+        let to = Rect::new(10, 62, 1260, 760);
+        let expansion = Expansion {
+            from,
+            started_ms: 1_000,
+            collapsing: false,
+        };
+
+        assert_eq!(
+            expansion.rect(to, 1_000, EXPAND_MS),
+            from,
+            "the first frame"
+        );
+        assert_eq!(
+            expansion.rect(to, 1_000 + EXPAND_MS, EXPAND_MS),
+            to,
+            "the last frame"
+        );
+        assert_eq!(
+            expansion.rect(to, 9_999_999, EXPAND_MS),
+            to,
+            "and it stays arrived"
+        );
+        assert!(expansion.finished(1_000 + EXPAND_MS, EXPAND_MS));
+        assert!(!expansion.finished(1_000 + EXPAND_MS - 1, EXPAND_MS));
+
+        // Monotone in every axis: the object never doubles back on itself.
+        let mut previous = expansion.rect(to, 1_000, EXPAND_MS);
+        let mut progress = 0.0;
+        for step in 0..=EXPAND_MS {
+            let now = 1_000 + step;
+            let next_progress = expansion.progress(now, EXPAND_MS);
+            assert!(
+                next_progress >= progress,
+                "progress went backwards at {step}ms"
+            );
+            progress = next_progress;
+            let rect = expansion.rect(to, now, EXPAND_MS);
+            assert!(rect.x <= previous.x, "x at {step}ms");
+            assert!(rect.w >= previous.w, "w at {step}ms");
+            assert!(rect.h >= previous.h, "h at {step}ms");
+            previous = rect;
+        }
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// Reduced motion is not a shorter animation, it is none: the surface is simply where it was
+    /// going, on the first frame.
+    #[test]
+    fn reduced_motion_arrives_immediately_rather_than_quickly() {
+        let from = Rect::new(20, 60, 96, 90);
+        let to = Rect::new(10, 62, 1260, 760);
+        let expansion = Expansion {
+            from,
+            started_ms: 7,
+            collapsing: false,
+        };
+        assert!((expansion.progress(7, 0) - 1.0).abs() < f32::EPSILON);
+        assert!(expansion.finished(7, 0));
+        assert_eq!(expansion.rect(to, 7, 0), to);
+    }
+
+    /// Opening the Files object grows it out of its own tile, and closing it puts it back —
+    /// the surface stays drawn until it has finished falling in, because a pane that blinks out
+    /// is a pane that went somewhere nobody saw.
+    #[test]
+    fn expanding_grows_out_of_the_tile_and_collapsing_falls_back_into_it() {
+        let mut h = Harness::new();
+        let files = field_model::files_tile_id();
+        let rect = h.rect_of(files);
+
+        h.click(rect.x + rect.w / 2, rect.bottom() - 10);
+        // The tile it grows out of is only known once the field has been laid out, so the
+        // expansion starts on the frame after the press rather than during it.
+        h.frame();
+        assert!(h.screen.files_expanded);
+        let expansion = h.screen.expansion.expect("it grew out of something");
+        assert!(!expansion.collapsing);
+        assert_eq!(expansion.from, rect, "it grew out of somewhere else");
+
+        // Once it has arrived the expansion is spent and the real surface takes over.
+        h.now += EXPAND_MS + 1;
+        h.frame();
+        assert!(h.screen.expansion.is_none());
+        assert!(h.screen.files_expanded);
+
+        h.key(KeyInput::Escape);
+        let collapsing = h.screen.expansion.expect("it is on its way back");
+        assert!(collapsing.collapsing);
+        assert!(
+            h.screen.files_expanded,
+            "the surface vanished before it had finished going anywhere"
+        );
+        h.now += EXPAND_MS + 1;
+        h.frame();
+        assert!(!h.screen.files_expanded);
+        assert!(h.screen.expansion.is_none());
+    }
+
+    /// Move and resize are two gestures and they must never share a pixel — at any rung, on any
+    /// shape a tile can be given. The move strip is the top edge (a heading where there is one,
+    /// a ten-pixel edge where there is not); the grip is the bottom-right corner.
+    #[test]
+    fn the_grip_never_overlaps_the_move_band_at_any_rung() {
+        let mut h = Harness::new();
+        h.frame();
         let ui = Ui::new(
             Painter::new(&mut h.buffer),
             &mut h.text,
@@ -3850,11 +4351,37 @@ mod tests {
             Scale::ONE,
             &mut h.kernel,
         );
-        let (band, grip) = (FieldScreen::band(rect, &ui), FieldScreen::grip(rect, &ui));
-        assert!(
-            grip.y >= band.bottom(),
-            "one gesture would shadow the other: band {band:?}, grip {grip:?}"
-        );
+        // Every rung, and every tile shape a cell grid can produce down to one cell.
+        for rung in [
+            Representation::Micro,
+            Representation::Small,
+            Representation::Wide,
+            Representation::Large,
+            Representation::Full,
+        ] {
+            for width in [40, 98, 210, 640] {
+                for height in [30, 98, 210, 640] {
+                    let rect = Rect::new(11, 62, width, height);
+                    let strip = FieldScreen::grab_strip(rect, rung, &ui);
+                    let grip = FieldScreen::grip(rect, &ui);
+                    assert!(
+                        grip.y >= strip.grab.bottom(),
+                        "{rung:?} at {width}x{height}: one gesture would shadow the other — \
+                         grab {:?}, grip {grip:?}",
+                        strip.grab
+                    );
+                    // And the body never starts above the strip that was taken from it.
+                    assert!(strip.body.y >= rect.y && strip.body.bottom() <= rect.bottom());
+                    match strip.heading {
+                        Some(heading) => assert_eq!(strip.body.y, heading.bottom()),
+                        None => assert_eq!(
+                            strip.body, rect,
+                            "{rung:?}: the compact edge was taken from the body"
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     #[test]

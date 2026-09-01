@@ -119,6 +119,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         apps: &apps,
         apps_available,
         widgets: &widgets,
+        variants: &HashMap::new(),
         projects: &projects,
         actions: lege_types::action::MANIFEST,
         file_search: None,
@@ -200,6 +201,10 @@ mod tests {
             Some(std::path::Path::new("/home/fixture/Desktop")),
         );
         field_model::route_file_drop(&mut field, std::path::Path::new("/home/fixture/notes.md"));
+        // One pinned application, so the baseline also reviews the compact rung — which since
+        // the chrome reduction is its own drawing path: no heading, the name as the body's first
+        // line, and the controls only on hover or focus.
+        field_model::pin_app(&mut field, &"org.legeos.Files".parse().unwrap());
 
         let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
@@ -306,6 +311,8 @@ mod tests {
                         categories: Vec::new(),
                         keywords: Vec::new(),
                         no_display: false,
+                        logical: String::new(),
+                        variants: 1,
                     })
                     .collect()
             } else {
@@ -327,6 +334,7 @@ mod tests {
             apps: &apps,
             apps_available: true,
             widgets: &widgets,
+            variants: &HashMap::new(),
             projects: &projects,
             actions: lege_types::action::MANIFEST,
             file_search: None,
@@ -375,7 +383,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x39d9_9504_b2f2_1674,
+            hash, 0xac34_43f6_2a37_c82c,
             "review the Home Field pixels before updating this baseline"
         );
     }
