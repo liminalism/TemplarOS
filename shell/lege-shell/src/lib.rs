@@ -29,6 +29,7 @@ pub mod files_surface;
 pub mod format;
 pub mod home_surface;
 pub mod icons;
+pub mod omnibox;
 pub mod pressure;
 pub mod previews;
 pub mod protocol;

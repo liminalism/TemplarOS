@@ -49,8 +49,10 @@ pub struct FileDrop {
 /// comes out here; nothing in this module performs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldAction {
+    /// Ask the file service this question, for this scope. The host debounces it — this is the
+    /// question, not the round trip.
     RunSearch {
-        location: crate::files_surface::FilesLocation,
+        scope: crate::omnibox::Scope,
         query: String,
     },
     Launch(AppId),
@@ -162,9 +164,16 @@ pub struct FieldData<'a> {
     pub home_revealed: bool,
     /// Whether the nm-tray2 application manifest is installed and launchable.
     pub network_control_available: bool,
-    /// Every installed application (`AppIdentity1.ListApplications`): the launcher widget's list
-    /// and what the search bar filters. Empty is ambiguous on its own, hence `apps_available`.
+    /// Every installed application (`AppIdentity1.ListApplications`): one of the omnibox's
+    /// sources. Empty is ambiguous on its own, hence `apps_available`.
     pub apps: &'a [crate::app_search::AppEntry],
+    /// Every project `Projects1` knows, and every declared action — the omnibox's other two
+    /// in-memory sources.
+    pub projects: &'a [field_model::ProjectInfo],
+    pub actions: &'static [lege_types::action::ActionDecl],
+    /// The last file search that completed, with the query it answered. The omnibox compares
+    /// that query against the one on screen and withholds a stale answer rather than showing it.
+    pub file_search: Option<crate::omnibox::FileResults<'a>>,
     /// Whether the application registry answered. A launcher that cannot reach it says so rather
     /// than showing an empty list, which reads as "nothing is installed".
     pub apps_available: bool,
@@ -224,6 +233,16 @@ pub struct FieldScreen {
     pub files_view: FilesBrowseView,
     pub search: TextFieldState,
     pub search_focused: bool,
+    /// The omnibox dropdown's cursor, and what this frame's search bar decided it should show.
+    /// The rows are computed with the bar and painted after the tiles, so the list sits over the
+    /// field rather than under it.
+    pub omnibox: crate::surface::omnibox_screen::OmniboxState,
+    omnibox_rows: Vec<crate::omnibox::Row>,
+    omnibox_anchor: Rect,
+    omnibox_files: crate::omnibox::FileState,
+    omnibox_committed: Option<usize>,
+    /// The query the file service was last asked for, so a redraw does not ask again.
+    asked_for: String,
     /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
     pub help_open: bool,
     /// The field's pixel rectangle from the last frame, for tests and hit-testing.
@@ -258,6 +277,12 @@ impl Default for FieldScreen {
             files_view: FilesBrowseView::default(),
             search: TextFieldState::new(),
             search_focused: false,
+            omnibox: crate::surface::omnibox_screen::OmniboxState::default(),
+            omnibox_rows: Vec::new(),
+            omnibox_anchor: Rect::new(0, 0, 0, 0),
+            omnibox_files: crate::omnibox::FileState::Idle,
+            omnibox_committed: None,
+            asked_for: String::new(),
             help_open: false,
             bounds: Rect::new(0, 0, 0, 0),
             last_drop: None,
@@ -437,6 +462,7 @@ impl FieldScreen {
             .0
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) -> Vec<FieldAction> {
         ui.painter.fill_rect(area, ui.theme.background);
         let mut actions = Vec::new();
@@ -465,6 +491,7 @@ impl FieldScreen {
         if self.files_expanded {
             self.draw_expanded(ui, rest, data, &mut actions);
             self.draw_notice(ui, rest);
+            self.draw_omnibox(ui, data, &mut actions);
             return actions;
         }
 
@@ -544,6 +571,7 @@ impl FieldScreen {
         if rects.is_empty() {
             self.draw_empty_state(ui, rest, data.connected);
         }
+        self.draw_omnibox(ui, data, &mut actions);
         actions
     }
 
@@ -720,6 +748,7 @@ impl FieldScreen {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn draw_search_bar(
         &mut self,
         ui: &mut Ui<'_>,
@@ -780,18 +809,51 @@ impl FieldScreen {
                 search_and_gap.h,
             )
         };
-        let enter = self.search_focused && ui.input.keys().contains(&KeyInput::Enter);
         if ui.input.take_click(search_area) {
             self.search_focused = true;
         }
-        // Scope is derived from where the surface is, never chosen: on bare Home the bar
-        // searches applications, and inside the expanded Files object it searches that location.
-        let placeholder = if self.files_expanded {
-            format!("Search {}", self.files.location().label())
-        } else {
-            // The launcher tile carries the running count of what the query matches; this line
-            // only has to say what typing here does.
-            "Search applications — Enter launches the best match".to_owned()
+        // Scope is derived from where the surface is, never chosen. There is no mode to be in,
+        // so there is no mode to get stuck in: on bare Home the question is asked of everything,
+        // and inside the expanded Files object it is asked of that location — with a permanent
+        // row offering to widen it.
+        let scope = self.scope();
+        let query = self.search.text().to_owned();
+        let rows = crate::omnibox::federate(
+            crate::omnibox::Sources {
+                apps: data.apps,
+                projects: data.projects,
+                files: data.file_search,
+                actions: data.actions,
+            },
+            &query,
+            &scope,
+            crate::omnibox::TOTAL_CAP,
+        );
+        // Read before `text_field` consumes the frame's keys: a focused field takes every key,
+        // including the ones the dropdown's cursor lives on.
+        let committed = self
+            .search_focused
+            .then(|| self.omnibox.handle_keys(ui, &query, rows.len()))
+            .flatten();
+        // Tab widens a scoped search without reaching for the row. It is safe to claim here
+        // because this screen does not use toolkit focus traversal at all — `pixelkit_ui` has no
+        // Tab-walks-the-controls behaviour, and the field's own Tab is handled in `handle_keys`,
+        // which returns early while the search field has focus. Ctrl+Space does the same thing
+        // for anyone whose habits or input method make Tab awkward.
+        let modifiers = ui.input.modifiers();
+        let widen = self.search_focused
+            && matches!(scope, crate::omnibox::Scope::Location(_))
+            && ui.input.keys().iter().any(|key| {
+                *key == KeyInput::Tab || (modifiers.control && *key == KeyInput::Character(' '))
+            });
+
+        let placeholder = match &scope {
+            crate::omnibox::Scope::Location(location) => {
+                format!("Search {} — Tab searches everything", location.label())
+            }
+            crate::omnibox::Scope::Everything => {
+                "Search files, applications, projects and actions".to_owned()
+            }
         };
         let previous_theme = ui.theme;
         ui.theme.background = design::SHELL;
@@ -808,24 +870,119 @@ impl FieldScreen {
         if status_width > 0 {
             Self::draw_information_row(ui, status, data, actions);
         }
-        if !enter || self.search.text().trim().is_empty() {
+
+        // Whatever is typed goes to the file service, once the typing has stopped. The debounce
+        // itself lives in the host, which has the clock; this only says what to ask.
+        if query.trim() != self.asked_for.trim() {
+            self.asked_for.clone_from(&query);
+            actions.push(FieldAction::RunSearch {
+                scope: scope.clone(),
+                query: query.clone(),
+            });
+        }
+
+        self.omnibox_rows = rows;
+        self.omnibox_anchor = search_area;
+        self.omnibox_files = crate::omnibox::file_state(data.file_search, &query);
+        self.omnibox_committed = committed;
+        if widen {
+            self.widen();
+        }
+    }
+
+    /// The dropdown, painted after the field so it is over the tiles rather than under them, and
+    /// hit-tested before them — [`Self::omnibox_area`] is what keeps a tile from stealing a click
+    /// aimed at a row. The same two-step the context menu uses.
+    fn draw_omnibox(
+        &mut self,
+        ui: &mut Ui<'_>,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        if !self.search_focused {
             return;
         }
+        let rows = std::mem::take(&mut self.omnibox_rows);
+        let outcome = crate::surface::omnibox_screen::draw(
+            ui,
+            self.omnibox_anchor,
+            self.bounds,
+            &rows,
+            &self.omnibox,
+            data.icons,
+            self.omnibox_files,
+        );
+        let chosen = match outcome {
+            crate::surface::omnibox_screen::OmniboxOutcome::None => self
+                .omnibox_committed
+                .and_then(|index| rows.get(index))
+                .map(crate::surface::omnibox_screen::commit),
+            outcome => Some(outcome),
+        };
+        match chosen {
+            Some(crate::surface::omnibox_screen::OmniboxOutcome::Widen) => self.widen(),
+            Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) => {
+                self.choose(hit, actions);
+            }
+            _ => {}
+        }
+    }
+
+    /// The rectangle the dropdown occupies right now, if it is open.
+    fn omnibox_area(&self, ui: &Ui<'_>) -> Option<Rect> {
+        if !self.search_focused {
+            return None;
+        }
+        crate::surface::omnibox_screen::panel_rect(
+            ui,
+            self.omnibox_anchor,
+            self.bounds,
+            self.omnibox_rows.len(),
+            self.omnibox_files,
+        )
+    }
+
+    /// Where the question is being asked from. Derived, never chosen.
+    fn scope(&self) -> crate::omnibox::Scope {
         if self.files_expanded {
-            let query = self.search.text().to_owned();
-            self.files.search(&query);
-            actions.push(FieldAction::RunSearch {
-                location: self.files.location().clone(),
-                query,
-            });
+            crate::omnibox::Scope::Location(self.files.location().clone())
         } else {
-            // On the field, Enter launches. The `launcher.launch` action declares this
-            // capability; the app id it needs is the query's best match, which is why it travels
-            // as `Launch` rather than as a payload-free `RunAction`.
-            if let Some(entry) = crate::app_search::best(data.apps, self.search.text()) {
-                actions.push(FieldAction::Launch(entry.id.clone()));
+            crate::omnibox::Scope::Everything
+        }
+    }
+
+    /// The escape from a scoped search: stop being inside the Files object and ask the desktop.
+    /// The query survives, because the question did not change — only who is being asked.
+    fn widen(&mut self) {
+        self.files_expanded = false;
+        self.omnibox.highlighted = 0;
+    }
+
+    /// Act on one omnibox row.
+    fn choose(&mut self, hit: crate::omnibox::Hit, actions: &mut Vec<FieldAction>) {
+        use crate::omnibox::Hit;
+        self.search_focused = false;
+        match hit {
+            Hit::App { id } => {
+                actions.push(FieldAction::Launch(id));
                 self.search.set_text("");
             }
+            Hit::File { path } => actions.push(FieldAction::OpenFile(path)),
+            Hit::Directory { path } => {
+                self.files
+                    .go_to(crate::files_surface::FilesLocation::Directory(path));
+                self.files_expanded = true;
+            }
+            Hit::Project { id } => {
+                // A project is a container on the field: choosing one zooms into it, which is
+                // the same thing its tile does. Nothing is launched and nothing is asked of a
+                // service — the project is already here.
+                self.zoomed = Some(field_model::project_tile_id(&id));
+                self.focus = None;
+                self.keyboard_move = None;
+            }
+            Hit::Action { id } => actions.push(FieldAction::RunAction(id)),
+            Hit::Everything => self.widen(),
         }
     }
 
@@ -1349,6 +1506,7 @@ impl FieldScreen {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_pointer(
         &mut self,
         ui: &mut Ui<'_>,
@@ -1358,6 +1516,13 @@ impl FieldScreen {
     ) {
         let whole = ui.painter.bounds();
         let held = ui.input.pressing(whole);
+        // The dropdown is painted after the tiles but claims its clicks before them: a press
+        // inside it is the list's, not whatever tile happens to be underneath.
+        if let Some(area) = self.omnibox_area(ui)
+            && ui.input.cursor().is_some_and(|(x, y)| area.contains(x, y))
+        {
+            return;
+        }
         let Some((cx, cy)) = ui.input.cursor() else {
             if self.drag != Drag::Idle {
                 self.finish_drag(ui, doc, data, actions);
@@ -2485,39 +2650,9 @@ impl FieldScreen {
                 // `lege`. An unknown probe says so rather than rendering an empty shell.
                 if let Some(widget) = widgets::descriptor(probe) {
                     let rung = representation_of(data.field, tile);
-                    // The launcher's body is rows rather than a headline, so it draws itself; its
-                    // region strip and its rung rules are still the contract's (see
-                    // `widgets::launcher`). Every other widget goes through the one painter.
-                    let chosen = if widget.id == "launcher" {
-                        // Owned so the borrow of the search field ends before the outcome is
-                        // acted on; the query is a handful of characters.
-                        let query = self.search.text().to_owned();
-                        let launcher = widgets::launcher::LauncherData {
-                            entries: data.apps,
-                            query: &query,
-                            icons: data.icons,
-                            available: data.apps_available,
-                        };
-                        let outcome = widgets::launcher::draw(
-                            ui,
-                            content,
-                            widget,
-                            &launcher,
-                            rung,
-                            self.confirming,
-                        );
-                        match outcome {
-                            widgets::launcher::LauncherOutcome::None => None,
-                            widgets::launcher::LauncherOutcome::Launch(app_id) => {
-                                self.confirming = None;
-                                actions.push(FieldAction::Launch(app_id));
-                                None
-                            }
-                            widgets::launcher::LauncherOutcome::Action(declaration) => {
-                                Some(declaration)
-                            }
-                        }
-                    } else if widget.id == "notifications" {
+                    // Notifications draw their own rows; every other widget goes through the
+                    // one painter.
+                    let chosen = if widget.id == "notifications" {
                         let snapshot = data.widgets.get(probe.as_str());
                         let notifications = widgets::notifications::NotificationsData {
                             rows: data.notifications,
@@ -2992,6 +3127,9 @@ mod tests {
                 apps: &self.apps,
                 apps_available: true,
                 widgets: &widgets,
+                projects: &[],
+                actions: lege_types::action::MANIFEST,
+                file_search: None,
                 clock_label: "SUN 24 AUG 18:43",
                 reduced_motion: false,
                 now_ms: self.now,
@@ -3119,146 +3257,117 @@ mod tests {
         assert_eq!(actions, vec![FieldAction::Activate(WindowId(1))]);
     }
 
-    /// The `y` of the launcher widget's first application row, from the same constants the
-    /// painter uses: grab band, the widget body's inset, the summary line, and half a row.
-    fn launcher_first_row_y(rect: Rect) -> i32 {
-        rect.y + design::GRAB_BAND_HEIGHT + 8 + 16 + 14
+    /// The `y` of the omnibox dropdown's `index`-th row, from the same constants the painter
+    /// uses: the top bar, the 4px gap under it, the panel's own 4px inset, and half a row.
+    fn omnibox_row_y(index: i32) -> i32 {
+        design::FIELD_INSET
+            + design::TOP_BAR_HEIGHT
+            + 4
+            + 4
+            + crate::surface::omnibox_screen::ROW_HEIGHT * index
+            + crate::surface::omnibox_screen::ROW_HEIGHT / 2
     }
 
+    /// The one search control, with nothing typed: every application, and clicking a row starts
+    /// it. This is what the launcher tile was, in the control that was already there.
     #[test]
-    fn clicking_a_row_on_the_launcher_widget_launches_that_application() {
+    fn the_omnibox_lists_every_application_and_a_row_launches_it() {
         let mut h = Harness::new();
-        let launcher = tile_id_for("system:launcher");
-        let rect = h.rect_of(launcher);
-        // With no query the list is alphabetical, so Files is the first row.
-        let actions = h.click(rect.x + rect.w / 2, launcher_first_row_y(rect));
+        h.screen.search_focused = true;
+        h.frame();
+        // Alphabetical with no query, so Files is the first row and GIMP the second.
+        let actions = h.click(W / 2, omnibox_row_y(0));
         assert_eq!(
             actions,
             vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())],
         );
     }
 
+    /// Typing narrows the same list, and Enter commits the highlighted row — which with a fresh
+    /// query is the best match.
     #[test]
-    fn typing_in_the_search_bar_filters_the_launcher_and_enter_launches_the_best_match() {
+    fn typing_narrows_the_omnibox_and_enter_commits_the_best_match() {
         let mut h = Harness::new();
         h.screen.search_focused = true;
         h.screen.search.set_text("image");
         h.frame();
 
-        // The filter reached the widget: its first row is now the only match, not Files.
-        let rect = h.rect_of(tile_id_for("system:launcher"));
         let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
-        let actions = h.click(rect.x + rect.w / 2, launcher_first_row_y(rect));
+        let actions = h.click(W / 2, omnibox_row_y(0));
         assert_eq!(actions, vec![FieldAction::Launch(gimp.clone())]);
 
-        // …and Enter on the field launches it without touching the tile at all — the repair to
-        // a search bar that said "Search files, applications and projects" and did nothing.
         h.screen.search.set_text("image");
+        h.screen.search_focused = true;
         let actions = h.key(KeyInput::Enter);
-        assert_eq!(actions, vec![FieldAction::Launch(gimp)]);
+        assert!(
+            actions.contains(&FieldAction::Launch(gimp)),
+            "Enter did not commit the best match: {actions:?}"
+        );
         assert!(
             h.screen.search.text().is_empty(),
             "a launched query is cleared, so the next keystroke starts a new search"
         );
     }
 
+    /// A query nothing matches launches nothing. It still *asks* — the file service has not
+    /// answered yet and may well have something — but it commits to nothing on its own.
     #[test]
     fn enter_with_a_query_that_matches_nothing_launches_nothing() {
         let mut h = Harness::new();
         h.screen.search_focused = true;
         h.screen.search.set_text("no such application");
-        assert_eq!(h.key(KeyInput::Enter), Vec::new());
+        let actions = h.key(KeyInput::Enter);
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, FieldAction::Launch(_))),
+            "{actions:?}"
+        );
         assert_eq!(h.screen.search.text(), "no such application");
     }
 
+    /// Every keystroke is not a search. The question is asked once per change of query, and the
+    /// host is what waits for the typing to stop.
     #[test]
-    fn the_launchers_declared_regions_reach_the_search_bar_and_are_declared_actions() {
+    fn the_omnibox_asks_the_file_service_once_per_query_not_once_per_frame() {
         let mut h = Harness::new();
-        let rect = h.rect_of(tile_id_for("system:launcher"));
-        // The region strip is the bottom band of the tile; at this size one region is offered.
-        let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 12);
-        assert_eq!(actions, vec![FieldAction::RunAction("launcher.search")]);
-        assert!(lege_types::action::action("launcher.search").is_some());
-    }
-
-    #[test]
-    fn the_park_control_on_an_open_session_parks_it() {
-        let mut h = Harness::new();
-        let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
-        let rect = h.rect_of(open);
-        let actions = h.click(rect.right() - 20, rect.y + 10);
-        assert_eq!(actions, vec![FieldAction::Park(WindowId(1))]);
-    }
-
-    #[test]
-    fn clicking_the_files_object_expands_it_and_escape_returns() {
-        let mut h = Harness::new();
-        let files = field_model::files_tile_id();
-        let rect = h.rect_of(files);
-        h.click(rect.x + rect.w / 2, rect.bottom() - 10);
-        assert!(h.screen.files_expanded);
-        h.key(KeyInput::Escape);
-        assert!(!h.screen.files_expanded);
-    }
-
-    #[test]
-    fn field_keyboard_reaches_every_action() {
-        let mut h = Harness::new();
-        // Arrow: focus the first tile (the Files object, top-left); Enter opens it; Escape
-        // closes.
-        h.key(KeyInput::Right);
-        assert_eq!(h.screen.focus, Some(field_model::files_tile_id()));
-        h.key(KeyInput::Enter);
-        assert!(h.screen.files_expanded);
-        h.key(KeyInput::Escape);
-        assert!(!h.screen.files_expanded);
-
-        // Walk right to the Files app tile and launch it with Enter.
-        let files = tile_id_for("app:org.legeos.Files");
-        while h.screen.focus != Some(files) {
-            let before = h.screen.focus;
-            h.key(KeyInput::Right);
-            assert_ne!(
-                h.screen.focus, before,
-                "the walk stopped short of the app tile"
-            );
-        }
-        assert_eq!(h.screen.focus, Some(files));
-        let actions = h.key(KeyInput::Enter);
-        assert_eq!(
-            actions,
-            vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())]
+        h.screen.search_focused = true;
+        h.screen.search.set_text("report");
+        let first = h.frame();
+        assert!(
+            first.iter().any(|action| matches!(
+                action,
+                FieldAction::RunSearch { query, .. } if query == "report"
+            )),
+            "{first:?}"
         );
+        let again = h.frame();
+        assert!(
+            !again
+                .iter()
+                .any(|action| matches!(action, FieldAction::RunSearch { .. })),
+            "the same question was asked twice: {again:?}"
+        );
+    }
 
-        // Space lifts, arrows move the ghost, Enter drops: an undoable Move. The op carries the
-        // cell the arrows walked to; where the tile actually settles is the reflow's call, which
-        // may legitimately differ when that cell is occupied, so the assertion is on the landing.
-        let before = h.doc.location(files).unwrap().placement.cell;
-        h.key(KeyInput::Character(' '));
-        assert!(h.screen.keyboard_move.is_some());
-        h.key(KeyInput::Right);
-        h.key(KeyInput::Down);
-        let actions = h.key(KeyInput::Enter);
-        let [FieldAction::Apply(FieldOp::Move { id, landing })] = actions.as_slice() else {
-            panic!("expected a Move, got {actions:?}");
-        };
-        assert_eq!(*id, files);
-        assert_eq!(landing.cell, Cell::new(before.col + 1, before.row + 1));
-        h.apply(&actions);
-        assert!(h.doc.location(files).is_some());
-
-        // Ctrl+Z asks for undo; Delete stashes the focused tile.
-        h.input.modifiers_changed(Modifiers {
-            control: true,
-            ..Modifiers::default()
-        });
-        let actions = h.key(KeyInput::Character('z'));
-        assert_eq!(actions, vec![FieldAction::Undo]);
-        h.input.modifiers_changed(Modifiers::default());
-        let actions = h.key(KeyInput::Delete);
+    /// Scope is derived, not chosen. Inside the expanded Files object Tab widens the search back
+    /// out to the whole desktop — and it is safe to claim, because this screen never uses Tab
+    /// for focus traversal while the search field has focus.
+    #[test]
+    fn tab_widens_a_scoped_search_back_to_the_whole_desktop() {
+        let mut h = Harness::new();
+        h.screen.files_expanded = true;
+        h.screen.search_focused = true;
+        h.screen.search.set_text("report");
+        h.key(KeyInput::Tab);
+        assert!(
+            !h.screen.files_expanded,
+            "Tab did not leave the scoped search"
+        );
         assert_eq!(
-            actions,
-            vec![FieldAction::Apply(FieldOp::Stash { id: files })]
+            h.screen.search.text(),
+            "report",
+            "widening threw the question away"
         );
     }
 

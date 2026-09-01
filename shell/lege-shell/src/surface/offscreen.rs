@@ -119,6 +119,9 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         apps: &apps,
         apps_available,
         widgets: &widgets,
+        projects: &projects,
+        actions: lege_types::action::MANIFEST,
+        file_search: None,
         clock_label: &clock_label,
         reduced_motion: true,
         now_ms: 0,
@@ -288,7 +291,25 @@ mod tests {
             feeds: &drawer_feeds,
             thumbnails: &empty_thumbnails,
         };
-        let apps = Vec::new();
+        let apps: Vec<crate::app_search::AppEntry> =
+            if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok() {
+                ["Reader", "Recorder", "Terminal", "Remote Desktop"]
+                    .into_iter()
+                    .map(|name| crate::app_search::AppEntry {
+                        id: format!("org.legeos.{}", name.replace(' ', ""))
+                            .parse()
+                            .unwrap(),
+                        name: name.to_owned(),
+                        desktop_file_id: String::new(),
+                        icon: String::new(),
+                        categories: Vec::new(),
+                        keywords: Vec::new(),
+                        no_display: false,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let data = FieldData {
             notifications: &[],
             field: &field,
@@ -305,6 +326,9 @@ mod tests {
             apps: &apps,
             apps_available: true,
             widgets: &widgets,
+            projects: &projects,
+            actions: lege_types::action::MANIFEST,
+            file_search: None,
             clock_label: "Thu 27 Aug 10:15",
             reduced_motion: true,
             now_ms: 0,
@@ -315,6 +339,13 @@ mod tests {
         let mut kernel = RasterKernel::new();
         let mut input = Input::new();
         let mut screen = FieldScreen::default();
+        // `LEGE_BASELINE_OMNIBOX=1` renders the same fixture with the omnibox open over it, for
+        // reviewing the dropdown — the one surface the resting field cannot show. It returns
+        // before the hash, so it can never be mistaken for the baseline itself.
+        if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok() {
+            screen.search_focused = true;
+            screen.search.set_text("re");
+        }
         for _ in 0..2 {
             let mut ui = Ui::new(
                 Painter::new(&mut buffer),
@@ -331,6 +362,9 @@ mod tests {
         if let Ok(path) = std::env::var("LEGE_BASELINE_DUMP") {
             write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
         }
+        if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok() {
+            return;
+        }
         let hash = buffer
             .pixels
             .iter()
@@ -340,7 +374,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xe585_9d12_a1f9_0990,
+            hash, 0x39d9_9504_b2f2_1674,
             "review the Home Field pixels before updating this baseline"
         );
     }

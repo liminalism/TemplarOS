@@ -37,15 +37,21 @@ pub const FILES_WIDGET: &str = "files";
 /// The `TileKind::System` probes Home places for itself. Each must be a widget the shell knows
 /// (`crate::surface::widgets::WIDGETS`), which a test asserts.
 ///
-/// The launcher is here for the same reason Session is: without it a freshly booted session has
-/// nothing on the field to open anything with, because application tiles are derived from windows
-/// that already exist (`merge_apps`) and go away with the last one.
-///
-/// Settings is the fourth and last: the battery, the volume and the display brightness on one
+/// Settings is the third and last: the battery, the volume and the display brightness on one
 /// tile, with the way into the window that changes the rest of them. LegeOS has no tray and no
 /// menu bar by design, so a widget is the only place those readings can be — but one tile each was
 /// three headings for three numbers, which is a tray by another name.
-pub const SYSTEM_WIDGETS: [&str; 4] = ["session", "launcher", "notifications", "settings"];
+///
+/// There is no launcher among them any more. The search control at the top of Home is the
+/// launcher, and a tile that listed what it matched was the same list twice.
+pub const SYSTEM_WIDGETS: [&str; 3] = ["session", "notifications", "settings"];
+
+/// The system widget a saved field may still be carrying and this build no longer draws.
+///
+/// The launcher tile was a list of applications filtered by the search bar's query — which is
+/// what the omnibox under that same bar now is, at every size, for every kind of thing. There is
+/// no successor tile: the capability moved into the control that was already there.
+const LEGACY_LAUNCHER_WIDGET: &str = "launcher";
 
 /// The `TileKind::System` probes a saved field may still be carrying: one tile per hardware
 /// reading, as Home placed them before the Settings widget replaced all three.
@@ -194,6 +200,7 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     // object, and the migration has to run before `merge_files` so the replacement can inherit
     // the place the block held instead of landing in the default corner.
     migrate_drawer_tiles(doc, &mut applied);
+    migrate_launcher_tile(doc, &mut applied);
     merge_files(doc, &mut wanted, &mut applied);
     // A Home overview must never sacrifice a real open window to a project shortcut or redundant
     // application badge when space is tight, so sessions get first claim after the utility block.
@@ -744,6 +751,26 @@ fn migrate_hardware_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         cell,
     };
     try_apply(doc, FieldOp::Place { tile, landing }, applied);
+}
+
+/// Take the launcher tile off a saved field.
+///
+/// The one migration with no successor, and that is the point rather than an omission: the
+/// launcher's whole content was "the applications matching what is typed in the search bar", and
+/// that is now the omnibox under the search bar itself — at every size, for files and projects
+/// and actions as well as applications. Putting a replacement tile in its place would be putting
+/// the same list on the field twice.
+///
+/// Kind-checked and expressed as an ordinary op, like every other migration here, so it inverts
+/// exactly and a person who wants the space back does not have to hunt for it.
+fn migrate_launcher_tile(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let id = tile_id_for(&format!("system:{LEGACY_LAUNCHER_WIDGET}"));
+    let is_launcher = doc.tile(id).is_some_and(
+        |tile| matches!(&tile.kind, TileKind::System { probe } if probe == LEGACY_LAUNCHER_WIDGET),
+    );
+    if is_launcher {
+        try_apply(doc, FieldOp::Remove { id }, applied);
+    }
 }
 
 /// System widgets form a shelf in the bottom-right corner, packed right to left in declaration
@@ -1465,7 +1492,7 @@ mod tests {
         // A small field keeps the three a desktop is unusable without and drops the readouts,
         // rather than filling the space windows need with instruments.
         let fitted = system_widgets_that_fit(11, 7);
-        assert_eq!(fitted, vec!["session", "launcher", "notifications"]);
+        assert_eq!(fitted, vec!["session", "notifications", "settings"]);
     }
 
     #[test]
@@ -1648,6 +1675,55 @@ mod tests {
             Some(chosen),
             "the tile a person is already using was moved"
         );
+    }
+
+    /// The launcher tile leaves a saved field and nothing takes its place: its whole content was
+    /// "the applications matching what is typed in the search bar", and that is the omnibox under
+    /// the search bar now. Nothing else on the field moves.
+    #[test]
+    fn a_saved_field_loses_its_launcher_tile_and_gains_no_replacement() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let kind = TileKind::System {
+            probe: LEGACY_LAUNCHER_WIDGET.to_owned(),
+        };
+        let chosen = Cell::new(9, 6);
+        doc = apply(
+            &doc,
+            &FieldOp::Place {
+                tile: Tile {
+                    id: tile_id_for("system:launcher"),
+                    kind,
+                    title: "Applications".to_owned(),
+                    spans: SpanRange::new(Span::new(2, 1), Span::new(3, 2), Span::new(7, 4)),
+                    accent: None,
+                },
+                landing: Landing {
+                    container: None,
+                    cell: chosen,
+                },
+            },
+        )
+        .expect("the old launcher tile places")
+        .0;
+
+        merge(&mut doc, &LiveState::default());
+        assert!(
+            doc.tile(tile_id_for("system:launcher")).is_none(),
+            "the launcher tile is still there"
+        );
+        assert!(
+            !doc.tiles.iter().any(|tile| doc
+                .location(tile.id)
+                .is_some_and(|located| located.placement.cell == chosen)),
+            "something was put in its place; there is no successor tile"
+        );
+        // Idempotent, and silent on a field that never had one.
+        assert!(merge(&mut doc, &LiveState::default()).is_empty());
+        let mut fresh = FieldDocument::new("eDP-1", 16, 10);
+        merge(&mut fresh, &LiveState::default());
+        let mut ops = Vec::new();
+        migrate_launcher_tile(&mut fresh, &mut ops);
+        assert!(ops.is_empty(), "{ops:?}");
     }
 
     /// The migration touches nothing on a field that never had drawer tiles, and never runs

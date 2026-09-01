@@ -30,6 +30,7 @@ use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKi
 use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
+use crate::omnibox::Scope;
 use crate::settings::{self, HomeFieldSettings, PreviewMode};
 use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
@@ -98,7 +99,7 @@ enum DataUpdate {
     /// `HomeField1` is not reachable: the field stays in-session.
     FieldUnavailable,
     SearchResults {
-        location: FilesLocation,
+        scope: Scope,
         query: String,
         result: Result<Vec<BrowseEntry>, String>,
     },
@@ -263,7 +264,11 @@ struct ShellApp {
     started: Instant,
 
     drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
-    search_results: Option<(FilesLocation, String, Result<Vec<BrowseEntry>, String>)>,
+    search_results: Option<(Scope, String, Result<Vec<BrowseEntry>, String>)>,
+    /// The question typed but not yet asked. A keystroke is not a search: the shell waits for
+    /// the typing to stop before spending a round trip, and 180ms is about the gap between two
+    /// keystrokes of ordinary typing.
+    search_pending: Option<(Scope, String, Instant)>,
     browser_sources: BrowserSources,
     browser_listing: Option<(FilesLocation, bool, DirectoryListing)>,
     /// Decoded file thumbnails for the browse view's grid mode, keyed by path. Filled from the
@@ -340,6 +345,7 @@ impl ShellApp {
             started: Instant::now(),
             drawer_feeds: HashMap::new(),
             search_results: None,
+            search_pending: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
             file_thumbnails: std::collections::HashMap::new(),
@@ -446,20 +452,56 @@ impl ShellApp {
         });
     }
 
-    fn spawn_search(&self, location: FilesLocation, query: String) {
+    /// The debounce interval: long enough that ordinary typing costs one search rather than one
+    /// per keystroke, short enough that a person who stopped typing does not notice waiting.
+    const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
+
+    /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
+    fn note_search(&mut self, scope: Scope, query: String) {
         if query.trim().is_empty() {
+            self.search_pending = None;
+            self.search_results = None;
+            return;
+        }
+        self.search_pending = Some((scope, query, Instant::now()));
+    }
+
+    /// Ask the question, if it has been still for long enough.
+    fn flush_search(&mut self) {
+        let ready = self
+            .search_pending
+            .as_ref()
+            .is_some_and(|(_, _, at)| at.elapsed() >= Self::SEARCH_DEBOUNCE);
+        if !ready {
+            return;
+        }
+        let Some((scope, query, _)) = self.search_pending.take() else {
+            return;
+        };
+        // Everywhere means every pinned directory: the same places the Files object offers, so a
+        // federated search never looks somewhere the object itself does not go.
+        let roots: Vec<String> = match &scope {
+            Scope::Location(location) => location
+                .directory()
+                .map(|path| vec![path.display().to_string()])
+                .unwrap_or_default(),
+            Scope::Everything => self
+                .browser_sources
+                .pinned
+                .iter()
+                .filter_map(|pinned| pinned.location.directory())
+                .map(|path| path.display().to_string())
+                .collect(),
+        };
+        if roots.is_empty() {
             return;
         }
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
-        let roots = location
-            .directory()
-            .map(|path| vec![path.display().to_string()])
-            .unwrap_or_default();
         self.runtime.spawn(async move {
             let result = run_search(roots, &query).await;
             let _ = tx.send(DataUpdate::SearchResults {
-                location,
+                scope,
                 query,
                 result,
             });
@@ -639,11 +681,11 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::SearchResults {
-                    location,
+                    scope,
                     query,
                     result,
                 } => {
-                    self.search_results = Some((location, query, result));
+                    self.search_results = Some((scope, query, result));
                 }
                 DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
                 DataUpdate::BrowserListing {
@@ -875,6 +917,7 @@ impl ShellApp {
             .retain(|id, _| toplevels.iter().any(|t| t.window_id == *id));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn redraw_home(&mut self) {
         let toplevels = self
             .bridge
@@ -892,20 +935,38 @@ impl ShellApp {
         self.refresh_field(logical.width as i32, logical.height as i32, &toplevels);
         let network_control_available = network_control_app(&self.apps).is_some();
         let clock_label = local_clock_label(std::time::SystemTime::now());
+        self.flush_search();
 
         let Some(home) = &mut self.home else { return };
         if !home.prepare() {
             return;
         }
         let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
-        // A search result is shown only while it still answers the question on screen: the
-        // same location and the same query. The staleness guard is the one it always was, keyed
-        // on the location now that a drawer is not a thing.
-        let here = self.field_screen.files.location().clone();
+        // A search result is shown only while it still answers the question on screen: the same
+        // scope and the same query. The staleness guard is the one it always was, keyed on the
+        // scope now that a drawer is not a thing.
+        let scope = if self.field_screen.files_expanded {
+            Scope::Location(self.field_screen.files.location().clone())
+        } else {
+            Scope::Everything
+        };
         let active_search = self
             .search_results
             .as_ref()
-            .filter(|(location, _, _)| *location == here);
+            .filter(|(had, _, _)| *had == scope);
+        let file_search = self
+            .search_results
+            .as_ref()
+            .and_then(|(_, query, result)| {
+                result
+                    .as_ref()
+                    .ok()
+                    .map(|entries| crate::omnibox::FileResults {
+                        query,
+                        entries: entries.as_slice(),
+                    })
+            })
+            .filter(|_| active_search.is_some());
         let search_query = active_search.map(|(_, query, _)| query.as_str());
         let search_entries = active_search
             .and_then(|(_, _, result)| result.as_ref().ok())
@@ -950,6 +1011,9 @@ impl ShellApp {
             apps: &self.apps,
             apps_available: self.apps_available,
             widgets: &self.widgets,
+            projects: &self.projects,
+            actions: lege_types::action::MANIFEST,
+            file_search,
             clock_label: &clock_label,
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
@@ -997,7 +1061,7 @@ impl ShellApp {
                 });
             }
 
-            FieldAction::RunSearch { location, query } => self.spawn_search(location, query),
+            FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
             FieldAction::Launch(app_id) => self.spawn_launch(app_id),
             FieldAction::Activate(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
@@ -1191,9 +1255,14 @@ impl ShellApp {
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
             "launcher.search" => self.field_screen.search_focused = true,
+            // "Show all" is the omnibox with nothing typed in it: an empty query is not "match
+            // nothing", it is every application, which is exactly the list the launcher tile
+            // used to be. Focused, because a list nobody can type into is a list you cannot
+            // narrow.
             "launcher.show-all" => {
                 self.field_screen.search.set_text("");
-                self.field_screen.search_focused = false;
+                self.field_screen.omnibox.highlighted = 0;
+                self.field_screen.search_focused = true;
             }
             "notifications.clear" => self.spawn_clear_notifications(),
             "settings.open" => self.spawn_settings(),

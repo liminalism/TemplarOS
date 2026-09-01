@@ -24,7 +24,6 @@
 //! [`Representation`] at which it appears, so a tile that shrinks *drops* controls rather than
 //! rendering them too small to hit.
 
-pub mod launcher;
 pub mod notifications;
 pub mod settings;
 
@@ -146,20 +145,6 @@ pub const WIDGETS: &[WidgetDescriptor] = &[
             WidgetRegion::new("session.suspend", Representation::Wide),
             WidgetRegion::new("session.reboot", Representation::Large),
             WidgetRegion::new("session.poweroff", Representation::Large),
-        ],
-        scroll: None,
-        preferred_span: (3, 2),
-    },
-    WidgetDescriptor {
-        id: "launcher",
-        title: "Applications",
-        // The rows themselves are the launcher's real surface (`launcher::draw`), and each one
-        // performs `launcher.launch`; these two are the controls that are the same whatever is
-        // listed. `launcher.show-all` only earns its place once there is room for enough rows for
-        // "all" to differ visibly from what a filter left behind.
-        regions: &[
-            WidgetRegion::new("launcher.search", Representation::Small),
-            WidgetRegion::new("launcher.show-all", Representation::Wide),
         ],
         scroll: None,
         preferred_span: (3, 2),
@@ -467,7 +452,6 @@ mod tests {
     fn a_readout_arrives_no_larger_than_a_launcher() {
         // The launcher needs rows to be a list. Three readings and a control row need no more,
         // and the shelf is a strip along the bottom rather than a second desktop.
-        assert_eq!(descriptor("launcher").unwrap().preferred_span, (3, 2));
         assert_eq!(descriptor("settings").unwrap().preferred_span, (3, 2));
     }
 
@@ -548,7 +532,7 @@ mod tests {
 
     #[test]
     fn a_widget_with_no_wheel_route_leaves_the_wheel_alone() {
-        for id in ["session", "notifications", "launcher"] {
+        for id in ["session", "notifications"] {
             assert_eq!(
                 wheel_over(descriptor(id).unwrap(), -48.0, &[]),
                 None,
