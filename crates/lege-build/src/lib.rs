@@ -27,6 +27,7 @@
 #![forbid(unsafe_code)]
 
 pub mod components;
+pub mod interfaces;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -92,6 +93,28 @@ pub struct BuildSet {
     /// without re-parsing it.
     pub epoch: u64,
     pub packages: Vec<BuiltPackage>,
+    /// Every shipped D-Bus signature in this set, so a deployment can ask whether the daemons it
+    /// is about to restart still speak what the clients already running were built against —
+    /// without needing a source checkout on the machine being deployed to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub interfaces: BTreeMap<String, crate::interfaces::InterfaceSignatures>,
+    /// What this set's binaries make of each persistent store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, StoreSchema>,
+}
+
+/// What one build set's binaries make of one persistent store.
+///
+/// There is a single LegeOS state database (`$XDG_STATE_HOME/legeos/session.db`) today, keyed
+/// here as `session`; every domain's migrations live in it, so there is one counter rather than
+/// one per domain. The map exists because a second store would otherwise have to be smuggled
+/// into the first one's numbers.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StoreSchema {
+    /// The schema generation this set's binaries write.
+    pub version: u32,
+    /// The oldest generation that can still read what they wrote.
+    pub min_reader_version: u32,
 }
 
 /// One `.deb` in a build set.

@@ -205,6 +205,9 @@ enum DevCommand {
         /// Put the previous set back without asking if a component fails its health gate.
         #[arg(long)]
         auto_rollback: bool,
+        /// Copy the state stores first, for a set that could not otherwise be rolled back.
+        #[arg(long)]
+        snapshot_state: bool,
     },
 }
 
@@ -541,6 +544,7 @@ fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) 
             build_set,
             dry_run,
             auto_rollback,
+            snapshot_state,
         } => dev::deploy(
             repo,
             root,
@@ -548,6 +552,7 @@ fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) 
                 build_set,
                 dry_run,
                 auto_rollback,
+                snapshot_state,
             },
         ),
     }
