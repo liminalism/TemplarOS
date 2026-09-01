@@ -426,16 +426,32 @@ fn action_reason(
     }
 }
 
+/// This machine's `MemTotal`, or the reference machine's when `/proc/meminfo` cannot be read.
+///
+/// Falling back to the reference rather than to zero is deliberate: zero would scale every
+/// threshold to its floor and make the governor believe a large machine is a tiny one. A
+/// `/proc` that cannot be read is a broken environment, and the least surprising behaviour there
+/// is the behaviour this project has shipped all along.
+fn read_mem_total(proc_root: &Path) -> u64 {
+    psi::read_mem_total(proc_root).unwrap_or_else(|error| {
+        tracing::warn!(%error, "could not read MemTotal; using the reference machine's thresholds");
+        crate::policy::REFERENCE_MEMORY
+    })
+}
+
 /// Run one tick with real defaults, print the resulting report and exit. No D-Bus, no
 /// persistence — this is `lege-resourced --once`, a smoke test that must succeed even on a
 /// machine with no LegeOS units at all.
 pub fn run_once() -> Result<()> {
     lock_memory();
-    let config = config::load(&config::default_path()).unwrap_or_else(|error| {
-        tracing::warn!(%error, "invalid resourced.toml; using defaults");
-        GovernorConfig::default()
-    });
-    let mut ctx = TickContext::new(config, TickPaths::production(current_uid()));
+    let paths = TickPaths::production(current_uid());
+    let mem_total = read_mem_total(&paths.proc_root);
+    let config =
+        config::load_for_memory(&config::default_path(), mem_total).unwrap_or_else(|error| {
+            tracing::warn!(%error, "invalid resourced.toml; using defaults");
+            GovernorConfig::for_total_memory(mem_total)
+        });
+    let mut ctx = TickContext::new(config, paths);
     let shared = SharedState::in_memory();
     let outcome = tick(&mut ctx, &shared, Instant::now());
 
@@ -571,8 +587,18 @@ pub async fn serve(interval: Duration, config_path: &Path, state_dir: &Path) -> 
     }
     lock_memory();
 
-    let config =
-        config::load(config_path).with_context(|| format!("loading {}", config_path.display()))?;
+    // Once, at startup: how much memory this machine has does not change while it runs, and the
+    // sampling loop must not grow a file read for an answer that is always the same.
+    let paths = TickPaths::production(current_uid());
+    let mem_total = read_mem_total(&paths.proc_root);
+    let config = config::load_for_memory(config_path, mem_total)
+        .with_context(|| format!("loading {}", config_path.display()))?;
+    tracing::info!(
+        mem_total_mib = mem_total / (1024 * 1024),
+        reserve_mib = config.reserve_bytes / (1024 * 1024),
+        critical_reserve_mib = config.critical_reserve_bytes / (1024 * 1024),
+        "thresholds scaled to this machine",
+    );
     let traces = TraceRing::open(state_dir, 5000, 4 * 1024 * 1024);
     let stage_path = state_dir.join("stage.toml");
     let shared = Arc::new(SharedState::new(Some(stage_path), traces));

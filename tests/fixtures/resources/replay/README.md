@@ -1,6 +1,6 @@
 # Replay fixtures — hand-authored, not recordings
 
-These four traces are **written by hand**. Nobody's desktop produced them. They are scenarios
+These five traces are **written by hand**. Nobody's desktop produced them. They are scenarios
 chosen to exercise the parts of the governor that are hard to reach otherwise, in the format
 `lege-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
 `lege-resourced --replay` can push them back through the current policy.
@@ -24,7 +24,7 @@ cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay --bless 
 Blessing is how a deliberate policy change gets committed, *after* its diff has been read and
 quoted in the commit message. It is never the way to make a surprising diff go away.
 
-## The four scenarios
+## The five scenarios
 
 **`01-calm-desktop.jsonl`** — 20 GiB free, no pressure, four instances including the protected
 shell. Every tick should be `normal` and should emit nothing but `restore-limits`. The trace that
@@ -44,6 +44,14 @@ the change shows up.
 the kill decision is reached, then memory freed. Two things are asserted at once: that the kill is
 decided from the *record's own* clock rather than how long a replay took, and that the level takes
 three good ticks to come back down, because de-escalation is debounced and escalation is not.
+
+**`05-low-memory-no-stall.jsonl`** — 2 GiB free and no stall whatsoever. This is the one fixture
+that isolates the *memory* leg of the classifier from the PSI leg: the other four all reach their
+level through PSI, so they would decide the same thing whatever the reserve was. On the 48 GiB
+reference machine 2 GiB is below the 3 GiB reserve and reads as `severe`; replayed through a
+4 GiB laptop's scaled thresholds it reads as `normal`, because 2 GiB free on a 4 GiB machine is
+half the machine. `services/lege-resourced/tests/replay_fixtures.rs` asserts exactly that
+divergence, which is how the memory-scaling work is evidenced rather than asserted.
 
 Note that `stage` is `observe-only` in every record: these are decisions, not actions taken. At
 that stage the executor logs what it would have done and does none of it.

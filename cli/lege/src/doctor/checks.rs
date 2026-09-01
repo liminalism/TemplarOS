@@ -28,6 +28,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(PackageAgesConsistent),
         Box::new(CompositorUsable),
         Box::new(ProtectedUnitsHaveResourceControl),
+        Box::new(OomdOwnership),
         Box::new(NvidiaFlavourConsistent),
         Box::new(NoStandaloneNvidiaInstaller),
         Box::new(PortalConfigPresent),
@@ -166,6 +167,130 @@ fn legeos_packages() -> Vec<String> {
 /// How far apart two LegeOS packages' build dates are allowed to be before that is a fault rather
 /// than the ordinary spread of a single build run.
 const MAX_BUILD_SKEW: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// systemd-oomd is armed where ADR-0014 says it should be, and disarmed where it says it must be.
+///
+/// Two things on this desktop can decide a process must lose memory: `lege-resourced`, which
+/// knows which window has focus and which application has unsaved work, and `systemd-oomd`, which
+/// knows neither. ADR-0014 gives the session to resourced and leaves oomd armed on `app.slice` at
+/// 90% as a far-above backstop — the level at which resourced is very likely not running at all.
+///
+/// The realistic way that posture drifts is not someone editing it on purpose: it is a
+/// distribution upgrade replacing a drop-in, or a slice reorganisation making the session visible
+/// to a monitor it was never meant to be visible to. Neither announces itself; both are silent
+/// until the day something kills the compositor. Hence a check rather than a comment.
+///
+/// A Warning, not an Error: a machine where the drop-ins are simply not installed is a source
+/// checkout or a partial install, and `unit-binaries` is the check that says so.
+struct OomdOwnership;
+impl Check for OomdOwnership {
+    fn id(&self) -> &'static str {
+        "oomd-ownership"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn run(&self, context: &Context) -> Finding {
+        let app = context.path("/usr/lib/systemd/user/app.slice.d/legeos.conf");
+        let session = context.path("/usr/lib/systemd/user/session.slice.d/legeos.conf");
+        let (Ok(app_text), Ok(session_text)) =
+            (fs::read_to_string(&app), fs::read_to_string(&session))
+        else {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "the slice drop-ins are not installed",
+                app.display().to_string(),
+            );
+        };
+
+        let mut problems = Vec::new();
+        if directive(&app_text, "ManagedOOMMemoryPressure").as_deref() != Some("kill") {
+            problems.push(
+                "app.slice does not arm systemd-oomd; nothing would contain a session whose \
+                 governor is not running"
+                    .to_owned(),
+            );
+        }
+        match directive(&app_text, "ManagedOOMMemoryPressureLimit") {
+            Some(limit) if limit == "90%" => {}
+            Some(limit) => problems.push(format!(
+                "app.slice arms systemd-oomd at {limit}, not the 90% ADR-0014 states"
+            )),
+            None => problems.push("app.slice sets no oomd pressure limit".to_owned()),
+        }
+        if directive(&session_text, "ManagedOOMMemoryPressure").as_deref() == Some("kill") {
+            problems.push(
+                "session.slice arms systemd-oomd: it could kill the compositor, the shell or the \
+                 governor, which are what a recovery is for"
+                    .to_owned(),
+            );
+        }
+        if directive(&session_text, "ManagedOOMSwap").as_deref() == Some("kill") {
+            problems.push("session.slice arms systemd-oomd on swap pressure".to_owned());
+        }
+
+        let unprotected: Vec<&str> = OOMD_AVOID_UNITS
+            .iter()
+            .copied()
+            .filter(|unit| {
+                let path = context.path(&format!("/usr/lib/systemd/user/{unit}"));
+                fs::read_to_string(&path).is_ok_and(|text| {
+                    directive(&text, "ManagedOOMPreference").as_deref() != Some("avoid")
+                })
+            })
+            .collect();
+        if !unprotected.is_empty() {
+            problems.push(format!(
+                "{} do not declare ManagedOOMPreference=avoid",
+                unprotected.join(", ")
+            ));
+        }
+
+        if problems.is_empty() {
+            finding(
+                self,
+                Outcome::Pass,
+                "systemd-oomd is the backstop on app.slice and disarmed on session.slice \
+                 (ADR-0014)",
+                "",
+            )
+        } else {
+            finding(
+                self,
+                Outcome::Fail,
+                format!(
+                    "the systemd-oomd posture has drifted from ADR-0014 in {} way(s)",
+                    problems.len()
+                ),
+                problems.join("; "),
+            )
+        }
+    }
+}
+
+/// The units ADR-0014 puts out of systemd-oomd's reach.
+const OOMD_AVOID_UNITS: [&str; 5] = [
+    "lege-comp.service",
+    "lege-shell.service",
+    "lege-sessiond.service",
+    "lege-filed.service",
+    "lege-resourced.service",
+];
+
+/// The last value of a `Key=value` directive in a unit file.
+///
+/// Last rather than first, because that is what systemd does: a later assignment in a drop-in
+/// overrides an earlier one, and a check that read the first would pass a file that had been
+/// overridden two lines further down.
+fn directive(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+        .map(|value| value.trim().to_owned())
+        .next_back()
+}
 
 /// Every LegeOS package installed here belongs to the same build set.
 ///
@@ -1486,6 +1611,145 @@ mod tests {
 
     const SET: &str = "0.1.0~dev2000+gaaaaaaa";
     const OLDER_SET: &str = "0.1.0~dev1000+gbbbbbbb";
+
+    /// The oomd posture as ADR-0014 states it, under a scratch root.
+    fn install_oomd_posture(root: &Path) {
+        let user = root.join("usr/lib/systemd/user");
+        fs::create_dir_all(user.join("app.slice.d")).unwrap();
+        fs::create_dir_all(user.join("session.slice.d")).unwrap();
+        fs::write(
+            user.join("app.slice.d/legeos.conf"),
+            "[Slice]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=90%\n",
+        )
+        .unwrap();
+        fs::write(
+            user.join("session.slice.d/legeos.conf"),
+            "[Slice]\nManagedOOMMemoryPressure=auto\nManagedOOMSwap=auto\n",
+        )
+        .unwrap();
+        for unit in OOMD_AVOID_UNITS {
+            fs::write(
+                user.join(unit),
+                "[Service]\nOOMScoreAdjust=-900\nManagedOOMPreference=avoid\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn oomd_ownership_passes_the_posture_the_adr_states() {
+        let root = fixture_root("oomd-ok");
+        install_oomd_posture(&root);
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        assert_eq!(OomdOwnership.run(&context).outcome, Outcome::Pass);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn oomd_ownership_catches_a_session_slice_that_became_killable() {
+        // The realistic drift: a distribution upgrade replaces the drop-in and nothing announces
+        // it until the day oomd kills the compositor.
+        let root = fixture_root("oomd-session-armed");
+        install_oomd_posture(&root);
+        fs::write(
+            root.join("usr/lib/systemd/user/session.slice.d/legeos.conf"),
+            "[Slice]\nManagedOOMMemoryPressure=kill\n",
+        )
+        .unwrap();
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let finding = OomdOwnership.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail);
+        assert!(
+            finding.detail.contains("what a recovery is for"),
+            "{finding:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn oomd_ownership_catches_an_unarmed_app_slice_and_an_unprotected_unit() {
+        let root = fixture_root("oomd-app-disarmed");
+        install_oomd_posture(&root);
+        fs::write(
+            root.join("usr/lib/systemd/user/app.slice.d/legeos.conf"),
+            "[Slice]\nManagedOOMMemoryPressure=auto\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("usr/lib/systemd/user/lege-comp.service"),
+            "[Service]\nOOMScoreAdjust=-900\n",
+        )
+        .unwrap();
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let finding = OomdOwnership.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail);
+        assert!(finding.detail.contains("does not arm"), "{finding:?}");
+        assert!(finding.detail.contains("lege-comp.service"), "{finding:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn oomd_ownership_skips_a_tree_with_no_drop_ins() {
+        let root = fixture_root("oomd-absent");
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        assert_eq!(OomdOwnership.run(&context).outcome, Outcome::Skipped);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directive_reads_the_last_assignment_the_way_systemd_does() {
+        let text = "[Slice]\nManagedOOMMemoryPressure=auto\nManagedOOMMemoryPressure=kill\n";
+        assert_eq!(
+            directive(text, "ManagedOOMMemoryPressure").as_deref(),
+            Some("kill")
+        );
+        assert_eq!(
+            directive("# ManagedOOMPreference=avoid\n", "ManagedOOMPreference"),
+            None,
+            "a commented-out directive is not a directive"
+        );
+    }
+
+    #[test]
+    fn the_shipped_units_and_drop_ins_state_the_posture_the_adr_does() {
+        // Against the repository's own files rather than a fixture: the check above proves the
+        // check works, and this proves the thing it checks is actually true here.
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let app =
+            fs::read_to_string(repo.join("distro/policy/systemd/user/app.slice.d/legeos.conf"))
+                .unwrap();
+        assert_eq!(
+            directive(&app, "ManagedOOMMemoryPressureLimit").as_deref(),
+            Some("90%")
+        );
+        let session =
+            fs::read_to_string(repo.join("distro/policy/systemd/user/session.slice.d/legeos.conf"))
+                .unwrap();
+        assert_ne!(
+            directive(&session, "ManagedOOMMemoryPressure").as_deref(),
+            Some("kill")
+        );
+        for unit in OOMD_AVOID_UNITS {
+            let text = fs::read_to_string(repo.join("session/units/user").join(unit)).unwrap();
+            assert_eq!(
+                directive(&text, "ManagedOOMPreference").as_deref(),
+                Some("avoid"),
+                "{unit}"
+            );
+        }
+    }
 
     #[test]
     fn build_set_coherent_passes_a_whole_set_at_one_version() {

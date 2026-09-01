@@ -28,12 +28,19 @@ fn a_tick_against_the_checked_in_fixture_tree_reports_severe_pressure_observe_on
         drm_root: root.join("cgroup/drm-absent"),
         kmsg_path: root.join("cgroup/kmsg-absent"),
     };
-    let mut ctx = TickContext::new(GovernorConfig::default(), paths);
+    // Scaled to the fixture's own MemTotal rather than to the built-in defaults, so this test
+    // exercises the thresholds production actually runs with. The fixture machine is the 48 GiB
+    // reference one, where the scaled reserve is exactly the 3 GiB the constant always said —
+    // which is what makes this assertion still be about pressure rather than about arithmetic.
+    let mem_total = lege_resourced::psi::read_mem_total(&paths.proc_root).unwrap();
+    let config = GovernorConfig::for_total_memory(mem_total);
+    assert_eq!(config.reserve_bytes, 3 * 1024 * 1024 * 1024);
+    let mut ctx = TickContext::new(config, paths);
     let shared = SharedState::in_memory();
 
     let outcome = tick(&mut ctx, &shared, Instant::now());
 
-    // MemAvailable (2 GiB) is between the 1 GiB critical and 3 GiB reserve, and full PSI avg10
+    // MemAvailable (2 GiB) is between the ~1 GiB critical and 3 GiB reserve, and full PSI avg10
     // (1.10) clears the 0.5 severe bar: Severe by either leg.
     assert_eq!(outcome.level, PressureLevel::Severe);
 

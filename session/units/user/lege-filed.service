@@ -17,5 +17,13 @@ Slice=session.slice
 # Heavy I/O lives here on purpose: a stuck mount must not stall policy daemons.
 CPUWeight=200
 IOWeight=300
+# A stalled file service is a file manager, a file-chooser portal and the Home surface's file
+# object all failing to answer at once, so it gets the same modest reserve the shell does — and
+# unlike the shell it is doing I/O under exactly the pressure that makes reclaim expensive.
+MemoryLow=64M
 OOMScoreAdjust=-500
+# systemd-oomd must look elsewhere first (ADR-0014): even where it is armed on a slice this unit
+# is visible in — a distribution default, a future slice reorganisation, someone's own drop-in —
+# this is the unit a session cannot lose.
+ManagedOOMPreference=avoid
 StateDirectory=legeos

@@ -15,5 +15,6 @@
 | 0011 | Flatpak not snapd; telemetry-free crash handling | accepted |
 | 0012 | Compositor built on Smithay, not forked from cosmic-comp | accepted |
 | 0013 | Own code AGPL-3.0-only; `lege-comp` stays GPL-3.0-only | accepted |
+| 0014 | `systemd-oomd` is the backstop; `lege-resourced` owns the session | accepted |
 
 Mirrored as AKR `decision` records (`.akr/`, rendered in `docs/generated/`).
