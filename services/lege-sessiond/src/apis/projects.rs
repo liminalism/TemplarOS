@@ -10,7 +10,7 @@ use crate::{apis::failed, checkpoint::CheckpointTransport};
 use lege_appd::{Registry, launcher::LaunchBackend};
 use lege_session_core::{
     history::{Event, EventId, EventKind, HistoryStore, SqliteHistory},
-    projects::{self, Project, ProjectApp, ProjectId},
+    projects::{self, Project, ProjectApp, ProjectId, ProjectState},
 };
 use lege_state::Store;
 use lege_types::{
@@ -18,8 +18,14 @@ use lege_types::{
     checkpoint::{CheckpointRequest, CheckpointResponse},
 };
 use parking_lot::RwLock;
+use rusqlite::{OptionalExtension, params};
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
-use zbus::{Connection, fdo};
+use zbus::{Connection, fdo, object_server::SignalEmitter};
+
+/// Where the current project is remembered. `settings_values` is the generic key/value table other
+/// domains piggyback on, under an `_internal.` prefix that keeps it out of the typed settings
+/// schema (the same convention `_internal.location.policy` and `_internal.power.profile.*` use).
+const CURRENT_KEY: &str = "_internal.projects.current";
 
 #[derive(Debug)]
 pub struct ProjectsApi {
@@ -67,8 +73,11 @@ impl ProjectsApi {
             .map_err(failed)
     }
 
+    /// Record one event caused by a project. The cause is `project:<id>` rather than a bare
+    /// `project`, so "what happened in this project" is a question History1 can actually answer.
     fn record(
         &self,
+        project_id: &str,
         kind: EventKind,
         app_id: Option<AppId>,
         instance_id: Option<InstanceId>,
@@ -81,12 +90,82 @@ impl ProjectsApi {
             app_id,
             instance_id,
             message,
-            cause: Some("project".into()),
+            cause: Some(format!("project:{project_id}")),
             actions: Vec::new(),
             reversible: false,
         };
         if let Err(error) = self.history.append(event) {
             tracing::warn!(%error, "failed to record project history event");
+        }
+    }
+
+    /// The project the session is working in, or `None`.
+    fn current(&self) -> Option<String> {
+        let connection = self.store.lock();
+        connection
+            .query_row(
+                "SELECT value_json FROM settings_values WHERE key = ?1",
+                params![CURRENT_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<String>(&json).ok())
+            .filter(|id| !id.is_empty())
+    }
+
+    fn store_current(&self, project_id: Option<&str>) -> fdo::Result<()> {
+        self.store
+            .transaction(|tx| {
+                match project_id {
+                    None => {
+                        tx.execute(
+                            "DELETE FROM settings_values WHERE key = ?1",
+                            params![CURRENT_KEY],
+                        )?;
+                    }
+                    Some(id) => {
+                        tx.execute(
+                            "INSERT INTO settings_values (key, value_json, updated_ms)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT (key) DO UPDATE SET
+                                value_json = excluded.value_json, updated_ms = excluded.updated_ms",
+                            params![
+                                CURRENT_KEY,
+                                serde_json::to_string(id)?,
+                                lege_state::now_ms()
+                            ],
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(failed)
+    }
+
+    /// Tell the file service which project is open, so recent-file and last-directory suggestions
+    /// follow the work. Best-effort: `lege-filed` may not be up yet, and a project must still open
+    /// when it is not.
+    async fn tell_files_the_project(&self, project: Option<&Project>, closing: Option<&str>) {
+        let proxy = match lege_client::proxies::FilesRecentsProxy::new(&self.connection).await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                tracing::debug!(%error, "the file service is not answering; recent-file suggestions will not follow this project");
+                return;
+            }
+        };
+        let result = match (project, closing) {
+            (Some(project), _) => {
+                proxy
+                    .set_project(&project.id.0, &project.root.to_string_lossy())
+                    .await
+            }
+            (None, Some(project_id)) => proxy.clear_project(project_id).await,
+            (None, None) => Ok(()),
+        };
+        if let Err(error) = result {
+            tracing::debug!(%error, "telling the file service about the project failed");
         }
     }
 }
@@ -162,6 +241,7 @@ impl ProjectsApi {
                         }
                     }
                     self.record(
+                        project_id,
                         EventKind::Launch,
                         Some(app.app_id.clone()),
                         Some(record.id),
@@ -177,8 +257,11 @@ impl ProjectsApi {
                 }
             }
         }
+        project.last_opened_ms = lege_state::now_ms();
         self.save(&project)?;
         self.open_projects.write().insert(project_id.to_owned());
+        // Recent-file and last-directory suggestions should follow the work.
+        self.tell_files_the_project(Some(&project), None).await;
         Ok(())
     }
 
@@ -206,6 +289,7 @@ impl ProjectsApi {
                 } => {
                     app.checkpoint_token = Some(token);
                     self.record(
+                        project_id,
                         EventKind::ResourceAction,
                         Some(app.app_id.clone()),
                         Some(instance),
@@ -223,6 +307,7 @@ impl ProjectsApi {
                 }
                 CheckpointResponse::Refused { reason, .. } => {
                     self.record(
+                        project_id,
                         EventKind::ResourceAction,
                         Some(app.app_id.clone()),
                         Some(instance),
@@ -237,6 +322,7 @@ impl ProjectsApi {
         }
         self.save(&project)?;
         self.open_projects.write().remove(project_id);
+        self.tell_files_the_project(None, Some(project_id)).await;
         Ok(())
     }
 
@@ -249,12 +335,7 @@ impl ProjectsApi {
         let app_id = parse_app_id(app_id)?;
         let mut project = self.load(project_id)?;
         project.apps.retain(|app| app.app_id != app_id);
-        project.apps.push(ProjectApp {
-            app_id,
-            arguments,
-            last_instance: None,
-            checkpoint_token: None,
-        });
+        project.apps.push(ProjectApp::variant(app_id, arguments));
         self.save(&project)
     }
 
@@ -270,6 +351,148 @@ impl ProjectsApi {
             .transaction(|tx| projects::delete_within(tx, &ProjectId(project_id.to_owned())))
             .map_err(failed)?;
         self.open_projects.write().remove(project_id);
+        if self.current().as_deref() == Some(project_id) {
+            self.store_current(None)?;
+        }
         Ok(())
     }
+
+    /// The whole project as JSON (`interfaces/schemas/project.schema.json`).
+    ///
+    /// `List` answers "which projects exist"; this answers "what is this one". The payload is JSON
+    /// rather than a struct signature because project semantics keep growing and a signature
+    /// cannot — the same reason `Providers1.Report` and `HomeField1.Get` do it.
+    async fn describe(&self, project_id: &str) -> fdo::Result<String> {
+        let project = self.load(project_id)?;
+        serde_json::to_string(&project)
+            .map_err(|error| fdo::Error::Failed(format!("serializing project: {error}")))
+    }
+
+    /// `(project_id, project_json)` for every project — one round-trip instead of `List` plus N
+    /// `Describe`s, which is what a launcher or an omnibox actually needs.
+    async fn list_detailed(&self) -> fdo::Result<Vec<(String, String)>> {
+        Ok(projects::load_all(&self.store)
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|project| {
+                let json = serde_json::to_string(&project).ok()?;
+                Some((project.id.0, json))
+            })
+            .collect())
+    }
+
+    /// Merge a partial project object into the stored project.
+    ///
+    /// Only the user-editable keys are accepted. An unknown key is refused rather than dropped: a
+    /// client that believes it changed something it did not is worse than an error.
+    async fn update(
+        &self,
+        project_id: &str,
+        changes_json: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let changes: serde_json::Value = serde_json::from_str(changes_json)
+            .map_err(|error| fdo::Error::InvalidArgs(format!("changes must be JSON: {error}")))?;
+        let changes = changes.as_object().ok_or_else(|| {
+            fdo::Error::InvalidArgs("changes must be a JSON object of project keys".into())
+        })?;
+
+        let mut project = self.load(project_id)?;
+        let previous_importance = project.importance;
+        project
+            .apply_changes(changes)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        self.save(&project)?;
+
+        if project.importance != previous_importance {
+            self.record(
+                project_id,
+                EventKind::SettingChange,
+                None,
+                None,
+                format!(
+                    "Project {} is now {}.",
+                    project.name,
+                    project.importance.as_str()
+                ),
+            );
+        }
+        let _ = emitter.changed(project_id.to_owned()).await;
+        Ok(())
+    }
+
+    /// The project the session is currently working in, or `""` for none.
+    async fn get_current(&self) -> String {
+        self.current().unwrap_or_default()
+    }
+
+    /// Set (or clear, with `""`) the current project.
+    async fn set_current(
+        &self,
+        project_id: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        if project_id.is_empty() {
+            let previous = self.current();
+            self.store_current(None)?;
+            if let Some(previous) = previous.as_deref() {
+                self.tell_files_the_project(None, Some(previous)).await;
+            }
+            let _ = emitter.current_changed(String::new()).await;
+            return Ok(());
+        }
+        let project = self.load(project_id)?;
+        self.store_current(Some(project_id))?;
+        self.tell_files_the_project(Some(&project), None).await;
+        let _ = emitter.current_changed(project_id.to_owned()).await;
+        Ok(())
+    }
+
+    /// Archive a project, or bring it back. An archived project stays searchable and openable; it
+    /// is simply out of the way.
+    async fn set_state(
+        &self,
+        project_id: &str,
+        state: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let state = ProjectState::parse(state).ok_or_else(|| {
+            fdo::Error::InvalidArgs(format!(
+                "{state:?} is not a project state. Use \"active\" or \"archived\"."
+            ))
+        })?;
+        let mut project = self.load(project_id)?;
+        if project.state == state {
+            return Ok(());
+        }
+        project.state = state;
+        project.updated_ms = lege_state::now_ms();
+        self.save(&project)?;
+        self.record(
+            project_id,
+            EventKind::SettingChange,
+            None,
+            None,
+            match state {
+                ProjectState::Archived => format!(
+                    "Project {} was archived. It is out of the way, not gone: it still opens.",
+                    project.name
+                ),
+                ProjectState::Active => format!("Project {} is active again.", project.name),
+            },
+        );
+        let _ = emitter.changed(project_id.to_owned()).await;
+        Ok(())
+    }
+
+    /// This project changed; re-read it with `Describe`.
+    #[zbus(signal)]
+    async fn changed(signal_emitter: &SignalEmitter<'_>, project_id: String) -> zbus::Result<()>;
+
+    /// The current project changed (`""` when it was cleared).
+    #[zbus(signal)]
+    async fn current_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        project_id: String,
+    ) -> zbus::Result<()>;
 }
