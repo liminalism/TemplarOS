@@ -53,6 +53,42 @@ record legeos.work.action-manifest-one-declaration-three-surfaces/1 : work {
     }
 }
 
+record legeos.work.adaptive-files-and-omnibox/1 : work {
+    title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
+    state proposed
+    scope [ path "shell/lege-shell/**" ]
+    intent """
+        Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
+        """
+    note """
+        Verify Tab as the scope-escape key against pixelkit_ui focus traversal before committing; Ctrl-Space is the fallback. Until WS4 lands, the omnibox's project source is Projects1.List; switch to ListDetailed when available.
+        """
+    acceptance {
+        check omnibox-unit-tests {
+            statement """
+                federate() unit tests pass: cross-source ordering at equal strength, per-source caps before merge, staleness gate, escape row present exactly once under Files scope, empty query lists all offerable apps.
+                """
+            method command
+            command "cargo test -p lege-shell omnibox"
+        }
+        check one-search-control {
+            statement """
+                Exactly one search field exists in every Home state; typing on bare Home yields federated app, project and file results in deterministic order; late file results never reorder visible rows.
+                """
+            method manual
+        }
+        check state-continuity {
+            statement """
+                Expanding Files, navigating three directories deep, selecting entries, collapsing and re-expanding lands in the same directory with the same selection and scroll.
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.work.home-presentation-subtraction ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
 record legeos.work.compositor-window-authority/1 : work {
     title "The compositor's window authority: typed layers, one scene, explicit minimisation, recovery without the shell"
     state completed
@@ -83,6 +119,111 @@ record legeos.work.consumers-cli-portal-shell/1 : work {
         @legeos.work.sessiond-persistence-and-launch
     ]
     part_of [ @legeos.milestone.m1-session-runtime ]
+}
+
+record legeos.work.deployment-activation-and-resourced/1 : work {
+    title "WS6 — build identity, local archive, lege dev deploy, compatibility gates, and replay-gated resourced improvements"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-build/**",
+        path "crates/lege-field/**",
+        path "crates/lege-state/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/adr/**",
+        path "interfaces/**",
+        path "justfile",
+        path "scripts/reinstall-legeos-desktop.sh",
+        path "services/lege-boot-health/**",
+        path "services/lege-hostd/**",
+        path "services/lege-resourced/**",
+        path "session/units/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Tracks A-E, landing order A1 A2 A3 A4 B1 B2 B3 E0 C1 C2 B4 E1 E5 E6 D1 D2 E2 E3 E4 C3. Track A: BuildSetId is the Debian version (0.1.0~dev<epoch>+g<sha7>[.dirty]) across all 13 packages via cargo xtask build-set, which rejects mixed sets; every long-lived process writes a runtime build stamp file at startup (filesystem-first because comp and shell serve no D-Bus; not RuntimeDirectory=, which would delete siblings' stamps); distro/deploy/components.toml is the machine-readable component matrix; lege dev status computes installed-versus-running convergence; doctor gains BuildSetCoherent and RunningMatchesInstalled with PackageAgesConsistent as the documented fallback. Track B: a local signed APT repo at /var/lib/legeos/devrepo (apt-ftparchive + per-developer gpg key, keep=3 sets), one transactional apt-get install --allow-downgrades per set, lege dev rollback as the same path, and an activation engine with per-component rules — shell restart with health gate, apps at next launch, resourced controlled restart, sessiond/filed/portal only when the compatibility gates pass (shipped manual until the composed-session restart test exists), hostd blocked mid-transaction, compositor always needs-session, kernel/boot needs-reboot — ending in the convergence report with the previous set retained. Track C: xtask interface-baseline/check-interface-signatures turns the frozen-signature convention into an enforced gate; lege-state gains schema_meta with min_reader_version, an open()-time refusal of too-new databases, VACUUM INTO snapshots, and the documented one-rollback-generation policy; lege-field gains a document migration registry applied at the load boundary with DocumentTooNew never overwriting. Track D: lege-boot-health calls MarkGood/Rollback itself, and hostd's reconcile_boot wires the GRUB tries counter; cryptographic verification and the hardware matrix stay explicitly deferred. Track E, all gated behind the E0 replay harness (replay recorded traces through Governor::decide with a round-trip fidelity test): thresholds scale with MemTotal (reserve clamp 6.25% 768MiB-4GiB, critical clamp 2% 256MiB-1.5GiB, reproducing today's constants at 48GiB), unsaved-work gains a producer and a TTL via additive SetInstanceWork, richer safe-to-sacrifice signals via additive SetInstanceActivity (idle age, project importance, checkpoint freshness reaching scoring for the first time, user pin as strong weight never hard exclusion), Governor::plan returns multi-step reclaim plans (Elevated trims up to three, Severe throttles top-K to the deficit, Critical stays single-victim) with the foreground structurally excluded at Severe unless demonstrably the runaway, protect.rs stops lowering memory.low and covers sessiond and filed, and ADR-0014 settles systemd-oomd ownership (armed backstop on app.slice at 90%, off on session.slice, avoid on the five session units).
+        """
+    note """
+        Verified corrections folded in: MSRV is 1.97 workspace-wide per ADR-0008 (debian/control, packaging/README.md and CLAUDE.md prose are stale and get the three-line fix); protect.rs currently lowers protection every tick; has_unsaved_work has no producer at ObserveOnly; the health-to-promotion loop is open on both boot backends. Terminate stays unreachable and no phase raises a resourced stage; hand-authored fixture traces prove the harness and properties, not real-world calibration. Settled: per-developer signing key framed as built-on-this-machine; Build1 interface deferred; user pins persisted in sessiond; foreground-runaway thresholds are declared guesses; greeter/DM matrix row ships manual and disabled.
+        """
+    acceptance {
+        check convergence-report {
+            statement """
+                lege dev deploy ends with a per-component report (build set, needs-session, needs-reboot), a schema-compatibility verdict, and the previous set named for rollback; lege dev status agrees with the stamps.
+                """
+            method manual
+        }
+        check protect-never-lowers {
+            statement """
+                protect.rs writes memory.low only when the desired value exceeds the current one, and covers lege-sessiond and lege-filed.
+                """
+            method command
+            command "cargo test -p lege-resourced protect"
+        }
+        check replay-fidelity {
+            statement """
+                Replaying a recorded trace with the config that recorded it reproduces its recorded decisions, and every E1-E4 change quotes its replay diff against the fixture traces.
+                """
+            method command
+            command "cargo test -p lege-resourced replay"
+        }
+        check rollback-acceptance {
+            statement """
+                With lege-shell deliberately broken, the set is rejected or health-gated before logout, and lege dev rollback restores the previous set without rebuilding.
+                """
+            method manual
+        }
+        check signature-gate {
+            statement """
+                check-interface-signatures passes on the committed baseline and fails when a shipped argument type is edited in place.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interface-signatures"
+        }
+    }
+    derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.design-consolidation-roadmap/1 : work {
+    title "Design consolidation roadmap — subtraction, one Files object, federated omnibox, semantic projects, app variants, activation system"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-appd/**",
+        path "crates/lege-associationd/**",
+        path "crates/lege-field/**",
+        path "crates/lege-session-core/**",
+        path "crates/lege-state/**",
+        path "crates/lege-types/**",
+        path "debian/**",
+        path "distro/**",
+        path "interfaces/**",
+        path "services/lege-boot-health/**",
+        path "services/lege-hostd/**",
+        path "services/lege-resourced/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Carry out the six workstreams of the approved 2026-09-01 consolidation plan (plan file: recursive-crunching-boot). WS1 Home presentation subtraction: shape-aware representation floors, the eight drawers collapse into one adaptive Files object, App tiles only when pinned, conditional LIVE/PARKED. WS2 adaptive Files surface and federated omnibox: HomeSurfaceScreen retired, one persistent FilesSurfaceState across every rung, one search control federating apps, projects, files and actions. WS3 chrome reduction and spatial continuity: per-rung chrome replacing the 34px band, expansion animating from the tile's place. WS4 project semantics: Projects1 extended additively (Describe, ListDetailed, Update, current, state, AddLogicalApp), priority_boost replaced by ProjectImportance feeding SetInstanceHints. WS5 logical app and variant identity: AppId is the variant id, LogicalAppId is new, provenance and trust tiers recorded, flatpak import collision fixed via resolve-through-alias, variant-keyed rights with trust gates. WS6 deployment activation and resourced: BuildSetId as the Debian version, runtime build stamps, component matrix, local signed APT repo, lege dev deploy with pre-activation interface/schema gates, boot-health promotion loop closed, and resourced improved behind a trace-replay harness (scaled thresholds, unsaved-work freshness, richer signals, reclaim plans, memory.low fixes, oomd ownership ADR).
+        """
+    note """
+        User decisions 2026-09-01: all six workstreams in full detail; Settings GUI proceeds in parallel; full Home subtraction; full activation tool in the first iteration with Btrfs boot deployments as the later lane. Sequencing: WS1 → WS2 → WS3, then WS4/WS5 (WS5's types precede WS4's consumption), with WS6 parallel throughout. Ordering within WS6: A1 A2 A3 A4 B1 B2 B3 E0 C1 C2 B4 E1 E5 E6 D1 D2 E2 E3 E4 C3.
+        """
+    derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.home-field ]
+    source {
+        kind external
+        role origin
+        document "design-review-home-and-platform-20260901"
+        use """
+            The six workstreams and their sequencing follow the review's 'What I would change first' list, verified and elaborated by three plan agents on 2026-09-01.
+            """
+    }
 }
 
 record legeos.work.desktop-validation-foundations/1 : work {
@@ -1323,6 +1464,42 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.work.home-presentation-subtraction/1 : work {
+    title "WS1 — Home subtraction: shape-aware floors, one Files object, pinned-only App tiles"
+    state proposed
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    intent """
+        Shell phases 0-2 of the consolidation plan. Phase 0: replace Representation::for_span's cell-count match with a declared RungFloor/RungLadder (cols, rows, cells floors per rung; highest admitted rung wins; monotone by construction), values chosen so no span reachable in today's default layout changes rung (System Large keeps rows floor 2 for the 7x2 Settings tile); reflow's aspect_distortion untouched; the --render baseline must not change in this phase. Phase 1: delete DRAWER_TILES, drawer_grid, drawer_reserved_cols, merge_drawers and the drawers panel group; add files_tile_id, merge_files (TileKind::Widget widget="files", span 2x2 floor / 4x3 preferred / widget-class ceiling) and migrate_drawer_tiles (all ten legacy drawer tiles kind-checked, first cell and largest span inherited, panel removed, idempotent, exact-inverse FieldOps); new surface/files_screen.rs renders Small and Wide from existing DrawerFeeds with conditional Downloads/Trash/Operations rows; DOCUMENT_VERSION stays 1. Phase 2: delete merge_apps; narrow the gone sweep to ParkedSession only (commented as load-bearing); add pin_app, FieldAction::PinApp, a Keep-on-Home session context row and the declared home.pin-app action; LIVE/PARKED hidden when every non-shelved toplevel has a located session tile.
+        """
+    note """
+        Settled: the default Desktop folder tile stays (per the placeable-objects decision); all ten --print drawer slugs stay as diagnostics. Risk watched: WidgetRegion::from_rung reachability asserted for every widget so no control silently vanishes at a new rung boundary.
+        """
+    acceptance {
+        check drawer-migration {
+            statement """
+                A saved layout with the legacy drawer block loads with one Files tile at the first drawer's cell, the drawers panel removed, and the migration idempotent with exact inverses.
+                """
+            method command
+            command "cargo test -p lege-shell field_model"
+        }
+        check field-ladder-tests {
+            statement """
+                lege-field passes the new ladder property tests: rung monotone in both axes, ladders well-formed, every rung reachable within its kind's ceiling, and the cells-only ladder reproduced for aspect within 1:3.
+                """
+            method command
+            command "cargo test -p lege-field"
+        }
+        check no-auto-app-tiles {
+            statement """
+                A running session produces a session tile and no App tile; a pinned App tile survives a shell restart; a field refresh never removes a placed tile other than a closed window's session tile.
+                """
+            method manual
+        }
+    }
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
 record legeos.work.home-shelf-and-representation-ladder/1 : work {
     title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
     state completed
@@ -1656,6 +1833,139 @@ record legeos.work.host-update-transaction/1 : work {
         Make lege-hostd able to promote or roll back a kernel and its NVIDIA modules as a pair: the Planned → Downloading → Staging → Verifying → AwaitingReboot → Trial → Promoted|RolledBack|Failed state machine over a durable journal that resumes mid-apt after a restart, with apt run as a child transient unit; a BootManager trait with working systemd-boot and grub backends so ADR-0004's undecided Secure-Boot posture stays a configuration choice rather than a hardcoding; one driver authority that selects a single flavour from detected hardware, verifies the version lock and detects support violations; the storage reserve and its trim order; polkit authorisation checked in the daemon on every privileged method, with the policy and an AppArmor profile shipped; and a lege-boot-health that can actually fail, since it gates boot-complete.target with FailureAction=reboot-force.
         """
     part_of [ @legeos.milestone.m1-session-runtime ]
+}
+
+record legeos.work.logical-app-and-variant-identity/1 : work {
+    title "WS5 — logical app + variant identity: provenance, trust tiers, variant-keyed rights"
+    state proposed
+    scope [
+        path "crates/lege-appd/**",
+        path "crates/lege-associationd/**",
+        path "crates/lege-client/**",
+        path "crates/lege-state/**",
+        path "crates/lege-types/**",
+        path "interfaces/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Identity phases 0-4 and 8. Today's AppId is the variant id (pub type AppVariantId = AppId); LogicalAppId is a new newtype sharing the validator; the cgroup/unit name keeps naming the variant. AppProvenance (origin kind, trust tier derived never declared, source path, package ref, version, desktop entry, launch mechanism, executable, sandboxed, update owner, declared privileges and provider claims as inert claims) attaches to every manifest. Import keys candidates on (origin_namespace, desktop_id) — the XDG chain keeps freedesktop shadowing, flatpak exports become their own namespace with ids flatpak.<X-Flatpak id>, fixing the live bug where a flatpak export and a distro package sharing a desktop id collapse and the distro app silently vanishes. Old flatpak ids migrate by resolve-through-alias (app_variant_aliases), never by rewriting stored rows, so rollback stays safe. Logical grouping joins variants only on five explicit rules (declared logical app, shared desktop-entry id across origins, flatpak alias, StartupWMClass+Name, shared executable minus multiplexers); minted logical ids persist. AppIdentity1/Projects1/Launcher1 extended additively (ListLogicalApps, ListVariants, LogicalAppOf, ListInstancesDetailed, LaunchLogical); ResolveWindow unchanged. Phase 4 closes two live security gaps: Providers1.Declare verifies the caller's own variant via peer PID to cgroup; a User-trust variant may not declare an exclusive provider role; and a desktop id whose provenance moves System to User trust has its provider declarations and autostart approvals dropped with a history event. Associationd records logical_app_id beside app_id and substitutes sibling variants with reason variant-substituted.
+        """
+    note """
+        Settled: AppVariantId stays an alias (rename separable); the Declare credential check lands here because it is what makes variant-keyed rights enforceable; migration 0006 is additive with the explicit review step that no column-less INSERT exists anywhere. A wrong logical merge is cosmetic by design because rights key on the variant.
+        """
+    acceptance {
+        check collision-regression {
+            statement """
+                A distro org.mozilla.firefox.desktop and a flatpak export of the same desktop id import as two distinct variants grouped under one logical app; today's silent disappearance is gone.
+                """
+            method command
+            command "cargo test -p lege-appd"
+        }
+        check migration-fixture {
+            statement """
+                A database seeded with pre-0006 association, provider and desktop-import rows returns identical values for every pre-existing read after migration 0006 applies.
+                """
+            method command
+            command "cargo test -p lege-state"
+        }
+        check one-firefox {
+            statement """
+                With two variants installed the shell search shows one application whose details offer the variant choice, and an association whose stored variant was uninstalled resolves to a sibling with reason variant-substituted.
+                """
+            method manual
+        }
+        check trust-gates {
+            statement """
+                A user-writable .desktop cannot take an exclusive provider role; a user entry shadowing a system entry does not inherit its grants; Declare from a caller whose cgroup does not own the declared variant is refused.
+                """
+            method command
+            command "cargo test -p lege-sessiond providers"
+        }
+    }
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.project-semantic-service/1 : work {
+    title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-client/**",
+        path "crates/lege-session-core/**",
+        path "interfaces/**",
+        path "services/lege-filed/**",
+        path "services/lege-sessiond/**"
+    ]
+    intent """
+        Identity phases 5-7. Projects1 is extended additively — no Projects2: Describe(id) returning project_json against interfaces/schemas/project.schema.json, ListDetailed, Update with an explicit key allowlist (unknown key refused, nothing stored), GetCurrent/SetCurrent (stored in settings_values under _internal.projects.current), SetState(active|archived) with archived projects still searchable and openable, AddLogicalApp(logical id + optional preferred variant), and Changed/CurrentChanged signals. The Project struct gains importance, state, created/last-opened/last-active timestamps and references, and loses the inert priority_boost — replaced by ProjectImportance { Normal, Important }; the JSON blob is serde-additive in both directions so no schema migration is needed. Open/close call Files.Recents1.SetProject/ClearProject, waking the dead Suggestion::CurrentProject in lege-filed. ProjectApp gains logical_app and last_variant; opening resolves preferred variant, then the logical default, then warn-and-skip, recording what launched. Importance reaches the governor without touching lege-resourced: an Important open project sets protected=true through the existing Resources1.SetInstanceHints on the instances it launched, restored on close or demotion. HomeField stores only presentation (this project is here, this size); the project service is the record of membership.
+        """
+    note """
+        A graded importance channel is deliberately not built until resourced has a weight to multiply it by — the priority_boost lesson. CLI: lege project show / set --importance --state / current.
+        """
+    acceptance {
+        check blob-compat {
+            statement """
+                An old project blob still carrying priority_boost loads with the value ignored; a new blob read by the previous binary round-trips without loss; apply_changes refuses an unknown key.
+                """
+            method command
+            command "cargo test -p lege-session-core projects"
+        }
+        check update-roundtrip {
+            statement """
+                Update followed by Describe round-trips every allowlisted field through the D-Bus API, and SetCurrent reaches lege-filed's recents suggestion.
+                """
+            method command
+            command "cargo test -p lege-sessiond projects"
+        }
+        check variant-reopen {
+            statement """
+                A project whose pinned flatpak variant was uninstalled reopens on the sibling variant and says so in history.
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.work.logical-app-and-variant-identity ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.representation-chrome-and-continuity/1 : work {
+    title "WS3 — per-rung chrome and spatially continuous expansion"
+    state proposed
+    scope [ path "shell/lege-shell/**" ]
+    intent """
+        Shell phases 5-6. Phase 5: retire the unconditional 34px GRAB_BAND_HEIGHT; add HEADING_HEIGHT=30, EDGE_GRAB_HEIGHT=10, REVEAL_HEIGHT=20; FieldScreen::band becomes grab_strip(doc, id, rect, ui) consulting representation_of so painting and hit-testing share one function — Micro/Small get a 10px grabbable edge not reserved from content with a hover-or-focus reveal strip carrying the manipulation controls and the title drawn inside the body (identity always visible, only manipulation revealed); Wide and above keep a 30px heading. Phase 6: Expansion { from, started_ms, collapsing } with EXPAND_MS=140 eased, reduced_motion forcing zero duration; the Files body draws into the interpolated rect under clip with the rung ladder itself providing the cross-fade; collapse targets the Files tile's rect recomputed per frame.
+        """
+    note """
+        Re-baseline --render at the end of phases 5 and 6 only, never mid-phase, so every baseline diff has one explanation.
+        """
+    acceptance {
+        check expansion-interpolation {
+            statement """
+                Expansion interpolation is monotone, terminates, equals the tile rect at t=0 and the full area at t=1, and reduced_motion yields no intermediate frames.
+                """
+            method command
+            command "cargo test -p lege-shell"
+        }
+        check grip-overlap-all-rungs {
+            statement """
+                the_grip_never_overlaps_the_move_band holds at every representation rung, including a 1x1 App tile.
+                """
+            method command
+            command "cargo test -p lege-shell field_screen"
+        }
+        check hands-on-chrome {
+            statement """
+                In a nested session, small tiles show content with no permanent band, hover and keyboard focus both reveal manipulation controls, and expansion visibly grows from and collapses back to the tile's place.
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.work.adaptive-files-and-omnibox ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
 record legeos.work.reversible-window-arrangement-presets/1 : work {

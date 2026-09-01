@@ -1,5 +1,16 @@
 [
   {
+    "added_at": "2026-09-01",
+    "availability": "full",
+    "byte_len": 28861,
+    "content_hash": "sha256:63db09f6fe91f5b42ff5e6ad53665baebc3271a567f94b9a81d33bd6ee92bbcf",
+    "id": "design-review-home-and-platform-20260901",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/design-review-home-and-platform-20260901--63db09f6.md",
+    "title": "External design review: Home Field, file service, projects, app identity, resourced, hotfixability (2026-09-01)"
+  },
+  {
     "added_at": "2026-08-22",
     "availability": "full",
     "byte_len": 26221,

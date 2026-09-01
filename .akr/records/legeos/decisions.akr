@@ -308,6 +308,32 @@ record legeos.decision.one-session-policy-daemon/1 : decision {
     supported_by [ @legeos.evidence.m0-check-interfaces, @legeos.evidence.m0-smoke ]
 }
 
+record legeos.decision.representation-ladder-is-the-organizing-principle/1 : decision {
+    title "One object, one canonical route, many sizes of representation — the ladder organizes the whole shell"
+    state proposed
+    scope [ path "apps/lege-files/**", path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    topic shell-design-language
+    decision """
+        The representation ladder (Micro → Small → Wide → Large → Full) is the organizing principle of the LegeOS interface, governed by three rules. One object, one canonical route, many sizes of representation: a semantic object is never simultaneously represented by proxies of itself (no Projects drawer beside project tiles, no auto App tile beside a session tile, no launcher tile beside the search field), and enlarging an object yields a bigger surface of the same object with location, selection and navigation state preserved — never a different UI. Minimize useless space, not empty space: permanent chrome, permanent destination tiles and duplicate search fields are useless space to be recovered; a margin of empty field is a drop/throw target and stays. Objects reveal capability as physical area becomes available: representation selection considers shape (cols, rows), not just cell count; Micro/Small representations are information-first with manipulation revealed on hover/focus, Wide and above carry a conventional heading. Visually, LegeOS uses calm rectangular instruments: neutral substrate, restrained boundaries, typography-led hierarchy, with accent colour communicating state rather than application branding, rich texture living inside objects, and expansion spatially continuous — a tile grows from its place and collapses back into it.
+        """
+    context """
+        An external design review (2026-09-01) found the Home Field model substantially better than the visible interface and prescribed subtraction and consolidation rather than a new home-screen concept. Exploration verified its factual claims: eight default drawer tiles, a triple-nested expanded-drawer chrome (field breadcrumb → HomeSurfaceScreen rail+search → FileBrowserScreen sidebar+toolbar), cell-count-only representation selection, an unconditional 34px grab band, duplicated app/session tiles, and two search fields.
+        """
+    consequences """
+        The default Home reduces to Work (projects, sessions, trays), one adaptive Files object, and a minimal set of system surfaces; the application catalogue lives behind the omnibox. HomeSurfaceScreen and the launcher tile are retired. Every expandable surface gets a persistent state model consumed by all rungs. Existing saved layouts migrate through add-only merge-time rewrites, never a version refusal.
+        """
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    source {
+        kind external
+        role origin
+        document "design-review-home-and-platform-20260901"
+        use """
+            The three governing rules, the redundancy inventory, and the calm-rectangular-instruments visual direction were adopted from the review after in-tree verification of its factual claims.
+            """
+    }
+}
+
 record legeos.decision.resourced-separate-process/1 : decision {
     title "D3/ADR-0002 — The resource governor (lege-resourced) is a separate, tiny, protected process that needs no D-Bus for emergency actions"
     state active

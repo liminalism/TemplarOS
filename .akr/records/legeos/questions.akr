@@ -30,3 +30,13 @@ record legeos.question.home-field-default-density/2 : question {
     part_of [ @legeos.work.home-widgets ]
     supersedes [ @legeos.question.home-field-default-density/1 ]
 }
+
+record legeos.question.package-version-authority-across-lanes/1 : question {
+    title "Which version authority reconciles the dev lane's --deb-version with the archive lane's debian/changelog?"
+    state open
+    scope [ path "debian/**", path "distro/apt/**", path "tools/xtask/**" ]
+    question """
+        The dev deployment lane stamps BuildSetIds via cargo-deb --deb-version, bypassing debian/changelog, while the Stage-2 archive lane builds from debian/changelog. Two version authorities cannot coexist into release: either a changelog entry is generated at release time from the build-set machinery, or debian/rules learns to accept LEGEOS_BUILD_SET so both lanes share one source. This must be settled before the archive.legeos.org lane is finished.
+        """
+    part_of [ @legeos.work.deployment-activation-and-resourced ]
+}
