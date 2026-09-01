@@ -491,4 +491,43 @@ mod tests {
         let held = hints_for(&disposable, ProjectImportance::Important, true);
         assert!(held.protected && !held.disposable);
     }
+
+    #[test]
+    fn an_edit_survives_the_round_trip_through_the_store() {
+        // The blob is written and read as a unit, so "did the change stick" is only answered by
+        // going through the store rather than by inspecting the struct in memory.
+        let store = Store::in_memory().unwrap();
+        let mut project = Project::new("thesis", "Thesis", PathBuf::from("/home/p/thesis"));
+        project.apps.push(ProjectApp::variant(
+            "org.legeos.Viewer".parse().unwrap(),
+            vec![],
+        ));
+        store.transaction(|tx| save_within(tx, &project)).unwrap();
+
+        let mut loaded = load_all(&store).unwrap().remove(0);
+        let changes = serde_json::json!({
+            "name": "Doctoral thesis",
+            "importance": "important",
+            "state": "archived",
+            "directories": ["/home/p/refs"],
+            "references": ["https://example.org/issue/1"],
+            "environment": {"EDITOR": "lege-editor"},
+        });
+        loaded.apply_changes(changes.as_object().unwrap()).unwrap();
+        store.transaction(|tx| save_within(tx, &loaded)).unwrap();
+
+        let back = load_all(&store).unwrap().remove(0);
+        assert_eq!(back.name, "Doctoral thesis");
+        assert_eq!(back.importance, ProjectImportance::Important);
+        assert_eq!(back.state, ProjectState::Archived);
+        assert_eq!(back.directories, vec![PathBuf::from("/home/p/refs")]);
+        assert_eq!(back.references, vec!["https://example.org/issue/1"]);
+        assert_eq!(
+            back.environment.get("EDITOR").map(String::as_str),
+            Some("lege-editor")
+        );
+        assert_eq!(back.apps.len(), 1, "the daemon's fields are untouched");
+        assert_eq!(back.created_ms, project.created_ms);
+        assert!(back.updated_ms >= project.created_ms);
+    }
 }
