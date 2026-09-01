@@ -77,13 +77,34 @@ pub fn read_mem_available(proc_root: &Path) -> Result<u64> {
 }
 
 pub(crate) fn parse_mem_available(meminfo: &str) -> Result<u64> {
+    parse_meminfo_field(meminfo, "MemAvailable:")
+}
+
+/// `MemTotal` in bytes, from `{proc_root}/meminfo`.
+///
+/// Read once, at startup: how much memory the machine has does not change while it runs, and
+/// re-reading it every tick would put a file read on the sampling loop for an answer that is
+/// always the same.
+///
+/// # Errors
+/// If `/proc/meminfo` cannot be read or has no `MemTotal` line.
+pub fn read_mem_total(proc_root: &Path) -> Result<u64> {
+    parse_mem_total(&std::fs::read_to_string(proc_root.join("meminfo"))?)
+}
+
+pub(crate) fn parse_mem_total(meminfo: &str) -> Result<u64> {
+    parse_meminfo_field(meminfo, "MemTotal:")
+}
+
+/// One `Name: <kib> kB` line of `/proc/meminfo`, in bytes.
+fn parse_meminfo_field(meminfo: &str, field: &str) -> Result<u64> {
     let kib = meminfo
         .lines()
         .find_map(|line| {
-            let remainder = line.strip_prefix("MemAvailable:")?;
+            let remainder = line.strip_prefix(field)?;
             remainder.split_whitespace().next()?.parse::<u64>().ok()
         })
-        .context("MemAvailable is absent from /proc/meminfo")?;
+        .with_context(|| format!("{field} is absent from /proc/meminfo"))?;
     Ok(kib.saturating_mul(1024))
 }
 

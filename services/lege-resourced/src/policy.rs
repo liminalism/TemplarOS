@@ -226,6 +226,64 @@ pub struct GovernorConfig {
     pub victim_weights: VictimWeights,
 }
 
+/// The machine this project's thresholds were calibrated on.
+///
+/// [`GovernorConfig::default`]'s literal 3 GiB and 1 GiB come from a 48 GiB workstation, and were
+/// only ever right for one. [`GovernorConfig::for_total_memory`] is what production uses; this
+/// constant is what ties the two together, in a test, so the scaled form cannot quietly drift
+/// away from the calibration it was derived from.
+pub const REFERENCE_MEMORY: u64 = 48 * GIB;
+
+/// Fraction of `MemTotal` held back before pressure counts as severe.
+///
+/// 1/16. On the 48 GiB reference machine that is exactly the 3 GiB the constant always said; on a
+/// 4 GiB laptop it is 256 MiB, floored up to 768 MiB, which is the point — a fixed 3 GiB reserve
+/// on a 4 GiB machine declares severe pressure at the login screen and never stops.
+const RESERVE_FRACTION: f64 = 0.0625;
+/// Fraction of `MemTotal` below which pressure is critical.
+const CRITICAL_FRACTION: f64 = 0.02;
+
+/// Floors and ceilings for the scaled reserves.
+///
+/// The floors are what a desktop needs to survive at all regardless of how little memory it has:
+/// below roughly 768 MiB free, opening a window is already failing. The ceilings stop a very large
+/// machine from holding back an absurd amount it will never need — 6.25% of 256 GiB is 16 GiB of
+/// memory nobody would ever get to use.
+const RESERVE_FLOOR: u64 = 768 * MIB;
+const RESERVE_CEILING: u64 = 4 * GIB;
+const CRITICAL_FLOOR: u64 = 256 * MIB;
+const CRITICAL_CEILING: u64 = 3 * GIB / 2;
+
+impl GovernorConfig {
+    /// Defaults scaled to this machine's `MemTotal`.
+    ///
+    /// The shipped thresholds were two literals — 3 GiB and 1 GiB — with `MemTotal` read nowhere
+    /// in the crate. On the machine they were measured on that is right; on a 4 GiB laptop a 3 GiB
+    /// reserve means the governor believes the system is under severe memory pressure from the
+    /// moment it logs in, forever, and on a 256 GiB workstation it means it never notices anything
+    /// at all.
+    #[must_use]
+    pub fn for_total_memory(mem_total: u64) -> Self {
+        Self {
+            reserve_bytes: scale(mem_total, RESERVE_FRACTION, RESERVE_FLOOR, RESERVE_CEILING),
+            critical_reserve_bytes: scale(
+                mem_total,
+                CRITICAL_FRACTION,
+                CRITICAL_FLOOR,
+                CRITICAL_CEILING,
+            ),
+            ..Self::default()
+        }
+    }
+}
+
+/// `fraction` of `mem_total`, held between `floor` and `ceiling`.
+fn scale(mem_total: u64, fraction: f64, floor: u64, ceiling: u64) -> u64 {
+    #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+    let scaled = (mem_total as f64 * fraction) as u64;
+    scaled.clamp(floor, ceiling)
+}
+
 impl Default for GovernorConfig {
     fn default() -> Self {
         Self {
@@ -511,6 +569,83 @@ pub fn victim_score(app: &AppSample, weights: &VictimWeights) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reference_machine_reproduces_the_calibrated_reserve_exactly() {
+        // The literals in `default()` came off a 48 GiB workstation. If the scaled form ever
+        // stops agreeing with them there, the scaling has drifted away from the only calibration
+        // this project actually has.
+        let scaled = GovernorConfig::for_total_memory(REFERENCE_MEMORY);
+        assert_eq!(
+            scaled.reserve_bytes,
+            GovernorConfig::default().reserve_bytes,
+            "the reserve on the reference machine is the calibrated one"
+        );
+        // The critical reserve is a round 2% rather than the 1/48 that would land on exactly
+        // 1 GiB. 983 MiB against 1024 MiB is within 4%, and a round fraction is worth more than
+        // four significant figures back-fitted to one machine.
+        let critical = GovernorConfig::default().critical_reserve_bytes;
+        let difference = critical.abs_diff(scaled.critical_reserve_bytes);
+        assert!(
+            difference * 100 / critical <= 5,
+            "{} vs {critical}",
+            scaled.critical_reserve_bytes
+        );
+    }
+
+    #[test]
+    fn a_small_laptop_is_not_told_it_is_permanently_out_of_memory() {
+        // The bug the scaling fixes. A fixed 3 GiB reserve on a 4 GiB machine means MemAvailable
+        // is below it from the login screen onward, so the governor declares severe pressure
+        // forever and every later judgement is made from a false premise.
+        let laptop = GovernorConfig::for_total_memory(4 * GIB);
+        assert_eq!(laptop.reserve_bytes, 768 * MIB, "the floor applies");
+        assert!(laptop.reserve_bytes < 4 * GIB / 2);
+
+        let governor = Governor::new(laptop);
+        assert_eq!(
+            governor.classify(2 * GIB, 0.0, 0.0),
+            PressureLevel::Normal,
+            "half of a 4 GiB machine free is not severe pressure"
+        );
+        assert_eq!(
+            Governor::new(GovernorConfig::default()).classify(2 * GIB, 0.0, 0.0),
+            PressureLevel::Severe,
+            "which is exactly what the unscaled thresholds used to say"
+        );
+    }
+
+    #[test]
+    fn a_very_large_machine_does_not_hold_back_an_absurd_amount() {
+        let workstation = GovernorConfig::for_total_memory(256 * GIB);
+        assert_eq!(workstation.reserve_bytes, 4 * GIB, "the ceiling applies");
+        assert_eq!(workstation.critical_reserve_bytes, 3 * GIB / 2);
+    }
+
+    #[test]
+    fn the_scaled_thresholds_stay_ordered_at_every_size() {
+        // Critical must always be the tighter of the two, or the state machine can reach Critical
+        // without ever having been Severe.
+        for gib in [1_u64, 2, 4, 8, 16, 32, 48, 64, 128, 256, 1024] {
+            let config = GovernorConfig::for_total_memory(gib * GIB);
+            assert!(
+                config.critical_reserve_bytes < config.reserve_bytes,
+                "{gib} GiB: critical {} is not below reserve {}",
+                config.critical_reserve_bytes,
+                config.reserve_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn the_scaled_reserve_never_decreases_as_memory_grows() {
+        let mut previous = 0;
+        for gib in 1..=512_u64 {
+            let reserve = GovernorConfig::for_total_memory(gib * GIB).reserve_bytes;
+            assert!(reserve >= previous, "{gib} GiB lowers the reserve");
+            previous = reserve;
+        }
+    }
 
     fn sample(memory_gib: u64) -> AppSample {
         AppSample {
