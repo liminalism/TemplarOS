@@ -25,16 +25,18 @@ use pixelkit_ui::Ui;
 use lege_field::Representation;
 
 use crate::drawers::DrawerFeed;
+use crate::file_browser::BrowserSources;
+use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::surface::design;
 
 /// What the Files object asks its host to do. Every route into it is the same route: open the
 /// object at one of its locations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilesAction {
     None,
     /// Open the Files surface at this location.
-    Open(Drawer),
+    Open(FilesLocation),
     /// Perform one declared action (`lege_types::action::MANIFEST`) — the trash's own EMPTY, so
     /// far. Named rather than performed: like every other surface here, this module decides
     /// nothing that touches a service.
@@ -45,19 +47,14 @@ pub enum FilesAction {
 #[derive(Clone, Copy, Debug)]
 pub struct FilesData<'a> {
     pub feeds: &'a HashMap<Drawer, DrawerFeed>,
+    /// The pinned locations, in the order the expanded surface offers them. The compact tile
+    /// shows as many as fit, so the two surfaces cannot disagree about what is worth a press.
+    pub sources: &'a BrowserSources,
 }
 
-/// The locations that earn a chip of their own, in the order they are offered.
-///
-/// Places first, then the machine's own storage: a person reaching for the Files object is far
-/// more often after a directory than after a volume, and the ordering says so.
-pub const PINNED: [Drawer; 5] = [
-    Drawer::Recent,
-    Drawer::Documents,
-    Drawer::Downloads,
-    Drawer::Media,
-    Drawer::Drives,
-];
+/// How many locations the compact tile offers as chips. Past this the row stops being scannable
+/// and starts being a list, and a list belongs at the expanded rung.
+const CHIP_LIMIT: usize = 5;
 
 impl<'a> FilesData<'a> {
     fn feed(self, drawer: Drawer) -> Option<&'a DrawerFeed> {
@@ -202,7 +199,7 @@ fn draw_full(ui: &mut Ui<'_>, inner: Rect, data: FilesData<'_>) -> FilesAction {
     }
     let mut y = inner.y + row + ui.px(design::FILES_SECTION_GAP);
     let mut action = FilesAction::None;
-    take(&mut action, draw_locations(ui, inner, &mut y));
+    take(&mut action, draw_locations(ui, inner, &mut y, data));
     take(&mut action, draw_conditions(ui, inner, &mut y, data));
     if let Some((label, fraction)) = data.running()
         && y + row <= inner.bottom()
@@ -225,13 +222,13 @@ fn take(action: &mut FilesAction, next: FilesAction) {
 /// The locations, as chips: one press each, wrapping onto as many lines as there is room for and
 /// simply stopping when there is not. A chip that will not fit is left out rather than clipped to
 /// an unreadable stub. `y` is advanced past the block.
-fn draw_locations(ui: &mut Ui<'_>, inner: Rect, y: &mut i32) -> FilesAction {
+fn draw_locations(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_>) -> FilesAction {
     let mut action = FilesAction::None;
     let chip_height = ui.px(design::FILES_CHIP_HEIGHT);
     let gap = ui.px(design::FILES_CHIP_GAP);
     let mut x = inner.x;
-    for drawer in PINNED {
-        let label = drawer.name();
+    for pinned in data.sources.pinned.iter().take(CHIP_LIMIT) {
+        let label = pinned.label.as_str();
         let width = ui.text.measure(label, design::state_style(ui)) + ui.px(16);
         if x + width > inner.right() {
             x = inner.x;
@@ -265,7 +262,7 @@ fn draw_locations(ui: &mut Ui<'_>, inner: Rect, y: &mut i32) -> FilesAction {
             Align::Centre,
         );
         if ui.input.take_click(chip) {
-            action = FilesAction::Open(drawer);
+            action = FilesAction::Open(pinned.location.clone());
         }
         x += width + gap;
     }
@@ -326,7 +323,12 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
             Align::Right,
         );
         if ui.input.take_click(strip) {
-            action = FilesAction::Open(drawer);
+            // Downloads is a real directory and the pinned list knows where it is; the rest are
+            // feeds and are their own location.
+            action = data.sources.by_label(drawer.name()).map_or_else(
+                || FilesAction::Open(location_for(drawer)),
+                |pinned| FilesAction::Open(pinned.location.clone()),
+            );
         }
         if let Some(control) = control {
             let hovered = ui.input.hovering(control);
@@ -402,13 +404,26 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
     }
     ui.painter.pop_clip();
     if lines.is_empty() {
+        // One row tall, at the top of the listing — a label centred in whatever is left sits
+        // orphaned halfway down the tile, a long way from the heading it belongs to.
         ui.label_styled(
-            listing,
+            Rect::new(listing.x, listing.y, listing.w, row),
             "nothing recent",
             design::state_style(ui),
             design::TEXT_FAINT,
             Align::Left,
         );
+    }
+}
+
+/// The location behind a condition row. Conditions only ever name a feed, and a feed is a
+/// location in its own right.
+fn location_for(drawer: Drawer) -> FilesLocation {
+    match drawer {
+        Drawer::Trash => FilesLocation::Trash,
+        Drawer::Operations => FilesLocation::Operations,
+        Drawer::Drives => FilesLocation::Drives,
+        _ => FilesLocation::Recent,
     }
 }
 
@@ -465,6 +480,12 @@ fn draw_progress(ui: &mut Ui<'_>, area: Rect, label: &str, fraction: f32) {
 mod tests {
     use super::*;
 
+    /// The pinned list plays no part in what the object *says*; these tests are about the
+    /// content, so they hand it an empty one.
+    fn nowhere() -> BrowserSources {
+        BrowserSources::default()
+    }
+
     fn feeds(pairs: &[(Drawer, DrawerFeed)]) -> HashMap<Drawer, DrawerFeed> {
         pairs.iter().cloned().collect()
     }
@@ -475,10 +496,18 @@ mod tests {
             Drawer::Drives,
             DrawerFeed::new("512.0 MiB usable", Vec::new()),
         )]);
-        assert_eq!(FilesData { feeds: &map }.storage(), "512.0 MiB usable");
         assert_eq!(
             FilesData {
-                feeds: &HashMap::new()
+                feeds: &map,
+                sources: &nowhere(),
+            }
+            .storage(),
+            "512.0 MiB usable"
+        );
+        assert_eq!(
+            FilesData {
+                feeds: &HashMap::new(),
+                sources: &nowhere(),
             }
             .storage(),
             "…"
@@ -495,7 +524,14 @@ mod tests {
         );
         feed.row_targets = vec![Some("/a/b/my notes.md".to_owned())];
         let map = feeds(&[(Drawer::Recent, feed)]);
-        assert_eq!(FilesData { feeds: &map }.latest(), Some("my notes.md"));
+        assert_eq!(
+            FilesData {
+                feeds: &map,
+                sources: &nowhere(),
+            }
+            .latest(),
+            Some("my notes.md")
+        );
     }
 
     /// A finished operation is not news. Only a running one earns the line and the bar, and its
@@ -506,7 +542,14 @@ mod tests {
             Drawer::Operations,
             DrawerFeed::new("3 finished", Vec::new()),
         )]);
-        assert_eq!(FilesData { feeds: &done }.running(), None);
+        assert_eq!(
+            FilesData {
+                feeds: &done,
+                sources: &nowhere(),
+            }
+            .running(),
+            None
+        );
 
         let busy = feeds(&[(
             Drawer::Operations,
@@ -518,7 +561,12 @@ mod tests {
                 ],
             ),
         )]);
-        let (label, fraction) = FilesData { feeds: &busy }.running().expect("running");
+        let nowhere = nowhere();
+        let data = FilesData {
+            feeds: &busy,
+            sources: &nowhere,
+        };
+        let (label, fraction) = data.running().expect("running");
         assert_eq!(label, "2 running of 3");
         assert!((fraction - 0.40).abs() < 0.001, "{fraction}");
     }
@@ -532,14 +580,23 @@ mod tests {
             (Drawer::Downloads, DrawerFeed::new("nothing", Vec::new())),
             (Drawer::Trash, DrawerFeed::new("empty", Vec::new())),
         ]);
-        assert!(conditions(FilesData { feeds: &quiet }).is_empty());
+        assert!(
+            conditions(FilesData {
+                feeds: &quiet,
+                sources: &nowhere(),
+            })
+            .is_empty()
+        );
 
         let busy = feeds(&[
             (Drawer::Downloads, DrawerFeed::new("4 places", Vec::new())),
             (Drawer::Trash, DrawerFeed::unavailable("no file service")),
         ]);
         assert_eq!(
-            conditions(FilesData { feeds: &busy }),
+            conditions(FilesData {
+                feeds: &busy,
+                sources: &nowhere(),
+            }),
             vec![(Drawer::Downloads, "4 places".to_owned())]
         );
     }
