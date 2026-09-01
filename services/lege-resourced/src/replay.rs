@@ -65,6 +65,11 @@ pub fn sample_from(trace: &InstanceTrace) -> AppSample {
         protected: trace.protected,
         reports_unsaved_state: trace.has_unsaved_work,
         disposable: trace.disposable,
+        last_interaction_age: trace.last_interaction_age_ms.map(Duration::from_millis),
+        project_important: trace.project_important,
+        supports_checkpoint: trace.supports_checkpoint,
+        checkpoint_age: trace.checkpoint_age_ms.map(Duration::from_millis),
+        user_pinned: trace.user_pinned,
     }
 }
 
@@ -354,6 +359,11 @@ mod tests {
             protected: false,
             disposable,
             has_unsaved_work: false,
+            last_interaction_age_ms: None,
+            project_important: false,
+            supports_checkpoint: false,
+            checkpoint_age_ms: None,
+            user_pinned: false,
             victim_score: 0.0,
             score_breakdown: crate::policy::ScoreBreakdown::default(),
         }
@@ -406,6 +416,11 @@ mod tests {
             protected: true,
             reports_unsaved_state: true,
             disposable: true,
+            last_interaction_age: Some(Duration::from_secs(90)),
+            project_important: true,
+            supports_checkpoint: true,
+            checkpoint_age: Some(Duration::from_secs(30)),
+            user_pinned: true,
         };
         let trace = InstanceTrace {
             instance_id: source.instance_id,
@@ -418,6 +433,11 @@ mod tests {
             protected: source.protected,
             disposable: source.disposable,
             has_unsaved_work: source.reports_unsaved_state,
+            last_interaction_age_ms: Some(90_000),
+            project_important: source.project_important,
+            supports_checkpoint: source.supports_checkpoint,
+            checkpoint_age_ms: Some(30_000),
+            user_pinned: source.user_pinned,
             victim_score: 12.5,
             score_breakdown: crate::policy::ScoreBreakdown::default(),
         };

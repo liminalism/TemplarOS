@@ -123,7 +123,21 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
     let discovered = register_and_reap(ctx, shared, now);
     let (samples, instance_reports) = build_samples(ctx, shared, &discovered, now);
 
-    let decided = ctx.governor.decide(now, level, &samples);
+    // The plan, not just its actions: the reasons and the expected relief are what make a
+    // recorded run reviewable, and reviewing recorded runs is the condition on raising the stage.
+    let plan = ctx.governor.plan(now, level, &samples);
+    if level != PressureLevel::Normal {
+        for step in &plan.steps {
+            tracing::debug!(
+                instance_id = %step.instance_id,
+                expects_mib = step.expected_relief_bytes / (1024 * 1024),
+                deficit_mib = plan.deficit_bytes / (1024 * 1024),
+                reason = %step.reason,
+                "reclaim step",
+            );
+        }
+    }
+    let decided = plan.actions();
     let victim = (level != PressureLevel::Normal)
         .then(|| decided.first().map(Action::instance_id))
         .flatten();
@@ -225,6 +239,18 @@ fn register_and_reap(
     discovered
 }
 
+/// How long ago `then_ms` was, or `None` if nobody said.
+///
+/// A timestamp in the future yields `Duration::ZERO` rather than `None`: a clock that stepped
+/// backwards should read as "just now", not as "unknown", because the event did happen.
+fn age_since(then_ms: Option<i64>, now_ms: i64) -> Option<std::time::Duration> {
+    let then_ms = then_ms?;
+    let millis = now_ms.saturating_sub(then_ms).max(0);
+    Some(std::time::Duration::from_millis(
+        u64::try_from(millis).unwrap_or(0),
+    ))
+}
+
 /// Sample every discovered instance's memory/growth/PSI, merge in its D-Bus enrichment, and
 /// score it — the shared basis for both `Governor::decide`'s input and the published `Report`.
 fn build_samples(
@@ -273,6 +299,14 @@ fn build_samples(
             protected: enrichment.protected,
             reports_unsaved_state: enrichment.has_unsaved_work && claim_current,
             disposable: enrichment.disposable,
+            last_interaction_age: age_since(enrichment.last_interaction_ms, now_ms),
+            project_important: enrichment.project_important,
+            supports_checkpoint: enrichment.supports_checkpoint,
+            checkpoint_age: enrichment
+                .checkpoint_ok
+                .then(|| age_since(enrichment.checkpoint_at_ms, now_ms))
+                .flatten(),
+            user_pinned: enrichment.user_pinned,
         };
         let breakdown = crate::policy::victim_score_breakdown(&sample, &weights);
         instance_reports.push(InstanceReport {
@@ -289,6 +323,13 @@ fn build_samples(
             unsaved_work_age_ms: enrichment
                 .unsaved_since_ms
                 .map(|since| now_ms.saturating_sub(since)),
+            last_interaction_age_ms: sample
+                .last_interaction_age
+                .map(|age| age.as_millis() as u64),
+            project_important: sample.project_important,
+            supports_checkpoint: sample.supports_checkpoint,
+            checkpoint_age_ms: sample.checkpoint_age.map(|age| age.as_millis() as u64),
+            user_pinned: sample.user_pinned,
             victim_score: breakdown.total,
             score_breakdown: breakdown,
         });
@@ -376,6 +417,11 @@ fn record_trace(
                 protected: instance.protected,
                 disposable: instance.disposable,
                 has_unsaved_work: instance.has_unsaved_work,
+                last_interaction_age_ms: instance.last_interaction_age_ms,
+                project_important: instance.project_important,
+                supports_checkpoint: instance.supports_checkpoint,
+                checkpoint_age_ms: instance.checkpoint_age_ms,
+                user_pinned: instance.user_pinned,
                 victim_score: instance.victim_score,
                 score_breakdown: instance.score_breakdown,
             })

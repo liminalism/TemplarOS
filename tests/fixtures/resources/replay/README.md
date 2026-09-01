@@ -1,6 +1,6 @@
 # Replay fixtures — hand-authored, not recordings
 
-These five traces are **written by hand**. Nobody's desktop produced them. They are scenarios
+These six traces are **written by hand**. Nobody's desktop produced them. They are scenarios
 chosen to exercise the parts of the governor that are hard to reach otherwise, in the format
 `lege-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
 `lege-resourced --replay` can push them back through the current policy.
@@ -24,7 +24,7 @@ cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay --bless 
 Blessing is how a deliberate policy change gets committed, *after* its diff has been read and
 quoted in the commit message. It is never the way to make a surprising diff go away.
 
-## The five scenarios
+## The six scenarios
 
 **`01-calm-desktop.jsonl`** — 20 GiB free, no pressure, four instances including the protected
 shell. Every tick should be `normal` and should emit nothing but `restore-limits`. The trace that
@@ -35,10 +35,11 @@ in the editor. `elevated` throughout; the disposable browser is chosen and trimm
 foreground editor is left alone. The trace for "does mild pressure stay proportionate".
 
 **`03-severe-foreground-runaway.jsonl`** — memory falling to `severe` while the *foreground*
-browser is the thing growing at 420 MiB/s. Today the foreground protection outweighs its size and
-the background build is chosen instead. That is worth knowing rather than assuming, and it is
-exactly the behaviour the roadmap's reclaim-plan work changes; when it does, this trace is where
-the change shows up.
+browser grows at 420 MiB/s. Two things this now records. The foreground browser is structurally
+excluded from Severe unless it is demonstrably the cause — and at 420 MiB/s it is, being above the
+runaway threshold — so the score, not the exclusion, is what decides; the background build still
+wins it on size. And the plan throttles a *second* instance, because one instance's ten percent
+does not cover the deficit.
 
 **`04-critical-then-recovery.jsonl`** — `critical` held past the three-second emergency delay so
 the kill decision is reached, then memory freed. Two things are asserted at once: that the kill is
@@ -52,6 +53,16 @@ reference machine 2 GiB is below the 3 GiB reserve and reads as `severe`; replay
 4 GiB laptop's scaled thresholds it reads as `normal`, because 2 GiB free on a 4 GiB machine is
 half the machine. `services/lege-resourced/tests/replay_fixtures.rs` asserts exactly that
 divergence, which is how the memory-scaling work is evidenced rather than asserted.
+
+**`06-attention-and-intent.jsonl`** — Severe pressure with three real candidates: a document the
+user is typing in, the biggest process on the machine which the user has pinned, and a terminal
+untouched for three quarters of an hour that can be checkpointed and restarted. The terminal is
+chosen. Replayed with the attention and intent weights set to zero — the policy as it stood before
+them — the *browser* is chosen instead, on size alone, because the user having asked to keep it and
+the terminal having been abandoned were facts the score could not see.
+`replay_fixtures.rs::attention_and_intent_change_which_instance_is_chosen` asserts that divergence,
+and asserts that the other five fixtures are untouched by the same change, since none of them
+carries an attention signal.
 
 Note that `stage` is `observe-only` in every record: these are decisions, not actions taken. At
 that stage the executor logs what it would have done and does none of it.

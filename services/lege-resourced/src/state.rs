@@ -48,6 +48,15 @@ pub struct Enrichment {
     pub checkpoint_ok: bool,
     /// When that checkpoint was taken, in milliseconds since the epoch.
     pub checkpoint_at_ms: Option<i64>,
+    /// When the user last interacted with this instance, in milliseconds since the epoch.
+    ///
+    /// `None` means nobody has said — which is not the same as "a long time ago" and is not
+    /// scored as if it were.
+    pub last_interaction_ms: Option<i64>,
+    /// The user asked for this instance to be kept.
+    pub user_pinned: bool,
+    /// The instance belongs to a project the user marked important.
+    pub project_important: bool,
 }
 
 impl Default for Enrichment {
@@ -64,6 +73,9 @@ impl Default for Enrichment {
             unsaved_since_ms: None,
             checkpoint_ok: false,
             checkpoint_at_ms: None,
+            last_interaction_ms: None,
+            user_pinned: false,
+            project_important: false,
         }
     }
 }
@@ -125,6 +137,15 @@ pub struct InstanceReport {
     /// six-hour-old assertion sound like a fresh one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsaved_work_age_ms: Option<i64>,
+    /// The signals that reached scoring alongside the original four. Absent when nobody has
+    /// reported them, which is different from zero and is scored as such.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_interaction_age_ms: Option<u64>,
+    pub project_important: bool,
+    pub supports_checkpoint: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_age_ms: Option<u64>,
+    pub user_pinned: bool,
     pub victim_score: f64,
     pub score_breakdown: ScoreBreakdown,
 }
@@ -484,6 +505,11 @@ mod tests {
             disposable: false,
             has_unsaved_work: false,
             unsaved_work_age_ms: None,
+            last_interaction_age_ms: None,
+            project_important: false,
+            supports_checkpoint: false,
+            checkpoint_age_ms: None,
+            user_pinned: false,
             victim_score: score,
             score_breakdown: ScoreBreakdown::default(),
         }
