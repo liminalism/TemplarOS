@@ -62,6 +62,8 @@ impl ConfigFile {
             critical_reserve_bytes: self
                 .critical_reserve_bytes
                 .unwrap_or(base.critical_reserve_bytes),
+            // Not configurable: it is a fact about the machine, not a policy choice.
+            total_memory_bytes: base.total_memory_bytes,
             elevated_some_avg10: self.elevated_some_avg10.unwrap_or(base.elevated_some_avg10),
             severe_full_avg10: self.severe_full_avg10.unwrap_or(base.severe_full_avg10),
             critical_full_avg10: self.critical_full_avg10.unwrap_or(base.critical_full_avg10),

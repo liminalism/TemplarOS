@@ -35,10 +35,11 @@ in the editor. `elevated` throughout; the disposable browser is chosen and trimm
 foreground editor is left alone. The trace for "does mild pressure stay proportionate".
 
 **`03-severe-foreground-runaway.jsonl`** — memory falling to `severe` while the *foreground*
-browser is the thing growing at 420 MiB/s. Today the foreground protection outweighs its size and
-the background build is chosen instead. That is worth knowing rather than assuming, and it is
-exactly the behaviour the roadmap's reclaim-plan work changes; when it does, this trace is where
-the change shows up.
+browser grows at 420 MiB/s. Two things this now records. The foreground browser is structurally
+excluded from Severe unless it is demonstrably the cause — and at 420 MiB/s it is, being above the
+runaway threshold — so the score, not the exclusion, is what decides; the background build still
+wins it on size. And the plan throttles a *second* instance, because one instance's ten percent
+does not cover the deficit.
 
 **`04-critical-then-recovery.jsonl`** — `critical` held past the three-second emergency delay so
 the kill decision is reached, then memory freed. Two things are asserted at once: that the kill is

@@ -268,6 +268,9 @@ pub const FRESH_CHECKPOINT_WINDOW: Duration = Duration::from_secs(5 * 60);
 pub struct GovernorConfig {
     pub reserve_bytes: u64,
     pub critical_reserve_bytes: u64,
+    /// This machine's `MemTotal`. Read once at startup; used to size the thresholds and to judge
+    /// what counts as a runaway.
+    pub total_memory_bytes: u64,
 
     pub elevated_some_avg10: f64,
     pub severe_full_avg10: f64,
@@ -338,6 +341,7 @@ impl GovernorConfig {
                 CRITICAL_FLOOR,
                 CRITICAL_CEILING,
             ),
+            total_memory_bytes: mem_total,
             ..Self::default()
         }
     }
@@ -355,6 +359,7 @@ impl Default for GovernorConfig {
         Self {
             reserve_bytes: 3 * GIB,
             critical_reserve_bytes: GIB,
+            total_memory_bytes: REFERENCE_MEMORY,
             // Starting values only. Calibrate from real traces.
             elevated_some_avg10: 3.0,
             severe_full_avg10: 0.5,
@@ -368,6 +373,78 @@ impl Default for GovernorConfig {
     }
 }
 
+/// One instance's share of a reclaim plan: what to do to it, what that is expected to free, and
+/// why it was chosen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReclaimStep {
+    pub instance_id: InstanceId,
+    pub actions: Vec<Action>,
+    /// A rough estimate, in bytes. Rough is honest: `memory.high` and `memory.reclaim` are
+    /// requests to the kernel, not transactions, and what actually comes back depends on what is
+    /// reclaimable. It exists so a plan can stop when it has probably done enough rather than
+    /// always doing the maximum.
+    pub expected_relief_bytes: u64,
+    pub reason: String,
+}
+
+/// What the governor intends to do this tick, in order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReclaimPlan {
+    pub level: PressureLevel,
+    /// How far below the reserve the machine is. Zero above the reserve.
+    pub deficit_bytes: u64,
+    pub steps: Vec<ReclaimStep>,
+}
+
+impl ReclaimPlan {
+    /// Every action, in plan order.
+    #[must_use]
+    pub fn actions(&self) -> Vec<Action> {
+        self.steps
+            .iter()
+            .flat_map(|step| step.actions.iter().cloned())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn expected_relief_bytes(&self) -> u64 {
+        self.steps
+            .iter()
+            .map(|step| step.expected_relief_bytes)
+            .sum()
+    }
+}
+
+/// How many idle or disposable instances `Elevated` will trim in one tick.
+///
+/// Three. Trimming a cache is the cheapest useful thing the governor can do and nobody notices
+/// it; doing it to one instance at a time means several ticks of mild pressure before the same
+/// amount of memory comes back.
+pub const ELEVATED_TRIM_LIMIT: usize = 3;
+
+/// How many instances `Severe` will throttle in one tick.
+///
+/// Two. Every throttled application is one the user may be about to return to, and a plan that
+/// touched five of them to cover a deficit would be indistinguishable from the machine having
+/// simply become slow.
+pub const SEVERE_THROTTLE_LIMIT: usize = 2;
+
+/// Growth at or above which an instance is treated as a runaway rather than merely large.
+///
+/// A declared guess, deliberately far above anything an ordinary application does: the cost of a
+/// false positive is throttling the window the user is working in.
+pub const RUNAWAY_GROWTH_PER_SECOND: u64 = 256 * MIB;
+
+/// How long an instance must be untouched to count as idle for `Elevated` trimming.
+pub const IDLE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// Whether nobody has touched this instance for a while. `None` — nobody has said — is not idle.
+#[must_use]
+fn is_idle(app: &AppSample) -> bool {
+    app.last_interaction_age
+        .is_some_and(|age| age >= IDLE_AFTER)
+}
+
 /// The pressure state machine.
 #[derive(Debug)]
 pub struct Governor {
@@ -376,11 +453,18 @@ pub struct Governor {
     current_level: PressureLevel,
     /// A raw level below `current_level` seen for `pending.1` consecutive ticks so far.
     pending: Option<(PressureLevel, u32)>,
+    /// `MemAvailable` at the last [`Governor::tick_level`].
+    ///
+    /// Kept here rather than passed to [`Governor::plan`] so that `decide`'s signature — which
+    /// every test and the replay harness call — does not change. The two are always called in
+    /// order, one tick apart at most.
+    last_available_bytes: u64,
 }
 
 impl Governor {
     pub fn new(config: GovernorConfig) -> Self {
         Self {
+            last_available_bytes: config.reserve_bytes,
             config,
             critical_since: None,
             current_level: PressureLevel::Normal,
@@ -429,6 +513,7 @@ impl Governor {
         global_some_avg10: f64,
         global_full_avg10: f64,
     ) -> PressureLevel {
+        self.last_available_bytes = available_bytes;
         let raw = self.classify(available_bytes, global_some_avg10, global_full_avg10);
         match raw.cmp(&self.current_level) {
             Ordering::Greater => {
@@ -452,109 +537,229 @@ impl Governor {
         self.current_level
     }
 
-    /// Decide what to do this tick.
+    /// Decide what to do this tick. A thin wrapper over [`Governor::plan`].
+    ///
+    /// Kept because it is what every test and the replay harness call, and because "the actions
+    /// for this tick" is genuinely the common question; the plan is what to ask when the answer
+    /// needs to be explained.
     pub fn decide(
         &mut self,
         now: Instant,
         level: PressureLevel,
         applications: &[AppSample],
     ) -> Vec<Action> {
+        self.plan(now, level, applications).actions()
+    }
+
+    /// What to reclaim, from whom, and why.
+    ///
+    /// The governor used to pick exactly one victim at every level. That is right at `Critical`,
+    /// where narrowness is the safety property — one instance contained, deliberately, rather
+    /// than a broad action taken in a hurry — and wrong everywhere below it. At `Elevated` the
+    /// cheapest useful response is trimming several idle caches, none of which anyone notices; at
+    /// `Severe` one instance's ten percent frequently does not cover the deficit, so the machine
+    /// stays severe and the same instance is squeezed again next tick while three others sit
+    /// untouched.
+    ///
+    /// Every step says what it expects to free and why, because a plan nobody can read is a plan
+    /// nobody can calibrate — and these numbers need calibrating from real traces.
+    pub fn plan(
+        &mut self,
+        now: Instant,
+        level: PressureLevel,
+        applications: &[AppSample],
+    ) -> ReclaimPlan {
         if level != PressureLevel::Critical {
             self.critical_since = None;
         }
+        let deficit_bytes = self
+            .config
+            .reserve_bytes
+            .saturating_sub(self.last_available_bytes);
 
         if level == PressureLevel::Normal {
-            return applications
-                .iter()
-                .map(|app| Action::RestoreDynamicLimits {
-                    instance_id: app.instance_id,
-                })
-                .collect();
+            return ReclaimPlan {
+                level,
+                deficit_bytes: 0,
+                steps: applications
+                    .iter()
+                    .map(|app| ReclaimStep {
+                        instance_id: app.instance_id,
+                        actions: vec![Action::RestoreDynamicLimits {
+                            instance_id: app.instance_id,
+                        }],
+                        expected_relief_bytes: 0,
+                        reason: "pressure is normal; any temporary limit is lifted".to_owned(),
+                    })
+                    .collect(),
+            };
         }
 
-        let weights = &self.config.victim_weights;
-        let Some(target) =
-            applications
-                .iter()
-                .filter(|app| !app.protected)
-                .max_by(|left, right| {
-                    victim_score(left, weights)
-                        .partial_cmp(&victim_score(right, weights))
-                        .unwrap_or(Ordering::Equal)
-                })
-        else {
-            return Vec::new();
-        };
-
-        match level {
+        let ranked = self.ranked_candidates(level, applications);
+        let steps = match level {
             PressureLevel::Normal => unreachable!("handled above"),
+            PressureLevel::Elevated => Self::elevated_steps(&ranked),
+            PressureLevel::Severe => self.severe_steps(&ranked, deficit_bytes),
+            PressureLevel::Critical => self.critical_steps(now, &ranked),
+        };
+        ReclaimPlan {
+            level,
+            deficit_bytes,
+            steps,
+        }
+    }
 
-            PressureLevel::Elevated => {
-                if target.foreground {
-                    Vec::new()
+    /// Eligible candidates, best victim first.
+    ///
+    /// `protected` is the one hard exclusion and is applied here, once, structurally. At `Severe`
+    /// the foreground application joins it — the thing the user is looking at is the last thing
+    /// to throttle while there is anything else to throttle — *unless* it is demonstrably the
+    /// cause, in which case protecting it would mean containing everything except the problem.
+    /// At `Critical` it is eligible again but sorted last, because at that point the alternative
+    /// to touching it is the kernel's OOM killer touching something at random.
+    fn ranked_candidates<'a>(
+        &self,
+        level: PressureLevel,
+        applications: &'a [AppSample],
+    ) -> Vec<&'a AppSample> {
+        let weights = &self.config.victim_weights;
+        let mut candidates: Vec<&AppSample> = applications
+            .iter()
+            .filter(|app| !app.protected)
+            .filter(|app| level != PressureLevel::Severe || !app.foreground || self.is_runaway(app))
+            .collect();
+        candidates.sort_by(|left, right| {
+            // At Critical the foreground application goes last among eligible candidates.
+            let foreground_last = left.foreground.cmp(&right.foreground);
+            foreground_last.then_with(|| {
+                victim_score(right, weights)
+                    .partial_cmp(&victim_score(left, weights))
+                    .unwrap_or(Ordering::Equal)
+            })
+        });
+        candidates
+    }
+
+    /// Whether this instance is demonstrably the cause rather than merely large.
+    ///
+    /// Two declared guesses, to be recalibrated from real traces: growing by a quarter of a
+    /// gigabyte a second, or already holding half the machine. Both are deliberately far above
+    /// anything an ordinary application does, because the cost of a false positive here is
+    /// throttling the window the user is working in.
+    fn is_runaway(&self, app: &AppSample) -> bool {
+        app.memory_growth_per_second >= i64::try_from(RUNAWAY_GROWTH_PER_SECOND).unwrap_or(i64::MAX)
+            || app.memory_current >= self.config.total_memory_bytes / 2
+    }
+
+    /// Trim up to three idle or disposable caches. Nobody notices a trimmed cache.
+    fn elevated_steps(ranked: &[&AppSample]) -> Vec<ReclaimStep> {
+        ranked
+            .iter()
+            .filter(|app| !app.foreground)
+            .filter(|app| app.disposable || is_idle(app))
+            .take(ELEVATED_TRIM_LIMIT)
+            .map(|app| ReclaimStep {
+                instance_id: app.instance_id,
+                actions: vec![Action::TrimCaches {
+                    instance_id: app.instance_id,
+                }],
+                expected_relief_bytes: 0,
+                reason: if app.disposable {
+                    "disposable, and not on screen".to_owned()
                 } else {
-                    vec![Action::TrimCaches {
-                        instance_id: target.instance_id,
-                    }]
-                }
-            }
+                    "idle, and not on screen".to_owned()
+                },
+            })
+            .collect()
+    }
 
-            PressureLevel::Severe => {
-                let high = target
-                    .memory_current
-                    .saturating_mul(9)
-                    .saturating_div(10)
-                    .max(self.config.minimum_high_limit);
-                let reclaim = (target.memory_current / 8).min(256 * MIB);
-                vec![
+    /// Throttle the top candidates until the deficit is covered, up to two.
+    ///
+    /// Two, not more: every throttled application is one the user may be about to return to, and
+    /// a plan that touched five of them to cover a deficit would be indistinguishable from the
+    /// machine having simply become slow.
+    fn severe_steps(&self, ranked: &[&AppSample], deficit_bytes: u64) -> Vec<ReclaimStep> {
+        let mut steps = Vec::new();
+        let mut covered = 0_u64;
+        for app in ranked.iter().take(SEVERE_THROTTLE_LIMIT) {
+            let high = app
+                .memory_current
+                .saturating_mul(9)
+                .saturating_div(10)
+                .max(self.config.minimum_high_limit);
+            let reclaim = (app.memory_current / 8).min(256 * MIB);
+            let relief = app
+                .memory_current
+                .saturating_sub(high)
+                .saturating_add(reclaim);
+            steps.push(ReclaimStep {
+                instance_id: app.instance_id,
+                actions: vec![
                     Action::TrimCaches {
-                        instance_id: target.instance_id,
+                        instance_id: app.instance_id,
                     },
                     Action::SetMemoryHigh {
-                        instance_id: target.instance_id,
+                        instance_id: app.instance_id,
                         bytes: high,
                     },
                     Action::Reclaim {
-                        instance_id: target.instance_id,
+                        instance_id: app.instance_id,
                         bytes: reclaim,
                     },
-                ]
-            }
-
-            PressureLevel::Critical => {
-                let started = self.critical_since.get_or_insert(now);
-                let elapsed = now.saturating_duration_since(*started);
-                let high = target
-                    .memory_current
-                    .saturating_mul(8)
-                    .saturating_div(10)
-                    .max(self.config.minimum_high_limit);
-
-                let mut actions = vec![
-                    Action::SetMemoryHigh {
-                        instance_id: target.instance_id,
-                        bytes: high,
-                    },
-                    Action::RequestCheckpoint {
-                        instance_id: target.instance_id,
-                        deadline: self.config.emergency_kill_delay,
-                    },
-                ];
-
-                if elapsed >= self.config.emergency_kill_delay {
-                    actions.push(Action::KillCgroup {
-                        instance_id: target.instance_id,
-                        reason: format!(
-                            "persistent critical memory pressure; usage={} MiB, full PSI avg10={:.2}",
-                            target.memory_current / MIB,
-                            target.full_psi_avg10,
-                        ),
-                    });
-                }
-
-                actions
+                ],
+                expected_relief_bytes: relief,
+                reason: format!(
+                    "holding {} MiB under severe pressure",
+                    app.memory_current / MIB
+                ),
+            });
+            covered = covered.saturating_add(relief);
+            if covered >= deficit_bytes {
+                break;
             }
         }
+        steps
+    }
+
+    /// One victim, contained hard, and terminated only after the delay has elapsed.
+    fn critical_steps(&mut self, now: Instant, ranked: &[&AppSample]) -> Vec<ReclaimStep> {
+        let Some(target) = ranked.first() else {
+            return Vec::new();
+        };
+        let started = self.critical_since.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(*started);
+        let high = target
+            .memory_current
+            .saturating_mul(8)
+            .saturating_div(10)
+            .max(self.config.minimum_high_limit);
+
+        let mut actions = vec![
+            Action::SetMemoryHigh {
+                instance_id: target.instance_id,
+                bytes: high,
+            },
+            Action::RequestCheckpoint {
+                instance_id: target.instance_id,
+                deadline: self.config.emergency_kill_delay,
+            },
+        ];
+        if elapsed >= self.config.emergency_kill_delay {
+            actions.push(Action::KillCgroup {
+                instance_id: target.instance_id,
+                reason: format!(
+                    "persistent critical memory pressure; usage={} MiB, full PSI avg10={:.2}",
+                    target.memory_current / MIB,
+                    target.full_psi_avg10,
+                ),
+            });
+        }
+        vec![ReclaimStep {
+            instance_id: target.instance_id,
+            actions,
+            expected_relief_bytes: target.memory_current.saturating_sub(high),
+            reason: "the single highest-scoring candidate under critical pressure".to_owned(),
+        }]
     }
 }
 
@@ -706,6 +911,180 @@ pub fn victim_score(app: &AppSample, weights: &VictimWeights) -> f64 {
 mod tests {
     use super::*;
 
+    /// A governor whose last observed `MemAvailable` is `available`.
+    fn governor_at(available: u64) -> Governor {
+        let mut governor = Governor::new(GovernorConfig::default());
+        governor.tick_level(available, 0.0, 0.0);
+        governor
+    }
+
+    fn idle(memory_gib: u64) -> AppSample {
+        let mut app = sample(memory_gib);
+        app.last_interaction_age = Some(IDLE_AFTER + Duration::from_secs(1));
+        app
+    }
+
+    #[test]
+    fn elevated_trims_several_idle_caches_rather_than_one() {
+        // Trimming a cache is the cheapest useful thing the governor can do and nobody notices
+        // it. Doing it one instance at a time meant several ticks of mild pressure before the
+        // same memory came back.
+        let mut governor = governor_at(4 * GIB);
+        let apps: Vec<AppSample> = (1..=5).map(idle).collect();
+        let plan = governor.plan(Instant::now(), PressureLevel::Elevated, &apps);
+        assert_eq!(plan.steps.len(), ELEVATED_TRIM_LIMIT);
+        assert!(
+            plan.actions()
+                .iter()
+                .all(|action| matches!(action, Action::TrimCaches { .. }))
+        );
+    }
+
+    #[test]
+    fn elevated_leaves_alone_anything_the_user_might_be_using() {
+        // Neither disposable nor idle: trimming it costs the user a re-read of everything it had
+        // cached, for mild pressure that may pass on its own.
+        let mut governor = governor_at(4 * GIB);
+        let busy = sample(4);
+        let plan = governor.plan(Instant::now(), PressureLevel::Elevated, &[busy]);
+        assert!(plan.steps.is_empty(), "{plan:?}");
+    }
+
+    #[test]
+    fn severe_stops_as_soon_as_the_deficit_is_covered() {
+        // One instance's ten percent frequently does not cover a deficit, and the old single
+        // victim meant the machine stayed severe while three other instances sat untouched.
+        let config = GovernorConfig::default();
+        // Two modest instances: each is worth roughly 460 MiB of relief, so covering a 3 GiB
+        // deficit takes both of them and covering a one-byte deficit takes neither twice.
+        let apps = [sample(2), sample(2)];
+
+        let mut just_under = Governor::new(config);
+        just_under.tick_level(config.reserve_bytes - 1, 0.0, 0.0);
+        let plan = just_under.plan(Instant::now(), PressureLevel::Severe, &apps);
+        assert_eq!(plan.steps.len(), 1, "{plan:?}");
+
+        let mut wide = governor_at(0);
+        let plan = wide.plan(Instant::now(), PressureLevel::Severe, &apps);
+        assert_eq!(plan.steps.len(), 2, "{plan:?}");
+    }
+
+    #[test]
+    fn severe_never_throttles_more_than_two_instances() {
+        // Every throttled application is one the user may be about to return to; five of them at
+        // once is indistinguishable from the machine having simply become slow.
+        let mut governor = governor_at(0);
+        let apps: Vec<AppSample> = (1..=6).map(sample).collect();
+        let plan = governor.plan(Instant::now(), PressureLevel::Severe, &apps);
+        assert_eq!(plan.steps.len(), SEVERE_THROTTLE_LIMIT);
+    }
+
+    #[test]
+    fn severe_spares_the_window_the_user_is_working_in() {
+        let mut governor = governor_at(0);
+        // Large, but not half the machine and not growing: the foreground window, not the cause.
+        let mut front = sample(4);
+        front.foreground = true;
+        let background = sample(2);
+        let plan = governor.plan(
+            Instant::now(),
+            PressureLevel::Severe,
+            &[front.clone(), background.clone()],
+        );
+        assert_eq!(
+            plan.steps.iter().map(|s| s.instance_id).collect::<Vec<_>>(),
+            vec![background.instance_id],
+            "the foreground window is the last thing to throttle while there is anything else"
+        );
+    }
+
+    #[test]
+    fn severe_reaches_the_foreground_when_it_is_demonstrably_the_cause() {
+        // Protecting the foreground unconditionally would mean containing everything except the
+        // problem, while the problem keeps growing.
+        let mut governor = governor_at(0);
+        let mut runaway = sample(4);
+        runaway.foreground = true;
+        runaway.memory_growth_per_second = i64::try_from(RUNAWAY_GROWTH_PER_SECOND).unwrap();
+        let plan = governor.plan(Instant::now(), PressureLevel::Severe, &[runaway.clone()]);
+        assert_eq!(
+            plan.steps.first().map(|s| s.instance_id),
+            Some(runaway.instance_id)
+        );
+
+        // Merely being the foreground application and large is not enough.
+        let mut large = sample(4);
+        large.foreground = true;
+        let plan = governor.plan(Instant::now(), PressureLevel::Severe, &[large]);
+        assert!(plan.steps.is_empty());
+    }
+
+    #[test]
+    fn holding_half_the_machine_also_counts_as_a_runaway() {
+        let mut governor = governor_at(0);
+        let mut hog = sample(24); // half of the 48 GiB reference machine
+        hog.foreground = true;
+        let plan = governor.plan(Instant::now(), PressureLevel::Severe, &[hog.clone()]);
+        assert_eq!(
+            plan.steps.first().map(|s| s.instance_id),
+            Some(hog.instance_id)
+        );
+    }
+
+    #[test]
+    fn critical_stays_a_single_victim() {
+        // Narrowness is the safety property here: one instance contained, deliberately, rather
+        // than a broad action taken in a hurry.
+        let mut governor = governor_at(0);
+        let apps: Vec<AppSample> = (1..=5).map(sample).collect();
+        let plan = governor.plan(Instant::now(), PressureLevel::Critical, &apps);
+        assert_eq!(plan.steps.len(), 1);
+    }
+
+    #[test]
+    fn critical_reaches_the_foreground_only_after_everything_else() {
+        // Eligible, because the alternative at this point is the kernel's OOM killer choosing at
+        // random — but last, because it is still the window the user is in.
+        let mut governor = governor_at(0);
+        let mut front = sample(4);
+        front.foreground = true;
+        let other = sample(1);
+        let plan = governor.plan(
+            Instant::now(),
+            PressureLevel::Critical,
+            &[front.clone(), other.clone()],
+        );
+        assert_eq!(plan.steps[0].instance_id, other.instance_id);
+
+        let alone = governor.plan(Instant::now(), PressureLevel::Critical, &[front.clone()]);
+        assert_eq!(alone.steps[0].instance_id, front.instance_id);
+    }
+
+    #[test]
+    fn a_plan_says_what_it_expects_to_free_and_why() {
+        // A plan nobody can read is a plan nobody can calibrate, and these numbers need
+        // calibrating from real traces.
+        let mut governor = governor_at(0);
+        let plan = governor.plan(Instant::now(), PressureLevel::Severe, &[sample(8)]);
+        let step = &plan.steps[0];
+        assert!(step.expected_relief_bytes > 0);
+        assert!(step.reason.contains("MiB"), "{}", step.reason);
+        assert_eq!(plan.expected_relief_bytes(), step.expected_relief_bytes);
+        assert!(plan.deficit_bytes > 0);
+    }
+
+    #[test]
+    fn decide_is_exactly_the_plans_actions() {
+        let apps: Vec<AppSample> = (1..=4).map(sample).collect();
+        let mut one = governor_at(0);
+        let mut two = governor_at(0);
+        let now = Instant::now();
+        assert_eq!(
+            one.decide(now, PressureLevel::Severe, &apps),
+            two.plan(now, PressureLevel::Severe, &apps).actions()
+        );
+    }
+
     #[test]
     fn a_pinned_instance_is_protected_but_not_excluded() {
         // The line this weight walks. A pin must count for a great deal — more than the user
@@ -728,7 +1107,7 @@ mod tests {
         let mut governor = Governor::new(GovernorConfig::default());
         let actions = governor.decide(
             Instant::now(),
-            PressureLevel::Elevated,
+            PressureLevel::Severe,
             &[runaway.clone(), small],
         );
         assert_eq!(
@@ -747,7 +1126,7 @@ mod tests {
         let mut governor = Governor::new(GovernorConfig::default());
         let actions = governor.decide(
             Instant::now(),
-            PressureLevel::Elevated,
+            PressureLevel::Severe,
             &[protected, small.clone()],
         );
         assert_eq!(

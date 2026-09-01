@@ -123,7 +123,21 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
     let discovered = register_and_reap(ctx, shared, now);
     let (samples, instance_reports) = build_samples(ctx, shared, &discovered, now);
 
-    let decided = ctx.governor.decide(now, level, &samples);
+    // The plan, not just its actions: the reasons and the expected relief are what make a
+    // recorded run reviewable, and reviewing recorded runs is the condition on raising the stage.
+    let plan = ctx.governor.plan(now, level, &samples);
+    if level != PressureLevel::Normal {
+        for step in &plan.steps {
+            tracing::debug!(
+                instance_id = %step.instance_id,
+                expects_mib = step.expected_relief_bytes / (1024 * 1024),
+                deficit_mib = plan.deficit_bytes / (1024 * 1024),
+                reason = %step.reason,
+                "reclaim step",
+            );
+        }
+    }
+    let decided = plan.actions();
     let victim = (level != PressureLevel::Normal)
         .then(|| decided.first().map(Action::instance_id))
         .flatten();
