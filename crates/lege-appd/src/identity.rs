@@ -220,6 +220,28 @@ impl AppCatalog for Registry {
     fn manifests(&self) -> Vec<Arc<AppManifest>> {
         self.manifests.read().values().cloned().collect()
     }
+
+    fn resolve_alias(&self, stored: &AppId) -> AppId {
+        self.resolve_variant(stored)
+    }
+
+    fn logical_app_of(&self, id: &AppId) -> Option<LogicalAppId> {
+        self.logical_of(id)
+    }
+
+    fn sibling_variants(&self, id: &AppId) -> Vec<AppId> {
+        let resolved = self.resolve_variant(id);
+        let Some(logical) = self.logical_of(&resolved) else {
+            return Vec::new();
+        };
+        self.logical
+            .read()
+            .variants_of(&logical)
+            .iter()
+            .filter(|variant| **variant != resolved && **variant != *id)
+            .cloned()
+            .collect()
+    }
 }
 
 fn component_count(path: &Path) -> usize {

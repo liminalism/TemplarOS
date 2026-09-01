@@ -10,8 +10,13 @@ use lege_appd::{
     desktop_entry::{self, ExecResolver, OriginNamespace, SourceContext},
     store as appd_store,
 };
+use lege_session_core::{
+    autostart, history,
+    history::{Event, EventId, EventKind},
+    providers,
+};
 use lege_state::Store;
-use lege_types::AppCatalog;
+use lege_types::{AppCatalog, AppId, TrustTier};
 use std::{collections::BTreeSet, path::PathBuf};
 
 /// Every directory that may hold `.desktop` application entries. Within the XDG chain later ones
@@ -82,79 +87,136 @@ pub fn import(
 
     let mut imported = 0;
     for ((_namespace, desktop_id), source) in candidates {
-        let path = source.path.clone();
         if native_ids.contains(&desktop_id) {
             continue;
         }
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        let mtime_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |duration| duration.as_millis() as i64);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Some(entry) = desktop_entry::parse(&text) else {
-            continue;
-        };
-        let Some(derived) = desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver)
-        else {
-            continue;
-        };
-
-        let mut manifest = derived.manifest;
-        let origin = manifest
-            .provenance
-            .as_ref()
-            .map_or(lege_types::AppOriginKind::Unknown, |p| p.origin);
-        // A variant seen before keeps the moment it was first seen: it is what makes "the copy
-        // that has been here longest" a real answer rather than "whichever was scanned first".
-        if let Some(first_seen) = appd_store::variant_first_seen(store, &manifest.id)
-            && let Some(provenance) = manifest.provenance.as_mut()
-        {
-            provenance.first_seen_ms = first_seen;
+        if import_one(registry, store, &desktop_id, &source, resolver)? {
+            imported += 1;
         }
-
-        // A Flatpak export used to be imported as `desktop-import.<desktop id>`. Its id has moved,
-        // so record where the old one now points. Nothing stored elsewhere is rewritten: a MIME
-        // default or a project holding the old id resolves through this alias on read, and a
-        // rolled-back binary reads exactly the rows it wrote.
-        if origin == lege_types::AppOriginKind::Flatpak {
-            let previous = desktop_entry::derive_app_id(&desktop_id);
-            if previous != manifest.id {
-                let current = manifest.id.clone();
-                store
-                    .transaction(|tx| {
-                        appd_store::save_variant_alias_within(
-                            tx,
-                            &previous,
-                            &current,
-                            "flatpak-export-renamed",
-                        )
-                    })
-                    .with_context(|| format!("recording the variant alias for {desktop_id}"))?;
-            }
-        }
-
-        registry.insert_manifest(manifest.clone());
-        store
-            .transaction(|tx| {
-                appd_store::record_desktop_import_within(
-                    tx,
-                    &desktop_id,
-                    &path,
-                    mtime_ms,
-                    &manifest.id,
-                    origin,
-                )
-            })
-            .with_context(|| format!("recording desktop_import bookkeeping for {desktop_id}"))?;
-        imported += 1;
     }
     Ok(imported)
+}
+
+/// Import one candidate. `Ok(false)` when the file turned out not to be an importable application
+/// — a directory full of `.desktop` files is full of entries that are not.
+fn import_one(
+    registry: &Registry,
+    store: &Store,
+    desktop_id: &str,
+    source: &SourceContext,
+    resolver: &dyn ExecResolver,
+) -> Result<bool> {
+    let path = source.path.clone();
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return Ok(false);
+    };
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis() as i64);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let Some(entry) = desktop_entry::parse(&text) else {
+        return Ok(false);
+    };
+    let Some(derived) = desktop_entry::derive_manifest(&entry, desktop_id, source, resolver) else {
+        return Ok(false);
+    };
+
+    let mut manifest = derived.manifest;
+    let origin = manifest
+        .provenance
+        .as_ref()
+        .map_or(lege_types::AppOriginKind::Unknown, |p| p.origin);
+    // A variant seen before keeps the moment it was first seen: it is what makes "the copy that has
+    // been here longest" a real answer rather than "whichever was scanned first".
+    if let Some(first_seen) = appd_store::variant_first_seen(store, &manifest.id)
+        && let Some(provenance) = manifest.provenance.as_mut()
+    {
+        provenance.first_seen_ms = first_seen;
+    }
+
+    // A Flatpak export used to be imported as `desktop-import.<desktop id>`. Its id has moved, so
+    // record where the old one now points. Nothing stored elsewhere is rewritten: a MIME default or
+    // a project holding the old id resolves through this alias on read, and a rolled-back binary
+    // reads exactly the rows it wrote.
+    if origin == lege_types::AppOriginKind::Flatpak {
+        let previous = desktop_entry::derive_app_id(desktop_id);
+        if previous != manifest.id {
+            let current = manifest.id.clone();
+            store
+                .transaction(|tx| {
+                    appd_store::save_variant_alias_within(
+                        tx,
+                        &previous,
+                        &current,
+                        "flatpak-export-renamed",
+                    )
+                })
+                .with_context(|| format!("recording the variant alias for {desktop_id}"))?;
+        }
+    }
+
+    // The hole this closes: a `.desktop` file the account can rewrite, dropped on top of a desktop
+    // id a package used to own, inherited that package's provider declarations and autostart
+    // approval — the grants were keyed on the id, and the id had not changed. They are dropped
+    // instead, and the person is told.
+    if appd_store::variant_trust(store, &manifest.id) == Some(TrustTier::System)
+        && manifest.trust() == TrustTier::User
+    {
+        invalidate_shadowed_grants(store, &manifest.id, &manifest.display_name);
+    }
+
+    registry.insert_manifest(manifest.clone());
+    store
+        .transaction(|tx| {
+            appd_store::record_desktop_import_within(
+                tx,
+                desktop_id,
+                &path,
+                mtime_ms,
+                &manifest.id,
+                origin,
+            )
+        })
+        .with_context(|| format!("recording desktop_import bookkeeping for {desktop_id}"))?;
+    Ok(true)
+}
+
+/// Drop the rights a variant earned while the system owned it, now that it does not.
+///
+/// Provider declarations and autostart approvals both key on the variant id, and the id survives
+/// the file underneath it being replaced. Trust does not: a copy that used to come from a package
+/// and now comes from a file this account can rewrite is, for these purposes, a different
+/// application wearing the same name.
+fn invalidate_shadowed_grants(store: &Store, variant: &AppId, display_name: &str) {
+    let result = store.transaction(|tx| {
+        providers::undeclare_within(tx, variant)?;
+        autostart::set_approval_within(tx, variant, autostart::Approval::Undecided)?;
+        history::append_within(
+            tx,
+            &Event {
+                id: EventId::new(),
+                at_ms: lege_state::now_ms(),
+                kind: EventKind::ProviderChange,
+                app_id: Some(variant.clone()),
+                instance_id: None,
+                message: format!(
+                    "{display_name} is now provided by a file in your own account rather than by \
+                     an installed package. Its system roles and its permission to start at login \
+                     were withdrawn; you can grant them again if you meant to replace it."
+                ),
+                cause: Some("provenance-moved-to-user".into()),
+                actions: Vec::new(),
+                reversible: false,
+            },
+        )
+    });
+    if let Err(error) = result {
+        tracing::warn!(app = %variant, %error, "failed to withdraw grants after a provenance move");
+    }
 }
 
 /// Group everything installed into logical applications and persist the result, then load the
@@ -440,5 +502,96 @@ mod tests {
         let before = index.rows();
         regroup_and_persist(&registry, &store).unwrap();
         assert_eq!(registry.logical_index().rows(), before);
+    }
+
+    #[test]
+    fn a_user_file_taking_over_a_packages_desktop_id_loses_the_packages_rights() {
+        // The live hole: provider declarations and autostart approvals key on the variant id, and
+        // the id survives the file underneath it being replaced. Drop a `.desktop` file into your
+        // own applications directory carrying a packaged application's desktop id, and it
+        // inherited that package's system role and its permission to start at login.
+        let resolver = StaticResolver(HashMap::from([
+            ("sync-agent", "/usr/bin/sync-agent"),
+            ("impostor", "/usr/bin/impostor"),
+        ]));
+        let derive = |exec: &str, directory: &str| {
+            let text = format!("[Desktop Entry]\nType=Application\nName=Sync\nExec={exec}\n");
+            let entry = desktop_entry::parse(&text).unwrap();
+            desktop_entry::derive_manifest(
+                &entry,
+                "sync.desktop",
+                &SourceContext::for_file(
+                    std::path::Path::new(directory),
+                    std::path::PathBuf::from(format!("{directory}/sync.desktop")),
+                ),
+                &resolver,
+            )
+            .unwrap()
+            .manifest
+        };
+
+        let packaged = derive("sync-agent", "/usr/share/applications");
+        let mine = derive("impostor", "/home/person/.local/share/applications");
+        let variant: AppId = "desktop-import.sync.desktop".parse().unwrap();
+        assert_eq!(packaged.id, variant);
+        assert_eq!(
+            mine.id, variant,
+            "the id does not change — that is exactly why the grants leaked"
+        );
+        assert_eq!(packaged.trust(), TrustTier::System);
+        assert_eq!(mine.trust(), TrustTier::User);
+
+        // The packaged copy is recorded, and earns a role and an autostart approval.
+        let store = Store::in_memory().unwrap();
+        store
+            .transaction(|tx| {
+                appd_store::save_variant_within(
+                    tx,
+                    &variant,
+                    &"logical.sync".parse().unwrap(),
+                    lege_appd::LogicalSource::Derived,
+                    packaged.provenance.as_ref().unwrap(),
+                )?;
+                providers::declare_within(
+                    tx,
+                    &variant,
+                    &lege_types::ProviderCapability {
+                        role: lege_types::ProviderRole::NotificationServer,
+                        priority: 100,
+                    },
+                )?;
+                autostart::set_approval_within(tx, &variant, autostart::Approval::Approved)
+            })
+            .unwrap();
+        assert_eq!(
+            appd_store::variant_trust(&store, &variant),
+            Some(TrustTier::System)
+        );
+
+        invalidate_shadowed_grants(&store, &variant, &mine.display_name);
+
+        let declarations: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM provider_declarations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(declarations, 0, "the role the package earned is withdrawn");
+        // Storing Undecided deletes the row: the absence of a row *is* undecided, so the person
+        // is asked again rather than the old yes being kept.
+        assert_eq!(
+            autostart::approval_for(&autostart::load_approvals(&store).unwrap(), &variant),
+            autostart::Approval::Undecided,
+            "and so is the permission to start at login"
+        );
+        let explained: i64 = store
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM history WHERE cause = 'provenance-moved-to-user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(explained, 1, "and the person is told why");
     }
 }

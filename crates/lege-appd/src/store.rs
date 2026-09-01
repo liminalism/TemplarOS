@@ -222,6 +222,23 @@ pub fn save_variant_within(
     Ok(())
 }
 
+/// The trust tier recorded for this variant the last time it was scanned, if it was.
+///
+/// Used to notice a variant's provenance *moving* — the case where a `.desktop` file in the
+/// person's own data directory takes over a desktop id a package used to own, and would otherwise
+/// silently inherit that package's provider declarations and autostart approval.
+pub fn variant_trust(store: &Store, variant: &AppVariantId) -> Option<lege_types::TrustTier> {
+    let connection = store.lock();
+    connection
+        .query_row(
+            "SELECT trust FROM app_variants WHERE variant = ?1",
+            params![variant.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|value| lege_types::TrustTier::from_str_or_user(&value))
+}
+
 /// When this variant was first recorded, if it has been seen before.
 pub fn variant_first_seen(store: &Store, variant: &AppVariantId) -> Option<i64> {
     let connection = store.lock();

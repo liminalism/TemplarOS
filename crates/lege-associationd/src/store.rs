@@ -141,6 +141,7 @@ pub fn set_mime_default_within(
     tx: &Transaction<'_>,
     mime: &str,
     app_id: &AppId,
+    logical_app_id: Option<&lege_types::LogicalAppId>,
 ) -> Result<EventId> {
     let previous: Option<String> = tx
         .query_row(
@@ -151,9 +152,18 @@ pub fn set_mime_default_within(
         .optional()
         .context("reading previous mime default")?;
     tx.execute(
-        "INSERT INTO mime_defaults (mime, app_id) VALUES (?1, ?2)
-         ON CONFLICT (mime) DO UPDATE SET app_id = excluded.app_id",
-        params![mime, app_id.as_str()],
+        // The choice is stored against the variant, always: a person picked *that copy*. The
+        // logical id travels alongside as a read model — "which application did this mean" — so a
+        // sibling can answer when the chosen copy is uninstalled, without the stored choice ever
+        // having been silently widened.
+        "INSERT INTO mime_defaults (mime, app_id, logical_app_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT (mime) DO UPDATE SET
+            app_id = excluded.app_id, logical_app_id = excluded.logical_app_id",
+        params![
+            mime,
+            app_id.as_str(),
+            logical_app_id.map(lege_types::LogicalAppId::as_str)
+        ],
     )
     .context("persisting mime default")?;
 
@@ -181,6 +191,7 @@ pub fn set_extension_default_within(
     tx: &Transaction<'_>,
     extension: &str,
     rule: &ExtensionRule,
+    logical_app_id: Option<&lege_types::LogicalAppId>,
 ) -> Result<EventId> {
     let previous: Option<(String, bool)> = tx
         .query_row(
@@ -191,10 +202,17 @@ pub fn set_extension_default_within(
         .optional()
         .context("reading previous extension default")?;
     tx.execute(
-        "INSERT INTO extension_defaults (extension, app_id, override_specific_mime) VALUES (?1, ?2, ?3)
+        "INSERT INTO extension_defaults (extension, app_id, override_specific_mime, logical_app_id)
+         VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (extension) DO UPDATE SET
-            app_id = excluded.app_id, override_specific_mime = excluded.override_specific_mime",
-        params![extension, rule.app_id.as_str(), rule.override_specific_mime],
+            app_id = excluded.app_id, override_specific_mime = excluded.override_specific_mime,
+            logical_app_id = excluded.logical_app_id",
+        params![
+            extension,
+            rule.app_id.as_str(),
+            rule.override_specific_mime,
+            logical_app_id.map(lege_types::LogicalAppId::as_str)
+        ],
     )
     .context("persisting extension default")?;
 
@@ -226,6 +244,7 @@ pub fn set_project_mime_default_within(
     project_id: &str,
     mime: &str,
     app_id: &AppId,
+    logical_app_id: Option<&lege_types::LogicalAppId>,
 ) -> Result<EventId> {
     let previous: Option<String> = tx
         .query_row(
@@ -236,9 +255,16 @@ pub fn set_project_mime_default_within(
         .optional()
         .context("reading previous project mime default")?;
     tx.execute(
-        "INSERT INTO project_mime_defaults (project_id, mime, app_id) VALUES (?1, ?2, ?3)
-         ON CONFLICT (project_id, mime) DO UPDATE SET app_id = excluded.app_id",
-        params![project_id, mime, app_id.as_str()],
+        "INSERT INTO project_mime_defaults (project_id, mime, app_id, logical_app_id)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (project_id, mime) DO UPDATE SET
+            app_id = excluded.app_id, logical_app_id = excluded.logical_app_id",
+        params![
+            project_id,
+            mime,
+            app_id.as_str(),
+            logical_app_id.map(lege_types::LogicalAppId::as_str)
+        ],
     )
     .context("persisting project mime default")?;
 
@@ -486,7 +512,7 @@ mod tests {
         let store = Store::in_memory().unwrap();
         let app_id: AppId = "org.legeos.Viewer".parse().unwrap();
         let event_id = store
-            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &app_id))
+            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &app_id, None))
             .unwrap();
 
         let db = load_db(&store).unwrap();
@@ -525,7 +551,9 @@ mod tests {
         let store = Store::in_memory().unwrap();
         let app_id: AppId = "org.legeos.Viewer".parse().unwrap();
         store
-            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &app_id).map(|_| ()))
+            .transaction(|tx| {
+                set_mime_default_within(tx, "application/pdf", &app_id, None).map(|_| ())
+            })
             .unwrap();
 
         let event_id = store
@@ -578,10 +606,12 @@ mod tests {
 
         // Undo a change: the change_log entry from a Viewer -> Browser switch restores Viewer.
         store
-            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &viewer).map(|_| ()))
+            .transaction(|tx| {
+                set_mime_default_within(tx, "application/pdf", &viewer, None).map(|_| ())
+            })
             .unwrap();
         let event_id = store
-            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &browser))
+            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &browser, None))
             .unwrap();
         store
             .transaction(|tx| {
@@ -611,7 +641,7 @@ mod tests {
             })
             .unwrap();
         let create_event = store
-            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &viewer))
+            .transaction(|tx| set_mime_default_within(tx, "application/pdf", &viewer, None))
             .unwrap();
         store
             .transaction(|tx| {
