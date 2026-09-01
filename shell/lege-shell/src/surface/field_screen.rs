@@ -457,9 +457,41 @@ impl FieldScreen {
         ))
     }
 
-    pub fn band(rect: Rect, ui: &Ui<'_>) -> Rect {
-        rect.split_top(ui.px(design::GRAB_BAND_HEIGHT).min(rect.h))
-            .0
+    /// How a tile is grabbed, and what that costs its body — one answer, consulted by the
+    /// painter and by the pointer, so the strip a person aims at and the strip that reacts can
+    /// never be two different rectangles.
+    ///
+    /// Above the compact rungs a tile has a heading: its name and the controls that act on the
+    /// whole of it, in a band the body does not get. At Micro and Small it has none. A tile that
+    /// small spending a third of itself on a band containing its own name was the worst trade on
+    /// the field; instead the top edge stays grabbable without being *taken*, the name is drawn
+    /// as the first line of the body, and the controls appear only when the tile is hovered or
+    /// focused. Identity is never hidden — only manipulation.
+    pub fn grab_strip(rect: Rect, rung: Representation, ui: &Ui<'_>) -> GrabStrip {
+        // Never into the bottom third, whatever the tile's height: that is where the resize grip
+        // lives, and two gestures sharing a pixel is the one thing neither of them survives.
+        let ceiling = (rect.h * 2 / 3).max(0);
+        if rung >= Representation::Wide {
+            let (heading, body) = rect.split_top(ui.px(design::HEADING_HEIGHT).min(ceiling));
+            return GrabStrip {
+                grab: heading,
+                heading: Some(heading),
+                body,
+            };
+        }
+        let grab = rect
+            .split_top(ui.px(design::EDGE_GRAB_HEIGHT).min(ceiling))
+            .0;
+        GrabStrip {
+            grab,
+            heading: None,
+            body: rect,
+        }
+    }
+
+    /// The same, for a tile the document has placed.
+    pub fn strip_of(doc: &FieldDocument, tile: &Tile, rect: Rect, ui: &Ui<'_>) -> GrabStrip {
+        Self::grab_strip(rect, representation_of(doc, tile), ui)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1592,7 +1624,9 @@ impl FieldScreen {
                     let grabbed = if Self::body_draggable(doc, *id) {
                         rect.contains(cx, cy)
                     } else {
-                        Self::band(*rect, ui).contains(cx, cy)
+                        doc.tile(*id).is_some_and(|tile| {
+                            Self::strip_of(doc, tile, *rect, ui).grab.contains(cx, cy)
+                        })
                     };
                     if grabbed {
                         hit = Some((*id, *rect));
@@ -2284,7 +2318,7 @@ impl FieldScreen {
             draw_composition_band(ui, rect, composition);
         }
 
-        let band = Self::band(rect, ui);
+        let strip = Self::strip_of(data.field, tile, rect, ui);
         let child_count = data.field.count_in(Some(tile.id));
         let controls_width = match &tile.kind {
             TileKind::ParkedSession { .. } if window.is_some_and(|window| !window.shelved) => 64,
@@ -2292,8 +2326,6 @@ impl FieldScreen {
             TileKind::Project { .. } if child_count > 0 => 64,
             _ => 0,
         };
-        // `split_right` hands back the right strip first.
-        let (band_controls, title_area) = band.split_right(ui.px(controls_width).min(band.w / 2));
         let display_title = match &tile.kind {
             TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
             // The Files object wears the system label, like the instruments: it is furniture the
@@ -2318,6 +2350,49 @@ impl FieldScreen {
             }
             _ => 0,
         };
+        let title_colour = if matches!(&tile.kind, TileKind::Project { .. }) {
+            design::ACCENT
+        } else {
+            design::TEXT
+        };
+
+        // Where the name goes, and where the controls go. With a heading they share it; without
+        // one the name is the body's first line and the controls wait for a hover or a focus.
+        let revealed = visual.hovered || visual.focused || visual.lifted;
+        let mut content = strip.body;
+        let (band_controls, title_area) = if let Some(heading) = strip.heading {
+            // `split_right` hands back the right strip first.
+            heading.split_right(ui.px(controls_width).min(heading.w / 2))
+        } else {
+            {
+                // The name is the first line of the body, not a band over it: the tile keeps
+                // saying what it is at every size, and pays one line rather than a third of
+                // itself for the privilege.
+                let line = ui.px(design::COMPACT_TITLE_HEIGHT).min(content.h);
+                let (name_line, below) = content.split_top(line + ui.px(4));
+                content = below;
+                if !revealed || controls_width == 0 {
+                    (Rect::new(rect.right(), rect.y, 0, 0), name_line)
+                } else {
+                    // Manipulation, and only manipulation, waits for attention: a strip fades in
+                    // over the top of the body carrying what a heading would have held. Focus
+                    // counts as attention, so this is reachable without a pointer.
+                    let reveal = Rect::new(
+                        rect.x,
+                        rect.y,
+                        rect.w,
+                        ui.px(design::REVEAL_HEIGHT).min(rect.h),
+                    );
+                    ui.painter.blend_rect(reveal, design::SHELL_LOW, 225);
+                    (
+                        reveal
+                            .split_right(ui.px(controls_width).min(reveal.w / 2))
+                            .0,
+                        name_line,
+                    )
+                }
+            }
+        };
         let title_area = Rect::new(
             title_area.x + ui.px(left_mark + 12),
             title_area.y,
@@ -2328,36 +2403,32 @@ impl FieldScreen {
             title_area,
             &display_title,
             title_style,
-            if matches!(&tile.kind, TileKind::Project { .. }) {
-                design::ACCENT
-            } else {
-                design::TEXT
-            },
+            title_colour,
             Align::Left,
         );
-        match &tile.kind {
-            TileKind::App { .. } if running > 0 => {
-                let badge = band_controls.inset(ui.px(6));
-                ui.badge(
-                    badge,
-                    &running.to_string(),
-                    design::TEXT,
-                    design::ACTIVITY_SOFT,
-                    design::ACTIVITY,
-                );
+        if band_controls.w > 0 {
+            match &tile.kind {
+                TileKind::App { .. } if running > 0 => {
+                    ui.badge(
+                        band_controls.inset(ui.px(4)),
+                        &running.to_string(),
+                        design::TEXT,
+                        design::ACTIVITY_SOFT,
+                        design::ACTIVITY,
+                    );
+                }
+                TileKind::Project { .. } if child_count > 0 => {
+                    ui.label_styled(
+                        band_controls.inset(ui.px(6)),
+                        &format!("{child_count} tiles"),
+                        design::state_style(ui),
+                        design::ACCENT,
+                        Align::Right,
+                    );
+                }
+                _ => {}
             }
-            TileKind::Project { .. } if child_count > 0 => {
-                ui.label_styled(
-                    band_controls.inset(ui.px(6)),
-                    &format!("{child_count} tiles"),
-                    design::state_style(ui),
-                    design::ACCENT,
-                    Align::Right,
-                );
-            }
-            _ => {}
         }
-        let content = Rect::new(rect.x, band.bottom(), rect.w, (rect.h - band.h).max(0));
 
         match &tile.kind {
             TileKind::App { app_id } => {
@@ -2915,6 +2986,17 @@ fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
     near(bitmap.width, wanted.0) && near(bitmap.height, wanted.1)
 }
 
+/// How one tile is grabbed and where its body starts. See [`FieldScreen::grab_strip`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GrabStrip {
+    /// Where a move gesture starts.
+    pub grab: Rect,
+    /// The heading, when the tile is large enough to have one. `None` at the compact rungs.
+    pub heading: Option<Rect>,
+    /// What is left for the tile's content — the whole rect when there is no heading.
+    pub body: Rect,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TileVisual {
     hovered: bool,
@@ -3209,7 +3291,12 @@ mod tests {
             Scale::ONE,
             &mut h.kernel,
         );
-        assert_eq!(FieldScreen::band(rect, &ui).h, design::GRAB_BAND_HEIGHT);
+        assert_eq!(
+            FieldScreen::grab_strip(rect, Representation::Large, &ui)
+                .heading
+                .map(|heading| heading.h),
+            Some(design::HEADING_HEIGHT)
+        );
     }
 
     #[test]
@@ -3837,11 +3924,13 @@ mod tests {
         );
     }
 
+    /// Move and resize are two gestures and they must never share a pixel — at any rung, on any
+    /// shape a tile can be given. The move strip is the top edge (a heading where there is one,
+    /// a ten-pixel edge where there is not); the grip is the bottom-right corner.
     #[test]
-    fn the_grip_never_overlaps_the_move_band() {
+    fn the_grip_never_overlaps_the_move_band_at_any_rung() {
         let mut h = Harness::new();
-        let downloads = downloads_tile();
-        let rect = h.rect_of(downloads);
+        h.frame();
         let ui = Ui::new(
             Painter::new(&mut h.buffer),
             &mut h.text,
@@ -3850,11 +3939,37 @@ mod tests {
             Scale::ONE,
             &mut h.kernel,
         );
-        let (band, grip) = (FieldScreen::band(rect, &ui), FieldScreen::grip(rect, &ui));
-        assert!(
-            grip.y >= band.bottom(),
-            "one gesture would shadow the other: band {band:?}, grip {grip:?}"
-        );
+        // Every rung, and every tile shape a cell grid can produce down to one cell.
+        for rung in [
+            Representation::Micro,
+            Representation::Small,
+            Representation::Wide,
+            Representation::Large,
+            Representation::Full,
+        ] {
+            for width in [40, 98, 210, 640] {
+                for height in [30, 98, 210, 640] {
+                    let rect = Rect::new(11, 62, width, height);
+                    let strip = FieldScreen::grab_strip(rect, rung, &ui);
+                    let grip = FieldScreen::grip(rect, &ui);
+                    assert!(
+                        grip.y >= strip.grab.bottom(),
+                        "{rung:?} at {width}x{height}: one gesture would shadow the other — \
+                         grab {:?}, grip {grip:?}",
+                        strip.grab
+                    );
+                    // And the body never starts above the strip that was taken from it.
+                    assert!(strip.body.y >= rect.y && strip.body.bottom() <= rect.bottom());
+                    match strip.heading {
+                        Some(heading) => assert_eq!(strip.body.y, heading.bottom()),
+                        None => assert_eq!(
+                            strip.body, rect,
+                            "{rung:?}: the compact edge was taken from the body"
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -200,6 +200,10 @@ mod tests {
             Some(std::path::Path::new("/home/fixture/Desktop")),
         );
         field_model::route_file_drop(&mut field, std::path::Path::new("/home/fixture/notes.md"));
+        // One pinned application, so the baseline also reviews the compact rung — which since
+        // the chrome reduction is its own drawing path: no heading, the name as the body's first
+        // line, and the controls only on hover or focus.
+        field_model::pin_app(&mut field, &"org.legeos.Files".parse().unwrap());
 
         let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
@@ -375,7 +379,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x39d9_9504_b2f2_1674,
+            hash, 0xac34_43f6_2a37_c82c,
             "review the Home Field pixels before updating this baseline"
         );
     }
