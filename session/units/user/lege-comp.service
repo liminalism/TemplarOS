@@ -29,3 +29,7 @@ MemoryLow=256M
 CPUWeight=1000
 IOWeight=1000
 OOMScoreAdjust=-900
+# systemd-oomd must look elsewhere first (ADR-0014): even where it is armed on a slice this unit
+# is visible in — a distribution default, a future slice reorganisation, someone's own drop-in —
+# this is the unit a session cannot lose.
+ManagedOOMPreference=avoid

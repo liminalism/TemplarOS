@@ -22,4 +22,8 @@ IOWeight=300
 # unlike the shell it is doing I/O under exactly the pressure that makes reclaim expensive.
 MemoryLow=64M
 OOMScoreAdjust=-500
+# systemd-oomd must look elsewhere first (ADR-0014): even where it is armed on a slice this unit
+# is visible in — a distribution default, a future slice reorganisation, someone's own drop-in —
+# this is the unit a session cannot lose.
+ManagedOOMPreference=avoid
 StateDirectory=legeos
