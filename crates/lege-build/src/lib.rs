@@ -77,6 +77,53 @@ pub fn build_set_id(version: &str, epoch: u64, git_sha: &str, dirty: bool) -> St
     )
 }
 
+/// What one `cargo xtask build-set` run produced — `target/debian/build-set.json`.
+///
+/// Written by xtask, read by `lege dev repo publish`. It lives here rather than in either of them
+/// because it is the handoff between the two, and a handoff format that only one side owns drifts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BuildSet {
+    /// The build-set id: the Debian version every package in the set carries.
+    pub id: String,
+    pub git_sha: String,
+    #[serde(default)]
+    pub dirty: bool,
+    /// Seconds since the Unix epoch — the `<epoch>` inside the id, so the id can be checked
+    /// without re-parsing it.
+    pub epoch: u64,
+    pub packages: Vec<BuiltPackage>,
+}
+
+/// One `.deb` in a build set.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BuiltPackage {
+    /// Component matrix row name.
+    pub component: String,
+    /// Debian package name.
+    pub package: String,
+    #[serde(rename = "crate")]
+    pub crate_name: String,
+    pub version: String,
+    /// The `.deb`'s file name, resolved against the directory holding `build-set.json`. A bare
+    /// name rather than a path so the set can be read from wherever it was copied to.
+    pub file: String,
+    #[serde(default)]
+    pub size_bytes: u64,
+}
+
+impl BuildSet {
+    /// Reads a `build-set.json`, resolving each package's file against the manifest's directory.
+    ///
+    /// # Errors
+    /// If the manifest cannot be read or parsed.
+    pub fn read(path: &Path) -> Result<(Self, PathBuf), io::Error> {
+        let body = fs::read(path)?;
+        let set: Self = serde_json::from_slice(&body).map_err(io::Error::other)?;
+        let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        Ok((set, dir))
+    }
+}
+
 /// A build-set id taken apart again.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedBuildSetId {

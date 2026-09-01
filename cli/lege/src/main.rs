@@ -23,7 +23,10 @@ use lege_client::proxies::{
     ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
-use std::{fmt::Write as _, path::PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 /// The LegeOS command line.
 #[derive(Debug, Parser)]
@@ -136,6 +139,12 @@ enum Command {
     Dev {
         #[command(subcommand)]
         command: Option<DevCommand>,
+        /// The local archive build sets are published to and installed from.
+        #[arg(long, global = true, default_value = lege::dev::repo::DEFAULT_ROOT)]
+        repo: PathBuf,
+        /// Act on an unpacked root instead of `/`.
+        #[arg(long, global = true, default_value = "/")]
+        root: PathBuf,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -165,9 +174,63 @@ enum DevCommand {
         /// Compare against this build set instead of the newest one installed.
         #[arg(long)]
         target: Option<String>,
-        /// Check an unpacked image root instead of `/`.
+    },
+    /// The local package archive this machine installs build sets from.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+    /// Install a published build set — one pinned apt transaction for all of it.
+    Install {
+        /// Which set; defaults to the archive's current one.
+        build_set: Option<String>,
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Put the previous build set back.
+    Rollback {
+        /// Print the transaction and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Publish, install, activate and report — the whole deployment.
+    Deploy {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+        /// Print the whole pipeline and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Put the previous set back without asking if a component fails its health gate.
+        #[arg(long)]
+        auto_rollback: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RepoCommand {
+    /// Create the archive and its per-machine signing key. Idempotent.
+    Init {
+        /// Also write apt's keyring and deb822 source. Needs root.
+        #[arg(long)]
+        install_source: bool,
+        /// Write those under this root instead of `/`.
         #[arg(long, default_value = "/")]
-        root: PathBuf,
+        sysroot: PathBuf,
+    },
+    /// Publish a built set into the archive.
+    Publish {
+        /// The manifest `cargo xtask build-set` wrote.
+        #[arg(long, default_value = "target/debian/build-set.json")]
+        build_set: PathBuf,
+    },
+    /// What the archive holds, and what a rollback would go back to.
+    Status,
+    /// Drop all but the newest sets (never the current or previous one).
+    Prune {
+        #[arg(long, default_value_t = lege::dev::repo::DEFAULT_KEEP)]
+        keep: usize,
     },
 }
 
@@ -455,14 +518,50 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
     Ok(())
 }
 
+/// `lege dev`, whose subcommands are all synchronous — no bus, no session, just the filesystem
+/// and a few external tools.
+fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) -> Result<String> {
+    let command = command.unwrap_or(DevCommand::Status { target: None });
+    match command {
+        DevCommand::Status { target } => dev::status(root, target.as_deref(), json),
+        DevCommand::Repo { command } => match command {
+            RepoCommand::Init {
+                install_source,
+                sysroot,
+            } => dev::repo_init(repo, &sysroot, install_source),
+            RepoCommand::Publish { build_set } => dev::repo_publish(repo, &build_set),
+            RepoCommand::Status => dev::repo_status(repo),
+            RepoCommand::Prune { keep } => dev::repo_prune(repo, keep),
+        },
+        DevCommand::Install { build_set, dry_run } => {
+            dev::install_set(repo, root, build_set.as_deref(), dry_run)
+        }
+        DevCommand::Rollback { dry_run } => dev::rollback(repo, root, dry_run),
+        DevCommand::Deploy {
+            build_set,
+            dry_run,
+            auto_rollback,
+        } => dev::deploy(
+            repo,
+            root,
+            &dev::DeployOptions {
+                build_set,
+                dry_run,
+                auto_rollback,
+            },
+        ),
+    }
+}
+
 async fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Dev { command, json } => {
-            let DevCommand::Status { target, root } = command.unwrap_or(DevCommand::Status {
-                target: None,
-                root: PathBuf::from("/"),
-            });
-            print!("{}", dev::status(&root, target.as_deref(), json)?);
+        Command::Dev {
+            command,
+            repo,
+            root,
+            json,
+        } => {
+            print!("{}", run_dev(command, repo, &root, json)?);
             if json {
                 println!();
             }

@@ -171,6 +171,69 @@ fn outstanding_summary(outstanding: &[&Row]) -> Vec<String> {
     lines
 }
 
+/// An activation plan, as printed by `--dry-run`.
+///
+/// Same column shape as the convergence report on purpose: the plan and the report that follows
+/// it are read minutes apart by the same person, and two different layouts would make them look
+/// like two different subjects.
+#[must_use]
+pub fn render_activation_plan(plan: &super::activate::ActivationPlan) -> String {
+    let width = plan
+        .steps
+        .iter()
+        .map(|step| step.component().chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for step in &plan.steps {
+        let _ = writeln!(
+            out,
+            "  {glyph}  {name:<width$}  {explanation}",
+            glyph = plan_glyph(step),
+            name = step.component(),
+            explanation = step.explanation(),
+        );
+    }
+    out
+}
+
+fn plan_glyph(step: &super::activate::Step) -> &'static str {
+    use super::activate::Step;
+    match step {
+        Step::Nothing { .. } => "✓",
+        Step::Restart { .. } => "↻",
+        Step::Relaunch { .. } => "·",
+        Step::Manual { .. } => "!",
+        Step::NeedsSession { .. } => "⟳",
+        Step::NeedsReboot { .. } => "⏻",
+        Step::Blocked { .. } => "✗",
+    }
+}
+
+/// What an activation actually did.
+#[must_use]
+pub fn render_activation(report: &super::activate::ActivationReport) -> String {
+    use super::activate::StepOutcome;
+    let width = report
+        .outcomes
+        .iter()
+        .map(|(component, _)| component.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::from("\nactivation\n");
+    for (component, outcome) in &report.outcomes {
+        let (glyph, text) = match outcome {
+            StepOutcome::Skipped => ("✓", "already current".to_owned()),
+            StepOutcome::Activated => ("✓", "restarted, and the new build answered".to_owned()),
+            StepOutcome::Failed(reason) => ("✗", reason.clone()),
+            StepOutcome::Deferred(reason) => ("·", reason.clone()),
+            StepOutcome::NotReached => ("—", "not attempted".to_owned()),
+        };
+        let _ = writeln!(out, "  {glyph}  {component:<width$}  {text}");
+    }
+    out
+}
+
 /// The same answer as data, for `--json`.
 #[must_use]
 pub fn as_json(convergence: &Convergence) -> serde_json::Value {
