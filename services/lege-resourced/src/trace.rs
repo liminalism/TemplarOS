@@ -50,6 +50,12 @@ pub struct ActionTrace {
 /// One tick's worth of decision-relevant state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TraceRecord {
+    /// Format version, so a trace recorded by an older build can say what it is. The rule for
+    /// changing this format is additive only — new fields default, existing ones never change
+    /// meaning — which is what keeps last month's recordings replayable by this month's binary
+    /// (`crate::replay`). A record written before versioning existed reads as version 1.
+    #[serde(default = "default_trace_version")]
+    pub trace_version: u32,
     pub timestamp_ms: i64,
     pub level: PressureLevel,
     pub stage: Stage,
@@ -59,6 +65,10 @@ pub struct TraceRecord {
     pub instances: Vec<InstanceTrace>,
     pub victim: Option<InstanceId>,
     pub actions: Vec<ActionTrace>,
+}
+
+fn default_trace_version() -> u32 {
+    crate::replay::TRACE_VERSION
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -172,6 +182,7 @@ mod tests {
 
     fn sample_record(level: PressureLevel) -> TraceRecord {
         TraceRecord {
+            trace_version: crate::replay::TRACE_VERSION,
             timestamp_ms: now_ms(),
             level,
             stage: Stage::ObserveOnly,

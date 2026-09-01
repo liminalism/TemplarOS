@@ -28,6 +28,8 @@ Repository-specific gates (all run by `just check`; each is also a standalone re
 cargo run -q -p xtask -- tree-check         # directory layout matches ARCHITECTURE.md
 cargo run -q -p xtask -- deps-check         # e.g. lege-window/lege-field stay free of tokio/zbus
 cargo run -q -p xtask -- check-interfaces   # code matches interfaces/ (the contract source of truth)
+cargo run -q -p xtask -- check-interface-signatures  # no shipped D-Bus signature changed
+cargo run -q -p xtask -- interface-baseline # re-freeze interfaces/baseline.json after an addition
 cargo run -q -p xtask -- check-proxies      # lege-client proxies match the D-Bus XML
 cargo run -q -p xtask -- check-packaging    # debian/ + distro/ package facts
 cargo run -q -p xtask -- check-assets

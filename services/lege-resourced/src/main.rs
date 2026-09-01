@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use lege_resourced::{config, daemon};
+use lege_resourced::{config, daemon, policy::GovernorConfig, replay};
 use std::{path::PathBuf, time::Duration};
 
 /// LegeOS resource governor.
@@ -25,6 +25,17 @@ struct Cli {
     /// Where the stage setting and trace ring live (default: `$XDG_STATE_HOME/legeos/resources`).
     #[arg(long)]
     state_dir: Option<PathBuf>,
+
+    /// Replay recorded traces through today's policy and print what changed. Takes a
+    /// `traces.jsonl` file or a directory of them. Reads only; touches no cgroup and no bus.
+    #[arg(long, value_name = "PATH")]
+    replay: Option<PathBuf>,
+
+    /// Rewrite the replayed traces' recorded level, victim and actions to what today's policy
+    /// decides. For committing a *deliberate* policy change after its diff has been read — never
+    /// for making a surprising diff go away.
+    #[arg(long, requires = "replay")]
+    bless: bool,
 }
 
 fn main() -> Result<()> {
@@ -35,6 +46,10 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if let Some(path) = &cli.replay {
+        return replay_traces(path, cli.bless);
+    }
 
     if cli.once {
         return daemon::run_once();
@@ -61,4 +76,50 @@ fn main() -> Result<()> {
         &config_path,
         &state_dir,
     ))
+}
+
+/// `--replay`: run recorded pressure back through the current policy and report the difference.
+///
+/// Exits non-zero when anything diverged, so a replay can gate a change the way a test does. The
+/// output is the form a commit message quotes: one line per trace, one line per divergent record.
+fn replay_traces(path: &std::path::Path, bless: bool) -> Result<()> {
+    if bless {
+        let files = if path.is_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                .with_context(|| format!("reading {}", path.display()))?
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                .collect();
+            files.sort();
+            files
+        } else {
+            vec![path.to_path_buf()]
+        };
+        for file in files {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let blessed = replay::bless(&text, GovernorConfig::default());
+            std::fs::write(&file, blessed)
+                .with_context(|| format!("writing {}", file.display()))?;
+            println!("blessed {}", file.display());
+        }
+        return Ok(());
+    }
+
+    let reports = replay::replay_path(path, GovernorConfig::default())
+        .with_context(|| format!("replaying {}", path.display()))?;
+    let mut diverged = 0;
+    for report in &reports {
+        print!("{}", report.render());
+        if !report.agrees() {
+            diverged += 1;
+        }
+    }
+    if diverged == 0 {
+        println!("\n{} trace(s) replay identically", reports.len());
+        Ok(())
+    } else {
+        anyhow::bail!("{diverged} of {} trace(s) diverge", reports.len())
+    }
 }

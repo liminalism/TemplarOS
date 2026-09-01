@@ -4867,6 +4867,7 @@ dependencies = [
  "anyhow",
  "clap",
  "lege-build",
+ "quick-xml",
  "serde",
  "serde_json",
 ]
