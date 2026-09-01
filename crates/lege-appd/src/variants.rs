@@ -152,9 +152,68 @@ fn intersects<T: Ord>(left: &BTreeSet<T>, right: &BTreeSet<T>) -> bool {
     left.iter().any(|item| right.contains(item))
 }
 
+/// The desktop entries that are *panels of* another installed entry rather than applications in
+/// their own right.
+///
+/// A settings application ships one entry per destination — `com.system76.CosmicSettings.desktop`
+/// plus `…CosmicSettings.About.desktop`, `…CosmicSettings.Network.desktop`, and thirty more. They
+/// share a window class and a binary, so rules 4 and 5 cheerfully fuse the whole suite into one
+/// row, and a person loses thirty-two destinations they think of separately (and gets whichever
+/// one sorts first as the name of all of them — "About", in the real case that found this).
+///
+/// The signal is structural and needs no list of applications to know about: an installed entry
+/// whose id extends another installed entry's id by a dotted segment is a panel of it. Only rules
+/// 4 and 5 are suppressed — a Flatpak and a package of the *same* panel still merge, because that
+/// is rules 2 and 3, and they are about identity rather than resemblance.
+#[derive(Clone, Debug, Default)]
+pub struct SuiteIndex {
+    /// Lowercased desktop-entry base names (no `.desktop`) that extend another installed one.
+    panels: BTreeSet<String>,
+}
+
+impl SuiteIndex {
+    /// Work out which installed entries are panels of another.
+    pub fn from_manifests(manifests: &[Arc<AppManifest>]) -> Self {
+        let all: BTreeSet<String> = manifests
+            .iter()
+            .flat_map(|manifest| {
+                desktop_ids(manifest)
+                    .into_iter()
+                    .map(desktop_base)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let panels = all
+            .iter()
+            .filter(|candidate| {
+                all.iter().any(|parent| {
+                    parent.len() < candidate.len()
+                        && candidate.starts_with(parent.as_str())
+                        && candidate.as_bytes().get(parent.len()) == Some(&b'.')
+                })
+            })
+            .cloned()
+            .collect();
+        Self { panels }
+    }
+
+    /// Whether this copy is a panel of some other installed entry.
+    fn is_panel(&self, manifest: &AppManifest) -> bool {
+        desktop_ids(manifest)
+            .into_iter()
+            .any(|id| self.panels.contains(&desktop_base(id)))
+    }
+}
+
+/// A desktop id without its extension, lowercased — the form both halves of a suite comparison
+/// have to be in for the prefix test to mean anything.
+fn desktop_base(id: &str) -> String {
+    id.trim_end_matches(".desktop").to_ascii_lowercase()
+}
+
 /// Whether two installed copies are copies of the same application. Symmetric by construction:
 /// every rule is written over an unordered pair.
-pub fn same_application(left: &AppManifest, right: &AppManifest) -> bool {
+pub fn same_application(left: &AppManifest, right: &AppManifest, suite: &SuiteIndex) -> bool {
     if left.id == right.id {
         return true;
     }
@@ -189,6 +248,13 @@ pub fn same_application(left: &AppManifest, right: &AppManifest) -> bool {
     // 3 — one names the other's Flatpak.
     if intersects(&flatpak_ids(left), &flatpak_ids(right)) {
         return true;
+    }
+
+    // Rules 4 and 5 are resemblance rather than identity, and a suite of panels resembles itself
+    // completely: one binary, one window class, thirty-two destinations. They are not copies of
+    // each other, so the resemblance rules do not get to speak here.
+    if suite.is_panel(left) || suite.is_panel(right) {
+        return false;
     }
 
     // 4 — the same window class *and* the same name. Either alone is far too loose: window
@@ -258,10 +324,18 @@ fn find(parent: &mut [usize], mut index: usize) -> usize {
 
 /// Rank a variant as a default: the copy a person most likely means when they say the name.
 ///
-/// System trust first (a packaged copy over a file the account can rewrite), then the origin's own
+/// Displayable first, and this is not a tie-breaker but the first question. The default variant is
+/// what launches when a caller names only the application, and it is also the entry a launcher
+/// draws the row from — so electing a `NoDisplay` shim gets both wrong at once. Visual Studio Code
+/// ships `code.desktop` and `code-url-handler.desktop`; they are genuinely the same application,
+/// and the URL handler winning made the row read "Visual Studio Code - URL Handler". An entry its
+/// own author marked as not-to-be-offered must never be the face of the application when a
+/// displayable sibling exists.
+///
+/// Then System trust (a packaged copy over a file the account can rewrite), then the origin's own
 /// order, then the copy that has been here longest, then the id — so the answer is total and
 /// stable rather than dependent on scan order.
-fn default_rank(manifest: &AppManifest) -> (u8, u8, i64, String) {
+fn default_rank(manifest: &AppManifest) -> (u8, u8, u8, i64, String) {
     let provenance = manifest.provenance.as_ref();
     let trust = match manifest.trust() {
         TrustTier::System => 0,
@@ -276,7 +350,13 @@ fn default_rank(manifest: &AppManifest) -> (u8, u8, i64, String) {
         AppOriginKind::Unknown => 5,
     };
     let first_seen = provenance.map_or(0, |p| p.first_seen_ms);
-    (trust, origin, first_seen, manifest.id.to_string())
+    (
+        u8::from(manifest.no_display),
+        trust,
+        origin,
+        first_seen,
+        manifest.id.to_string(),
+    )
 }
 
 /// Group `manifests` into logical applications, honouring what was persisted before.
@@ -287,10 +367,11 @@ pub fn group(
     manifests: &[Arc<AppManifest>],
     persisted: &BTreeMap<AppVariantId, PersistedLogical>,
 ) -> LogicalIndex {
+    let suite = SuiteIndex::from_manifests(manifests);
     let mut parent: Vec<usize> = (0..manifests.len()).collect();
     for left in 0..manifests.len() {
         for right in (left + 1)..manifests.len() {
-            if same_application(&manifests[left], &manifests[right]) {
+            if same_application(&manifests[left], &manifests[right], &suite) {
                 let (a, b) = (find(&mut parent, left), find(&mut parent, right));
                 if a != b {
                     parent[a] = b;
@@ -317,7 +398,7 @@ pub fn group(
 
     for component in ordered {
         let members: Vec<&Arc<AppManifest>> = component.iter().map(|i| &manifests[*i]).collect();
-        let (logical, source) = choose_logical(&members, persisted, &taken);
+        let (logical, source) = choose_logical(&members, persisted, &taken, &suite);
         taken.insert(logical.clone());
 
         let mut variants: Vec<AppVariantId> = members.iter().map(|m| m.id.clone()).collect();
@@ -343,6 +424,7 @@ fn choose_logical(
     members: &[&Arc<AppManifest>],
     persisted: &BTreeMap<AppVariantId, PersistedLogical>,
     taken: &BTreeSet<LogicalAppId>,
+    suite: &SuiteIndex,
 ) -> (LogicalAppId, LogicalSource) {
     let mut user_choice: Option<LogicalAppId> = None;
     let mut declared: Option<LogicalAppId> = None;
@@ -371,7 +453,7 @@ fn choose_logical(
     if let Some(logical) = previous {
         return (logical, LogicalSource::Derived);
     }
-    (mint(members, taken), LogicalSource::Derived)
+    (mint(members, taken, suite), LogicalSource::Derived)
 }
 
 /// Keep the lower of two candidate ids, so the answer does not depend on scan order.
@@ -389,19 +471,34 @@ fn min_option(current: Option<LogicalAppId>, candidate: LogicalAppId) -> Logical
 /// reading a log or a stored project can tell what it refers to. Disambiguated against ids already
 /// minted in this run, because two unrelated applications called "Files" must not collide into
 /// one.
-fn mint(members: &[&Arc<AppManifest>], taken: &BTreeSet<LogicalAppId>) -> LogicalAppId {
-    let handle = members
-        .iter()
-        .flat_map(|manifest| wm_classes(manifest))
-        .min()
-        .or_else(|| {
-            members
-                .iter()
-                .flat_map(|manifest| desktop_ids(manifest))
-                .map(|id| id.trim_end_matches(".desktop").to_ascii_lowercase())
-                .min()
-        })
-        .unwrap_or_else(|| members[0].id.to_string());
+///
+/// A suite panel is the exception: every panel of a settings application shares one window class,
+/// so naming them after it would produce `logical.…settings`, `…-2`, `…-3` in whatever order the
+/// scan happened to run. Their desktop ids are what actually distinguishes them, so those are the
+/// handle — and the suite's own top-level entry keeps the window-class name.
+fn mint(
+    members: &[&Arc<AppManifest>],
+    taken: &BTreeSet<LogicalAppId>,
+    suite: &SuiteIndex,
+) -> LogicalAppId {
+    let lowest_desktop_base = || {
+        members
+            .iter()
+            .flat_map(|manifest| desktop_ids(manifest))
+            .map(desktop_base)
+            .min()
+    };
+    let all_panels = members.iter().all(|manifest| suite.is_panel(manifest));
+    let handle = if all_panels {
+        lowest_desktop_base()
+    } else {
+        members
+            .iter()
+            .flat_map(|manifest| wm_classes(manifest))
+            .min()
+            .or_else(lowest_desktop_base)
+    }
+    .unwrap_or_else(|| members[0].id.to_string());
 
     let sanitized: String = handle
         .chars()
@@ -648,5 +745,217 @@ mod tests {
         let index = group(&arcs(vec![a.clone()]), &BTreeMap::new());
         assert!(index.logical_of(&a.id).is_some());
         assert_eq!(index.variants_of(index.logical_of(&a.id).unwrap()).len(), 1);
+    }
+
+    /// Build a manifest the way a `.desktop` import would: a desktop id of its own, a window class
+    /// and an executable it may share with siblings, and a NoDisplay flag.
+    fn entry(
+        id: &str,
+        desktop_id: &str,
+        name: &str,
+        wm_class: &str,
+        executable: &str,
+        no_display: bool,
+    ) -> AppManifest {
+        let mut manifest = manifest(id, name, AppOriginKind::DistroPackage);
+        manifest.primary_desktop_file_id = desktop_id.to_owned();
+        manifest.aliases.desktop_file_ids = [desktop_id.to_owned()].into();
+        manifest.aliases.startup_wm_classes = [wm_class.to_owned()].into();
+        manifest.executable = PathBuf::from(executable);
+        manifest.no_display = no_display;
+        manifest
+    }
+
+    #[test]
+    fn a_settings_suite_stays_thirty_two_destinations_rather_than_becoming_one_row_called_about() {
+        // Found on a real machine: Cosmic Settings ships one entry per panel, all with the same
+        // window class and the same binary, so rules 4 and 5 fused all thirty-two into one logical
+        // application — whose default variant was `…CosmicSettings.About.desktop`, so the whole of
+        // Settings appeared in search as "About".
+        let mut installed = vec![entry(
+            "desktop-import.com.system76.CosmicSettings.desktop",
+            "com.system76.CosmicSettings.desktop",
+            "Settings",
+            "com.system76.CosmicSettings",
+            "/usr/bin/cosmic-settings",
+            false,
+        )];
+        for panel in ["About", "Network", "Displays", "Sound"] {
+            installed.push(entry(
+                &format!("desktop-import.com.system76.CosmicSettings.{panel}.desktop"),
+                &format!("com.system76.CosmicSettings.{panel}.desktop"),
+                panel,
+                "com.system76.CosmicSettings",
+                "/usr/bin/cosmic-settings",
+                false,
+            ));
+        }
+        let index = group(&arcs(installed), &BTreeMap::new());
+        assert_eq!(
+            index.logical_apps().count(),
+            5,
+            "the suite and its four panels are five destinations, not one"
+        );
+        for (logical, variants) in index.logical_apps() {
+            assert_eq!(
+                variants.len(),
+                1,
+                "{logical} should speak for exactly one entry"
+            );
+        }
+
+        // The suite's own entry keeps the window-class name; the panels are told apart by their
+        // desktop ids rather than all colliding on it and being disambiguated with -2, -3, -4.
+        let minted: BTreeSet<String> = index
+            .logical_apps()
+            .map(|(logical, _)| logical.to_string())
+            .collect();
+        assert!(minted.contains("logical.com.system76.cosmicsettings"));
+        assert!(minted.contains("logical.com.system76.cosmicsettings.about"));
+        assert!(minted.contains("logical.com.system76.cosmicsettings.network"));
+        assert!(
+            !minted.iter().any(|id| id.ends_with("-2")),
+            "no panel should need a numeric disambiguator: {minted:?}"
+        );
+    }
+
+    #[test]
+    fn a_panel_still_merges_with_the_same_panel_from_another_origin() {
+        // Only the resemblance rules are suppressed. Two copies of the *same* panel are still one
+        // thing, because that is rule 2 — identity, not resemblance.
+        let parent = entry(
+            "desktop-import.com.system76.CosmicSettings.desktop",
+            "com.system76.CosmicSettings.desktop",
+            "Settings",
+            "com.system76.CosmicSettings",
+            "/usr/bin/cosmic-settings",
+            false,
+        );
+        let distro = entry(
+            "desktop-import.com.system76.CosmicSettings.About.desktop",
+            "com.system76.CosmicSettings.About.desktop",
+            "About",
+            "com.system76.CosmicSettings",
+            "/usr/bin/cosmic-settings",
+            false,
+        );
+        let mut flatpak = entry(
+            "flatpak.com.system76.CosmicSettings",
+            "com.system76.CosmicSettings.About.desktop",
+            "About",
+            "com.system76.CosmicSettings",
+            "/var/lib/flatpak/exports/bin/com.system76.CosmicSettings",
+            false,
+        );
+        flatpak.provenance = Some(AppProvenance::from_origin(AppOriginKind::Flatpak));
+
+        let index = group(
+            &arcs(vec![parent, distro.clone(), flatpak.clone()]),
+            &BTreeMap::new(),
+        );
+        assert_eq!(index.logical_apps().count(), 2, "the suite, and one About");
+        assert_eq!(
+            index.logical_of(&distro.id),
+            index.logical_of(&flatpak.id),
+            "two copies of the same panel are still one panel"
+        );
+    }
+
+    #[test]
+    fn a_no_display_url_handler_never_becomes_the_face_of_its_application() {
+        // Found on a real machine: Visual Studio Code ships `code.desktop` and
+        // `code-url-handler.desktop`. They *are* the same application — the merge is right — but
+        // the URL handler won the default and the search row read "Visual Studio Code - URL
+        // Handler". An entry its own author marked NoDisplay must never be the face of anything.
+        let editor = entry(
+            "desktop-import.code.desktop",
+            "code.desktop",
+            "Visual Studio Code",
+            "Code",
+            "/usr/bin/code",
+            false,
+        );
+        let handler = entry(
+            "desktop-import.code-url-handler.desktop",
+            "code-url-handler.desktop",
+            "Visual Studio Code - URL Handler",
+            "Code",
+            "/usr/bin/code",
+            true,
+        );
+        // `code-url-handler` sorts before `code.desktop` by id, so only displayability can save
+        // this — a tie-break on the id alone elects the shim.
+        assert!(handler.id.as_str() < editor.id.as_str());
+
+        let index = group(
+            &arcs(vec![editor.clone(), handler.clone()]),
+            &BTreeMap::new(),
+        );
+        assert_eq!(index.logical_apps().count(), 1, "these are one application");
+        let logical = index.logical_of(&editor.id).unwrap();
+        assert_eq!(
+            index.default_variant(logical),
+            Some(&editor.id),
+            "the displayable entry is the face of the application"
+        );
+        assert_eq!(
+            index.variants_of(logical).first(),
+            Some(&editor.id),
+            "and it is offered first"
+        );
+    }
+
+    #[test]
+    fn displayability_outranks_trust_when_electing_a_default() {
+        // A packaged shim and a displayable copy from anywhere: the shim still must not be the
+        // face. Nothing is granted by being the default — rights key on the variant — so there is
+        // nothing to lose by preferring the entry a person can actually be shown.
+        let mut shim = entry(
+            "desktop-import.thing-handler.desktop",
+            "thing-handler.desktop",
+            "Thing - URL Handler",
+            "thing",
+            "/usr/bin/thing",
+            true,
+        );
+        shim.provenance = Some(AppProvenance::from_origin(AppOriginKind::DistroPackage));
+        let mut mine = entry(
+            "desktop-import.thing.desktop",
+            "thing.desktop",
+            "Thing",
+            "thing",
+            "/usr/bin/thing",
+            false,
+        );
+        mine.provenance = Some(AppProvenance::from_origin(AppOriginKind::UserDesktopEntry));
+
+        let index = group(&arcs(vec![shim.clone(), mine.clone()]), &BTreeMap::new());
+        let logical = index.logical_of(&mine.id).unwrap();
+        assert_eq!(index.default_variant(logical), Some(&mine.id));
+    }
+
+    #[test]
+    fn an_application_whose_every_copy_is_hidden_still_has_a_default() {
+        // Displayability is a preference, not a requirement: a MIME shim with no displayable
+        // sibling must still be launchable by its logical id.
+        let a = entry(
+            "desktop-import.shim-a.desktop",
+            "shim-a.desktop",
+            "Shim",
+            "shim",
+            "/usr/bin/shim",
+            true,
+        );
+        let b = entry(
+            "desktop-import.shim-b.desktop",
+            "shim-b.desktop",
+            "Shim",
+            "shim",
+            "/usr/bin/shim",
+            true,
+        );
+        let index = group(&arcs(vec![a.clone(), b]), &BTreeMap::new());
+        let logical = index.logical_of(&a.id).unwrap();
+        assert!(index.default_variant(logical).is_some());
     }
 }
