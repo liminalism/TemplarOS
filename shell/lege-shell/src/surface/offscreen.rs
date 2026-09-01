@@ -89,8 +89,6 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     let empty_icons = HashMap::new();
     let empty_previews = HashMap::new();
-    let empty_treemaps = HashMap::new();
-    let empty_compositions = HashMap::new();
     let empty_thumbnails = std::collections::HashMap::new();
     let browser = FileBrowserData {
         sources: &browser_sources,
@@ -111,8 +109,8 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         icons: &empty_icons,
         previews: &empty_previews,
         drawer_feeds: &drawer_feeds,
-        treemaps: &empty_treemaps,
-        compositions: &empty_compositions,
+        treemap: None,
+        composition: &[],
         browser: &browser,
         connected: false,
         home_revealed: false,
@@ -234,8 +232,6 @@ mod tests {
             ),
         );
         let empty_bitmaps = HashMap::new();
-        let empty_treemaps = HashMap::new();
-        let empty_compositions = HashMap::new();
         let browser_sources = crate::file_browser::BrowserSources::default();
         let empty_thumbnails = std::collections::HashMap::new();
         let browser = FileBrowserData {
@@ -257,8 +253,8 @@ mod tests {
             icons: &empty_bitmaps,
             previews: &empty_bitmaps,
             drawer_feeds: &drawer_feeds,
-            treemaps: &empty_treemaps,
-            compositions: &empty_compositions,
+            treemap: None,
+            composition: &[],
             browser: &browser,
             connected: true,
             home_revealed: true,
@@ -301,7 +297,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xf597_8489_6e30_f9f9,
+            hash, 0x846a_1706_6053_8157,
             "review the Home Field pixels before updating this baseline"
         );
     }

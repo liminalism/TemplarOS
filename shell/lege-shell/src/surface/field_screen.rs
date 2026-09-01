@@ -107,10 +107,10 @@ pub enum FieldAction {
     /// A field op the user performed; the caller applies it and keeps the inverse for undo.
     Apply(FieldOp),
     Undo,
-    /// A drawer tile is large enough to show its directory as a treemap and has none at this
+    /// The Files object is large enough to show its directory as a treemap and has none at this
     /// size: the caller scans and rasterizes one of `width`×`height` pixels off-thread.
     NeedTreemap {
-        drawer: Drawer,
+        path: PathBuf,
         width: u32,
         height: u32,
     },
@@ -143,11 +143,14 @@ pub struct FieldData<'a> {
     /// Window previews by session identifier (phase 6; empty until then).
     pub previews: &'a HashMap<String, Bitmap>,
     pub drawer_feeds: &'a HashMap<Drawer, crate::drawers::DrawerFeed>,
-    /// Rasterized cushion treemaps of the standard-path drawers' directories
-    /// (`lege_treemap`), keyed by drawer, at whatever size was last requested.
-    pub treemaps: &'a HashMap<Drawer, Bitmap>,
-    /// Each such drawer's composition: `(0x00RRGGBB, share)` per file category, largest first.
-    pub compositions: &'a HashMap<Drawer, Vec<(u32, f32)>>,
+    /// The rasterized cushion treemap (`lege_treemap`) of the Files object's current directory,
+    /// at whatever size was last requested, and that directory's composition: `(0x00RRGGBB,
+    /// share)` per file category, largest first.
+    ///
+    /// One directory, not eight: there is one Files object now, and what it is showing is the
+    /// only directory the field has an opinion about.
+    pub treemap: Option<&'a Bitmap>,
+    pub composition: &'a [(u32, f32)],
     pub browser: &'a FileBrowserData<'a>,
     /// The notifications widget's structured rows (`widgets::notifications`).
     pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
@@ -2007,8 +2010,8 @@ impl FieldScreen {
                 }
             }
             TileKind::Widget { widget, .. } => {
-                if let Some(drawer) = field_model::widget_drawer(widget) {
-                    self.expanded = Some(drawer);
+                if widget == field_model::FILES_WIDGET {
+                    self.expanded = Some(Drawer::Recent);
                     self.drawer_view.scroll = pixelkit_ui::ScrollState::new();
                 }
             }
@@ -2052,11 +2055,6 @@ impl FieldScreen {
             TileKind::Project { .. } => (design::ACCENT_SOFT, design::PROJECT_EDGE),
             TileKind::ParkedSession { .. } => (design::SHELL, design::EDGE_STRONG),
             TileKind::System { .. } => (design::SYSTEM_SHELL, design::EDGE_STRONG),
-            TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
-            {
-                (design::SYSTEM_SHELL, design::EDGE_STRONG)
-            }
             TileKind::Folder { .. } => (design::FOLDER_SHELL, design::FOLDER_EDGE),
             TileKind::Tray { .. } => (design::TRAY_SHELL, design::TRAY_EDGE),
             TileKind::App { .. } | TileKind::Widget { .. } | TileKind::File { .. } => {
@@ -2077,10 +2075,9 @@ impl FieldScreen {
         }
 
         let widget_composition = match &tile.kind {
-            TileKind::Widget { widget, .. } => field_model::widget_drawer(widget)
-                .and_then(|drawer| data.compositions.get(&drawer))
-                .filter(|composition| !composition.is_empty())
-                .map(Vec::as_slice),
+            TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
+                Some(data.composition).filter(|composition| !composition.is_empty())
+            }
             _ => None,
         };
         let tray_composition = match &tile.kind {
@@ -2106,19 +2103,17 @@ impl FieldScreen {
         let (band_controls, title_area) = band.split_right(ui.px(controls_width).min(band.w / 2));
         let display_title = match &tile.kind {
             TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
+            // The Files object wears the system label, like the instruments: it is furniture the
+            // desktop always has, not something a person put there.
             TileKind::System { .. } => tile.title.to_uppercase(),
-            TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
-            {
+            TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
                 tile.title.to_uppercase()
             }
             _ => tile.title.clone(),
         };
         let title_style = match &tile.kind {
             TileKind::Project { .. } | TileKind::System { .. } => design::system_label_style(ui),
-            TileKind::Widget { widget, .. }
-                if field_model::widget_drawer(widget).is_some_and(Drawer::is_instrument) =>
-            {
+            TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
                 design::system_label_style(ui)
             }
             _ => design::title_style(ui),
@@ -2276,153 +2271,37 @@ impl FieldScreen {
                 }
             }
             TileKind::Widget { widget, .. } => {
-                let small = design::measurement_style(ui);
-                let drawer = field_model::widget_drawer(widget);
-                let inner = content.inset(ui.px(12));
-                // A directory drawer tall enough shows its directory as a cushion treemap —
-                // the one place on the field where area means bytes; compact, it shows a
-                // composition band across the shell's top edge instead.
-                let treemap_drawer = drawer
-                    .filter(|d| matches!(d, Drawer::Downloads | Drawer::Documents | Drawer::Media));
-                let representation = representation_of(data.field, tile);
-                let tall = matches!(representation, Representation::Large | Representation::Full)
-                    && inner.h >= ui.px(60)
-                    && inner.w >= ui.px(60);
-                if let Some(d) = treemap_drawer
-                    && tall
-                {
-                    ui.painter.fill_rounded_rect_aa(
-                        ui.kernel,
+                let inner = content.inset(ui.px(4));
+                if widget == field_model::FILES_WIDGET {
+                    let files = crate::surface::files_screen::FilesData {
+                        feeds: data.drawer_feeds,
+                    };
+                    match crate::surface::files_screen::draw(
+                        ui,
                         inner,
-                        ui.px(design::WELL_RADIUS) as f32,
-                        0x00ff_ffff,
-                        255,
-                    );
-                    ui.painter
-                        .stroke_rect(inner, ui.scale.hairline(), design::EDGE);
-                    let wanted = (inner.w.max(1) as u32, inner.h.max(1) as u32);
-                    match data.treemaps.get(&d) {
-                        Some(bitmap) if close_enough(bitmap, wanted) => {
-                            ui.painter.blit(bitmap, inner, ScaleFilter::Bilinear);
+                        representation_of(data.field, tile),
+                        files,
+                    ) {
+                        crate::surface::files_screen::FilesAction::Open(drawer) => {
+                            self.expanded = Some(drawer);
+                            self.drawer_view.scroll = pixelkit_ui::ScrollState::new();
                         }
-                        _ => {
-                            actions.push(FieldAction::NeedTreemap {
-                                drawer: d,
-                                width: wanted.0,
-                                height: wanted.1,
-                            });
-                            ui.label_styled(
-                                inner,
-                                "scanning…",
-                                small,
-                                design::TEXT_DIM,
-                                Align::Left,
-                            );
+                        crate::surface::files_screen::FilesAction::Run(id) => {
+                            actions.push(FieldAction::RunAction(id));
                         }
+                        crate::surface::files_screen::FilesAction::None => {}
                     }
                 } else {
-                    // The representation ladder, the same one the system widgets climb: the
-                    // headline is the drawer's count or figure and is shown at every rung, and
-                    // the listing only appears once the tile is wide enough to be read as one.
-                    // A short tile used to show the first line or two of the listing, clipped
-                    // mid-path, which told the user less than "12 items" would have.
-                    let feed = drawer.and_then(|drawer| data.drawer_feeds.get(&drawer));
-                    let line_height = ui.px(16);
-                    // The Trash drawer is the one drawer whose rows are things rather than
-                    // reports, so it is the one that carries controls: EMPTY beside the count,
-                    // and every row a restore. Both go through `Files.Trash1`, which journals
-                    // them, so Home cannot end up with its own idea of the trash.
-                    let mut headline_width = inner.w;
-                    if drawer == Some(Drawer::Trash)
-                        && feed.is_some_and(|feed| !feed.lines.is_empty())
-                        && representation >= Representation::Wide
-                    {
-                        let empty_button =
-                            Rect::new(inner.right() - ui.px(58), inner.y, ui.px(58), line_height);
-                        headline_width = (empty_button.x - inner.x - ui.px(6)).max(0);
-                        let hovered = ui.input.hovering(empty_button);
-                        ui.painter.fill_rounded_rect(
-                            empty_button,
-                            ui.px(design::CHIP_RADIUS),
-                            if hovered {
-                                design::ACCENT_SOFT
-                            } else {
-                                design::SHELL
-                            },
-                        );
-                        ui.painter.stroke_rect(
-                            empty_button,
-                            ui.scale.hairline(),
-                            design::EDGE_STRONG,
-                        );
-                        ui.label_styled(
-                            empty_button,
-                            "EMPTY",
-                            TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                            design::TEXT_DIM,
-                            Align::Centre,
-                        );
-                        if ui.input.take_click(empty_button) {
-                            actions.push(FieldAction::RunAction("trash.empty"));
-                        }
-                    }
-                    // "…" is nothing fetched yet, as opposed to a service that answered with
-                    // nothing — which has a headline of its own.
+                    // A widget kind this build does not know. Saying so is the whole of the
+                    // behaviour: a migration is how a retired widget leaves a saved field, and
+                    // guessing at a body for one would hide the fact that it needs one.
                     ui.label_styled(
-                        Rect::new(inner.x, inner.y, headline_width, line_height),
-                        feed.map_or("…", |feed| feed.headline.as_str()),
-                        design::measurement_style(ui),
-                        if feed.is_none_or(|feed| feed.available) {
-                            design::TEXT
-                        } else {
-                            design::TEXT_DIM
-                        },
+                        inner.inset(ui.px(8)),
+                        "no such widget",
+                        design::state_style(ui),
+                        design::TEXT_FAINT,
                         Align::Left,
                     );
-                    if let Some(feed) = feed
-                        && representation >= Representation::Wide
-                    {
-                        let listing = Rect::new(
-                            inner.x,
-                            inner.y + line_height + ui.px(6),
-                            inner.w,
-                            (inner.bottom() - inner.y - line_height - ui.px(6)).max(0),
-                        );
-                        ui.painter.push_clip(listing);
-                        let mut y = listing.y;
-                        for (index, line) in feed
-                            .lines
-                            .iter()
-                            .enumerate()
-                            .take((listing.h / line_height).max(0) as usize)
-                        {
-                            let row = Rect::new(listing.x, y, listing.w, line_height);
-                            // Only a row that names something is a control; everywhere else a
-                            // drawer's listing stays exactly the report it was.
-                            let target = feed.row_target(index);
-                            if target.is_some() && ui.input.hovering(row) {
-                                ui.painter.fill_rect(row, design::ACCENT_SOFT);
-                            }
-                            ui.label_styled(
-                                row,
-                                line,
-                                small,
-                                if target.is_some() && ui.input.hovering(row) {
-                                    design::TEXT
-                                } else {
-                                    design::TEXT_DIM
-                                },
-                                Align::Left,
-                            );
-                            if let Some(target) = target
-                                && ui.input.take_click(row)
-                            {
-                                actions.push(FieldAction::RestoreFromTrash(target.to_owned()));
-                            }
-                            y += line_height;
-                        }
-                        ui.painter.pop_clip();
-                    }
                 }
             }
             TileKind::Project { .. } => {
@@ -2864,6 +2743,9 @@ fn draw_composition_band(ui: &mut Ui<'_>, rect: Rect, composition: &[(u32, f32)]
 
 /// Whether a cached treemap is near enough to `wanted` to blit rather than rasterize again:
 /// within a quarter in each dimension, so a drag's every pixel of resize does not re-scan.
+// No caller while the Files object has no directory of its own to show; the expansion work that
+// gives it one is what asks for a treemap again, and the rule is the same rule.
+#[allow(dead_code)]
 fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
     let near = |have: u32, want: u32| have * 4 >= want * 3 && have * 3 <= want * 4;
     near(bitmap.width, wanted.0) && near(bitmap.height, wanted.1)
@@ -3045,8 +2927,6 @@ mod tests {
             let icons = HashMap::new();
             let previews = HashMap::new();
             let drawer_feeds = HashMap::new();
-            let treemaps = HashMap::new();
-            let compositions = HashMap::new();
             let widgets = HashMap::new();
             let browser_sources = crate::file_browser::BrowserSources::default();
             let empty_thumbnails = std::collections::HashMap::new();
@@ -3068,8 +2948,8 @@ mod tests {
                 icons: &icons,
                 previews: &previews,
                 drawer_feeds: &drawer_feeds,
-                treemaps: &treemaps,
-                compositions: &compositions,
+                treemap: None,
+                composition: &[],
                 browser: &browser,
                 connected: true,
                 home_revealed: false,
@@ -3276,12 +3156,12 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_drawer_tile_expands_it_and_escape_returns() {
+    fn clicking_the_files_object_expands_it_and_escape_returns() {
         let mut h = Harness::new();
-        let inbox = tile_id_for("drawer:Downloads");
-        let rect = h.rect_of(inbox);
+        let files = field_model::files_tile_id();
+        let rect = h.rect_of(files);
         h.click(rect.x + rect.w / 2, rect.bottom() - 10);
-        assert_eq!(h.screen.expanded, Some(Drawer::Downloads));
+        assert_eq!(h.screen.expanded, Some(Drawer::Recent));
         h.key(KeyInput::Escape);
         assert_eq!(h.screen.expanded, None);
     }
@@ -3289,18 +3169,24 @@ mod tests {
     #[test]
     fn field_keyboard_reaches_every_action() {
         let mut h = Harness::new();
-        // Arrow: focus the first tile (Downloads, top-left); Enter opens it; Escape closes.
+        // Arrow: focus the first tile (the Files object, top-left); Enter opens it; Escape
+        // closes.
         h.key(KeyInput::Right);
-        assert_eq!(h.screen.focus, Some(tile_id_for("drawer:Downloads")));
+        assert_eq!(h.screen.focus, Some(field_model::files_tile_id()));
         h.key(KeyInput::Enter);
-        assert_eq!(h.screen.expanded, Some(Drawer::Downloads));
+        assert_eq!(h.screen.expanded, Some(Drawer::Recent));
         h.key(KeyInput::Escape);
         assert_eq!(h.screen.expanded, None);
 
         // Walk right to the Files app tile and launch it with Enter.
         let files = tile_id_for("app:org.legeos.Files");
-        for _ in 0..3 {
+        while h.screen.focus != Some(files) {
+            let before = h.screen.focus;
             h.key(KeyInput::Right);
+            assert_ne!(
+                h.screen.focus, before,
+                "the walk stopped short of the app tile"
+            );
         }
         assert_eq!(h.screen.focus, Some(files));
         let actions = h.key(KeyInput::Enter);
@@ -3558,8 +3444,8 @@ mod tests {
         h.frame();
         assert_eq!(h.screen.drag, Drag::Idle, "an unmoved press stays a click");
 
-        let downloads = tile_id_for("drawer:Downloads");
-        let rect = h.rect_of(downloads);
+        let files_object = field_model::files_tile_id();
+        let rect = h.rect_of(files_object);
         h.input
             .cursor_moved((rect.x + 6) as f32, (rect.bottom() - 6) as f32);
         h.input.mouse(MouseButton::Left, true);
@@ -3573,9 +3459,9 @@ mod tests {
         h.frame();
     }
 
-    /// The drawer tiles are the widgets a person actually grabs, so the grip is tested on one.
+    /// The Files object is the widget a person actually grabs, so the grip is tested on it.
     fn downloads_tile() -> TileId {
-        tile_id_for("drawer:Downloads")
+        field_model::files_tile_id()
     }
 
     /// A field of widgets placed exactly where the test wants them, so a resize test is about
@@ -3731,15 +3617,27 @@ mod tests {
 
     #[test]
     fn a_block_of_minimum_size_widgets_clamps_instead_of_evicting_anyone() {
-        // This is the default Home Field: eight drawers packed two-across at the 2x2 widget
-        // floor, so none of them has anything to give. Growing one must stop, not shove a
-        // neighbour across the field — and it must not leave a no-op undo entry behind either.
+        // A field packed with widgets already at their floor, so none of them has anything to
+        // give. Growing one must stop, not shove a neighbour across the field — and it must not
+        // leave a no-op undo entry behind either.
         let mut h = Harness::new();
-        let downloads = downloads_tile();
-        let recent = tile_id_for("drawer:Recent");
-        let before_neighbour = h.doc.location(recent).map(|l| l.placement);
+        h.frame();
+        let fixed = SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(4, 4));
+        let subject = TileId(1);
+        let neighbour = TileId(2);
+        h.doc = doc_with(
+            h.doc.cols,
+            h.doc.rows,
+            &[
+                (1, Cell::new(0, 0), fixed),
+                (2, Cell::new(2, 0), fixed),
+                (3, Cell::new(0, 2), fixed),
+                (4, Cell::new(2, 2), fixed),
+            ],
+        );
+        let before_neighbour = h.doc.location(neighbour).map(|l| l.placement);
 
-        let grip = grip_of(&mut h, downloads);
+        let grip = grip_of(&mut h, subject);
         h.input
             .cursor_moved((grip.x + 2) as f32, (grip.y + 2) as f32);
         h.input.mouse(MouseButton::Left, true);
@@ -3749,16 +3647,16 @@ mod tests {
         h.frame();
         h.input.mouse(MouseButton::Left, false);
         let actions = h.frame();
-        let before = h.doc.location(downloads).unwrap().placement;
+        let before = h.doc.location(subject).unwrap().placement;
         h.apply(&actions);
 
         assert_eq!(
-            h.doc.location(downloads).unwrap().placement,
+            h.doc.location(subject).unwrap().placement,
             before,
-            "packed at their floor, the drawers cannot make room"
+            "packed at their floor, the widgets cannot make room"
         );
         assert_eq!(
-            h.doc.location(recent).map(|l| l.placement),
+            h.doc.location(neighbour).map(|l| l.placement),
             before_neighbour,
             "and nobody was evicted to pretend otherwise"
         );
@@ -4334,6 +4232,16 @@ mod tests {
                     .0;
             }
         }
+        // The Files object goes with them, for the same reason: it is Home's furniture, and this
+        // test needs a quadrant free.
+        h.doc = apply(
+            &h.doc,
+            &FieldOp::Stash {
+                id: field_model::files_tile_id(),
+            },
+        )
+        .expect("stash applies")
+        .0;
         let files = tile_id_for("app:org.legeos.Files");
         let editor = tile_id_for("app:org.example.Editor");
         let op = FieldOp::CreateProject {
@@ -4361,7 +4269,7 @@ mod tests {
         assert_eq!(h.screen.zoomed, Some(project));
         h.frame();
         assert!(h.rect_of(files).w > 0);
-        let inbox = tile_id_for("drawer:Downloads");
+        let inbox = field_model::files_tile_id();
         h.frame();
         {
             let ui = Ui::new(
@@ -4407,6 +4315,16 @@ mod tests {
     #[test]
     fn dropping_one_loose_tile_on_another_offers_a_new_project() {
         let mut h = Harness::new();
+        // The project the drop creates wants a quadrant, and this test is about the grammar of
+        // the drop rather than about how much of a small field Home's own furniture claims.
+        h.doc = apply(
+            &h.doc,
+            &FieldOp::Stash {
+                id: field_model::files_tile_id(),
+            },
+        )
+        .expect("stash applies")
+        .0;
         let files = tile_id_for("app:org.legeos.Files");
         let editor = tile_id_for("app:org.example.Editor");
         let from = h.rect_of(files);

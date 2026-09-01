@@ -304,14 +304,17 @@ mod tests {
         assert!(targets.contains(&"field".to_owned()));
     }
 
+    /// The default field, in text, with no bus: one Files object where eight drawer tiles used
+    /// to be, the system shelf beside it, and no drawer tile left anywhere.
     #[tokio::test]
-    async fn print_field_renders_the_drawer_tiles_without_a_bus() {
+    async fn print_field_renders_the_files_object_without_a_bus() {
         let text = print_target("field", 10, (1920, 1080)).await.unwrap();
         assert!(text.starts_with("field primary  18x10"), "{text}");
-        for drawer in lege_shell::field_model::DRAWER_TILES {
+        assert!(text.contains("Files"), "{text}");
+        for drawer in lege_shell::home_surface::Drawer::DEFAULT {
             assert!(
-                text.contains(drawer.name()),
-                "{} missing from {text}",
+                !text.contains(&format!("drawer:{}", drawer.name().to_ascii_lowercase())),
+                "{} is still a tile in {text}",
                 drawer.name()
             );
         }
