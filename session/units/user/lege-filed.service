@@ -17,5 +17,9 @@ Slice=session.slice
 # Heavy I/O lives here on purpose: a stuck mount must not stall policy daemons.
 CPUWeight=200
 IOWeight=300
+# A stalled file service is a file manager, a file-chooser portal and the Home surface's file
+# object all failing to answer at once, so it gets the same modest reserve the shell does — and
+# unlike the shell it is doing I/O under exactly the pressure that makes reclaim expensive.
+MemoryLow=64M
 OOMScoreAdjust=-500
 StateDirectory=legeos

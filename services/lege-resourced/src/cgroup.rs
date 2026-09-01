@@ -73,6 +73,25 @@ impl Cgroup {
         self.read_text("io.pressure")
     }
 
+    /// The `memory.low` currently set on this cgroup.
+    ///
+    /// `max` — which systemd writes for an unbounded value — reads as [`u64::MAX`], so a caller
+    /// comparing "what is set" against "what I want to set" never mistakes unlimited protection
+    /// for none.
+    ///
+    /// # Errors
+    /// If the file cannot be read or does not hold a number or `max`.
+    pub fn memory_low(&self) -> Result<u64> {
+        let text = self.read_text("memory.low")?;
+        let trimmed = text.trim();
+        if trimmed == "max" {
+            return Ok(u64::MAX);
+        }
+        trimmed
+            .parse()
+            .with_context(|| format!("memory.low of {} is {trimmed:?}", self.directory.display()))
+    }
+
     pub fn set_memory_low(&self, bytes: u64) -> Result<()> {
         self.write_control("memory.low", &bytes.to_string())
     }
