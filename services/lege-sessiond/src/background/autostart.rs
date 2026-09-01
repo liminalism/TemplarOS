@@ -124,6 +124,7 @@ pub async fn run(
         }
     };
 
+    let mut imported_any = false;
     let mut entries: Vec<(AutostartEntry, autostart::Approval)> = Vec::new();
     for (desktop_id, entry, source) in scan_entries(&dirs) {
         let existing = registry
@@ -141,6 +142,7 @@ pub async fn run(
         {
             let id = derived.manifest.id.clone();
             registry.insert_manifest(derived.manifest);
+            imported_any = true;
             id
         } else {
             tracing::debug!(
@@ -156,6 +158,18 @@ pub async fn run(
         }
         let approval = autostart::approval_for(&approvals, &request.app_id);
         entries.push((request, approval));
+    }
+
+    // Autostart may have been the first thing to see an application at all. Regroup before the
+    // decisions are recorded, and tell anything listening that the installed set moved — a
+    // launcher drawn before this point is showing a stale list.
+    if imported_any {
+        if let Err(error) =
+            crate::background::desktop_import::regroup_and_persist(&registry, &store)
+        {
+            tracing::warn!(%error, "regrouping after autostart import failed");
+        }
+        announce_applications_changed(&connection).await;
     }
 
     let plan = autostart::plan(&entries, &providers.read());
@@ -206,6 +220,24 @@ pub async fn run(
             Ok(()) => notifier.notify().await,
             Err(error) => tracing::warn!(%error, "failed to record autostart history event"),
         }
+    }
+}
+
+/// Emit `AppIdentity1.ApplicationsChanged`. Best-effort: a listener that misses it re-reads on its
+/// next natural refresh, and failing to announce a change must never abort autostart.
+async fn announce_applications_changed(connection: &zbus::Connection) {
+    let emitter = match zbus::object_server::SignalEmitter::new(
+        connection,
+        lege_types::dbus::session::APP_IDENTITY_PATH,
+    ) {
+        Ok(emitter) => emitter,
+        Err(error) => {
+            tracing::debug!(%error, "could not address AppIdentity1 to announce a change");
+            return;
+        }
+    };
+    if let Err(error) = lege_appd::dbus::IdentityApi::applications_changed(&emitter).await {
+        tracing::debug!(%error, "announcing ApplicationsChanged failed");
     }
 }
 
