@@ -446,16 +446,17 @@ mod tests {
 
     #[test]
     fn a_stamp_round_trips_through_the_directory() {
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.path();
         write_stamp_in(
-            &dir,
+            dir,
             "lege-shell",
             &identity("0.1.0~dev1+gaaaaaaa"),
             42,
             1000,
         )
         .unwrap();
-        let stamps = read_stamps_in(&dir, &|_| true);
+        let stamps = read_stamps_in(dir, &|_| true);
         let stamp = &stamps["lege-shell"];
         assert_eq!(stamp.build_set, "0.1.0~dev1+gaaaaaaa");
         assert_eq!(stamp.pid, 42);
@@ -464,21 +465,23 @@ mod tests {
 
     #[test]
     fn a_stamp_whose_process_is_gone_is_not_running() {
-        let dir = tempdir();
-        write_stamp_in(&dir, "lege-shell", &identity("a"), 42, 1).unwrap();
-        write_stamp_in(&dir, "lege-comp", &identity("a"), 43, 1).unwrap();
-        let live = read_stamps_in(&dir, &|pid| pid == 43);
+        let scratch = tempdir();
+        let dir = scratch.path();
+        write_stamp_in(dir, "lege-shell", &identity("a"), 42, 1).unwrap();
+        write_stamp_in(dir, "lege-comp", &identity("a"), 43, 1).unwrap();
+        let live = read_stamps_in(dir, &|pid| pid == 43);
         assert_eq!(live.keys().collect::<Vec<_>>(), vec!["lege-comp"]);
     }
 
     #[test]
     fn one_components_restart_does_not_erase_its_siblings() {
         // The whole reason the stamps share a directory nobody owns.
-        let dir = tempdir();
-        write_stamp_in(&dir, "lege-comp", &identity("a"), 43, 1).unwrap();
-        write_stamp_in(&dir, "lege-shell", &identity("a"), 42, 1).unwrap();
-        write_stamp_in(&dir, "lege-shell", &identity("b"), 44, 2).unwrap();
-        let stamps = read_stamps_in(&dir, &|_| true);
+        let scratch = tempdir();
+        let dir = scratch.path();
+        write_stamp_in(dir, "lege-comp", &identity("a"), 43, 1).unwrap();
+        write_stamp_in(dir, "lege-shell", &identity("a"), 42, 1).unwrap();
+        write_stamp_in(dir, "lege-shell", &identity("b"), 44, 2).unwrap();
+        let stamps = read_stamps_in(dir, &|_| true);
         assert_eq!(stamps.len(), 2);
         assert_eq!(stamps["lege-shell"].build_set, "b");
         assert_eq!(stamps["lege-comp"].build_set, "a");
@@ -486,19 +489,21 @@ mod tests {
 
     #[test]
     fn a_corrupt_stamp_hides_only_itself() {
-        let dir = tempdir();
-        write_stamp_in(&dir, "lege-shell", &identity("a"), 42, 1).unwrap();
+        let scratch = tempdir();
+        let dir = scratch.path();
+        write_stamp_in(dir, "lege-shell", &identity("a"), 42, 1).unwrap();
         fs::write(dir.join("lege-comp.json"), b"{ not json").unwrap();
-        let stamps = read_stamps_in(&dir, &|_| true);
+        let stamps = read_stamps_in(dir, &|_| true);
         assert_eq!(stamps.keys().collect::<Vec<_>>(), vec!["lege-shell"]);
     }
 
     #[test]
     fn a_component_name_may_not_escape_its_directory() {
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.path();
         for bad in ["../escape", "a/b", "", ".", ".."] {
             assert!(
-                write_stamp_in(&dir, bad, &identity("a"), 1, 1).is_err(),
+                write_stamp_in(dir, bad, &identity("a"), 1, 1).is_err(),
                 "{bad}"
             );
         }
@@ -506,9 +511,10 @@ mod tests {
 
     #[test]
     fn no_temporary_file_survives_a_write() {
-        let dir = tempdir();
-        write_stamp_in(&dir, "lege-shell", &identity("a"), 42, 1).unwrap();
-        let names: Vec<_> = fs::read_dir(&dir)
+        let scratch = tempdir();
+        let dir = scratch.path();
+        write_stamp_in(dir, "lege-shell", &identity("a"), 42, 1).unwrap();
+        let names: Vec<_> = fs::read_dir(dir)
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -520,25 +526,24 @@ mod tests {
     fn a_stamp_written_by_an_older_build_still_parses() {
         // The additive-field rule: `lege dev status` from a new build must be able to read the
         // stamp a not-yet-restarted old component wrote.
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.path();
         fs::write(
             dir.join("lege-filed.json"),
             br#"{"component":"lege-filed","build_set":"old","git_sha":"0000000","pid":7,"started_at_ms":5}"#,
         )
         .unwrap();
-        let stamps = read_stamps_in(&dir, &|_| true);
+        let stamps = read_stamps_in(dir, &|_| true);
         assert_eq!(stamps["lege-filed"].build_set, "old");
         assert!(stamps["lege-filed"].schema_versions.is_empty());
     }
 
-    fn tempdir() -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "lege-build-test-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        base
+    /// A scratch directory that removes itself when the test ends.
+    ///
+    /// `tempfile` rather than a hand-rolled path under `/tmp`: the hand-rolled version cleaned up
+    /// at the *start* of each test, which is one run behind — 287 directories had accumulated on
+    /// the machine this was written on before anyone looked.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("a scratch directory")
     }
 }

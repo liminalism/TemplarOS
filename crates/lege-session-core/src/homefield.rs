@@ -8,19 +8,50 @@ use lege_field::{FieldDocument, FieldOp, apply};
 use lege_state::Store;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-/// The stored document for `output`, if any.
+/// What was found in the store for one output.
+#[derive(Debug)]
+pub enum Stored {
+    /// Nothing saved yet.
+    Absent,
+    /// A document this build can work with, brought forward if it needed it.
+    Readable(Box<FieldDocument>),
+    /// A document this build must not touch — written by a newer LegeOS, or otherwise
+    /// unreadable. **The stored copy stays exactly as it is.**
+    Untouchable(lege_field::LoadError),
+}
+
+/// The stored document for `output`, migrated forward if an older build wrote it.
+///
+/// Returns [`Stored::Untouchable`] rather than an error for a document from the future, because
+/// the caller's correct response is not to fail — the session still has to start — but to leave
+/// the saved layout alone and carry on with an empty field.
+pub fn load_stored(store: &Store, output: &str) -> Result<Stored> {
+    let json: Option<String> = {
+        let connection = store.lock();
+        connection
+            .query_row(
+                "SELECT json FROM homefield WHERE output = ?1",
+                params![output],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("reading the home field document")?
+    };
+    let Some(json) = json else {
+        return Ok(Stored::Absent);
+    };
+    Ok(match lege_field::load_document(&json) {
+        Ok(doc) => Stored::Readable(Box::new(doc)),
+        Err(error) => Stored::Untouchable(error),
+    })
+}
+
+/// The stored document for `output`, if any and if this build can read it.
 pub fn load(store: &Store, output: &str) -> Result<Option<FieldDocument>> {
-    let connection = store.lock();
-    let json: Option<String> = connection
-        .query_row(
-            "SELECT json FROM homefield WHERE output = ?1",
-            params![output],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("reading the home field document")?;
-    json.map(|json| serde_json::from_str(&json).context("parsing the stored home field"))
-        .transpose()
+    Ok(match load_stored(store, output)? {
+        Stored::Readable(doc) => Some(*doc),
+        Stored::Absent | Stored::Untouchable(_) => None,
+    })
 }
 
 /// The stored document, reshaped to `cols`×`rows` if the display it was saved on is not the one
@@ -34,17 +65,37 @@ pub fn load(store: &Store, output: &str) -> Result<Option<FieldDocument>> {
 /// `lege_field::reshape` re-seats every tile proportionally through the ordinary reflow, so the
 /// result satisfies the same invariants a drop does.
 pub fn load_or_create(store: &Store, output: &str, cols: u16, rows: u16) -> Result<FieldDocument> {
-    if let Some(doc) = load(store, output)? {
-        if doc.cols == cols && doc.rows == rows {
-            return Ok(doc);
+    match load_stored(store, output)? {
+        Stored::Readable(doc) => {
+            if doc.cols == cols && doc.rows == rows {
+                return Ok(*doc);
+            }
+            let reshaped = lege_field::reshape(&doc, cols, rows);
+            store.transaction(|tx| save_within(tx, &reshaped))?;
+            Ok(reshaped)
         }
-        let reshaped = lege_field::reshape(&doc, cols, rows);
-        store.transaction(|tx| save_within(tx, &reshaped))?;
-        return Ok(reshaped);
+        // Nothing to read: an empty field, persisted, so the first `Apply` has something to
+        // apply to and `GetRevision` answers 0 rather than "no such output".
+        Stored::Absent => {
+            let doc = FieldDocument::new(output, cols, rows);
+            store.transaction(|tx| save_within(tx, &doc))?;
+            Ok(doc)
+        }
+        // A document this build must not touch — a newer LegeOS wrote it, which is what a rolled
+        // back build set looks like from underneath. An empty field is returned so the session
+        // still comes up, and it is deliberately **not** saved: writing it would replace the
+        // arrangement with nothing and make the rollback permanent before anyone noticed it had
+        // happened. Rolling forward again finds the layout where it was left.
+        Stored::Untouchable(error) => {
+            debug_assert!(error.leave_stored_document_alone());
+            tracing::warn!(
+                output,
+                %error,
+                "the saved Home Field was left untouched; showing an empty one for this session",
+            );
+            Ok(FieldDocument::new(output, cols, rows))
+        }
     }
-    let doc = FieldDocument::new(output, cols, rows);
-    store.transaction(|tx| save_within(tx, &doc))?;
-    Ok(doc)
 }
 
 /// Discard `output`'s document and its whole undo log, and store a fresh empty one at
@@ -166,6 +217,60 @@ pub fn undo(store: &Store, output: &str) -> Result<Option<FieldDocument>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_field_from_a_newer_build_is_left_exactly_as_it_is() {
+        // What a rolled-back build set looks like from underneath. The older shell reads a
+        // layout it does not understand; if it replaced it with an empty one and saved that, the
+        // rollback would destroy the arrangement before anyone noticed it had happened.
+        let store = Store::in_memory().unwrap();
+        let mut value = serde_json::to_value(FieldDocument::new("DP-1", 8, 6)).unwrap();
+        value["version"] = serde_json::Value::from(lege_field::DOCUMENT_VERSION + 1);
+        let saved = serde_json::to_string(&value).unwrap();
+        store
+            .lock()
+            .execute(
+                "INSERT INTO homefield (output, revision, json, updated_ms) VALUES (?1, 7, ?2, 0)",
+                params!["DP-1", saved],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            load_stored(&store, "DP-1").unwrap(),
+            Stored::Untouchable(_)
+        ));
+
+        // The session still comes up, with an empty field for this run.
+        let doc = load_or_create(&store, "DP-1", 8, 6).unwrap();
+        assert!(doc.tiles.is_empty());
+        assert_eq!(doc.revision, 0);
+
+        // And the stored bytes are byte-for-byte what they were.
+        let after: String = store
+            .lock()
+            .query_row(
+                "SELECT json FROM homefield WHERE output = ?1",
+                params!["DP-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, saved, "the saved layout must survive being read");
+    }
+
+    #[test]
+    fn a_current_document_still_round_trips_through_the_load_boundary() {
+        let store = Store::in_memory().unwrap();
+        let doc = load_or_create(&store, "DP-1", 8, 6).unwrap();
+        assert_eq!(doc.version, lege_field::DOCUMENT_VERSION);
+        assert!(matches!(
+            load_stored(&store, "DP-1").unwrap(),
+            Stored::Readable(_)
+        ));
+        assert!(matches!(
+            load_stored(&store, "HDMI-1").unwrap(),
+            Stored::Absent
+        ));
+    }
     use lege_field::{Cell, Landing, Span, SpanRange, Tile, TileId, TileKind};
 
     fn tile(id: u64) -> Tile {

@@ -59,7 +59,8 @@
 | `lege-resourced` (lib) | itself | cgroup wrapper, PSI, pure `Governor`, executor, `app.slice` scan |
 | `lege-filed` (lib) | itself | structured browsing, bounded previews, operation journal, storage/reserve, last-dir policy |
 | `lege-preview-codecs` (bin) | transient helper | JPXL decode and first-page Lege PDF CPU rendering behind time, memory and output limits |
-| `lege` (lib) | cli, tests | `doctor` engine |
+| `lege-build` | every long-lived binary, xtask, cli | build identity: one BuildSetId per set, runtime stamps saying what is running, the component matrix, D-Bus signature comparison |
+| `lege` (lib) | cli, tests | `doctor` engine, `lege dev` deployment (convergence, local archive, activation, gates) |
 
 ## Invariants the code enforces
 

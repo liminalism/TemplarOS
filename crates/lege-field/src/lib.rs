@@ -35,6 +35,7 @@ pub mod drag;
 pub mod field;
 pub mod focus;
 pub mod grammar;
+pub mod migrate;
 pub mod ops;
 pub mod panel;
 pub mod reflow;
@@ -48,6 +49,7 @@ pub use field::{
     cell_rect, tile_rect,
 };
 pub use grammar::{DropModifiers, Operation, Target, operation_for};
+pub use migrate::{DOCUMENT_MIGRATIONS, DocumentMigration, LoadError, load_document};
 pub use ops::{FieldError, FieldOp, apply, reshape};
 pub use panel::{Arrangement, Edge, Orientation, Panel, PanelId, arrangement_layout, panel_id_for};
 pub use reflow::{LayoutCost, Reflow};
@@ -56,6 +58,11 @@ pub use tile::{
     Representation, RungFloor, RungLadder, Span, SpanRange, Tile, TileId, TileKind, TrayId,
 };
 
-/// The document format version this crate reads and writes. `FieldDocument::version` must equal
-/// it; a persisted document from another version is refused rather than guessed at.
+/// The document format version this crate writes.
+///
+/// [`ops::apply`] requires an in-memory document to be exactly this version — applying an
+/// operation to a shape this code does not understand is how a layout gets silently mangled. At
+/// the *load* boundary the two directions differ: an older document is brought forward through
+/// [`migrate::DOCUMENT_MIGRATIONS`], and a newer one is refused with the stored copy left
+/// untouched. See [`migrate`].
 pub const DOCUMENT_VERSION: u32 = 1;
