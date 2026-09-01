@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bus;
+pub mod dev;
 pub mod doctor;
 pub mod files;
 pub mod format;

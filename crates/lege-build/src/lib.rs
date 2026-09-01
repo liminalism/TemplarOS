@@ -77,6 +77,42 @@ pub fn build_set_id(version: &str, epoch: u64, git_sha: &str, dirty: bool) -> St
     )
 }
 
+/// A build-set id taken apart again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedBuildSetId {
+    pub version: String,
+    pub epoch: u64,
+    pub git_sha: String,
+    pub dirty: bool,
+}
+
+/// Reads a build-set id back into its parts.
+///
+/// The epoch is what orders two sets. Comparing the strings would not: `~dev9` sorts after
+/// `~dev10` alphabetically, and an id built from an older commit can carry a newer epoch, which
+/// is correct — the epoch is when it was *built*, and that is what "the previous set" means.
+///
+/// Returns `None` for anything that is not one of our ids, including an archive version, so a
+/// caller can tell "not a dev build" apart from "a dev build I cannot order".
+#[must_use]
+pub fn parse_build_set_id(id: &str) -> Option<ParsedBuildSetId> {
+    let (version, rest) = id.split_once("~dev")?;
+    let (epoch, rest) = rest.split_once("+g")?;
+    let (git_sha, dirty) = match rest.strip_suffix(".dirty") {
+        Some(sha) => (sha, true),
+        None => (rest, false),
+    };
+    if git_sha.is_empty() || !git_sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(ParsedBuildSetId {
+        version: version.to_owned(),
+        epoch: epoch.parse().ok()?,
+        git_sha: git_sha.to_owned(),
+        dirty,
+    })
+}
+
 /// What a running process claims about itself.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunningStamp {
@@ -270,6 +306,41 @@ mod tests {
         // `~` is what makes this true for apt; assert the shape we rely on rather than shelling
         // out to dpkg, which is not present everywhere the tests run.
         assert!(build_set_id("0.1.0", 1, "aaaaaaa", false).starts_with("0.1.0~dev"));
+    }
+
+    #[test]
+    fn a_build_set_id_comes_apart_again() {
+        let parsed = parse_build_set_id("0.1.0~dev1756700000+gabcdef1.dirty").unwrap();
+        assert_eq!(parsed.version, "0.1.0");
+        assert_eq!(parsed.epoch, 1_756_700_000);
+        assert_eq!(parsed.git_sha, "abcdef1");
+        assert!(parsed.dirty);
+        assert!(
+            !parse_build_set_id("0.1.0~dev1756700000+gabcdef1")
+                .unwrap()
+                .dirty
+        );
+    }
+
+    #[test]
+    fn an_archive_version_is_not_a_build_set_id() {
+        assert!(parse_build_set_id("0.1.0-1").is_none());
+        assert!(parse_build_set_id("0.1.0~dev1+gzzzz").is_none());
+        assert!(parse_build_set_id("").is_none());
+    }
+
+    #[test]
+    fn build_sets_are_ordered_by_epoch_not_by_string() {
+        // "~dev9" sorts after "~dev10" as text; the epoch is what actually orders two builds.
+        let older = build_set_id("0.1.0", 9, "aaaaaaa", false);
+        let newer = build_set_id("0.1.0", 10, "bbbbbbb", false);
+        assert!(
+            older > newer,
+            "the string comparison is the trap this guards against"
+        );
+        assert!(
+            parse_build_set_id(&older).unwrap().epoch < parse_build_set_id(&newer).unwrap().epoch
+        );
     }
 
     #[test]
