@@ -1,6 +1,7 @@
 //! `cargo xtask <command>` — repository checks that must not drift.
 
 mod build_set;
+mod signatures;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -50,6 +51,10 @@ enum Command {
         #[arg(long)]
         epoch: Option<u64>,
     },
+    /// Freeze every shipped D-Bus signature into interfaces/baseline.json.
+    InterfaceBaseline,
+    /// No shipped D-Bus signature has changed or disappeared since the baseline.
+    CheckInterfaceSignatures,
     /// Print the component matrix — one field per component, for the shell scripts that used to
     /// keep their own copy of the package list.
     Components {
@@ -378,6 +383,8 @@ fn main() -> Result<()> {
                 epoch,
             },
         ),
+        Command::InterfaceBaseline => signatures::write_baseline(&root),
+        Command::CheckInterfaceSignatures => signatures::check(&root),
         Command::Components { field } => components(&root, &field),
     }
 }
