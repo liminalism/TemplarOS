@@ -86,6 +86,11 @@ async fn main() -> Result<()> {
     }
 
     if cli.surface {
+        // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot
+        // be written must never keep the shell from starting.
+        if let Err(error) = lege_build::write_stamp("lege-shell") {
+            tracing::warn!(%error, "could not write the build stamp");
+        }
         tracing::info!(
             wayland_display = ?std::env::var_os("WAYLAND_DISPLAY"),
             "starting graphical shell; connecting to Wayland"

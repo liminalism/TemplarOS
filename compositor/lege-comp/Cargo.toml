@@ -17,6 +17,7 @@ name = "lege-comp"
 path = "src/main.rs"
 
 [dependencies]
+lege-build = { workspace = true }
 lege-window = { workspace = true }
 lege-comp-integration = { workspace = true }
 lege-types = { workspace = true }

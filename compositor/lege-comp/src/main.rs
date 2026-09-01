@@ -85,6 +85,11 @@ fn main() -> anyhow::Result<()> {
     }
     let backend = cli.backend.unwrap_or_else(default_backend);
 
+    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
+    // written must never keep lege-comp from starting.
+    if let Err(error) = lege_build::write_stamp("lege-comp") {
+        tracing::warn!(%error, "could not write the build stamp");
+    }
     tracing::info!(?backend, "starting lege-comp");
     let exit_code = match backend {
         BackendKind::Winit => backend::winit::run(exec.as_deref(), cli.socket_name.as_deref()),

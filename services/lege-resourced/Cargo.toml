@@ -13,6 +13,7 @@ name = "lege-resourced"
 path = "src/main.rs"
 
 [dependencies]
+lege-build = { workspace = true }
 lege-types = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
