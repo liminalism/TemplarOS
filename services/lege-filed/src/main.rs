@@ -109,6 +109,11 @@ async fn main() -> Result<()> {
         tracing::info!(resumed, "resumed journalled operations");
     }
 
+    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
+    // written must never keep lege-filed from starting.
+    if let Err(error) = lege_build::write_stamp("lege-filed") {
+        tracing::warn!(%error, "could not write the build stamp");
+    }
     let connection = connection::Builder::session()?
         .name(names::BUS_NAME)?
         .serve_at(

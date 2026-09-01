@@ -12,7 +12,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lege::{bus, doctor, files, history, open, power, project, providers, res, settings, update};
+use lege::{
+    bus, dev, doctor, files, history, open, power, project, providers, res, settings, update,
+};
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
     FilesActionsProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy,
@@ -130,6 +132,13 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// Developer deployment: what is installed, what is running, and the gap between them.
+    Dev {
+        #[command(subcommand)]
+        command: Option<DevCommand>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Integration checks (runtime, image root, or hardware matrix).
     Doctor {
         /// Check an unpacked image root instead of `/`.
@@ -146,6 +155,19 @@ enum Command {
         profile: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DevCommand {
+    /// Per-component convergence: installed set against running builds (the default).
+    Status {
+        /// Compare against this build set instead of the newest one installed.
+        #[arg(long)]
+        target: Option<String>,
+        /// Check an unpacked image root instead of `/`.
+        #[arg(long, default_value = "/")]
+        root: PathBuf,
     },
 }
 
@@ -435,6 +457,17 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
 
 async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Dev { command, json } => {
+            let DevCommand::Status { target, root } = command.unwrap_or(DevCommand::Status {
+                target: None,
+                root: PathBuf::from("/"),
+            });
+            print!("{}", dev::status(&root, target.as_deref(), json)?);
+            if json {
+                println!();
+            }
+            Ok(())
+        }
         Command::Doctor {
             root,
             hardware,

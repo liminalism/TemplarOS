@@ -1492,6 +1492,7 @@ dependencies = [
  "clap",
  "lege-appd",
  "lege-associationd",
+ "lege-build",
  "lege-client",
  "lege-filed",
  "lege-hwdetect",
@@ -1562,6 +1563,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lege-build"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "lege-client"
 version = "0.1.0"
 dependencies = [
@@ -1580,6 +1590,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lege-build",
  "lege-comp-integration",
  "lege-types",
  "lege-window",
@@ -1633,6 +1644,7 @@ dependencies = [
  "bpg-decode",
  "clap",
  "image",
+ "lege-build",
  "lege-state",
  "lege-types",
  "libc",
@@ -1696,6 +1708,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "lege-build",
  "lege-hwdetect",
  "lege-types",
  "libc",
@@ -1723,6 +1736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lege-build",
  "lege-types",
  "libc",
  "parking_lot",
@@ -1771,6 +1785,7 @@ dependencies = [
  "futures-util",
  "lege-appd",
  "lege-associationd",
+ "lege-build",
  "lege-client",
  "lege-field",
  "lege-session-core",
@@ -1818,6 +1833,7 @@ dependencies = [
  "async-trait",
  "clap",
  "futures-util",
+ "lege-build",
  "lege-client",
  "lege-field",
  "lege-treemap",
@@ -4783,6 +4799,7 @@ dependencies = [
  "async-trait",
  "clap",
  "futures-util",
+ "lege-build",
  "lege-client",
  "lege-filed",
  "lege-resourced",
@@ -4849,6 +4866,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lege-build",
+ "serde",
  "serde_json",
 ]
 

@@ -1,0 +1,157 @@
+# The LegeOS component matrix — what a build set is made of, and what it takes to make each
+# part of it actually run.
+#
+# This file is data, not code, because four different things needed the same list and each had
+# grown its own copy: the justfile's `deb` recipe, `lege doctor`'s LEGEOS_PACKAGES, the reinstall
+# script's expected_packages, and the deployment tooling. `cargo xtask check-packaging` checks it
+# against debian/control and the workspace, so a package added in one place and forgotten here
+# fails the build rather than quietly dropping out of a deployment.
+#
+# Installed to /usr/share/legeos/components.toml; `lege dev` reads the repository copy when run
+# from a checkout and the installed one otherwise.
+#
+# activation — what has to happen before a newly installed component is the one running:
+#   immediate      nothing: the next invocation is the new binary (CLIs, data-only packages).
+#   restart        restart its unit; the deployment then waits for it to come back healthy.
+#   relaunch       running instances keep the old binary; the next launch gets the new one.
+#   manual         restartable in principle, but not by the tool yet — it prints what to do.
+#   needs-session  requires logging out and back in (the compositor and the session units).
+#   needs-reboot   requires a reboot (boot-path components).
+#
+# `manual` is where the honesty lives. Restarting sessiond, filed or the portal disconnects
+# every proxy the shell holds; those rows stay manual until the composed-session restart test
+# exists (roadmap track B4). Shipping them as `restart` today would make the tool confidently
+# break a live desktop.
+
+version = 1
+
+[[component]]
+name = "sessiond"
+crate = "lege-sessiond"
+package = "legeos-sessiond"
+stamp = "lege-sessiond"
+unit = "lege-sessiond.service"
+scope = "user"
+activation = "manual"
+depends_on = []
+summary = "session policy daemon — identity, launching, associations, history, settings"
+
+[[component]]
+name = "resourced"
+crate = "lege-resourced"
+package = "legeos-resourced"
+stamp = "lege-resourced"
+unit = "lege-resourced.service"
+scope = "user"
+activation = "restart"
+depends_on = []
+summary = "resource governor"
+
+[[component]]
+name = "filed"
+crate = "lege-filed"
+package = "legeos-filed"
+stamp = "lege-filed"
+unit = "lege-filed.service"
+scope = "user"
+activation = "manual"
+depends_on = []
+summary = "file service"
+
+[[component]]
+name = "hostd"
+crate = "lege-hostd"
+package = "legeos-hostd"
+stamp = "lege-hostd"
+unit = "lege-hostd.service"
+scope = "system"
+activation = "restart"
+depends_on = []
+summary = "privileged system-bus surface"
+
+[[component]]
+name = "boot-health"
+crate = "lege-boot-health"
+package = "legeos-boot-health"
+unit = "lege-boot-health.service"
+scope = "system"
+activation = "needs-reboot"
+depends_on = []
+summary = "boot health probe; only ever runs at boot"
+
+[[component]]
+name = "session"
+crate = "lege-session"
+package = "legeos-session"
+scope = "none"
+activation = "needs-session"
+depends_on = []
+summary = "session entry and the user units themselves"
+
+[[component]]
+name = "comp"
+crate = "lege-comp"
+package = "legeos-comp"
+stamp = "lege-comp"
+unit = "lege-comp.service"
+scope = "user"
+activation = "needs-session"
+depends_on = []
+summary = "compositor — Restart=no by design, so a new one means a new session"
+
+[[component]]
+name = "greeter"
+crate = "lege-greeter"
+package = "legeos-greeter"
+scope = "none"
+activation = "manual"
+depends_on = ["comp"]
+summary = "login surface; started by greetd, outside this session"
+
+[[component]]
+name = "shell"
+crate = "lege-shell"
+package = "legeos-shell"
+stamp = "lege-shell"
+unit = "lege-shell.service"
+scope = "user"
+activation = "restart"
+depends_on = ["sessiond", "filed", "comp"]
+summary = "Home Field, panel and the rest of the restartable surface"
+
+[[component]]
+name = "settings"
+crate = "lege-settings"
+package = "legeos-settings"
+scope = "none"
+activation = "relaunch"
+depends_on = ["sessiond"]
+summary = "Settings application"
+
+[[component]]
+name = "files"
+crate = "lege-files"
+package = "lege-files"
+scope = "none"
+activation = "relaunch"
+depends_on = ["sessiond", "filed"]
+summary = "standalone file manager"
+
+[[component]]
+name = "portal"
+crate = "xdg-desktop-portal-lege"
+package = "legeos-portal"
+stamp = "xdg-desktop-portal-lege"
+scope = "none"
+activation = "manual"
+depends_on = ["sessiond", "filed"]
+summary = "xdg-desktop-portal backend — D-Bus activated by xdg-desktop-portal, not a unit of ours"
+
+[[component]]
+name = "cli"
+crate = "lege"
+package = "legeos-cli"
+scope = "none"
+activation = "immediate"
+depends_on = []
+summary = "lege — the command line, including doctor and this tool"

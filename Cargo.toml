@@ -12,6 +12,7 @@ resolver = "3"
 members = [
     "crates/lege-types",
     "crates/lege-appd",
+    "crates/lege-build",
     "crates/lege-associationd",
     "crates/lege-window",
     "crates/lege-field",
@@ -52,6 +53,7 @@ authors = ["LegeOS contributors"]
 # internal
 lege-types = { path = "crates/lege-types" }
 lege-appd = { path = "crates/lege-appd" }
+lege-build = { path = "crates/lege-build" }
 lege-associationd = { path = "crates/lege-associationd" }
 lege-window = { path = "crates/lege-window" }
 lege-field = { path = "crates/lege-field" }

@@ -40,6 +40,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
     let cli = Cli::parse();
 
+    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
+    // written must never keep xdg-desktop-portal-lege from starting.
+    if let Err(error) = lege_build::write_stamp("xdg-desktop-portal-lege") {
+        tracing::warn!(%error, "could not write the build stamp");
+    }
     let connection = connection::Builder::session()?
         .name(BUS_NAME)?
         .build()

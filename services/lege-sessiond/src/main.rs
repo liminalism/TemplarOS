@@ -674,6 +674,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Say which build is running, for `lege dev status`. Diagnostic only: a stamp that cannot be
+    // written must never keep lege-sessiond from starting.
+    if let Err(error) = lege_build::write_stamp("lege-sessiond") {
+        tracing::warn!(%error, "could not write the build stamp");
+    }
     let connection = zbus::connection::Builder::session()?
         .build()
         .await

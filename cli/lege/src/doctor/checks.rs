@@ -23,6 +23,8 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(OsRelease),
         Box::new(SessionUnitsPresent),
         Box::new(UnitBinariesPresent),
+        Box::new(BuildSetCoherent),
+        Box::new(RunningMatchesInstalled),
         Box::new(PackageAgesConsistent),
         Box::new(CompositorUsable),
         Box::new(ProtectedUnitsHaveResourceControl),
@@ -145,37 +147,218 @@ fn exec_start_binaries(unit: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every package `scripts/reinstall-legeos-desktop.sh` installs, keyed by its dpkg name. This has
-/// to be an explicit set rather than "everything starting with `legeos-`" or "everything the
-/// reinstall script's package list happens to mention": `legeos-nvidia-open` and
-/// `legeos-nvidia-proprietary` also carry that prefix and are flavour packages with nothing to do
-/// with build skew, and `lege-files` breaks the naming pattern entirely.
-const LEGEOS_PACKAGES: [&str; 13] = [
-    "legeos-sessiond",
-    "legeos-resourced",
-    "legeos-filed",
-    "legeos-hostd",
-    "legeos-boot-health",
-    "legeos-session",
-    "legeos-comp",
-    "legeos-greeter",
-    "legeos-shell",
-    "legeos-settings",
-    "legeos-portal",
-    "legeos-cli",
-    "lege-files",
-];
+/// Every Debian package in a LegeOS build set, keyed by its dpkg name.
+///
+/// This has to be an explicit set rather than "everything starting with `legeos-`":
+/// `legeos-nvidia-open` and `legeos-nvidia-proprietary` also carry that prefix and are driver
+/// flavour packages with nothing to do with build skew, and `lege-files` breaks the naming
+/// pattern entirely. The set is not written down *here*, though — it comes from the component
+/// matrix (`distro/deploy/components.toml`), which is also what `cargo xtask build-set` builds and
+/// what the reinstall script installs, so the three can no longer disagree about what LegeOS is.
+fn legeos_packages() -> Vec<String> {
+    lege_build::components::Matrix::embedded()
+        .packages()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+}
 
 /// How far apart two LegeOS packages' build dates are allowed to be before that is a fault rather
 /// than the ordinary spread of a single build run.
 const MAX_BUILD_SKEW: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// A mixed-age LegeOS install: some packages rebuilt, some left over from an earlier run of
-/// `scripts/reinstall-legeos-desktop.sh`.
+/// Every LegeOS package installed here belongs to the same build set.
 ///
-/// Version numbers cannot catch this — every LegeOS package is `0.1.0-1` throughout development,
-/// so two packages agreeing on version proves nothing about whether they were built together. What
-/// does prove it is the mtime cargo-deb stamps on each package's binary at build time: packages
+/// This is the check `PackageAgesConsistent` was a stand-in for. A build set gives all thirteen
+/// packages one version string (`0.1.0~dev<epoch>+g<sha>`), so an install that mixes two
+/// deployments is not a judgement call about file timestamps — it is two different strings, named
+/// exactly, with the rollback already spelled out by `lege dev status`.
+///
+/// Severity is Error because a mixed set is not a cosmetic problem: it is a shell calling D-Bus
+/// methods an older sessiond does not serve, and every symptom of that looks like an application
+/// bug rather than an install that never finished.
+struct BuildSetCoherent;
+impl Check for BuildSetCoherent {
+    fn id(&self) -> &'static str {
+        "build-set-coherent"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn run(&self, context: &Context) -> Finding {
+        let status_path = context.path("/var/lib/dpkg/status");
+        let Ok(status_text) = fs::read_to_string(&status_path) else {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no dpkg status to check",
+                status_path.display().to_string(),
+            );
+        };
+        let matrix = lege_build::components::Matrix::embedded();
+        let installed = crate::dev::installed_versions(&status_text, &matrix.packages());
+        if installed.is_empty() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no LegeOS packages installed — a source checkout, not an install",
+                "",
+            );
+        }
+
+        let identified: BTreeMap<&String, &String> = installed
+            .iter()
+            .filter(|(_, version)| lege_build::parse_build_set_id(version).is_some())
+            .collect();
+        if identified.is_empty() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "these packages predate build identity; package-ages is the fallback",
+                format!("{} package(s) with no build-set id", installed.len()),
+            );
+        }
+
+        let mut sets: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (package, version) in &identified {
+            sets.entry(version.as_str())
+                .or_default()
+                .push(package.as_str());
+        }
+        if sets.len() > 1 {
+            let detail = sets
+                .iter()
+                .map(|(version, packages)| format!("{version}: {}", packages.join(" ")))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return finding(
+                self,
+                Outcome::Fail,
+                format!("mixed install: {} different build sets", sets.len()),
+                detail,
+            );
+        }
+
+        let set = sets.keys().next().copied().unwrap_or_default();
+        let unidentified: Vec<&str> = installed
+            .keys()
+            .filter(|package| !identified.contains_key(package))
+            .map(String::as_str)
+            .collect();
+        if !unidentified.is_empty() {
+            return finding(
+                self,
+                Outcome::Fail,
+                format!(
+                    "{} package(s) are not part of build set {set}",
+                    unidentified.len()
+                ),
+                unidentified.join(", "),
+            );
+        }
+        let missing: Vec<&str> = matrix
+            .packages()
+            .into_iter()
+            .filter(|package| !installed.contains_key(*package))
+            .collect();
+        if !missing.is_empty() {
+            return finding(
+                self,
+                Outcome::Fail,
+                format!("build set {set} is incomplete"),
+                format!("not installed: {}", missing.join(", ")),
+            );
+        }
+        finding(
+            self,
+            Outcome::Pass,
+            format!("all {} package(s) are build set {set}", installed.len()),
+            "",
+        )
+    }
+}
+
+/// Every running LegeOS process is running the build that is installed.
+///
+/// A coherent install and a stale process are different faults with the same symptoms. The shell
+/// restarts in half a second, so a shell still running yesterday's build after a deployment is
+/// ordinary and worth a nudge, not an alarm — hence Warning, and hence the wording, which says
+/// what to do rather than what is broken.
+///
+/// Only meaningful against a live root: an unpacked image has no running processes, and neither
+/// does a machine outside a LegeOS session.
+struct RunningMatchesInstalled;
+impl Check for RunningMatchesInstalled {
+    fn id(&self) -> &'static str {
+        "running-build"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn run(&self, context: &Context) -> Finding {
+        if context.root != Path::new("/") {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "an image root has nothing running",
+                "",
+            );
+        }
+        let matrix = lege_build::components::Matrix::embedded();
+        let observation = crate::dev::observe(&context.root, &matrix);
+        if observation.running.is_empty() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no LegeOS process is running here",
+                "",
+            );
+        }
+        let convergence = crate::dev::converge::converge(&matrix, &observation, None);
+        let stale: Vec<&crate::dev::converge::Row> = convergence
+            .rows
+            .iter()
+            .filter(|row| row.verdict == crate::dev::converge::Verdict::NeedsActivation)
+            .collect();
+        if stale.is_empty() {
+            return finding(
+                self,
+                Outcome::Pass,
+                format!(
+                    "{} running component(s) match what is installed",
+                    observation.running.len()
+                ),
+                "",
+            );
+        }
+        let detail = stale
+            .iter()
+            .map(|row| format!("{} — {}", row.component, row.activation.explanation()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        finding(
+            self,
+            Outcome::Fail,
+            format!(
+                "{} component(s) are still running an older build; `lege dev status` says what \
+                 each needs",
+                stale.len()
+            ),
+            detail,
+        )
+    }
+}
+
+/// A mixed-age LegeOS install, judged by build date — the **fallback** for packages that carry no
+/// build-set id.
+///
+/// [`BuildSetCoherent`] is the real check now: a build set gives every package one version string,
+/// so "were these built together?" is a string comparison with no heuristic in it. This check
+/// stays for the installs that predate that, where every package is `0.1.0-1` and two packages
+/// agreeing on version proves nothing. It skips itself the moment build-set ids are present,
+/// because a 24-hour mtime window is a guess and a version equality is not.
+///
+/// What it can prove is the mtime cargo-deb stamps on each package's binary at build time: packages
 /// built in the same run land within moments of each other, and packages left over from a prior
 /// run sit however many days behind. This is not a theoretical failure mode — a real install on
 /// this project's own development host had `lege-shell` four days newer than `lege`, with
@@ -192,7 +375,9 @@ impl Check for PackageAgesConsistent {
         "package-ages"
     }
     fn severity(&self) -> Severity {
-        Severity::Error
+        // A warning, not an error: the mtime window is a heuristic, and `build-set-coherent` is
+        // the error-severity check that can actually prove the same thing.
+        Severity::Warning
     }
     fn run(&self, context: &Context) -> Finding {
         let status_path = context.path("/var/lib/dpkg/status");
@@ -213,18 +398,30 @@ impl Check for PackageAgesConsistent {
                 "",
             );
         }
+        if installed
+            .iter()
+            .all(|(_, version)| lege_build::parse_build_set_id(version).is_some())
+        {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "every package carries a build-set id, so build-set-coherent answers this exactly",
+                "",
+            );
+        }
 
-        let dated: Vec<(&str, SystemTime)> = installed
+        let dated: Vec<(String, SystemTime)> = installed
             .into_iter()
-            .filter_map(|package| {
-                let binary = primary_binary(context, package)?;
+            .filter_map(|(package, _)| {
+                let binary = primary_binary(context, &package)?;
                 let modified = fs::metadata(&binary).ok()?.modified().ok()?;
                 Some((package, modified))
             })
             .collect();
         // Fewer than two dated binaries means there is nothing to compare — a missing binary is
         // `unit-binaries`' or `app-manifests`' fault to report, not this check's.
-        let Some(&(newest_package, newest)) = dated.iter().max_by_key(|(_, time)| *time) else {
+        let Some((newest_package, newest)) = dated.iter().max_by_key(|(_, time)| *time).cloned()
+        else {
             return finding(
                 self,
                 Outcome::Skipped,
@@ -233,15 +430,15 @@ impl Check for PackageAgesConsistent {
             );
         };
 
-        let mut lagging: Vec<(&str, SystemTime)> = dated
+        let mut lagging: Vec<(String, SystemTime)> = dated
             .iter()
-            .copied()
             .filter(|(package, time)| {
                 *package != newest_package
                     && newest
                         .duration_since(*time)
                         .is_ok_and(|behind| behind > MAX_BUILD_SKEW)
             })
+            .cloned()
             .collect();
         if lagging.is_empty() {
             return finding(
@@ -279,9 +476,10 @@ impl Check for PackageAgesConsistent {
     }
 }
 
-/// Every package in [`LEGEOS_PACKAGES`] that `status_text` (a dpkg `status` file) marks as
-/// installed.
-fn installed_legeos_packages(status_text: &str) -> Vec<&'static str> {
+/// Every package in [`legeos_packages`] that `status_text` (a dpkg `status` file) marks as
+/// installed, with the version dpkg records for it.
+fn installed_legeos_packages(status_text: &str) -> Vec<(String, String)> {
+    let known = legeos_packages();
     status_text
         .split("\n\n")
         .filter_map(|stanza| {
@@ -291,10 +489,14 @@ fn installed_legeos_packages(status_text: &str) -> Vec<&'static str> {
             let installed = stanza
                 .lines()
                 .any(|line| line.starts_with("Status:") && line.contains("installed"));
-            if !installed {
+            if !installed || !known.iter().any(|package| package == name) {
                 return None;
             }
-            LEGEOS_PACKAGES.iter().copied().find(|known| *known == name)
+            let version = stanza
+                .lines()
+                .find_map(|line| line.strip_prefix("Version: "))
+                .unwrap_or_default();
+            Some((name.to_owned(), version.trim().to_owned()))
         })
         .collect()
 }
@@ -1232,13 +1434,18 @@ mod tests {
     /// `unix_secs` as its mtime — the thing cargo-deb actually stamps at build time and the thing
     /// [`PackageAgesConsistent`] reads.
     fn install_package(root: &Path, package: &str, binary: &str, unix_secs: u64) {
+        install_package_at(root, package, binary, unix_secs, "0.1.0-1");
+    }
+
+    /// [`install_package`] with an explicit version, for the build-set checks.
+    fn install_package_at(root: &Path, package: &str, binary: &str, unix_secs: u64, version: &str) {
         use std::fmt::Write as _;
         let status_path = root.join("var/lib/dpkg/status");
         fs::create_dir_all(status_path.parent().unwrap()).unwrap();
         let mut status = fs::read_to_string(&status_path).unwrap_or_default();
         write!(
             status,
-            "Package: {package}\nStatus: install ok installed\nVersion: 0.1.0-1\n\n"
+            "Package: {package}\nStatus: install ok installed\nVersion: {version}\n\n"
         )
         .unwrap();
         fs::write(&status_path, status).unwrap();
@@ -1258,6 +1465,131 @@ mod tests {
             .unwrap();
         file.set_modified(UNIX_EPOCH + Duration::from_secs(unix_secs))
             .unwrap();
+    }
+
+    /// Install every matrix package at `version`, so the coherence check has a complete set.
+    fn install_whole_set(root: &Path, version: &str) {
+        for (index, package) in lege_build::components::Matrix::embedded()
+            .packages()
+            .iter()
+            .enumerate()
+        {
+            install_package_at(
+                root,
+                package,
+                &format!("/usr/bin/{package}"),
+                1_787_616_000 + index as u64,
+                version,
+            );
+        }
+    }
+
+    const SET: &str = "0.1.0~dev2000+gaaaaaaa";
+    const OLDER_SET: &str = "0.1.0~dev1000+gbbbbbbb";
+
+    #[test]
+    fn build_set_coherent_passes_a_whole_set_at_one_version() {
+        let root = fixture_root("build-set-coherent");
+        install_whole_set(&root, SET);
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let finding = BuildSetCoherent.run(&context);
+        assert_eq!(finding.outcome, Outcome::Pass, "{finding:?}");
+        assert!(finding.summary.contains(SET), "{}", finding.summary);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_set_coherent_names_both_sets_of_a_mixed_install() {
+        let root = fixture_root("build-set-mixed");
+        install_whole_set(&root, SET);
+        install_package_at(
+            &root,
+            "legeos-sessiond",
+            "/usr/bin/legeos-sessiond",
+            1,
+            OLDER_SET,
+        );
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let finding = BuildSetCoherent.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail, "{finding:?}");
+        assert_eq!(finding.severity, Severity::Error);
+        assert!(finding.detail.contains(OLDER_SET), "{}", finding.detail);
+        assert!(
+            finding.detail.contains("legeos-sessiond"),
+            "{}",
+            finding.detail
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_set_coherent_fails_an_incomplete_set() {
+        let root = fixture_root("build-set-incomplete");
+        install_package_at(&root, "legeos-shell", "/usr/bin/lege-shell", 1, SET);
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let finding = BuildSetCoherent.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail, "{finding:?}");
+        assert!(
+            finding.summary.contains("incomplete"),
+            "{}",
+            finding.summary
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_set_coherent_defers_to_package_ages_for_packages_with_no_id() {
+        // The two checks must never both speak: an install predating build identity is
+        // package-ages' business, and an install carrying ids is not.
+        let root = fixture_root("build-set-legacy");
+        install_whole_set(&root, "0.1.0-1");
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        assert_eq!(BuildSetCoherent.run(&context).outcome, Outcome::Skipped);
+        assert_ne!(
+            PackageAgesConsistent.run(&context).outcome,
+            Outcome::Skipped,
+            "the fallback has to answer when the primary cannot"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+
+        let root = fixture_root("build-set-identified");
+        install_whole_set(&root, SET);
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        assert_eq!(BuildSetCoherent.run(&context).outcome, Outcome::Pass);
+        assert_eq!(
+            PackageAgesConsistent.run(&context).outcome,
+            Outcome::Skipped,
+            "the fallback must stand down once build-set ids are present"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn running_build_skips_an_image_root() {
+        let context = Context {
+            root: PathBuf::from("/nonexistent-image-root"),
+            hardware: false,
+        };
+        assert_eq!(
+            RunningMatchesInstalled.run(&context).outcome,
+            Outcome::Skipped
+        );
     }
 
     #[test]
