@@ -390,9 +390,11 @@ mod tests {
         // seen at a real seat. Like the omnibox variant it returns before the hash.
         if std::env::var("LEGE_BASELINE_FILES").is_ok() {
             screen.files_expanded = true;
-            screen.files.go_to(crate::files_surface::FilesLocation::Directory(
-                "/home/fixture".into(),
-            ));
+            screen
+                .files
+                .go_to(crate::files_surface::FilesLocation::Directory(
+                    "/home/fixture".into(),
+                ));
         }
         for _ in 0..2 {
             let mut ui = Ui::new(
