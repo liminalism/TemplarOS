@@ -1,365 +1,360 @@
-//! Background permissions page: "every running background application and why it is running"
-//! (`docs/architecture/providers.md`).
+//! Background permissions page: "every currently running background application and why it is
+//! running" (`docs/architecture/providers.md`), over `org.legeos.Background1`.
 //!
-//! **No dedicated interface exists for this.** `interfaces/dbus/` has no `Background1` or
-//! similar — autostart approvals are internal to `lege-sessiond`
-//! (`crates/lege-session-core/src/autostart.rs`), never exposed over the bus. This page
-//! reconstructs the honest answer from three interfaces that *do* exist:
+//! This page used to reconstruct that answer by joining `AppIdentity1.ListInstances`,
+//! `History1.Recent` and `Providers1.Report` itself. `Background1` now exists precisely so no
+//! client has to — the interface's own commentary calls that three-interface join "exactly what
+//! [`@legeos.constraint.services-not-indicators`] forbids" — and it answers more than the join
+//! could: what each application *asked for*, whether the session said yes, and, for a running
+//! one, whether this instance came from autostart or from a launch.
 //!
-//! * `AppIdentity1.ListInstances()` — who is running right now.
-//! * `History1.Recent()` — cross-referenced by `app_id` against `autostart-decision` events,
-//!   whose `message` field already reads like a sentence explaining the decision.
-//! * `Providers1.Report()` — an instance whose `app_id` is the resolved provider for some role
-//!   is running *because* it is that role's provider, independent of any autostart event.
-//!
-//! An instance can match both, neither, or several roles; every match found is reported, and a
-//! match found is never invented — an instance with no match says so plainly rather than
-//! guessing. See this module's doc comment in the final report for what a purpose-built
-//! interface would need to expose instead.
+//! `List()` returns `(app_id, permissions_json, approval, running, reason_json)`.
+//! [`parse_entries`] mirrors that wire shape; every parse is lenient in one direction only — a
+//! field this page cannot read becomes a plainly-worded absence, never a guess.
 
-use crate::history::{Event, EventKind, HistorySource};
-use crate::providers::{self, ProvidersSource, Resolution};
 use anyhow::{Context, Result};
-use lege_types::ProviderRole;
+use serde::Deserialize;
 
-/// How many recent history events to scan for an `autostart-decision` naming this app. Autostart
-/// decisions are made once per login, so this is generous enough to cover a normal session, but
-/// it is a scan of *recent* history, not "since this instance started" — `History1` has no
-/// "events for this app since boot" query, which is exactly the gap a dedicated interface would
-/// close (see this module's doc comment).
-const AUTOSTART_LOOKBACK: u32 = 500;
+/// The wire row of `Background1.List`.
+pub(crate) type Row = (String, String, String, bool, String);
 
-/// One running instance and everything this page could find to explain it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RunningApp {
-    pub(crate) instance_id: String,
-    pub(crate) app_id: String,
-    /// Roles for which this app is the currently resolved provider.
-    pub(crate) provider_roles: Vec<ProviderRole>,
-    /// The most recent `autostart-decision` event's message naming this app, if any.
-    pub(crate) autostart_reason: Option<String>,
+/// What the session has decided about an application's declared background activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Approval {
+    Approved,
+    Denied,
+    /// Declared, never answered — the state a freshly installed application starts in.
+    Undecided,
 }
 
-impl RunningApp {
-    pub(crate) fn has_a_reason(&self) -> bool {
-        !self.provider_roles.is_empty() || self.autostart_reason.is_some()
+impl Approval {
+    fn parse(value: &str) -> Self {
+        match value {
+            "approved" => Self::Approved,
+            "denied" => Self::Denied,
+            _ => Self::Undecided,
+        }
+    }
+
+    /// The word this page shows for the decision. Deliberately the plain past tense of what a
+    /// person did, not the service's enum spelling.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "Allowed",
+            Self::Denied => "Blocked",
+            Self::Undecided => "Not decided",
+        }
     }
 }
 
-/// Cross-reference running instances against provider resolutions and autostart-decision
-/// history. Pure and unit-testable against literal fixtures — no D-Bus call.
-pub(crate) fn cross_reference(
-    instances: &[(String, String, String, String)],
-    autostart_events: &[Event],
-    providers: &[(ProviderRole, Resolution)],
-) -> Vec<RunningApp> {
-    instances
-        .iter()
-        .map(|(instance_id, app_id, _unit, _cgroup)| {
-            let provider_roles = providers
-                .iter()
-                .filter(|(_, resolution)| {
-                    resolution
-                        .provider_app_id()
-                        .is_some_and(|provider| provider.as_str() == app_id)
-                })
-                .map(|(role, _)| *role)
-                .collect();
+/// Why a running application is running, as `Background1` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct Reason {
+    pub(crate) instance_id: String,
+    /// `"autostart"` or `"launch"`.
+    pub(crate) started_via: String,
+    /// The provider role the application declares, if it declares one.
+    #[serde(default)]
+    pub(crate) role: Option<String>,
+    /// Whether it is the *resolved* provider for that role, rather than merely a candidate.
+    #[serde(default)]
+    pub(crate) role_selected: bool,
+}
 
-            // `Recent` is newest-first, so the first match is the most recent decision.
-            let autostart_reason = autostart_events
-                .iter()
-                .find(|event| {
-                    event.kind == EventKind::AutostartDecision
-                        && event
-                            .app_id
-                            .as_ref()
-                            .is_some_and(|event_app| event_app.as_str() == app_id)
-                })
-                .map(|event| event.message.clone());
+/// One application that declares background activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BackgroundEntry {
+    pub(crate) app_id: String,
+    /// The kebab-case permission names it declares, in the order the service reported them.
+    pub(crate) permissions: Vec<String>,
+    pub(crate) approval: Approval,
+    pub(crate) running: bool,
+    /// Present only while it is running; `None` for a declaration with nothing behind it.
+    pub(crate) reason: Option<Reason>,
+}
 
-            RunningApp {
-                instance_id: instance_id.clone(),
+/// Parse `List()`'s rows. Pure and unit-testable against literal wire values.
+///
+/// A row whose `permissions_json` or `reason_json` will not parse still yields an entry: the
+/// application and its approval are the part a person acts on, and losing the whole row because
+/// a detail did not decode would hide a permission that is genuinely in force.
+pub(crate) fn parse_entries(rows: &[Row]) -> Vec<BackgroundEntry> {
+    rows.iter()
+        .map(
+            |(app_id, permissions_json, approval, running, reason_json)| BackgroundEntry {
                 app_id: app_id.clone(),
-                provider_roles,
-                autostart_reason,
-            }
-        })
+                permissions: serde_json::from_str(permissions_json).unwrap_or_default(),
+                approval: Approval::parse(approval),
+                running: *running,
+                reason: if *running {
+                    serde_json::from_str(reason_json).ok()
+                } else {
+                    None
+                },
+            },
+        )
         .collect()
 }
 
-fn render_running_apps(apps: &[RunningApp]) -> String {
-    if apps.is_empty() {
-        return "No application instances are running.".to_owned();
+/// What the application asked for, as a sentence.
+pub(crate) fn permissions_line(entry: &BackgroundEntry) -> String {
+    if entry.permissions.is_empty() {
+        return "Declares background activity without naming a permission.".to_owned();
     }
-    apps.iter()
-        .map(|app| {
-            let mut reasons = Vec::new();
-            if !app.has_a_reason() {
-                reasons.push(
-                    "no recorded reason found (not a role provider, and no matching autostart-decision in recent history — likely launched directly)."
-                        .to_owned(),
-                );
-            }
-            if !app.provider_roles.is_empty() {
-                let roles = app
-                    .provider_roles
-                    .iter()
-                    .copied()
-                    .map(ProviderRole::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                reasons.push(format!("selected provider for: {roles}"));
-            }
-            if let Some(reason) = &app.autostart_reason {
-                reasons.push(format!("autostart: {reason}"));
-            }
-            format!("{} [{}]\n  {}", app.app_id, app.instance_id, reasons.join("\n  "))
+    format!("Asks for {}.", join_words(&entry.permissions))
+}
+
+/// Why it is running now — or that it is not.
+pub(crate) fn running_line(entry: &BackgroundEntry) -> String {
+    let Some(reason) = entry.reason.as_ref() else {
+        return if entry.running {
+            "Running, but the session did not report why.".to_owned()
+        } else {
+            "Not running.".to_owned()
+        };
+    };
+    let start = match reason.started_via.as_str() {
+        "autostart" => "Started at login",
+        "launch" => "Started when it was opened",
+        other => return format!("Running ({other})."),
+    };
+    match (&reason.role, reason.role_selected) {
+        (Some(role), true) => format!("{start}; it is the selected provider for {role}."),
+        (Some(role), false) => {
+            format!("{start}; it offers to be the provider for {role} but another one is selected.")
+        }
+        (None, _) => format!("{start}."),
+    }
+}
+
+/// `a, b and c` — the list a person would say out loud, not a comma-joined machine list.
+fn join_words(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [only] => only.replace('-', " "),
+        [rest @ .., last] => format!(
+            "{} and {}",
+            rest.iter()
+                .map(|word| word.replace('-', " "))
+                .collect::<Vec<_>>()
+                .join(", "),
+            last.replace('-', " ")
+        ),
+    }
+}
+
+fn render_entries(entries: &[BackgroundEntry]) -> String {
+    if entries.is_empty() {
+        return "No application declares background activity.".to_owned();
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} — {}\n  {}\n  {}",
+                entry.app_id,
+                entry.approval.label(),
+                permissions_line(entry),
+                running_line(entry)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// The bus operation this page needs beyond [`HistorySource`] and [`ProvidersSource`].
-pub(crate) trait AppIdentitySource {
-    async fn list_instances(&self) -> Result<Vec<(String, String, String, String)>>;
+/// The bus operations this page needs.
+pub(crate) trait BackgroundSource {
+    async fn list(&self) -> Result<Vec<Row>>;
+    async fn grant(&self, app_id: &str) -> Result<()>;
+    async fn revoke(&self, app_id: &str) -> Result<()>;
 }
 
-impl AppIdentitySource for lege_client::proxies::AppIdentityProxy<'_> {
-    async fn list_instances(&self) -> Result<Vec<(String, String, String, String)>> {
-        self.list_instances()
-            .await
-            .context("AppIdentity1.ListInstances")
+impl BackgroundSource for lege_client::proxies::BackgroundProxy<'_> {
+    async fn list(&self) -> Result<Vec<Row>> {
+        self.list().await.context("Background1.List")
+    }
+    async fn grant(&self, app_id: &str) -> Result<()> {
+        self.grant(app_id).await.context("Background1.Grant")
+    }
+    async fn revoke(&self, app_id: &str) -> Result<()> {
+        self.revoke(app_id).await.context("Background1.Revoke")
     }
 }
 
-pub(crate) async fn render_with<A, H, P>(app_identity: &A, history: &H, providers: &P) -> String
-where
-    A: AppIdentitySource,
-    H: HistorySource,
-    P: ProvidersSource,
-{
-    let instances = match app_identity.list_instances().await {
-        Ok(instances) => instances,
-        Err(error) => return format!("service unavailable: {error:#}"),
-    };
+/// The page's entries, or the reason there are none. The graphical page needs the parsed values
+/// rather than the rendered text, so the fetch is separate from the rendering.
+pub(crate) async fn entries_with<S: BackgroundSource>(
+    source: &S,
+) -> Result<Vec<BackgroundEntry>, String> {
+    match source.list().await {
+        Ok(rows) => Ok(parse_entries(&rows)),
+        Err(error) => Err(format!("service unavailable: {error:#}")),
+    }
+}
 
-    let raw_events = match history.recent(AUTOSTART_LOOKBACK).await {
-        Ok(events) => events,
-        Err(error) => {
-            return format!(
-                "service unavailable: could not cross-reference autostart history: {error:#}"
-            );
-        }
-    };
-    let events: Vec<Event> = raw_events
-        .iter()
-        .filter_map(|raw| serde_json::from_str(raw).ok())
-        .collect();
+pub(crate) async fn render_with<S: BackgroundSource>(source: &S) -> String {
+    match entries_with(source).await {
+        Ok(entries) => render_entries(&entries),
+        Err(message) => message,
+    }
+}
 
-    let report = match providers.report().await {
-        Ok(report) => report,
-        Err(error) => {
-            return format!(
-                "service unavailable: could not cross-reference provider roles: {error:#}"
-            );
-        }
-    };
-    let parsed_report = providers::parse_report(&report);
-
-    render_running_apps(&cross_reference(&instances, &events, &parsed_report))
+/// Connect to `Background1`, for a caller that already has a session connection.
+pub(crate) async fn connect(
+    connection: &zbus::Connection,
+) -> Result<lege_client::proxies::BackgroundProxy<'static>> {
+    lege_client::proxies::BackgroundProxy::new(connection)
+        .await
+        .context("Background1")
 }
 
 pub(crate) async fn render(connection: &zbus::Connection) -> String {
-    let app_identity = match lege_client::proxies::AppIdentityProxy::new(connection).await {
-        Ok(proxy) => proxy,
-        Err(error) => {
-            return format!("service unavailable: could not reach AppIdentity1 ({error})");
-        }
-    };
-    let history = match lege_client::proxies::HistoryProxy::new(connection).await {
-        Ok(proxy) => proxy,
-        Err(error) => return format!("service unavailable: could not reach History1 ({error})"),
-    };
-    let providers = match lege_client::proxies::ProvidersProxy::new(connection).await {
-        Ok(proxy) => proxy,
-        Err(error) => return format!("service unavailable: could not reach Providers1 ({error})"),
-    };
-    render_with(&app_identity, &history, &providers).await
+    match connect(connection).await {
+        Ok(proxy) => render_with(&proxy).await,
+        Err(error) => format!("service unavailable: could not reach Background1 ({error:#})"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn event(kind: EventKind, app_id: &str, message: &str) -> Event {
-        serde_json::from_value(serde_json::json!({
-            "id": "00000000-0000-4000-8000-000000000000",
-            "at_ms": 1,
-            "kind": kind.as_str(),
-            "app_id": app_id,
-            "instance_id": null,
-            "message": message,
-            "cause": null,
-            "actions": [],
-            "reversible": false,
-        }))
-        .unwrap()
+    fn row(app_id: &str, permissions: &str, approval: &str, running: bool, reason: &str) -> Row {
+        (
+            app_id.to_owned(),
+            permissions.to_owned(),
+            approval.to_owned(),
+            running,
+            reason.to_owned(),
+        )
     }
 
     #[test]
-    fn a_role_provider_is_explained_without_any_history_event() {
-        let instances = vec![(
-            "instance-1".to_owned(),
-            "org.legeos.NetworkTray".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )];
-        let providers = vec![(
-            ProviderRole::NetworkStatusUi,
-            Resolution::Selected {
-                app_id: "org.legeos.NetworkTray".parse().unwrap(),
-            },
-        )];
-        let apps = cross_reference(&instances, &[], &providers);
-        assert_eq!(apps.len(), 1);
-        assert_eq!(apps[0].provider_roles, vec![ProviderRole::NetworkStatusUi]);
-        assert!(apps[0].autostart_reason.is_none());
-        assert!(apps[0].has_a_reason());
-    }
-
-    #[test]
-    fn an_autostart_decision_is_matched_by_app_id() {
-        let instances = vec![(
-            "instance-1".to_owned(),
-            "org.example.Sync".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )];
-        let events = vec![event(
-            EventKind::AutostartDecision,
-            "org.example.Sync",
-            "org.example.Sync was allowed to autostart (continuous-background approved).",
-        )];
-        let apps = cross_reference(&instances, &events, &[]);
-        assert_eq!(apps.len(), 1);
-        assert!(apps[0].provider_roles.is_empty());
+    fn a_running_selected_provider_says_which_role_it_fills() {
+        let entries = parse_entries(&[row(
+            "org.legeos.NetworkTray",
+            r#"["continuous-background","network-while-hidden"]"#,
+            "approved",
+            true,
+            r#"{"instance_id":"i-1","started_via":"autostart","role":"network-status-ui","role_selected":true}"#,
+        )]);
+        assert_eq!(entries[0].approval, Approval::Approved);
         assert_eq!(
-            apps[0].autostart_reason.as_deref(),
-            Some("org.example.Sync was allowed to autostart (continuous-background approved).")
+            permissions_line(&entries[0]),
+            "Asks for continuous background and network while hidden."
+        );
+        assert_eq!(
+            running_line(&entries[0]),
+            "Started at login; it is the selected provider for network-status-ui."
         );
     }
 
     #[test]
-    fn the_most_recent_matching_event_wins() {
-        let instances = vec![(
-            "instance-1".to_owned(),
-            "org.example.Sync".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )];
-        // Recent() is newest-first, so the first element is the latest decision.
-        let events = vec![
-            event(
-                EventKind::AutostartDecision,
-                "org.example.Sync",
-                "second decision",
-            ),
-            event(
-                EventKind::AutostartDecision,
-                "org.example.Sync",
-                "first decision",
-            ),
-        ];
-        let apps = cross_reference(&instances, &events, &[]);
-        assert_eq!(apps[0].autostart_reason.as_deref(), Some("second decision"));
+    fn a_candidate_that_did_not_win_the_role_is_not_described_as_the_provider() {
+        let entries = parse_entries(&[row(
+            "org.example.OtherTray",
+            r#"["continuous-background"]"#,
+            "approved",
+            true,
+            r#"{"instance_id":"i-2","started_via":"launch","role":"network-status-ui","role_selected":false}"#,
+        )]);
+        assert_eq!(
+            running_line(&entries[0]),
+            "Started when it was opened; it offers to be the provider for network-status-ui but another one is selected."
+        );
     }
 
     #[test]
-    fn a_non_autostart_event_for_the_same_app_is_ignored() {
-        let instances = vec![(
-            "instance-1".to_owned(),
-            "org.example.Sync".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )];
-        let events = vec![event(
-            EventKind::SettingChange,
+    fn a_declaration_that_is_not_running_carries_no_reason() {
+        let entries = parse_entries(&[row(
             "org.example.Sync",
-            "unrelated",
-        )];
-        let apps = cross_reference(&instances, &events, &[]);
-        assert!(apps[0].autostart_reason.is_none());
+            r#"["login-autostart"]"#,
+            "undecided",
+            false,
+            "",
+        )]);
+        assert_eq!(entries[0].approval, Approval::Undecided);
+        assert!(entries[0].reason.is_none());
+        assert_eq!(running_line(&entries[0]), "Not running.");
+        assert_eq!(permissions_line(&entries[0]), "Asks for login autostart.");
     }
 
     #[test]
-    fn an_instance_with_no_match_says_so() {
-        let instances = vec![(
-            "instance-1".to_owned(),
-            "org.example.Mystery".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )];
-        let apps = cross_reference(&instances, &[], &[]);
-        assert!(!apps[0].has_a_reason());
-        let rendered = render_running_apps(&apps);
-        assert!(rendered.contains("no recorded reason found"));
+    fn an_unreadable_detail_never_costs_the_row_its_approval() {
+        let entries = parse_entries(&[row(
+            "org.example.Broken",
+            "not json",
+            "denied",
+            true,
+            "also not json",
+        )]);
+        assert_eq!(entries[0].approval, Approval::Denied);
+        assert!(entries[0].permissions.is_empty());
+        assert_eq!(
+            permissions_line(&entries[0]),
+            "Declares background activity without naming a permission."
+        );
+        assert_eq!(
+            running_line(&entries[0]),
+            "Running, but the session did not report why."
+        );
     }
 
-    struct FakeAppIdentity(Vec<(String, String, String, String)>);
-    impl AppIdentitySource for FakeAppIdentity {
-        async fn list_instances(&self) -> Result<Vec<(String, String, String, String)>> {
-            Ok(self.0.clone())
-        }
+    #[test]
+    fn an_unknown_approval_word_is_read_as_undecided_rather_than_as_consent() {
+        let entries = parse_entries(&[row("org.example.New", "[]", "pending-review", false, "")]);
+        assert_eq!(entries[0].approval, Approval::Undecided);
+        assert_eq!(entries[0].approval.label(), "Not decided");
     }
 
-    struct FakeHistory(Vec<String>);
-    impl HistorySource for FakeHistory {
-        async fn recent(&self, _limit: u32) -> Result<Vec<String>> {
+    struct FakeBackground(Vec<Row>);
+    impl BackgroundSource for FakeBackground {
+        async fn list(&self) -> Result<Vec<Row>> {
             Ok(self.0.clone())
         }
-        async fn search(&self, _query: &str, _limit: u32) -> Result<Vec<String>> {
-            Ok(self.0.clone())
+        async fn grant(&self, _app_id: &str) -> Result<()> {
+            Ok(())
         }
-        async fn undo(&self, _event_id: &str) -> Result<bool> {
-            Ok(false)
-        }
-    }
-
-    struct FakeProviders(Vec<(String, String)>);
-    impl ProvidersSource for FakeProviders {
-        async fn report(&self) -> Result<Vec<(String, String)>> {
-            Ok(self.0.clone())
+        async fn revoke(&self, _app_id: &str) -> Result<()> {
+            Ok(())
         }
     }
 
     #[tokio::test]
-    async fn render_with_combines_all_three_sources() {
-        let app_identity = FakeAppIdentity(vec![(
-            "instance-1".to_owned(),
-            "org.legeos.NetworkTray".to_owned(),
-            "unit".to_owned(),
-            "cgroup".to_owned(),
-        )]);
-        let history = FakeHistory(vec![]);
-        let providers = FakeProviders(vec![(
-            "network-status-ui".to_owned(),
-            r#"{"kind":"selected","app_id":"org.legeos.NetworkTray"}"#.to_owned(),
-        )]);
-        let rendered = render_with(&app_identity, &history, &providers).await;
-        assert!(rendered.contains("org.legeos.NetworkTray"));
-        assert!(rendered.contains("selected provider for: network-status-ui"));
+    async fn render_with_reports_the_decision_and_the_reason_together() {
+        let rendered = render_with(&FakeBackground(vec![row(
+            "org.legeos.NetworkTray",
+            r#"["continuous-background"]"#,
+            "approved",
+            true,
+            r#"{"instance_id":"i-1","started_via":"autostart","role":null,"role_selected":false}"#,
+        )]))
+        .await;
+        assert!(rendered.contains("org.legeos.NetworkTray — Allowed"));
+        assert!(rendered.contains("Started at login."));
     }
 
     #[tokio::test]
-    async fn render_with_degrades_when_app_identity_is_unavailable() {
+    async fn render_with_says_so_when_nothing_declares_background_activity() {
+        let rendered = render_with(&FakeBackground(vec![])).await;
+        assert_eq!(rendered, "No application declares background activity.");
+    }
+
+    #[tokio::test]
+    async fn render_with_degrades_when_the_service_is_unavailable() {
         struct Failing;
-        impl AppIdentitySource for Failing {
-            async fn list_instances(&self) -> Result<Vec<(String, String, String, String)>> {
-                anyhow::bail!("no reply from AppIdentity1")
+        impl BackgroundSource for Failing {
+            async fn list(&self) -> Result<Vec<Row>> {
+                anyhow::bail!("no reply from Background1")
+            }
+            async fn grant(&self, _app_id: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn revoke(&self, _app_id: &str) -> Result<()> {
+                Ok(())
             }
         }
-        let rendered = render_with(&Failing, &FakeHistory(vec![]), &FakeProviders(vec![])).await;
+        let rendered = render_with(&Failing).await;
         assert!(rendered.starts_with("service unavailable:"));
     }
 }

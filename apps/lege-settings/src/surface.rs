@@ -1,6 +1,9 @@
 //! Graphical Settings surface. The Home Field form is generated from `Settings1.SchemaDetails`;
 //! bounds and choices therefore remain service policy rather than becoming UI constants.
 
+use crate::background::BackgroundEntry;
+use crate::history::Event;
+use crate::providers::{ChoiceOption, RoleChoice};
 use anyhow::{Context, Result};
 use lege_client::proxies::SettingsProxy;
 use lege_session_core::settings::{SettingSpec, SettingValue};
@@ -9,13 +12,14 @@ use pixelkit_shell::{
     Input, KeyInput, Modifiers, MouseButton, PixelApp, Scale, Waker, WindowConfig, run_app,
 };
 use pixelkit_text::{Align, Face, FontSet, TextCache};
-use pixelkit_ui::{Theme, Ui};
+use pixelkit_ui::{Dropdown, ScrollState, Theme, Ui};
 use std::sync::{Arc, Mutex, mpsc};
 
 const HOME_PREFIX: &str = "shell.home-field.";
-/// The two interactive pages come first and the rendered text pages follow. `System` is second
-/// because it is the page the Home Field's Settings widget opens into: the widget reports the
-/// battery, the volume and the brightness, and this is where they can be set outright.
+/// `System` is second because it is the page the Home Field's Settings widget opens into: the
+/// widget reports the battery, the volume and the brightness, and this is where they can be set
+/// outright. The rest keep the order they have had, so a person who learned where a tab is does
+/// not have to learn it again.
 const PAGE_NAMES: [&str; 8] = [
     "Home Field",
     "System",
@@ -29,9 +33,15 @@ const PAGE_NAMES: [&str; 8] = [
 /// The index of each page that draws controls rather than rendered text.
 const HOME_PAGE: usize = 0;
 const SYSTEM_PAGE: usize = 1;
+const PROVIDERS_PAGE: usize = 2;
+const BACKGROUND_PAGE: usize = 4;
+const HISTORY_PAGE: usize = 6;
 /// How far one press of a stepper moves a level: the same five points `lege status louder` and
 /// the Home Field's own controls use, so no two surfaces disagree about what one step means.
 const STEP_PERCENT: i32 = 5;
+/// How many recent events the History page holds. A settings page is read to find something that
+/// happened today, not to audit a month, and every row is parsed and laid out on the UI thread.
+const HISTORY_LIMIT: u32 = 200;
 
 #[derive(Clone, Debug)]
 struct SettingRow {
@@ -44,6 +54,39 @@ enum Command {
     Set { key: String, value: SettingValue },
     Reset { key: String },
     System(SystemCommand),
+    Background(BackgroundCommand),
+    History(HistoryCommand),
+    Providers(ProvidersCommand),
+}
+
+/// One change to who fills a role, or a plain re-read.
+#[derive(Clone, Debug)]
+enum ProvidersCommand {
+    Refresh,
+    /// Pin `app_id` to `role`.
+    Select {
+        role: String,
+        app_id: String,
+    },
+    /// Return `role` to choosing automatically.
+    Deselect {
+        role: String,
+    },
+}
+
+/// One change to a background-activity approval, or a plain re-read.
+#[derive(Clone, Debug)]
+enum BackgroundCommand {
+    Refresh,
+    Grant(String),
+    Revoke(String),
+}
+
+/// One undo, or a plain re-read.
+#[derive(Clone, Debug)]
+enum HistoryCommand {
+    Refresh,
+    Undo(String),
 }
 
 /// One change to a hardware level, or a plain re-read.
@@ -75,6 +118,20 @@ enum ResultMessage {
         state: Box<crate::system::SystemState>,
         error: Option<String>,
     },
+    /// Same discipline for the two list pages: a write is always followed by the re-read, so the
+    /// rows show the state the service is actually in and never the one the click asked for.
+    Background {
+        entries: Vec<BackgroundEntry>,
+        message: Option<String>,
+    },
+    History {
+        events: Vec<Event>,
+        message: Option<String>,
+    },
+    Providers {
+        choices: Vec<RoleChoice>,
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -97,6 +154,13 @@ impl Backend {
                 while let Ok(command) = command_rx.recv() {
                     let message = match command {
                         Command::System(system) => runtime.block_on(run_system_command(system)),
+                        Command::Background(background) => {
+                            runtime.block_on(run_background_command(background))
+                        }
+                        Command::History(history) => runtime.block_on(run_history_command(history)),
+                        Command::Providers(providers) => {
+                            runtime.block_on(run_providers_command(providers))
+                        }
                         Command::Set { .. } | Command::Reset { .. } => {
                             runtime.block_on(run_setting_command(command))
                         }
@@ -118,7 +182,10 @@ impl Backend {
 async fn run_setting_command(command: Command) -> ResultMessage {
     let key = match &command {
         Command::Set { key, .. } | Command::Reset { key } => key.clone(),
-        Command::System(_) => unreachable!("dispatched by the caller"),
+        Command::System(_)
+        | Command::Background(_)
+        | Command::History(_)
+        | Command::Providers(_) => unreachable!("dispatched by the caller"),
     };
     let result = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
@@ -129,7 +196,10 @@ async fn run_setting_command(command: Command) -> ResultMessage {
                 proxy.set(&key, &json, "lege-settings-gui").await?;
             }
             Command::Reset { key } => proxy.reset(&key, "lege-settings-gui").await?,
-            Command::System(_) => unreachable!("dispatched by the caller"),
+            Command::System(_)
+            | Command::Background(_)
+            | Command::History(_)
+            | Command::Providers(_) => unreachable!("dispatched by the caller"),
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -171,11 +241,159 @@ async fn run_system_command(command: SystemCommand) -> ResultMessage {
     }
 }
 
+/// One approval change, followed by a re-read of the whole list.
+///
+/// The re-read is not an optimisation away from a local edit: `Grant`/`Revoke` write the same
+/// `autostart_approvals` the planner consults, and granting one application can change what the
+/// session reports about another. Only the service knows the result of that, so the page asks.
+async fn run_background_command(command: BackgroundCommand) -> ResultMessage {
+    use crate::background::{self, BackgroundSource};
+    let outcome = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let proxy = background::connect(&connection).await?;
+        // Through the trait, not the proxy's inherent method of the same name: the trait's
+        // implementation is what names the call in the error a person ends up reading.
+        let attempted = match &command {
+            BackgroundCommand::Refresh => Ok(()),
+            BackgroundCommand::Grant(app_id) => BackgroundSource::grant(&proxy, app_id).await,
+            BackgroundCommand::Revoke(app_id) => BackgroundSource::revoke(&proxy, app_id).await,
+        };
+        Ok::<_, anyhow::Error>((background::entries_with(&proxy).await, attempted))
+    }
+    .await;
+    match outcome {
+        Ok((entries, attempted)) => ResultMessage::Background {
+            entries: entries.clone().unwrap_or_default(),
+            message: match (attempted, entries) {
+                (Err(error), _) => Some(format!("Could not change it — {error:#}")),
+                (Ok(()), Err(unavailable)) => Some(unavailable),
+                (Ok(()), Ok(_)) => background_confirmation(&command),
+            },
+        },
+        Err(error) => ResultMessage::Background {
+            entries: Vec::new(),
+            message: Some(format!("Could not reach Background1 — {error:#}")),
+        },
+    }
+}
+
+fn background_confirmation(command: &BackgroundCommand) -> Option<String> {
+    match command {
+        BackgroundCommand::Refresh => None,
+        BackgroundCommand::Grant(app_id) => Some(format!("{app_id} may run in the background")),
+        // Deliberately not "stopped": `Revoke` takes effect at the next autostart decision and
+        // does not kill a running instance, and a page that implies otherwise is lying about
+        // what the button did.
+        BackgroundCommand::Revoke(app_id) => Some(format!(
+            "{app_id} is blocked from starting in the background; a copy already running keeps running"
+        )),
+    }
+}
+
+/// One undo, followed by a re-read of recent history.
+///
+/// `Undo` answering `false` is not an error — it is the service saying the event was already
+/// undone or was never reversible — and it is reported as the plain fact it is.
+async fn run_history_command(command: HistoryCommand) -> ResultMessage {
+    use crate::history::{self, HistorySource};
+    let outcome = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let proxy = lege_client::proxies::HistoryProxy::new(&connection)
+            .await
+            .context("History1")?;
+        let attempted = match &command {
+            HistoryCommand::Refresh => Ok(None),
+            HistoryCommand::Undo(event_id) => HistorySource::undo(&proxy, event_id).await.map(Some),
+        };
+        let events = HistorySource::recent(&proxy, HISTORY_LIMIT)
+            .await
+            .map(|raw| history::parse_events(&raw));
+        Ok::<_, anyhow::Error>((events, attempted))
+    }
+    .await;
+    match outcome {
+        Ok((events, attempted)) => ResultMessage::History {
+            events: events.as_ref().cloned().unwrap_or_default(),
+            message: match (attempted, events) {
+                (Err(error), _) => Some(format!("Could not undo it — {error:#}")),
+                (Ok(_), Err(error)) => Some(format!("Could not read history — {error:#}")),
+                (Ok(Some(true)), Ok(_)) => Some("Undone".to_owned()),
+                (Ok(Some(false)), Ok(_)) => {
+                    Some("Nothing to undo — it was already undone".to_owned())
+                }
+                (Ok(None), Ok(_)) => None,
+            },
+        },
+        Err(error) => ResultMessage::History {
+            events: Vec::new(),
+            message: Some(format!("Could not reach History1 — {error:#}")),
+        },
+    }
+}
+
+/// One provider change, followed by a re-read of every role.
+///
+/// The whole report, not the one role: an exclusive role's resolution is a function of what every
+/// application declares, and `Providers1.Changed` names one role while the *reasons* shown under
+/// the others can move with it.
+async fn run_providers_command(command: ProvidersCommand) -> ResultMessage {
+    use crate::providers::{self, ProvidersSource};
+    let outcome = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let proxy = lege_client::proxies::ProvidersProxy::new(&connection)
+            .await
+            .context("Providers1")?;
+        let attempted = match &command {
+            ProvidersCommand::Refresh => Ok(()),
+            ProvidersCommand::Select { role, app_id } => {
+                ProvidersSource::select(&proxy, role, app_id).await
+            }
+            ProvidersCommand::Deselect { role } => ProvidersSource::deselect(&proxy, role).await,
+        };
+        Ok::<_, anyhow::Error>((providers::role_choices_with(&proxy).await, attempted))
+    }
+    .await;
+    match outcome {
+        Ok((choices, attempted)) => ResultMessage::Providers {
+            choices: choices.clone().unwrap_or_default(),
+            message: match (attempted, choices) {
+                (Err(error), _) => Some(format!("Could not change it — {error:#}")),
+                (Ok(()), Err(unavailable)) => Some(unavailable),
+                (Ok(()), Ok(_)) => providers_confirmation(&command),
+            },
+        },
+        Err(error) => ResultMessage::Providers {
+            choices: Vec::new(),
+            message: Some(format!("Could not reach Providers1 — {error:#}")),
+        },
+    }
+}
+
+fn providers_confirmation(command: &ProvidersCommand) -> Option<String> {
+    match command {
+        ProvidersCommand::Refresh => None,
+        ProvidersCommand::Select { role, app_id } => Some(format!("{app_id} now fills {role}")),
+        ProvidersCommand::Deselect { role } => Some(format!("{role} chooses automatically again")),
+    }
+}
+
 struct SettingsApp {
     home: Vec<SettingRow>,
     system: crate::system::SystemState,
+    background: Vec<BackgroundEntry>,
+    history: Vec<Event>,
+    providers: Vec<RoleChoice>,
+    /// The one open chooser, if any. Immediate mode has no z-order, so a dropdown's popup is
+    /// drawn last, after every row — see `pixelkit_ui::Dropdown`.
+    provider_dropdown: Dropdown,
+    /// Which role's chooser is open, so the popup's pick is applied to the right row.
+    provider_open_row: Option<usize>,
     pages: Vec<Vec<String>>,
     selected_page: usize,
+    /// One scroll position per tab, so leaving a page and coming back does not lose the place a
+    /// person had scrolled to — and so a long page can be read at all, which is the part that
+    /// was missing while every page drew its first twenty lines and stopped.
+    scroll: [ScrollState; PAGE_NAMES.len()],
     input: Input,
     text: TextCache,
     kernel: RasterKernel,
@@ -213,6 +431,24 @@ impl SettingsApp {
                         self.status = format!("Could not change it — {error}");
                     }
                 }
+                ResultMessage::Background { entries, message } => {
+                    self.background = entries;
+                    if let Some(message) = message {
+                        self.status = message;
+                    }
+                }
+                ResultMessage::History { events, message } => {
+                    self.history = events;
+                    if let Some(message) = message {
+                        self.status = message;
+                    }
+                }
+                ResultMessage::Providers { choices, message } => {
+                    self.providers = choices;
+                    if let Some(message) = message {
+                        self.status = message;
+                    }
+                }
             }
         }
     }
@@ -221,19 +457,35 @@ impl SettingsApp {
         let _ = self.backend.commands.send(Command::System(command));
     }
 
+    /// Re-read whichever page was just opened. Nothing pushes at this window, so arriving on a
+    /// page is when it refreshes; the two static pages have nothing to re-read.
+    fn refresh_page(&mut self, page: usize) {
+        let command = match page {
+            SYSTEM_PAGE => Command::System(SystemCommand::Refresh),
+            PROVIDERS_PAGE => Command::Providers(ProvidersCommand::Refresh),
+            BACKGROUND_PAGE => Command::Background(BackgroundCommand::Refresh),
+            HISTORY_PAGE => Command::History(HistoryCommand::Refresh),
+            _ => return,
+        };
+        let _ = self.backend.commands.send(command);
+    }
+
     fn draw_home(&mut self, ui: &mut Ui<'_>, area: Rect) {
-        let mut y = area.y;
-        for index in 0..self.home.len() {
-            let row_area = Rect::new(area.x, y, area.w, ui.px(78));
+        let rows = self.home.clone();
+        let heights = vec![ui.px(88); rows.len()];
+        let mut wanted: Option<(usize, Option<SettingValue>)> = None;
+        let mut scroll = self.scroll[HOME_PAGE];
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let row_area = Rect::new(rect.x, rect.y, rect.w, ui.px(78));
             ui.painter
-                .fill_rounded_rect(row_area, ui.px(6), 0x00fb_fcfd);
+                .fill_rounded_rect(row_area, ui.px(6), ui.theme.panel);
             ui.painter
-                .stroke_rect(row_area, ui.scale.hairline(), 0x00dd_e1e6);
-            let name = self.home[index]
+                .stroke_rect(row_area, ui.scale.hairline(), ui.theme.panel_edge);
+            let name = rows[index]
                 .spec
                 .key
                 .strip_prefix(HOME_PREFIX)
-                .unwrap_or(&self.home[index].spec.key)
+                .unwrap_or(&rows[index].spec.key)
                 .replace('-', " ");
             ui.label(
                 Rect::new(
@@ -253,7 +505,7 @@ impl SettingsApp {
                     row_area.w - ui.px(220),
                     ui.px(34),
                 ),
-                &self.home[index].spec.description,
+                &rows[index].spec.description,
                 ui.theme.text_dim,
                 Align::Left,
             );
@@ -265,68 +517,17 @@ impl SettingsApp {
             );
             let reset = Rect::new(controls.x - ui.px(66), controls.y, ui.px(58), controls.h);
             if ui.button(reset, "Reset") {
-                self.reset(index);
+                wanted = Some((index, None));
             }
-            self.draw_home_control(ui, index, controls);
-            y += ui.px(88);
-        }
-    }
-
-    /// The editing control for one Home setting, chosen by the value's type: a toggle for a flag,
-    /// a stepper clamped to the spec's bounds for a number, and a cycling button for a choice.
-    fn draw_home_control(&mut self, ui: &mut Ui<'_>, index: usize, controls: Rect) {
-        match self.home[index].value.clone() {
-            SettingValue::Bool(mut enabled) => {
-                let label = if enabled { "On" } else { "Off" };
-                if ui.toggle(controls, &mut enabled, label) {
-                    self.change(index, SettingValue::Bool(enabled));
-                }
+            if let Some(value) = home_control(ui, &rows[index], controls) {
+                wanted = Some((index, Some(value)));
             }
-            SettingValue::Int(value) => {
-                let minus = Rect::new(controls.x, controls.y, ui.px(38), controls.h);
-                let plus = Rect::new(
-                    controls.right() - ui.px(38),
-                    controls.y,
-                    ui.px(38),
-                    controls.h,
-                );
-                if ui.button(minus, "−") {
-                    let min = self.home[index].spec.min.unwrap_or(i64::MIN);
-                    self.change(index, SettingValue::Int(value.saturating_sub(1).max(min)));
-                }
-                ui.label(
-                    Rect::new(
-                        minus.right(),
-                        controls.y,
-                        controls.w - ui.px(76),
-                        controls.h,
-                    ),
-                    &value.to_string(),
-                    ui.theme.text,
-                    Align::Centre,
-                );
-                if ui.button(plus, "+") {
-                    let max = self.home[index].spec.max.unwrap_or(i64::MAX);
-                    self.change(index, SettingValue::Int(value.saturating_add(1).min(max)));
-                }
-            }
-            SettingValue::Choice(value) => {
-                let choices = &self.home[index].spec.choices;
-                if ui.button(controls, &value) && !choices.is_empty() {
-                    let position = choices
-                        .iter()
-                        .position(|choice| choice == &value)
-                        .unwrap_or(0);
-                    let next = choices[(position + 1) % choices.len()].clone();
-                    self.change(index, SettingValue::Choice(next));
-                }
-            }
-            other => ui.label(
-                controls,
-                &format!("{other:?}"),
-                ui.theme.text,
-                Align::Centre,
-            ),
+        });
+        self.scroll[HOME_PAGE] = scroll;
+        match wanted {
+            Some((index, Some(value))) => self.change(index, value),
+            Some((index, None)) => self.reset(index),
+            None => {}
         }
     }
 
@@ -379,23 +580,361 @@ impl SettingsApp {
         }
     }
 
+    /// The Providers page: which application fills each exclusive role, why, and a chooser to
+    /// change it.
+    ///
+    /// The sentence stays. A chooser without it would show *what* is selected and never *why* —
+    /// and "why" here is the difference between a role a person pinned and one that resolved by
+    /// priority, which look identical in a dropdown and behave differently when something new is
+    /// installed.
+    fn draw_providers(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        if self.providers.is_empty() {
+            ui.label(
+                Rect::new(area.x, area.y, area.w, ui.px(24)),
+                "Providers1 is not answering.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        }
+        let choices = self.providers.clone();
+        let heights = vec![ui.px(84); choices.len()];
+        let mut opened: Option<usize> = None;
+        let mut scroll = self.scroll[PROVIDERS_PAGE];
+        let dropdown = &mut self.provider_dropdown;
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let choice = &choices[index];
+            let row = Rect::new(rect.x, rect.y, rect.w, ui.px(74));
+            ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+            ui.painter
+                .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+
+            let field_w = ui.px(300);
+            let text_w = (row.w - field_w - ui.px(36)).max(ui.px(120));
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(8), text_w, ui.px(22)),
+                &choice.role.to_string(),
+                ui.theme.text,
+                Align::Left,
+            );
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(32), text_w, ui.px(34)),
+                &choice.explanation,
+                ui.theme.text_dim,
+                Align::Left,
+            );
+
+            let labels: Vec<String> = choice.options.iter().map(ChoiceOption::label).collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let field = Rect::new(
+                row.right() - field_w - ui.px(12),
+                row.y + ui.px(20),
+                field_w,
+                ui.px(34),
+            );
+            if ui.dropdown(dropdown, field, &refs, choice.selected) {
+                opened = Some(index);
+            }
+        });
+        self.scroll[PROVIDERS_PAGE] = scroll;
+        if let Some(index) = opened {
+            self.provider_open_row = self.provider_dropdown.is_open().then_some(index);
+        }
+    }
+
+    /// The open chooser's popup, drawn after every page so nothing covers it, and the pick it
+    /// reports applied to the row that opened it.
+    fn draw_provider_popup(&mut self, ui: &mut Ui<'_>, bounds: Rect) {
+        let mut dropdown = std::mem::take(&mut self.provider_dropdown);
+        let picked = dropdown.draw(ui, bounds);
+        self.provider_dropdown = dropdown;
+        let (Some(picked), Some(row)) = (picked, self.provider_open_row) else {
+            return;
+        };
+        self.provider_open_row = None;
+        let Some(choice) = self.providers.get(row) else {
+            return;
+        };
+        let Some(option) = choice.options.get(picked) else {
+            return;
+        };
+        let role = choice.role.to_string();
+        let command = match option {
+            ChoiceOption::Automatic => ProvidersCommand::Deselect { role },
+            ChoiceOption::App { app_id, .. } => ProvidersCommand::Select {
+                role,
+                app_id: app_id.clone(),
+            },
+        };
+        "Saving…".clone_into(&mut self.status);
+        let _ = self.backend.commands.send(Command::Providers(command));
+    }
+
+    /// The Background page: every application that declares background activity, what it asked
+    /// for, whether it is running and why, and the one decision a person makes about it.
+    ///
+    /// Allow and Block are two buttons rather than one toggle because the service has three
+    /// states, not two: an application that has never been answered is *undecided*, which a
+    /// toggle would have to draw as one of the other two and thereby claim a decision nobody
+    /// made. The current state is the badge; the buttons say what a click would do.
+    fn draw_background(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        if self.background.is_empty() {
+            ui.label(
+                Rect::new(area.x, area.y, area.w, ui.px(24)),
+                "No application declares background activity.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        }
+        let entries = self.background.clone();
+        let heights = vec![ui.px(96); entries.len()];
+        let mut wanted: Option<BackgroundCommand> = None;
+        let mut scroll = self.scroll[BACKGROUND_PAGE];
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let entry = &entries[index];
+            let row = Rect::new(rect.x, rect.y, rect.w, ui.px(86));
+            ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+            ui.painter
+                .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+
+            let buttons = ui.px(168);
+            let text_w = (row.w - buttons - ui.px(24)).max(ui.px(120));
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(6), text_w, ui.px(24)),
+                &entry.app_id,
+                ui.theme.text,
+                Align::Left,
+            );
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(30), text_w, ui.px(22)),
+                &crate::background::permissions_line(entry),
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(52), text_w, ui.px(22)),
+                &crate::background::running_line(entry),
+                ui.theme.text_dim,
+                Align::Left,
+            );
+
+            let (badge_text, badge_fill) = approval_colours(ui.theme, entry.approval);
+            ui.badge(
+                Rect::new(
+                    row.right() - buttons - ui.px(6),
+                    row.y + ui.px(8),
+                    ui.px(96),
+                    ui.px(22),
+                ),
+                entry.approval.label(),
+                badge_text,
+                badge_fill,
+                ui.theme.panel_edge,
+            );
+
+            let allow = Rect::new(
+                row.right() - buttons,
+                row.y + ui.px(40),
+                ui.px(76),
+                ui.px(32),
+            );
+            let block = Rect::new(allow.right() + ui.px(8), allow.y, ui.px(76), allow.h);
+            if ui.button(allow, "Allow") {
+                wanted = Some(BackgroundCommand::Grant(entry.app_id.clone()));
+            }
+            if ui.button(block, "Block") {
+                wanted = Some(BackgroundCommand::Revoke(entry.app_id.clone()));
+            }
+        });
+        self.scroll[BACKGROUND_PAGE] = scroll;
+        if let Some(command) = wanted {
+            "Saving…".clone_into(&mut self.status);
+            let _ = self.backend.commands.send(Command::Background(command));
+        }
+    }
+
+    /// The History page: what the session decided, when, why — and Undo where the service says
+    /// the event can still be reversed.
+    ///
+    /// Only reversible events get a button. `History1.Undo` on an irreversible event answers
+    /// "nothing to undo" rather than failing, so a button on every row would work; it would also
+    /// be a row of buttons that mostly do nothing, which is worse than no button at all.
+    fn draw_history(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        if self.history.is_empty() {
+            ui.label(
+                Rect::new(area.x, area.y, area.w, ui.px(24)),
+                "Nothing has been recorded yet.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        }
+        let events = self.history.clone();
+        let now = crate::history::now_ms();
+        let heights = vec![ui.px(62); events.len()];
+        let mut wanted: Option<String> = None;
+        let mut scroll = self.scroll[HISTORY_PAGE];
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let event = &events[index];
+            let row = Rect::new(rect.x, rect.y, rect.w, ui.px(54));
+            ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+            ui.painter
+                .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+
+            let kind_w = ui.px(132);
+            let undo_w = if event.reversible { ui.px(84) } else { 0 };
+            let text_x = row.x + kind_w + ui.px(16);
+            let text_w = (row.right() - text_x - undo_w - ui.px(16)).max(ui.px(80));
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(6), kind_w, ui.px(20)),
+                &event.kind.to_string().replace('-', " "),
+                ui.theme.accent,
+                Align::Left,
+            );
+            ui.label(
+                Rect::new(text_x, row.y + ui.px(6), text_w, ui.px(22)),
+                event.headline(),
+                ui.theme.text,
+                Align::Left,
+            );
+            ui.label(
+                Rect::new(text_x, row.y + ui.px(28), text_w, ui.px(20)),
+                &event.detail(now),
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            if event.reversible {
+                let undo = Rect::new(
+                    row.right() - undo_w - ui.px(8),
+                    row.y + ui.px(11),
+                    ui.px(76),
+                    ui.px(32),
+                );
+                if ui.button(undo, "Undo") {
+                    wanted = Some(event.id.clone());
+                }
+            }
+        });
+        self.scroll[HISTORY_PAGE] = scroll;
+        if let Some(event_id) = wanted {
+            "Undoing…".clone_into(&mut self.status);
+            let _ = self
+                .backend
+                .commands
+                .send(Command::History(HistoryCommand::Undo(event_id)));
+        }
+    }
+
+    /// A page whose content is text the page module rendered: scrolled, not truncated.
+    ///
+    /// A rendered page is one paragraph per subject with its detail indented under it, so a line
+    /// that starts with whitespace continues the one above and is drawn dimmer.
     fn draw_text_page(&mut self, ui: &mut Ui<'_>, area: Rect) {
         let lines = self
             .pages
             .get(self.selected_page)
             .cloned()
             .unwrap_or_default();
-        for (index, line) in lines.iter().take(20).enumerate() {
+        let line_height = ui.px(26);
+        let heights = vec![line_height; lines.len()];
+        let mut scroll = self.scroll[self.selected_page];
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let line = &lines[index];
+            let continuation = line.starts_with(char::is_whitespace);
             ui.label(
-                Rect::new(area.x, area.y + ui.px(index as i32 * 26), area.w, ui.px(24)),
-                line,
-                if line.ends_with(':') {
-                    ui.theme.text
-                } else {
+                Rect::new(rect.x, rect.y, rect.w, rect.h),
+                line.trim_start(),
+                if continuation {
                     ui.theme.text_dim
+                } else {
+                    ui.theme.text
                 },
                 Align::Left,
             );
+        });
+        self.scroll[self.selected_page] = scroll;
+    }
+}
+
+/// The badge colours for one approval state.
+///
+/// Blocked is the only one drawn in the theme's plain text colour on the panel edge: a red badge
+/// would read as a fault, and a person deliberately blocking an application has not caused one.
+fn approval_colours(theme: Theme, approval: crate::background::Approval) -> (u32, u32) {
+    use crate::background::Approval;
+    match approval {
+        Approval::Approved => (theme.accent, theme.accent_soft),
+        Approval::Denied => (theme.text_dim, theme.panel_edge),
+        Approval::Undecided => (theme.text, theme.hover),
+    }
+}
+
+/// The editing control for one Home setting, chosen by the value's type: a toggle for a flag, a
+/// stepper clamped to the spec's bounds for a number, and a cycling button for a choice.
+///
+/// A free function rather than a method because it is drawn from inside a scroll list's row
+/// closure, which already holds the page mutably; it reports the value a person asked for and
+/// the page applies it once the list is done.
+fn home_control(ui: &mut Ui<'_>, row: &SettingRow, controls: Rect) -> Option<SettingValue> {
+    match row.value.clone() {
+        SettingValue::Bool(mut enabled) => {
+            let label = if enabled { "On" } else { "Off" };
+            ui.toggle(controls, &mut enabled, label)
+                .then_some(SettingValue::Bool(enabled))
+        }
+        SettingValue::Int(value) => {
+            let minus = Rect::new(controls.x, controls.y, ui.px(38), controls.h);
+            let plus = Rect::new(
+                controls.right() - ui.px(38),
+                controls.y,
+                ui.px(38),
+                controls.h,
+            );
+            let mut wanted = None;
+            if ui.button(minus, "−") {
+                let min = row.spec.min.unwrap_or(i64::MIN);
+                wanted = Some(SettingValue::Int(value.saturating_sub(1).max(min)));
+            }
+            ui.label(
+                Rect::new(
+                    minus.right(),
+                    controls.y,
+                    controls.w - ui.px(76),
+                    controls.h,
+                ),
+                &value.to_string(),
+                ui.theme.text,
+                Align::Centre,
+            );
+            if ui.button(plus, "+") {
+                let max = row.spec.max.unwrap_or(i64::MAX);
+                wanted = Some(SettingValue::Int(value.saturating_add(1).min(max)));
+            }
+            wanted
+        }
+        SettingValue::Choice(value) => {
+            let choices = &row.spec.choices;
+            if ui.button(controls, &value) && !choices.is_empty() {
+                let position = choices
+                    .iter()
+                    .position(|choice| choice == &value)
+                    .unwrap_or(0);
+                Some(SettingValue::Choice(
+                    choices[(position + 1) % choices.len()].clone(),
+                ))
+            } else {
+                None
+            }
+        }
+        other => {
+            ui.label(
+                controls,
+                &format!("{other:?}"),
+                ui.theme.text,
+                Align::Centre,
+            );
+            None
         }
     }
 }
@@ -560,12 +1099,11 @@ impl PixelApp for SettingsApp {
             let inset = whole.inset(ui.px(18));
             ui.heading(Rect::new(inset.x, inset.y, inset.w, ui.px(48)), "Settings");
             let tabs = Rect::new(inset.x, inset.y + ui.px(56), inset.w, ui.px(42));
-            if ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES)
-                && self.selected_page == SYSTEM_PAGE
-            {
-                // Nothing pushes a level change at this window, so arriving on the page is when
-                // it re-reads. A stale charge is the one reading that goes wrong on its own.
-                self.system(SystemCommand::Refresh);
+            if ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES) {
+                // Nothing pushes at this window, so arriving on a page is when it re-reads. A
+                // stale charge, a stale approval and a stale history are each the kind of
+                // reading that goes wrong on its own between visits.
+                self.refresh_page(self.selected_page);
             }
             let content = Rect::new(
                 inset.x,
@@ -576,8 +1114,13 @@ impl PixelApp for SettingsApp {
             match self.selected_page {
                 HOME_PAGE => self.draw_home(&mut ui, content),
                 SYSTEM_PAGE => self.draw_system(&mut ui, content),
+                PROVIDERS_PAGE => self.draw_providers(&mut ui, content),
+                BACKGROUND_PAGE => self.draw_background(&mut ui, content),
+                HISTORY_PAGE => self.draw_history(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
+            // Last, so nothing the page drew afterwards covers the open list.
+            self.draw_provider_popup(&mut ui, content);
             ui.label(
                 Rect::new(inset.x, inset.bottom() - ui.px(34), inset.w, ui.px(28)),
                 &self.status,
@@ -671,36 +1214,24 @@ async fn load() -> Result<SettingsApp> {
     }
     home.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
 
-    // One entry per tab, so `selected_page` indexes both. The two interactive pages draw their own
-    // controls and keep an empty entry here rather than a rendered copy of themselves.
+    // One entry per tab, so `selected_page` indexes both. The four interactive pages draw their
+    // own controls and keep an empty entry here rather than a rendered copy of themselves.
     let pages = vec![
         Vec::new(),
         Vec::new(),
-        super::providers::render(&connection, None)
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
+        Vec::new(),
         super::associations::render(&connection, None, "")
             .await
             .lines()
             .map(str::to_owned)
             .collect(),
-        super::background::render(&connection)
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
+        Vec::new(),
         super::resources::render(&connection, 20)
             .await
             .lines()
             .map(str::to_owned)
             .collect(),
-        super::history::render(&connection, None, 20, None)
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
+        Vec::new(),
         super::hardware::render()
             .await
             .lines()
@@ -715,11 +1246,41 @@ async fn load() -> Result<SettingsApp> {
         Err(_) => crate::system::SystemState::default(),
     };
 
+    // Same reasoning for the two list pages: populated at startup, refreshed on every visit.
+    // A service that is not answering yields an empty page, never a failed launch — Settings is
+    // where a person goes *because* something is wrong.
+    let background = match crate::background::connect(&connection).await {
+        Ok(proxy) => crate::background::entries_with(&proxy)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let providers = match lege_client::proxies::ProvidersProxy::new(&connection).await {
+        Ok(proxy) => crate::providers::role_choices_with(&proxy)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let history = match lege_client::proxies::HistoryProxy::new(&connection).await {
+        Ok(proxy) => proxy
+            .recent(HISTORY_LIMIT)
+            .await
+            .map(|raw| crate::history::parse_events(&raw))
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
     Ok(SettingsApp {
         home,
         system,
+        background,
+        history,
+        providers,
+        provider_dropdown: Dropdown::new(),
+        provider_open_row: None,
         pages,
         selected_page: 0,
+        scroll: [ScrollState::new(); PAGE_NAMES.len()],
         input: Input::new(),
         text: TextCache::new(fonts()),
         kernel: RasterKernel::new(),

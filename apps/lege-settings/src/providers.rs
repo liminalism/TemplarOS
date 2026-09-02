@@ -28,18 +28,6 @@ pub(crate) enum Resolution {
     NoProvider,
 }
 
-impl Resolution {
-    /// The application allowed to fill the role under this resolution, if any — mirrors
-    /// `ProviderRegistry::provider()`. Used by the background page to say "running because it is
-    /// the selected provider for X" without a second D-Bus round trip.
-    pub(crate) fn provider_app_id(&self) -> Option<&AppId> {
-        match self {
-            Self::Selected { app_id } | Self::DefaultedByPriority { app_id, .. } => Some(app_id),
-            Self::SelectionStale { .. } | Self::NoProvider => None,
-        }
-    }
-}
-
 /// One full sentence explaining a role's resolution, for a person. Pure and unit-testable
 /// against literal [`Resolution`] values — no D-Bus call needed.
 ///
@@ -77,15 +65,131 @@ fn join_app_ids(ids: &[AppId]) -> String {
     ids.iter().map(AppId::as_str).collect::<Vec<_>>().join(", ")
 }
 
-/// The one bus operation this page needs.
+/// The bus operations this page needs.
 pub(crate) trait ProvidersSource {
     async fn report(&self) -> Result<Vec<(String, String)>>;
+    async fn candidates(&self, role: &str) -> Result<Vec<(String, u32)>>;
+    async fn select(&self, role: &str, app_id: &str) -> Result<()>;
+    async fn deselect(&self, role: &str) -> Result<()>;
 }
 
 impl ProvidersSource for lege_client::proxies::ProvidersProxy<'_> {
     async fn report(&self) -> Result<Vec<(String, String)>> {
         self.report().await.context("Providers1.Report")
     }
+    async fn candidates(&self, role: &str) -> Result<Vec<(String, u32)>> {
+        self.candidates(role).await.context("Providers1.Candidates")
+    }
+    async fn select(&self, role: &str, app_id: &str) -> Result<()> {
+        self.select(role, app_id).await.context("Providers1.Select")
+    }
+    async fn deselect(&self, role: &str) -> Result<()> {
+        self.deselect(role).await.context("Providers1.Deselect")
+    }
+}
+
+/// One role as the graphical page shows it: the sentence, the choice, and where the choice
+/// currently sits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoleChoice {
+    pub(crate) role: ProviderRole,
+    /// The sentence [`explain`] writes for the current resolution.
+    pub(crate) explanation: String,
+    /// What the chooser offers, in the order it offers them. `Automatic` is always first: it is
+    /// what a role starts as, and it is the answer a person wants when they have made a mess.
+    pub(crate) options: Vec<ChoiceOption>,
+    /// Which option is in force. Always a valid index into `options`.
+    pub(crate) selected: usize,
+}
+
+/// One entry in a role's chooser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChoiceOption {
+    /// Let priority decide — `Providers1.Deselect`.
+    Automatic,
+    /// Pin this application — `Providers1.Select`.
+    App { app_id: String, priority: u32 },
+}
+
+impl ChoiceOption {
+    /// The text the chooser shows. Priority is spelled out because it is the reason an
+    /// application is offered where it is, and a bare list of identifiers explains nothing.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Automatic => "Choose automatically".to_owned(),
+            Self::App { app_id, priority } => format!("{app_id} (priority {priority})"),
+        }
+    }
+}
+
+/// Build one role's chooser from its resolution and its candidate list.
+///
+/// The selected index is derived from the resolution rather than from the candidate list, so the
+/// two disagreeing — a selection whose application has since stopped declaring the role, which
+/// `Report` calls `SelectionStale` — shows as *Automatic* being not-yet-true rather than as a
+/// silent pick of some other application. `explain` has already said what went wrong in words.
+pub(crate) fn role_choice(
+    role: ProviderRole,
+    resolution: &Resolution,
+    candidates: &[(String, u32)],
+) -> RoleChoice {
+    let mut options = vec![ChoiceOption::Automatic];
+    options.extend(
+        candidates
+            .iter()
+            .map(|(app_id, priority)| ChoiceOption::App {
+                app_id: app_id.clone(),
+                priority: *priority,
+            }),
+    );
+
+    // Only an explicit selection moves the chooser off Automatic. A role resolved by priority is
+    // *on* automatic, however emphatically one application happens to be winning.
+    let pinned = match resolution {
+        Resolution::Selected { app_id } | Resolution::SelectionStale { app_id } => {
+            Some(app_id.as_str())
+        }
+        Resolution::DefaultedByPriority { .. } | Resolution::NoProvider => None,
+    };
+    let selected = pinned
+        .and_then(|pinned| {
+            options.iter().position(
+                |option| matches!(option, ChoiceOption::App { app_id, .. } if app_id == pinned),
+            )
+        })
+        .unwrap_or(0);
+
+    RoleChoice {
+        role,
+        explanation: explain(role, resolution),
+        options,
+        selected,
+    }
+}
+
+/// Every role's chooser, in `ProviderRole::ALL` order.
+///
+/// A role whose candidates cannot be read still gets a row — with the sentence, and a chooser
+/// holding only Automatic — because the sentence is the part that explains the machine, and
+/// dropping the row would make a failing service look like a role that does not exist.
+pub(crate) async fn role_choices_with<S: ProvidersSource>(
+    source: &S,
+) -> Result<Vec<RoleChoice>, String> {
+    let pairs = match source.report().await {
+        Ok(pairs) => pairs,
+        Err(error) => return Err(format!("service unavailable: {error:#}")),
+    };
+    let report = parse_report(&pairs);
+    let mut choices = Vec::with_capacity(ProviderRole::ALL.len());
+    for role in ProviderRole::ALL {
+        let resolution = report
+            .iter()
+            .find(|(reported, _)| *reported == role)
+            .map_or(Resolution::NoProvider, |(_, resolution)| resolution.clone());
+        let candidates = source.candidates(role.as_str()).await.unwrap_or_default();
+        choices.push(role_choice(role, &resolution, &candidates));
+    }
+    Ok(choices)
 }
 
 /// Render every role in [`ProviderRole::ALL`] order (or just `role`, if given) against a live or
@@ -215,33 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_app_id_matches_provider_registry_semantics() {
-        assert_eq!(
-            Resolution::Selected {
-                app_id: app("org.legeos.A")
-            }
-            .provider_app_id(),
-            Some(&app("org.legeos.A"))
-        );
-        assert_eq!(
-            Resolution::DefaultedByPriority {
-                app_id: app("org.legeos.A"),
-                competitors: vec![]
-            }
-            .provider_app_id(),
-            Some(&app("org.legeos.A"))
-        );
-        assert_eq!(
-            Resolution::SelectionStale {
-                app_id: app("org.legeos.A")
-            }
-            .provider_app_id(),
-            None
-        );
-        assert_eq!(Resolution::NoProvider.provider_app_id(), None);
-    }
-
-    #[test]
     fn resolution_deserializes_from_the_real_wire_shape() {
         let json = r#"{"kind":"selected","app_id":"org.legeos.NetworkTray"}"#;
         let resolution: Resolution = serde_json::from_str(json).unwrap();
@@ -253,11 +330,26 @@ mod tests {
         );
     }
 
-    struct FakeProviders(Vec<(String, String)>);
+    struct FakeProviders(Vec<(String, String)>, Vec<(String, u32)>);
+
+    impl FakeProviders {
+        fn new(report: Vec<(String, String)>) -> Self {
+            Self(report, Vec::new())
+        }
+    }
 
     impl ProvidersSource for FakeProviders {
         async fn report(&self) -> Result<Vec<(String, String)>> {
             Ok(self.0.clone())
+        }
+        async fn candidates(&self, _role: &str) -> Result<Vec<(String, u32)>> {
+            Ok(self.1.clone())
+        }
+        async fn select(&self, _role: &str, _app_id: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn deselect(&self, _role: &str) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -267,11 +359,122 @@ mod tests {
         async fn report(&self) -> Result<Vec<(String, String)>> {
             anyhow::bail!("no reply from Providers1")
         }
+        async fn candidates(&self, _role: &str) -> Result<Vec<(String, u32)>> {
+            anyhow::bail!("no reply from Providers1")
+        }
+        async fn select(&self, _role: &str, _app_id: &str) -> Result<()> {
+            anyhow::bail!("no reply from Providers1")
+        }
+        async fn deselect(&self, _role: &str) -> Result<()> {
+            anyhow::bail!("no reply from Providers1")
+        }
+    }
+
+    fn choice_for(resolution: &Resolution, candidates: &[(String, u32)]) -> RoleChoice {
+        role_choice(ProviderRole::NetworkStatusUi, resolution, candidates)
+    }
+
+    fn tray_and_applet() -> Vec<(String, u32)> {
+        vec![
+            ("org.legeos.NetworkTray".to_owned(), 100),
+            ("org.gnome.NmApplet".to_owned(), 50),
+        ]
+    }
+
+    #[test]
+    fn a_role_resolved_by_priority_sits_on_automatic() {
+        let choice = choice_for(
+            &Resolution::DefaultedByPriority {
+                app_id: app("org.legeos.NetworkTray"),
+                competitors: vec![app("org.gnome.NmApplet")],
+            },
+            &tray_and_applet(),
+        );
+        assert_eq!(choice.selected, 0);
+        assert_eq!(choice.options[0], ChoiceOption::Automatic);
+        assert_eq!(choice.options.len(), 3);
+    }
+
+    #[test]
+    fn an_explicit_selection_moves_the_chooser_onto_that_application() {
+        let choice = choice_for(
+            &Resolution::Selected {
+                app_id: app("org.gnome.NmApplet"),
+            },
+            &tray_and_applet(),
+        );
+        assert_eq!(
+            choice.options[choice.selected],
+            ChoiceOption::App {
+                app_id: "org.gnome.NmApplet".to_owned(),
+                priority: 50
+            }
+        );
+    }
+
+    #[test]
+    fn a_stale_selection_falls_back_to_automatic_rather_than_picking_someone_else() {
+        // The selected application no longer declares the role, so it is not among the
+        // candidates. Landing on whichever application happens to be first would show a pin that
+        // does not exist.
+        let choice = choice_for(
+            &Resolution::SelectionStale {
+                app_id: app("org.gone.Tray"),
+            },
+            &tray_and_applet(),
+        );
+        assert_eq!(choice.selected, 0);
+        assert!(choice.explanation.contains("no longer declares it"));
+    }
+
+    #[test]
+    fn a_role_nothing_declares_still_offers_automatic() {
+        let choice = choice_for(&Resolution::NoProvider, &[]);
+        assert_eq!(choice.options, vec![ChoiceOption::Automatic]);
+        assert_eq!(choice.selected, 0);
+    }
+
+    #[test]
+    fn an_option_says_why_it_is_where_it_is() {
+        assert_eq!(ChoiceOption::Automatic.label(), "Choose automatically");
+        assert_eq!(
+            ChoiceOption::App {
+                app_id: "org.legeos.NetworkTray".to_owned(),
+                priority: 100
+            }
+            .label(),
+            "org.legeos.NetworkTray (priority 100)"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_role_gets_a_row_even_when_candidates_cannot_be_read() {
+        let choices = role_choices_with(&FakeProviders(
+            vec![(
+                "network-status-ui".to_owned(),
+                r#"{"kind":"no-provider"}"#.to_owned(),
+            )],
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(choices.len(), ProviderRole::ALL.len());
+        assert!(choices.iter().all(|choice| !choice.options.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn a_report_that_will_not_answer_is_reported_rather_than_shown_as_empty() {
+        assert!(
+            role_choices_with(&FailingProviders)
+                .await
+                .unwrap_err()
+                .starts_with("service unavailable:")
+        );
     }
 
     #[tokio::test]
     async fn render_with_covers_every_role_and_flags_the_missing_ones() {
-        let fake = FakeProviders(vec![(
+        let fake = FakeProviders::new(vec![(
             "network-status-ui".to_owned(),
             r#"{"kind":"selected","app_id":"org.legeos.NetworkTray"}"#.to_owned(),
         )]);
@@ -283,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_with_can_filter_to_one_role() {
-        let fake = FakeProviders(vec![]);
+        let fake = FakeProviders::new(vec![]);
         let rendered = render_with(&fake, Some(ProviderRole::Greeter)).await;
         assert_eq!(rendered, "greeter: not reported by Providers1.Report.");
     }

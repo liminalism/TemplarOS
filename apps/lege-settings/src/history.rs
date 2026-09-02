@@ -102,6 +102,75 @@ impl Event {
             self.at_ms, self.kind, self.id, self.message, self.reversible
         )
     }
+
+    /// The headline a person reads: what happened, in the event's own words.
+    ///
+    /// The kind is not repeated here — the graphical page shows it as its own badge, and a line
+    /// that begins "setting-change" before saying anything is a line that spends its first words
+    /// on the filing system rather than on the event.
+    pub(crate) fn headline(&self) -> &str {
+        &self.message
+    }
+
+    /// The line under the headline: when, to whom, and why.
+    pub(crate) fn detail(&self, now_ms: i64) -> String {
+        let mut parts = vec![relative_time(now_ms - self.at_ms)];
+        if let Some(app_id) = &self.app_id {
+            parts.push(app_id.to_string());
+        }
+        if let Some(cause) = &self.cause {
+            parts.push(cause.clone());
+        }
+        parts.join(" · ")
+    }
+}
+
+/// How long ago, in the words a person would use. Coarse on purpose: a history page is read to
+/// place an event in the day, not to time it, and "3 minutes ago" that is really 3 minutes and
+/// 40 seconds is the right answer for that question.
+///
+/// A negative age — an event stamped in the future by a clock that has since been corrected — is
+/// reported as such rather than being shown as a very old event, which is what wrapping the
+/// subtraction into an unsigned duration would produce.
+pub(crate) fn relative_time(age_ms: i64) -> String {
+    if age_ms < 0 {
+        return "in the future".to_owned();
+    }
+    let seconds = age_ms / 1000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    match (days, hours, minutes) {
+        (0, 0, 0) => "just now".to_owned(),
+        (0, 0, 1) => "1 minute ago".to_owned(),
+        (0, 0, minutes) => format!("{minutes} minutes ago"),
+        (0, 1, _) => "1 hour ago".to_owned(),
+        (0, hours, _) => format!("{hours} hours ago"),
+        (1, _, _) => "yesterday".to_owned(),
+        (days, _, _) => format!("{days} days ago"),
+    }
+}
+
+/// Milliseconds since the Unix epoch, for [`Event::detail`]. Saturates rather than panicking on
+/// a clock before the epoch: a settings page has nothing useful to do with that failure.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+/// Parse what `Recent`/`Search` returned, dropping only the documents that will not decode.
+///
+/// The graphical page needs the events themselves, not a rendering of them; an undecodable one
+/// is left out because there is no row to draw for an event whose id, kind and message are all
+/// unknown — the text renderer, which can say "could not parse", keeps reporting it.
+pub(crate) fn parse_events(raw_events: &[String]) -> Vec<Event> {
+    raw_events
+        .iter()
+        .filter_map(|raw| serde_json::from_str(raw).ok())
+        .collect()
 }
 
 /// The bus operations this page needs.
@@ -202,6 +271,42 @@ mod tests {
         "actions": [{"label": "Deny", "command": "autostart:deny:org.legeos.NetworkTray"}],
         "reversible": true
     }"#;
+
+    #[test]
+    fn relative_time_speaks_in_the_units_a_person_would_use() {
+        assert_eq!(relative_time(0), "just now");
+        assert_eq!(relative_time(59_000), "just now");
+        assert_eq!(relative_time(60_000), "1 minute ago");
+        assert_eq!(relative_time(59 * 60_000), "59 minutes ago");
+        assert_eq!(relative_time(60 * 60_000), "1 hour ago");
+        assert_eq!(relative_time(5 * 60 * 60_000), "5 hours ago");
+        assert_eq!(relative_time(25 * 60 * 60_000), "yesterday");
+        assert_eq!(relative_time(3 * 24 * 60 * 60_000), "3 days ago");
+    }
+
+    #[test]
+    fn a_future_timestamp_is_named_rather_than_shown_as_an_ancient_event() {
+        assert_eq!(relative_time(-5_000), "in the future");
+    }
+
+    #[test]
+    fn detail_reads_when_who_and_why_without_repeating_the_message() {
+        let event: Event = serde_json::from_str(SAMPLE).unwrap();
+        let detail = event.detail(event.at_ms + 2 * 60_000);
+        assert_eq!(
+            detail,
+            "2 minutes ago · org.legeos.NetworkTray · providers:selected"
+        );
+        assert_eq!(event.headline(), event.message);
+        assert!(!detail.contains(&event.message));
+    }
+
+    #[test]
+    fn parse_events_keeps_the_readable_ones_and_drops_only_the_broken() {
+        let events = parse_events(&[SAMPLE.to_owned(), "not json".to_owned()]);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].reversible);
+    }
 
     #[test]
     fn event_deserializes_from_the_real_wire_shape() {
