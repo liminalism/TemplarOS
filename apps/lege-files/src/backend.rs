@@ -384,10 +384,34 @@ fn error_text(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// One session-bus connection per runtime.
+///
+/// `zbus::Connection::session()` builds a new connection every call — socket, SASL handshake,
+/// `Hello`, and a reader task — and browsing a directory here makes several. That handshake costs
+/// about as much as the call it was made for, so half the cost of listing a folder was opening
+/// connections to list it with.
+///
+/// Keyed by runtime because a connection owns a reader task on the runtime that built it, and one
+/// that outlives its runtime does not report itself closed: it simply stops being answered. This
+/// process holds one long-lived runtime for the browser and builds a second for `--print`, so the
+/// key is what keeps the short-lived one from poisoning the cache for the other.
+static SESSIONS: tokio::sync::Mutex<
+    Option<std::collections::HashMap<tokio::runtime::Id, zbus::Connection>>,
+> = tokio::sync::Mutex::const_new(None);
+
 async fn session() -> Result<zbus::Connection> {
-    zbus::Connection::session()
+    let runtime = tokio::runtime::Handle::current().id();
+    let mut held = SESSIONS.lock().await;
+    let connections = held.get_or_insert_with(std::collections::HashMap::new);
+    connections.retain(|_, connection| !connection.is_closed());
+    if let Some(connection) = connections.get(&runtime) {
+        return Ok(connection.clone());
+    }
+    let connection = zbus::Connection::session()
         .await
-        .context("connecting to the LegeOS session bus")
+        .context("connecting to the LegeOS session bus")?;
+    connections.insert(runtime, connection.clone());
+    Ok(connection)
 }
 
 async fn fetch_roots() -> Result<BrowserSources> {

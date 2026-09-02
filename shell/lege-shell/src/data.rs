@@ -19,11 +19,49 @@ use crate::file_browser::{BrowserSources, DirectoryListing};
 use crate::files_surface::{FilesLocation, PinnedKind, PinnedLocation};
 use crate::home_surface::Drawer;
 
+/// The one session-bus connection this process uses.
+///
+/// `zbus::Connection::session()` builds a *new* connection every time it is called — socket,
+/// SASL handshake, `Hello`, and a background reader task — and the shell calls it from three
+/// dozen places. A Home refresh alone fetches seven drawers, four widgets, the field, the
+/// projects and the browser sources, so it was paying that handshake a dozen times over: measured
+/// at roughly a millisecond each on this machine, against about one millisecond for the method
+/// call it was made for. Half the cost of reading Home was opening connections to read it with.
+///
+/// Held behind an async lock rather than a `OnceCell` so that the first two callers to arrive
+/// together share one connection instead of racing to build two, and so a connection that has
+/// since closed can be replaced in place.
+///
+/// One entry per runtime. A `zbus::Connection` owns a reader task on the runtime that built it,
+/// and a connection outliving that runtime does not report itself closed — it simply stops being
+/// answered, and every call on it hangs. The shell has exactly one runtime, so this map holds
+/// exactly one entry for the life of the process; the test binary gives each `#[tokio::test]` its
+/// own runtime, and a single shared slot would have them evicting each other's live connections
+/// on every call.
+static SESSIONS: tokio::sync::Mutex<
+    Option<std::collections::HashMap<tokio::runtime::Id, zbus::Connection>>,
+> = tokio::sync::Mutex::const_new(None);
+
 /// Connect to the session bus, or explain why not in one line.
+///
+/// Reuses this runtime's connection when there is a live one. A closed connection — the bus went
+/// away, or the socket errored — is dropped and rebuilt rather than handed back, so a session
+/// that comes back does not leave Home permanently unable to reach it.
 pub async fn session() -> Result<zbus::Connection, String> {
-    zbus::Connection::session()
+    let runtime = tokio::runtime::Handle::current().id();
+    let mut held = SESSIONS.lock().await;
+    let connections = held.get_or_insert_with(std::collections::HashMap::new);
+    // Closed connections go, whichever runtime they belonged to: this is the only place the map
+    // is touched, so it is where an entry for a runtime that has gone away stops being kept.
+    connections.retain(|_, connection| !connection.is_closed());
+    if let Some(connection) = connections.get(&runtime) {
+        return Ok(connection.clone());
+    }
+    let connection = zbus::Connection::session()
         .await
-        .map_err(|error| format!("service unavailable: no session bus ({error})"))
+        .map_err(|error| format!("service unavailable: no session bus ({error})"))?;
+    connections.insert(runtime, connection.clone());
+    Ok(connection)
 }
 
 /// Whether a LegeOS session daemon is answering on this machine's session bus.
@@ -1019,6 +1057,39 @@ mod tests {
                 vec!["/home/test/paper.pdf".into()]
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn the_session_connection_is_built_once_and_handed_back() {
+        let Ok(first) = session().await else {
+            // No session bus here (a build container). Nothing to assert about reuse.
+            return;
+        };
+        let second = session().await.expect("the cached connection");
+        assert_eq!(
+            first.unique_name(),
+            second.unique_name(),
+            "a second caller must get the connection the first one built, not a new socket, \
+             a new handshake and a new reader task"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_runtime_never_inherits_the_first_runtime_s_connection() {
+        // Whatever this test binary's other tests left in the cache belongs to their runtimes; a
+        // connection whose runtime is gone does not report itself closed, it just stops being
+        // answered. The guard is the runtime id, and the observable consequence is that this
+        // call returns something that actually works.
+        let Ok(connection) = session().await else {
+            return;
+        };
+        let proxy = zbus::fdo::DBusProxy::new(&connection)
+            .await
+            .expect("a proxy on a live connection");
+        proxy
+            .list_names()
+            .await
+            .expect("a call on this runtime's own connection is answered");
     }
 
     #[tokio::test]
