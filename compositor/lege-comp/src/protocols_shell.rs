@@ -336,8 +336,9 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     if let Some(window) = state.windows.element_of(window_id)
         && let Some(toplevel) = window.toplevel()
     {
+        let client = crate::space_sync::client_area(state, window_id);
         toplevel.with_pending_state(|pending| {
-            pending.size = Some((geometry.width, geometry.height).into());
+            pending.size = Some((client.width, client.height).into());
         });
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();

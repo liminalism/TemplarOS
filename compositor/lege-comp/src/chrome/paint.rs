@@ -68,28 +68,78 @@ pub fn recovery_band(
     pixel_h: i32,
     background: u32,
     title: &str,
+    buttons: &[(layout::BandButton, PxRect)],
     fonts: Fonts<'_>,
     scale: f32,
 ) {
     let area = canvas(pixel_w, pixel_h);
     painter.fill_rect(area, background);
+    let ink = layout::text_ink_for(background);
+    let mut title_right = area.right();
+    for (button, rect) in buttons {
+        band_button(painter, *button, *rect, ink, scale);
+        title_right = title_right.min(rect.x);
+    }
     let Some((cache, face)) = fonts else { return };
     if title.is_empty() {
         return;
     }
 
-    let ink = layout::text_ink_for(background);
     let style = TextStyle::new(face, (14.0 * scale).max(8.0));
     let padding = (8.0 * scale).round() as i32;
     let text_area = PxRect::new(
         area.x + padding,
         area.y,
-        (area.w - 2 * padding).max(0),
+        (title_right - area.x - 2 * padding).max(0),
         area.h,
     );
     let line_height = cache.line_height(style);
     let y = area.y + ((area.h - line_height) / 2).max(0);
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
+}
+
+/// One band control, as a glyph anyone recognises without a font: a bar to park, a square to
+/// maximize, a cross to close. Drawn with filled rectangles only, like the grip, so it is
+/// legible at the band's own 32 logical pixels and identical whether or not a font was found.
+fn band_button(
+    painter: &mut Painter<'_>,
+    button: layout::BandButton,
+    rect: PxRect,
+    ink: u32,
+    scale: f32,
+) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    painter.fill_rect(rect, BUTTON_COLOR);
+    let stroke = (2.0 * scale).round().max(1.0) as i32;
+    let reach = ((10.0 * scale).round() as i32).clamp(stroke, rect.w.min(rect.h) - 2 * stroke);
+    let cx = rect.x + rect.w / 2;
+    let cy = rect.y + rect.h / 2;
+    let left = cx - reach / 2;
+    let top = cy - reach / 2;
+    match button {
+        layout::BandButton::Park => {
+            painter.fill_rect(PxRect::new(left, cy - stroke / 2, reach, stroke), ink);
+        }
+        layout::BandButton::Maximize => {
+            painter.fill_rect(PxRect::new(left, top, reach, stroke), ink);
+            painter.fill_rect(PxRect::new(left, top + reach - stroke, reach, stroke), ink);
+            painter.fill_rect(PxRect::new(left, top, stroke, reach), ink);
+            painter.fill_rect(PxRect::new(left + reach - stroke, top, stroke, reach), ink);
+        }
+        layout::BandButton::Close => {
+            // Two diagonals as staircases of `stroke`-sized squares, the way the grip draws its
+            // rules: `Painter` fills rectangles, so a diagonal is stepped rather than stroked.
+            for step in 0..reach {
+                painter.fill_rect(PxRect::new(left + step, top + step, stroke, stroke), ink);
+                painter.fill_rect(
+                    PxRect::new(left + reach - stroke - step, top + step, stroke, stroke),
+                    ink,
+                );
+            }
+        }
+    }
 }
 
 /// A window's compositor-owned resize grip (`lege_window::geometry::resize_grip`): the corner
@@ -370,6 +420,7 @@ mod tests {
                 32,
                 RECOVERY_BAND_COLOR,
                 "Waterfox",
+                &[],
                 None,
                 1.0,
             );
@@ -384,7 +435,7 @@ mod tests {
         let mut buffer = WindowBuffer::new(64, 32);
         {
             let mut painter = Painter::new(&mut buffer);
-            recovery_band(&mut painter, 64, 32, RECOVERY_TAB_COLOR, "", None, 1.0);
+            recovery_band(&mut painter, 64, 32, RECOVERY_TAB_COLOR, "", &[], None, 1.0);
         }
         for x in 0..64 {
             for y in 0..32 {
@@ -502,6 +553,7 @@ mod tests {
                     32,
                     RECOVERY_BAND_COLOR,
                     "Waterfox",
+                    &[],
                     Some((&mut cache, test_fonts::LATIN)),
                     1.0,
                 );

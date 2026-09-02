@@ -124,11 +124,12 @@ pub fn apply_arrangement<B: Backend + 'static>(
     if !moves.is_empty() && state.window_service.home_revealed() {
         state.reveal_home(lege_window::RevealHome::Hide);
     }
-    for (window_id, geometry) in moves {
+    for (window_id, _geometry) in moves {
         let maximized = state
             .window_service
             .window(window_id)
             .is_some_and(|window| window.maximized);
+        let client = crate::space_sync::client_area(state, window_id);
         if let Some(window) = crate::space_sync::element_for_window(state, window_id)
             && let Some(toplevel) = window.toplevel()
         {
@@ -139,7 +140,7 @@ pub fn apply_arrangement<B: Backend + 'static>(
                 } else {
                     pending.states.unset(State::Maximized);
                 }
-                pending.size = Some((geometry.width, geometry.height).into());
+                pending.size = Some((client.width, client.height).into());
             });
             if toplevel.is_initial_configure_sent() {
                 toplevel.send_configure();
@@ -159,8 +160,7 @@ pub fn apply_maximized<B: Backend + 'static>(
         now_monotonic_ns: now_monotonic_ns(&state.clock),
     };
     let Ok(CommandEffect::Maximized {
-        geometry: Some(geometry),
-        ..
+        geometry: Some(_), ..
     }) = state.window_service.handle_command(
         WindowCommand::SetMaximized {
             window_id,
@@ -171,20 +171,29 @@ pub fn apply_maximized<B: Backend + 'static>(
     else {
         return;
     };
-    if let Some(window) = crate::space_sync::element_for_window(state, window_id)
-        && let Some(toplevel) = window.toplevel()
-    {
-        toplevel.with_pending_state(|pending| {
-            use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-            if maximized {
-                pending.states.set(State::Maximized);
-            } else {
-                pending.states.unset(State::Maximized);
+    let client = crate::space_sync::client_area(state, window_id);
+    if let Some(window) = crate::space_sync::element_for_window(state, window_id) {
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|pending| {
+                use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                if maximized {
+                    pending.states.set(State::Maximized);
+                } else {
+                    pending.states.unset(State::Maximized);
+                }
+                pending.size = Some((client.width, client.height).into());
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
             }
-            pending.size = Some((geometry.width, geometry.height).into());
-        });
-        if toplevel.is_initial_configure_sent() {
-            toplevel.send_configure();
+        } else if let Some(x11) = window.x11_surface() {
+            // An X11 window is told its whole placement in one request; the band button is
+            // the only maximize route it has.
+            let _ = x11.set_maximized(maximized);
+            let _ = x11.configure(Some(smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((client.x, client.y)),
+                smithay::utils::Size::from((client.width, client.height)),
+            )));
         }
     }
     crate::space_sync::sync_after_change(state);
@@ -253,6 +262,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
         let object_id = surface.id();
         if self.windows.is_mapped(&object_id) {
+            self.adopt_client_size(surface, &window, &toplevel);
             return;
         }
         self.windows.track_pending(object_id.clone());
@@ -292,12 +302,17 @@ impl<B: Backend + 'static> LegeCompState<B> {
         let trusted_shell =
             client.is_some_and(|client| crate::state::client_is_trusted_shell(&client));
         let claims = claims_from_wayland(app_id);
-        let requested = lege_window::Rect::new(
-            geometry.loc.x,
-            geometry.loc.y,
+        // The client's size, asked for as the frame it needs: the band goes above the client
+        // (`lege_window::geometry::client_area`), so what is placed and clamped is the whole of
+        // what will be on screen. The geometry's own location is the window's offset inside its
+        // surface (a client-side shadow margin), not a position — an xdg client cannot ask for
+        // one — and would otherwise read as a placed window that skips centring.
+        let requested = lege_window::frame_around(lege_window::Rect::new(
+            0,
+            0,
             geometry.size.w,
             geometry.size.h,
-        );
+        ));
 
         let window_id = self.window_service.on_toplevel_mapped(
             peer_pid,
@@ -313,13 +328,16 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .window_service
             .window(window_id)
             .map_or(requested, |record| record.geometry);
+        // A shell surface has no frame, so this is the whole geometry for one; a client window
+        // sits under its band.
+        let client = crate::space_sync::client_area(self, window_id);
         self.space
-            .map_element(window.clone(), (repaired.x, repaired.y), false);
+            .map_element(window.clone(), (client.x, client.y), false);
         // Placement may have clamped an oversized request to the output's usable area
         // (`lege_window::place_new_window`); the client only learns a size through a configure.
-        if (repaired.width, repaired.height) != (requested.width, requested.height) {
+        if (client.width, client.height) != (geometry.size.w, geometry.size.h) {
             toplevel.with_pending_state(|pending| {
-                pending.size = Some((repaired.width, repaired.height).into());
+                pending.size = Some((client.width, client.height).into());
             });
             toplevel.send_configure();
         }
@@ -331,6 +349,69 @@ impl<B: Backend + 'static> LegeCompState<B> {
             recoverable = lege_window::is_recoverable(repaired, self.window_service.outputs()),
             "toplevel mapped"
         );
+        crate::space_sync::sync_after_change(self);
+    }
+}
+
+impl<B: Backend + 'static> LegeCompState<B> {
+    /// A mapped client committed a size of its own choosing — a terminal restoring its saved
+    /// size, an application growing for a new document — so the frame follows it: the record's
+    /// geometry becomes the frame around the committed size, at the position the window had.
+    ///
+    /// Not while the compositor is the one changing the size: an interactive resize and a
+    /// maximize both configure sizes the client has yet to catch up with, and a commit that
+    /// still carries the older size is the client catching up, not choosing. The tell is the
+    /// acknowledgement: only once the client has acked the size it was last given does a
+    /// different committed size mean it wants that size.
+    fn adopt_client_size(
+        &mut self,
+        surface: &WlSurface,
+        window: &Window,
+        toplevel: &ToplevelSurface,
+    ) {
+        let Some(window_id) = self.windows.window_id_for(&surface.id()) else {
+            return;
+        };
+        let Some(record) = self.window_service.window(window_id) else {
+            return;
+        };
+        if record.maximized
+            || record.fullscreen
+            || self.window_service.is_resizing(window_id)
+            || !self.window_service.has_frame(window_id)
+        {
+            return;
+        }
+        let committed = window.geometry().size;
+        let client = crate::space_sync::client_area(self, window_id);
+        if (committed.w, committed.h) == (client.width, client.height) {
+            return;
+        }
+        let caught_up = with_states(surface, |states| {
+            let attributes = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .expect("xdg toplevel surfaces always carry XdgToplevelSurfaceData")
+                .lock()
+                .unwrap();
+            let sent = attributes.current_server_state().size;
+            let acked = attributes
+                .last_acked
+                .as_ref()
+                .and_then(|configure| configure.state.size);
+            sent.is_none() || acked == sent
+        });
+        if !caught_up {
+            return;
+        }
+        let _ = toplevel;
+        let frame = lege_window::frame_around(lege_window::Rect::new(
+            client.x,
+            client.y,
+            committed.w,
+            committed.h,
+        ));
+        self.window_service.set_geometry(window_id, frame);
         crate::space_sync::sync_after_change(self);
     }
 }
@@ -519,21 +600,19 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
 impl<B: Backend + 'static> XdgDecorationHandler for LegeCompState<B> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // We have no server-side chrome renderer yet (`src/chrome.rs`'s module doc), so
-        // client-side is the only mode that actually produces a usable title bar today.
-        //
-        // That is not the same as a window being unmanageable when the client draws nothing: the
-        // compositor owns a recovery band and a resize grip over every window regardless of this
-        // mode (`lege_window::geometry::recovery_band`/`resize_grip`, painted by
-        // `chrome::collect_bands`/`collect_grips`, hit-tested in `input.rs`), which is what makes
-        // an XWayland or borderless window movable and resizable without server-side decorations
-        // existing at all. Closing it is the shell's route (`lege_shell_toplevel_v1.close`).
+        // The compositor draws the frame: the recovery band above every client window is a
+        // title bar with park, maximize and close controls (`chrome::collect_bands`,
+        // `chrome::layout::band_buttons`), and the window is movable by it, resizable by its
+        // corner grip and its outside edges (`lege_window::geometry::resize_edges_at`). A client
+        // that also drew its own title bar would be showing two, so server-side is the answer
+        // unless the client insists on client-side in `request_mode`.
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ClientSide);
+            state.decoration_mode = Some(Mode::ServerSide);
         });
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
         }
+        self.apply_decoration(&toplevel, Mode::ServerSide);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
@@ -548,12 +627,12 @@ impl<B: Backend + 'static> XdgDecorationHandler for LegeCompState<B> {
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ClientSide);
+            state.decoration_mode = Some(Mode::ServerSide);
         });
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
         }
-        self.apply_decoration(&toplevel, Mode::ClientSide);
+        self.apply_decoration(&toplevel, Mode::ServerSide);
     }
 }
 

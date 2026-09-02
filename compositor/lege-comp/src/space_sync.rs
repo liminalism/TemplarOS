@@ -31,20 +31,31 @@ pub fn element_for_window<B: Backend + 'static>(
         .cloned()
 }
 
+/// Where `window_id`'s surface goes and how big it is: `WindowService::client_area` — under the
+/// band for a framed client window, the whole geometry for a shell surface. Every `map_element`
+/// and every size configure in the compositor goes through this, so the frame is subtracted in
+/// exactly one place. A window the service does not know is mapped at its geometry as given.
+pub fn client_area<B: Backend + 'static>(state: &LegeCompState<B>, window_id: WindowId) -> Rect {
+    state
+        .window_service
+        .client_area(window_id)
+        .or_else(|| state.window_service.window(window_id).map(|w| w.geometry))
+        .unwrap_or(Rect::new(0, 0, 1, 1))
+}
+
 /// After a drag-motion event: move the dragged window's `Space` element to `geometry` (applied
 /// as-is, matching COMPOSITOR.md's drag row — no repair, no stacking change, no broadcast, since
 /// dragging alone changes neither the toplevel list, the shelf nor the stacking order).
 pub fn apply_dragged_geometry<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     window_id: WindowId,
-    geometry: Rect,
+    _geometry: Rect,
 ) {
     let Some(window) = element_for_window(state, window_id) else {
         return;
     };
-    state
-        .space
-        .map_element(window, (geometry.x, geometry.y), false);
+    let client = client_area(state, window_id);
+    state.space.map_element(window, (client.x, client.y), false);
 }
 
 /// After a resize-motion event: give `window_id` the size `WindowService` just computed.
@@ -57,7 +68,7 @@ pub fn apply_dragged_geometry<B: Backend + 'static>(
 pub fn apply_resized_geometry<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     window_id: WindowId,
-    geometry: Rect,
+    _geometry: Rect,
     still_resizing: bool,
 ) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
@@ -66,6 +77,7 @@ pub fn apply_resized_geometry<B: Backend + 'static>(
     let Some(window) = element_for_window(state, window_id) else {
         return;
     };
+    let geometry = client_area(state, window_id);
     let size = (geometry.width.max(1), geometry.height.max(1));
     // Cloned out of the element before `map_element` takes ownership of it below; the two shells
     // are mutually exclusive (`Window::toplevel`/`Window::x11_surface`), so this is one match
@@ -144,14 +156,15 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut LegeCompState<B>) {
         let Some(record) = state.window_service.window(window_id) else {
             continue;
         };
-        let geometry = record.geometry;
+        let _ = record;
+        let client = client_area(state, window_id);
         let Some(window) = element_for_window(state, window_id) else {
             continue;
         };
         if state.window_service.is_visible(window_id) {
             state
                 .space
-                .map_element(window.clone(), (geometry.x, geometry.y), false);
+                .map_element(window.clone(), (client.x, client.y), false);
             state.space.raise_element(&window, false);
         } else {
             state.space.unmap_elem(&window);

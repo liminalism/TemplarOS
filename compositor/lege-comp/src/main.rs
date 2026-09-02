@@ -181,6 +181,9 @@ mod tests {
         ));
         let protocol = include_str!("protocols_shell.rs");
         assert!(protocol.contains("shell_surface_placement(layer, exclusive, &output, requested)"));
-        assert!(protocol.contains("pending.size = Some((geometry.width, geometry.height).into())"));
+        // The claim configures the client's own area, which for a shell surface is the whole
+        // placement: the frame is only ever subtracted in `space_sync::client_area`.
+        assert!(protocol.contains("let client = crate::space_sync::client_area(state, window_id)"));
+        assert!(protocol.contains("pending.size = Some((client.width, client.height).into())"));
     }
 }

@@ -187,6 +187,65 @@ pub fn scatter_label_band(tile: Rect, label_height: i32) -> (Rect, Rect) {
     )
 }
 
+/// The three controls at the right end of every recovery band, in the left-to-right order they
+/// are drawn: park to the Home shelf, maximize/restore, close. Close is rightmost and the last
+/// to give way on a narrow band, because it is the one a person looks for first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BandButton {
+    Park,
+    Maximize,
+    Close,
+}
+
+impl BandButton {
+    /// Every button, in drawing order.
+    pub const ALL: [BandButton; 3] = [Self::Park, Self::Maximize, Self::Close];
+}
+
+/// Logical width of one band button — a square of the band's own height.
+pub const BAND_BUTTON_WIDTH: i32 = lege_window::geometry::RECOVERY_BAND_HEIGHT;
+
+/// Room the title keeps at the left of a band before buttons start giving way.
+const BAND_TITLE_MIN_WIDTH: i32 = 64;
+
+/// The buttons that fit on `band`, with their rectangles, packed against its right edge in
+/// [`BandButton::ALL`] order. On a band too narrow for all three the leftmost go first:
+/// [`MIN_RECOVERY_WIDTH`](lege_window::geometry::MIN_RECOVERY_WIDTH) is wide enough for Close
+/// alone plus a sliver of title, which is the least a recoverable window ever has.
+pub fn band_buttons(band: Rect) -> Vec<(BandButton, Rect)> {
+    let width = BAND_BUTTON_WIDTH.min(band.height.max(1)).max(1);
+    let room = (band.width - BAND_TITLE_MIN_WIDTH).max(0);
+    let count = usize::try_from(room / width)
+        .unwrap_or(0)
+        .min(BandButton::ALL.len());
+    let shown = &BandButton::ALL[BandButton::ALL.len() - count..];
+    shown
+        .iter()
+        .enumerate()
+        .map(|(index, button)| {
+            let from_right = i32::try_from(shown.len() - index).unwrap_or(1);
+            (
+                *button,
+                Rect::new(
+                    band.right() - from_right * width,
+                    band.y,
+                    width,
+                    band.height,
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The band button containing `point`, if any — the same rectangles [`band_buttons`] draws, so
+/// the drawn control and the clickable area cannot drift apart.
+pub fn band_button_at(band: Rect, point: lege_window::Point) -> Option<BandButton> {
+    band_buttons(band)
+        .into_iter()
+        .find(|(_, rect)| rect_contains(*rect, point))
+        .map(|(button, _)| button)
+}
+
 /// Off-white and near-black chrome text can be drawn in — [`text_ink_for`] picks between exactly
 /// these two, never an arbitrary hue, so the choice stays a legibility decision rather than a
 /// styling one.
@@ -333,6 +392,49 @@ mod tests {
             pressure_choice_at(area, lege_window::Point { x: -100, y: -100 }),
             None
         );
+    }
+
+    #[test]
+    fn band_buttons_pack_against_the_right_edge_close_last() {
+        let band = Rect::new(100, 50, 400, 32);
+        let buttons = band_buttons(band);
+        assert_eq!(
+            buttons.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
+            BandButton::ALL.to_vec()
+        );
+        let (close, close_rect) = buttons[2];
+        assert_eq!(close, BandButton::Close);
+        assert_eq!(close_rect.right(), band.right());
+        assert_eq!(close_rect.height, band.height);
+        for pair in buttons.windows(2) {
+            assert_eq!(pair[0].1.right(), pair[1].1.x, "buttons are contiguous");
+        }
+        // The title keeps everything left of the first button.
+        assert_eq!(buttons[0].1.x, band.right() - 3 * 32);
+        for (button, rect) in &buttons {
+            assert_eq!(band_button_at(band, rect.center()), Some(*button));
+        }
+        assert_eq!(
+            band_button_at(
+                band,
+                lege_window::Point {
+                    x: band.x + 10,
+                    y: band.y + 10
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_narrow_band_keeps_close_and_gives_up_the_rest() {
+        let band = Rect::new(0, 0, lege_window::geometry::MIN_RECOVERY_WIDTH, 32);
+        let buttons = band_buttons(band);
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].0, BandButton::Close);
+        assert_eq!(band_buttons(Rect::new(0, 0, 130, 32)).len(), 2);
+        assert!(band_buttons(Rect::new(0, 0, 40, 32)).is_empty());
+        assert!(band_buttons(Rect::new(0, 0, 0, 0)).is_empty());
     }
 
     #[test]

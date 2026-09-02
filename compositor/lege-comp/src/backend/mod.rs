@@ -59,11 +59,12 @@ pub fn recompute_outputs<B: Backend + 'static>(state: &mut LegeCompState<B>) {
 fn configure_x11_geometry<B: Backend + 'static>(
     state: &LegeCompState<B>,
     window_id: WindowId,
-    rect: lege_window::Rect,
+    _rect: lege_window::Rect,
 ) {
     let Some(surface) = state.windows.surface_for(window_id) else {
         return;
     };
+    let rect = crate::space_sync::client_area(state, window_id);
     let Some(window) = state
         .space
         .elements()

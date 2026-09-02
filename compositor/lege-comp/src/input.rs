@@ -9,6 +9,7 @@
 //! `MotionEvent` onward (`WindowService::update_drag`, hit-testing, focus) stays in that one
 //! logical space, matching `crates/lege-window`'s own invariant.
 
+use crate::chrome::layout::{self, BandButton};
 use crate::state::{Backend, LegeCompState};
 use lege_window::{Point as LegePoint, WindowId};
 use smithay::{
@@ -161,6 +162,43 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
     {
         keyboard.set_focus(state, Some(surface.clone()), SERIAL_COUNTER.next_serial());
     }
+}
+
+/// What a primary-button press on a window's compositor-owned chrome asks for
+/// (`LegeCompState::affordance_at`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Affordance {
+    /// One of the band's controls (`chrome::layout::band_buttons`).
+    Button(BandButton),
+    /// The band itself: a move.
+    Band,
+    /// The bottom-right grip: a corner resize.
+    Grip,
+    /// Just outside the frame: a resize of these edges.
+    Edge(lege_window::ResizeEdges),
+}
+
+/// The band's park button: put `window_id` on the Home shelf and hand the keyboard to whatever
+/// is left on top — the next visible client window, or Home when there is none — exactly as
+/// Ctrl+Alt+P does for the activated window (`keybindings::park_focused`).
+fn park_window<B: Backend + 'static>(state: &mut LegeCompState<B>, window_id: WindowId) {
+    let ctx = lege_window::CommandContext {
+        trusted_shell: true,
+        now_monotonic_ns: crate::window_bridge::now_monotonic_ns(&state.clock),
+    };
+    if state
+        .window_service
+        .handle_command(lege_window::WindowCommand::Shelve { window_id }, ctx)
+        .is_err()
+    {
+        return;
+    }
+    crate::space_sync::sync_after_change(state);
+    let any_left =
+        state.window_service.stacking_order().into_iter().any(|id| {
+            state.window_service.is_visible(id) && state.window_service.is_client_window(id)
+        });
+    refocus_after_reveal(state, !any_left);
 }
 
 /// How a gesture came to be requested, which decides where its grab-start data comes from.
@@ -754,19 +792,53 @@ impl<B: Backend + 'static> LegeCompState<B> {
         }
     }
 
-    /// The topmost window (by `WindowService::stacking_order`) whose geometry contains `pos`, if
-    /// any — window geometry, not `Space`'s own input-region test, is the hit-test authority here,
-    /// so the recovery band always takes priority over whatever the client's surface would have
-    /// done with the same point (COMPOSITOR.md: "the compositor-owned recovery band" wins over
-    /// client content that happens to be drawn there, e.g. a borderless window).
-    fn topmost_window_at(&self, pos: LegePoint) -> Option<WindowId> {
-        self.window_service.stacking_order().into_iter().find(|id| {
-            self.window_service.is_visible(*id)
-                && self
-                    .window_service
-                    .window(*id)
-                    .is_some_and(|record| rect_contains(record.geometry, pos))
-        })
+    /// The compositor-owned affordance under `pos`, with the window it belongs to, if any.
+    ///
+    /// Windows are walked top-first (`WindowService::stacking_order`), and window geometry — not
+    /// `Space`'s own input-region test — is the hit-test authority, so the band always wins
+    /// over whatever the client's surface would have done with the same point (COMPOSITOR.md:
+    /// "the compositor-owned recovery band" wins over client content). The first window whose
+    /// frame contains the point settles it: a band button, the band, the grip, or nothing at
+    /// all because the point is the client's. A point just *outside* a framed window's edge is
+    /// that window's resize zone (`lege_window::resize_edges_at`), and a window above another
+    /// takes its zone before the one beneath sees the press — the invisible border belongs to
+    /// the window on top.
+    fn affordance_at(&self, pos: LegePoint) -> Option<(WindowId, Affordance)> {
+        for window_id in self.window_service.stacking_order() {
+            if !self.window_service.is_visible(window_id) {
+                continue;
+            }
+            let Some(record) = self.window_service.window(window_id) else {
+                continue;
+            };
+            if rect_contains(record.geometry, pos) {
+                if !self.window_service.is_client_window(window_id) {
+                    return None;
+                }
+                if let Some(affordance) = self.window_service.recovery_affordance(window_id)
+                    && rect_contains(affordance.band, pos)
+                {
+                    return Some((
+                        window_id,
+                        layout::band_button_at(affordance.band, pos)
+                            .map_or(Affordance::Band, Affordance::Button),
+                    ));
+                }
+                if let Some(grip) = self.window_service.resize_grip(window_id)
+                    && rect_contains(grip, pos)
+                {
+                    return Some((window_id, Affordance::Grip));
+                }
+                return None;
+            }
+            if self.window_service.has_frame(window_id)
+                && !record.maximized
+                && let Some(edges) = lege_window::resize_edges_at(record.geometry, pos)
+            {
+                return Some((window_id, Affordance::Edge(edges)));
+            }
+        }
+        None
     }
 
     fn handle_press_for_focus_or_drag(
@@ -789,38 +861,41 @@ impl<B: Backend + 'static> LegeCompState<B> {
         // right- or middle-press that started one would install a grab nothing the user does with
         // that button could ever end.
         if button == BTN_LEFT
-            && let Some(window_id) = self.topmost_window_at(pos)
+            && let Some((window_id, affordance)) = self.affordance_at(pos)
         {
-            if let Some(grip) = self.window_service.resize_grip(window_id)
-                && rect_contains(grip, pos)
-            {
-                let seat = self.seat.clone();
-                start_gesture(
-                    self,
-                    &seat,
-                    serial,
-                    window_id,
-                    Gesture::Resize {
-                        edges: lege_window::ResizeEdges::BOTTOM_RIGHT,
-                    },
-                    GestureOrigin::CompositorAffordance,
-                );
-                return;
-            }
-            if let Some(affordance) = self.window_service.recovery_affordance(window_id)
-                && rect_contains(affordance.band, pos)
-            {
-                let seat = self.seat.clone();
-                start_gesture(
-                    self,
-                    &seat,
-                    serial,
-                    window_id,
-                    Gesture::Move,
-                    GestureOrigin::CompositorAffordance,
-                );
-                return;
-            }
+            let seat = self.seat.clone();
+            let gesture = match affordance {
+                Affordance::Button(BandButton::Close) => {
+                    crate::backend::close_window(self, window_id);
+                    return;
+                }
+                Affordance::Button(BandButton::Park) => {
+                    park_window(self, window_id);
+                    return;
+                }
+                Affordance::Button(BandButton::Maximize) => {
+                    let maximized = self
+                        .window_service
+                        .window(window_id)
+                        .is_some_and(|window| window.maximized);
+                    crate::xdg_shell::apply_maximized(self, window_id, !maximized);
+                    return;
+                }
+                Affordance::Band => Gesture::Move,
+                Affordance::Grip => Gesture::Resize {
+                    edges: lege_window::ResizeEdges::BOTTOM_RIGHT,
+                },
+                Affordance::Edge(edges) => Gesture::Resize { edges },
+            };
+            start_gesture(
+                self,
+                &seat,
+                serial,
+                window_id,
+                gesture,
+                GestureOrigin::CompositorAffordance,
+            );
+            return;
         }
 
         if let Some((window, _)) = self

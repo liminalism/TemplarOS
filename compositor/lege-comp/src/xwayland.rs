@@ -67,12 +67,14 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
             return;
         };
         let geometry = window.geometry();
-        let requested = lege_window::Rect::new(
+        // An X11 client may have placed itself, and that position is honoured; the size is
+        // asked for as the frame around it, since the band goes above the client.
+        let requested = lege_window::frame_around(lege_window::Rect::new(
             geometry.loc.x,
             geometry.loc.y,
             geometry.size.w,
             geometry.size.h,
-        );
+        ));
         let claims = claims_from_x11(Some(window.class()));
         let trusted_shell = surface
             .client()
@@ -89,15 +91,11 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
         let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
         self.windows.mark_mapped(surface, window_id);
 
-        let repaired = self
-            .window_service
-            .window(window_id)
-            .map_or(requested, |record| record.geometry);
-        let _ = window.configure(Some(rect_to_smithay(repaired)));
+        let client = crate::space_sync::client_area(self, window_id);
+        let _ = window.configure(Some(rect_to_smithay(client)));
         let element = Window::new_x11_window(window);
         self.windows.track_element(object_id, element.clone());
-        self.space
-            .map_element(element, (repaired.x, repaired.y), false);
+        self.space.map_element(element, (client.x, client.y), false);
         crate::space_sync::sync_after_change(self);
     }
 
@@ -143,6 +141,29 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
             w.map_or(current.size.w, |w| w as i32),
             h.map_or(current.size.h, |h| h as i32),
         ));
+        // The frame follows the size the client chose, at the position the window has — the
+        // X11 counterpart of `adopt_client_size` — so the band stays above the client rather
+        // than over a client that just grew under it.
+        if let Some(window_id) = self.window_id_of(&window)
+            && let Some(record) = self.window_service.window(window_id)
+            && !record.maximized
+            && !record.fullscreen
+            && !self.window_service.is_resizing(window_id)
+        {
+            let client = crate::space_sync::client_area(self, window_id);
+            let frame = if self.window_service.has_frame(window_id) {
+                lege_window::frame_around(lege_window::Rect::new(
+                    client.x, client.y, size.w, size.h,
+                ))
+            } else {
+                lege_window::Rect::new(client.x, client.y, size.w, size.h)
+            };
+            self.window_service.set_geometry(window_id, frame);
+            let client = crate::space_sync::client_area(self, window_id);
+            let _ = window.configure(Some(rect_to_smithay(client)));
+            crate::space_sync::sync_after_change(self);
+            return;
+        }
         let _ = window.configure(Some(Rectangle::new(current.loc, size)));
     }
 

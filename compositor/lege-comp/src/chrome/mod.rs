@@ -493,6 +493,18 @@ fn collect_bands(
             Point::from((output_rect.x, output_rect.y)),
             output_scale,
         );
+        // The buttons in the band's own coordinates: `layout::band_buttons` places them in the
+        // global band rect (which is also what `src/input.rs` hit-tests), and the widget's
+        // buffer starts at the band's origin.
+        let buttons: Vec<(layout::BandButton, Rect)> = layout::band_buttons(band)
+            .into_iter()
+            .map(|(button, rect)| {
+                (
+                    button,
+                    Rect::new(rect.x - band.x, rect.y - band.y, rect.width, rect.height),
+                )
+            })
+            .collect();
         let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
         let widget = chrome.bands.entry(window.id).or_default();
         if let Some(element) = widget.ensure(
@@ -503,14 +515,13 @@ fn collect_bands(
             &mut chrome.scratch,
             renderer,
             move |painter, pixel_w, pixel_h| {
+                let scale = scale_factor(pixel_w, band.width);
+                let buttons: Vec<(layout::BandButton, pixelkit_raster::Rect)> = buttons
+                    .iter()
+                    .map(|(button, rect)| (*button, paint::scaled_px(*rect, scale)))
+                    .collect();
                 paint::recovery_band(
-                    painter,
-                    pixel_w,
-                    pixel_h,
-                    background,
-                    &title,
-                    fonts,
-                    scale_factor(pixel_w, band.width),
+                    painter, pixel_w, pixel_h, background, &title, &buttons, fonts, scale,
                 );
             },
         ) {
