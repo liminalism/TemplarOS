@@ -174,6 +174,11 @@ const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
+/// How many three-second refreshes pass between full re-reads of the installed application set.
+/// Thirty seconds: slow enough that the most expensive read on the loop stops dominating it,
+/// soon enough that a package installed by a path that announces nothing still turns up while
+/// the person is still looking for it.
+const APPS_REFRESH_TICKS: u32 = 10;
 
 /// Whether this EMPTY press is the confirming one: a press is only armed for a short window, so
 /// an unanswered confirmation expires rather than sitting armed until a stray click hours later
@@ -396,6 +401,7 @@ impl ShellApp {
                 let _ = proxy.send_event(Wake);
             }
         });
+        self.spawn_applications_watch();
         self.runtime.spawn(async move {
             let mut ticks: u32 = 0;
             loop {
@@ -403,11 +409,14 @@ impl ShellApp {
                 if ticks.is_multiple_of(100) {
                     let _ = tx.send(DataUpdate::TreemapsStale);
                 }
-                let drawers = crate::data::fetch_all(20).await;
-                let apps = crate::data::fetch_apps().await;
-                let field_settings = fetch_home_field_settings().await;
-                let projects = crate::data::fetch_projects().await;
-                let browser_sources = crate::data::fetch_browser_sources().await;
+                // Concurrently, because none of these reads depends on another and they were
+                // costing the sum of their round trips rather than the longest of them.
+                let (drawers, field_settings, projects, browser_sources) = tokio::join!(
+                    crate::data::fetch_all(20),
+                    fetch_home_field_settings(),
+                    crate::data::fetch_projects(),
+                    crate::data::fetch_browser_sources(),
+                );
                 let (session_widget, notifications_widget, settings_widget) = tokio::join!(
                     crate::data::fetch_session_widget(),
                     crate::data::fetch_notifications_widget(),
@@ -416,7 +425,14 @@ impl ShellApp {
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
-                let _ = tx.send(DataUpdate::Apps(apps));
+                // The installed set is the most expensive read here by a wide margin — the whole
+                // catalogue, then its logical grouping — and it is also the one that changes
+                // least: a person installs software, they do not install it every three seconds.
+                // `ApplicationsChanged` carries the prompt update; this is the backstop for the
+                // paths that do not announce themselves, which is why it is slow rather than off.
+                if ticks == 1 || ticks.is_multiple_of(APPS_REFRESH_TICKS) {
+                    let _ = tx.send(DataUpdate::Apps(crate::data::fetch_apps().await));
+                }
                 let _ = tx.send(DataUpdate::Projects(projects));
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
@@ -430,6 +446,40 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::Widget("settings".to_owned(), settings_widget));
                 let _ = proxy.send_event(Wake);
                 tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
+
+    /// Re-read the installed applications whenever `AppIdentity1` says the set moved.
+    ///
+    /// A separate task from the refresh loop because it spends nearly all its time asleep on a
+    /// signal, and folding it into a three-second poll would be the poll again by another name.
+    /// The signal is best-effort by its own documentation — sessiond emits it when the autostart
+    /// scan imports something, and a package installed later announces nothing — so this makes
+    /// the common case immediate and leaves the loop's slow backstop to catch the rest.
+    fn spawn_applications_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(identity) = lege_client::proxies::AppIdentityProxy::new(&connection).await
+            else {
+                return;
+            };
+            let Ok(mut changed) = identity.receive_applications_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                if tx
+                    .send(DataUpdate::Apps(crate::data::fetch_apps().await))
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = proxy.send_event(Wake);
             }
         });
     }

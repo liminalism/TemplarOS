@@ -368,12 +368,20 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
     let Ok(proxy) = LifecycleProxy::new(&connection).await else {
         return WidgetSnapshot::unavailable("Session — Lifecycle1 unavailable");
     };
+    // Concurrently: each of these is a session-bus call that sessiond turns into a system-bus
+    // call to logind, and asked in turn they cost three of those round trips rather than one.
+    // An array literal awaits its elements in order, which is what made them serial.
+    let (power_off, reboot, suspend) = tokio::join!(
+        proxy.can_power_off(),
+        proxy.can_reboot(),
+        proxy.can_suspend()
+    );
     let mut refused = Vec::new();
     let mut reachable = false;
     for (label, action, verdict) in [
-        ("Shut down", "session.poweroff", proxy.can_power_off().await),
-        ("Restart", "session.reboot", proxy.can_reboot().await),
-        ("Suspend", "session.suspend", proxy.can_suspend().await),
+        ("Shut down", "session.poweroff", power_off),
+        ("Restart", "session.reboot", reboot),
+        ("Suspend", "session.suspend", suspend),
     ] {
         match verdict {
             Ok(verdict) => {
