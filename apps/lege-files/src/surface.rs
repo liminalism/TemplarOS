@@ -391,7 +391,7 @@ fn draw_roots(
     }
     {
         let (label, detail) = trash_row.inset(ui.px(6)).split_top(ui.px(22));
-        ui.label(label, "PLACE  Trash", TEXT, Align::Left);
+        ui.label(label, "Trash", TEXT, Align::Left);
         ui.label_styled(
             detail,
             &match model.trash.as_ref() {
@@ -411,6 +411,7 @@ fn draw_roots(
         }
     }
     let heights = vec![ui.px(ROOT_ROW_HEIGHT); model.sources.roots.len()];
+    let home = model.sources.home();
     ui.scroll_list(scroll, body, &heights, |ui, index, row| {
         let root = &model.sources.roots[index];
         // Not "the last folder I was in" — while the trash is open, no drive is the open place.
@@ -423,26 +424,25 @@ fn draw_roots(
         } else if ui.input.hovering(row) && root.available {
             ui.painter.fill_rect(row, 0x00ff_ffff);
         }
+        // The name leads. A PLACE or DRIVE caption in front of every row was the same word
+        // repeated down the rail, and a place's path underneath it was the home folder repeated
+        // once per row; the detail line now says only what the name does not — free space for a
+        // drive, and a path only where it is not the obvious one under the home folder.
         let (label, detail) = row.inset(ui.px(6)).split_top(ui.px(22));
         ui.label(
             label,
-            &format!(
-                "{}  {}",
-                match root.kind {
-                    RootKind::Place => "PLACE",
-                    RootKind::Drive => "DRIVE",
-                },
-                root.label
-            ),
+            &root.label,
             if root.available { TEXT } else { TEXT_DIM },
             Align::Left,
         );
         let detail_text = root.volume.as_ref().map_or_else(
             || {
-                if root.available {
-                    root.path.display().to_string()
+                if !root.available {
+                    "Not present".to_owned()
+                } else if root.kind == RootKind::Place && is_under(&root.path, home) {
+                    String::new()
                 } else {
-                    "Not present".into()
+                    root.path.display().to_string()
                 }
             },
             |volume| {
@@ -465,6 +465,12 @@ fn draw_roots(
         }
     });
     commands
+}
+
+/// Whether `path` is the home folder or sits directly inside it — the places whose path the
+/// rail need not spell, because the name already does.
+fn is_under(path: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    home.is_some_and(|home| path == home || path.parent() == Some(home))
 }
 
 /// The main pane: whichever listing is the open place. The two are held apart rather than
