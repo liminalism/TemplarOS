@@ -1,6 +1,7 @@
 //! Graphical Settings surface. The Home Field form is generated from `Settings1.SchemaDetails`;
 //! bounds and choices therefore remain service policy rather than becoming UI constants.
 
+use crate::associations::MimeChoice;
 use crate::background::BackgroundEntry;
 use crate::history::Event;
 use crate::providers::{ChoiceOption, RoleChoice};
@@ -34,6 +35,7 @@ const PAGE_NAMES: [&str; 8] = [
 const HOME_PAGE: usize = 0;
 const SYSTEM_PAGE: usize = 1;
 const PROVIDERS_PAGE: usize = 2;
+const ASSOCIATIONS_PAGE: usize = 3;
 const BACKGROUND_PAGE: usize = 4;
 const HISTORY_PAGE: usize = 6;
 /// How far one press of a stepper moves a level: the same five points `lege status louder` and
@@ -57,6 +59,21 @@ enum Command {
     Background(BackgroundCommand),
     History(HistoryCommand),
     Providers(ProvidersCommand),
+    Associations(AssociationsCommand),
+}
+
+/// One change to which application opens a MIME type, or a plain re-read.
+#[derive(Clone, Debug)]
+enum AssociationsCommand {
+    Refresh,
+    SetMimeDefault {
+        mime: String,
+        app_id: String,
+    },
+    /// Remove the stored default, so the type is resolved or asked about again.
+    ForgetMime {
+        mime: String,
+    },
 }
 
 /// One change to who fills a role, or a plain re-read.
@@ -132,6 +149,10 @@ enum ResultMessage {
         choices: Vec<RoleChoice>,
         message: Option<String>,
     },
+    Associations {
+        choices: Vec<MimeChoice>,
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -161,6 +182,9 @@ impl Backend {
                         Command::Providers(providers) => {
                             runtime.block_on(run_providers_command(providers))
                         }
+                        Command::Associations(associations) => {
+                            runtime.block_on(run_associations_command(associations))
+                        }
                         Command::Set { .. } | Command::Reset { .. } => {
                             runtime.block_on(run_setting_command(command))
                         }
@@ -185,7 +209,8 @@ async fn run_setting_command(command: Command) -> ResultMessage {
         Command::System(_)
         | Command::Background(_)
         | Command::History(_)
-        | Command::Providers(_) => unreachable!("dispatched by the caller"),
+        | Command::Providers(_)
+        | Command::Associations(_) => unreachable!("dispatched by the caller"),
     };
     let result = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
@@ -199,7 +224,8 @@ async fn run_setting_command(command: Command) -> ResultMessage {
             Command::System(_)
             | Command::Background(_)
             | Command::History(_)
-            | Command::Providers(_) => unreachable!("dispatched by the caller"),
+            | Command::Providers(_)
+            | Command::Associations(_) => unreachable!("dispatched by the caller"),
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -377,17 +403,73 @@ fn providers_confirmation(command: &ProvidersCommand) -> Option<String> {
     }
 }
 
+/// One default change, followed by a re-read of every type that has one.
+///
+/// `Forget` on a type whose default was already gone answers `false` rather than failing, which
+/// is the plain fact and is reported as such — the chooser was already where the click asked it
+/// to be.
+async fn run_associations_command(command: AssociationsCommand) -> ResultMessage {
+    use crate::associations::{self, AssociationsSource};
+    let outcome = async {
+        let connection = zbus::Connection::session().await.context("session bus")?;
+        let proxy = lege_client::proxies::AssociationsProxy::new(&connection)
+            .await
+            .context("Associations1")?;
+        let attempted = match &command {
+            AssociationsCommand::Refresh => Ok(()),
+            AssociationsCommand::SetMimeDefault { mime, app_id } => {
+                AssociationsSource::set_mime_default(&proxy, mime, app_id).await
+            }
+            AssociationsCommand::ForgetMime { mime } => {
+                AssociationsSource::forget(&proxy, "mime", mime, "")
+                    .await
+                    .map(|_| ())
+            }
+        };
+        Ok::<_, anyhow::Error>((associations::mime_choices_with(&proxy).await, attempted))
+    }
+    .await;
+    match outcome {
+        Ok((choices, attempted)) => ResultMessage::Associations {
+            choices: choices.clone().unwrap_or_default(),
+            message: match (attempted, choices) {
+                (Err(error), _) => Some(format!("Could not change it — {error:#}")),
+                (Ok(()), Err(unavailable)) => Some(unavailable),
+                (Ok(()), Ok(_)) => associations_confirmation(&command),
+            },
+        },
+        Err(error) => ResultMessage::Associations {
+            choices: Vec::new(),
+            message: Some(format!("Could not reach Associations1 — {error:#}")),
+        },
+    }
+}
+
+fn associations_confirmation(command: &AssociationsCommand) -> Option<String> {
+    match command {
+        AssociationsCommand::Refresh => None,
+        AssociationsCommand::SetMimeDefault { mime, app_id } => {
+            Some(format!("{mime} now opens with {app_id}"))
+        }
+        AssociationsCommand::ForgetMime { mime } => {
+            Some(format!("{mime} has no default; you will be asked"))
+        }
+    }
+}
+
 struct SettingsApp {
     home: Vec<SettingRow>,
     system: crate::system::SystemState,
     background: Vec<BackgroundEntry>,
     history: Vec<Event>,
     providers: Vec<RoleChoice>,
+    associations: Vec<MimeChoice>,
     /// The one open chooser, if any. Immediate mode has no z-order, so a dropdown's popup is
-    /// drawn last, after every row — see `pixelkit_ui::Dropdown`.
-    provider_dropdown: Dropdown,
-    /// Which role's chooser is open, so the popup's pick is applied to the right row.
-    provider_open_row: Option<usize>,
+    /// drawn last, after every row — see `pixelkit_ui::Dropdown`. One is enough for the whole
+    /// window: only one page is on screen at a time, and switching tabs closes it.
+    chooser: Dropdown,
+    /// Which row on the current page opened it, so the popup's pick reaches the right one.
+    chooser_row: Option<usize>,
     pages: Vec<Vec<String>>,
     selected_page: usize,
     /// One scroll position per tab, so leaving a page and coming back does not lose the place a
@@ -449,6 +531,12 @@ impl SettingsApp {
                         self.status = message;
                     }
                 }
+                ResultMessage::Associations { choices, message } => {
+                    self.associations = choices;
+                    if let Some(message) = message {
+                        self.status = message;
+                    }
+                }
             }
         }
     }
@@ -463,6 +551,7 @@ impl SettingsApp {
         let command = match page {
             SYSTEM_PAGE => Command::System(SystemCommand::Refresh),
             PROVIDERS_PAGE => Command::Providers(ProvidersCommand::Refresh),
+            ASSOCIATIONS_PAGE => Command::Associations(AssociationsCommand::Refresh),
             BACKGROUND_PAGE => Command::Background(BackgroundCommand::Refresh),
             HISTORY_PAGE => Command::History(HistoryCommand::Refresh),
             _ => return,
@@ -601,7 +690,7 @@ impl SettingsApp {
         let heights = vec![ui.px(84); choices.len()];
         let mut opened: Option<usize> = None;
         let mut scroll = self.scroll[PROVIDERS_PAGE];
-        let dropdown = &mut self.provider_dropdown;
+        let dropdown = &mut self.chooser;
         ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
             let choice = &choices[index];
             let row = Rect::new(rect.x, rect.y, rect.w, ui.px(74));
@@ -638,36 +727,110 @@ impl SettingsApp {
         });
         self.scroll[PROVIDERS_PAGE] = scroll;
         if let Some(index) = opened {
-            self.provider_open_row = self.provider_dropdown.is_open().then_some(index);
+            self.chooser_row = self.chooser.is_open().then_some(index);
         }
     }
 
     /// The open chooser's popup, drawn after every page so nothing covers it, and the pick it
     /// reports applied to the row that opened it.
-    fn draw_provider_popup(&mut self, ui: &mut Ui<'_>, bounds: Rect) {
-        let mut dropdown = std::mem::take(&mut self.provider_dropdown);
+    fn draw_chooser_popup(&mut self, ui: &mut Ui<'_>, bounds: Rect) {
+        let mut dropdown = std::mem::take(&mut self.chooser);
         let picked = dropdown.draw(ui, bounds);
-        self.provider_dropdown = dropdown;
-        let (Some(picked), Some(row)) = (picked, self.provider_open_row) else {
+        self.chooser = dropdown;
+        let (Some(picked), Some(row)) = (picked, self.chooser_row) else {
             return;
         };
-        self.provider_open_row = None;
-        let Some(choice) = self.providers.get(row) else {
-            return;
+        self.chooser_row = None;
+        let command = match self.selected_page {
+            PROVIDERS_PAGE => self.provider_pick(row, picked).map(Command::Providers),
+            ASSOCIATIONS_PAGE => self
+                .association_pick(row, picked)
+                .map(Command::Associations),
+            _ => None,
         };
-        let Some(option) = choice.options.get(picked) else {
-            return;
-        };
+        if let Some(command) = command {
+            "Saving…".clone_into(&mut self.status);
+            let _ = self.backend.commands.send(command);
+        }
+    }
+
+    fn provider_pick(&self, row: usize, picked: usize) -> Option<ProvidersCommand> {
+        let choice = self.providers.get(row)?;
         let role = choice.role.to_string();
-        let command = match option {
+        Some(match choice.options.get(picked)? {
             ChoiceOption::Automatic => ProvidersCommand::Deselect { role },
             ChoiceOption::App { app_id, .. } => ProvidersCommand::Select {
                 role,
                 app_id: app_id.clone(),
             },
-        };
-        "Saving…".clone_into(&mut self.status);
-        let _ = self.backend.commands.send(Command::Providers(command));
+        })
+    }
+
+    fn association_pick(&self, row: usize, picked: usize) -> Option<AssociationsCommand> {
+        let choice = self.associations.get(row)?;
+        let mime = choice.mime.clone();
+        let option = choice.options.get(picked)?;
+        Some(if option == crate::associations::ASK_EACH_TIME {
+            AssociationsCommand::ForgetMime { mime }
+        } else {
+            AssociationsCommand::SetMimeDefault {
+                mime,
+                app_id: option.clone(),
+            }
+        })
+    }
+
+    /// The Associations page: which application opens each type that has a default set, and a
+    /// chooser holding exactly the applications the engine will accept for it.
+    ///
+    /// Only types that already have a default. The shared MIME database runs to thousands of
+    /// types, and this page is where a person revisits a choice they made — the first choice for
+    /// a type is made where the file is.
+    fn draw_associations(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        if self.associations.is_empty() {
+            ui.label(
+                Rect::new(area.x, area.y, area.w, ui.px(24)),
+                "No file type has a default application set yet.",
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        }
+        let choices = self.associations.clone();
+        let heights = vec![ui.px(56); choices.len()];
+        let mut opened: Option<usize> = None;
+        let mut scroll = self.scroll[ASSOCIATIONS_PAGE];
+        let dropdown = &mut self.chooser;
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            let choice = &choices[index];
+            let row = Rect::new(rect.x, rect.y, rect.w, ui.px(48));
+            ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+            ui.painter
+                .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+
+            let field_w = ui.px(300);
+            let text_w = (row.w - field_w - ui.px(36)).max(ui.px(120));
+            ui.label(
+                Rect::new(row.x + ui.px(12), row.y + ui.px(13), text_w, ui.px(22)),
+                &choice.mime,
+                ui.theme.text,
+                Align::Left,
+            );
+            let refs: Vec<&str> = choice.options.iter().map(String::as_str).collect();
+            let field = Rect::new(
+                row.right() - field_w - ui.px(12),
+                row.y + ui.px(7),
+                field_w,
+                ui.px(34),
+            );
+            if ui.dropdown(dropdown, field, &refs, choice.selected) {
+                opened = Some(index);
+            }
+        });
+        self.scroll[ASSOCIATIONS_PAGE] = scroll;
+        if let Some(index) = opened {
+            self.chooser_row = self.chooser.is_open().then_some(index);
+        }
     }
 
     /// The Background page: every application that declares background activity, what it asked
@@ -1100,6 +1263,10 @@ impl PixelApp for SettingsApp {
             ui.heading(Rect::new(inset.x, inset.y, inset.w, ui.px(48)), "Settings");
             let tabs = Rect::new(inset.x, inset.y + ui.px(56), inset.w, ui.px(42));
             if ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES) {
+                // A popup belonging to the page just left would otherwise hang over the new one
+                // and apply its pick to a row that is no longer there.
+                self.chooser.close();
+                self.chooser_row = None;
                 // Nothing pushes at this window, so arriving on a page is when it re-reads. A
                 // stale charge, a stale approval and a stale history are each the kind of
                 // reading that goes wrong on its own between visits.
@@ -1115,12 +1282,13 @@ impl PixelApp for SettingsApp {
                 HOME_PAGE => self.draw_home(&mut ui, content),
                 SYSTEM_PAGE => self.draw_system(&mut ui, content),
                 PROVIDERS_PAGE => self.draw_providers(&mut ui, content),
+                ASSOCIATIONS_PAGE => self.draw_associations(&mut ui, content),
                 BACKGROUND_PAGE => self.draw_background(&mut ui, content),
                 HISTORY_PAGE => self.draw_history(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
             // Last, so nothing the page drew afterwards covers the open list.
-            self.draw_provider_popup(&mut ui, content);
+            self.draw_chooser_popup(&mut ui, content);
             ui.label(
                 Rect::new(inset.x, inset.bottom() - ui.px(34), inset.w, ui.px(28)),
                 &self.status,
@@ -1220,11 +1388,7 @@ async fn load() -> Result<SettingsApp> {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        super::associations::render(&connection, None, "")
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
+        Vec::new(),
         Vec::new(),
         super::resources::render(&connection, 20)
             .await
@@ -1261,6 +1425,12 @@ async fn load() -> Result<SettingsApp> {
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
+    let associations = match lege_client::proxies::AssociationsProxy::new(&connection).await {
+        Ok(proxy) => crate::associations::mime_choices_with(&proxy)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
     let history = match lege_client::proxies::HistoryProxy::new(&connection).await {
         Ok(proxy) => proxy
             .recent(HISTORY_LIMIT)
@@ -1276,8 +1446,9 @@ async fn load() -> Result<SettingsApp> {
         background,
         history,
         providers,
-        provider_dropdown: Dropdown::new(),
-        provider_open_row: None,
+        associations,
+        chooser: Dropdown::new(),
+        chooser_row: None,
         pages,
         selected_page: 0,
         scroll: [ScrollState::new(); PAGE_NAMES.len()],

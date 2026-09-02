@@ -166,6 +166,25 @@ impl AssociationEngine {
         }
     }
 
+    /// Every installed application that declares support for `mime`, sorted by id.
+    ///
+    /// This is exactly the set [`Self::validate_mime_default`] will accept, so a chooser built on
+    /// it cannot offer a default the engine would then refuse. Sorted rather than left in catalog
+    /// order because catalog order is unspecified, and a list of applications that reshuffles
+    /// itself between two readings of the same page is one a person cannot use.
+    pub fn handlers(&self, mime: &str) -> Vec<AppId> {
+        let mut handlers: Vec<AppId> = self
+            .catalog
+            .manifests()
+            .into_iter()
+            .filter(|manifest| manifest.supports_mime(mime))
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        handlers.sort();
+        handlers.dedup();
+        handlers
+    }
+
     /// Set the global default for a MIME type. The application must declare support for it.
     pub fn set_mime_default(&mut self, mime: &str, app_id: AppId) -> Result<()> {
         self.validate_mime_default(mime, &app_id)?;
@@ -484,6 +503,45 @@ pub(crate) mod tests {
             ("org.example.Editor", &["text/plain", "text/*"]),
         ]);
         AssociationEngine::new(AssociationDb::default(), catalog)
+    }
+
+    #[test]
+    fn handlers_are_exactly_what_set_mime_default_will_accept() {
+        let mut engine = engine();
+        let handlers = engine.handlers("application/pdf");
+        assert_eq!(
+            handlers.iter().map(AppId::as_str).collect::<Vec<_>>(),
+            vec!["org.example.Browser", "org.legeos.Viewer"],
+            "sorted, so the same page read twice lists them the same way"
+        );
+        for app_id in handlers {
+            engine
+                .set_mime_default("application/pdf", app_id.clone())
+                .unwrap_or_else(|error| panic!("{app_id} was offered but refused: {error}"));
+        }
+    }
+
+    #[test]
+    fn a_wildcard_declaration_makes_an_application_a_handler_for_the_types_it_covers() {
+        // `org.example.Editor` declares `text/*`, so it handles text/plain and text/markdown
+        // without naming either; a chooser that only matched literal strings would leave the one
+        // application that can open the file out of its own list.
+        let engine = engine();
+        assert!(
+            engine
+                .handlers("text/markdown")
+                .iter()
+                .any(|id| id.as_str() == "org.example.Editor")
+        );
+    }
+
+    #[test]
+    fn a_type_nothing_declares_has_no_handlers() {
+        assert!(
+            engine()
+                .handlers("application/x-nothing-declares-this")
+                .is_empty()
+        );
     }
 
     #[test]

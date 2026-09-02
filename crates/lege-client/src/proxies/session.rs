@@ -169,6 +169,10 @@ mod associations {
             app_id: &str,
         ) -> zbus::Result<()>;
 
+        /// Every installed application declaring support for `mime`, sorted by id — the set
+        /// `SetMimeDefault` will accept.
+        fn handlers(&self, mime: &str) -> zbus::Result<Vec<String>>;
+
         fn list_mime_defaults(&self) -> zbus::Result<Vec<(String, String)>>;
 
         fn explain(&self, path: &str, project_id: &str) -> zbus::Result<String>;

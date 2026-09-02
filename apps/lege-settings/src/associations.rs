@@ -3,10 +3,11 @@
 //!
 //! `docs/architecture/associations.md`: "Choice UI distinguishes open once / always for MIME /
 //! always for extension / always in this project / ask when extension and content disagree."
-//! There is no interactive picker here (no toolkit in this milestone), so [`ChoiceScope`] models
-//! that distinction as a type rather than a UI — but the *explanation* of what is currently
-//! happening always comes from the real `ResolveFile`/`ResolveUri`/`Explain` calls, never
-//! invented text: `Explain` already returns the exact human sentence
+//! [`ChoiceScope`] models that distinction as a type. The graphical page offers the MIME half of
+//! it — the one scope that stands on its own, without a file in hand to name an extension or a
+//! project — and the `--print` renderer still lists all five. The *explanation* of what is
+//! currently happening always comes from the real `ResolveFile`/`ResolveUri`/`Explain` calls,
+//! never invented text: `Explain` already returns the exact human sentence
 //! (`crates/lege-associationd/src/dbus.rs::explain_decision`), so this page prints it verbatim.
 
 use anyhow::{Context, Result};
@@ -86,6 +87,9 @@ impl ResolveReason {
 /// The bus operations this page needs.
 pub(crate) trait AssociationsSource {
     async fn list_mime_defaults(&self) -> Result<Vec<(String, String)>>;
+    async fn handlers(&self, mime: &str) -> Result<Vec<String>>;
+    async fn set_mime_default(&self, mime: &str, app_id: &str) -> Result<()>;
+    async fn forget(&self, scope: &str, key: &str, project_id: &str) -> Result<bool>;
     async fn resolve_file(&self, path: &str, project_id: &str) -> Result<(String, String, String)>;
     async fn resolve_uri(&self, uri: &str, project_id: &str) -> Result<(String, String, String)>;
     async fn explain(&self, path: &str, project_id: &str) -> Result<String>;
@@ -96,6 +100,22 @@ impl AssociationsSource for lege_client::proxies::AssociationsProxy<'_> {
         self.list_mime_defaults()
             .await
             .context("Associations1.ListMimeDefaults")
+    }
+
+    async fn handlers(&self, mime: &str) -> Result<Vec<String>> {
+        self.handlers(mime).await.context("Associations1.Handlers")
+    }
+
+    async fn set_mime_default(&self, mime: &str, app_id: &str) -> Result<()> {
+        self.set_mime_default(mime, app_id)
+            .await
+            .context("Associations1.SetMimeDefault")
+    }
+
+    async fn forget(&self, scope: &str, key: &str, project_id: &str) -> Result<bool> {
+        self.forget(scope, key, project_id)
+            .await
+            .context("Associations1.Forget")
     }
 
     async fn resolve_file(&self, path: &str, project_id: &str) -> Result<(String, String, String)> {
@@ -126,6 +146,71 @@ fn looks_like_uri(target: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
     })
+}
+
+/// One MIME type as the graphical page shows it: what opens it now, and everything that could.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MimeChoice {
+    pub(crate) mime: String,
+    /// The applications offered, in the order they are offered. Index 0 is always
+    /// [`ASK_EACH_TIME`], which maps to `Forget` rather than to any application.
+    pub(crate) options: Vec<String>,
+    /// Which option is in force. Always a valid index into `options`.
+    pub(crate) selected: usize,
+}
+
+/// The first option of every chooser: no default at all.
+///
+/// It is not an application, and it is not "the system default" either — `Forget` removes the
+/// stored choice, after which the engine resolves by extension rule or asks. Naming it after what
+/// a person then experiences is more honest than naming it after the call that produces it.
+pub(crate) const ASK_EACH_TIME: &str = "Ask each time";
+
+/// Build one MIME type's chooser from its current default and the handlers the engine will
+/// accept.
+///
+/// A default naming an application that is no longer among the handlers — uninstalled, or its
+/// manifest stopped declaring the type — is kept in the list and kept selected. Dropping it would
+/// show the chooser sitting on "Ask each time" while the stored default is still there, and the
+/// person would have no way to see, or clear, the thing that is actually set.
+pub(crate) fn mime_choice(mime: &str, current: Option<&str>, handlers: &[String]) -> MimeChoice {
+    let mut options = vec![ASK_EACH_TIME.to_owned()];
+    options.extend(handlers.iter().cloned());
+    if let Some(current) = current
+        && !options.iter().any(|option| option == current)
+    {
+        options.push(current.to_owned());
+    }
+    let selected = current
+        .and_then(|current| options.iter().position(|option| option == current))
+        .unwrap_or(0);
+    MimeChoice {
+        mime: mime.to_owned(),
+        options,
+        selected,
+    }
+}
+
+/// Every MIME type with a default set, in name order, each with its chooser.
+///
+/// Only types that *have* a default: the full list of MIME types a machine knows runs to
+/// thousands, and a settings page is where a person revisits a choice they made, not where they
+/// browse the shared MIME database. Setting a default for a type that has none happens where the
+/// file is — the "open with" choice — which is what [`ChoiceScope`] models.
+pub(crate) async fn mime_choices_with<S: AssociationsSource>(
+    source: &S,
+) -> Result<Vec<MimeChoice>, String> {
+    let mut defaults = match source.list_mime_defaults().await {
+        Ok(defaults) => defaults,
+        Err(error) => return Err(format!("service unavailable: {error:#}")),
+    };
+    defaults.sort();
+    let mut choices = Vec::with_capacity(defaults.len());
+    for (mime, app_id) in defaults {
+        let handlers = source.handlers(&mime).await.unwrap_or_default();
+        choices.push(mime_choice(&mime, Some(&app_id), &handlers));
+    }
+    Ok(choices)
 }
 
 pub(crate) async fn render_with<S: AssociationsSource>(
@@ -260,8 +345,10 @@ mod tests {
         assert!(!looks_like_uri("report.pdf"));
     }
 
+    #[derive(Default)]
     struct FakeAssociations {
         mime_defaults: Vec<(String, String)>,
+        handlers: Vec<String>,
         resolve: (String, String, String),
         explanation: String,
     }
@@ -269,6 +356,18 @@ mod tests {
     impl AssociationsSource for FakeAssociations {
         async fn list_mime_defaults(&self) -> Result<Vec<(String, String)>> {
             Ok(self.mime_defaults.clone())
+        }
+
+        async fn handlers(&self, _mime: &str) -> Result<Vec<String>> {
+            Ok(self.handlers.clone())
+        }
+
+        async fn set_mime_default(&self, _mime: &str, _app_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn forget(&self, _scope: &str, _key: &str, _project_id: &str) -> Result<bool> {
+            Ok(true)
         }
 
         async fn resolve_file(
@@ -292,10 +391,67 @@ mod tests {
         }
     }
 
+    fn readers() -> Vec<String> {
+        vec![
+            "org.legeos.Reader".to_owned(),
+            "org.mozilla.firefox".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn a_chooser_offers_ask_each_time_first_and_the_handlers_after_it() {
+        let choice = mime_choice("application/pdf", Some("org.legeos.Reader"), &readers());
+        assert_eq!(choice.options[0], ASK_EACH_TIME);
+        assert_eq!(choice.options.len(), 3);
+        assert_eq!(choice.options[choice.selected], "org.legeos.Reader");
+    }
+
+    #[test]
+    fn a_type_with_no_default_sits_on_ask_each_time() {
+        let choice = mime_choice("application/pdf", None, &readers());
+        assert_eq!(choice.selected, 0);
+    }
+
+    #[test]
+    fn a_default_naming_an_application_that_no_longer_handles_the_type_stays_visible() {
+        // Uninstalled, or its manifest stopped declaring the type: it is not among the handlers.
+        // Showing "Ask each time" here would hide a default that is really set, and leave no way
+        // to clear it.
+        let choice = mime_choice("application/pdf", Some("org.gone.Reader"), &readers());
+        assert_eq!(choice.options[choice.selected], "org.gone.Reader");
+        assert!(choice.selected != 0);
+    }
+
+    #[test]
+    fn a_type_whose_handlers_cannot_be_read_still_offers_what_is_set_and_a_way_out() {
+        let choice = mime_choice("application/pdf", Some("org.legeos.Reader"), &[]);
+        assert_eq!(choice.options, vec![ASK_EACH_TIME, "org.legeos.Reader"]);
+        assert_eq!(choice.selected, 1);
+    }
+
+    #[tokio::test]
+    async fn mime_choices_are_listed_in_name_order() {
+        let choices = mime_choices_with(&FakeAssociations {
+            mime_defaults: vec![
+                ("text/plain".to_owned(), "org.legeos.Editor".to_owned()),
+                ("application/pdf".to_owned(), "org.legeos.Reader".to_owned()),
+            ],
+            handlers: readers(),
+            ..FakeAssociations::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            choices.iter().map(|c| c.mime.as_str()).collect::<Vec<_>>(),
+            vec!["application/pdf", "text/plain"]
+        );
+    }
+
     #[tokio::test]
     async fn render_with_lists_every_choice_scope() {
         let fake = FakeAssociations {
             mime_defaults: vec![],
+            handlers: Vec::new(),
             resolve: (String::new(), String::new(), "ask-user".to_owned()),
             explanation: String::new(),
         };
@@ -313,6 +469,7 @@ mod tests {
     async fn render_with_prints_the_real_explain_sentence_verbatim() {
         let fake = FakeAssociations {
             mime_defaults: vec![("application/pdf".to_owned(), "org.legeos.Reader".to_owned())],
+            handlers: Vec::new(),
             resolve: (
                 "org.legeos.Reader".to_owned(),
                 "application/pdf".to_owned(),
@@ -330,6 +487,7 @@ mod tests {
     async fn render_with_shows_ask_when_nothing_resolves() {
         let fake = FakeAssociations {
             mime_defaults: vec![],
+            handlers: Vec::new(),
             resolve: (String::new(), "application/octet-stream".to_owned(), "ask-user".to_owned()),
             explanation: "mystery.bin (detected as application/octet-stream) has no handler set; you will be asked.".to_owned(),
         };

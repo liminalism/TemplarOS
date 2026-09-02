@@ -45,6 +45,13 @@
       <arg name="mime" type="s" direction="in"/>
       <arg name="app_id" type="s" direction="in"/>
     </method>
+    <!-- Every installed application declaring support for `mime`, sorted by id: exactly the set
+         SetMimeDefault will accept, so a chooser built on this cannot offer a default the engine
+         would then refuse. ListMimeDefaults says what is chosen; this says what could be. -->
+    <method name="Handlers">
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="app_ids" type="as" direction="out"/>
+    </method>
     <method name="ListMimeDefaults">
       <arg name="defaults" type="a(ss)" direction="out"/>
     </method>

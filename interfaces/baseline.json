@@ -21,6 +21,7 @@
       "methods": {
         "Explain": "(ss)->(s)",
         "Forget": "(sss)->(b)",
+        "Handlers": "(s)->(as)",
         "ListMimeDefaults": "()->(a(ss))",
         "ResolveFile": "(ss)->(sss)",
         "ResolveUri": "(ss)->(sss)",

@@ -223,6 +223,19 @@ impl AssociationApi {
             .collect()
     }
 
+    /// Every installed application that declares support for `mime`, sorted by id.
+    ///
+    /// The set `SetMimeDefault` will accept, so a chooser built on this cannot offer a default
+    /// the engine would refuse. `ListMimeDefaults` says what is chosen; this says what could be.
+    async fn handlers(&self, mime: &str) -> Vec<String> {
+        self.engine
+            .read()
+            .handlers(mime)
+            .into_iter()
+            .map(|app_id| app_id.to_string())
+            .collect()
+    }
+
     /// Explain, in one sentence, why `path` would (or would not) open with a particular
     /// application right now — the same resolution `ResolveFile` uses, phrased for a person.
     async fn explain(&self, path: &str, project_id: &str) -> fdo::Result<String> {
