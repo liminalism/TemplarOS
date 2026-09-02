@@ -262,7 +262,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
         let object_id = surface.id();
         if self.windows.is_mapped(&object_id) {
-            self.adopt_client_size(surface, &window, &toplevel);
+            self.adopt_client_size(surface, &window);
             return;
         }
         self.windows.track_pending(object_id.clone());
@@ -363,12 +363,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
     /// still carries the older size is the client catching up, not choosing. The tell is the
     /// acknowledgement: only once the client has acked the size it was last given does a
     /// different committed size mean it wants that size.
-    fn adopt_client_size(
-        &mut self,
-        surface: &WlSurface,
-        window: &Window,
-        toplevel: &ToplevelSurface,
-    ) {
+    fn adopt_client_size(&mut self, surface: &WlSurface, window: &Window) {
         let Some(window_id) = self.windows.window_id_for(&surface.id()) else {
             return;
         };
@@ -404,7 +399,6 @@ impl<B: Backend + 'static> LegeCompState<B> {
         if !caught_up {
             return;
         }
-        let _ = toplevel;
         let frame = lege_window::frame_around(lege_window::Rect::new(
             client.x,
             client.y,
