@@ -411,6 +411,75 @@ pub fn resize_grip(window: Rect) -> Option<Rect> {
     })
 }
 
+/// The rectangle a framed window's client surface occupies: everything under the recovery
+/// band. The band is the compositor's, drawn *above* the client rather than over it — a band
+/// painted over the top of a client's own pixels hid the first line of every terminal and the
+/// close button of every client-decorated window.
+///
+/// Never empty: a frame shorter than the band still yields a one-pixel client area, so a caller
+/// can always configure it.
+pub fn client_area(frame: Rect) -> Rect {
+    Rect {
+        x: frame.x,
+        y: frame.y.saturating_add(RECOVERY_BAND_HEIGHT),
+        width: frame.width.max(1),
+        height: frame.height.saturating_sub(RECOVERY_BAND_HEIGHT).max(1),
+    }
+}
+
+/// The frame a client surface of `client` needs — the inverse of [`client_area`].
+pub fn frame_around(client: Rect) -> Rect {
+    Rect {
+        x: client.x,
+        y: client.y.saturating_sub(RECOVERY_BAND_HEIGHT),
+        width: client.width.max(1),
+        height: client.height.max(1).saturating_add(RECOVERY_BAND_HEIGHT),
+    }
+}
+
+/// How far outside a window's frame a press still grabs its edge, in logical pixels. Outside,
+/// never inside: an edge zone inside the frame would take the client's own outermost pixels —
+/// its scrollbar, its own resize border — and the band already owns the top.
+pub const RESIZE_MARGIN: i32 = 8;
+
+/// How far along an edge from a corner a press still grabs the corner as well.
+pub const RESIZE_CORNER: i32 = 24;
+
+/// Which edges a press at `point`, just outside `frame`, grabs — `None` for a point inside the
+/// frame (that is the band's, the grip's or the client's) or further than [`RESIZE_MARGIN`]
+/// from it. Within [`RESIZE_CORNER`] of a corner, both of the corner's edges.
+pub fn resize_edges_at(frame: Rect, point: Point) -> Option<ResizeEdges> {
+    let inside = point.x >= frame.x
+        && point.x < frame.right()
+        && point.y >= frame.y
+        && point.y < frame.bottom();
+    if inside {
+        return None;
+    }
+    let near = point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN)
+        && point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN);
+    if !near {
+        return None;
+    }
+    let mut edges = ResizeEdges {
+        left: point.x < frame.x,
+        right: point.x >= frame.right(),
+        top: point.y < frame.y,
+        bottom: point.y >= frame.bottom(),
+    };
+    if edges.left || edges.right {
+        edges.top |= point.y < frame.y.saturating_add(RESIZE_CORNER);
+        edges.bottom |= point.y >= frame.bottom().saturating_sub(RESIZE_CORNER);
+    }
+    if edges.top || edges.bottom {
+        edges.left |= point.x < frame.x.saturating_add(RESIZE_CORNER);
+        edges.right |= point.x >= frame.right().saturating_sub(RESIZE_CORNER);
+    }
+    (!edges.is_empty()).then_some(edges)
+}
+
 /// Which edges an interactive resize moves. Held as four flags rather than a bitmask so a
 /// corner is expressible without a table of sixteen names, and so this crate never has to
 /// depend on the protocol enum the compositor translates from.
@@ -1128,6 +1197,82 @@ mod tests {
     fn no_outputs_leaves_geometry_alone() {
         let w = Rect::new(-500, -500, 100, 100);
         assert_eq!(repair_window(w, &[]), w);
+    }
+
+    #[test]
+    fn the_client_area_sits_under_the_band_and_the_frame_is_its_inverse() {
+        let frame = Rect::new(100, 200, 640, 480);
+        let client = client_area(frame);
+        assert_eq!(
+            client,
+            Rect::new(
+                100,
+                200 + RECOVERY_BAND_HEIGHT,
+                640,
+                480 - RECOVERY_BAND_HEIGHT
+            )
+        );
+        assert_eq!(frame_around(client), frame);
+        assert!(
+            client.intersection(recovery_band(frame)).is_none(),
+            "the band is above the client, never over it"
+        );
+        // A frame too short for a client still yields one the compositor can configure.
+        assert_eq!(client_area(Rect::new(0, 0, 100, 10)).height, 1);
+        assert_eq!(client_area(Rect::new(0, 0, 0, 0)).width, 1);
+    }
+
+    #[test]
+    fn edges_are_grabbed_just_outside_the_frame_and_nowhere_inside_it() {
+        let frame = Rect::new(100, 100, 400, 300);
+        let at = |x, y| resize_edges_at(frame, Point { x, y });
+        // Inside is the client's, the band's or the grip's.
+        assert_eq!(at(300, 250), None);
+        assert_eq!(at(100, 100), None);
+        assert_eq!(at(499, 399), None);
+        // Just outside each edge, away from the corners.
+        assert_eq!(
+            at(96, 250),
+            Some(ResizeEdges {
+                left: true,
+                ..ResizeEdges::default()
+            })
+        );
+        assert_eq!(
+            at(503, 250),
+            Some(ResizeEdges {
+                right: true,
+                ..ResizeEdges::default()
+            })
+        );
+        assert_eq!(
+            at(300, 405),
+            Some(ResizeEdges {
+                bottom: true,
+                ..ResizeEdges::default()
+            })
+        );
+        assert_eq!(
+            at(300, 95),
+            Some(ResizeEdges {
+                top: true,
+                ..ResizeEdges::default()
+            })
+        );
+        // A corner, reached from either of its edges.
+        assert_eq!(at(503, 390), Some(ResizeEdges::BOTTOM_RIGHT));
+        assert_eq!(at(490, 403), Some(ResizeEdges::BOTTOM_RIGHT));
+        assert_eq!(
+            at(95, 105),
+            Some(ResizeEdges {
+                left: true,
+                top: true,
+                ..ResizeEdges::default()
+            })
+        );
+        // Too far away is nothing at all.
+        assert_eq!(at(80, 250), None);
+        assert_eq!(at(300, 420), None);
     }
 
     #[test]

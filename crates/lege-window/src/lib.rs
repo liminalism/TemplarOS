@@ -23,9 +23,9 @@ pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };
 pub use geometry::{
-    Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, is_recoverable,
-    logical_to_physical, move_into_view, physical_to_logical, recovery_affordance, recovery_band,
-    repair_window, resize_grip, resize_rect, scatter_layout,
+    Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, client_area, frame_around,
+    is_recoverable, logical_to_physical, move_into_view, physical_to_logical, recovery_affordance,
+    recovery_band, repair_window, resize_edges_at, resize_grip, resize_rect, scatter_layout,
 };
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};
 pub use service::{

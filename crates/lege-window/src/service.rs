@@ -631,6 +631,31 @@ impl<I: IdentityCache> WindowService<I> {
         resize_grip(window.geometry)
     }
 
+    /// Whether `window_id` wears the compositor's frame — the recovery band drawn above its
+    /// client area rather than over it. Every client window does, except a fullscreen one:
+    /// fullscreen is the client's whole output by definition, and the band stays an overlay
+    /// there so the window remains grabbable without giving up a strip of the picture.
+    pub fn has_frame(&self, window_id: WindowId) -> bool {
+        self.is_client_window(window_id)
+            && self
+                .windows
+                .get(&window_id)
+                .is_some_and(|window| !window.fullscreen)
+    }
+
+    /// The rectangle `window_id`'s client surface occupies: under the band for a framed window
+    /// ([`client_area`](crate::geometry::client_area)), the whole geometry for anything else —
+    /// a shell surface, a fullscreen window. What the compositor maps the surface at and
+    /// configures the client to; the geometry itself is the frame.
+    pub fn client_area(&self, window_id: WindowId) -> Option<Rect> {
+        let window = self.windows.get(&window_id)?;
+        Some(if self.has_frame(window_id) {
+            crate::geometry::client_area(window.geometry)
+        } else {
+            window.geometry
+        })
+    }
+
     /// Move `window_id` to the visible Window Shelf: a hidden window cannot sensibly hold
     /// keyboard focus, so this also clears `activated` (the compositor should pick a new focus
     /// target the same way it would for any other deactivation). Returns `false` if the window
