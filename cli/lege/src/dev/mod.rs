@@ -395,14 +395,18 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     let convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
     let plan = activate::plan(&matrix, &convergence, &gate.conditions);
     let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
+    let target_user = systemd::sudo_target_user();
     let systemctl = systemd::RealSystemctl {
         runner: runner.clone(),
         dir: root.to_path_buf(),
+        target_user: target_user.clone(),
     };
     let bus = systemd::RealBusProbe {
         runner,
         dir: root.to_path_buf(),
+        target_user: target_user.clone(),
     };
+    let stamps = systemd::RealStamps { target_user };
     let activation = activate::execute(
         &plan,
         &matrix,
@@ -410,7 +414,7 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
             systemctl: &systemctl,
             bus: &bus,
             clock: &systemd::RealClock,
-            stamps: &systemd::RealStamps,
+            stamps: &stamps,
         },
     );
     out.push_str(&report::render_activation(&activation));
@@ -420,15 +424,19 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
         if options.auto_rollback {
             let previous = rollback(repo_root, root, false)?;
             out.push_str(&previous);
-            bail!("{out}");
+            // A one-line-prefixed error swallowing a long multi-line report reads exactly like a
+            // success dump unless it says so in the very first word: this is a failed deployment
+            // start to finish, not a log of steps that merely happened to end early.
+            bail!("DEPLOY FAILED — package state changed, activation did not\n\n{out}");
         }
         let _ = writeln!(out, "roll back with: sudo lege dev rollback");
-        bail!("{out}");
+        bail!("DEPLOY FAILED — package state changed, activation did not\n\n{out}");
     }
 
     let final_convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
     out.push('\n');
     out.push_str(&report::render(&final_convergence));
+    out.push_str("\ndeploy succeeded\n");
     if let Some(previous) = open_repo(repo_root).previous()? {
         let _ = writeln!(out, "\nprevious set retained: {previous}");
         out.push_str("roll back with: sudo lege dev rollback\n");

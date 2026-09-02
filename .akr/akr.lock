@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:0b7c86b36485a0d745b09e3927e9d32ac503cc089c48f3b9b2548d38e1fb573a"
+    source_graph "sha256:16814f5e0e10709bfa3b0fd3622c845fe0fbc8d421d8f2cacdb38ab2a32f5bae"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:34e607eb7ed936d0cc4b332d02da5a85efe588505ff27305a3e3505c3c6546f6"
-    records 64
+    hash "sha256:b50db5393856fde78394c3fbb55f5174ea9e7af58e122d90d1e82c610b394e6a"
+    records 71
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -2191,6 +2191,11 @@ seal @legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 {
     hash "sha256:c0da9b4751bab0c7f74bedc82a71c26ce721dc6b4297e2265b7019167ff5b3c9"
 }
 
+seal @legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 {
+    state verified
+    hash "sha256:9bfa072531e6befa10691794d1f8f575e5440af4a63e21b3aa089de3496c5d72"
+}
+
 seal @legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 {
     state verified
     hash "sha256:0522b5015d69ab1b7842d9e5d6c19afb2d85d4acbe8708e969bae380b48d98c4"
@@ -2209,6 +2214,11 @@ seal @legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 {
 seal @legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 {
     state verified
     hash "sha256:cdcf3d53d60844cc00e87ce334248a87ab7105886d9b655c9f0f4adb7a9e4837"
+}
+
+seal @legeos.papercut.correcting-my-earlier-papercut-allow/1 {
+    state verified
+    hash "sha256:4610ae6eed0bcf06e61becb68c84e07f0c0f59efd34a031613b786ea86291f1a"
 }
 
 seal @legeos.papercut.every-reported-home-field-failure-slow-lossy/1 {
@@ -2261,6 +2271,16 @@ seal @legeos.papercut.lege-build-s-tests-created-a-scratch-directory/1 {
     hash "sha256:57909c4fe008479b07f91031244f45909627ad5d96e1b0efc1e37a0b853505a2"
 }
 
+seal @legeos.papercut.lege-dev-deploy-failed-with-apt-unauthenticated/1 {
+    state verified
+    hash "sha256:e12b2d0bc0b70d4365c8ea1db51ebcadc4b1939e258f241723dfc44154e558a0"
+}
+
+seal @legeos.papercut.lege-dev-deploy-restarts-lege-hostd-service-and/1 {
+    state verified
+    hash "sha256:516b297bbe6b2d694116c9e3167ee1e96493404f726d2770bf546c358fd8e209"
+}
+
 seal @legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 {
     state verified
     hash "sha256:04a931ae9bb712328b8d6cd66259d98a8a7e46ba57dea5b21275f11d696c9ad9"
@@ -2294,6 +2314,11 @@ seal @legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 {
 seal @legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 {
     state verified
     hash "sha256:06d15059facd20aad6f9d9c61f402371c0624dda31890876ad9ef7f0b013afb5"
+}
+
+seal @legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 {
+    state verified
+    hash "sha256:0a5eb883a4ace7a92809a2da168dc3c72e9845379511a6294e0b1fe875715fab"
 }
 
 seal @legeos.papercut.systemd-analyze-user-verify-accepted-the/1 {
@@ -2399,6 +2424,16 @@ seal @legeos.papercut.the-sibling-codebase-was-referenced-as-rust/1 {
 seal @legeos.papercut.the-working-tree-carried-a-body-of-in-flight/1 {
     state verified
     hash "sha256:28c6179ea89ec8bdbb54718afa341784397ee31da957e830ed86f468ba87b26e"
+}
+
+seal @legeos.papercut.third-bug-in-the-same-chain-after-the-machine/1 {
+    state verified
+    hash "sha256:16a7331d6816529373951e08c1cf68059cb6a04df8613aa1eccdffd4695c1055"
+}
+
+seal @legeos.papercut.ux-papercut-in-the-same-session-lege-dev-deploy/1 {
+    state verified
+    hash "sha256:8fa93dc0bab6dea5697b28dcfac09dcc05465711ca7e913a7cca73c01f87e6b7"
 }
 
 seal @legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 {

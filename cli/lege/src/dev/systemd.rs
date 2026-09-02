@@ -18,6 +18,13 @@ pub struct RealSystemctl {
     pub runner: Arc<dyn CommandRunner>,
     /// Working directory for the invocations — irrelevant to systemctl, but the runner asks.
     pub dir: PathBuf,
+    /// The desktop user whose `--user` manager to reach, when this process is root.
+    ///
+    /// `lege dev deploy` requires root (it needs it for apt), but a `--user` unit lives in the
+    /// *desktop user's* manager, not root's own — root has no session bus of its own, so a plain
+    /// `systemctl --user` under `sudo` fails with "DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR
+    /// not defined". `--machine=<user>@.host` is systemd's supported way to cross that gap.
+    pub target_user: Option<String>,
 }
 
 impl RealSystemctl {
@@ -30,12 +37,56 @@ impl RealSystemctl {
     }
 
     fn systemctl(&self, scope: Scope, args: &[&str]) -> Result<std::process::Output> {
+        let machine = machine_arg(scope, self.target_user.as_deref());
         let mut all = vec![Self::scope_flag(scope), "--no-pager"];
+        if let Some(machine) = &machine {
+            all.push(machine);
+        }
         all.extend_from_slice(args);
         self.runner
             .run(&self.dir, "systemctl", &all)
             .context("running systemctl")
     }
+}
+
+/// The desktop user to reach for a `--user` call, when this process was started with `sudo`.
+///
+/// `sudo` sets `SUDO_USER` to the account that invoked it; a login shell already running as
+/// root (no `sudo` involved) leaves it unset, which correctly means "nothing to cross into".
+#[must_use]
+pub fn sudo_target_user() -> Option<String> {
+    std::env::var("SUDO_USER").ok()
+}
+
+/// A user's numeric uid, read from `/etc/passwd` — not through libc, which the CLI does not
+/// otherwise link (the same reasoning `install::is_root` gives for reading `/proc/self/status`
+/// directly).
+fn uid_for_user(user: &str) -> Option<u32> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    uid_for_user_in(&passwd, user)
+}
+
+fn uid_for_user_in(passwd: &str, user: &str) -> Option<u32> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        (fields.next()? == user)
+            .then(|| fields.nth(1))
+            .flatten()
+            .and_then(|uid| uid.parse().ok())
+    })
+}
+
+/// `--machine=<user>@.host`, for a `--user` call this process cannot otherwise reach.
+///
+/// Only applies to `Scope::User`: a system-manager call from root already has the access it
+/// needs, and a target user of "root" (or none, e.g. run outside `sudo`) means there is nothing
+/// to cross into.
+fn machine_arg(scope: Scope, target_user: Option<&str>) -> Option<String> {
+    if !matches!(scope, Scope::User | Scope::None) {
+        return None;
+    }
+    let user = target_user?;
+    (!user.is_empty() && user != "root").then(|| format!("--machine={user}@.host"))
 }
 
 impl Systemctl for RealSystemctl {
@@ -73,25 +124,28 @@ impl Systemctl for RealSystemctl {
 pub struct RealBusProbe {
     pub runner: Arc<dyn CommandRunner>,
     pub dir: PathBuf,
+    /// See [`RealSystemctl::target_user`]: the session bus this probes is the desktop user's,
+    /// not root's, when this process is running under `sudo`.
+    pub target_user: Option<String>,
 }
 
 impl BusProbe for RealBusProbe {
     fn answers(&self, bus_name: &str) -> bool {
-        let Ok(output) = self.runner.run(
-            &self.dir,
-            "busctl",
-            &[
-                "--user",
-                "--no-pager",
-                "call",
-                "org.freedesktop.DBus",
-                "/org/freedesktop/DBus",
-                "org.freedesktop.DBus",
-                "NameHasOwner",
-                "s",
-                bus_name,
-            ],
-        ) else {
+        let machine = machine_arg(Scope::User, self.target_user.as_deref());
+        let mut args = vec!["--user", "--no-pager"];
+        if let Some(machine) = &machine {
+            args.push(machine);
+        }
+        args.extend_from_slice(&[
+            "call",
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            "s",
+            bus_name,
+        ]);
+        let Ok(output) = self.runner.run(&self.dir, "busctl", &args) else {
             return false;
         };
         output.status.success() && String::from_utf8_lossy(&output.stdout).contains("true")
@@ -117,11 +171,38 @@ impl Clock for RealClock {
 /// The runtime stamps, read fresh each time — which is the point, since the gate is waiting for
 /// one of them to change.
 #[derive(Debug, Default)]
-pub struct RealStamps;
+pub struct RealStamps {
+    /// See [`RealSystemctl::target_user`]: a user-scope component's stamp lives in the desktop
+    /// user's own runtime directory (`/run/user/<uid>/legeos/build`), not root's, when this
+    /// process is running under `sudo` — root has no `XDG_RUNTIME_DIR` of its own, so reading
+    /// only `lege_build::stamp_dir()` finds a system-scope component's stamp but never a
+    /// user-scope one, which is most of the matrix.
+    pub target_user: Option<String>,
+}
 
 impl Stamps for RealStamps {
     fn read(&self) -> BTreeMap<String, RunningStamp> {
-        lege_build::read_stamps()
+        // An explicit single-directory override (tests, `lege dev status --stamps`) takes
+        // priority over any user-crossing logic below.
+        if std::env::var_os("LEGEOS_BUILD_STAMP_DIR").is_some() {
+            return lege_build::read_stamps();
+        }
+        let mut stamps = lege_build::read_stamps_in(
+            &PathBuf::from("/run/legeos/build"),
+            &lege_build::pid_is_alive,
+        );
+        let user_dir = self
+            .target_user
+            .as_deref()
+            .and_then(uid_for_user)
+            .map_or_else(lege_build::stamp_dir, |uid| {
+                PathBuf::from(format!("/run/user/{uid}/legeos/build"))
+            });
+        stamps.extend(lege_build::read_stamps_in(
+            &user_dir,
+            &lege_build::pid_is_alive,
+        ));
+        stamps
     }
 }
 
@@ -136,6 +217,7 @@ mod tests {
             RealSystemctl {
                 runner: runner.clone(),
                 dir: PathBuf::from("/"),
+                target_user: None,
             },
             runner,
         )
@@ -144,6 +226,51 @@ mod tests {
     #[test]
     fn a_user_unit_is_restarted_in_the_user_manager() {
         let (systemctl, runner) = systemctl();
+        systemctl
+            .restart(Scope::User, "lege-shell.service")
+            .unwrap();
+        assert_eq!(
+            runner.lines(),
+            vec!["systemctl --user --no-pager restart lege-shell.service"]
+        );
+    }
+
+    #[test]
+    fn a_user_unit_is_restarted_via_machine_when_running_as_root() {
+        // Under `sudo`, this process has no session bus of its own; `--machine=<user>@.host` is
+        // how it reaches the desktop user's `--user` manager instead of failing with "
+        // DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR not defined".
+        let (mut systemctl, runner) = systemctl();
+        systemctl.target_user = Some("dk".to_owned());
+        systemctl
+            .restart(Scope::User, "lege-resourced.service")
+            .unwrap();
+        assert_eq!(
+            runner.lines(),
+            vec!["systemctl --user --no-pager --machine=dk@.host restart lege-resourced.service"]
+        );
+    }
+
+    #[test]
+    fn a_system_unit_never_takes_a_machine_flag() {
+        // `--system` from root already has the access it needs; a `--machine` there would be a
+        // pointless, possibly wrong, deviation.
+        let (mut systemctl, runner) = systemctl();
+        systemctl.target_user = Some("dk".to_owned());
+        systemctl
+            .restart(Scope::System, "lege-hostd.service")
+            .unwrap();
+        assert_eq!(
+            runner.lines(),
+            vec!["systemctl --system --no-pager restart lege-hostd.service"]
+        );
+    }
+
+    #[test]
+    fn a_target_user_of_root_takes_no_machine_flag() {
+        // Run outside `sudo` (or as root's own session), there is nothing to cross into.
+        let (mut systemctl, runner) = systemctl();
+        systemctl.target_user = Some("root".to_owned());
         systemctl
             .restart(Scope::User, "lege-shell.service")
             .unwrap();
@@ -209,11 +336,20 @@ mod tests {
         let probe = RealBusProbe {
             runner: runner.clone(),
             dir: PathBuf::from("/"),
+            target_user: None,
         };
         runner.say("busctl", "b true\n");
         assert!(probe.answers("org.legeos.Resources"));
         runner.say("busctl", "b false\n");
         assert!(!probe.answers("org.legeos.Resources"));
         assert!(runner.lines()[0].contains("NameHasOwner"));
+    }
+
+    #[test]
+    fn a_users_uid_is_read_from_passwd() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\ndk:x:1000:1000:dk,,,:/home/dk:/bin/bash\n";
+        assert_eq!(uid_for_user_in(passwd, "dk"), Some(1000));
+        assert_eq!(uid_for_user_in(passwd, "root"), Some(0));
+        assert_eq!(uid_for_user_in(passwd, "nobody-here"), None);
     }
 }

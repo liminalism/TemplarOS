@@ -257,13 +257,17 @@ impl Repo {
         Ok(vec![keyring, source])
     }
 
+    /// Deliberately no `Trusted:` field. It reads like "trust only if `Signed-By` checks out",
+    /// but apt's actual semantics are the opposite of that: `Trusted: no` *forces* every package
+    /// from the source to be flagged unauthenticated, unconditionally — even when the signature
+    /// verifies cleanly. Leaving it unset is what makes `Signed-By` alone the gate: a good
+    /// signature authenticates the source, a missing or bad one does not.
     fn source_stanza(&self, keyring: &Path) -> String {
         format!(
             "# The local LegeOS development archive. Written by `lege dev repo init`.\n\
              Types: deb\n\
              URIs: file://{}\n\
              Suites: ./\n\
-             Trusted: no\n\
              Signed-By: {}\n",
             self.root.display(),
             keyring.display(),
@@ -774,8 +778,9 @@ mod tests {
         assert!(text.contains("Suites: ./"), "{text}");
         assert!(text.contains("Signed-By:"), "{text}");
         assert!(
-            text.contains("Trusted: no"),
-            "an unsigned repository must not be silently trusted: {text}"
+            !text.contains("Trusted:"),
+            "Trusted: no forces every package unauthenticated even with a good signature; \
+             Signed-By alone must gate trust: {text}"
         );
         let _ = fs::remove_dir_all(scratch);
     }

@@ -129,6 +129,18 @@ record legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 : papercut 
     created_at 2026-08-24
 }
 
+record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
+    title "AKR MCP failed to connect this session, so knowledge.start/context had…"
+    state verified
+    statement """
+        AKR MCP failed to connect this session, so knowledge.start/context had to go through the akr CLI. The CLI's start takes a positional task, not --task, which is the first guess from the MCP-shaped docs.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
+    about "akr"
+    author "grok"
+    created_at 2026-09-02
+}
+
 record legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 : papercut {
     title "Bumping interfaces/wayland/lege-shell-v1.xml to version 2: `cargo xtask…"
     state verified
@@ -170,6 +182,17 @@ record legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 : papercut
         cli/lege/src/dev/cmd.rs knowingly duplicates services/lege-hostd/src/cmd.rs (CommandRunner + fake). Two consumers did not justify a shared crate and hostd's copy carries a transaction timeout the CLI should not inherit; if a third consumer appears, extract. Commented at the top of the file.
         """
     observed_at git:cd6563649c3c85e3c23b92adb22d60de7ce90e44
+    author "claude"
+    created_at 2026-09-01
+}
+
+record legeos.papercut.correcting-my-earlier-papercut-allow/1 : papercut {
+    title "Correcting my earlier papercut: --allow-releaseinfo-change was not the…"
+    state verified
+    statement """
+        Correcting my earlier papercut: --allow-releaseinfo-change was not the fix (the scoped apt-get update always succeeded cleanly). Real cause: source_stanza() in cli/lege/src/dev/repo.rs wrote `Trusted: no`, which forces every package unauthenticated unconditionally in apt's deb822 semantics -- it does NOT mean "trust only if Signed-By verifies". Fixed by dropping the field entirely so Signed-By alone gates trust (repo.rs source_stanza). Existing /etc/apt/sources.list.d/legeos-dev.sources on a dev machine needs `lege dev repo init --install-source` re-run to pick up the corrected stanza.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
     author "claude"
     created_at 2026-09-01
 }
@@ -288,6 +311,28 @@ record legeos.papercut.lege-build-s-tests-created-a-scratch-directory/1 : paperc
     created_at 2026-09-01
 }
 
+record legeos.papercut.lege-dev-deploy-failed-with-apt-unauthenticated/1 : papercut {
+    title "`lege dev deploy` failed with apt \"unauthenticated packages\" right…"
+    state verified
+    statement """
+        `lege dev deploy` failed with apt "unauthenticated packages" right after a fresh `lege dev repo init --install-source` on a machine with a stale cached index. Root cause: every publish regenerates the devrepo Release from scratch, so apt sometimes sees an Origin/Label mismatch vs. its cached copy and silently keeps the stale (mismatched) index instead of refreshing — unlike scripts/reinstall-legeos-desktop.sh, which uses dpkg -i directly and never touches apt's trust cache. Fixed by adding --allow-releaseinfo-change to the scoped apt-get update in refresh_index() (cli/lege/src/dev/install.rs); this repo has exactly one publisher so accepting the metadata change is always correct.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
+    author "claude"
+    created_at 2026-09-01
+}
+
+record legeos.papercut.lege-dev-deploy-restarts-lege-hostd-service-and/1 : papercut {
+    title "`lege dev deploy` restarts lege-hostd.service and it crash-loops: zbus…"
+    state verified
+    statement """
+        `lege dev deploy` restarts lege-hostd.service and it crash-loops: zbus fails "claiming org.legeos.Host on the system bus" with a raw EACCES connecting to /var/run/dbus/system_bus_socket (0666, root:root). Ruled out: AppArmor profile is confirmed complain-mode (would only log, not block); org.legeos.Host.conf is correctly shipped under /usr/share/dbus-1/system.d/; a plain `sudo -u root` shell can read/write the socket fine. Unit has no explicit sandboxing beyond ProtectHome=yes/NoNewPrivileges=no; RestrictAddressFamilies/SystemCallFilter show unset. Root cause still unknown — worth a fresh look with strace on the actual ExecStart process. Not blocking desktop-session testing (hostd isn't in the login path); packages were already fully installed by the time this surfaced.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
+    author "claude"
+    created_at 2026-09-01
+}
+
 record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : papercut {
     title "`lege doctor` exited 1 on every developer install and made…"
     state verified
@@ -362,6 +407,17 @@ record legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 : papercut {
         scripts/nested-session.sh stop leaves lege-sessiond and lege-filed running — the pidfiles are there but the processes survive and a stale sessiond keeps holding org.legeos.Session after an apparently clean stop; they had to be killed by hand during the WS3 nested run.
         """
     observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
+    author "claude"
+    created_at 2026-09-01
+}
+
+record legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 : papercut {
+    title "Second, separate bug found after the apt-trust fix: `lege dev deploy`…"
+    state verified
+    statement """
+        Second, separate bug found after the apt-trust fix: `lege dev deploy` (root, via sudo) failed to activate lege-resourced.service — "Failed to connect to user scope bus via local transport: DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR not defined". Root cause: RealSystemctl/RealBusProbe in cli/lege/src/dev/systemd.rs ran `systemctl --user`/`busctl --user` as root, which has no session bus of its own -- a --user unit lives in the desktop user's manager. Fixed by adding --machine=<user>@.host (resolved from SUDO_USER) whenever scope is User and the process is root; system-scope calls and a target_user of "root"/none are unaffected.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
     author "claude"
     created_at 2026-09-01
 }
@@ -598,6 +654,28 @@ record legeos.papercut.the-working-tree-carried-a-body-of-in-flight/1 : papercut
     observed_at git:06bf665f54b58b218e145fb66f8d4033e53e39bc
     author "claude"
     created_at 2026-08-30
+}
+
+record legeos.papercut.third-bug-in-the-same-chain-after-the-machine/1 : papercut {
+    title "Third bug in the same chain: after the --machine fix, lege-resourced…"
+    state verified
+    statement """
+        Third bug in the same chain: after the --machine fix, lege-resourced restarted fine but the activation gate still reported "came back without writing a build stamp". Root cause: RealStamps::read() (cli/lege/src/dev/systemd.rs) called lege_build::read_stamps(), which resolves its directory from the CURRENT process's own $XDG_RUNTIME_DIR -- root's (unset under sudo), not the desktop user's /run/user/<uid>/legeos/build where user-scope units (everything except hostd/boot-health) actually write. Confirmed by hand: /run/legeos/build does not exist at all; /run/user/1000/legeos/build/lege-resourced.json does, freshly written. Fixed by having RealStamps merge /run/legeos/build (system scope) with the target user's resolved /run/user/<uid>/legeos/build (user scope, uid read from /etc/passwd via SUDO_USER) when running as root.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
+    author "claude"
+    created_at 2026-09-01
+}
+
+record legeos.papercut.ux-papercut-in-the-same-session-lege-dev-deploy/1 : papercut {
+    title "UX papercut in the same session: `lege dev deploy`'s success and…"
+    state verified
+    statement """
+        UX papercut in the same session: `lege dev deploy`'s success and failure output were visually indistinguishable -- a failure bail!()s the ENTIRE accumulated progress log as one anyhow error, so it prints almost identically to a successful run except for a "lege: " prefix on line 1 alone and two trailing lines. Fixed cli/lege/src/dev/mod.rs deploy() to prepend "DEPLOY FAILED -- package state changed, activation did not" to the bailed message, and append "deploy succeeded" to the genuinely-successful output.
+        """
+    observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
+    author "claude"
+    created_at 2026-09-01
 }
 
 record legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 : papercut {

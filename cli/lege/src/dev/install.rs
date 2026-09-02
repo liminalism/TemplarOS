@@ -101,9 +101,16 @@ impl Installer {
             .run(&self.root, "apt-get", &args)
             .context("running apt-get install")?;
         if !output.status.success() {
+            // apt's own diagnosis of *which* packages it would not authenticate — the detail
+            // that actually explains a refusal like this — goes to stdout, not stderr; the final
+            // "E: ..." line on stderr alone never says why.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
-                "apt-get refused the set; nothing was changed:\n{}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "apt-get refused the set; nothing was changed:\n{}{}{}",
+                stdout.trim(),
+                if stdout.trim().is_empty() { "" } else { "\n" },
+                stderr.trim()
             );
         }
         self.verify(&plan.build_set)
@@ -114,6 +121,13 @@ impl Installer {
     /// A plain `apt-get update` would go to the network and refresh every source on the machine,
     /// which is a slow and unrelated thing to do in the middle of a deployment. Pointing apt at
     /// the archive's own copy of its source file updates exactly what is about to be installed.
+    ///
+    /// `--allow-releaseinfo-change`: every publish regenerates this archive's `Release` from
+    /// scratch (origin/label/suite are recomputed, not preserved), so apt sometimes sees a
+    /// "repository changed its Origin/Label" mismatch against what it cached last time and
+    /// refuses to refresh — leaving a stale index in place that the following `apt-get install`
+    /// then reports as unauthenticated. There is exactly one publisher of this repository (this
+    /// machine), so accepting that change here is always correct, not a hijacked-mirror risk.
     fn refresh_index(&self) -> Result<()> {
         let sourceparts = self.repo.apt_dir().display().to_string();
         let output = self
@@ -123,6 +137,7 @@ impl Installer {
                 "apt-get",
                 &[
                     "update",
+                    "--allow-releaseinfo-change",
                     "-o",
                     "Dir::Etc::SourceList=/dev/null",
                     "-o",
@@ -278,6 +293,11 @@ mod tests {
             .into_iter()
             .find(|line| line.starts_with("apt-get update"))
             .expect("an index refresh");
+        assert!(
+            update.contains("--allow-releaseinfo-change"),
+            "every publish regenerates Release from scratch; apt must not refuse the refresh \
+             and silently keep a stale, mismatched index: {update}"
+        );
         assert!(
             update.contains("Dir::Etc::SourceList=/dev/null"),
             "{update}"
