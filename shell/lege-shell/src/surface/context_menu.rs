@@ -395,7 +395,7 @@ impl ContextMenu {
                         (accelerator.w - ui.px(8)).max(0),
                         accelerator.h,
                     ),
-                    &chord.to_string().to_uppercase(),
+                    &chord.to_string(),
                     TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
                     design::TEXT_FAINT,
                     Align::Right,

@@ -41,6 +41,13 @@ pub const FIELD_INSET: i32 = 10;
 pub const TOP_BAR_HEIGHT: i32 = 44;
 pub const TOP_BAR_GAP: i32 = 8;
 pub const HOME_WIDTH: i32 = 104;
+/// The search field's preferred width. It is centred in the top bar and shrinks when the
+/// output cannot spare this much between Home and Help.
+pub const SEARCH_WIDTH: i32 = 520;
+/// The recent-apps strip under the search field: icon plus name, one row.
+pub const RECENTS_HEIGHT: i32 = 76;
+/// One recent application in that strip.
+pub const RECENT_CHIP_WIDTH: i32 = 76;
 pub const TILE_RADIUS: i32 = 8;
 pub const WELL_RADIUS: i32 = 5;
 pub const CHIP_RADIUS: i32 = 4;

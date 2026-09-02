@@ -70,7 +70,7 @@ fn feed_json(json: &str) -> Result<DrawerFeed> {
     let volumes: Vec<VolumeInfo> =
         serde_json::from_str(json).context("parsing Files.Volumes1.List volumes_json")?;
     if volumes.is_empty() {
-        return Ok(DrawerFeed::new("no volumes", Vec::new()));
+        return Ok(DrawerFeed::vacant("no volumes"));
     }
     // The glance is how much room is left, not how many disks there are: a count of volumes is
     // never the reason anyone looks at this drawer.

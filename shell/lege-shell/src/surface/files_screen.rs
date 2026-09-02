@@ -23,6 +23,7 @@ use pixelkit_text::Align;
 use pixelkit_ui::Ui;
 
 use lege_field::Representation;
+use lege_types::action::ActionDecl;
 
 use crate::drawers::DrawerFeed;
 use crate::file_browser::BrowserSources;
@@ -85,18 +86,8 @@ impl<'a> FilesData<'a> {
     /// The running file operation worth a line, as a label and a fraction, or `None` when
     /// nothing is running. A finished operation is not news; a running one is.
     fn running(self) -> Option<(&'a str, f32)> {
-        let feed = self.feed(Drawer::Operations)?;
-        let headline = feed.headline.as_str();
-        if !headline.contains("running") {
-            return None;
-        }
-        let percent = feed
-            .lines
-            .iter()
-            .filter_map(|line| percent_in(line))
-            .min()
-            .unwrap_or(0);
-        Some((headline, f32::from(percent) / 100.0))
+        let (label, percent) = self.feed(Drawer::Operations)?.progress.as_ref()?;
+        Some((label.as_str(), f32::from(*percent) / 100.0))
     }
 }
 
@@ -107,14 +98,6 @@ fn file_name_of(target: &str) -> &str {
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(target)
-}
-
-/// The percentage an operations row reports. The rows are rendered by `drawers::operations` as
-/// `state  nn%  done/total  summary`, so the figure is the token ending in `%`.
-fn percent_in(line: &str) -> Option<u8> {
-    line.split_whitespace()
-        .find_map(|token| token.strip_suffix('%'))
-        .and_then(|digits| digits.parse().ok())
 }
 
 /// Draw the object into `rect` at `rung`, returning what the pointer asked for.
@@ -284,8 +267,10 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
         // The trash is the one condition that carries a control rather than only a count: it is
         // the only one whose remedy is a single verb. It goes through `Files.Trash1`, which
         // journals it, so Home never keeps its own idea of what is in the trash.
+        let empty_label =
+            lege_types::action::action("trash.empty").map_or("Empty", ActionDecl::control_label);
         let (strip, control) = if drawer == Drawer::Trash {
-            let width = ui.text.measure("EMPTY", design::state_style(ui)) + ui.px(16);
+            let width = ui.text.measure(empty_label, design::state_style(ui)) + ui.px(16);
             let gap = ui.px(design::FILES_CHIP_GAP);
             let (control, rest) = strip.split_right((width + gap).min(strip.w / 2));
             (
@@ -345,7 +330,7 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
                 .stroke_rect(control, ui.scale.hairline(), design::EDGE);
             ui.label_styled(
                 control,
-                "EMPTY",
+                empty_label,
                 design::state_style(ui),
                 if hovered {
                     design::DANGER
@@ -371,7 +356,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
     if top + row * 2 <= inner.bottom() {
         ui.label_styled(
             Rect::new(inner.x, top, inner.w, row),
-            "RECENT",
+            "Recent",
             design::section_label_style(ui),
             design::TEXT_FAINT,
             Align::Left,
@@ -435,21 +420,12 @@ fn conditions(data: FilesData<'_>) -> Vec<(Drawer, String)> {
         let Some(feed) = data.feed(drawer) else {
             continue;
         };
-        if !feed.available || is_nothing(&feed.headline) {
+        if !feed.available || feed.empty {
             continue;
         }
         rows.push((drawer, feed.headline.clone()));
     }
     rows
-}
-
-/// Whether a headline reports an empty drawer. The drawer renderers each choose their own word
-/// for it, and they are all here.
-fn is_nothing(headline: &str) -> bool {
-    matches!(
-        headline,
-        "empty" | "nothing" | "nothing yet" | "no volumes" | "nothing running or recent"
-    )
 }
 
 /// One running operation as a labelled bar. Accent means *activity* here, as everywhere else in
@@ -559,7 +535,8 @@ mod tests {
                     "copying     70%  7 B/10 B  Copy a to b".into(),
                     "copying     40%  4 B/10 B  Copy c to d".into(),
                 ],
-            ),
+            )
+            .with_progress("2 running of 3", 40),
         )]);
         let nowhere = nowhere();
         let data = FilesData {
@@ -577,8 +554,8 @@ mod tests {
     #[test]
     fn a_condition_row_appears_only_while_it_is_true() {
         let quiet = feeds(&[
-            (Drawer::Downloads, DrawerFeed::new("nothing", Vec::new())),
-            (Drawer::Trash, DrawerFeed::new("empty", Vec::new())),
+            (Drawer::Downloads, DrawerFeed::vacant("nothing")),
+            (Drawer::Trash, DrawerFeed::vacant("empty")),
         ]);
         assert!(
             conditions(FilesData {

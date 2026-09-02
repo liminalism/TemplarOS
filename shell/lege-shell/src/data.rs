@@ -330,7 +330,6 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
     let Ok(proxy) = LifecycleProxy::new(&connection).await else {
         return WidgetSnapshot::unavailable("Session — Lifecycle1 unavailable");
     };
-    let mut detail = Vec::new();
     let mut refused = Vec::new();
     let mut reachable = false;
     for (label, action, verdict) in [
@@ -341,20 +340,12 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
         match verdict {
             Ok(verdict) => {
                 reachable = true;
-                // logind's own vocabulary, kept distinct: "challenge" is not "no".
-                let meaning = match verdict.as_str() {
-                    "yes" => "ready",
-                    "no" => "refused by policy",
-                    "na" => "not supported",
-                    "challenge" => "needs authentication",
-                    other => other,
-                };
                 // Only a settled no. "challenge" means logind would authenticate the user, which
-                // is a working control with a step in front of it, not a refused one.
+                // is a working control with a step in front of it, not a refused one. The
+                // verdicts dim those controls; they are not the tile's body.
                 if matches!(verdict.as_str(), "no" | "na") {
                     refused.push(action.to_owned());
                 }
-                detail.push(format!("{label} — {meaning}"));
             }
             Err(error) => tracing::debug!(%error, %label, "Lifecycle1 query failed"),
         }
@@ -365,7 +356,7 @@ pub async fn fetch_session_widget() -> crate::surface::widgets::WidgetSnapshot {
     let user = std::env::var("USER").unwrap_or_else(|_| "signed in".to_owned());
     WidgetSnapshot {
         headline: user,
-        detail,
+        detail: vec!["Lock and leave from here".to_owned()],
         available: true,
         refused,
     }

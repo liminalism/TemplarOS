@@ -41,7 +41,7 @@ pub fn render_projects(projects: &[ProjectRow]) -> String {
 
 pub fn feed_projects(projects: &[ProjectRow]) -> DrawerFeed {
     if projects.is_empty() {
-        return DrawerFeed::new("none yet", Vec::new());
+        return DrawerFeed::vacant("none yet");
     }
     let open = projects
         .iter()

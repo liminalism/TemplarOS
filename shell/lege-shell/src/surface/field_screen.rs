@@ -183,6 +183,9 @@ pub struct FieldData<'a> {
     /// Whether the application registry answered. A launcher that cannot reach it says so rather
     /// than showing an empty list, which reads as "nothing is installed".
     pub apps_available: bool,
+    /// Recently launched applications, newest first, already resolved against `apps`. Empty on a
+    /// cold session; the strip under search is then simply not drawn.
+    pub recents: &'a [&'a crate::app_search::AppEntry],
     /// Each widget's current content, keyed by `TileKind::System`'s probe. Absent means the
     /// first fetch has not landed; see `crate::surface::widgets` for why a widget that cannot
     /// reach its service reports that rather than showing a zero.
@@ -578,10 +581,16 @@ impl FieldScreen {
 
         self.expire_notice(data.now_ms);
 
-        let (bar, below_bar) = area
-            .inset(ui.px(design::FIELD_INSET))
-            .split_top(ui.px(design::TOP_BAR_HEIGHT));
-        self.draw_search_bar(ui, bar, data, &mut actions);
+        let inset = area.inset(ui.px(design::FIELD_INSET));
+        let recents_visible = self.recents_visible(data);
+        let chrome_h = ui.px(design::TOP_BAR_HEIGHT)
+            + if recents_visible {
+                ui.px(design::TOP_BAR_GAP) + ui.px(design::RECENTS_HEIGHT)
+            } else {
+                0
+            };
+        let (chrome, below_bar) = inset.split_top(chrome_h.min(inset.h));
+        self.draw_search_bar(ui, chrome, recents_visible, data, &mut actions);
         if self.help_open {
             self.draw_help_overlay(ui, area);
             return actions;
@@ -645,10 +654,7 @@ impl FieldScreen {
             let style = TextStyle::new(ui.theme.body.face, 13.0);
             ui.label_styled(
                 crumb.inset(ui.px(6)),
-                &format!(
-                    "HOME  ▸  {}   (Escape returns; Backspace moves a tile back out)",
-                    name.to_uppercase()
-                ),
+                &format!("Home  ▸  {name}"),
                 style,
                 ui.theme.text_dim,
                 Align::Left,
@@ -717,9 +723,9 @@ impl FieldScreen {
         let message = if self.zoomed.is_some() {
             "Empty project — drop tiles onto its tile on the field to fill it"
         } else if connected {
-            "Home Field — nothing here yet; open an application and it will appear"
+            "Search to launch, or open Files"
         } else {
-            "Home Field — not connected to the compositor's lege_shell_v1 protocol"
+            "Home is not connected to the compositor"
         };
         ui.label(
             area.inset(ui.px(12)),
@@ -857,7 +863,7 @@ impl FieldScreen {
                 ui.painter.fill_rect(at, design::ACCENT);
                 ui.label_styled(
                     at.inset(ui.px(8)),
-                    &label.to_uppercase(),
+                    label,
                     TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
                     0x00ff_ffff,
                     Align::Left,
@@ -886,15 +892,25 @@ impl FieldScreen {
         }
     }
 
+    fn recents_visible(&self, data: &FieldData<'_>) -> bool {
+        self.search.text().trim().is_empty() && !self.files_expanded && !data.recents.is_empty()
+    }
+
     #[allow(clippy::too_many_lines)]
     fn draw_search_bar(
         &mut self,
         ui: &mut Ui<'_>,
-        bar: Rect,
+        chrome: Rect,
+        recents_visible: bool,
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
         let gap = ui.px(design::TOP_BAR_GAP);
+        let bar = if recents_visible {
+            chrome.split_top(ui.px(design::TOP_BAR_HEIGHT)).0
+        } else {
+            chrome
+        };
         let (home, after_home) = bar.split_left(ui.px(design::HOME_WIDTH));
         if ui.input.hovering(home) {
             ui.painter
@@ -909,9 +925,11 @@ impl FieldScreen {
                 design::TEXT
             },
         );
+        let home_label = lege_types::action::action("home.reveal")
+            .map_or("Home", |declaration| declaration.control_label());
         ui.label_styled(
             home,
-            "HOME",
+            home_label,
             TextStyle::tracked(ui.theme.body.face, 13.0, 0.14),
             0x00f2_f4f6,
             Align::Centre,
@@ -936,17 +954,17 @@ impl FieldScreen {
         } else {
             0
         };
-        let (status, search_and_gap) = after_home.split_right(status_width);
-        let search_area = if status_width == 0 {
-            search_and_gap
+        let (status, mid) = after_home.split_right(status_width);
+        let mid = if status_width == 0 {
+            mid
         } else {
-            Rect::new(
-                search_and_gap.x,
-                search_and_gap.y,
-                (search_and_gap.w - gap).max(0),
-                search_and_gap.h,
-            )
+            Rect::new(mid.x, mid.y, (mid.w - gap).max(0), mid.h)
         };
+        // Centred in the bar, clamped so it never runs under Home or Help.
+        let search_w = ui.px(design::SEARCH_WIDTH).min(mid.w);
+        let ideal_x = bar.x + (bar.w - search_w) / 2;
+        let search_x = ideal_x.clamp(mid.x, mid.x + mid.w - search_w);
+        let search_area = Rect::new(search_x, mid.y, search_w, mid.h);
         if ui.input.take_click(search_area) {
             self.search_focused = true;
         }
@@ -989,9 +1007,7 @@ impl FieldScreen {
             crate::omnibox::Scope::Location(location) => {
                 format!("Search {} — Tab searches everything", location.label())
             }
-            crate::omnibox::Scope::Everything => {
-                "Search files, applications, projects and actions".to_owned()
-            }
+            crate::omnibox::Scope::Everything => "Search everything".to_owned(),
         };
         let previous_theme = ui.theme;
         ui.theme.background = design::SHELL;
@@ -1007,6 +1023,18 @@ impl FieldScreen {
 
         if status_width > 0 {
             Self::draw_information_row(ui, status, data, actions);
+        }
+
+        if recents_visible {
+            let recents_row = Rect::new(
+                search_area.x,
+                chrome.y + ui.px(design::TOP_BAR_HEIGHT) + gap,
+                search_area.w,
+                ui.px(design::RECENTS_HEIGHT).min(
+                    (chrome.bottom() - (chrome.y + ui.px(design::TOP_BAR_HEIGHT) + gap)).max(0),
+                ),
+            );
+            Self::draw_recents(ui, recents_row, data, actions);
         }
 
         // Whatever is typed goes to the file service, once the typing has stopped. The debounce
@@ -1025,6 +1053,96 @@ impl FieldScreen {
         self.omnibox_committed = committed;
         if widen {
             self.widen(data.now_ms);
+        }
+    }
+
+    /// Recently launched applications, as a row of chips under the search field. The COSMIC
+    /// app-library recent list, drawn where the empty search actually is.
+    fn draw_recents(
+        ui: &mut Ui<'_>,
+        area: Rect,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let chip_w = ui.px(design::RECENT_CHIP_WIDTH);
+        if chip_w <= 0 || area.h <= 0 {
+            return;
+        }
+        let max = usize::try_from((area.w / chip_w).max(0)).unwrap_or(0);
+        let shown: Vec<&crate::app_search::AppEntry> =
+            data.recents.iter().copied().take(max).collect();
+        if shown.is_empty() {
+            return;
+        }
+        let total = chip_w * i32::try_from(shown.len()).unwrap_or(0);
+        let start_x = area.x + (area.w - total) / 2;
+        let icon_size = ui
+            .px(36)
+            .min(chip_w - ui.px(12))
+            .min(area.h - ui.px(22))
+            .max(8);
+        for (index, app) in shown.iter().enumerate() {
+            let chip = Rect::new(
+                start_x + chip_w * i32::try_from(index).unwrap_or(0),
+                area.y,
+                chip_w,
+                area.h,
+            );
+            let hovered = ui.input.hovering(chip);
+            if hovered {
+                ui.painter.fill_rounded_rect(
+                    chip.inset(ui.px(2)),
+                    ui.px(design::CHIP_RADIUS),
+                    design::ACCENT_SOFT,
+                );
+            }
+            let icon = Rect::new(
+                chip.x + (chip.w - icon_size) / 2,
+                chip.y + ui.px(6),
+                icon_size,
+                icon_size,
+            );
+            if let Some(bitmap) = data.icons.get(&app.id.to_string()) {
+                ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
+            } else {
+                ui.painter.fill_rounded_rect_aa(
+                    ui.kernel,
+                    icon,
+                    ui.px(design::CHIP_RADIUS) as f32,
+                    design::ACCENT_SOFT,
+                    255,
+                );
+                let initial = app
+                    .label()
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string();
+                ui.label(icon, &initial, design::ACCENT, Align::Centre);
+            }
+            let name = Rect::new(
+                chip.x + ui.px(4),
+                icon.bottom() + ui.px(2),
+                (chip.w - ui.px(8)).max(0),
+                ui.px(16).min((chip.bottom() - icon.bottom()).max(0)),
+            );
+            if name.h > 0 {
+                ui.label_styled(
+                    name,
+                    app.label(),
+                    design::state_style(ui),
+                    if hovered {
+                        design::ACCENT
+                    } else {
+                        design::TEXT
+                    },
+                    Align::Centre,
+                );
+            }
+            if ui.input.take_click(chip) {
+                actions.push(FieldAction::Launch(app.id.clone()));
+            }
         }
     }
 
@@ -1113,7 +1231,7 @@ impl FieldScreen {
         if let Some(heading) = strip.heading {
             ui.label_styled(
                 Rect::new(heading.x + ui.px(12), heading.y, heading.w, heading.h),
-                "FILES",
+                "Files",
                 design::system_label_style(ui),
                 design::TEXT,
                 Align::Left,
@@ -1220,14 +1338,16 @@ impl FieldScreen {
     }
 
     fn draw_help_button(&mut self, ui: &mut Ui<'_>, area: Rect, gap: i32) -> Rect {
-        let (help, before_help) = area.split_right(ui.px(78).min(area.w / 4));
+        let help_label = lege_types::action::action("field.help")
+            .map_or("Help", |declaration| declaration.control_label());
+        let (help, before_help) = area.split_right(ui.px(64).min(area.w / 4));
         design::shell(ui, help, design::SHELL, design::EDGE, Elevation::Rest);
         if ui.input.hovering(help) {
             ui.painter.fill_rect(help.inset(1), design::ACCENT_SOFT);
         }
         ui.label_styled(
             help.inset(ui.px(6)),
-            "F1  HELP",
+            help_label,
             TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
             design::TEXT_DIM,
             Align::Centre,
@@ -1263,6 +1383,59 @@ impl FieldScreen {
         true
     }
 
+    /// The six things Home is for, in the order a person sitting down reaches for them.
+    ///
+    /// The cheat sheet below this is the complete action list. This is the first-run surface:
+    /// what this screen is, and where each first request goes, without having to scan every
+    /// declared verb.
+    fn draw_help_primer(ui: &mut Ui<'_>, area: Rect) {
+        const ROWS: [(&str, &str); 7] = [
+            ("Super", "Come back here from any window"),
+            ("Search", "Find files, applications, projects, and actions"),
+            ("Recents", "Applications you launched, under search"),
+            ("Files", "Every file on this machine"),
+            ("Session", "Lock, log out, or shut down"),
+            ("Settings", "Volume, brightness, and the rest"),
+            ("Right-click", "More for a tile or the field"),
+        ];
+        design::shell(ui, area, design::RECESSED, design::EDGE, Elevation::Rest);
+        let inner = area.inset(ui.px(12));
+        let heading_h = ui.px(22);
+        ui.label_styled(
+            Rect::new(inner.x, inner.y, inner.w, heading_h),
+            "How Home works",
+            TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
+            design::TEXT_FAINT,
+            Align::Left,
+        );
+        let body = Rect::new(
+            inner.x,
+            inner.y + heading_h,
+            inner.w,
+            (inner.h - heading_h).max(0),
+        );
+        let row_h = (body.h / ROWS.len() as i32).min(ui.px(20)).max(1);
+        let key_w = ui.px(96).min(body.w / 3);
+        for (index, (key, intent)) in ROWS.iter().enumerate() {
+            let row = Rect::new(body.x, body.y + index as i32 * row_h, body.w, row_h);
+            let (key_rect, rest) = row.split_left(key_w);
+            ui.label_styled(
+                key_rect,
+                key,
+                design::state_style(ui),
+                design::TEXT,
+                Align::Left,
+            );
+            ui.label_styled(
+                rest,
+                intent,
+                design::state_style(ui),
+                design::TEXT_DIM,
+                Align::Left,
+            );
+        }
+    }
+
     /// The action manifest rendered as product help, rather than copied into another list that
     /// can drift. Actions without an accelerator remain visible as deliberate on-screen routes.
     fn draw_help_overlay(&mut self, ui: &mut Ui<'_>, area: Rect) {
@@ -1279,8 +1452,8 @@ impl FieldScreen {
         let (close, title) = header.split_right(ui.px(116).min(header.w / 3));
         ui.label_styled(
             title,
-            "HOME HELP",
-            TextStyle::tracked(ui.theme.heading.face, 20.0, 0.10),
+            "Help",
+            TextStyle::tracked(ui.theme.heading.face, 20.0, 0.06),
             design::TEXT,
             Align::Left,
         );
@@ -1290,7 +1463,7 @@ impl FieldScreen {
         }
         ui.label_styled(
             close.inset(ui.px(6)),
-            "CLOSE  ·  F1",
+            "Close  ·  F1",
             design::state_style(ui),
             design::TEXT_DIM,
             Align::Centre,
@@ -1300,10 +1473,14 @@ impl FieldScreen {
             return;
         }
 
+        let (primer, rest) = content.split_top(ui.px(168).min(content.h / 3));
+        Self::draw_help_primer(ui, primer);
+        let gap = ui.px(12);
+        let content = Rect::new(rest.x, rest.y + gap, rest.w, (rest.h - gap).max(0));
+
         let columns = if content.w >= ui.px(880) { 3 } else { 2 };
         let category_count = lege_types::action::ActionCategory::ALL.len();
         let rows = category_count.div_ceil(columns);
-        let gap = ui.px(12);
         let cell_w = (content.w - gap * (columns as i32 - 1)).max(1) / columns as i32;
         let cell_h = (content.h - gap * (rows as i32 - 1)).max(1) / rows as i32;
 
@@ -1325,7 +1502,7 @@ impl FieldScreen {
             let heading_h = ui.px(24);
             ui.label_styled(
                 inner.split_top(heading_h).0,
-                &category.title().to_uppercase(),
+                category.title(),
                 TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
                 design::TEXT_FAINT,
                 Align::Left,
@@ -1344,10 +1521,9 @@ impl FieldScreen {
                     design::TEXT,
                     Align::Left,
                 );
-                let route = declaration.primary_chord().map_or_else(
-                    || "ON-SCREEN".to_owned(),
-                    |chord| chord.to_string().to_uppercase(),
-                );
+                let route = declaration
+                    .primary_chord()
+                    .map_or_else(|| "On screen".to_owned(), |chord| chord.to_string());
                 ui.label_styled(
                     accelerator,
                     &route,
@@ -1377,11 +1553,11 @@ impl FieldScreen {
         // The label comes from the action manifest, not from a string here, so the row and the
         // cheat sheet cannot end up calling the same capability two different things.
         let network_action = lege_types::action::action("network.open-control");
-        let network_label = network_action.map_or("NETWORK", |declaration| declaration.label);
+        let network_label = network_action.map_or("Network", |declaration| declaration.label);
         let network_label = if data.network_control_available {
-            network_label.to_uppercase()
+            network_label.to_owned()
         } else {
-            format!("{} —", network_label.to_uppercase())
+            format!("{network_label} —")
         };
         ui.label_styled(
             network.inset(ui.px(8)),
@@ -1426,11 +1602,7 @@ impl FieldScreen {
                 });
         if !all_accounted_for {
             let parked = data.toplevels.len().saturating_sub(live);
-            let summary = if activity.w >= ui.px(170) {
-                format!("{live} LIVE    {parked} PARKED")
-            } else {
-                format!("{live}L  {parked}P")
-            };
+            let summary = format!("{live} live · {parked} parked");
             ui.label_styled(
                 activity.inset(ui.px(8)),
                 &summary,
@@ -1469,10 +1641,7 @@ impl FieldScreen {
         let style = TextStyle::new(ui.theme.body.face, 13.0);
         ui.label_styled(
             crumb.inset(ui.px(6)),
-            &format!(
-                "HOME  ▸  {}   (Escape returns)",
-                self.files.location().label().to_uppercase()
-            ),
+            &format!("Home  ▸  {}", self.files.location().label()),
             style,
             ui.theme.text_dim,
             Align::Left,
@@ -2563,16 +2732,7 @@ impl FieldScreen {
             TileKind::Project { .. } if child_count > 0 => 64,
             _ => 0,
         };
-        let display_title = match &tile.kind {
-            TileKind::Project { .. } => format!("PROJECT · {}", tile.title.to_uppercase()),
-            // The Files object wears the system label, like the instruments: it is furniture the
-            // desktop always has, not something a person put there.
-            TileKind::System { .. } => tile.title.to_uppercase(),
-            TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
-                tile.title.to_uppercase()
-            }
-            _ => tile.title.clone(),
-        };
+        let display_title = tile.title.clone();
         let title_style = match &tile.kind {
             TileKind::Project { .. } | TileKind::System { .. } => design::system_label_style(ui),
             TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
@@ -2759,9 +2919,11 @@ impl FieldScreen {
                     );
                     ui.painter
                         .stroke_rect(park, ui.scale.hairline(), design::EDGE_STRONG);
+                    let park_label = lege_types::action::action("window.park")
+                        .map_or("Park", |declaration| declaration.control_label());
                     ui.label_styled(
                         park,
-                        "PARK",
+                        park_label,
                         TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
                         design::TEXT_DIM,
                         Align::Centre,
@@ -3353,6 +3515,7 @@ mod tests {
         doc: FieldDocument,
         toplevels: Vec<ShellToplevel>,
         apps: Vec<crate::app_search::AppEntry>,
+        recents: Vec<crate::app_search::AppEntry>,
         variants: HashMap<String, Vec<(String, String, String)>>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
@@ -3392,6 +3555,7 @@ mod tests {
                         "GNU Image Manipulation Program",
                     ),
                 ],
+                recents: Vec::new(),
                 variants: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
@@ -3434,6 +3598,7 @@ mod tests {
                 feeds: &drawer_feeds,
                 thumbnails: &empty_thumbnails,
             };
+            let recents: Vec<&crate::app_search::AppEntry> = self.recents.iter().collect();
             let data = FieldData {
                 notifications: &[],
                 field: &self.doc,
@@ -3454,6 +3619,7 @@ mod tests {
                 projects: &[],
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
+                recents: &recents,
                 clock_label: "SUN 24 AUG 18:43",
                 reduced_motion: false,
                 now_ms: self.now,
@@ -3597,15 +3763,18 @@ mod tests {
             + crate::surface::omnibox_screen::ROW_HEIGHT / 2
     }
 
-    /// The one search control, with nothing typed: every application, and clicking a row starts
-    /// it. This is what the launcher tile was, in the control that was already there.
+    /// Recents sit under the centred search field. An empty query is not a dropdown of every
+    /// application — that is what typing is for — and a chip launches the application it names.
     #[test]
-    fn the_omnibox_lists_every_application_and_a_row_launches_it() {
+    fn a_recent_chip_under_search_launches_that_application() {
         let mut h = Harness::new();
-        h.screen.search_focused = true;
+        h.recents = vec![app_entry("org.legeos.Files", "Files")];
         h.frame();
-        // Alphabetical with no query, so Files is the first row and GIMP the second.
-        let actions = h.click(W / 2, omnibox_row_y(0));
+        let search = h.screen.omnibox_anchor;
+        let chip_w = design::RECENT_CHIP_WIDTH;
+        let chip_x = search.x + (search.w - chip_w) / 2;
+        let recents_y = search.bottom() + design::TOP_BAR_GAP + design::RECENTS_HEIGHT / 2;
+        let actions = h.click(chip_x + chip_w / 2, recents_y);
         assert_eq!(
             actions,
             vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())],

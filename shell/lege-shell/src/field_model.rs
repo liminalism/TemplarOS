@@ -73,10 +73,10 @@ const SYSTEM_SHELF_SHARE: u16 = 4;
 /// The system widgets that fit on a `cols`x`rows` field, in declaration order.
 ///
 /// Declaration order is the priority order, and [`SYSTEM_WIDGETS`] is written accordingly: session
-/// and the launcher are what a desktop is unusable without, so on a field with room for only some
-/// of them they are the ones that stay. A readout that does not fit is not placed rather than
-/// squeezed in on top of the space windows need — a laptop screen that arrives with no room to
-/// work is a worse outcome than one that shows two instruments instead of five.
+/// is what a desktop is unusable without, so on a field with room for only some of them it is the
+/// one that stays. A readout that does not fit is not placed rather than squeezed in on top of
+/// the space windows need — a laptop screen that arrives with no room to work is a worse outcome
+/// than one that shows two instruments instead of three.
 fn system_widgets_that_fit(cols: u16, rows: u16) -> Vec<&'static str> {
     let budget = u32::from(cols) * u32::from(rows) / u32::from(SYSTEM_SHELF_SHARE.max(1));
     let mut spent = 0u32;
@@ -638,8 +638,8 @@ fn migrate_drawer_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
 }
 
 /// The system widgets Home always offers: Session, which is the only route out of a running
-/// session that does not involve killing the compositor from a virtual terminal; the launcher,
-/// which is the only route to an application with no window yet; and notifications.
+/// session that does not involve killing the compositor from a virtual terminal; notifications;
+/// and Settings, which is the hardware readout and the way into the rest.
 ///
 /// Add-only, like projects: a system tile is never removed by a merge, so a user who has moved
 /// or resized one keeps their arrangement. The landing is a shelf along the bottom, to the right

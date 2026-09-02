@@ -248,8 +248,11 @@ pub enum Requires {
 pub struct ActionDecl {
     /// Stable dotted identifier. Never shown to a person; never reused for another meaning.
     pub id: &'static str,
-    /// What a menu, a region label or a cheat sheet calls this.
+    /// What a menu or cheat sheet calls this. A complete phrase; the category is not repeated.
     pub label: &'static str,
+    /// What a widget region or compact chrome calls this, when the tile's own heading already
+    /// supplies the noun. `None` means [`Self::label`] is short enough to use in both places.
+    pub control: Option<&'static str>,
     pub category: ActionCategory,
     /// Accelerators, in the order a cheat sheet should list them. Empty is normal.
     pub chords: &'static [Chord],
@@ -266,6 +269,11 @@ impl ActionDecl {
     pub fn primary_chord(&self) -> Option<Chord> {
         self.chords.first().copied()
     }
+
+    /// The word a control on a tile uses. Falls back to [`Self::label`].
+    pub fn control_label(&self) -> &'static str {
+        self.control.unwrap_or(self.label)
+    }
 }
 
 /// Every declared action. Adding a row here is what makes an action exist for the menu, the
@@ -275,7 +283,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // ---- Navigation -------------------------------------------------------------------
     ActionDecl {
         id: "field.help",
-        label: "Show Home help",
+        label: "Help",
+        control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::bare(Key::Function(1))],
         cli_verb: None,
@@ -284,7 +293,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "home.reveal",
-        label: "Go home",
+        label: "Home",
+        control: None,
         category: ActionCategory::Navigation,
         // The bare tap is the primary route (`ROADMAP.md` M2: "a bare Super tap is the primary
         // route between windows and Home"); the other two exist because not every keyboard has
@@ -301,6 +311,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "home.pin-app",
         label: "Keep on Home",
+        control: None,
         category: ActionCategory::Navigation,
         // No chord: it applies to *this* application, and a payload-free chord has no way to say
         // which. The pointer route is the session tile's own menu row, which knows.
@@ -312,6 +323,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",
+        control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::ALT, Key::Tab)],
         cli_verb: None,
@@ -321,6 +333,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "window.cycle-backward",
         label: "Previous window",
+        control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::ALT_SHIFT, Key::Tab)],
         cli_verb: None,
@@ -329,7 +342,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.group-next",
-        label: "Next window in this group",
+        label: "Next in group",
+        control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Right)],
         cli_verb: None,
@@ -338,7 +352,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.group-previous",
-        label: "Previous window in this group",
+        label: "Previous in group",
+        control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Left)],
         cli_verb: None,
@@ -352,7 +367,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // a pointer, and the Super chord space stays free for held-gesture semantics.
     ActionDecl {
         id: "windows.arrange.focus",
-        label: "Arrange windows: focus",
+        label: "Focus",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -361,7 +377,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.arrange.halves",
-        label: "Arrange windows: halves",
+        label: "Halves",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -370,7 +387,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.arrange.thirds",
-        label: "Arrange windows: thirds",
+        label: "Thirds",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -379,7 +397,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.arrange.quarters",
-        label: "Arrange windows: grid",
+        label: "Grid",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -388,7 +407,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.arrange.main-and-stack",
-        label: "Arrange windows: main and stack",
+        label: "Main and stack",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -397,7 +417,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.arrange.cushion",
-        label: "Arrange windows: cushion",
+        label: "Cushion",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -407,6 +428,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "pane.new",
         label: "New shortcut pane",
+        control: None,
         category: ActionCategory::Field,
         chords: &[],
         cli_verb: None,
@@ -415,7 +437,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "windows.restore-arrangement",
-        label: "Restore window arrangement",
+        label: "Restore arrangement",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -424,7 +447,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.show-all",
-        label: "Show every window",
+        label: "Show all windows",
+        control: None,
         category: ActionCategory::Window,
         chords: &[Chord::new(Modifiers::CTRL_ALT, Key::Space)],
         cli_verb: None,
@@ -433,7 +457,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.escape-fullscreen",
-        label: "Escape fullscreen or modal",
+        label: "Leave fullscreen",
+        control: None,
         category: ActionCategory::Window,
         chords: &[Chord::new(Modifiers::CTRL_ALT, Key::Escape)],
         cli_verb: None,
@@ -442,7 +467,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.park",
-        label: "Park this window",
+        label: "Park",
+        control: None,
         category: ActionCategory::Window,
         // Compositor-owned so the one-workspace substitute remains available with the shell
         // dead, alongside show-all and the fallback switcher.
@@ -453,7 +479,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "window.close",
-        label: "Close this window",
+        label: "Close",
+        control: None,
         category: ActionCategory::Window,
         chords: &[],
         cli_verb: None,
@@ -464,7 +491,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // ---- Home Field -------------------------------------------------------------------
     ActionDecl {
         id: "field.undo",
-        label: "Undo the last change",
+        label: "Undo",
+        control: None,
         category: ActionCategory::Field,
         chords: &[Chord::new(Modifiers::CTRL, Key::Character('z'))],
         cli_verb: None,
@@ -473,7 +501,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "field.move",
-        label: "Move this tile",
+        label: "Move",
+        control: None,
         category: ActionCategory::Field,
         chords: &[Chord::bare(Key::Space)],
         cli_verb: None,
@@ -482,7 +511,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "field.resize",
-        label: "Resize this tile",
+        label: "Resize",
+        control: None,
         category: ActionCategory::Field,
         chords: &[Chord::bare(Key::Character('r'))],
         cli_verb: None,
@@ -491,7 +521,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "field.stash",
-        label: "Stash this tile on the shelf",
+        label: "Stash",
+        control: None,
         category: ActionCategory::Field,
         chords: &[Chord::bare(Key::Delete)],
         cli_verb: None,
@@ -502,7 +533,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // only until the next change, and nothing else on any surface could reach a shelved tile.
     ActionDecl {
         id: "field.restore",
-        label: "Bring shelved tiles back",
+        label: "Restore from shelf",
+        control: None,
         category: ActionCategory::Field,
         chords: &[Chord::new(Modifiers::CTRL_SHIFT, Key::Character('r'))],
         cli_verb: None,
@@ -515,7 +547,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // add-only and will never move a tile that already has a place.
     ActionDecl {
         id: "field.reset",
-        label: "Reset the field to its default layout",
+        label: "Reset Home",
+        control: None,
         category: ActionCategory::Field,
         chords: &[],
         cli_verb: None,
@@ -526,6 +559,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "network.open-control",
         label: "Network",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -534,7 +568,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "launcher.launch",
-        label: "Launch an application",
+        label: "Launch",
+        control: None,
         category: ActionCategory::System,
         // No accelerator: which application to start is a choice, not a chord. The launcher
         // widget's rows and the Home search bar are the pointer and keyboard routes to it.
@@ -546,6 +581,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "app.launch-variant",
         label: "Start this copy",
+        control: None,
         category: ActionCategory::System,
         // No accelerator, for the same reason `launcher.launch` has none: *which* copy is a
         // choice, and a chord cannot carry one. The pointer route is the application tile's own
@@ -557,7 +593,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "launcher.search",
-        label: "Find an application",
+        label: "Search",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -566,7 +603,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "launcher.show-all",
-        label: "Show all",
+        label: "Show all applications",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -576,6 +614,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "notifications.clear",
         label: "Clear notifications",
+        control: Some("Clear"),
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -595,6 +634,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.copy",
         label: "Copy",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -604,6 +644,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.cut",
         label: "Cut",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -613,6 +654,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.paste",
         label: "Paste",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -622,6 +664,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.trash",
         label: "Move to Trash",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -634,6 +677,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.rename",
         label: "Rename",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -643,6 +687,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.new-folder",
         label: "New folder",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -652,6 +697,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.properties",
         label: "Properties",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -661,6 +707,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "files.copy-path",
         label: "Copy path",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: None,
@@ -672,7 +719,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     // explain itself, and this is the one declared route from the glance to that window.
     ActionDecl {
         id: "settings.open",
-        label: "Settings",
+        label: "Open Settings",
+        control: Some("Open"),
         category: ActionCategory::System,
         // No chord: it opens a window, and nothing that opens a window is a keystroke away here.
         chords: &[],
@@ -691,6 +739,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "volume.decrease",
         label: "Quieter",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: Some("status quieter"),
@@ -700,6 +749,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "volume.increase",
         label: "Louder",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: Some("status louder"),
@@ -709,6 +759,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "volume.mute",
         label: "Mute",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: Some("status mute"),
@@ -720,6 +771,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "brightness.decrease",
         label: "Dimmer",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: Some("status dimmer"),
@@ -729,6 +781,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "brightness.increase",
         label: "Brighter",
+        control: None,
         category: ActionCategory::System,
         chords: &[],
         cli_verb: Some("status brighter"),
@@ -738,6 +791,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "trash.empty",
         label: "Empty Trash",
+        control: Some("Empty"),
         category: ActionCategory::System,
         // No chord, deliberately: nothing that cannot be undone is one keystroke away.
         chords: &[],
@@ -747,7 +801,8 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "session.lock",
-        label: "Lock the screen",
+        label: "Lock",
+        control: None,
         category: ActionCategory::Session,
         chords: &[],
         cli_verb: Some("session lock"),
@@ -757,6 +812,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "session.suspend",
         label: "Suspend",
+        control: None,
         category: ActionCategory::Session,
         chords: &[],
         cli_verb: Some("session suspend"),
@@ -766,6 +822,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "session.logout",
         label: "Log out",
+        control: None,
         category: ActionCategory::Session,
         chords: &[],
         cli_verb: Some("session logout"),
@@ -775,6 +832,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "session.reboot",
         label: "Restart",
+        control: None,
         category: ActionCategory::Session,
         chords: &[],
         cli_verb: Some("session reboot"),
@@ -784,6 +842,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     ActionDecl {
         id: "session.poweroff",
         label: "Shut down",
+        control: None,
         category: ActionCategory::Session,
         chords: &[],
         cli_verb: Some("session poweroff"),
@@ -886,6 +945,16 @@ mod tests {
                 declaration.id
             );
         }
+    }
+
+    #[test]
+    fn a_control_is_the_short_form_when_the_tile_already_names_the_noun() {
+        let settings = action("settings.open").expect("declared");
+        assert_eq!(settings.label, "Open Settings");
+        assert_eq!(settings.control_label(), "Open");
+        let lock = action("session.lock").expect("declared");
+        assert_eq!(lock.control_label(), lock.label);
+        assert_eq!(lock.label, "Lock");
     }
 
     #[test]

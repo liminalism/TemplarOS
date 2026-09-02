@@ -158,6 +158,16 @@ pub fn baseline_schema() -> SettingsSchema {
     });
     add_home_field_specs(&mut schema);
     schema.add(SettingSpec {
+        key: "shell.launcher.recent-apps".into(),
+        description: "Recently launched applications, newest first, shown under Home's search"
+            .into(),
+        default: SettingValue::StrList(Vec::new()),
+        choices: vec![],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
         key: "resources.mode".into(),
         description: "Resource governor mode".into(),
         default: SettingValue::Choice("observe-only".into()),
@@ -444,6 +454,13 @@ mod tests {
         assert_eq!(
             schema.validate("nope", &SettingValue::Bool(true)),
             Err(SettingError::UnknownKey("nope".into()))
+        );
+        assert_eq!(
+            schema.validate(
+                "shell.launcher.recent-apps",
+                &SettingValue::StrList(vec!["org.legeos.Files".into()])
+            ),
+            Ok(())
         );
     }
 

@@ -207,7 +207,7 @@ fn feed_parts(directories: &[PathBuf], queries: &[SavedQuery]) -> DrawerFeed {
         lines.push(format!("{:<40} saved query: {}", query.name, query.query));
     }
     if lines.is_empty() {
-        return DrawerFeed::new("nothing", Vec::new());
+        return DrawerFeed::vacant("nothing");
     }
     // A placeholder headline: the caller replaces it once it has counted the contents.
     DrawerFeed::new(

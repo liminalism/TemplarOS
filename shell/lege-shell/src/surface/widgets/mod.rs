@@ -124,9 +124,8 @@ pub struct WidgetDescriptor {
 ///
 /// Session is first because it is the one a desktop is unusable without: before it there was no
 /// route from a running session to a logged-out one that did not involve killing the compositor
-/// from a virtual terminal. Launcher is the second for the mirror-image reason: application tiles
-/// are derived from windows that already exist, so a freshly booted session had nothing on it to
-/// open anything *with*.
+/// from a virtual terminal. Notifications and Settings follow; launching is the search control,
+/// not a fourth tile.
 pub const WIDGETS: &[WidgetDescriptor] = &[
     WidgetDescriptor {
         id: "session",
@@ -332,7 +331,11 @@ pub fn draw_region_strip(
         };
         ui.painter
             .fill_rounded_rect(rect, ui.px(design::CHIP_RADIUS), fill);
-        let label = if armed { "CONFIRM" } else { declaration.label };
+        let label = if armed {
+            "Confirm"
+        } else {
+            declaration.control_label()
+        };
         ui.label_styled(rect, label, design::state_style(ui), ink, Align::Centre);
         if refused {
             continue;
@@ -449,10 +452,20 @@ mod tests {
     }
 
     #[test]
-    fn a_readout_arrives_no_larger_than_a_launcher() {
-        // The launcher needs rows to be a list. Three readings and a control row need no more,
-        // and the shelf is a strip along the bottom rather than a second desktop.
+    fn a_readout_arrives_as_a_strip_not_a_list() {
+        // Three readings and a control row need no more than a 3x2 strip along the bottom
+        // rather than a second desktop.
         assert_eq!(descriptor("settings").unwrap().preferred_span, (3, 2));
+    }
+
+    #[test]
+    fn a_widget_region_uses_the_short_control_when_the_heading_already_names_the_noun() {
+        let settings = descriptor("settings").expect("declared");
+        let open = settings.regions[0].declaration().expect("settings.open");
+        assert_eq!(open.control_label(), "Open");
+        let session = descriptor("session").expect("declared");
+        let lock = session.regions[0].declaration().expect("session.lock");
+        assert_eq!(lock.control_label(), "Lock");
     }
 
     /// The way in is the one control that survives every shrink: a tile too small for the steppers

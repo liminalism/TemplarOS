@@ -43,6 +43,12 @@ pub struct DrawerFeed {
     /// Whether the backing service answered. A drawer that cannot reach its service says so
     /// rather than showing a plausible zero.
     pub available: bool,
+    /// Whether this feed is an empty collection. Structured so a surface does not have to parse
+    /// the headline for "empty" / "nothing" / "nothing yet".
+    pub empty: bool,
+    /// A running operation's label and percent, when anything is still in flight. Structured so
+    /// the Files object does not have to recover progress from rendered text.
+    pub progress: Option<(String, u8)>,
 }
 
 impl DrawerFeed {
@@ -52,7 +58,29 @@ impl DrawerFeed {
             lines,
             row_targets: Vec::new(),
             available: true,
+            empty: false,
+            progress: None,
         }
+    }
+
+    /// An empty collection, with the word the drawer uses for that. Distinct from
+    /// [`Self::unavailable`]: nothing failed, there is simply nothing here.
+    pub fn vacant(headline: impl Into<String>) -> DrawerFeed {
+        DrawerFeed {
+            headline: headline.into(),
+            lines: Vec::new(),
+            row_targets: Vec::new(),
+            available: true,
+            empty: true,
+            progress: None,
+        }
+    }
+
+    /// Attach in-flight progress. The Files object reads this instead of parsing the listing.
+    #[must_use]
+    pub fn with_progress(mut self, label: impl Into<String>, percent: u8) -> DrawerFeed {
+        self.progress = Some((label.into(), percent));
+        self
     }
 
     /// What clicking the row at `index` should act on, if anything.
@@ -68,6 +96,8 @@ impl DrawerFeed {
             lines: Vec::new(),
             row_targets: Vec::new(),
             available: false,
+            empty: false,
+            progress: None,
         }
     }
 

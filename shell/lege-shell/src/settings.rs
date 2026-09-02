@@ -28,6 +28,10 @@ pub const PREVIEWS_KEY: &str = "shell.home-field.previews";
 pub const PREVIEW_RATE_KEY: &str = "shell.home-field.preview-rate";
 /// `shell.home-field.reduced-motion`.
 pub const REDUCED_MOTION_KEY: &str = "shell.home-field.reduced-motion";
+/// Recently launched applications, newest first. Not a Home Field layout key: it is launch
+/// history for the search strip, and lives under `shell.launcher.*` so the Settings Home Field
+/// page does not offer it as a control.
+pub const RECENT_APPS_KEY: &str = "shell.launcher.recent-apps";
 
 /// What a parked-session tile shows of its window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +84,15 @@ pub fn parse_choice(value_json: &str) -> Option<String> {
 pub fn parse_bool(value_json: &str) -> Option<bool> {
     let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
     value.get("value")?.as_bool()
+}
+
+/// The `value` of a `SettingValue` JSON payload as a list of strings.
+pub fn parse_str_list(value_json: &str) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(value_json).ok()?;
+    let list = value.get("value")?.as_array()?;
+    list.iter()
+        .map(|entry| entry.as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The Home Field's settings, each falling back to its schema default on its own.
@@ -172,6 +185,24 @@ pub async fn dock_grouping(client: &impl SettingsClient) -> DockGrouping {
         .unwrap_or(DockGrouping::ByApplication)
 }
 
+/// The recent-apps list, newest first. An unreadable setting is an empty list — a cold session,
+/// which is what the strip itself shows.
+pub async fn load_recent_apps(client: &impl SettingsClient) -> crate::recents::RecentApps {
+    let ids = client
+        .get(RECENT_APPS_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_str_list)
+        .unwrap_or_default();
+    crate::recents::RecentApps::from_ids(ids)
+}
+
+/// The `SettingValue` JSON `Settings1.Set` expects for the recent-apps list.
+pub fn recent_apps_json(ids: &[String]) -> String {
+    serde_json::json!({ "type": "str-list", "value": ids }).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +258,26 @@ mod tests {
         // The shell must draw something when sessiond is not up: the schema default, not an error.
         let fake = Fake(Err(()));
         assert_eq!(dock_grouping(&fake).await, DockGrouping::ByApplication);
+    }
+
+    #[test]
+    fn a_str_list_payload_round_trips_the_recent_ids() {
+        let json = recent_apps_json(&[
+            "org.legeos.Files".to_owned(),
+            "org.legeos.Terminal".to_owned(),
+        ]);
+        assert_eq!(
+            parse_str_list(&json),
+            Some(vec![
+                "org.legeos.Files".to_owned(),
+                "org.legeos.Terminal".to_owned()
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_recents_are_an_empty_list_not_an_error() {
+        let fake = Fake(Err(()));
+        assert!(load_recent_apps(&fake).await.ids().is_empty());
     }
 }

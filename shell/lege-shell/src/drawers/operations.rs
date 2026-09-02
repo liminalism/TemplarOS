@@ -149,17 +149,17 @@ pub fn render_operations(operations: &[Operation]) -> String {
 
 pub fn feed_operations(operations: &[Operation]) -> DrawerFeed {
     if operations.is_empty() {
-        return DrawerFeed::new("nothing running or recent", Vec::new());
+        return DrawerFeed::vacant("nothing running or recent");
     }
     // What matters at a glance is whether anything is *still going*, not how many have ever run.
-    let running = operations
+    let in_flight: Vec<&Operation> = operations
         .iter()
         .filter(|operation| operation.percent() < 100 && operation.error.is_none())
-        .count();
-    let headline = if running == 0 {
+        .collect();
+    let headline = if in_flight.is_empty() {
         format!("{} finished", operations.len())
     } else {
-        format!("{running} running of {}", operations.len())
+        format!("{} running of {}", in_flight.len(), operations.len())
     };
     let lines = operations
         .iter()
@@ -182,7 +182,11 @@ pub fn feed_operations(operations: &[Operation]) -> DrawerFeed {
             line
         })
         .collect();
-    DrawerFeed::new(headline, lines)
+    let feed = DrawerFeed::new(headline.clone(), lines);
+    match in_flight.iter().map(|operation| operation.percent()).min() {
+        Some(percent) => feed.with_progress(headline, percent),
+        None => feed,
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +251,14 @@ mod tests {
             "the glance says whether anything is still going: {}",
             feed.headline
         );
+        assert_eq!(
+            feed.progress
+                .as_ref()
+                .map(|(label, percent)| (label.as_str(), *percent)),
+            Some(("1 running of 3", 50)),
+            "progress is a field, not a word recovered from the listing"
+        );
+        assert!(!feed.empty);
         let lines = &feed.lines;
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("running"));
@@ -258,6 +270,9 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_recent_is_said_plainly() {
+        let empty = feed(&FakeOperations("[]"), 10).await.unwrap();
+        assert!(empty.empty);
+        assert!(empty.progress.is_none());
         assert_eq!(
             render(&FakeOperations("[]"), 10).await.unwrap(),
             "nothing running or recent"

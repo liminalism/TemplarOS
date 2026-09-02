@@ -37,7 +37,7 @@ pub fn render(toplevels: &[ShellToplevel]) -> String {
 pub fn feed(toplevels: &[ShellToplevel]) -> DrawerFeed {
     let shelved = shelved(toplevels);
     if shelved.is_empty() {
-        return DrawerFeed::new("nothing shelved", Vec::new());
+        return DrawerFeed::vacant("nothing shelved");
     }
     let headline = format!(
         "{} shelved",

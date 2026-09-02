@@ -31,6 +31,7 @@ use crate::surface::file_browser::FileBrowserData;
 use crate::surface::fonts;
 
 /// Render the Home Field at `width`x`height` logical pixels and write it to `path` as a PNG.
+#[allow(clippy::too_many_lines)]
 pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     anyhow::ensure!(
         width >= 320 && height >= 240,
@@ -123,6 +124,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         projects: &projects,
         actions: lege_types::action::MANIFEST,
         file_search: None,
+        recents: &[],
         clock_label: &clock_label,
         reduced_motion: true,
         now_ms: 0,
@@ -222,8 +224,17 @@ mod tests {
         widgets.insert(
             "session".to_owned(),
             crate::surface::widgets::WidgetSnapshot {
-                headline: "Session ready".to_owned(),
-                detail: vec!["Balanced power".to_owned()],
+                headline: "dk".to_owned(),
+                detail: vec!["Lock and leave from here".to_owned()],
+                available: true,
+                refused: Vec::new(),
+            },
+        );
+        widgets.insert(
+            "notifications".to_owned(),
+            crate::surface::widgets::WidgetSnapshot {
+                headline: "quiet".to_owned(),
+                detail: Vec::new(),
                 available: true,
                 refused: Vec::new(),
             },
@@ -318,6 +329,24 @@ mod tests {
             } else {
                 Vec::new()
             };
+        let recent_entries: Vec<crate::app_search::AppEntry> = [
+            ("org.legeos.Files", "Files"),
+            ("org.legeos.Terminal", "Terminal"),
+        ]
+        .into_iter()
+        .map(|(id, name)| crate::app_search::AppEntry {
+            id: id.parse().unwrap(),
+            name: name.to_owned(),
+            desktop_file_id: String::new(),
+            icon: String::new(),
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            no_display: false,
+            logical: String::new(),
+            variants: 1,
+        })
+        .collect();
+        let recents: Vec<&crate::app_search::AppEntry> = recent_entries.iter().collect();
         let data = FieldData {
             notifications: &[],
             field: &field,
@@ -338,6 +367,7 @@ mod tests {
             projects: &projects,
             actions: lege_types::action::MANIFEST,
             file_search: None,
+            recents: &recents,
             clock_label: "Thu 27 Aug 10:15",
             reduced_motion: true,
             now_ms: 0,
@@ -383,7 +413,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xac34_43f6_2a37_c82c,
+            hash, 0x3332_498f_9631_8e81,
             "review the Home Field pixels before updating this baseline"
         );
     }

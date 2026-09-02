@@ -65,6 +65,9 @@ enum DataUpdate {
     /// keys the per-item dismiss and invoke controls act on.
     NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
     HomeFieldSettings(HomeFieldSettings),
+    /// The persisted recent-apps list. Applied only while the in-memory list is still empty,
+    /// so a launch that happened before the load landed is not overwritten by a stale read.
+    RecentApps(crate::recents::RecentApps),
     /// Something the user asked for did not happen, in words meant for them. Shown in the field's
     /// notice strip, the same place a successful operation reports itself.
     Notice(String),
@@ -243,6 +246,9 @@ struct ShellApp {
     /// one lift starts exactly one drag rather than one per frame.
     drag_exported: bool,
     field_settings: HomeFieldSettings,
+    /// Recently launched applications, newest first. Loaded once from Settings1; launches
+    /// update it in memory immediately so the strip does not wait on the round trip.
+    recent: crate::recents::RecentApps,
     /// Whether the one-time `HomeField1.Get` has been sent.
     field_requested: bool,
     apps: Vec<crate::app_search::AppEntry>,
@@ -336,6 +342,7 @@ impl ShellApp {
             clipboard: None,
             drag_exported: false,
             field_settings: HomeFieldSettings::default(),
+            recent: crate::recents::RecentApps::default(),
             field_requested: false,
             apps: Vec::new(),
             apps_available: false,
@@ -374,6 +381,21 @@ impl ShellApp {
     fn spawn_refresh_loop(&self) {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
+        self.runtime.spawn({
+            let tx = tx.clone();
+            let proxy = proxy.clone();
+            async move {
+                let recents = match crate::data::session().await {
+                    Ok(connection) => match SettingsProxy::new(&connection).await {
+                        Ok(settings) => crate::settings::load_recent_apps(&settings).await,
+                        Err(_) => crate::recents::RecentApps::default(),
+                    },
+                    Err(_) => crate::recents::RecentApps::default(),
+                };
+                let _ = tx.send(DataUpdate::RecentApps(recents));
+                let _ = proxy.send_event(Wake);
+            }
+        });
         self.runtime.spawn(async move {
             let mut ticks: u32 = 0;
             loop {
@@ -642,6 +664,11 @@ impl ShellApp {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
                         settings.throw && !settings.reduced_motion;
+                }
+                DataUpdate::RecentApps(loaded) => {
+                    if self.recent.ids().is_empty() {
+                        self.recent = loaded;
+                    }
                 }
                 DataUpdate::Treemap {
                     path,
@@ -1027,6 +1054,7 @@ impl ShellApp {
             feeds: &self.drawer_feeds,
             thumbnails: &self.file_thumbnails,
         };
+        let recents = self.recent.resolve(&self.apps);
         let data = FieldData {
             notifications: &self.notification_rows,
             field: &self.field,
@@ -1047,6 +1075,7 @@ impl ShellApp {
             projects: &self.projects,
             actions: lege_types::action::MANIFEST,
             file_search,
+            recents: &recents,
             clock_label: &clock_label,
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
@@ -1095,10 +1124,14 @@ impl ShellApp {
             }
 
             FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
-            FieldAction::Launch(app_id) => self.spawn_launch(app_id),
+            FieldAction::Launch(app_id) => {
+                self.record_recent(&app_id);
+                self.spawn_launch(app_id);
+            }
             // Named on purpose, so it goes straight to `Launcher1.Launch` for that exact copy
             // rather than back through the daemon's default-variant policy.
             FieldAction::LaunchVariant(app_id) => {
+                self.record_recent(&app_id);
                 self.runtime.spawn(async move {
                     let Ok(connection) = crate::data::session().await else {
                         return;
@@ -1289,6 +1322,25 @@ impl ShellApp {
         self.spawn_launch_with_args(app_id, Vec::new());
     }
 
+    fn record_recent(&mut self, app_id: &AppId) {
+        self.recent.record(app_id.as_str());
+        let json = crate::settings::recent_apps_json(self.recent.ids());
+        self.runtime.spawn(async move {
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = SettingsProxy::new(&connection).await else {
+                return;
+            };
+            if let Err(error) = proxy
+                .set(crate::settings::RECENT_APPS_KEY, &json, "lege-shell")
+                .await
+            {
+                tracing::debug!(%error, "persisting recent applications");
+            }
+        });
+    }
+
     /// Perform one declared action (`lege_types::action::MANIFEST`).
     ///
     /// This is the single place an action id becomes a thing that happens, so every surface —
@@ -1302,10 +1354,8 @@ impl ShellApp {
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
             "launcher.search" => self.field_screen.search_focused = true,
-            // "Show all" is the omnibox with nothing typed in it: an empty query is not "match
-            // nothing", it is every application, which is exactly the list the launcher tile
-            // used to be. Focused, because a list nobody can type into is a list you cannot
-            // narrow.
+            // "Show all" focuses the search with nothing typed. Recents already sit under the
+            // field; typing is what lists everything else.
             "launcher.show-all" => {
                 self.field_screen.search.set_text("");
                 self.field_screen.omnibox.highlighted = 0;

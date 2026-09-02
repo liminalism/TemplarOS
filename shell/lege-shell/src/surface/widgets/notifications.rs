@@ -130,7 +130,7 @@ pub fn draw(
         {
             let mut x = inner.x + ui.px(12);
             for (key, label) in row.actions.iter().take(3) {
-                let width = ui.px(18) + ui.px(7) * i32::try_from(label.len()).unwrap_or(12);
+                let width = ui.text.measure(label, design::state_style(ui)) + ui.px(16);
                 let chip = Rect::new(x, y, width.min(inner.w / 3), ui.px(CHIP_HEIGHT));
                 if chip.right() > inner.right() {
                     break;

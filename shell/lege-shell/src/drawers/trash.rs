@@ -74,7 +74,7 @@ pub async fn feed(client: &impl TrashClient, limit: u32) -> Result<DrawerFeed> {
 /// give — it knew what had been trashed, not what was still there.
 pub fn feed_entries(entries: &[TrashEntry], limit: u32) -> DrawerFeed {
     if entries.is_empty() {
-        return DrawerFeed::new("empty", Vec::new());
+        return DrawerFeed::vacant("empty");
     }
     let shown = entries.iter().take(limit as usize);
     let mut feed = DrawerFeed::new(

@@ -74,7 +74,7 @@ fn feed_json(json: &str) -> Result<DrawerFeed> {
     let entries: Vec<RecentEntry> =
         serde_json::from_str(json).context("parsing Files.Recents1.List entries_json")?;
     if entries.is_empty() {
-        return Ok(DrawerFeed::new("nothing yet", Vec::new()));
+        return Ok(DrawerFeed::vacant("nothing yet"));
     }
     let headline = DrawerFeed::count(entries.len(), "item", "items", "nothing yet");
     let lines = entries

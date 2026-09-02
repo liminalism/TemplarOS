@@ -974,7 +974,7 @@ impl ShellBridge {
             .context("flushing escape_fullscreen_or_modal")
     }
 
-    /// "Go home" (version 2): the field's HOME button reaches the same reveal as a bare Super
+    /// Home (version 2): the field's Home button reaches the same reveal as a bare Super
     /// tap and the compositor's Ctrl+Alt+H / Super+D fallbacks.
     pub fn reveal_home(&self, reveal: RevealHome) -> Result<()> {
         if self.manager.version() < 2 {

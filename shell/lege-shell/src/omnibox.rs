@@ -154,28 +154,13 @@ pub fn file_state(files: Option<FileResults<'_>>, query: &str) -> FileState {
 
 /// The ranked rows for `query` in `scope`, at most `limit` of them.
 ///
-/// An empty query is not "match nothing": on bare Home it is every application, which is what a
-/// launcher shows before anyone types.
+/// An empty query is not a list: recents live under the search field, and typing is what
+/// asks every source. A scoped empty query still keeps the way out of that location.
 pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) -> Vec<Row> {
     let needle = query.trim().to_lowercase();
     let mut rows: Vec<Row> = Vec::new();
 
     if needle.is_empty() {
-        // Nothing to rank, so nothing is ranked: the applications in their own stable
-        // alphabetical order, which is the list a person scans rather than reads.
-        rows.extend(
-            crate::app_search::all_offerable(sources.apps)
-                .into_iter()
-                .take(limit)
-                .map(|row| Row {
-                    hit: Hit::App {
-                        id: row.entry.id.clone(),
-                    },
-                    label: row.entry.label().to_owned(),
-                    detail: row.entry.id.as_str().to_owned(),
-                    kind: row.kind,
-                }),
-        );
         push_escape(&mut rows, scope);
         return rows;
     }
@@ -329,10 +314,9 @@ fn actions(actions: &'static [lege_types::action::ActionDecl], needle: &str) -> 
                 label: action.label.to_owned(),
                 // Its accelerator if it has one — the useful thing to learn from seeing an
                 // action in a list — and otherwise the id, which at least says where it lives.
-                detail: action.primary_chord().map_or_else(
-                    || action.id.to_owned(),
-                    |chord| chord.to_string().to_uppercase(),
-                ),
+                detail: action
+                    .primary_chord()
+                    .map_or_else(|| action.id.to_owned(), |chord| chord.to_string()),
                 kind,
             })
         })
@@ -550,16 +534,16 @@ mod tests {
         assert!(rows.iter().all(|row| row.hit != Hit::Everything));
     }
 
-    /// An empty query is "no filter", not "match nothing": it is every application, in the
-    /// stable alphabetical order a person scans.
+    /// An empty query on Home is not a list: recents sit under the search field, and typing
+    /// is what asks. A scoped empty query still has the way out.
     #[test]
-    fn an_empty_query_offers_every_application_in_a_stable_order() {
+    fn an_empty_query_on_home_is_not_a_dropdown() {
         let apps = vec![
             app("org.legeos.Terminal", "Terminal"),
             app("org.legeos.Files", "Files"),
         ];
         let rows = federate(sources(&apps, &[], None), "  ", &Scope::Everything, 12);
-        assert_eq!(labels(&rows), ["Files", "Terminal"]);
+        assert!(rows.is_empty(), "{rows:?}");
     }
 
     /// The whole list is a dropdown, not a page.

@@ -33,6 +33,7 @@ pub mod omnibox;
 pub mod pressure;
 pub mod previews;
 pub mod protocol;
+pub mod recents;
 pub mod settings;
 pub mod surface;
 pub mod wayland_bridge;
