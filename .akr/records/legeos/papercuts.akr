@@ -163,6 +163,17 @@ record legeos.papercut.cargo-deb-special-cases-the-crate-s-target/1 : papercut {
     created_at 2026-08-24
 }
 
+record legeos.papercut.cargo-run-q-p-xtask-check-packaging-fails-on-a/1 : papercut {
+    title "`cargo run -q -p xtask -- check-packaging` fails on a tree where `just…"
+    state verified
+    statement """
+        `cargo run -q -p xtask -- check-packaging` fails on a tree where `just preview-codecs` has not been run (or where target/ has been cleaned), reporting three legeos-filed asset sources under target/preview-codecs as missing. The gate is checking a build output rather than a source fact, so a clean checkout fails a check that has nothing wrong with it; the message could say to run `just preview-codecs` first.
+        """
+    observed_at git:392bd0d8a20b8ad0b43311cfde9ad58543c942a6
+    author "claude"
+    created_at 2026-09-02
+}
+
 record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercut {
     title "Cleaning an explicitly validated mktemp smoke directory, exec rejected…"
     state verified
@@ -800,4 +811,15 @@ record legeos.papercut.while-verifying-m2-its-structural-checks/1 : papercut {
     observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
     author "codex"
     created_at 2026-08-27
+}
+
+record legeos.papercut.xtask-interface-baseline-prints-froze-170/1 : papercut {
+    title "`xtask interface-baseline` prints \"froze 170 member(s)\" and the…"
+    state verified
+    statement """
+        `xtask interface-baseline` prints "froze 170 member(s)" and the following `check-interface-signatures` also prints 170, but the run before it had said "170 unchanged; 2 new" and the baseline diff added 2 lines. The count in the freeze message appears to be the pre-existing total rather than the new one, which makes it look as though the addition was not frozen.
+        """
+    observed_at git:392bd0d8a20b8ad0b43311cfde9ad58543c942a6
+    author "claude"
+    created_at 2026-09-02
 }

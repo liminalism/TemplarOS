@@ -84,6 +84,32 @@ record legeos.observation.home-hands-on-failures-diagnosed/1 : observation {
     derived_from [ @legeos.work.home-widget-foundations ]
 }
 
+record legeos.observation.home-refresh-costs-profiled-20260902/1 : observation {
+    title "Home's three-second refresh profiled: what was fixed, and the two service-side costs that remain"
+    state verified
+    scope [
+        path "services/lege-sessiond/src/apis/audio.rs",
+        path "services/lege-sessiond/src/apis/lifecycle.rs",
+        path "shell/lege-shell/**"
+    ]
+    statement """
+        Measured against a live sessiond on the development host, one pass of the Home Surface's three-second refresh loop cost about 82ms, of which: fetch_apps 34ms, fetch_settings_widget 19ms, fetch_session_widget 18ms, fetch_all(20) 5.5ms, fetch_projects 2.6ms, fetch_browser_sources 0.8ms. Separately, zbus's Connection::session() builds a new connection — socket, SASL handshake, Hello and a reader task — on every call, and the shell called it from three dozen places; caching one connection per tokio runtime took fetch_all from 14ms to 5.5ms.
+
+        Fixed in 392bd0d and f148046: the connection cache, joining the loop's independent fetches, joining the Session widget's three logind Can* questions (18ms to 13ms), and moving the application-catalogue read onto AppIdentity1.ApplicationsChanged plus a thirty-second backstop. An ordinary tick is now about 27ms.
+
+        Two costs remain and both are inside lege-sessiond, not the shell. Audio1.Get spawns `wpctl` as a child process on every call, which is most of fetch_settings_widget's remaining time; the Home Settings widget therefore spawns a process every three seconds for as long as the session lasts. Lifecycle1's Can* answers still cost about 13ms even when the three are asked together, which suggests the system-bus round trips to logind are being serialised inside sessiond rather than by the caller; logind's answer to whether this machine may shut down does not change between two three-second ticks and is a candidate for caching.
+        """
+    observed_at git:392bd0d8a20b8ad0b43311cfde9ad58543c942a6
+    method command
+    watches [
+        "shell/lege-shell/src/data.rs",
+        "shell/lege-shell/src/surface/app.rs",
+        "services/lege-sessiond/src/apis/audio.rs",
+        "services/lege-sessiond/src/apis/lifecycle.rs"
+    ]
+    derived_from [ @legeos.work.home-field ]
+}
+
 record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {
     title "A stashed tile has no route back onto the field, and a drawer already sits on the shelf unreachable"
     state superseded
