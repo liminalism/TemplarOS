@@ -192,7 +192,13 @@ mod providers {
         /// `(role, resolution-json)`
         fn report(&self) -> zbus::Result<Vec<(String, String)>>;
 
+        /// `(app_id, priority)`, best first — the choice for one role.
+        fn candidates(&self, role: &str) -> zbus::Result<Vec<(String, u32)>>;
+
         fn select(&self, role: &str, app_id: &str) -> zbus::Result<()>;
+
+        /// Drop the explicit selection and let priority decide again.
+        fn deselect(&self, role: &str) -> zbus::Result<()>;
 
         fn declare(&self, app_id: &str, role: &str, priority: u32) -> zbus::Result<()>;
 

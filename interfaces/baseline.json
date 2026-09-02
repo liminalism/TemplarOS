@@ -315,7 +315,9 @@
     },
     "org.legeos.Providers1": {
       "methods": {
+        "Candidates": "(s)->(a(su))",
         "Declare": "(ssu)->()",
+        "Deselect": "(s)->()",
         "Report": "()->(a(ss))",
         "Select": "(ss)->()",
         "Undeclare": "(s)->()"

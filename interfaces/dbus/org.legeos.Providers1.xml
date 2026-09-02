@@ -11,9 +11,27 @@
     <method name="Report">
       <arg name="report" type="a(ss)" direction="out"/>
     </method>
+    <!-- Every application that declares `role`, best first — the same order Report's
+         DefaultedByPriority resolution picks its winner from, so the head of this list is the
+         default. (app_id, priority). A chooser needs this: Report names the winner and, only
+         when nothing is explicitly selected, its losers, so from Report alone a client cannot
+         offer the alternatives to a role that *has* a selection. -->
+    <method name="Candidates">
+      <arg name="role" type="s" direction="in"/>
+      <arg name="candidates" type="a(su)" direction="out"/>
+    </method>
+    <!-- Pin `role` to `app_id`. Recorded in History1 with an Undo action, like every other
+         reversible decision the session makes on a person's behalf. -->
     <method name="Select">
       <arg name="role" type="s" direction="in"/>
       <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <!-- Drop the explicit selection and let priority decide again. Deliberately not the same as
+         selecting whichever application priority currently favours: that would pin today's
+         winner, and a higher-priority provider installed later would never take over. Also
+         recorded with an Undo action. -->
+    <method name="Deselect">
+      <arg name="role" type="s" direction="in"/>
     </method>
     <!-- An application (or its manifest/autostart-entry import) declares it can fill a role.
          priority: distribution defaults use 100, third parties 50.

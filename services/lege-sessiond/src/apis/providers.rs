@@ -200,6 +200,23 @@ impl ProvidersApi {
             .collect()
     }
 
+    /// Every application that declares `role`, best first: `(app_id, priority)`.
+    ///
+    /// `Report` alone cannot answer this. Its `DefaultedByPriority` resolution carries the
+    /// losers, but a role that *has* an explicit selection resolves to `Selected`, which carries
+    /// only the winner — so a client offering a person a choice would be able to show the
+    /// alternatives right up until they picked one, and never again.
+    async fn candidates(&self, role: &str) -> fdo::Result<Vec<(String, u32)>> {
+        let role = role_by_name(role)?;
+        Ok(self
+            .registry
+            .read()
+            .candidates(role)
+            .into_iter()
+            .map(|(app_id, priority)| (app_id.to_string(), priority))
+            .collect())
+    }
+
     async fn select(
         &self,
         role: &str,
@@ -209,9 +226,28 @@ impl ProvidersApi {
         let role_enum = role_by_name(role)?;
         let app_id = parse_app_id(app_id)?;
         self.store
-            .transaction(|tx| providers::select_within(tx, role_enum, &app_id))
+            .transaction(|tx| {
+                providers::apply_selection_within(tx, role_enum, Some(&app_id), "providers1-select")
+            })
             .map_err(failed)?;
         self.registry.write().select(role_enum, app_id);
+        let _ = emitter.changed(role.to_owned()).await;
+        Ok(())
+    }
+
+    /// Drop the explicit selection and let priority decide again.
+    async fn deselect(
+        &self,
+        role: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let role_enum = role_by_name(role)?;
+        self.store
+            .transaction(|tx| {
+                providers::apply_selection_within(tx, role_enum, None, "providers1-deselect")
+            })
+            .map_err(failed)?;
+        self.registry.write().deselect(role_enum);
         let _ = emitter.changed(role.to_owned()).await;
         Ok(())
     }

@@ -1,5 +1,9 @@
 //! Declarative system-provider selection: one selected provider per exclusive role.
 
+use crate::{
+    change_log,
+    history::{Event, EventAction, EventId, EventKind, append_within},
+};
 use anyhow::{Context, Result};
 use lege_state::Store;
 use lege_types::{AppId, ProviderCapability, ProviderRole};
@@ -52,6 +56,27 @@ impl ProviderRegistry {
 
     pub fn select(&mut self, role: ProviderRole, app_id: AppId) {
         self.selections.insert(role, app_id);
+    }
+
+    /// Drop an explicit selection, returning the role to whatever priority decides.
+    ///
+    /// Not the same as selecting the application that priority would have picked: that would
+    /// pin today's winner, so a later-installed higher-priority provider would not take over.
+    pub fn deselect(&mut self, role: ProviderRole) -> Option<AppId> {
+        self.selections.remove(&role)
+    }
+
+    /// Every application that declares `role`, best first — the same order [`Self::resolve`]
+    /// picks a default from, so a chooser built on this shows the default at the top.
+    ///
+    /// Priority is carried alongside because it is the reason for the order; a chooser that
+    /// showed the order without it would be asking a person to trust an arrangement it will not
+    /// explain.
+    pub fn candidates(&self, role: ProviderRole) -> Vec<(AppId, u32)> {
+        self.declaring(role)
+            .into_iter()
+            .map(|declaration| (declaration.app_id.clone(), declaration.capability.priority))
+            .collect()
     }
 
     fn declaring(&self, role: ProviderRole) -> Vec<&Declaration> {
@@ -226,6 +251,99 @@ pub fn select_within(
         .context("invalid app id previously stored as a provider selection")
 }
 
+/// Change who fills `role` — to `choice`, or back to automatic when it is `None` — and journal
+/// it, so `History1` shows the change and `History1.Undo` can put it back.
+///
+/// The `providers.selection` undo applier has existed in the daemon's dispatcher since the
+/// change_log was introduced; nothing wrote an entry for it to reverse. This is that writer, and
+/// it is the only path a caller should take to change a selection: `select_within` and
+/// `deselect_within` persist the row but leave no record, so a selection made through them is
+/// one a person cannot see happen and cannot take back.
+///
+/// `None` is a real old value in the journal — it means the role was on automatic — which is
+/// exactly what [`revert_selection_within`] reads to decide between restoring a pin and removing
+/// one.
+pub fn apply_selection_within(
+    tx: &Transaction<'_>,
+    role: ProviderRole,
+    choice: Option<&AppId>,
+    origin: &str,
+) -> Result<EventId> {
+    let previous = match choice {
+        Some(app_id) => select_within(tx, role, app_id)?,
+        None => deselect_within(tx, role)?,
+    };
+
+    let old_json = previous
+        .as_ref()
+        .map(|value| serde_json::to_string(value.as_str()))
+        .transpose()
+        .context("encoding the previous provider selection")?;
+    let new_json = choice
+        .map(|app_id| serde_json::to_string(app_id.as_str()))
+        .transpose()
+        .context("encoding the new provider selection")?;
+    let event_id = EventId::new();
+    let change_id = change_log::record_within(
+        tx,
+        "providers.selection",
+        role.as_str(),
+        old_json.as_deref(),
+        new_json.as_deref(),
+        event_id,
+    )?;
+    let message = match (choice, previous.as_ref()) {
+        (Some(app_id), _) => format!("{app_id} was selected to fill the {role} role."),
+        (None, Some(previous)) => format!(
+            "{role} was returned to choosing automatically; {previous} is no longer pinned."
+        ),
+        (None, None) => format!("{role} was already choosing automatically."),
+    };
+    append_within(
+        tx,
+        &Event {
+            id: event_id,
+            at_ms: lege_state::now_ms(),
+            kind: EventKind::ProviderChange,
+            app_id: choice.cloned().or(previous),
+            instance_id: None,
+            message,
+            cause: Some(origin.to_owned()),
+            actions: vec![EventAction {
+                label: "Undo".into(),
+                command: change_log::undo_command(change_id),
+            }],
+            reversible: true,
+        },
+    )?;
+    Ok(event_id)
+}
+
+/// Remove the explicit selection for `role`, returning the one that was there.
+///
+/// Returning the previous value is what lets the caller journal the change: `None` is a
+/// meaningful old value (the role was already on automatic) and has to survive into `change_log`
+/// as such, because that is what [`revert_selection_within`] reads to undo this.
+pub fn deselect_within(tx: &Transaction<'_>, role: ProviderRole) -> Result<Option<AppId>> {
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT app_id FROM provider_selections WHERE role = ?1",
+            params![role.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("reading previous provider selection")?;
+    tx.execute(
+        "DELETE FROM provider_selections WHERE role = ?1",
+        params![role.as_str()],
+    )
+    .context("removing a provider selection")?;
+    previous
+        .map(|value| value.parse::<AppId>())
+        .transpose()
+        .context("invalid app id previously stored as a provider selection")
+}
+
 /// Reverse a selection change recorded in the shared `change_log` (`History1.Undo`).
 /// `old_value_json` is a JSON string (the previous `AppId`) or `None` if the role had no
 /// selection before the change being undone.
@@ -268,6 +386,71 @@ mod tests {
     }
 
     #[test]
+    fn candidates_are_listed_best_first_with_the_priority_that_ordered_them() {
+        let mut registry = ProviderRegistry::default();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+        let tray: AppId = "org.legeos.NetworkTray".parse().unwrap();
+        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
+        registry.declare(tray.clone(), cap(ProviderRole::NetworkStatusUi, 100));
+
+        assert_eq!(
+            registry.candidates(ProviderRole::NetworkStatusUi),
+            vec![(tray, 100), (applet, 50)]
+        );
+    }
+
+    #[test]
+    fn a_role_nothing_declares_has_no_candidates() {
+        let registry = ProviderRegistry::default();
+        assert!(
+            registry
+                .candidates(ProviderRole::NetworkStatusUi)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn candidates_are_the_declarations_not_the_selection() {
+        let mut registry = ProviderRegistry::default();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+        let tray: AppId = "org.legeos.NetworkTray".parse().unwrap();
+        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
+        registry.declare(tray.clone(), cap(ProviderRole::NetworkStatusUi, 100));
+        registry.select(ProviderRole::NetworkStatusUi, applet.clone());
+
+        // Selecting the lower-priority one must not reorder or shorten the choice a person is
+        // offered — that would hide the alternative they just moved away from.
+        assert_eq!(
+            registry.candidates(ProviderRole::NetworkStatusUi),
+            vec![(tray, 100), (applet, 50)]
+        );
+    }
+
+    #[test]
+    fn deselecting_returns_the_role_to_priority_rather_than_pinning_the_winner() {
+        let mut registry = ProviderRegistry::default();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+        let tray: AppId = "org.legeos.NetworkTray".parse().unwrap();
+        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
+        registry.select(ProviderRole::NetworkStatusUi, applet.clone());
+        assert_eq!(
+            registry.deselect(ProviderRole::NetworkStatusUi),
+            Some(applet)
+        );
+
+        // A higher-priority provider installed afterwards now wins, which is the whole point of
+        // going back to automatic.
+        registry.declare(tray.clone(), cap(ProviderRole::NetworkStatusUi, 100));
+        assert_eq!(registry.provider(ProviderRole::NetworkStatusUi), Some(tray));
+    }
+
+    #[test]
+    fn deselecting_a_role_that_was_already_automatic_reports_no_previous_selection() {
+        let mut registry = ProviderRegistry::default();
+        assert_eq!(registry.deselect(ProviderRole::NetworkStatusUi), None);
+    }
+
+    #[test]
     fn exactly_one_network_indicator_may_autostart() {
         let mut registry = ProviderRegistry::default();
         let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
@@ -295,6 +478,132 @@ mod tests {
             registry.resolve(ProviderRole::Greeter),
             Resolution::NoProvider
         );
+    }
+
+    #[test]
+    fn selecting_through_the_journal_leaves_a_reversible_event() {
+        let store = Store::in_memory().unwrap();
+        let tray: AppId = "org.legeos.NetworkTray".parse().unwrap();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+
+        store
+            .transaction(|tx| {
+                declare_within(tx, &tray, &cap(ProviderRole::NetworkStatusUi, 100))?;
+                declare_within(tx, &applet, &cap(ProviderRole::NetworkStatusUi, 50))?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&applet), "test")?;
+                Ok(())
+            })
+            .unwrap();
+
+        let registry = load(&store).unwrap();
+        assert_eq!(
+            registry.provider(ProviderRole::NetworkStatusUi),
+            Some(applet.clone())
+        );
+
+        let events = {
+            use crate::history::HistoryStore;
+            crate::history::SqliteHistory::new(store.clone())
+                .recent(10)
+                .unwrap()
+        };
+        let event = events
+            .iter()
+            .find(|event| event.kind == crate::history::EventKind::ProviderChange)
+            .expect("the selection was recorded");
+        assert!(
+            event.reversible,
+            "a selection a person made must be undoable"
+        );
+        assert!(event.message.contains("org.gnome.NmApplet"));
+        assert_eq!(event.actions.len(), 1, "one Undo action");
+    }
+
+    #[test]
+    fn undoing_a_selection_restores_the_one_that_was_there_before_it() {
+        let store = Store::in_memory().unwrap();
+        let tray: AppId = "org.legeos.NetworkTray".parse().unwrap();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+        let mut registry = ProviderRegistry::default();
+        registry.declare(tray.clone(), cap(ProviderRole::NetworkStatusUi, 100));
+        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
+
+        store
+            .transaction(|tx| {
+                declare_within(tx, &tray, &cap(ProviderRole::NetworkStatusUi, 100))?;
+                declare_within(tx, &applet, &cap(ProviderRole::NetworkStatusUi, 50))?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&tray), "test")?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&applet), "test")?;
+                Ok(())
+            })
+            .unwrap();
+
+        // What the dispatcher does for a `providers.selection` entry, with the old value the
+        // second change journalled.
+        let old_value = serde_json::to_string(tray.as_str()).unwrap();
+        store
+            .transaction(|tx| {
+                revert_selection_within(
+                    tx,
+                    &mut registry,
+                    ProviderRole::NetworkStatusUi,
+                    Some(&old_value),
+                )
+            })
+            .unwrap();
+
+        assert_eq!(
+            load(&store).unwrap().selections[&ProviderRole::NetworkStatusUi],
+            tray
+        );
+    }
+
+    #[test]
+    fn undoing_the_first_selection_a_role_ever_had_returns_it_to_automatic() {
+        let store = Store::in_memory().unwrap();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+        let mut registry = ProviderRegistry::default();
+        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
+
+        store
+            .transaction(|tx| {
+                declare_within(tx, &applet, &cap(ProviderRole::NetworkStatusUi, 50))?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&applet), "test")?;
+                // No old value: the role had never been pinned before this.
+                revert_selection_within(tx, &mut registry, ProviderRole::NetworkStatusUi, None)
+            })
+            .unwrap();
+
+        assert!(load(&store).unwrap().selections.is_empty());
+    }
+
+    #[test]
+    fn returning_a_role_to_automatic_is_itself_recorded_and_undoable() {
+        let store = Store::in_memory().unwrap();
+        let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
+
+        store
+            .transaction(|tx| {
+                declare_within(tx, &applet, &cap(ProviderRole::NetworkStatusUi, 50))?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&applet), "test")?;
+                apply_selection_within(tx, ProviderRole::NetworkStatusUi, None, "test")?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(load(&store).unwrap().selections.is_empty());
+        let events = {
+            use crate::history::HistoryStore;
+            crate::history::SqliteHistory::new(store.clone())
+                .recent(10)
+                .unwrap()
+        };
+        let latest = events
+            .iter()
+            .find(|event| event.kind == crate::history::EventKind::ProviderChange)
+            .expect("the deselection was recorded");
+        assert!(latest.reversible);
+        assert!(latest.message.contains("choosing automatically"));
     }
 
     #[test]
