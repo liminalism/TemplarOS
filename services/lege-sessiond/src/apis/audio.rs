@@ -97,6 +97,22 @@ pub fn parse_volume(output: &str) -> Result<(u32, bool)> {
     Ok((percent, muted))
 }
 
+/// Where one step lands, given where the level is now.
+///
+/// A sink something else has boosted past 100% reads back above 100, and clamping the *result* to
+/// 0..=100 made both steppers do the same thing there: from 126%, "quieter" and "louder" both
+/// landed on 100. Pressing louder to get a quieter sink is the kind of control a person stops
+/// trusting.
+///
+/// So the ceiling is wherever the level already is, never lower than 100. Stepping down from a
+/// boosted sink walks down through the boosted range as it should; stepping up cannot push past
+/// where it already was, because boosting a sink is not something this control does — it is
+/// something that was done to it, and undoing it is the only direction that makes sense here.
+fn step_to(current: u32, delta: i32) -> u32 {
+    let ceiling = i64::from(current.max(100));
+    (i64::from(current) + i64::from(delta)).clamp(0, ceiling) as u32
+}
+
 /// `org.legeos.Audio1`.
 #[derive(Debug)]
 pub struct AudioApi {
@@ -175,7 +191,7 @@ impl AudioApi {
         if !state.present {
             return Err(Self::absent());
         }
-        let wanted = (i64::from(state.volume_percent) + i64::from(delta)).clamp(0, 100) as u32;
+        let wanted = step_to(state.volume_percent, delta);
         let landed = self.apply_volume(wanted).await.map_err(failed)?;
         let _ = Self::changed(&emitter).await;
         Ok(landed)
@@ -224,6 +240,29 @@ impl AudioApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stepping_down_from_a_boosted_sink_actually_goes_down() {
+        // 126% is what wpctl reports when something has boosted the sink; clamping the result to
+        // 100 made both steppers land there, so "louder" made it quieter.
+        assert_eq!(step_to(126, -5), 121);
+        assert_eq!(
+            step_to(126, 5),
+            126,
+            "this control never boosts a sink further"
+        );
+        assert_eq!(step_to(103, -5), 98);
+    }
+
+    #[test]
+    fn stepping_inside_the_ordinary_range_is_unchanged() {
+        assert_eq!(step_to(45, 5), 50);
+        assert_eq!(step_to(97, 5), 100);
+        assert_eq!(step_to(100, 5), 100);
+        assert_eq!(step_to(3, -5), 0);
+        assert_eq!(step_to(0, -5), 0);
+    }
+
     use std::sync::Mutex;
 
     /// Answers like `wpctl` and records what it was asked. Nothing in this module's tests changes

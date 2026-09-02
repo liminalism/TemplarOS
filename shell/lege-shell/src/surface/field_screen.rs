@@ -3015,14 +3015,19 @@ impl FieldScreen {
                 // The bound directory, dimly: the tile's title is the folder's name, so the
                 // content row says where it lives. Live contents come from activation — the
                 // paint path never reads the filesystem.
+                //
+                // In a band at the top, not the whole body: the path belongs under the title it
+                // qualifies, and a label given the body is centred in it.
                 let inner = content.inset(ui.px(12));
-                ui.label_styled(
-                    inner,
-                    &path.to_string_lossy(),
-                    design::state_style(ui),
-                    design::TEXT_DIM,
-                    Align::Left,
-                );
+                if let Some(band) = crate::surface::widgets::top_band(inner, ui.px(16)) {
+                    ui.label_styled(
+                        band,
+                        &path.to_string_lossy(),
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
+                    );
+                }
             }
             TileKind::Tray { tray_id } => {
                 let inner = content.inset(ui.px(12));

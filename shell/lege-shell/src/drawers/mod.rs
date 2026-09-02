@@ -88,12 +88,33 @@ impl DrawerFeed {
         self.row_targets.get(index)?.as_deref()
     }
 
-    /// A feed for a service that did not answer: the reason is the headline, so it is legible at
-    /// the smallest rung rather than hidden in a detail line.
+    /// A feed for a service that did not answer, where the whole sentence is the headline.
+    ///
+    /// Prefer [`Self::unreachable`] when there is a reason worth keeping: a headline is drawn on
+    /// one line at the tile's width, so a long one is truncated with an ellipsis, and the part
+    /// that gets cut is the end — which is exactly where the reason is.
     pub fn unavailable(reason: impl Into<String>) -> DrawerFeed {
         DrawerFeed {
             headline: reason.into(),
             lines: Vec::new(),
+            row_targets: Vec::new(),
+            available: false,
+            empty: false,
+            progress: None,
+        }
+    }
+
+    /// A service that did not answer, with the short fact in the headline and the reason under
+    /// it.
+    ///
+    /// "Drives — service unavailable: no reply from Files.Volumes1" put in a headline came out as
+    /// "Drives — service unavaila…", which tells a person nothing they did not already know from
+    /// looking at an empty tile. The subject fits at every rung; the reason gets a line of its
+    /// own, where there is room to read it.
+    pub fn unreachable(subject: impl Into<String>, reason: impl Into<String>) -> DrawerFeed {
+        DrawerFeed {
+            headline: format!("{} — unavailable", subject.into()),
+            lines: vec![reason.into()],
             row_targets: Vec::new(),
             available: false,
             empty: false,

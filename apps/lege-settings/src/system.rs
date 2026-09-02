@@ -167,6 +167,13 @@ pub(crate) fn volume_line(state: Option<&AudioState>) -> String {
             "No audio service on this machine; nothing to set".to_owned()
         }
         Some(state) if state.muted => format!("Muted at {}%", state.volume_percent),
+        // A reading over full scale is something else's doing, not this page's, and a person who
+        // sees 126% next to a full track deserves to be told which of the two is lying.
+        Some(state) if state.boosted() => {
+            "Boosted past full scale by something else; the steppers bring it back down, and \
+             cannot push it higher"
+                .to_owned()
+        }
         Some(_) => "Default output".to_owned(),
     }
 }
@@ -232,6 +239,15 @@ pub(crate) async fn render(connection: &zbus::Connection) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_boosted_reading_is_explained_rather_than_left_next_to_a_full_track() {
+        let state: AudioState =
+            serde_json::from_str(r#"{"present":true,"volume_percent":126,"muted":false}"#).unwrap();
+        let line = volume_line(Some(&state));
+        assert!(line.contains("Boosted past full scale"), "{line}");
+        assert!(line.contains("cannot push it higher"), "{line}");
+    }
 
     /// A fixture standing in for all three interfaces. Nothing in this module's tests touches a
     /// bus, a sysfs node or this machine's actual volume.

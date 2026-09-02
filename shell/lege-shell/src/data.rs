@@ -108,11 +108,12 @@ pub async fn fetch_drawer(drawer: Drawer, limit: u32) -> drawers::DrawerFeed {
     let connection = match session().await {
         Ok(connection) => connection,
         Err(message) => {
-            return DrawerFeed::unavailable(format!("{} — {message}", drawer.name()));
+            return DrawerFeed::unreachable(drawer.name(), message);
         }
     };
-    let failed =
-        |what: &str, error: &anyhow::Error| DrawerFeed::unavailable(unavailable(what, error));
+    let failed = |what: &str, error: &anyhow::Error| {
+        DrawerFeed::unreachable(what, format!("service unavailable: {error:#}"))
+    };
 
     match drawer {
         Drawer::Recent => match FilesRecentsProxy::new(&connection).await {

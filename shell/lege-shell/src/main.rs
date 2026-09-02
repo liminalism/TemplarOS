@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_service_backed_drawer_degrades_to_one_readable_line_with_no_bus() {
+    async fn a_service_backed_drawer_degrades_to_a_subject_and_a_reason_with_no_bus() {
         // These tests describe the no-service path, which can only be observed when no service is
         // answering. A developer running the session — installed, or nested via
         // `.agent/scratch/nested-session.sh` — has a live `org.legeos.Session` and gets real
@@ -372,17 +372,22 @@ mod tests {
             return;
         }
         // Every one of these drawers must produce a sentence rather than panicking, hanging, or
-        // printing a zbus debug dump.
+        // printing a zbus debug dump — and it must be split so the tile can show it. The first
+        // line is the headline, drawn on one line at the tile's width; a reason appended to it
+        // was truncated away, which is why the reason now has a line of its own.
         for target in ["recent", "drives", "operations", "trash", "projects"] {
             let text = print_target(target, 5, (1920, 1080)).await.unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 2, "{target} did not degrade readably: {text}");
             assert!(
-                text.contains("unavailable"),
-                "{target} did not degrade readably: {text}"
+                lines[0].ends_with("— unavailable"),
+                "{target}'s headline must be short enough to survive a narrow tile: {}",
+                lines[0]
             );
-            assert_eq!(
-                text.lines().count(),
-                1,
-                "{target} printed more than one line"
+            assert!(
+                lines[1].contains("service unavailable"),
+                "{target} lost the reason: {}",
+                lines[1]
             );
         }
     }

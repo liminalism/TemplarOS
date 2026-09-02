@@ -355,46 +355,130 @@ fn draw_snapshot(
     rung: Representation,
 ) {
     let inner = body.inset(ui.px(10));
-    if inner.h > 0 {
-        match snapshot {
-            None => ui.label(inner, "…", design::TEXT_FAINT, Align::Left),
-            Some(snapshot) => {
-                let colour = if snapshot.available {
-                    design::TEXT
-                } else {
-                    design::TEXT_DIM
-                };
-                ui.label_styled(
+    if inner.h <= 0 {
+        return;
+    }
+    let headline_height = ui.px(22);
+    let line_height = ui.px(16);
+    let Some(headline_band) = top_band(inner, headline_height) else {
+        return;
+    };
+    match snapshot {
+        None => ui.label(headline_band, "…", design::TEXT_FAINT, Align::Left),
+        Some(snapshot) => {
+            let colour = if snapshot.available {
+                design::TEXT
+            } else {
+                design::TEXT_DIM
+            };
+            ui.label_styled(
+                headline_band,
+                &snapshot.headline,
+                design::measurement_style(ui),
+                colour,
+                Align::Left,
+            );
+            if rung >= Representation::Wide {
+                for (band, line) in snapshot_detail_bands(
                     inner,
-                    &snapshot.headline,
-                    design::measurement_style(ui),
-                    colour,
-                    Align::Left,
-                );
-                if rung >= Representation::Wide {
-                    let line_height = ui.px(16);
-                    for (index, line) in snapshot.detail.iter().enumerate() {
-                        let y = inner.y + line_height * (index as i32 + 1) + ui.px(6);
-                        if y + line_height > inner.bottom() {
-                            break;
-                        }
-                        ui.label_styled(
-                            Rect::new(inner.x, y, inner.w, line_height),
-                            line,
-                            design::state_style(ui),
-                            design::TEXT_DIM,
-                            Align::Left,
-                        );
-                    }
+                    headline_band,
+                    line_height,
+                    ui.px(6),
+                    snapshot.detail.len(),
+                )
+                .into_iter()
+                .zip(&snapshot.detail)
+                {
+                    ui.label_styled(
+                        band,
+                        line,
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
+                    );
                 }
             }
         }
     }
 }
 
+/// The band one line of content occupies at the top of a tile's body.
+///
+/// `Ui::label_styled` centres its text vertically in whatever rect it is given, so handing it the
+/// whole body leaves the one line worth reading floating in the middle of a tall tile — with any
+/// following lines, which are anchored from the top, drawn *above* it. A tile reads top to bottom
+/// like everything else, so content gets a band and not the body.
+///
+/// An empty-state message is the exception and is deliberately still centred: "empty — drop tiles
+/// here" is about the space, not a reading taken in it.
+///
+/// `None` when the body is too short to hold the line at all, which is a tile that should draw
+/// nothing rather than a clipped half-line.
+pub(crate) fn top_band(inner: Rect, headline_height: i32) -> Option<Rect> {
+    (inner.h >= headline_height)
+        .then(|| Rect::new(inner.x, inner.y, inner.w, headline_height.min(inner.h)))
+}
+
+/// One band per detail line that fits under the headline, in order. A line that would be clipped
+/// gets no band rather than half of one.
+fn snapshot_detail_bands(
+    inner: Rect,
+    headline: Rect,
+    line_height: i32,
+    gap: i32,
+    count: usize,
+) -> Vec<Rect> {
+    let mut bands = Vec::with_capacity(count);
+    let mut y = headline.bottom() + gap;
+    for _ in 0..count {
+        if y + line_height > inner.bottom() {
+            break;
+        }
+        bands.push(Rect::new(inner.x, y, inner.w, line_height));
+        y += line_height;
+    }
+    bands
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_headline_sits_at_the_top_of_the_body_not_in_the_middle_of_it() {
+        // A tall tile: the failing case was a headline centred in 180 pixels of body with the
+        // detail lines drawn above it.
+        let inner = Rect::new(10, 20, 280, 180);
+        let headline = top_band(inner, 22).expect("a headline fits");
+        assert_eq!(headline.y, inner.y);
+        assert_eq!(headline.h, 22);
+    }
+
+    #[test]
+    fn every_detail_line_falls_under_the_headline_in_order() {
+        let inner = Rect::new(10, 20, 280, 180);
+        let headline = top_band(inner, 22).unwrap();
+        let bands = snapshot_detail_bands(inner, headline, 16, 6, 3);
+        assert_eq!(bands.len(), 3);
+        assert!(bands[0].y >= headline.bottom());
+        assert!(bands[1].y >= bands[0].bottom());
+        assert!(bands[2].y >= bands[1].bottom());
+    }
+
+    #[test]
+    fn a_detail_line_that_would_be_clipped_is_left_out_rather_than_half_drawn() {
+        // Room for the headline and one line, asked for four.
+        let inner = Rect::new(10, 20, 280, 46);
+        let headline = top_band(inner, 22).unwrap();
+        let bands = snapshot_detail_bands(inner, headline, 16, 6, 4);
+        assert_eq!(bands.len(), 1);
+        assert!(bands[0].bottom() <= inner.bottom());
+    }
+
+    #[test]
+    fn a_body_too_short_for_a_headline_draws_none() {
+        assert!(top_band(Rect::new(0, 0, 100, 8), 22).is_none());
+    }
 
     #[test]
     fn every_declared_scroll_route_names_a_real_action_and_only_levels_have_one() {

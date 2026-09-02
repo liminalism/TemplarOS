@@ -62,12 +62,26 @@ impl AudioState {
         if !self.present {
             return "No audio".to_owned();
         }
+        let level = format!("{}%{}", self.volume_percent, self.boost_note());
         if self.muted {
             // The level is still worth saying: unmuting returns to it, and "Muted" alone leaves a
             // person unable to predict how loud that will be.
-            return format!("Muted · {}%", self.volume_percent);
+            return format!("Muted · {level}");
         }
-        format!("{}%", self.volume_percent)
+        level
+    }
+
+    /// Whether something has pushed the sink past its own full scale.
+    ///
+    /// WirePlumber reports a linear fraction that can exceed 1.0, and the service reports that
+    /// truthfully rather than clamping a reading. A person seeing "126%" with no explanation is
+    /// left to wonder whether the number or the machine is broken.
+    pub fn boosted(&self) -> bool {
+        self.present && self.volume_percent > 100
+    }
+
+    fn boost_note(&self) -> &'static str {
+        if self.boosted() { " (boosted)" } else { "" }
     }
 }
 
@@ -161,6 +175,38 @@ pub fn duration_minutes(minutes: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sink_boosted_past_full_scale_says_so_rather_than_showing_a_bare_number() {
+        let boosted = AudioState {
+            present: true,
+            volume_percent: 126,
+            muted: false,
+        };
+        assert!(boosted.boosted());
+        assert_eq!(boosted.headline(), "126% (boosted)");
+    }
+
+    #[test]
+    fn a_boosted_sink_that_is_muted_says_both() {
+        let state = AudioState {
+            present: true,
+            volume_percent: 126,
+            muted: true,
+        };
+        assert_eq!(state.headline(), "Muted · 126% (boosted)");
+    }
+
+    #[test]
+    fn full_scale_is_not_boosted() {
+        let state = AudioState {
+            present: true,
+            volume_percent: 100,
+            muted: false,
+        };
+        assert!(!state.boosted());
+        assert_eq!(state.headline(), "100%");
+    }
 
     /// The direction is said once. "discharging · 2 h 23 min remaining" is one fact twice, and on
     /// a tile it is one fact twice *and* truncated.

@@ -91,11 +91,10 @@ pub fn render_audio(state: &AudioState) -> String {
     if !state.present {
         return "volume     no audio control on this machine".to_owned();
     }
-    format!(
-        "volume     {}%{}",
-        state.volume_percent,
-        if state.muted { "  (muted)" } else { "" }
-    )
+    // The shared headline, not a second wording: `AudioState::headline` exists precisely so two
+    // clients rendering the same reading cannot disagree about how to say it — including the
+    // boosted case, which this used to print as a bare percentage over 100.
+    format!("volume     {}", state.headline())
 }
 
 pub fn render_backlight(state: &BacklightState) -> String {
@@ -201,7 +200,15 @@ mod tests {
         let audio = parse_audio(r#"{"present":true,"volume_percent":30,"muted":true}"#).unwrap();
         let rendered = render_audio(&audio);
         assert!(rendered.contains("30%"));
-        assert!(rendered.contains("(muted)"));
+        assert!(rendered.contains("Muted"));
+    }
+
+    #[test]
+    fn a_boosted_sink_says_why_the_number_is_over_a_hundred() {
+        let audio = parse_audio(r#"{"present":true,"volume_percent":126,"muted":false}"#).unwrap();
+        let rendered = render_audio(&audio);
+        assert!(rendered.contains("126%"), "{rendered}");
+        assert!(rendered.contains("boosted"), "{rendered}");
     }
 
     #[test]
