@@ -102,5 +102,5 @@ workspace = true
 name = "legeos-shell"
 section = "x11"
 priority = "optional"
-depends = "$auto, legeos-sessiond, legeos-filed"
+depends = "$auto, legeos-sessiond, legeos-filed, wl-clipboard"
 assets = [["target/release/lege-shell", "usr/bin/lege-shell", "755"]]
