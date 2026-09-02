@@ -197,8 +197,16 @@ pub(crate) fn mime_choice(mime: &str, current: Option<&str>, handlers: &[String]
 /// thousands, and a settings page is where a person revisits a choice they made, not where they
 /// browse the shared MIME database. Setting a default for a type that has none happens where the
 /// file is — the "open with" choice — which is what [`ChoiceScope`] models.
+///
+/// `with_handlers` decides whether each row's alternatives are fetched. They cost one call per
+/// type, and a real machine has around a hundred and fifty defaults imported from `.desktop`
+/// files, so doing it while the window is still being built delays every other page for a page
+/// nobody has asked for yet. Pass `false` for the first load — the rows are complete and correct
+/// without it, each offering the default it has and a way to clear it — and `true` when the page
+/// is opened, which is when the alternatives are what a person came for.
 pub(crate) async fn mime_choices_with<S: AssociationsSource>(
     source: &S,
+    with_handlers: bool,
 ) -> Result<Vec<MimeChoice>, String> {
     let mut defaults = match source.list_mime_defaults().await {
         Ok(defaults) => defaults,
@@ -207,7 +215,11 @@ pub(crate) async fn mime_choices_with<S: AssociationsSource>(
     defaults.sort();
     let mut choices = Vec::with_capacity(defaults.len());
     for (mime, app_id) in defaults {
-        let handlers = source.handlers(&mime).await.unwrap_or_default();
+        let handlers = if with_handlers {
+            source.handlers(&mime).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         choices.push(mime_choice(&mime, Some(&app_id), &handlers));
     }
     Ok(choices)
@@ -431,20 +443,42 @@ mod tests {
 
     #[tokio::test]
     async fn mime_choices_are_listed_in_name_order() {
-        let choices = mime_choices_with(&FakeAssociations {
-            mime_defaults: vec![
-                ("text/plain".to_owned(), "org.legeos.Editor".to_owned()),
-                ("application/pdf".to_owned(), "org.legeos.Reader".to_owned()),
-            ],
-            handlers: readers(),
-            ..FakeAssociations::default()
-        })
+        let choices = mime_choices_with(
+            &FakeAssociations {
+                mime_defaults: vec![
+                    ("text/plain".to_owned(), "org.legeos.Editor".to_owned()),
+                    ("application/pdf".to_owned(), "org.legeos.Reader".to_owned()),
+                ],
+                handlers: readers(),
+                ..FakeAssociations::default()
+            },
+            true,
+        )
         .await
         .unwrap();
         assert_eq!(
             choices.iter().map(|c| c.mime.as_str()).collect::<Vec<_>>(),
             vec!["application/pdf", "text/plain"]
         );
+    }
+
+    #[tokio::test]
+    async fn the_first_load_asks_for_the_defaults_and_nothing_else() {
+        // Without handlers a row still knows what is set and still offers a way out; what it does
+        // not have is the alternatives, which is a call per type the window has not been asked
+        // for yet.
+        let choices = mime_choices_with(
+            &FakeAssociations {
+                mime_defaults: vec![("application/pdf".to_owned(), "org.legeos.Reader".to_owned())],
+                handlers: readers(),
+                ..FakeAssociations::default()
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(choices[0].options, vec![ASK_EACH_TIME, "org.legeos.Reader"]);
+        assert_eq!(choices[0].selected, 1);
     }
 
     #[tokio::test]

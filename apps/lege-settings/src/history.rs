@@ -113,10 +113,10 @@ impl Event {
     }
 
     /// The line under the headline: when, to whom, and why.
-    pub(crate) fn detail(&self, now_ms: i64) -> String {
+    pub(crate) fn detail(&self, now_ms: i64, names: &crate::names::AppNames) -> String {
         let mut parts = vec![relative_time(now_ms - self.at_ms)];
         if let Some(app_id) = &self.app_id {
-            parts.push(app_id.to_string());
+            parts.push(names.name(app_id.as_str()).to_owned());
         }
         if let Some(cause) = &self.cause {
             parts.push(cause.clone());
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn detail_reads_when_who_and_why_without_repeating_the_message() {
         let event: Event = serde_json::from_str(SAMPLE).unwrap();
-        let detail = event.detail(event.at_ms + 2 * 60_000);
+        let detail = event.detail(event.at_ms + 2 * 60_000, &crate::names::AppNames::default());
         assert_eq!(
             detail,
             "2 minutes ago · org.legeos.NetworkTray · providers:selected"

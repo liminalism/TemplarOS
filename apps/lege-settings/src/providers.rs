@@ -114,10 +114,12 @@ pub(crate) enum ChoiceOption {
 impl ChoiceOption {
     /// The text the chooser shows. Priority is spelled out because it is the reason an
     /// application is offered where it is, and a bare list of identifiers explains nothing.
-    pub(crate) fn label(&self) -> String {
+    pub(crate) fn label(&self, names: &crate::names::AppNames) -> String {
         match self {
             Self::Automatic => "Choose automatically".to_owned(),
-            Self::App { app_id, priority } => format!("{app_id} (priority {priority})"),
+            Self::App { app_id, priority } => {
+                format!("{} · priority {priority}", names.qualified(app_id))
+            }
         }
     }
 }
@@ -436,14 +438,18 @@ mod tests {
 
     #[test]
     fn an_option_says_why_it_is_where_it_is() {
-        assert_eq!(ChoiceOption::Automatic.label(), "Choose automatically");
+        let names = crate::names::AppNames::default();
+        assert_eq!(
+            ChoiceOption::Automatic.label(&names),
+            "Choose automatically"
+        );
         assert_eq!(
             ChoiceOption::App {
                 app_id: "org.legeos.NetworkTray".to_owned(),
                 priority: 100
             }
-            .label(),
-            "org.legeos.NetworkTray (priority 100)"
+            .label(&names),
+            "org.legeos.NetworkTray · priority 100"
         );
     }
 

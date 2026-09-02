@@ -4,6 +4,7 @@
 use crate::associations::MimeChoice;
 use crate::background::BackgroundEntry;
 use crate::history::Event;
+use crate::names::AppNames;
 use crate::providers::{ChoiceOption, RoleChoice};
 use anyhow::{Context, Result};
 use lege_client::proxies::SettingsProxy;
@@ -426,7 +427,10 @@ async fn run_associations_command(command: AssociationsCommand) -> ResultMessage
                     .map(|_| ())
             }
         };
-        Ok::<_, anyhow::Error>((associations::mime_choices_with(&proxy).await, attempted))
+        Ok::<_, anyhow::Error>((
+            associations::mime_choices_with(&proxy, true).await,
+            attempted,
+        ))
     }
     .await;
     match outcome {
@@ -464,6 +468,9 @@ struct SettingsApp {
     history: Vec<Event>,
     providers: Vec<RoleChoice>,
     associations: Vec<MimeChoice>,
+    /// Display names for every installed application, read once at startup. Ids are what the
+    /// services are told; names are what the pages show.
+    names: AppNames,
     /// The one open chooser, if any. Immediate mode has no z-order, so a dropdown's popup is
     /// drawn last, after every row — see `pixelkit_ui::Dropdown`. One is enough for the whole
     /// window: only one page is on screen at a time, and switching tabs closes it.
@@ -691,6 +698,7 @@ impl SettingsApp {
         let mut opened: Option<usize> = None;
         let mut scroll = self.scroll[PROVIDERS_PAGE];
         let dropdown = &mut self.chooser;
+        let names = &self.names;
         ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
             let choice = &choices[index];
             let row = Rect::new(rect.x, rect.y, rect.w, ui.px(74));
@@ -713,7 +721,11 @@ impl SettingsApp {
                 Align::Left,
             );
 
-            let labels: Vec<String> = choice.options.iter().map(ChoiceOption::label).collect();
+            let labels: Vec<String> = choice
+                .options
+                .iter()
+                .map(|option| option.label(names))
+                .collect();
             let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             let field = Rect::new(
                 row.right() - field_w - ui.px(12),
@@ -801,6 +813,7 @@ impl SettingsApp {
         let mut opened: Option<usize> = None;
         let mut scroll = self.scroll[ASSOCIATIONS_PAGE];
         let dropdown = &mut self.chooser;
+        let names = &self.names;
         ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
             let choice = &choices[index];
             let row = Rect::new(rect.x, rect.y, rect.w, ui.px(48));
@@ -816,7 +829,18 @@ impl SettingsApp {
                 ui.theme.text,
                 Align::Left,
             );
-            let refs: Vec<&str> = choice.options.iter().map(String::as_str).collect();
+            let labels: Vec<String> = choice
+                .options
+                .iter()
+                .map(|option| {
+                    if option == crate::associations::ASK_EACH_TIME {
+                        option.clone()
+                    } else {
+                        names.qualified(option)
+                    }
+                })
+                .collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             let field = Rect::new(
                 row.right() - field_w - ui.px(12),
                 row.y + ui.px(7),
@@ -854,6 +878,7 @@ impl SettingsApp {
         let heights = vec![ui.px(96); entries.len()];
         let mut wanted: Option<BackgroundCommand> = None;
         let mut scroll = self.scroll[BACKGROUND_PAGE];
+        let names = &self.names;
         ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
             let entry = &entries[index];
             let row = Rect::new(rect.x, rect.y, rect.w, ui.px(86));
@@ -863,9 +888,12 @@ impl SettingsApp {
 
             let buttons = ui.px(168);
             let text_w = (row.w - buttons - ui.px(24)).max(ui.px(120));
+            // Qualified, not just the name: granting background activity grants it to one
+            // installed copy, and two copies of Okular that both read "Okular" would make the
+            // row a coin toss.
             ui.label(
                 Rect::new(row.x + ui.px(12), row.y + ui.px(6), text_w, ui.px(24)),
-                &entry.app_id,
+                &names.qualified(&entry.app_id),
                 ui.theme.text,
                 Align::Left,
             );
@@ -935,6 +963,7 @@ impl SettingsApp {
         }
         let events = self.history.clone();
         let now = crate::history::now_ms();
+        let names = self.names.clone();
         let heights = vec![ui.px(62); events.len()];
         let mut wanted: Option<String> = None;
         let mut scroll = self.scroll[HISTORY_PAGE];
@@ -963,7 +992,7 @@ impl SettingsApp {
             );
             ui.label(
                 Rect::new(text_x, row.y + ui.px(28), text_w, ui.px(20)),
-                &event.detail(now),
+                &event.detail(now, &names),
                 ui.theme.text_dim,
                 Align::Left,
             );
@@ -1425,8 +1454,11 @@ async fn load() -> Result<SettingsApp> {
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
+    let names = crate::names::load(&connection).await;
     let associations = match lege_client::proxies::AssociationsProxy::new(&connection).await {
-        Ok(proxy) => crate::associations::mime_choices_with(&proxy)
+        // Without the per-type handler fetch: the page is opened by a tab click, and that click
+        // already refreshes it in full on the worker thread.
+        Ok(proxy) => crate::associations::mime_choices_with(&proxy, false)
             .await
             .unwrap_or_default(),
         Err(_) => Vec::new(),
@@ -1447,6 +1479,7 @@ async fn load() -> Result<SettingsApp> {
         history,
         providers,
         associations,
+        names,
         chooser: Dropdown::new(),
         chooser_row: None,
         pages,

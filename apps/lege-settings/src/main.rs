@@ -13,6 +13,7 @@ mod associations;
 mod background;
 mod hardware;
 mod history;
+mod names;
 mod providers;
 mod resources;
 mod surface;
