@@ -17,7 +17,7 @@ use pixelkit_ui::Ui;
 use std::collections::HashMap;
 
 use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing};
-use crate::files_surface::{FilesLocation, FilesSurfaceState, FocusArea, PinnedKind};
+use crate::files_surface::{FilesLocation, FilesSurfaceState, FocusArea};
 
 const ROOTS_WIDTH: i32 = 220;
 const ROOT_ROW_HEIGHT: i32 = 46;
@@ -624,18 +624,11 @@ impl FilesBrowseView {
                 } else if ui.input.hovering(row) {
                     ui.painter.fill_rect(row, ui.theme.hover);
                 }
-                let marker = match pinned.kind {
-                    PinnedKind::Place => "PLACE",
-                    PinnedKind::Drive => "DRIVE",
-                    PinnedKind::Feed => "",
-                };
+                // The name leads and the detail line says what kind of thing it is; a PLACE or
+                // DRIVE caption in front of every name was the same word repeated down the
+                // rail (the second hands-on run's label-noise finding, applied here too).
                 let (name_row, detail_row) = row.inset(ui.px(5)).split_top(ui.px(21));
-                let name = if marker.is_empty() {
-                    pinned.label.clone()
-                } else {
-                    format!("{marker}  {}", pinned.label)
-                };
-                ui.label(name_row, &name, ui.theme.text, Align::Left);
+                ui.label(name_row, &pinned.label, ui.theme.text, Align::Left);
                 ui.label_styled(
                     detail_row,
                     &pinned.detail,
@@ -766,12 +759,18 @@ impl FilesBrowseView {
             };
             prefixes.push((label, prefix.clone()));
         }
-        // Fit from the tail: measure right-to-left, then draw whatever fits left-to-right.
-        let pad = ui.px(10);
+        // Fit from the tail: measure right-to-left, then draw whatever fits left-to-right. The
+        // widths are the rendered text's own, not a per-character guess — a guess that runs
+        // short elides "home" to "ho…" in a row with room to spare.
+        let pad = ui.px(10) + ui.px(8);
+        let style = ui.theme.body;
+        let widths: Vec<i32> = prefixes
+            .iter()
+            .map(|(label, _)| pad + ui.text.measure(label, style))
+            .collect();
         let mut width_needed = 0;
         let mut first_shown = prefixes.len();
-        for (label, _) in prefixes.iter().rev() {
-            let width = pad + ui.px(7) * i32::try_from(label.chars().count()).unwrap_or(24);
+        for width in widths.iter().rev() {
             if width_needed + width > area.w {
                 break;
             }
@@ -783,8 +782,7 @@ impl FilesBrowseView {
         let mut x = area.x;
         let mut chosen = None;
         for (index, (label, target)) in prefixes.iter().enumerate().skip(first_shown) {
-            let width = (pad + ui.px(7) * i32::try_from(label.chars().count()).unwrap_or(24))
-                .min(area.right() - x);
+            let width = widths[index].min(area.right() - x);
             if width <= pad / 2 {
                 break;
             }
@@ -1170,9 +1168,14 @@ impl FilesBrowseView {
                         state.selection.replace(anchor.path.clone());
                     }
                     state.selection.extend_to(&order, entry.path.clone());
+                } else if state.selection.len() == 1 && state.selection.contains(&entry.path) {
+                    // The second press on the one selected row opens it. The first press only
+                    // selects, so the file verbs — which act on a selection — have something to
+                    // act on; a row that opened on its first press could never be copied,
+                    // renamed or trashed by pointer at all.
+                    selected = Some(entry.clone());
                 } else {
                     state.selection.replace(entry.path.clone());
-                    selected = Some(entry.clone());
                 }
             }
         });
@@ -1205,7 +1208,7 @@ fn activate(state: &mut FilesSurfaceState, entry: &BrowseEntry) -> Option<FileBr
 mod tests {
     use super::*;
     use crate::file_browser::EntryKind;
-    use crate::files_surface::PinnedLocation;
+    use crate::files_surface::{PinnedKind, PinnedLocation};
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
 
@@ -1634,11 +1637,34 @@ mod tests {
         harness.frame();
         // Browser begins after the 220 px roots rail; entries begin below the toolbar, the
         // file-verb row and the column header — 42 + 42 + 28 px.
-        harness.click(400.0, 130.0);
+        //
+        // The first press selects and nothing else — that is what gives the file verbs a
+        // selection to act on — and the second press on the selected row opens it.
+        assert_eq!(harness.click(400.0, 130.0), None);
+        assert_eq!(
+            harness.state.selected_paths(),
+            vec![PathBuf::from("/home/test/Downloads/Folder")]
+        );
+        assert_eq!(
+            harness.here(),
+            FilesLocation::Directory(PathBuf::from("/home/test/Downloads"))
+        );
+        assert_eq!(
+            harness.click(400.0, 130.0),
+            Some(FileBrowserAction::Load {
+                location: FilesLocation::Directory(PathBuf::from("/home/test/Downloads/Folder")),
+                show_hidden: false,
+            })
+        );
         assert_eq!(
             harness.here(),
             FilesLocation::Directory(PathBuf::from("/home/test/Downloads/Folder"))
         );
+        // The harness keeps serving the Downloads listing, so the surface is now somewhere it
+        // has no rows for; go back to where the rows are, and the same two presses apply.
+        harness.state.go_back();
+        harness.frame();
+        assert_eq!(harness.click(400.0, 168.0), None);
         assert_eq!(
             harness.click(400.0, 168.0),
             Some(FileBrowserAction::Open(PathBuf::from(
@@ -1745,6 +1771,20 @@ mod tests {
         let mut harness = Harness::new();
         let entries = harness.listing.entries.clone();
         harness.frame_with_search(Some("paper"), Some(&entries));
+        // Select, then open: the same two presses a directory listing takes.
+        harness.input.cursor_moved(400.0, 168.0);
+        harness.input.mouse(MouseButton::Left, true);
+        harness.input.mouse(MouseButton::Left, false);
+        // The harness never serves a search listing, so every frame here also asks for one;
+        // what matters is that the press selected rather than opened.
+        assert!(matches!(
+            harness.frame_with_search(Some("paper"), Some(&entries)),
+            Some(FileBrowserAction::Load { .. })
+        ));
+        assert_eq!(
+            harness.state.selected_paths(),
+            vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
+        );
         harness.input.cursor_moved(400.0, 168.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);

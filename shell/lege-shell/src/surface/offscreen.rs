@@ -385,6 +385,15 @@ mod tests {
             screen.search_focused = true;
             screen.search.set_text("re");
         }
+        // `LEGE_BASELINE_FILES=1` renders the fixture with the Files object expanded over the
+        // field instead — the one surface whose rail, crumb and toolbar are otherwise only
+        // seen at a real seat. Like the omnibox variant it returns before the hash.
+        if std::env::var("LEGE_BASELINE_FILES").is_ok() {
+            screen.files_expanded = true;
+            screen.files.go_to(crate::files_surface::FilesLocation::Directory(
+                "/home/fixture".into(),
+            ));
+        }
         for _ in 0..2 {
             let mut ui = Ui::new(
                 Painter::new(&mut buffer),
@@ -401,7 +410,9 @@ mod tests {
         if let Ok(path) = std::env::var("LEGE_BASELINE_DUMP") {
             write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
         }
-        if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok() {
+        if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok()
+            || std::env::var("LEGE_BASELINE_FILES").is_ok()
+        {
             return;
         }
         let hash = buffer

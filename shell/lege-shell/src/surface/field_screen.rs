@@ -235,6 +235,9 @@ pub struct FieldScreen {
     pub files_expanded: bool,
     /// The expansion in flight, if the object is between its tile and the field right now.
     pub expansion: Option<Expansion>,
+    /// The reveal state the last frame was drawn under, so a bare Super press — a change of it
+    /// in either direction — can close the expanded Files object.
+    last_home_revealed: Option<bool>,
     /// An expansion asked for mid-frame, started once this frame's layout is known — the tile it
     /// grows out of is only knowable after the field has been laid out.
     pending_expand: Option<u64>,
@@ -287,6 +290,7 @@ impl Default for FieldScreen {
             keyboard_resize: None,
             files_expanded: false,
             expansion: None,
+            last_home_revealed: None,
             pending_expand: None,
             files: crate::files_surface::FilesSurfaceState::default(),
             zoomed: None,
@@ -604,6 +608,18 @@ impl FieldScreen {
         );
 
         self.bounds = rest;
+        // A bare Super press is "show me Home" or "give me my windows back", and the expanded
+        // Files object is neither: it stays put through a reveal in either direction, which on
+        // real hardware read as Super hiding every window except the file manager. So a change
+        // of reveal state closes the object; where it was is kept, and opening it again lands
+        // there.
+        if self
+            .last_home_revealed
+            .is_some_and(|was| was != data.home_revealed)
+        {
+            self.collapse_files(data.now_ms);
+        }
+        self.last_home_revealed = Some(data.home_revealed);
         // An expansion asked for mid-frame starts now, when the field's layout — and so the
         // tile it grows out of — is finally known.
         if let Some(at) = self.pending_expand.take() {
@@ -1639,9 +1655,17 @@ impl FieldScreen {
     ) {
         let (crumb, body) = rest.split_top(ui.px(CRUMB_HEIGHT));
         let style = TextStyle::new(ui.theme.body.face, 13.0);
+        // The crumb says which object is open over Home. A directory's name is not repeated
+        // here: the toolbar's breadcrumb underneath already spells the whole path, and for the
+        // home folder the old form read "Home ▸ Home". A feed or a search has no breadcrumb of
+        // its own, so its name is the crumb's last step.
+        let crumb_text = match self.files.location() {
+            crate::files_surface::FilesLocation::Directory(_) => "Home  ▸  Files".to_owned(),
+            other => format!("Home  ▸  Files  ▸  {}", other.label()),
+        };
         ui.label_styled(
             crumb.inset(ui.px(6)),
-            &format!("Home  ▸  {}", self.files.location().label()),
+            &crumb_text,
             style,
             ui.theme.text_dim,
             Align::Left,

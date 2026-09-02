@@ -2244,6 +2244,12 @@ impl ShellApp {
     }
 
     /// `Copy path`, rendered by `Files.Actions1` so every surface copies the identical text.
+    ///
+    /// Rendering is half of it; the text then has to reach the clipboard, and it does so the
+    /// same way the Files app's Copy path does — through `wl-copy`, which takes the selection
+    /// as an ordinary client. The shell's own data source only ever offers a path set
+    /// (`crate::data_device`), and a path as *text* is for pasting into a terminal or a dialog,
+    /// which wants `text/plain` and nothing else.
     fn spawn_copy_path(&self, path: PathBuf) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -2251,7 +2257,9 @@ impl ShellApp {
             let result = async {
                 let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
                 let proxy = lege_client::proxies::FilesActionsProxy::new(&connection).await?;
-                Ok::<_, anyhow::Error>(proxy.render(&path.to_string_lossy(), "canonical").await?)
+                let rendered = proxy.render(&path.to_string_lossy(), "canonical").await?;
+                copy_text_to_clipboard(&rendered).await?;
+                Ok::<_, anyhow::Error>(rendered)
             }
             .await;
             let notice = match result {
@@ -2478,6 +2486,44 @@ async fn fetch_home_field_settings() -> HomeFieldSettings {
         },
         Err(_) => HomeFieldSettings::default(),
     }
+}
+
+/// Put `text` on the Wayland clipboard as `text/plain` through `wl-copy` (a runtime dependency
+/// of the shell package), waiting only for it to take the selection: `wl-copy` forks and keeps
+/// serving the clipboard after the parent has exited.
+///
+/// # Errors
+/// If `wl-copy` cannot be started, refuses the text, or does not take ownership within a few
+/// seconds — a compositor with no data-device support, say.
+async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use tokio::io::AsyncWriteExt as _;
+    let mut child = tokio::process::Command::new("wl-copy")
+        .arg("--type")
+        .arg("text/plain;charset=utf-8")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("starting wl-copy")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("wl-copy did not expose standard input")?;
+    stdin
+        .write_all(text.as_bytes())
+        .await
+        .context("writing the path to wl-copy")?;
+    stdin.shutdown().await.context("closing wl-copy input")?;
+    let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
+        .await
+        .context("wl-copy did not take ownership of the clipboard within 3 seconds")??;
+    anyhow::ensure!(
+        output.status.success(),
+        "wl-copy failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
