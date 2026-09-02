@@ -72,7 +72,7 @@ Description: LegeOS greeter
 
 Package: legeos-shell
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed
+Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed, wl-clipboard
 Description: LegeOS shell
  Restartable shell: Home Field, integrated file browser, panel/dock, launcher and window overview.
 
