@@ -323,10 +323,17 @@ mod tests {
 
     #[tokio::test]
     async fn serving_without_a_launch_identity_is_refused_before_touching_the_connection() {
-        // The sandboxed test process is not launched through the broker, so neither
+        // The test process is normally not launched through the broker, so neither
         // LEGEOS_APP_ID nor LEGEOS_INSTANCE_ID is set — exactly the documented legacy case.
-        assert!(std::env::var(env::APP_ID).is_err());
-        assert!(std::env::var(env::INSTANCE_ID).is_err());
+        // Run from a terminal inside a LegeOS session, both *are* set (the terminal was
+        // launched through the broker and its children inherit the identity), and the premise
+        // does not hold: skip rather than fail, the same way the shell's no-service tests skip
+        // when the session daemon is answering. Environment variables are process-wide, so
+        // unsetting them here would race every other test reading them.
+        if std::env::var(env::APP_ID).is_ok() || std::env::var(env::INSTANCE_ID).is_ok() {
+            eprintln!("skipped: this process carries a LegeOS launch identity");
+            return;
+        }
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let guid = zbus::Guid::generate();
