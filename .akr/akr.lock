@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:56a301094edf0420e0a480a3709e709f7347a7a59032e5c9649a858dac24b648"
+    source_graph "sha256:53209dda27120ea65cab6136606764b31b498fc39b71c8617374e34480f0c469"
 }
 
 source ".akr/project.akr" {
@@ -39,13 +39,13 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:3fed1def75fab24077a4520be64a73ac1c4cf89b03df35b6bade3a7c65169839"
-    records 10
+    hash "sha256:9efe3e03faeb230cc6b44a1772aee931d51112464b94cabba69366617f29c3f8"
+    records 11
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:a036b957b028e418c3fbdb49df4a545f1e460b9e46ff33f8abe0b2d2fbe2a7f9"
-    records 73
+    hash "sha256:176a377976fa81b549d3995f571c990fb9a18bbdf297dd3f8ac6664f5f5786a2"
+    records 75
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:96062c099de3420998aee38c29a16a916a8c7a69004f370482d56ddcf0f6051d"
-    records 52
+    hash "sha256:4368738c9cfe5c9ff389f594d8e9fe39bea32ca9d11af8ebde68088dfcfa8c7c"
+    records 53
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -430,6 +430,12 @@ resolution @legeos.observation.hands-on-run-20260831-findings/1 {
     hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
 }
 
+resolution @legeos.observation.hands-on-run-3-findings-20260903/1 {
+    slot derived_from
+    to @legeos.work.home-surface-usability-next/1
+    hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
+}
+
 resolution @legeos.observation.home-hands-on-failures-diagnosed/1 {
     slot derived_from
     to @legeos.work.home-widget-foundations/2
@@ -704,6 +710,18 @@ resolution @legeos.work.hands-on-run-2-fixes/1 {
     slot verified_by
     to @legeos.evidence.settings-widget-consolidation-20260831/1
     hash "sha256:bf9f5fda939d4a97d079d0b5d97a6bc7c3baad8c6fe641ed57acb085d5f5b00c"
+}
+
+resolution @legeos.work.hands-on-run-3-fixes/1 {
+    slot derived_from
+    to @legeos.observation.hands-on-run-3-findings-20260903/1
+    hash "sha256:3b7aa8f7a0db37fa5614ef82bf99fcd2f054a8ffb37ecec98bc996b65e67c3d4"
+}
+
+resolution @legeos.work.hands-on-run-3-fixes/1 {
+    slot part_of
+    to @legeos.work.home-surface-usability-next/1
+    hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
 }
 
 resolution @legeos.work.home-field/1 {
@@ -2107,6 +2125,11 @@ seal @legeos.observation.hands-on-run-20260831-findings/1 {
     hash "sha256:750244701ad3701f160bdd33b9758ee391187f5fba043ba05ca497f4bdf6298c"
 }
 
+seal @legeos.observation.hands-on-run-3-findings-20260903/1 {
+    state verified
+    hash "sha256:3b7aa8f7a0db37fa5614ef82bf99fcd2f054a8ffb37ecec98bc996b65e67c3d4"
+}
+
 seal @legeos.observation.hardware-home-loads-but-file-panes-empty/1 {
     state verified
     hash "sha256:512d9be49107bd78da2033670f468e442fa550fbd7cfe3f3d72a6c9d1128d25a"
@@ -2232,6 +2255,11 @@ seal @legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 {
     hash "sha256:cdcf3d53d60844cc00e87ce334248a87ab7105886d9b655c9f0f4adb7a9e4837"
 }
 
+seal @legeos.papercut.copy-path-in-the-shell-rendered-the-path/1 {
+    state verified
+    hash "sha256:3015665027db70fc1ab9a480b9c12938bcc5ceedd6ab9e81f5ffc7e517ecb9a1"
+}
+
 seal @legeos.papercut.correcting-my-earlier-papercut-allow/1 {
     state verified
     hash "sha256:4610ae6eed0bcf06e61becb68c84e07f0c0f59efd34a031613b786ea86291f1a"
@@ -2255,6 +2283,11 @@ seal @legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 {
 seal @legeos.papercut.just-check-failed-because-xtask-s-check-assets/1 {
     state verified
     hash "sha256:3afcf38baaaa7cb6b7a5bea8b91a82676a2e160eb5457e3a8c625d3541927e25"
+}
+
+seal @legeos.papercut.just-check-fails-when-run-from-a-terminal/1 {
+    state verified
+    hash "sha256:ac8c27de7f3714a26687e12c3ce2474835b34dc4d06b31c73da2d006efe8cad0"
 }
 
 seal @legeos.papercut.just-check-passes-formatting-workspace-clippy/1 {

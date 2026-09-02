@@ -34,6 +34,29 @@ record legeos.observation.hands-on-run-20260831-findings/1 : observation {
     derived_from [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.observation.hands-on-run-3-findings-20260903/1 : observation {
+    title "Third hands-on run at the installed desktop: Files object inert by pointer, band over client content, no window controls, no resize route"
+    state verified
+    scope [
+        path "apps/lege-files/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/**"
+    ]
+    statement """
+        User logged into the LegeOS desktop at cb57689 (installed packages match HEAD) to test in-place hot-fixing and reports: (1) redundant HOME labels on the left of the file manager; (2) Copy path does nothing and no button in the file manager works; (3) a bare Super press hides windows but not the open file manager; (4) windows have no minimize or close buttons; (5) Kitty's top line is cut off by the window pane; (6) windows move but do not resize. Usability otherwise possible but poor. Diagnosis from the code: the 'file manager' is the shell's expanded Files object on Home (Layer::HomeSurface), so a reveal never hides it and its rail read Home ▸ Home over PLACE Home; single click activated rows, so the selection-gated file verbs stayed inert; spawn_copy_path rendered the text and never put it on a clipboard; the compositor painted its 32 px recovery band OVER the client's top strip (hiding client-side close buttons and a terminal's first line) and offered only a 24 px corner grip for resizing.
+        """
+    observed_at git:cb57689cbb8350fa913349aa7b313be07ac03164
+    method manual
+    watches [
+        "shell/lege-shell/src/surface/file_browser.rs",
+        "shell/lege-shell/src/surface/field_screen.rs",
+        "compositor/lege-comp/src/**",
+        "crates/lege-window/src/geometry.rs"
+    ]
+    derived_from [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observation {
     title "Hardware Home loads and cursor works, but file panes expose no usable file content"
     state verified

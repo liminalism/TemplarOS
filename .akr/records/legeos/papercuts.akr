@@ -197,6 +197,17 @@ record legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 : papercut
     created_at 2026-09-01
 }
 
+record legeos.papercut.copy-path-in-the-shell-rendered-the-path/1 : papercut {
+    title "Copy path in the shell rendered the path through Files.Actions1 and…"
+    state verified
+    statement """
+        Copy path in the shell rendered the path through Files.Actions1 and reported "Copied path: …" without any clipboard write, and nothing caught it: the transport is a spawned wl-copy, so no unit test can observe the clipboard, and the notice text was the only "evidence" the feature worked. A notice should be derived from the transport's result, and any surface that claims to have put something on the clipboard needs a route that fails loudly when it did not.
+        """
+    observed_at git:7eaf295aad03829bdce33bf9e0b596a93bb4c463
+    author "claude"
+    created_at 2026-09-02
+}
+
 record legeos.papercut.correcting-my-earlier-papercut-allow/1 : papercut {
     title "Correcting my earlier papercut: --allow-releaseinfo-change was not the…"
     state verified
@@ -251,6 +262,17 @@ record legeos.papercut.just-check-failed-because-xtask-s-check-assets/1 : paperc
     observed_at git:25591b2d63d556aacf86b45dbae565354e9b2c53
     author "claude"
     created_at 2026-08-31
+}
+
+record legeos.papercut.just-check-fails-when-run-from-a-terminal/1 : papercut {
+    title "`just check` fails when run from a terminal inside a LegeOS session:…"
+    state verified
+    statement """
+        `just check` fails when run from a terminal inside a LegeOS session: lege-client's serving_without_a_launch_identity test asserted LEGEOS_APP_ID/LEGEOS_INSTANCE_ID are unset, but a broker-launched terminal's children inherit them. Fixed by skipping there, like the shell's no-service tests; any other test that reads ambient session environment needs the same guard, and the gate has no way of saying "this failure is your environment, not your change".
+        """
+    observed_at git:bf2df7d9efe8ca884a5df529cdc42280e80e2611
+    author "claude"
+    created_at 2026-09-02
 }
 
 record legeos.papercut.just-check-passes-formatting-workspace-clippy/1 : papercut {
