@@ -10,7 +10,10 @@
 //! its silhouette; a raised shadow only while a tile is lifted; one activity border for a live
 //! window; the pending operation spelled out in text before release.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use pixelkit_raster::{Bitmap, Rect, ScaleFilter};
 use pixelkit_shell::KeyInput;
@@ -27,11 +30,21 @@ use lege_types::AppId;
 use lege_window::{ShellToplevel, WindowId};
 
 use crate::field_model::{self, GAP};
+
+/// A folder window's row height and icon side, logical pixels. Tight on purpose: a window three
+/// cells tall has to be able to show more than four things.
+const FOLDER_ROW_HEIGHT: i32 = 20;
+const FOLDER_ICON: i32 = 14;
+
+/// What a folder tray opens to when it is pressed, clamped to the kind's ceiling. A tray is a
+/// door; this is the size at which the room behind it is worth looking at.
+const FOLDER_OPEN_SPAN: Span = Span { cols: 4, rows: 4 };
+use crate::file_browser::{DirectoryListing, EntryKind};
 use crate::home_surface::Drawer;
 use crate::surface::context_menu::{Chosen, ContextMenu, MenuTarget};
 use crate::surface::design::{self, Elevation};
-use crate::surface::file_browser::FileBrowserData;
 use crate::surface::file_browser::FilesBrowseView;
+use crate::surface::file_browser::{FileBrowserData, theme_icon_key};
 use crate::surface::widgets::{self, WidgetSnapshot};
 
 /// One typed file drop, ready for the service. The shell never decides what a conflict, a
@@ -72,6 +85,13 @@ pub enum FieldAction {
         show_hidden: bool,
     },
     OpenFile(PathBuf),
+    /// Fetch one folder window's directory. Separate from [`FieldAction::BrowseLocation`] because
+    /// there is one Files object but many folder windows: this one is keyed by path and cached
+    /// per path, so several windows on the field each list their own directory.
+    BrowseFolder(PathBuf),
+    /// Open `path` as a folder window on Home — a tile placed on the field, not a mode the whole
+    /// screen enters. Raises the window already showing that path rather than opening a second.
+    OpenFolderWindow(PathBuf),
     /// Open this folder in the standalone Files manager (`org.legeos.Files`), the surface with
     /// the full drives sidebar — the browse pane's door to somewhere it does not go itself.
     OpenInFiles(PathBuf),
@@ -178,6 +198,9 @@ pub struct FieldData<'a> {
     pub treemap: Option<&'a Bitmap>,
     pub composition: &'a [(u32, f32)],
     pub browser: &'a FileBrowserData<'a>,
+    /// Each open folder window's directory listing, keyed by the directory it lists. One entry per
+    /// window, unlike `browser.listing`, which is the single Files object's one location.
+    pub folder_listings: &'a HashMap<PathBuf, DirectoryListing>,
     /// The notifications widget's structured rows (`widgets::notifications`).
     pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
     pub connected: bool,
@@ -294,6 +317,13 @@ pub struct FieldScreen {
     pub menu: ContextMenu,
     /// The open "name this group" question, if there is one.
     rename_group: Option<GroupRename>,
+    /// Where each folder window has navigated to, keyed by its tile. Absent means the tile is
+    /// showing the directory it was opened at — the tile's own path is the window's home, and
+    /// navigating never rewrites the document, so a restart reopens where the window was placed
+    /// rather than wherever it was last browsed to.
+    folder_at: HashMap<TileId, PathBuf>,
+    /// Each folder window's scroll position, keyed by its tile.
+    folder_scroll: HashMap<TileId, pixelkit_ui::ScrollState>,
 }
 
 /// Naming a window group: which group (by one of its members, which is how every group request is
@@ -341,6 +371,8 @@ impl Default for FieldScreen {
             confirming: None,
             menu: ContextMenu::default(),
             rename_group: None,
+            folder_at: HashMap::new(),
+            folder_scroll: HashMap::new(),
         }
     }
 }
@@ -668,7 +700,7 @@ impl FieldScreen {
                         self.tile_rect(data.field, field_model::files_tile_id(), ui)
                             .unwrap_or(expansion.from)
                     } else {
-                        rest
+                        files_window_rect(rest, ui)
                     };
                     Self::draw_growing(ui, expansion.rect(to, data.now_ms, duration), data);
                     self.draw_notice(ui, rest);
@@ -684,7 +716,24 @@ impl FieldScreen {
             }
         }
         if self.files_expanded {
-            self.draw_expanded(ui, rest, data, &mut actions);
+            let window = files_window_rect(rest, ui);
+            // The ground around the window stays the field, dimmed: the object is a window over
+            // Home, not a mode Home enters. Pressing that ground puts it away, which is the same
+            // gesture as clicking off any other window and is why it is dimmed rather than hidden.
+            if window != rest {
+                ui.painter.blend_rect(rest, design::GROUND, 150);
+                if ui.input.take_click(rest) {
+                    self.collapse_files(data.now_ms);
+                }
+                design::shell(
+                    ui,
+                    window,
+                    design::SHELL,
+                    design::EDGE_STRONG,
+                    Elevation::Lifted,
+                );
+            }
+            self.draw_expanded(ui, window, data, &mut actions);
             self.draw_notice(ui, rest);
             self.draw_omnibox(ui, data, &mut actions);
             return actions;
@@ -1027,6 +1076,7 @@ impl FieldScreen {
             crate::omnibox::Sources {
                 apps: data.apps,
                 files: data.file_search,
+                home: data.browser.home,
             },
             &query,
             &scope,
@@ -1209,7 +1259,7 @@ impl FieldScreen {
             chose @ crate::surface::omnibox_screen::OmniboxOutcome::Chose(_) => Some(chose),
         };
         if let Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) = chosen {
-            self.choose(hit, data, actions);
+            self.choose(hit, actions);
         }
     }
 
@@ -1325,12 +1375,7 @@ impl FieldScreen {
     }
 
     /// Act on one omnibox row.
-    fn choose(
-        &mut self,
-        hit: crate::omnibox::Hit,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
+    fn choose(&mut self, hit: crate::omnibox::Hit, actions: &mut Vec<FieldAction>) {
         use crate::omnibox::Hit;
         self.search_focused = false;
         match hit {
@@ -1339,10 +1384,16 @@ impl FieldScreen {
                 self.search.set_text("");
             }
             Hit::File { path } => actions.push(FieldAction::OpenFile(path)),
+            // Inside the Files object a folder is somewhere to go; on bare Home it is a window
+            // to open. Same row, same hit — the scope decides, exactly as it does for the query
+            // itself, so there is still no mode to be in.
             Hit::Directory { path } => {
-                self.files
-                    .go_to(crate::files_surface::FilesLocation::Directory(path));
-                self.pending_expand = Some(data.now_ms);
+                if self.files_expanded {
+                    self.files
+                        .go_to(crate::files_surface::FilesLocation::Directory(path));
+                } else {
+                    actions.push(FieldAction::OpenFolderWindow(path));
+                }
             }
         }
     }
@@ -2897,8 +2948,33 @@ impl FieldScreen {
                 self.focus = None;
                 self.keyboard_move = None;
             }
-            TileKind::Folder { path } => {
-                actions.push(FieldAction::OpenFile(path.clone()));
+            // A folder tile is a window: its body is the listing and its rows are the clicks
+            // that matter, so the body's leftover ground is the expand/collapse control. A tray
+            // too small to list anything grows to a size that can; a window already at that size
+            // shrinks back to a tray. Both go through the field's own resize, so both undo.
+            TileKind::Folder { .. } => {
+                let collapsed = tile.spans.min;
+                let expanded = Span::new(
+                    tile.spans
+                        .max
+                        .cols
+                        .min(FOLDER_OPEN_SPAN.cols)
+                        .max(collapsed.cols),
+                    tile.spans
+                        .max
+                        .rows
+                        .min(FOLDER_OPEN_SPAN.rows)
+                        .max(collapsed.rows),
+                );
+                let now = data.field.location(tile.id).map(|at| at.placement.span);
+                let span = if now == Some(collapsed) {
+                    expanded
+                } else {
+                    collapsed
+                };
+                if now != Some(span) {
+                    actions.push(FieldAction::Apply(FieldOp::Resize { id: tile.id, span }));
+                }
             }
             TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {}
         }
@@ -3051,6 +3127,158 @@ impl FieldScreen {
                 design::state_style(ui),
                 design::TEXT_DIM,
                 Align::Left,
+            );
+        }
+    }
+
+    /// The step back up, drawn above a folder window's list when it has navigated below the
+    /// directory it was opened at. At the anchor there is nothing to say that the tile's own
+    /// title does not already say, so the whole body is the listing and this draws nothing.
+    ///
+    /// Returns the rectangle the list gets.
+    fn paint_folder_crumb(
+        &mut self,
+        ui: &mut Ui<'_>,
+        inner: Rect,
+        row_height: i32,
+        id: TileId,
+        anchor: &Path,
+        here: &Path,
+    ) -> Rect {
+        if here == anchor {
+            return inner;
+        }
+        let (crumb, rest) = inner.split_top(row_height);
+        if ui.input.hovering(crumb) {
+            ui.painter.fill_rect(crumb, ui.theme.hover);
+        }
+        ui.label_styled(
+            crumb,
+            &format!("↑  {}", here.to_string_lossy()),
+            design::state_style(ui),
+            design::TEXT_DIM,
+            Align::Left,
+        );
+        if ui.input.take_click(crumb) {
+            match here.parent() {
+                Some(parent) if parent.starts_with(anchor) => {
+                    self.folder_at.insert(id, parent.to_path_buf());
+                }
+                // Above the anchor there is nowhere further up to go inside this window: it goes
+                // home rather than wandering out of the folder it was opened for.
+                _ => {
+                    self.folder_at.remove(&id);
+                }
+            }
+        }
+        rest
+    }
+
+    /// A folder window's body: what is actually in the directory, listed.
+    ///
+    /// This is the whole of what makes a folder tile a window rather than a label. It used to
+    /// draw the bound path in dim text and nothing else, so the largest object on Home was also
+    /// the emptiest (the fifth hands-on run's "a lot of empty space"). Now it lists the directory
+    /// it is showing, a row per entry with the icon the installed theme gives that kind of thing;
+    /// a folder row goes into that folder *in this window*, a file row opens.
+    ///
+    /// Navigation is view state, not document state: the tile keeps the path it was placed at, so
+    /// closing and reopening the session puts the window back where it was put, not wherever it
+    /// was last browsed to.
+    fn paint_folder_window(
+        &mut self,
+        ui: &mut Ui<'_>,
+        content: Rect,
+        id: TileId,
+        anchor: &Path,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let here = self
+            .folder_at
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| anchor.to_path_buf());
+        let inner = content.inset(ui.px(8));
+        if inner.w <= 0 || inner.h <= 0 {
+            return;
+        }
+        let row_height = ui.px(FOLDER_ROW_HEIGHT);
+        let list = self.paint_folder_crumb(ui, inner, row_height, id, anchor, &here);
+        actions.push(FieldAction::BrowseFolder(here.clone()));
+        let Some(listing) = data.folder_listings.get(&here) else {
+            ui.label_styled(
+                list,
+                "reading…",
+                design::state_style(ui),
+                design::TEXT_FAINT,
+                Align::Left,
+            );
+            return;
+        };
+        if listing.entries.is_empty() {
+            ui.label_styled(
+                list,
+                "empty",
+                design::state_style(ui),
+                design::TEXT_FAINT,
+                Align::Left,
+            );
+            return;
+        }
+        let heights = vec![row_height; listing.entries.len()];
+        let scroll = self.folder_scroll.entry(id).or_default();
+        let mut chosen = None;
+        let icons = data.icons;
+        ui.scroll_list(scroll, list, &heights, |ui, index, row| {
+            let entry = &listing.entries[index];
+            if ui.input.hovering(row) {
+                ui.painter.fill_rect(row, ui.theme.hover);
+            }
+            let side = ui.px(FOLDER_ICON);
+            let (icon_box, text) = row.split_left(side + ui.px(4));
+            let name = match entry.kind {
+                EntryKind::Directory => crate::icons::directory_icon_name(&entry.path, None),
+                _ => "text-x-generic",
+            };
+            if let Some(bitmap) = icons.get(&theme_icon_key(name)) {
+                let square = Rect::new(icon_box.x, icon_box.y + (row.h - side) / 2, side, side);
+                ui.painter.blit(bitmap, square, ScaleFilter::Bilinear);
+            }
+            ui.label_styled(
+                text,
+                &entry.name,
+                design::state_style(ui),
+                if entry.hidden {
+                    design::TEXT_DIM
+                } else {
+                    design::TEXT
+                },
+                Align::Left,
+            );
+            if ui.input.take_click(row) {
+                chosen = Some(index);
+            }
+        });
+        if let Some(index) = chosen {
+            let entry = &listing.entries[index];
+            if entry.is_dir() {
+                self.folder_at.insert(id, entry.path.clone());
+                self.folder_scroll.remove(&id);
+            } else {
+                actions.push(FieldAction::OpenFile(entry.path.clone()));
+            }
+        }
+        if listing.truncated {
+            // Saying so beats a list that silently stops: the cap is the service's, and the way
+            // past it is the standalone manager.
+            let (_, foot) = list.split_bottom(row_height);
+            ui.label_styled(
+                foot,
+                &format!("first {} shown", listing.limit),
+                design::state_style(ui),
+                design::TEXT_FAINT,
+                Align::Right,
             );
         }
     }
@@ -3495,22 +3723,7 @@ impl FieldScreen {
                 }
             }
             TileKind::Folder { path } => {
-                // The bound directory, dimly: the tile's title is the folder's name, so the
-                // content row says where it lives. Live contents come from activation — the
-                // paint path never reads the filesystem.
-                //
-                // In a band at the top, not the whole body: the path belongs under the title it
-                // qualifies, and a label given the body is centred in it.
-                let inner = content.inset(ui.px(12));
-                if let Some(band) = crate::surface::widgets::top_band(inner, ui.px(16)) {
-                    ui.label_styled(
-                        band,
-                        &path.to_string_lossy(),
-                        design::state_style(ui),
-                        design::TEXT_DIM,
-                        Align::Left,
-                    );
-                }
+                self.paint_folder_window(ui, content, tile.id, path, data, actions);
             }
             TileKind::Tray { tray_id } => {
                 let inner = content.inset(ui.px(12));
@@ -3801,6 +4014,28 @@ fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Opti
     lege_window::geometry::contiguous_window(&windows, from, direction, STEP_HOPS)
 }
 
+/// Where the Files object goes when it opens: a window over the field, not the field itself.
+///
+/// Most of Home stays visible around it — the whole point of the object is that it is one thing
+/// on a desktop rather than the desktop becoming a file manager (the fifth hands-on run: "it
+/// takes up the entire screen, as if only one window can be opened at a time"). On a field too
+/// small to hold a window and still be a field, it is the field: a 400-pixel-wide pane inside a
+/// 500-pixel-wide screen would be neither.
+fn files_window_rect(field: Rect, ui: &Ui<'_>) -> Rect {
+    const MIN_FIELD: i32 = 900;
+    if field.w < ui.px(MIN_FIELD) {
+        return field;
+    }
+    let w = (field.w * 3 / 4).max(ui.px(720));
+    let h = (field.h * 5 / 6).max(ui.px(400)).min(field.h);
+    Rect::new(
+        field.x + (field.w - w) / 2,
+        field.y + (field.h - h) / 2,
+        w.min(field.w),
+        h,
+    )
+}
+
 fn representation_of(doc: &FieldDocument, tile: &Tile) -> Representation {
     let span = doc
         .location(tile.id)
@@ -4086,6 +4321,8 @@ mod tests {
                 search_error: None,
                 feeds: &drawer_feeds,
                 thumbnails: &empty_thumbnails,
+                icons: &HashMap::new(),
+                home: None,
             };
             let recents: Vec<&crate::app_search::AppEntry> = self.recents.iter().collect();
             let data = FieldData {
@@ -4098,6 +4335,7 @@ mod tests {
                 treemap: None,
                 composition: &[],
                 browser: &browser,
+                folder_listings: &HashMap::new(),
                 connected: true,
                 home_revealed: false,
                 network_control_available: true,
@@ -5823,9 +6061,17 @@ mod tests {
             .cursor_moved((from.x + 10) as f32, (from.y + 8) as f32);
         h.input.mouse(MouseButton::Left, true);
         h.frame();
+        // To the middle of the target tile, both axes: the two tiles do not have to share a row
+        // for a drop onto one to mean anything, and a horizontal-only drag stops landing on it
+        // the moment the grid's shape changes.
+        let (start_x, start_y) = ((from.x + 10) as f32, (from.y + 8) as f32);
+        let (end_x, end_y) = (to.x + to.w / 2, to.y + to.h / 2);
         for step in 1..=10 {
-            let x = from.x + 10 + (to.x - from.x) * step / 10;
-            h.input.cursor_moved(x as f32, (from.y + 8) as f32);
+            let t = step as f32 / 10.0;
+            h.input.cursor_moved(
+                start_x + (end_x as f32 - start_x) * t,
+                start_y + (end_y as f32 - start_y) * t,
+            );
             h.now += 100;
             h.frame();
         }

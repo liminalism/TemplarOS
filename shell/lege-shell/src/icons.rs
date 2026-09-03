@@ -137,10 +137,17 @@ impl IconRoots for SystemIconRoots {
             .collect()
     }
 
+    /// Ubuntu's own theme first, then Adwaita, then `hicolor` — the freedesktop fallback of last
+    /// resort. Place and device icons (`folder-documents`, `drive-harddisk`, `user-trash`) live in
+    /// the named themes and almost never in `hicolor`, so searching `hicolor` alone is why the
+    /// Files object had words where every other desktop has pictures.
     fn theme_dirs(&self) -> Vec<PathBuf> {
         Self::data_dirs()
             .into_iter()
-            .map(|dir| dir.join("icons/hicolor"))
+            .flat_map(|dir| {
+                let icons = dir.join("icons");
+                THEME_NAMES.iter().map(move |theme| icons.join(theme))
+            })
             .collect()
     }
 
@@ -152,7 +159,18 @@ impl IconRoots for SystemIconRoots {
 /// Size buckets tried, in order. `scalable` leads because an SVG is re-rendered at the size we
 /// want rather than resampled; after it, largest raster first — a tile would rather down-sample a
 /// 128px icon than up-sample a 16px one into a blur.
-const SIZE_BUCKETS: &[&str] = &["scalable", "256x256", "128x128", "64x64", "48x48", "32x32"];
+const SIZE_BUCKETS: &[&str] = &[
+    "scalable", "256x256", "128x128", "64x64", "48x48", "32x32", "24x24", "22x22", "16x16",
+];
+
+/// Icon themes searched, in order. Yaru is Ubuntu's and the one a LegeOS image installs; Adwaita
+/// is what a stock GNOME stack leaves behind and is present on every dev host; `hicolor` is the
+/// specified fallback every theme inherits from.
+const THEME_NAMES: &[&str] = &["Yaru", "Adwaita", "hicolor"];
+
+/// Icon-theme context directories searched inside one size bucket, in order. `apps` leads because
+/// the overwhelming majority of lookups are application icons.
+const ICON_CONTEXTS: &[&str] = &["apps", "places", "mimetypes", "devices", "status"];
 
 /// File extensions tried within one bucket, in order of preference.
 const ICON_EXTENSIONS: &[&str] = &["svg", "png"];
@@ -277,13 +295,15 @@ pub fn resolve_icon_path(icon: &str, roots: &impl IconRoots) -> Option<PathBuf> 
     };
     for theme_dir in roots.theme_dirs() {
         for size in SIZE_BUCKETS {
-            for extension in ICON_EXTENSIONS {
-                let path = theme_dir
-                    .join(size)
-                    .join("apps")
-                    .join(format!("{stem}.{extension}"));
-                if path.is_file() {
-                    return Some(path);
+            for context in ICON_CONTEXTS {
+                for extension in ICON_EXTENSIONS {
+                    let path = theme_dir
+                        .join(size)
+                        .join(context)
+                        .join(format!("{stem}.{extension}"));
+                    if path.is_file() {
+                        return Some(path);
+                    }
                 }
             }
         }
@@ -382,6 +402,40 @@ pub fn load_app_icon_hinted(
     let icon_name = desktop_icon_name_hinted(app_id, hints, roots)?;
     let path = resolve_icon_path(&icon_name, roots)?;
     decode_icon_file(&path)
+}
+
+/// A named icon straight from the theme, with no `.desktop` file in between: what a folder, a
+/// drive or the wastebasket is drawn with.
+///
+/// The name is a freedesktop icon name (`folder-documents`, `drive-harddisk`, `user-trash`), so
+/// the picture is whatever the installed theme says it is rather than something this shell drew.
+pub fn load_theme_icon(name: &str, roots: &impl IconRoots) -> Option<Bitmap> {
+    decode_icon_file(&resolve_icon_path(name, roots)?)
+}
+
+/// The freedesktop icon name for a directory, by what the directory *is*: the user's home, one of
+/// the XDG user directories, or a folder like any other.
+///
+/// Matching is on the path itself rather than on a label, because the label is what the person
+/// renamed the row to and the icon should not follow it.
+pub fn directory_icon_name(path: &Path, home: Option<&Path>) -> &'static str {
+    if home.is_some_and(|home| home == path) {
+        return "user-home";
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return "folder";
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "desktop" => "user-desktop",
+        "documents" => "folder-documents",
+        "downloads" | "download" => "folder-download",
+        "music" => "folder-music",
+        "pictures" => "folder-pictures",
+        "videos" | "movies" => "folder-videos",
+        "public" | "publicshare" => "folder-publicshare",
+        "templates" => "folder-templates",
+        _ => "folder",
+    }
 }
 
 #[cfg(test)]

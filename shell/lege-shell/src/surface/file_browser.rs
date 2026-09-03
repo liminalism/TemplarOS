@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use lege_types::file_sort::{SortDescriptor, SortField, ViewMode};
 use pixelkit_raster::Bitmap;
-use pixelkit_raster::Rect;
+use pixelkit_raster::{Rect, ScaleFilter};
 use pixelkit_shell::KeyInput;
 use pixelkit_text::{Align, TextStyle};
 use pixelkit_ui::Ui;
@@ -21,6 +21,15 @@ use crate::files_surface::{FilesLocation, FilesSurfaceState, FocusArea};
 
 const ROOTS_WIDTH: i32 = 220;
 const ROOT_ROW_HEIGHT: i32 = 46;
+
+/// The side of a pinned row's icon, logical pixels.
+const PINNED_ICON: i32 = 20;
+
+/// The key a theme icon is filed under in the shared icon map. Prefixed so a freedesktop icon
+/// name can never collide with a canonical application id.
+pub fn theme_icon_key(name: &str) -> String {
+    format!("theme:{name}")
+}
 const TOOLBAR_HEIGHT: i32 = 42;
 const COLUMNS_HEIGHT: i32 = 28;
 const ENTRY_HEIGHT: i32 = 38;
@@ -179,6 +188,12 @@ pub struct FileBrowserData<'a> {
     pub search_error: Option<&'a str>,
     /// The rows a feed location shows, already rendered by `crate::drawers`.
     pub feeds: &'a HashMap<crate::home_surface::Drawer, crate::drawers::DrawerFeed>,
+    /// Decoded icons by lookup key, shared with the field's own map: an application's is its
+    /// canonical id, a theme icon's is `theme:<freedesktop name>`.
+    pub icons: &'a HashMap<String, Bitmap>,
+    /// The user's home directory, so the one folder whose icon its name cannot give away gets
+    /// the right one.
+    pub home: Option<&'a Path>,
     /// Decoded thumbnails by path, produced off the render thread by the host from the bounded
     /// requests [`FileBrowserScreen::begin_thumbnails`] hands it. Drawing only ever reads.
     pub thumbnails: &'a HashMap<PathBuf, Bitmap>,
@@ -314,7 +329,7 @@ impl FilesBrowseView {
 
         ui.panel(area);
         let (roots_area, browser_area) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
-        Self::draw_pinned(ui, roots_area, state, data.sources);
+        Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
 
         let browser_area = browser_area.inset(ui.px(8));
         let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT));
@@ -439,7 +454,7 @@ impl FilesBrowseView {
     ) {
         ui.panel(area);
         let (roots_area, body) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
-        Self::draw_pinned(ui, roots_area, state, data.sources);
+        Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
         let body = body.inset(ui.px(8));
         let feed = data.feeds.get(&drawer);
         let (heading, rows) = body.split_top(ui.px(26));
@@ -707,6 +722,8 @@ impl FilesBrowseView {
         area: Rect,
         state: &mut FilesSurfaceState,
         sources: &BrowserSources,
+        icons: &HashMap<String, Bitmap>,
+        home: Option<&Path>,
     ) {
         ui.painter.fill_rect(area, ui.theme.panel_alt);
         let (title, body) = area.inset(ui.px(6)).split_top(ui.px(30));
@@ -735,18 +752,32 @@ impl FilesBrowseView {
                 } else if ui.input.hovering(row) {
                     ui.painter.fill_rect(row, ui.theme.hover);
                 }
-                // The name leads and the detail line says what kind of thing it is; a PLACE or
-                // DRIVE caption in front of every name was the same word repeated down the
-                // rail (the second hands-on run's label-noise finding, applied here too).
-                let (name_row, detail_row) = row.inset(ui.px(5)).split_top(ui.px(21));
-                ui.label(name_row, &pinned.label, ui.theme.text, Align::Left);
-                ui.label_styled(
-                    detail_row,
-                    &pinned.detail,
-                    TextStyle::new(ui.theme.body.face, 11.0),
-                    ui.theme.text_dim,
-                    Align::Left,
-                );
+                // The icon says what kind of thing this is and the name says which one. A second
+                // line saying "Standard folder" under every folder was the same word repeated
+                // down the rail (the fifth hands-on run), so the detail line is drawn only when
+                // it carries something the name does not — a volume's free space, or that a
+                // place named in the user's directories is not there.
+                let body = row.inset(ui.px(5));
+                let (icon_box, text) = body.split_left(ui.px(PINNED_ICON) + ui.px(6));
+                if let Some(bitmap) = icons.get(&theme_icon_key(pinned.icon_name(home))) {
+                    let side = ui.px(PINNED_ICON);
+                    let square =
+                        Rect::new(icon_box.x, icon_box.y + (icon_box.h - side) / 2, side, side);
+                    ui.painter.blit(bitmap, square, ScaleFilter::Bilinear);
+                }
+                if pinned.detail.is_empty() {
+                    ui.label(text, &pinned.label, ui.theme.text, Align::Left);
+                } else {
+                    let (name_row, detail_row) = text.split_top(ui.px(21));
+                    ui.label(name_row, &pinned.label, ui.theme.text, Align::Left);
+                    ui.label_styled(
+                        detail_row,
+                        &pinned.detail,
+                        TextStyle::new(ui.theme.body.face, 11.0),
+                        ui.theme.text_dim,
+                        Align::Left,
+                    );
+                }
                 if ui.input.take_click(row) {
                     chosen = Some(index);
                 }
@@ -1432,6 +1463,8 @@ mod tests {
                 search_error: None,
                 feeds: &empty_feeds,
                 thumbnails: &empty_thumbnails,
+                icons: &HashMap::new(),
+                home: None,
             };
             let mut ui = Ui::new(
                 Painter::new(&mut self.buffer),

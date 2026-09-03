@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn print_field_renders_the_files_object_without_a_bus() {
         let text = print_target("field", 10, (1920, 1080)).await.unwrap();
-        assert!(text.starts_with("field primary  18x10"), "{text}");
+        assert!(text.starts_with("field primary  21x12"), "{text}");
         assert!(text.contains("Files"), "{text}");
         for drawer in lege_shell::home_surface::Drawer::DEFAULT {
             assert!(

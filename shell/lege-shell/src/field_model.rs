@@ -23,7 +23,13 @@ use std::path::Path;
 use crate::home_surface::Drawer;
 
 /// Logical pixels per grid cell. `shell.home-field.tile-size` once the field is persisted.
-pub const TILE_SIZE: i32 = 104;
+///
+/// Finer than a tile is tall on purpose: the cell is the step a dragged tile snaps to, so it is
+/// the whole of how precisely anything can be placed. At 104 a 1080p field was 18×9 and a tile
+/// could only ever land on one of nine rows, which reads as a coarse magnet rather than as
+/// placement (the fifth hands-on run). 88 gives 21×11 there — a step small enough to aim with,
+/// still large enough that a one-cell tile is a legible icon.
+pub const TILE_SIZE: i32 = 88;
 /// Logical pixels between tiles.
 pub const GAP: i32 = 6;
 
@@ -269,6 +275,66 @@ pub fn desktop_folder_tile_id() -> TileId {
     tile_id_for("folder:desktop")
 }
 
+/// The tile id a folder window for `path` always has, so opening the same path twice raises the
+/// window that is already there instead of stacking a second one on top of it.
+pub fn folder_tile_id(path: &Path) -> TileId {
+    if crate::drawers::standard_paths::desktop_dir().as_deref() == Some(path) {
+        return desktop_folder_tile_id();
+    }
+    tile_id_for(&format!("folder:{}", path.to_string_lossy()))
+}
+
+/// Open `path` as a folder window on the field: the ops that place one, or nothing at all if a
+/// window for it is already open (the caller then raises what is there).
+///
+/// A folder window is a tile and nothing more exotic than that, which is the whole point — it can
+/// be dragged, resized, dropped into a project or a group, and it survives a restart, because
+/// every one of those is something the field already does for tiles. There is no second windowing
+/// system inside the shell.
+pub fn open_folder_ops(doc: &FieldDocument, path: &Path) -> Vec<FieldOp> {
+    let id = folder_tile_id(path);
+    if doc.tile(id).is_some() {
+        return Vec::new();
+    }
+    let kind = TileKind::Folder {
+        path: path.to_path_buf(),
+    };
+    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    let title = path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let landing = Landing {
+        container: None,
+        cell: first_free_cell(doc, spans.preferred),
+    };
+    vec![FieldOp::Place {
+        tile: Tile {
+            id,
+            kind,
+            title,
+            spans,
+            accent: None,
+        },
+        landing,
+    }]
+}
+
+/// The first cell, reading the field the way a page is read, where a `span`-sized tile fits with
+/// nothing under it. `Cell::new(0, 0)` when the field is full: the place op then displaces
+/// whatever is there, which is what the reflow is for and is better than refusing to open.
+fn first_free_cell(doc: &FieldDocument, span: Span) -> Cell {
+    for row in 0..doc.rows {
+        for col in 0..doc.cols {
+            let candidate = Placement::new(Cell::new(col, row), span);
+            if candidate.fits(doc.cols, doc.rows) && doc.is_free(None, candidate, None) {
+                return candidate.cell;
+            }
+        }
+    }
+    Cell::new(0, 0)
+}
+
 /// The XDG Desktop directory as one placeable Home folder object — the visible destination for
 /// software that still writes desktop files, without recreating scattered desktop icons: the
 /// directory's children stay behind the folder's door, never exploded into Home tiles.
@@ -286,7 +352,11 @@ pub fn merge_desktop_folder(doc: &mut FieldDocument, desktop: Option<&Path>) -> 
     let kind = TileKind::Folder {
         path: path.to_path_buf(),
     };
-    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    // A tray, not a pane: Desktop opens at the folder kind's floor and grows when it is pressed
+    // (`FieldScreen::primary_action`). The desktop folder is somewhere things arrive, so it has
+    // to be *present* on Home and it must not be the biggest thing there.
+    let kind_spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+    let spans = SpanRange::new(kind_spans.min, kind_spans.min, kind_spans.max);
     let tile = Tile {
         id,
         kind,
@@ -1853,7 +1923,7 @@ mod tests {
 
     #[test]
     fn a_grid_is_never_smaller_than_four_by_four() {
-        assert_eq!(grid_for(1920, 1016, TILE_SIZE), (18, 9));
+        assert_eq!(grid_for(1920, 1016, TILE_SIZE), (21, 11));
         assert_eq!(grid_for(100, 100, TILE_SIZE), (4, 4));
         assert_eq!(grid_for(1920, 1016, 240), (8, 4));
     }
@@ -2418,6 +2488,55 @@ mod tests {
         let applied = merge(&mut doc, &live);
         assert_eq!(doc, before, "the second merge is a no-op");
         assert!(applied.is_empty());
+    }
+
+    /// Typing a path opens a window for it, and typing the same path again does not open a
+    /// second one: the tile id is the path, so "already open" is exact.
+    #[test]
+    fn a_folder_window_opens_once_per_path_and_is_an_ordinary_tile() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        let path = Path::new("/home/dk/src/legeos");
+
+        let ops = open_folder_ops(&doc, path);
+        assert_eq!(ops.len(), 1, "one place op, nothing else");
+        doc = apply(&doc, &ops[0]).expect("the place applies").0;
+
+        let id = folder_tile_id(path);
+        let tile = doc.tile(id).expect("the window is a tile on the field");
+        assert_eq!(
+            tile.kind,
+            TileKind::Folder {
+                path: path.to_path_buf()
+            }
+        );
+        assert_eq!(tile.title, "legeos", "the window is named for its folder");
+        assert!(
+            doc.location(id).is_some(),
+            "a folder window is placed, so it can be moved, resized and grouped like any tile"
+        );
+        assert!(
+            open_folder_ops(&doc, path).is_empty(),
+            "the same path a second time raises what is there rather than stacking a copy"
+        );
+    }
+
+    /// Desktop is a tray: it opens at the folder floor, not at the folder kind's preferred size,
+    /// so the folder things arrive in is present on Home without being the largest thing on it.
+    #[test]
+    fn the_desktop_folder_opens_as_a_small_tray() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        merge_desktop_folder(&mut doc, Some(Path::new("/home/dk/Desktop")));
+        let id = desktop_folder_tile_id();
+        let tile = doc.tile(id).expect("desktop folder");
+        let floor = SpanRange::for_kind(&tile.kind, doc.cols, doc.rows).min;
+        assert_eq!(tile.spans.preferred, floor);
+        assert_eq!(
+            doc.location(id).expect("placed").placement.span,
+            floor,
+            "it starts collapsed; pressing it is what grows it"
+        );
     }
 
     /// The XDG Desktop directory appears as one placeable Home folder object when it exists,

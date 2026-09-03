@@ -91,6 +91,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     let empty_icons = HashMap::new();
     let empty_previews = HashMap::new();
     let empty_thumbnails = std::collections::HashMap::new();
+    let empty_folder_listings = HashMap::new();
     let browser = FileBrowserData {
         sources: &browser_sources,
         listing: None,
@@ -102,6 +103,8 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         search_error: None,
         feeds: &drawer_feeds,
         thumbnails: &empty_thumbnails,
+        icons: &empty_icons,
+        home: None,
     };
     let clock_label = crate::surface::app::clock_label_now();
     let data = FieldData {
@@ -114,6 +117,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         treemap: None,
         composition: &[],
         browser: &browser,
+        folder_listings: &empty_folder_listings,
         connected: false,
         home_revealed: false,
         network_control_available: false,
@@ -343,6 +347,8 @@ mod tests {
             search_error: None,
             feeds: &drawer_feeds,
             thumbnails: &empty_thumbnails,
+            icons: &HashMap::new(),
+            home: None,
         };
         let apps: Vec<crate::app_search::AppEntry> =
             if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok() {
@@ -393,6 +399,7 @@ mod tests {
             treemap: None,
             composition: &[],
             browser: &browser,
+            folder_listings: &HashMap::new(),
             connected: true,
             home_revealed: true,
             network_control_available: false,
@@ -462,7 +469,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xe7ab_5f4b_0617_079b,
+            hash, 0xf24a_bbf1_5fc7_7e53,
             "review the Home Field pixels before updating this baseline"
         );
     }

@@ -784,7 +784,8 @@ pub async fn fetch_browser_sources() -> BrowserSources {
         let detail = root.volume.as_ref().map_or_else(
             || {
                 if root.available {
-                    "Standard folder".to_owned()
+                    // Nothing: the name and the icon already say it is a folder.
+                    String::new()
                 } else {
                     "Not present".to_owned()
                 }
@@ -881,7 +882,7 @@ fn local_browser_sources() -> BrowserSources {
             .unwrap_or("Media");
         sources.pinned.push(PinnedLocation {
             label: label.to_owned(),
-            detail: "Media folder".to_owned(),
+            detail: String::new(),
             location: FilesLocation::Directory(path.clone()),
             kind: PinnedKind::Place,
         });
@@ -894,7 +895,7 @@ fn add_place(sources: &mut BrowserSources, label: &str, paths: &[std::path::Path
     for path in paths {
         sources.pinned.push(PinnedLocation {
             label: label.to_owned(),
-            detail: "Standard folder".to_owned(),
+            detail: String::new(),
             location: FilesLocation::Directory(path.clone()),
             kind: PinnedKind::Place,
         });

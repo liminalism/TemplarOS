@@ -23,7 +23,7 @@
 //!
 //! Pure: sources in, rows out. No D-Bus, no `Ui`, no clock.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lege_types::AppId;
 
@@ -127,6 +127,8 @@ pub struct Sources<'a> {
     /// `None` while nothing has come back yet, which is a different thing from a search that
     /// found nothing — see [`file_state`].
     pub files: Option<FileResults<'a>>,
+    /// The user's home directory, so a query beginning `~/` names somewhere real.
+    pub home: Option<&'a Path>,
 }
 
 /// How many rows each file source may contribute before the merge.
@@ -166,6 +168,31 @@ pub fn file_state(files: Option<FileResults<'_>>, query: &str) -> FileState {
     }
 }
 
+/// The directory a query names outright, if it names one: `/etc`, `~/src`, `~`.
+///
+/// Pure — it decides what the text *says*, never whether that directory exists. A window opened
+/// on a path that is not there says so in the window, which is a better answer than a row that
+/// silently fails to appear while you are still typing the path.
+pub fn literal_directory(query: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let text = query.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(rest) = text.strip_prefix('~') {
+        let home = home?;
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return Some(if rest.is_empty() {
+            home.to_path_buf()
+        } else {
+            home.join(rest)
+        });
+    }
+    if text.starts_with('/') && text.len() > 1 {
+        return Some(PathBuf::from(text));
+    }
+    None
+}
+
 /// The ranked rows for `query` in `scope`, at most `limit` of them.
 ///
 /// An empty query is not a list: recents live under the launcher field, and typing is what
@@ -203,6 +230,31 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
             ))
     });
     rows.truncate(limit);
+    // A typed path is not a search result: it is an instruction, and it goes first, above
+    // whatever the search happens to have found. This is the quick route to a folder window on
+    // Home — type where you want to be and it opens there.
+    if let Some(path) = literal_directory(query, sources.home) {
+        let already = rows
+            .iter()
+            .any(|row| matches!(&row.hit, Hit::Directory { path: other } if *other == path));
+        if !already {
+            let label = path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            rows.insert(
+                0,
+                Row {
+                    hit: Hit::Directory { path: path.clone() },
+                    label,
+                    detail: path.to_string_lossy().into_owned(),
+                    kind: MatchKind::ExactName,
+                    extra: RowExtra::None,
+                },
+            );
+            rows.truncate(limit);
+        }
+    }
     // The way out of this search and into the one that covers the whole machine. Appended after
     // the cap, never sorted with the results and never cut by the limit: it is not a result, and
     // a person looking for the row that widens the search must find it in the same place every
@@ -317,6 +369,25 @@ fn classify(label: &str, needle: &str) -> Option<MatchKind> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_typed_path_is_read_as_a_path_and_anything_else_is_not() {
+        use std::path::{Path, PathBuf};
+        let home = Path::new("/home/dk");
+        assert_eq!(
+            super::literal_directory("/etc", None),
+            Some(PathBuf::from("/etc"))
+        );
+        assert_eq!(
+            super::literal_directory("  ~/src/legeos ", Some(home)),
+            Some(PathBuf::from("/home/dk/src/legeos"))
+        );
+        assert_eq!(super::literal_directory("~", Some(home)), Some(home.into()));
+        // A name is a search, not a path; `~` with no home to expand against is neither.
+        assert_eq!(super::literal_directory("firefox", Some(home)), None);
+        assert_eq!(super::literal_directory("~/src", None), None);
+        assert_eq!(super::literal_directory("/", Some(home)), None);
+    }
+
     use super::*;
     use crate::file_browser::EntryKind;
 
@@ -425,7 +496,11 @@ mod tests {
     }
 
     fn sources<'a>(apps: &'a [AppEntry], files: Option<FileResults<'a>>) -> Sources<'a> {
-        Sources { apps, files }
+        Sources {
+            apps,
+            files,
+            home: None,
+        }
     }
 
     fn in_work() -> Scope {

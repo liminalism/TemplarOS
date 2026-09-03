@@ -88,6 +88,12 @@ enum DataUpdate {
         undo: Option<FileOperationUndo>,
         notice: String,
     },
+    /// One folder window's listing, keyed by the directory it lists. Many windows, many
+    /// listings — unlike the single Files object's, which has exactly one.
+    FolderListing {
+        path: PathBuf,
+        result: Result<DirectoryListing, String>,
+    },
     /// One file thumbnail for the browse grid, rendered by Files.Previews1 and decoded
     /// off-thread. Tagged with the listing generation it was requested under, so a decode that
     /// outlives its directory is dropped instead of painted into the wrong one.
@@ -129,6 +135,27 @@ enum DataUpdate {
         path: PathBuf,
         result: Result<crate::data::OpenFileResult, String>,
     },
+}
+
+/// The previews handed to a covered field: one empty map, so suppression costs no allocation and
+/// no clone of the cache it is standing in for.
+static EMPTY_PREVIEWS: std::sync::LazyLock<HashMap<String, pixelkit_raster::Bitmap>> =
+    std::sync::LazyLock::new(HashMap::new);
+
+/// Whether the field is behind something and its window previews should stop.
+///
+/// The Home Field is a background layer, so with a fullscreen or maximized window in front of it
+/// nobody is looking at it — except through that window, if the window happens to be translucent,
+/// and then the live previews underneath a terminal show the terminal, which is what the fifth
+/// hands-on run reported. Revealing Home (bare Super) puts the field in front again and the
+/// previews come back, as does un-maximizing or parking the window that was covering it.
+///
+/// A shelved window covers nothing: parking is how you get the field back.
+fn previews_covered(home_revealed: bool, toplevels: &[lege_window::ShellToplevel]) -> bool {
+    !home_revealed
+        && toplevels
+            .iter()
+            .any(|window| !window.shelved && (window.fullscreen || window.maximized))
 }
 
 /// `1 item` or `3 items` — what an operation summary calls a path set.
@@ -185,6 +212,11 @@ const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
+
+/// How often an open folder window re-reads its directory. Slow on purpose: this is a poll
+/// standing in for the change notification the shared file index will deliver
+/// (`@legeos.work.shared-incremental-file-index`), and a fast poll would be a busy loop per window.
+const FOLDER_REFRESH: Duration = Duration::from_secs(5);
 /// How many three-second refreshes pass between full re-reads of the installed application set.
 /// Thirty seconds: slow enough that the most expensive read on the loop stops dominating it,
 /// soon enough that a package installed by a path that announces nothing still turns up while
@@ -292,6 +324,16 @@ struct ShellApp {
     /// The copies of each logical application that has more than one, keyed by logical id.
     /// Refreshed with the application list, and empty for nearly every application there is.
     app_variants: HashMap<String, Vec<(String, String, String)>>,
+    /// The user's home directory, read once: the one folder whose icon its own name cannot give
+    /// away, and the root every folder window opens relative to.
+    home_dir: Option<PathBuf>,
+    /// What each open folder window is showing, keyed by the directory. Bounded by how many
+    /// folder tiles are on the field, which is bounded by the field.
+    folder_listings: HashMap<PathBuf, DirectoryListing>,
+    /// Directories a folder window has asked for and not yet received, and when each was last
+    /// asked for, so a window refreshes on a slow beat instead of once and never again.
+    folder_pending: HashSet<PathBuf>,
+    folder_asked: HashMap<PathBuf, Instant>,
     /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
@@ -387,6 +429,10 @@ impl ShellApp {
             apps_available: false,
             projects: Vec::new(),
             app_variants: HashMap::new(),
+            home_dir: crate::drawers::standard_paths::home_dir(),
+            folder_listings: HashMap::new(),
+            folder_pending: HashSet::new(),
+            folder_asked: HashMap::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
@@ -763,6 +809,55 @@ impl ShellApp {
         });
     }
 
+    /// One folder window's directory, on a slow refresh beat.
+    ///
+    /// There is no filesystem watcher behind Home yet, so a window that fetched once would show a
+    /// directory as it was when it opened. Re-asking every few seconds is the honest interim: it
+    /// is bounded by the number of folder windows, and it is the same call the Files object makes.
+    fn spawn_folder_browse(&mut self, path: PathBuf) {
+        if self.folder_pending.contains(&path) {
+            return;
+        }
+        let now = Instant::now();
+        let fresh = self
+            .folder_asked
+            .get(&path)
+            .is_some_and(|at| now.duration_since(*at) < FOLDER_REFRESH);
+        if fresh {
+            return;
+        }
+        self.folder_pending.insert(path.clone());
+        self.folder_asked.insert(path.clone(), now);
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = crate::data::browse_directory(&path, false).await;
+            let _ = tx.send(DataUpdate::FolderListing { path, result });
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    /// Place a folder window for `path` on the field, or do nothing when one is already there —
+    /// the tile id is derived from the path, so "already there" is exact rather than a guess.
+    fn open_folder_window(&mut self, path: &std::path::Path) {
+        let ops = field_model::open_folder_ops(&self.field, path);
+        if ops.is_empty() {
+            return;
+        }
+        for op in ops {
+            match lege_field::apply(&self.field, &op) {
+                Ok((next, _)) => {
+                    self.field = next;
+                    if self.field_synced == Some(true) {
+                        self.spawn_field_apply(op);
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "opening a folder window"),
+            }
+        }
+        self.spawn_folder_browse(path.to_path_buf());
+    }
+
     fn spawn_open_file(&mut self, path: PathBuf) {
         self.browser_status = Some(format!("Opening {}…", path.display()));
         let tx = self.data_tx.clone();
@@ -874,6 +969,18 @@ impl ShellApp {
                 DataUpdate::Icon(key, bitmap) => {
                     if let Some(bitmap) = bitmap {
                         self.icons.insert(key, bitmap);
+                    }
+                }
+                DataUpdate::FolderListing { path, result } => {
+                    self.folder_pending.remove(&path);
+                    match result {
+                        Ok(listing) => {
+                            self.folder_listings.insert(path, listing);
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, path = %path.display(), "a folder window's listing failed");
+                            self.folder_listings.remove(&path);
+                        }
                     }
                 }
                 DataUpdate::FileThumbnail {
@@ -1006,6 +1113,39 @@ impl ShellApp {
         });
     }
 
+    /// Ask for one theme icon — a folder, a drive, the wastebasket — off the event loop, exactly
+    /// as an application's icon is asked for and filed in the same map under a `theme:` key.
+    fn ensure_theme_icon(&mut self, name: &str) {
+        let key = crate::surface::file_browser::theme_icon_key(name);
+        if name.is_empty() || self.icons.contains_key(&key) || self.icon_attempted.contains(&key) {
+            return;
+        }
+        self.icon_attempted.insert(key.clone());
+        let name = name.to_owned();
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn_blocking(move || {
+            let bitmap = icons::load_theme_icon(&name, &SystemIconRoots);
+            let _ = tx.send(DataUpdate::Icon(key, bitmap));
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    /// Every theme icon the Files object's rail and the folder windows need, asked for once each.
+    fn ensure_place_icons(&mut self) {
+        let mut wanted: Vec<&'static str> =
+            vec!["folder", "text-x-generic", "application-x-executable"];
+        let home = self.home_dir.clone();
+        for pinned in &self.browser_sources.pinned {
+            wanted.push(pinned.icon_name(home.as_deref()));
+        }
+        wanted.sort_unstable();
+        wanted.dedup();
+        for name in wanted {
+            self.ensure_theme_icon(name);
+        }
+    }
+
     /// Bring the field document up to date with the window's size and the live state before a
     /// frame: grid size from the logical size, then `field_model::merge`.
     fn refresh_field(
@@ -1053,6 +1193,7 @@ impl ShellApp {
             self.ensure_icon(&key);
         }
         self.ensure_launcher_icons();
+        self.ensure_place_icons();
     }
 
     /// Ask for icons for the launcher's currently visible rows, a few per frame.
@@ -1085,11 +1226,18 @@ impl ShellApp {
     /// asks at the preview rate for every session tile. Arrived previews are filed under the
     /// tile's own identifier. The compositor's own floor of four frames a second per window
     /// holds whatever this asks.
-    fn refresh_previews(&mut self, toplevels: &[lege_window::ShellToplevel]) {
+    fn refresh_previews(&mut self, toplevels: &[lege_window::ShellToplevel], covered: bool) {
         let Some(bridge) = &mut self.bridge else {
             return;
         };
         if self.field_settings.previews == PreviewMode::Off || !bridge.previews_available() {
+            return;
+        }
+        // Nothing on the field is being looked at, so nothing on it is captured. The cache is
+        // kept, not cleared: that is what makes coming back instant instead of a blank tile
+        // filling in a frame or two later.
+        if covered {
+            self.drain_previews(toplevels);
             return;
         }
         let now = Instant::now();
@@ -1135,6 +1283,16 @@ impl ShellApp {
                 Err(error) => tracing::debug!(%error, "preview request skipped"),
             }
         }
+        self.drain_previews(toplevels);
+    }
+
+    /// File whatever the compositor has finished capturing and forget the windows that are gone.
+    /// Separate from the request policy because a suppressed field still has to accept the frames
+    /// already in flight — dropping them on the floor would leave the buffers un-released.
+    fn drain_previews(&mut self, toplevels: &[lege_window::ShellToplevel]) {
+        let Some(bridge) = &mut self.bridge else {
+            return;
+        };
         for (identifier, bitmap) in bridge.take_previews() {
             if let Some(toplevel) = toplevels
                 .iter()
@@ -1160,8 +1318,9 @@ impl ShellApp {
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
-        self.refresh_previews(&toplevels);
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
+        let previews_covered = previews_covered(home_revealed, &toplevels);
+        self.refresh_previews(&toplevels, previews_covered);
         let Some(home) = &self.home else { return };
         let scale = home.scale;
         let logical = home
@@ -1230,6 +1389,8 @@ impl ShellApp {
             search_error,
             feeds: &self.drawer_feeds,
             thumbnails: &self.file_thumbnails,
+            icons: &self.icons,
+            home: self.home_dir.as_deref(),
         };
         let recents = self.recent.resolve(&self.apps);
         let data = FieldData {
@@ -1237,11 +1398,16 @@ impl ShellApp {
             field: &self.field,
             toplevels: &toplevels,
             icons: &self.icons,
-            previews: &self.previews,
+            previews: if previews_covered {
+                &EMPTY_PREVIEWS
+            } else {
+                &self.previews
+            },
             drawer_feeds: &self.drawer_feeds,
             treemap: self.treemap.as_ref().map(|(_, bitmap)| bitmap),
             composition: &self.composition,
             browser: &browser_data,
+            folder_listings: &self.folder_listings,
             connected: self.bridge.is_some(),
             home_revealed,
             network_control_available,
@@ -1341,6 +1507,8 @@ impl ShellApp {
                 location,
                 show_hidden,
             } => self.spawn_browse(location, show_hidden),
+            FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path),
+            FieldAction::OpenFolderWindow(path) => self.open_folder_window(&path),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
                 Ok(app_id) => {
@@ -3080,6 +3248,47 @@ impl ApplicationHandler<Wake> for ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window(
+        id: u64,
+        fullscreen: bool,
+        maximized: bool,
+        shelved: bool,
+    ) -> lege_window::ShellToplevel {
+        lege_window::ShellToplevel {
+            window_id: lege_window::WindowId(id),
+            canonical_app_id: None,
+            instance_id: None,
+            title: "kitty".to_owned(),
+            verified_identity: false,
+            activated: true,
+            fullscreen,
+            shelved,
+            maximized,
+            geometry: lege_window::Rect::new(0, 0, 1920, 1080),
+            layer: lege_window::Layer::Normal,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn a_window_covering_the_field_stops_its_previews_until_it_stops_covering_it() {
+        // Nothing in front of the field: previews run.
+        assert!(!previews_covered(false, &[]));
+        assert!(!previews_covered(false, &[window(1, false, false, false)]));
+
+        // A translucent fullscreen terminal is exactly the case that reported this: the field
+        // behind it was still capturing, and its own preview of the terminal showed through.
+        assert!(previews_covered(false, &[window(1, true, false, false)]));
+        assert!(previews_covered(false, &[window(1, false, true, false)]));
+
+        // The three ways back. Revealing Home puts the field in front; parking and un-maximizing
+        // both stop the window covering it. Each is immediate, and the cache is untouched, so
+        // what comes back is the picture that was already there rather than a blank.
+        assert!(!previews_covered(true, &[window(1, true, false, false)]));
+        assert!(!previews_covered(false, &[window(1, true, false, true)]));
+        assert!(!previews_covered(false, &[window(1, false, false, false)]));
+    }
 
     fn file_undo(at: Instant) -> FileOperationUndo {
         FileOperationUndo {

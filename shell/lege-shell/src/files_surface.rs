@@ -94,9 +94,33 @@ pub enum PinnedKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedLocation {
     pub label: String,
+    /// What is worth saying about this row *beyond* its name — a volume's free space, or that it
+    /// is not mounted. Empty for an ordinary folder: "Documents / Standard folder" said the same
+    /// thing twice, once in a word the icon now carries (the fifth hands-on run).
     pub detail: String,
     pub location: FilesLocation,
     pub kind: PinnedKind,
+}
+
+impl PinnedLocation {
+    /// The freedesktop icon name this row is drawn with. `home` is the user's home directory,
+    /// which is the one folder whose icon cannot be told from its name alone.
+    pub fn icon_name(&self, home: Option<&Path>) -> &'static str {
+        match &self.location {
+            FilesLocation::Recent => "document-open-recent",
+            FilesLocation::Trash => "user-trash",
+            FilesLocation::Operations => "edit-copy",
+            FilesLocation::Drives => "drive-harddisk",
+            FilesLocation::Search { .. } => "system-search",
+            FilesLocation::Directory(path) => {
+                if self.kind == PinnedKind::Drive {
+                    "drive-harddisk"
+                } else {
+                    crate::icons::directory_icon_name(path, home)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
