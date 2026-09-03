@@ -1658,6 +1658,21 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+[[package]]
+name = "lege-file-index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inotify",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
  "tracing-subscriber",
  "uuid",
  "zbus",
@@ -1667,6 +1682,7 @@ dependencies = [
 name = "lege-files"
 version = "0.1.0"
 dependencies = [
+ "lege-file-index",
  "anyhow",
  "async-trait",
  "clap",
@@ -4889,12 +4905,12 @@ dependencies = [
 ]
 
 [[package]]
- "toml 0.9.12+spec-1.1.0",
 name = "yoke-derive"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
 dependencies = [
+ "toml 0.9.12+spec-1.1.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
