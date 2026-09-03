@@ -86,6 +86,23 @@ pub enum FieldAction {
         id: &'static str,
         window: WindowId,
     },
+    /// Put one window in another's window group (`window.group`, and on the wire
+    /// `lege_shell_toplevel_v1.join_group`): the drop of one session tile on another, or on a
+    /// group's tile.
+    ///
+    /// Not a `RunWindowAction`: that names one window, and grouping is the one window verb that
+    /// needs two. The action id is still the manifest's, so the menu, the cheat sheet and this
+    /// cannot call the capability three different things.
+    JoinWindowGroup {
+        window: WindowId,
+        other: WindowId,
+    },
+    /// Name one window group (`window.rename-group`, `lege_shell_toplevel_v1.set_group_name`),
+    /// addressed through any member. An empty name unnames it.
+    RenameWindowGroup {
+        window: WindowId,
+        name: String,
+    },
     /// Dismiss exactly one notification (`Notifications1.Dismiss`); the bulk clear stays the
     /// declared `notifications.clear` action.
     DismissNotification(u32),
@@ -275,6 +292,20 @@ pub struct FieldScreen {
     /// The secondary-click menu (`crate::surface::context_menu`): the pointer route to the
     /// window and field actions that otherwise had only a chord.
     pub menu: ContextMenu,
+    /// The open "name this group" question, if there is one.
+    rename_group: Option<GroupRename>,
+}
+
+/// Naming a window group: which group (by one of its members, which is how every group request is
+/// addressed) and what has been typed so far.
+///
+/// A small panel rather than an inline edit on the tile, for the same reason the Files object's
+/// rename is one: the tile is a live thing whose title the compositor may change under the caret,
+/// and a refusal needs somewhere to be said.
+#[derive(Debug)]
+struct GroupRename {
+    window: WindowId,
+    field: TextFieldState,
 }
 
 impl Default for FieldScreen {
@@ -309,6 +340,7 @@ impl Default for FieldScreen {
             notice: None,
             confirming: None,
             menu: ContextMenu::default(),
+            rename_group: None,
         }
     }
 }
@@ -693,7 +725,8 @@ impl FieldScreen {
         {
             self.focus = None;
         }
-        if !self.handle_menu(ui, doc, data, rest, &mut actions) {
+        let asking = self.update_rename_group(ui, rest, &mut actions);
+        if !asking && !self.handle_menu(ui, doc, data, rest, &mut actions) {
             self.handle_keys(ui, doc, data, &mut actions);
             self.handle_pointer(ui, doc, data, &mut actions);
             self.open_menu_on_secondary_click(ui, doc, data, rest);
@@ -727,6 +760,7 @@ impl FieldScreen {
         self.draw_resize_preview(ui, doc);
         self.draw_notice(ui, rest);
         self.menu.paint(ui, rest);
+        self.paint_rename_group(ui, rest);
 
         if rects.is_empty() {
             self.draw_empty_state(ui, rest, data.connected);
@@ -1365,7 +1399,12 @@ impl FieldScreen {
     /// what this screen is, and where each first request goes, without having to scan every
     /// declared verb.
     fn draw_help_primer(ui: &mut Ui<'_>, area: Rect) {
-        const ROWS: [(&str, &str); 7] = [
+        // The last row is a gesture, not an action, which is why it lives here rather than in the
+        // manifest below: grouping has no chord of its own on Home, and dropping one window's
+        // title bar on another is the only way to learn it. The chords that come *after* a group
+        // exists — Alt+Tab inside it, Super+Tab across groups, Super+G and Super+Shift+G — are
+        // declared actions and appear in the cheat sheet under Navigation and Window.
+        const ROWS: [(&str, &str); 8] = [
             ("Super", "Come back here from any window"),
             ("Apps", "Type an application's name to open it"),
             ("Recents", "Applications you launched, under Apps"),
@@ -1373,6 +1412,7 @@ impl FieldScreen {
             ("Session", "Lock, log out, or shut down"),
             ("Settings", "Volume, brightness, and the rest"),
             ("Right-click", "More for a tile or the field"),
+            ("Drop a title bar", "On another, to group two windows"),
         ];
         design::shell(ui, area, design::RECESSED, design::EDGE, Elevation::Rest);
         let inner = area.inset(ui.px(12));
@@ -2019,6 +2059,99 @@ impl FieldScreen {
         }
     }
 
+    /// Where the "name this group" panel goes, and the three rectangles inside it that take
+    /// input. Computed from the field's own area alone, so the input pass can place it before
+    /// anything is painted and the paint pass can find exactly the same rectangles again.
+    fn rename_group_rects(ui: &Ui<'_>, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+        let width = ui.px(380).min(area.w);
+        let height = ui.px(118).min(area.h);
+        let panel = Rect::new(
+            area.x + (area.w - width) / 2,
+            area.y + ui.px(64).min((area.h - height).max(0)),
+            width,
+            height,
+        );
+        let inner = panel.inset(ui.px(12));
+        let (title, rest) = inner.split_top(ui.px(22));
+        let (field, buttons) = rest.split_top(ui.px(34));
+        let (cancel, rest) = buttons.split_right(ui.px(96));
+        let (accept, _) = rest.split_right(ui.px(96));
+        (panel, title, field, accept, cancel)
+    }
+
+    /// Claim this frame's input for the "name this group" question, and report whether it owns
+    /// the frame.
+    ///
+    /// Split from the painting for the reason the context menu is: `pixelkit_shell::Input` gives
+    /// a press to whoever claims it first, so a question drawn *over* the tiles has to take the
+    /// input *before* they are painted or the tile underneath answers it. While it is up it owns
+    /// the keyboard and the pointer both, including the ground outside it — a question that let
+    /// the field keep acting behind it would fire two things per press.
+    ///
+    /// This is the pointer route for `window.rename-group`, whose declared menu row opens it.
+    fn update_rename_group(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        actions: &mut Vec<FieldAction>,
+    ) -> bool {
+        let Some(rename) = self.rename_group.as_mut() else {
+            return false;
+        };
+        let (_, _, field, accept, cancel) = Self::rename_group_rects(ui, area);
+        let keys = ui.input.take_keys();
+        if keys.contains(&KeyInput::Escape) {
+            self.rename_group = None;
+            return true;
+        }
+        let confirmed = keys.contains(&KeyInput::Enter);
+        rename.field.apply(&keys);
+        // An empty name is not a refusal: it is how a group goes back to being called by how many
+        // windows it holds, which is what an unnamed group is called.
+        let typed = rename.field.text().trim().to_owned();
+        let window = rename.window;
+        let cancelled = ui.input.take_click(cancel);
+        let accepted = ui.input.take_click(accept);
+        let _ = ui.input.take_click(field);
+        // Everything else on the field, so no tile answers a click aimed at this.
+        let _ = ui.input.take_click(area);
+        if cancelled {
+            self.rename_group = None;
+        } else if accepted || confirmed {
+            actions.push(FieldAction::RenameWindowGroup {
+                window,
+                name: typed,
+            });
+            self.rename_group = None;
+        }
+        true
+    }
+
+    /// Draw the "name this group" question, over everything the field painted.
+    fn paint_rename_group(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        let Some(rename) = self.rename_group.as_mut() else {
+            return;
+        };
+        let (panel, title, field, accept, cancel) = Self::rename_group_rects(ui, area);
+        ui.painter.fill_rect(panel, ui.theme.panel);
+        ui.painter
+            .stroke_rect(panel, ui.scale.hairline(), ui.theme.panel_edge);
+        let label = lege_types::action::action("window.rename-group")
+            .map_or("Rename group", |declaration| declaration.label);
+        ui.label(title, label, ui.theme.text, Align::Left);
+        ui.text_field(
+            &mut rename.field,
+            field.inset(ui.px(3)),
+            "Name",
+            true,
+            false,
+        );
+        // The clicks were claimed in the input pass; these paint, and their answers are already
+        // spoken for.
+        let _ = ui.button(cancel.inset(ui.px(4)), "Cancel");
+        let _ = ui.button(accept.inset(ui.px(4)), "Rename");
+    }
+
     /// Give this frame's input to the context menu, and report whether it owns the frame.
     ///
     /// The menu is drawn over the tiles, so it has to take the input *before* they are painted:
@@ -2064,9 +2197,19 @@ impl FieldScreen {
             .rev()
             .find(|(_, rect)| rect.contains(cx, cy))
             .map(|(id, _)| id);
-        let window = tile
-            .and_then(|id| field_model::window_for_tile(data.field, id, data.toplevels))
-            .map(|window| window.window_id);
+        // A group's tile has no window of its own, so it borrows one of its members: every group
+        // request on the wire is sent to a member and applies to the set.
+        let window_group =
+            tile.is_some_and(|id| matches!(doc.kind_of(id), Some(TileKind::WindowGroup { .. })));
+        let toplevel = tile.and_then(|id| {
+            if window_group {
+                field_model::group_window(data.field, id, data.toplevels)
+            } else {
+                field_model::window_for_tile(data.field, id, data.toplevels)
+            }
+        });
+        let in_window_group = toplevel.is_some_and(|toplevel| toplevel.group.is_some());
+        let window = toplevel.map(|toplevel| toplevel.window_id);
         if let Some(id) = tile {
             self.focus = Some(id);
             if !self.selection.contains(&id) {
@@ -2105,6 +2248,8 @@ impl FieldScreen {
                 tile,
                 window,
                 shelved: doc.shelved().next().is_some(),
+                window_group,
+                in_window_group,
             },
             choices,
         );
@@ -2199,7 +2344,25 @@ impl FieldScreen {
                     actions.push(FieldAction::PinApp(app_id));
                 }
             }
-            "window.escape-fullscreen" | "window.close" => {
+            // Naming a group needs a name, and a declared row carries no payload — so the row
+            // opens the one place a name can be typed, and the request goes when it is.
+            "window.rename-group" => {
+                if let Some((tile, window)) = tile.zip(window) {
+                    let name = doc
+                        .tile(tile)
+                        .map_or_else(String::new, |tile| tile.title.clone());
+                    self.rename_group = Some(GroupRename {
+                        window,
+                        field: TextFieldState::with_text(name),
+                    });
+                }
+            }
+            "window.escape-fullscreen"
+            | "window.close"
+            | "window.ungroup"
+            | "window.activate-group"
+            | "window.shelve-group"
+            | "window.unshelve-group" => {
                 if let Some(window) = window {
                     actions.push(FieldAction::RunWindowAction {
                         id: chosen.action,
@@ -2268,6 +2431,11 @@ impl FieldScreen {
                     // `release` has already cleared the drag; the field document is deliberately
                     // untouched, because the tile has not moved — the file has.
                     return;
+                }
+                // Grouping and ungrouping go to the compositor before the placement is applied,
+                // so the request is out even if the field refuses the move.
+                if let Some(gesture) = self.group_gesture(doc, tile, tile_at, ui, data) {
+                    actions.push(gesture);
                 }
                 let group = self.selection.len() > 1 && self.selection.contains(&tile);
                 let op = if group {
@@ -2541,6 +2709,54 @@ impl FieldScreen {
             destination,
             copy,
         })
+    }
+
+    /// The compositor request a drop asks for, when the grammar named one that changes group
+    /// membership rather than the document.
+    ///
+    /// Group membership belongs to `lege_window`, so a drop here asks and the tile follows on the
+    /// next merge; the field op the drop also produces is plain placement, as it is for every
+    /// other drop the grammar leaves to a service.
+    fn group_gesture(
+        &self,
+        doc: &FieldDocument,
+        tile: TileId,
+        tile_at: (f32, f32),
+        ui: &Ui<'_>,
+        data: &FieldData<'_>,
+    ) -> Option<FieldAction> {
+        let kind = doc.kind_of(tile)?;
+        let cell = self.landing_cell(doc, tile, tile_at, ui)?;
+        let target = Self::target_at(doc, self.zoomed, tile, cell);
+        let modifiers = lege_field::DropModifiers {
+            copy: ui.input.modifiers().control,
+        };
+        let operation = lege_field::operation_for(
+            tile,
+            kind,
+            &target,
+            Self::drop_origin(doc, tile),
+            modifiers,
+        )?;
+        let window = field_model::window_for_tile(doc, tile, data.toplevels)?.window_id;
+        match operation {
+            Operation::JoinWindowGroup { with } => {
+                // The target is either another window's tile or a group's; a group's tile is
+                // addressed through any of its members, because that is how the wire addresses
+                // a group at all.
+                let other = field_model::window_for_tile(doc, with, data.toplevels)
+                    .or_else(|| field_model::group_window(doc, with, data.toplevels))?;
+                (other.window_id != window).then_some(FieldAction::JoinWindowGroup {
+                    window,
+                    other: other.window_id,
+                })
+            }
+            Operation::LeaveWindowGroup => Some(FieldAction::RunWindowAction {
+                id: "window.ungroup",
+                window,
+            }),
+            _ => None,
+        }
     }
 
     fn drop_op(
@@ -4277,6 +4493,145 @@ mod tests {
             apply(&restored, &inverse).expect("inverse applies").0,
             h.doc
         );
+    }
+
+    /// A harness whose two windows are in one group, so the field carries a group tile.
+    fn grouped_harness() -> Harness {
+        let mut h = Harness::new();
+        for toplevel in &mut h.toplevels {
+            toplevel.group = Some(lege_window::GroupInfo {
+                group_id: 5,
+                name: "Writing".to_owned(),
+                accent: 0x0033_88ff,
+            });
+            toplevel.shelved = false;
+        }
+        merge(
+            &mut h.doc,
+            &LiveState {
+                toplevels: &h.toplevels,
+                projects: &[],
+            },
+        );
+        h
+    }
+
+    #[test]
+    fn dropping_one_window_on_another_asks_the_compositor_to_group_them() {
+        let mut h = Harness::new();
+        // Two loose windows, both on the field.
+        let one = field_model::session_tile_for(&h.doc, &h.toplevels[0]).expect("a tile");
+        let two = field_model::session_tile_for(&h.doc, &h.toplevels[1]).expect("a tile");
+        let onto = h.rect_of(two);
+        let from = h.rect_of(one);
+        let grab = (from.x + 10, from.y + 8);
+        h.input.cursor_moved(grab.0 as f32, grab.1 as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        let target = (onto.x + onto.w / 2, onto.y + onto.h / 2);
+        for step in 1..=10 {
+            h.input.cursor_moved(
+                (grab.0 + (target.0 - grab.0) * step / 10) as f32,
+                (grab.1 + (target.1 - grab.1) * step / 10) as f32,
+            );
+            h.now += 100;
+            h.frame();
+        }
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        let joined = actions.iter().find_map(|action| match action {
+            FieldAction::JoinWindowGroup { window, other } => Some((*window, *other)),
+            _ => None,
+        });
+        assert_eq!(
+            joined,
+            Some((WindowId(1), WindowId(2))),
+            "dropping one window's tile on another's groups them: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_group_tile_offers_the_verbs_that_act_on_the_whole_set() {
+        let mut h = grouped_harness();
+        let group = field_model::group_tile_id(5);
+        let tile = h.doc.tile(group).expect("the group has a tile");
+        assert_eq!(tile.title, "Writing");
+        assert_eq!(tile.accent, Some(0x0033_88ff));
+
+        // Pressing the name raises the whole group.
+        let rect = h.rect_of(group);
+        let actions = h.click(rect.x + rect.w / 4, rect.y + 10);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                FieldAction::RunWindowAction {
+                    id: "window.activate-group",
+                    ..
+                }
+            )),
+            "a press on a group's name raises it: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn the_group_menu_row_for_renaming_opens_the_question_and_sends_the_name() {
+        let mut h = grouped_harness();
+        let group = field_model::group_tile_id(5);
+        let rect = h.rect_of(group);
+        h.input
+            .cursor_moved((rect.x + 6) as f32, (rect.y + 6) as f32);
+        h.input.mouse(MouseButton::Right, true);
+        h.input.mouse(MouseButton::Right, false);
+        h.frame();
+        let rows: Vec<&'static str> = h
+            .screen
+            .menu
+            .target()
+            .expect("the menu opened")
+            .rows()
+            .iter()
+            .map(|item| item.action)
+            .collect();
+        assert!(rows.contains(&"window.rename-group"), "rows were {rows:?}");
+
+        // Choosing it opens the question, and Enter sends what is in it.
+        h.screen.rename_group = Some(GroupRename {
+            window: WindowId(1),
+            field: TextFieldState::with_text("Reading".to_owned()),
+        });
+        h.screen.menu.close();
+        let actions = h.key(KeyInput::Enter);
+        let named = actions.iter().find_map(|action| match action {
+            FieldAction::RenameWindowGroup { window, name } => Some((*window, name.clone())),
+            _ => None,
+        });
+        assert_eq!(named, Some((WindowId(1), "Reading".to_owned())));
+        assert!(h.screen.rename_group.is_none(), "the question closed");
+    }
+
+    #[test]
+    fn dragging_a_member_out_of_its_group_asks_the_compositor_to_ungroup_it() {
+        let h = grouped_harness();
+        let group = field_model::group_tile_id(5);
+        let member = field_model::session_tile_for(&h.doc, &h.toplevels[0]).expect("a tile");
+        assert_eq!(
+            h.doc.location(member).and_then(|at| at.container),
+            Some(group),
+            "the member starts inside its group"
+        );
+        // Inside the group tile the member has no rect of its own on the field, so the drag is
+        // exercised through the grammar the drop consults, which is what the pointer path calls.
+        let operation = lege_field::operation_for(
+            member,
+            h.doc.kind_of(member).expect("a kind"),
+            &Target::Empty {
+                container: None,
+                cell: Cell::new(0, 0),
+            },
+            FieldScreen::drop_origin(&h.doc, member),
+            lege_field::DropModifiers::MOVE,
+        );
+        assert_eq!(operation, Some(Operation::LeaveWindowGroup));
     }
 
     #[test]

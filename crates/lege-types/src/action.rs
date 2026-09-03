@@ -477,6 +477,72 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Window,
     },
+    // ---- Window groups ----------------------------------------------------------------
+    // A window group is an explicit set of windows that park, return and stack as one
+    // (`docs/planning/window-groups-and-application-integration.md` §2). Every row here is
+    // declared without a chord and reached from Home: grouping is a drop of one window's tile on
+    // another's, and the rest are the group tile's own controls and menu rows. The compositor
+    // owns the chords for grouping and for cycling, and attaches them to these same ids.
+    ActionDecl {
+        id: "window.group",
+        label: "Group these windows",
+        control: Some("Group"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.ungroup",
+        label: "Take out of group",
+        control: Some("Ungroup"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.activate-group",
+        label: "Raise the whole group",
+        control: Some("Raise"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.shelve-group",
+        label: "Park the whole group",
+        control: Some("Park"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.unshelve-group",
+        label: "Bring the whole group back",
+        control: Some("Return"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.rename-group",
+        label: "Rename group",
+        control: Some("Rename"),
+        category: ActionCategory::Window,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
     ActionDecl {
         id: "window.close",
         label: "Close",
