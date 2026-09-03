@@ -21,7 +21,12 @@ must call. The seven properties it must uphold are:
 3. **Identity** — `lege-comp-integration::DbusIdentityCache`; sanitized identity into the toplevel-info path.
 4. **Typed layers** (`lege_window::Layer`) replacing arbitrary always-on-top; `LayerStack` is the sole
    z-order authority — the compositor's own scene-graph stacking must be driven from `WindowService::stacking_order`,
-   never maintained independently.
+   never maintained independently. That governs the *frame's element order* too (`src/scene.rs`): a window's
+   band and grip are part of that window, emitted immediately above its own surface and below every window in
+   front of it, so a higher window occludes a lower window's title exactly as it occludes its content. Only
+   whole-output chrome — the lock screen, the pressure overlay, the fallback switcher, the "show every window"
+   scatter — sits above every window. Collecting chrome as one flat list ahead of all window content instead
+   painted a buried window's title over the translucent terminal in front of it, at full opacity.
 5. **Recovery** — `lege_recovery_v1` pressure overlay + "show every window" scatter (shelved windows
    included) + minimal fallback switcher + fullscreen/modal escape + "go home", all bound to fixed key
    combinations and calling straight into `WindowService`, so all five work without the shell;
@@ -69,6 +74,7 @@ over in-memory state, and every `lege-comp-integration` type hands work to a bac
 | `lege_shell_v1` request from the shell connection (`close`, `move_to_visible_area`, `shelve`, `unshelve`, `escape_fullscreen_or_modal`, `show_all_windows`) | `WindowService::handle_command` with `CommandContext{trusted_shell: true, ..}` — **only** the one connection the compositor itself spawned as the shell may set `trusted_shell: true`; every other connection (there is no other way to reach this protocol) is a protocol violation, not a legitimate `false` case |
 | Fixed recovery key combinations (`docs/architecture/accessibility.md`): show every window, escape fullscreen/modal, cycle the fallback switcher, go home | Call `WindowService::handle_command(WindowCommand::ShowAllWindows \| EscapeFullscreenOrModal \| RevealHome, CommandContext{trusted_shell: true, ..})` or `WindowService::cycle_focus` directly from the compositor's own keybinding handler — **not** through the wire protocol, and not gated on a shell connection existing at all; this is what makes them work with the shell dead. After a reveal starts or ends, `input::refocus_after_reveal` moves the keyboard to the Home Surface or back to the topmost visible window |
 | `xdg_toplevel.set_maximized` / `unset_maximized` | `xdg_shell::apply_maximized` → `WindowService::handle_command(SetMaximized{..})`; the returned geometry (one output's `usable()`, or the repaired floating rect) goes out as the pending size + one configure. `on_outputs_changed` re-derives a maximized window from its output rather than repairing it |
+| Any input event at all — keyboard, pointer, touch — before it is dispatched anywhere | `LegeCompState::note_activity` (`src/idle.rs`): wake a screen that idle-blanking turned off, and restart the countdown. The compositor is the session's **only** honest idle source — logind's `IdleHint` is driven by nothing here and no client can see the seat — so this is where "nothing has happened for a while" is known rather than guessed. The delay itself is `org.legeos.Power1`'s `screen_off_after`, which the shell reads and relays through `lege_shell_v1.set_idle_timeout` (0 = never); a live `zwp_idle_inhibit_manager_v1` inhibitor suspends the countdown entirely. On expiry the backend turns every output off (DPMS off on udev, a black frame nested) and the next input turns them back on. Turning the screen off is **not** locking it and not dimming it: `Power1`'s `lock_after` and `dim_after` are separate intervals, neither is enforced, and `src/idle.rs`'s module doc says where each would attach |
 | Anything that changed toplevel list, shelf contents or stacking order | `lege_comp_integration::snapshot(&service)` then `ShellStateBroadcaster::publish` — never encode/send `lege_shell_v1` events synchronously from the same call site that touched `WindowService` |
 
 `Layer::SecureLock` and `Layer::Recovery` surfaces (the lock screen, the pressure overlay, the recovery

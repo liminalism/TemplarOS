@@ -41,19 +41,9 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{
-            ImportDma, ImportMemWl,
-            element::{
-                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
-            },
-            gles::GlesRenderer,
-        },
+        renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
         session::{Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
-    },
-    desktop::{
-        Window,
-        space::{SpaceRenderElements, space_render_elements},
     },
     output::{Mode, Output, PhysicalProperties},
     reexports::{
@@ -75,19 +65,10 @@ use smithay::{
 use smithay_drm_extras::{display_info, drm_scanner::DrmScanner};
 use std::{collections::HashMap, time::Duration};
 
-// The scene this backend hands to `DrmOutput::render_frame`, front-to-back: compositor-drawn
-// chrome (recovery band/tab, pressure overlay, scatter backdrop — `crate::chrome`) always wins
-// over window content, matching `src/backend/winit.rs`'s `render_output` ordering and
-// `src/input.rs`'s hit-testing priority for the same rectangles.
-//
-// `render_elements!` (Smithay macro, `#[macro_export]`'d — not doc-commentable, hence `//` above
-// rather than `///`) generates `UdevRenderElement` and its `RenderElement<GlesRenderer>` impl.
-smithay::backend::renderer::element::render_elements! {
-    UdevRenderElement<=GlesRenderer>;
-    Cursor=crate::cursor::CursorRenderElement,
-    Custom=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
-}
+// The scene this backend hands to `DrmOutput::render_frame` is built by `crate::scene`, which
+// both backends share: whole-output chrome above everything, then each window's own band and
+// grip immediately above its own surface, top of the stacking order first. See that module for
+// why the order is a correctness question rather than a cosmetic one.
 
 /// Clear colour behind every output — matches `src/backend/winit.rs`'s so a window dragged
 /// between the two backends during development looks the same.
@@ -161,6 +142,50 @@ pub struct UdevBackendData {
 impl Backend for UdevBackendData {
     fn seat_name(&self) -> String {
         self.session.seat()
+    }
+
+    /// Idle blanking on real hardware (`src/idle.rs`): DPMS off, and back on.
+    ///
+    /// `DrmCompositor::clear` puts the CRTC into DPMS off and disables every plane; the surface
+    /// re-enables itself on the next `queue_frame`, which is exactly what waking does. Waking
+    /// also has to `reset_buffers` and kick a render by hand, because this backend's redraw
+    /// cadence is page-flip completion and a dark output has no flips in flight to carry it (the
+    /// same reason `schedule_retry` exists for a damage-free frame). Blanking is not attempted
+    /// while the session is paused for a VT switch: the CRTC is not ours to touch then.
+    fn set_blanked(state: &mut State, blanked: bool) {
+        if state.backend_data.paused {
+            return;
+        }
+        let surfaces: Vec<(DrmNode, crtc::Handle)> = state
+            .backend_data
+            .devices
+            .iter()
+            .flat_map(|(node, device)| device.surfaces.keys().map(move |crtc| (*node, *crtc)))
+            .collect();
+
+        for (node, crtc) in surfaces {
+            let Some(surface) = state
+                .backend_data
+                .devices
+                .get_mut(&node)
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+            else {
+                continue;
+            };
+            if blanked {
+                if let Err(error) = surface
+                    .drm_output
+                    .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                {
+                    tracing::warn!(%error, ?crtc, "turning the output off");
+                }
+            } else {
+                surface.drm_output.reset_buffers();
+                state
+                    .loop_handle
+                    .insert_idle(move |state| render_surface(state, node, crtc));
+            }
+        }
     }
 }
 
@@ -666,7 +691,7 @@ fn connector_connected(
 
     let mut locked = device.drm_output_manager.lock();
     let renderer = &mut device.renderer;
-    let drm_output = locked.initialize_output::<GlesRenderer, UdevRenderElement>(
+    let drm_output = locked.initialize_output::<GlesRenderer, crate::scene::SceneElement>(
         crtc,
         drm_mode,
         &[connector.handle()],
@@ -789,6 +814,12 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
 /// retry: true on any failure or a damage-free frame (nothing queued, so no page-flip completion
 /// will come to drive the next attempt), false once a flip is queued.
 fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output: &Output) -> bool {
+    // A blanked output stays blanked: queueing a frame is what would re-enable DPMS
+    // (`DrmCompositor::clear`'s contract), so the idle blank has to be checked here rather than
+    // only where it was decided.
+    if state.idle.blanked() {
+        return false;
+    }
     let backend = &mut state.backend_data;
     let Some(device) = backend.devices.get_mut(&node) else {
         return false;
@@ -812,10 +843,11 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     // `state.chrome`/`state.space`/`state.window_service`/... are fields of `state` disjoint
     // from `state.backend_data` (which `device`/`renderer` above borrow from) — Rust's borrow
     // checker tracks that disjointness through this whole function, which is exactly why
-    // `chrome::collect_elements` takes these pieces individually (`ChromeInputs`) rather than
+    // `crate::scene::collect` takes these pieces individually (`ChromeInputs`) rather than
     // `&LegeCompState<B>` as a whole (see that type's doc).
-    let chrome_elements = crate::chrome::collect_elements(
+    let scene_elements = crate::scene::collect(
         &mut state.chrome,
+        &state.windows,
         &crate::chrome::ChromeInputs {
             space: &state.space,
             window_service: &state.window_service,
@@ -828,20 +860,14 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         renderer,
     );
 
-    let space_elements =
-        match space_render_elements::<_, Window, _>(renderer, [&state.space], output, 1.0) {
-            Ok(elements) => elements,
-            Err(error) => {
-                tracing::warn!(%error, ?crtc, "failed to collect space render elements");
-                return true;
-            }
-        };
-
-    let mut elements: Vec<UdevRenderElement> =
-        Vec::with_capacity(cursor_elements.len() + chrome_elements.len() + space_elements.len());
-    elements.extend(cursor_elements.into_iter().map(UdevRenderElement::Cursor));
-    elements.extend(chrome_elements.into_iter().map(UdevRenderElement::Custom));
-    elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
+    let mut elements: Vec<crate::scene::SceneElement> =
+        Vec::with_capacity(cursor_elements.len() + scene_elements.len());
+    elements.extend(
+        cursor_elements
+            .into_iter()
+            .map(crate::scene::SceneElement::Cursor),
+    );
+    elements.extend(scene_elements);
 
     // Previews queued since the last frame, with this device's renderer
     // (`src/screencopy.rs`'s module doc). Before the output's own frame so a preview never
@@ -881,7 +907,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
 /// is coming) and a `render_frame`/`queue_frame` failure. Falls back to a plain 16ms poll if the
 /// output's mode isn't known yet.
 fn schedule_retry(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
-    if state.backend_data.paused {
+    if state.backend_data.paused || state.idle.blanked() {
         return;
     }
     let delay = state

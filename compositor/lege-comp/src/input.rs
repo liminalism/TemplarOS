@@ -96,7 +96,11 @@ pub fn activate_window<B: Backend + 'static>(state: &mut LegeCompState<B>, windo
     if let Some(keyboard) = state.seat.get_keyboard() {
         keyboard.set_focus(state, Some(wl_surface.clone()), serial);
     }
-    for window in state.space.elements() {
+    // Every toplevel the compositor knows about, not only the ones `Space` currently shows: a
+    // shelved or reveal-hidden window is unmapped from `Space` (`src/space_sync.rs`) and would
+    // otherwise keep the `activated` state it had when it went away, so two windows would come
+    // back believing they both had the keyboard.
+    for window in state.windows.elements().cloned().collect::<Vec<_>>() {
         let Some(toplevel) = window.toplevel() else {
             continue;
         };
@@ -165,7 +169,7 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
 }
 
 /// What a primary-button press on a window's compositor-owned chrome asks for
-/// (`LegeCompState::affordance_at`).
+/// ([`press_target_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Affordance {
     /// One of the band's controls (`chrome::layout::band_buttons`).
@@ -176,6 +180,82 @@ enum Affordance {
     Grip,
     /// Just outside the frame: a resize of these edges.
     Edge(lege_window::ResizeEdges),
+}
+
+/// One window as the press hit test sees it — everything [`press_target_at`] needs and nothing
+/// else, so the decision can be exercised with no compositor, no `Space` and no display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PressCandidate {
+    window_id: WindowId,
+    /// The window's *frame* (band included), which is what owns the point.
+    geometry: lege_window::Rect,
+    is_client: bool,
+    has_frame: bool,
+    maximized: bool,
+    band: Option<lege_window::Rect>,
+    grip: Option<lege_window::Rect>,
+}
+
+/// What a pointer press at a point is asking for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PressTarget {
+    /// A compositor-owned affordance on this window.
+    Affordance(WindowId, Affordance),
+    /// This window's own area: the press belongs to the client (or to the shell surface), and
+    /// the window takes focus first.
+    Window(WindowId),
+    /// No window `WindowService` knows owns this point.
+    Nothing,
+}
+
+/// The press target at `pos`, given every visible window top-first.
+///
+/// Pure, and deliberately so: this is the one place that decides which window a press belongs
+/// to, and getting it wrong is indistinguishable from "the windows fight for focus".
+fn press_target_at(candidates: &[PressCandidate], pos: LegePoint) -> PressTarget {
+    for candidate in candidates {
+        if rect_contains(candidate.geometry, pos) {
+            if !candidate.is_client {
+                return PressTarget::Window(candidate.window_id);
+            }
+            if let Some(band) = candidate.band
+                && rect_contains(band, pos)
+            {
+                return PressTarget::Affordance(
+                    candidate.window_id,
+                    layout::band_button_at(band, pos).map_or(Affordance::Band, Affordance::Button),
+                );
+            }
+            if let Some(grip) = candidate.grip
+                && rect_contains(grip, pos)
+            {
+                return PressTarget::Affordance(candidate.window_id, Affordance::Grip);
+            }
+            return PressTarget::Window(candidate.window_id);
+        }
+        if candidate.has_frame
+            && !candidate.maximized
+            && let Some(edges) = lege_window::resize_edges_at(candidate.geometry, pos)
+        {
+            return PressTarget::Affordance(candidate.window_id, Affordance::Edge(edges));
+        }
+    }
+    PressTarget::Nothing
+}
+
+/// Which window a press should bring forward before it does anything else, or `None` when it
+/// should bring none forward.
+///
+/// Everything a window owns focuses it: its client area, its title band, its resize grip and its
+/// edge zones. The two exceptions are the band's close and park buttons — activating a window in
+/// order to close it, or to send it to the shelf a frame later, would take the keyboard away from
+/// whatever the user was typing into and hand it to something that is about to disappear.
+fn press_activates(target: PressTarget) -> Option<WindowId> {
+    match target {
+        PressTarget::Affordance(_, Affordance::Button(BandButton::Close | BandButton::Park))
+        | PressTarget::Nothing => None,
+        PressTarget::Affordance(window_id, _) | PressTarget::Window(window_id) => Some(window_id),
+    }
 }
 
 /// The band's park button: put `window_id` on the Home shelf and hand the keyboard to whatever
@@ -512,6 +592,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
         event: InputEvent<I>,
         output_name: Option<&str>,
     ) {
+        // Every event, before it is dispatched anywhere: this is the session's only idle source
+        // (`src/idle.rs`), and "any input at all" is the whole condition.
+        self.note_activity();
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(&event),
@@ -792,53 +875,40 @@ impl<B: Backend + 'static> LegeCompState<B> {
         }
     }
 
-    /// The compositor-owned affordance under `pos`, with the window it belongs to, if any.
+    /// The press target under `pos`, from `WindowService` alone.
     ///
     /// Windows are walked top-first (`WindowService::stacking_order`), and window geometry — not
     /// `Space`'s own input-region test — is the hit-test authority, so the band always wins
     /// over whatever the client's surface would have done with the same point (COMPOSITOR.md:
     /// "the compositor-owned recovery band" wins over client content). The first window whose
-    /// frame contains the point settles it: a band button, the band, the grip, or nothing at
-    /// all because the point is the client's. A point just *outside* a framed window's edge is
-    /// that window's resize zone (`lege_window::resize_edges_at`), and a window above another
+    /// frame contains the point settles it: a band button, the band, the grip, or the window
+    /// itself because the point is the client's. A point just *outside* a framed window's edge
+    /// is that window's resize zone (`lege_window::resize_edges_at`), and a window above another
     /// takes its zone before the one beneath sees the press — the invisible border belongs to
     /// the window on top.
-    fn affordance_at(&self, pos: LegePoint) -> Option<(WindowId, Affordance)> {
-        for window_id in self.window_service.stacking_order() {
-            if !self.window_service.is_visible(window_id) {
-                continue;
-            }
-            let Some(record) = self.window_service.window(window_id) else {
-                continue;
-            };
-            if rect_contains(record.geometry, pos) {
-                if !self.window_service.is_client_window(window_id) {
-                    return None;
-                }
-                if let Some(affordance) = self.window_service.recovery_affordance(window_id)
-                    && rect_contains(affordance.band, pos)
-                {
-                    return Some((
-                        window_id,
-                        layout::band_button_at(affordance.band, pos)
-                            .map_or(Affordance::Band, Affordance::Button),
-                    ));
-                }
-                if let Some(grip) = self.window_service.resize_grip(window_id)
-                    && rect_contains(grip, pos)
-                {
-                    return Some((window_id, Affordance::Grip));
-                }
-                return None;
-            }
-            if self.window_service.has_frame(window_id)
-                && !record.maximized
-                && let Some(edges) = lege_window::resize_edges_at(record.geometry, pos)
-            {
-                return Some((window_id, Affordance::Edge(edges)));
-            }
-        }
-        None
+    fn press_target_at(&self, pos: LegePoint) -> PressTarget {
+        let candidates: Vec<PressCandidate> = self
+            .window_service
+            .stacking_order()
+            .into_iter()
+            .filter(|window_id| self.window_service.is_visible(*window_id))
+            .filter_map(|window_id| {
+                let record = self.window_service.window(window_id)?;
+                Some(PressCandidate {
+                    window_id,
+                    geometry: record.geometry,
+                    is_client: self.window_service.is_client_window(window_id),
+                    has_frame: self.window_service.has_frame(window_id),
+                    maximized: record.maximized,
+                    band: self
+                        .window_service
+                        .recovery_affordance(window_id)
+                        .map(|affordance| affordance.band),
+                    grip: self.window_service.resize_grip(window_id),
+                })
+            })
+            .collect();
+        press_target_at(&candidates, pos)
     }
 
     fn handle_press_for_focus_or_drag(
@@ -851,17 +921,38 @@ impl<B: Backend + 'static> LegeCompState<B> {
             return;
         }
         let pos = to_lege_point(location);
-        // The compositor's own two affordances, checked before the client sees the press: the
-        // band moves the window, the corner grip resizes it. Both are compositor-owned screen
-        // area by the same argument (`topmost_window_at`'s doc) — without them a window whose
-        // client draws no frame, which is most XWayland windows, could be neither moved nor
-        // resized by anyone.
+        let target = self.press_target_at(pos);
+
+        // Click to focus, and only click — LegeOS does not follow the mouse. Pressing anywhere a
+        // window owns brings that window forward first: its title band, its resize affordances
+        // and its client area alike. Doing it before anything else means a drag started from the
+        // band drags a window that is already on top and already has the keyboard, rather than
+        // moving a window the user cannot type into — which is what "the windows fight for
+        // focus" looked like from the outside.
+        if let Some(window_id) = press_activates(target) {
+            if self.window_service.is_client_window(window_id) {
+                activate_window(self, window_id);
+            } else if let Some(surface) = self.windows.surface_for(window_id).cloned()
+                && let Some(keyboard) = self.seat.get_keyboard()
+            {
+                // A shell surface (the Home Surface) takes the keyboard without being activated
+                // or raised: `WindowService::activate` is for client windows, and raising the
+                // Home Surface out of `Layer::HomeSurface` is not a thing that can happen.
+                keyboard.set_focus(self, Some(surface), serial);
+            }
+        }
+
+        // The compositor's own affordances, checked before the client sees the press: the band
+        // moves the window, the corner grip and the edge zones resize it. All are
+        // compositor-owned screen area by the same argument (`press_target_at`'s doc) — without
+        // them a window whose client draws no frame, which is most XWayland windows, could be
+        // neither moved nor resized by anyone.
         //
         // Primary button only. Both grabs end on `BTN_LEFT`'s release (`WindowGestureGrab`), so a
         // right- or middle-press that started one would install a grab nothing the user does with
         // that button could ever end.
         if button == BTN_LEFT
-            && let Some((window_id, affordance)) = self.affordance_at(pos)
+            && let PressTarget::Affordance(window_id, affordance) = target
         {
             let seat = self.seat.clone();
             let gesture = match affordance {
@@ -898,6 +989,16 @@ impl<B: Backend + 'static> LegeCompState<B> {
             return;
         }
 
+        if target != PressTarget::Nothing {
+            // A window owned the point and has already been focused above; the press itself goes
+            // on to the client through `PointerHandle::button`.
+            return;
+        }
+
+        // Nothing `WindowService` knows owns this point. That is not the same as nothing being
+        // there: an `xdg_popup` — a menu, a tooltip — lives outside its parent window's geometry
+        // and is reachable only through the surface tree, which is exactly what `element_under`
+        // walks.
         if let Some((window, _)) = self
             .space
             .element_under(location)
@@ -1019,10 +1120,164 @@ fn rect_contains(rect: lege_window::Rect, point: LegePoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lege_window::{Rect, frame_around};
     use smithay::utils::Size;
 
     fn output(x: i32, y: i32, width: i32, height: i32) -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((x, y)), Size::from((width, height)))
+    }
+
+    fn at(x: i32, y: i32) -> LegePoint {
+        LegePoint { x, y }
+    }
+
+    /// A framed client window, laid out the way the compositor lays one out: the record's
+    /// geometry is the *frame*, and the band is the strip `lege_window` puts above the client
+    /// area (`frame_around`/`recovery_band`).
+    fn framed(raw: u64, client: Rect) -> PressCandidate {
+        let geometry = frame_around(client);
+        PressCandidate {
+            window_id: WindowId(raw),
+            geometry,
+            is_client: true,
+            has_frame: true,
+            maximized: false,
+            band: Some(Rect::new(
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height - client.height,
+            )),
+            grip: None,
+        }
+    }
+
+    /// The fault the user reported as "the windows fight for focus": pressing a window's title
+    /// band started a move and nothing else. The window being dragged was neither raised nor
+    /// given the keyboard, so a person moved a window they still could not type into and the
+    /// window they *had* been typing into kept the keyboard — every drag left the two disagreeing
+    /// about which window was in front.
+    #[test]
+    fn pressing_a_windows_title_band_focuses_that_window() {
+        let window = framed(1, Rect::new(100, 140, 400, 300));
+        let band = window.band.expect("a framed window has a band");
+        let target = press_target_at(&[window], at(band.x + 200, band.y + 4));
+        assert_eq!(
+            target,
+            PressTarget::Affordance(WindowId(1), Affordance::Band)
+        );
+        assert_eq!(
+            press_activates(target),
+            Some(WindowId(1)),
+            "a press on the band is click-to-focus before it is a drag"
+        );
+    }
+
+    /// The same for the client area — the ordinary click-to-focus case — and for the resize
+    /// zones, so a window grabbed by its edge comes forward like one grabbed by its title.
+    #[test]
+    fn pressing_a_windows_own_area_or_its_resize_zone_focuses_it() {
+        let window = framed(1, Rect::new(100, 140, 400, 300));
+        let geometry = window.geometry;
+
+        let inside = press_target_at(&[window], at(geometry.x + 50, geometry.bottom() - 20));
+        assert_eq!(inside, PressTarget::Window(WindowId(1)));
+        assert_eq!(press_activates(inside), Some(WindowId(1)));
+
+        let edge = press_target_at(&[window], at(geometry.right() + 1, geometry.y + 60));
+        assert!(
+            matches!(
+                edge,
+                PressTarget::Affordance(WindowId(1), Affordance::Edge(_))
+            ),
+            "{edge:?}"
+        );
+        assert_eq!(press_activates(edge), Some(WindowId(1)));
+    }
+
+    /// Close and park are the two presses that must *not* focus: activating a window in order to
+    /// close it, or to send it to the shelf a frame later, takes the keyboard away from whatever
+    /// the person was typing into and hands it to something about to disappear.
+    #[test]
+    fn closing_or_parking_a_window_does_not_hand_it_the_keyboard_first() {
+        for button in [BandButton::Close, BandButton::Park] {
+            assert_eq!(
+                press_activates(PressTarget::Affordance(
+                    WindowId(1),
+                    Affordance::Button(button)
+                )),
+                None,
+                "{button:?}"
+            );
+        }
+        assert_eq!(
+            press_activates(PressTarget::Affordance(
+                WindowId(1),
+                Affordance::Button(BandButton::Maximize)
+            )),
+            Some(WindowId(1)),
+            "maximizing a background window brings it forward, like every other band press"
+        );
+        assert_eq!(press_activates(PressTarget::Nothing), None);
+    }
+
+    /// The stacking order settles overlap, and it settles it once: the window on top owns every
+    /// point inside its frame, including the points where the window beneath it has drawn its own
+    /// title band. Chrome that shows through from underneath (the compositing fault fixed in
+    /// `src/scene.rs`) must never become a click target — a person clicking a title bar they can
+    /// see and having a different window take the keyboard is exactly what "fighting for focus"
+    /// looks like.
+    #[test]
+    fn the_window_on_top_owns_every_point_inside_its_frame() {
+        let top = framed(1, Rect::new(100, 140, 400, 300));
+        let buried = framed(2, Rect::new(120, 300, 400, 300));
+        let buried_band = buried.band.expect("a framed window has a band");
+        let overlap = at(buried_band.x + 200, buried_band.y + 4);
+        assert!(
+            rect_contains(top.geometry, overlap),
+            "the test point overlaps"
+        );
+        assert!(
+            !rect_contains(top.band.expect("a framed window has a band"), overlap),
+            "and lands in the top window's client area rather than its own band"
+        );
+
+        let target = press_target_at(&[top, buried], overlap);
+        assert_eq!(
+            target,
+            PressTarget::Window(WindowId(1)),
+            "the point is inside the top window's frame, so it belongs to the top window"
+        );
+    }
+
+    /// A shell surface (the Home Surface) is not a client window: it takes the keyboard, but it
+    /// is never activated or raised, and it has no band to press.
+    #[test]
+    fn a_shell_surface_takes_the_press_without_offering_a_band() {
+        let home = PressCandidate {
+            window_id: WindowId(9),
+            geometry: Rect::new(0, 0, 1920, 1080),
+            is_client: false,
+            has_frame: false,
+            maximized: false,
+            band: None,
+            grip: None,
+        };
+        let target = press_target_at(&[home], at(400, 400));
+        assert_eq!(target, PressTarget::Window(WindowId(9)));
+        assert_eq!(press_activates(target), Some(WindowId(9)));
+    }
+
+    /// A press over no window at all is nobody's, and falls through to the surface-tree walk
+    /// that finds popups.
+    #[test]
+    fn a_press_over_nothing_belongs_to_nobody() {
+        let window = framed(1, Rect::new(100, 140, 400, 300));
+        assert_eq!(
+            press_target_at(&[window], at(1500, 900)),
+            PressTarget::Nothing
+        );
+        assert_eq!(press_target_at(&[], at(10, 10)), PressTarget::Nothing);
     }
 
     #[test]
