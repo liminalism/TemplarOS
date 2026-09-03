@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:53209dda27120ea65cab6136606764b31b498fc39b71c8617374e34480f0c469"
+    source_graph "sha256:b3735b76b505e290e167ca71f1fdf53d6a246cc980f98b4accbed149a147c3f3"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:61bb4daf5922bbdf85d2cc35f6388b2ca3ac6413e2e6fe93b275f6e8d5f48bd9"
-    records 135
+    hash "sha256:c83df8efd0c03ca556c89afcc904ae5a7398e571a30222dcb155e074d758d068"
+    records 138
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:4368738c9cfe5c9ff389f594d8e9fe39bea32ca9d11af8ebde68088dfcfa8c7c"
+    hash "sha256:467ff207bbbc28a7cd2615cb7dae054230106eeda7d62d385c41e26f11a616da"
     records 53
 }
 
@@ -722,6 +722,24 @@ resolution @legeos.work.hands-on-run-3-fixes/1 {
     slot part_of
     to @legeos.work.home-surface-usability-next/1
     hash "sha256:f84da59e9ba652925fe0682797116601d1b404160b0962658e24235b4462e581"
+}
+
+resolution @legeos.work.hands-on-run-3-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-3-band-controls-20260903/1
+    hash "sha256:b8db6602391f9428ff858f6c677cb28c5579bcc9a9b042defe7653746622831c"
+}
+
+resolution @legeos.work.hands-on-run-3-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-3-frame-geometry-20260903/1
+    hash "sha256:90e6d92dc973f1b4dd108dbe26773d483494a40c60b4c943186c6feff83047d0"
+}
+
+resolution @legeos.work.hands-on-run-3-fixes/1 {
+    slot verified_by
+    to @legeos.evidence.hands-on-3-select-then-open-20260903/1
+    hash "sha256:52e4d290ee30764e3ea383c78c361ef8fe40ff03e5209715e1e1ef55217ac15a"
 }
 
 resolution @legeos.work.home-field/1 {
@@ -1553,6 +1571,21 @@ seal @legeos.evidence.hands-on-2-gate-20260831/1 {
 seal @legeos.evidence.hands-on-2-placement-20260831/1 {
     state verified
     hash "sha256:a859382fa129c9fb4865659a61e7a3807fc9364e1b457a2116e358a81f1dca5a"
+}
+
+seal @legeos.evidence.hands-on-3-band-controls-20260903/1 {
+    state verified
+    hash "sha256:b8db6602391f9428ff858f6c677cb28c5579bcc9a9b042defe7653746622831c"
+}
+
+seal @legeos.evidence.hands-on-3-frame-geometry-20260903/1 {
+    state verified
+    hash "sha256:90e6d92dc973f1b4dd108dbe26773d483494a40c60b4c943186c6feff83047d0"
+}
+
+seal @legeos.evidence.hands-on-3-select-then-open-20260903/1 {
+    state verified
+    hash "sha256:52e4d290ee30764e3ea383c78c361ef8fe40ff03e5209715e1e1ef55217ac15a"
 }
 
 seal @legeos.evidence.hardware-input-journal-diagnosis-20260824/1 {
@@ -2658,6 +2691,11 @@ seal @legeos.work.governor-containment/1 {
 seal @legeos.work.hands-on-run-2-fixes/1 {
     state active
     hash "sha256:ee5bdfe8f0cbca24460dd008e5c6a8dfbf3dd7b7e3e1e9a7cf059efc49d98624"
+}
+
+seal @legeos.work.hands-on-run-3-fixes/1 {
+    state active
+    hash "sha256:f9e1c11fb632a1cee88e48cfb6f2cf97a917d872a3846dd08f9a1b57156fcc5e"
 }
 
 seal @legeos.work.home-field/1 {

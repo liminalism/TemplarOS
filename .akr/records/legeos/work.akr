@@ -882,7 +882,7 @@ record legeos.work.hands-on-run-2-fixes/1 : work {
 
 record legeos.work.hands-on-run-3-fixes/1 : work {
     title "Act on the third hands-on run: a usable Files object, a real window frame with controls, and resizable windows"
-    state proposed
+    state active
     scope [
         path "apps/lege-files/**",
         path "compositor/lege-comp/**",
@@ -903,6 +903,7 @@ record legeos.work.hands-on-run-3-fixes/1 : work {
                 """
             method command
             command "cargo test -p lege-comp -- band_buttons_pack_against_the_right_edge_close_last a_narrow_band_keeps_close_and_gives_up_the_rest"
+            verified_by [ @legeos.evidence.hands-on-3-band-controls-20260903 ]
         }
         check frame-geometry {
             statement """
@@ -910,6 +911,7 @@ record legeos.work.hands-on-run-3-fixes/1 : work {
                 """
             method command
             command "cargo test -p lege-window -- the_client_area_sits_under_the_band edges_are_grabbed_just_outside_the_frame"
+            verified_by [ @legeos.evidence.hands-on-3-frame-geometry-20260903 ]
         }
         check gates-green {
             statement """
@@ -930,6 +932,7 @@ record legeos.work.hands-on-run-3-fixes/1 : work {
                 """
             method command
             command "cargo test -p lege-shell -- file_browser_pointer_activates_folders_and_files file_browser_search_results_use_the_same_clickable_rows"
+            verified_by [ @legeos.evidence.hands-on-3-select-then-open-20260903 ]
         }
     }
     derived_from [ @legeos.observation.hands-on-run-3-findings-20260903 ]

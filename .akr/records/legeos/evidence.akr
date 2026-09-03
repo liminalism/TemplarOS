@@ -296,6 +296,42 @@ record legeos.evidence.hands-on-2-placement-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.hands-on-3-band-controls-20260903/1 : evidence {
+    title "2 passed: park/maximize/close pack against the band's right edge and hit-test where drawn; a narrow band keeps close."
+    state verified
+    result pass
+    method command
+    observed_at git:cbd0efa573ab6a04ba81e63f5bdffb8ba41eed2e
+    command "cargo test -p lege-comp -- band_buttons_pack_against_the_right_edge_close_last a_narrow_band_keeps_close_and_gives_up_the_rest"
+    summary """
+        2 passed: park/maximize/close pack against the band's right edge and hit-test where drawn; a narrow band keeps close.
+        """
+}
+
+record legeos.evidence.hands-on-3-frame-geometry-20260903/1 : evidence {
+    title "2 passed: client_area under the band with frame_around as inverse; edge zones outside the frame only, corners included."
+    state verified
+    result pass
+    method command
+    observed_at git:cbd0efa573ab6a04ba81e63f5bdffb8ba41eed2e
+    command "cargo test -p lege-window -- the_client_area_sits_under_the_band edges_are_grabbed_just_outside_the_frame"
+    summary """
+        2 passed: client_area under the band with frame_around as inverse; edge zones outside the frame only, corners included.
+        """
+}
+
+record legeos.evidence.hands-on-3-select-then-open-20260903/1 : evidence {
+    title "2 passed: a row's first press selects, the second opens; search results take the same two presses."
+    state verified
+    result pass
+    method command
+    observed_at git:cbd0efa573ab6a04ba81e63f5bdffb8ba41eed2e
+    command "cargo test -p lege-shell -- file_browser_pointer_activates_folders_and_files file_browser_search_results_use_the_same_clickable_rows"
+    summary """
+        2 passed: a row's first press selects, the second opens; search results take the same two presses.
+        """
+}
+
 record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
     title "Hardware input journal identifies compositor-side omission"
     state verified
