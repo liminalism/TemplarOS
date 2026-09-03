@@ -233,16 +233,15 @@ impl Index {
             let mut pool = self.0.readers.lock();
             pool.pop()
         };
-        let connection = match connection {
-            Some(connection) => connection,
-            None => {
-                let connection = Connection::open_with_flags(
-                    &self.0.path,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )?;
-                connection.busy_timeout(std::time::Duration::from_secs(5))?;
-                connection
-            }
+        let connection = if let Some(connection) = connection {
+            connection
+        } else {
+            let connection = Connection::open_with_flags(
+                &self.0.path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            connection.busy_timeout(std::time::Duration::from_secs(5))?;
+            connection
         };
         let outcome = body(&connection);
         let mut pool = self.0.readers.lock();
@@ -313,6 +312,9 @@ impl Index {
 
     /// Registers a root. Registering does not scan it: it starts `empty`, and something has to
     /// decide when walking it is appropriate.
+    // `policy` is taken by value: this is the frozen C5 contract signature (F1-contract.md §4),
+    // which F2/Files/CLI already code against, and only borrows `policy` internally.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn add_root(&self, path: &NativePath, policy: RootPolicy) -> Result<RootStatus> {
         let policy_json = serde_json::to_string(&policy)?;
         let root_id = self.with_write(|connection| {
@@ -423,6 +425,8 @@ impl Index {
     /// Changes what a root includes. The stored rows were produced under the old rules and cannot
     /// be compared with rows produced under the new ones, so this marks the root stale in the same
     /// transaction. It never deletes anything.
+    // Frozen C5 contract signature (F1-contract.md §4); see `add_root` above.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn set_root_policy(&self, root: RootId, policy: RootPolicy) -> Result<RootStatus> {
         let json = serde_json::to_string(&policy)?;
         self.with_write(|connection| {
@@ -484,21 +488,19 @@ impl Index {
     // ---- freshness transitions --------------------------------------------------------------
 
     pub fn mark_stale(&self, root: RootId, reason: &StaleReason) -> Result<RootStatus> {
-        self.transition(root, RootState::Stale, Some(reason.as_string()))
+        let reason = reason.as_string();
+        self.transition(root, RootState::Stale, Some(reason.as_str()))
     }
 
     pub fn mark_offline(&self, root: RootId, reason: &str) -> Result<RootStatus> {
-        self.transition(root, RootState::Offline, Some(reason.to_owned()))
+        self.transition(root, RootState::Offline, Some(reason))
     }
 
     /// A volume that came back. Deliberately lands in `stale`, never `current`: nothing has
     /// re-enumerated it yet, and claiming otherwise is exactly the lie this crate refuses.
     pub fn mark_online(&self, root: RootId) -> Result<RootStatus> {
-        self.transition(
-            root,
-            RootState::Stale,
-            Some(StaleReason::MountDisappeared.as_string()),
-        )
+        let reason = StaleReason::MountDisappeared.as_string();
+        self.transition(root, RootState::Stale, Some(reason.as_str()))
     }
 
     /// The committed snapshot is good and a queued backlog is being applied.
@@ -513,13 +515,11 @@ impl Index {
         if status.complete {
             self.transition(root, RootState::Current, None)
         } else {
+            let fallback = StaleReason::PermissionDenied.as_string();
             self.transition(
                 root,
                 RootState::Stale,
-                status
-                    .reason
-                    .clone()
-                    .or_else(|| Some(StaleReason::PermissionDenied.as_string())),
+                status.reason.as_deref().or(Some(fallback.as_str())),
             )
         }
     }
@@ -528,11 +528,11 @@ impl Index {
         &self,
         root: RootId,
         state: RootState,
-        reason: Option<String>,
+        reason: Option<&str>,
     ) -> Result<RootStatus> {
         self.with_write(|connection| {
             let transaction = connection.transaction()?;
-            set_state(&transaction, root, state, reason.as_deref())?;
+            set_state(&transaction, root, state, reason)?;
             transaction.commit()?;
             Ok(())
         })?;
@@ -640,9 +640,7 @@ impl Index {
     pub fn diagnostics(&self) -> Result<Diagnostics> {
         let roots = self.roots()?;
         let cursor_count = self.0.cursors.lock().len();
-        let db_bytes = std::fs::metadata(&self.0.path)
-            .map(|meta| meta.len())
-            .unwrap_or(0);
+        let db_bytes = std::fs::metadata(&self.0.path).map_or(0, |meta| meta.len());
         self.with_read(|connection| {
             let head: i64 = connection
                 .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
@@ -810,6 +808,10 @@ pub(crate) fn next_generation(connection: &Connection) -> Result<Generation> {
     Ok(Generation(next))
 }
 
+// A path's separator count is a handful of bytes at most; pulling in the `bytecount` crate for
+// this would violate the crate's minimal-dependency contract (F1-contract.md preamble) for no
+// measurable gain.
+#[allow(clippy::naive_bytecount)]
 pub(crate) fn separators(bytes: &[u8]) -> usize {
     bytes.iter().filter(|byte| **byte == b'/').count()
 }

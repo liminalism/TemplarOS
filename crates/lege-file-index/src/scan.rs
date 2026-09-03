@@ -65,8 +65,8 @@ fn walk(
     // A root is not allowed to wander onto another filesystem unless the user said so: the whole
     // machine is not what "index my home directory" means.
     if !session.options().policy.cross_mount
-        && let (Some(root_device), Ok(device)) = (root_device, device_of(&metadata))
-        && root_device != device
+        && let Some(root_device) = root_device
+        && root_device != device_of(&metadata)
         && depth > 0
     {
         return Ok(());
@@ -85,7 +85,7 @@ fn walk(
         match entry {
             Ok(entry) => children.push(entry.path()),
             Err(error) => {
-                session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied)
+                session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied);
             }
         }
     }
@@ -108,9 +108,9 @@ fn walk(
     Ok(())
 }
 
-fn device_of(metadata: &std::fs::Metadata) -> std::io::Result<u64> {
+fn device_of(metadata: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
-    Ok(metadata.dev())
+    metadata.dev()
 }
 
 trait DepthLimit {

@@ -22,6 +22,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     time::{Duration, Instant},
 };
 
@@ -315,7 +316,7 @@ impl QueryPlanner for Fts5TrigramPlanner {
                 .map(|root| root.0.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            filters.push_str(&format!(" AND root_id IN ({list})"));
+            let _ = write!(filters, " AND root_id IN ({list})");
         }
         if let Some(kinds) = &query.kinds
             && !kinds.is_empty()
@@ -325,19 +326,19 @@ impl QueryPlanner for Fts5TrigramPlanner {
                 .map(|kind| kind.as_i64().to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            filters.push_str(&format!(" AND kind IN ({list})"));
+            let _ = write!(filters, " AND kind IN ({list})");
         }
         if let Some(min) = query.min_size {
-            filters.push_str(&format!(" AND size_bytes >= {min}"));
+            let _ = write!(filters, " AND size_bytes >= {min}");
         }
         if let Some(max) = query.max_size {
-            filters.push_str(&format!(" AND size_bytes <= {max}"));
+            let _ = write!(filters, " AND size_bytes <= {max}");
         }
         if let Some(min) = query.min_mtime_ns {
-            filters.push_str(&format!(" AND mtime_ns >= {min}"));
+            let _ = write!(filters, " AND mtime_ns >= {min}");
         }
         if let Some(max) = query.max_mtime_ns {
-            filters.push_str(&format!(" AND mtime_ns <= {max}"));
+            let _ = write!(filters, " AND mtime_ns <= {max}");
         }
         if !query.include_hidden {
             filters.push_str(" AND hidden = 0");

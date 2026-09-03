@@ -11,7 +11,7 @@
 
 use crate::{
     ENTRY_COLUMNS, Result, entry_row_from_row,
-    model::{EntryKind, Generation, NativePath, RootId, RootState},
+    model::{EntryKind, Generation, NativePath, RootId, RootState, RootStatus},
     query::FieldMask,
 };
 use serde::{Deserialize, Serialize};
@@ -80,72 +80,9 @@ impl crate::Index {
             .collect();
 
         let mut payload = Vec::new();
-        payload.extend_from_slice(&(selected.len() as u32).to_le_bytes());
-        for status in &selected {
-            payload.extend_from_slice(&(status.root.0 as u64).to_le_bytes());
-            payload.push(state_code(status.state));
-            payload.push(u8::from(status.complete));
-            payload.extend_from_slice(&[0u8; 2]);
-            payload.extend_from_slice(&status.generation.0.to_le_bytes());
-            payload.extend_from_slice(&(status.path.as_bytes().len() as u32).to_le_bytes());
-            payload.extend_from_slice(status.path.as_bytes());
-        }
-
+        write_roots_section(&mut payload, &selected);
         let mask = request.fields;
-        let mut entry_count = 0u64;
-        for status in &selected {
-            self.with_read(|connection| {
-                let mut statement = connection.prepare(&format!(
-                    "SELECT {ENTRY_COLUMNS} FROM entries
-                      WHERE root_id = ?1 AND deleted_generation IS NULL
-                      ORDER BY entry_id"
-                ))?;
-                let rows = statement.query_map([status.root.0], entry_row_from_row)?;
-                for row in rows {
-                    let row = row?;
-                    payload.extend_from_slice(&(row.entry_id.0 as u64).to_le_bytes());
-                    payload.extend_from_slice(&(row.root.0 as u64).to_le_bytes());
-                    if mask.contains(FieldMask::PARENT) {
-                        payload.extend_from_slice(
-                            &(row.parent.map_or(0, |id| id.0) as u64).to_le_bytes(),
-                        );
-                    }
-                    if mask.contains(FieldMask::NAME) {
-                        write_bytes(&mut payload, row.name.as_bytes());
-                    }
-                    if mask.contains(FieldMask::PATH) {
-                        write_bytes(&mut payload, row.path.as_bytes());
-                    }
-                    if mask.contains(FieldMask::KIND) {
-                        payload.push(kind_code(row.meta.kind));
-                        payload.push(u8::from(row.meta.hidden));
-                        payload.extend_from_slice(&[0u8; 2]);
-                    }
-                    if mask.contains(FieldMask::SIZE) {
-                        payload.extend_from_slice(&row.meta.size_bytes.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.alloc_bytes.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::TIMES) {
-                        payload.extend_from_slice(&row.meta.mtime_ns.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.ctime_ns.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::MODE) {
-                        payload.extend_from_slice(&row.meta.mode.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.nlink.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::OBJECT_KEY) {
-                        let key = row
-                            .meta
-                            .object_key
-                            .unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
-                        payload.extend_from_slice(&key.dev.to_le_bytes());
-                        payload.extend_from_slice(&key.ino.to_le_bytes());
-                    }
-                    entry_count += 1;
-                }
-                Ok(())
-            })?;
-        }
+        let entry_count = self.write_entries_section(&mut payload, &selected, mask)?;
 
         let payload_crc = crc32c(&payload);
         let mut header = Vec::with_capacity(HEADER_LEN as usize);
@@ -188,6 +125,87 @@ impl crate::Index {
                 .collect(),
             sealed: false,
         })
+    }
+
+    /// The body of [`Self::write_snapshot`]'s entry loop, pulled out only so that method stays
+    /// short: one read transaction per selected root, streaming each live row's masked fields
+    /// into `payload`. Returns how many entries were written.
+    fn write_entries_section(
+        &self,
+        payload: &mut Vec<u8>,
+        selected: &[RootStatus],
+        mask: FieldMask,
+    ) -> Result<u64> {
+        let mut entry_count = 0u64;
+        for status in selected {
+            self.with_read(|connection| {
+                let mut statement = connection.prepare(&format!(
+                    "SELECT {ENTRY_COLUMNS} FROM entries
+                      WHERE root_id = ?1 AND deleted_generation IS NULL
+                      ORDER BY entry_id"
+                ))?;
+                let rows = statement.query_map([status.root.0], entry_row_from_row)?;
+                for row in rows {
+                    let row = row?;
+                    payload.extend_from_slice(&(row.entry_id.0 as u64).to_le_bytes());
+                    payload.extend_from_slice(&(row.root.0 as u64).to_le_bytes());
+                    if mask.contains(FieldMask::PARENT) {
+                        payload.extend_from_slice(
+                            &(row.parent.map_or(0, |id| id.0) as u64).to_le_bytes(),
+                        );
+                    }
+                    if mask.contains(FieldMask::NAME) {
+                        write_bytes(payload, row.name.as_bytes());
+                    }
+                    if mask.contains(FieldMask::PATH) {
+                        write_bytes(payload, row.path.as_bytes());
+                    }
+                    if mask.contains(FieldMask::KIND) {
+                        payload.push(kind_code(row.meta.kind));
+                        payload.push(u8::from(row.meta.hidden));
+                        payload.extend_from_slice(&[0u8; 2]);
+                    }
+                    if mask.contains(FieldMask::SIZE) {
+                        payload.extend_from_slice(&row.meta.size_bytes.to_le_bytes());
+                        payload.extend_from_slice(&row.meta.alloc_bytes.to_le_bytes());
+                    }
+                    if mask.contains(FieldMask::TIMES) {
+                        payload.extend_from_slice(&row.meta.mtime_ns.to_le_bytes());
+                        payload.extend_from_slice(&row.meta.ctime_ns.to_le_bytes());
+                    }
+                    if mask.contains(FieldMask::MODE) {
+                        payload.extend_from_slice(&row.meta.mode.to_le_bytes());
+                        payload.extend_from_slice(&row.meta.nlink.to_le_bytes());
+                    }
+                    if mask.contains(FieldMask::OBJECT_KEY) {
+                        let key = row
+                            .meta
+                            .object_key
+                            .unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
+                        payload.extend_from_slice(&key.dev.to_le_bytes());
+                        payload.extend_from_slice(&key.ino.to_le_bytes());
+                    }
+                    entry_count += 1;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(entry_count)
+    }
+}
+
+/// The body of [`crate::Index::write_snapshot`]'s roots header, pulled out only so that method
+/// stays short.
+fn write_roots_section(payload: &mut Vec<u8>, selected: &[RootStatus]) {
+    payload.extend_from_slice(&(selected.len() as u32).to_le_bytes());
+    for status in selected {
+        payload.extend_from_slice(&(status.root.0 as u64).to_le_bytes());
+        payload.push(state_code(status.state));
+        payload.push(u8::from(status.complete));
+        payload.extend_from_slice(&[0u8; 2]);
+        payload.extend_from_slice(&status.generation.0.to_le_bytes());
+        payload.extend_from_slice(&(status.path.as_bytes().len() as u32).to_le_bytes());
+        payload.extend_from_slice(status.path.as_bytes());
     }
 }
 

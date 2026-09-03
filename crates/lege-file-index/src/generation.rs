@@ -19,7 +19,7 @@ use crate::{
     mutation::{Change, ChangeOp},
     schema,
 };
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 use std::{
     sync::{
         Arc,
@@ -294,7 +294,6 @@ impl ScanSession {
             && !self.options.cancel.is_cancelled();
         let generation = self.generation;
         let root = self.root;
-        let scope = self.options.scope.clone();
         let retention = self.index.config().tombstone_retention_generations;
         let max_changes = self.index.config().max_changes;
         let oldest_cursor = self.index.cursors().lock().oldest_generation();
@@ -303,162 +302,7 @@ impl ScanSession {
         let reason = self.options.reason.clone();
 
         let (entries, state) = self.index.with_write(|connection| {
-            let transaction = connection.transaction()?;
-            let generation_id = generation.0 as i64;
-
-            transaction.execute(
-                "INSERT INTO entries
-                   (root_id, parent_id, name_bytes, name_display, name_fold, path_bytes,
-                    path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden,
-                    dev, inode, nlink, mime, written_generation, last_seen_generation,
-                    deleted_generation)
-                 SELECT root_id, NULL, name_bytes, name_display, name_fold, path_bytes,
-                        path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode,
-                        hidden, dev, inode, nlink, mime, ?1, ?1, NULL
-                   FROM entries_staging WHERE generation = ?1 AND root_id = ?2
-                 ON CONFLICT (root_id, path_bytes) DO UPDATE SET
-                    name_bytes = excluded.name_bytes,
-                    name_display = excluded.name_display,
-                    name_fold = excluded.name_fold,
-                    kind = excluded.kind,
-                    size_bytes = excluded.size_bytes,
-                    alloc_bytes = excluded.alloc_bytes,
-                    mtime_ns = excluded.mtime_ns,
-                    ctime_ns = excluded.ctime_ns,
-                    mode = excluded.mode,
-                    hidden = excluded.hidden,
-                    dev = excluded.dev,
-                    inode = excluded.inode,
-                    nlink = excluded.nlink,
-                    mime = excluded.mime,
-                    written_generation = ?1,
-                    last_seen_generation = ?1,
-                    deleted_generation = NULL",
-                rusqlite::params![generation_id, root.0],
-            )?;
-
-            // Parent links, resolved once the rows they point at exist.
-            transaction.execute(
-                "UPDATE entries AS e
-                    SET parent_id = (SELECT p.entry_id FROM entries p
-                                      WHERE p.root_id = e.root_id
-                                        AND p.path_bytes = (SELECT s.parent_bytes
-                                                              FROM entries_staging s
-                                                             WHERE s.generation = ?1
-                                                               AND s.root_id = e.root_id
-                                                               AND s.path_bytes = e.path_bytes))
-                  WHERE e.root_id = ?2 AND e.written_generation = ?1",
-                rusqlite::params![generation_id, root.0],
-            )?;
-
-            // Collection: only for a complete pass, only inside the scope it covered.
-            let mut collected = 0usize;
-            if complete {
-                collected = match &scope {
-                    ScanScope::Root => transaction.execute(
-                        "UPDATE entries SET deleted_generation = ?1
-                          WHERE root_id = ?2 AND deleted_generation IS NULL
-                            AND last_seen_generation < ?1",
-                        rusqlite::params![generation_id, root.0],
-                    )?,
-                    ScanScope::Subtree(prefix) => {
-                        let (low, high) = prefix.subtree_bounds();
-                        transaction.execute(
-                            "UPDATE entries SET deleted_generation = ?1
-                              WHERE root_id = ?2 AND deleted_generation IS NULL
-                                AND last_seen_generation < ?1
-                                AND path_bytes >= ?3 AND path_bytes < ?4",
-                            rusqlite::params![generation_id, root.0, low, high],
-                        )?
-                    }
-                };
-            }
-
-            refresh_fts(&transaction, root, generation)?;
-
-            // A wholesale re-enumeration is one marker, not a million events: a consumer whose
-            // projection spans this root re-reads it rather than replaying it.
-            let change = Change {
-                seq: 0,
-                generation,
-                root,
-                op: ChangeOp::Rescan,
-                entry_id: None,
-                path: read_root_path(&transaction, root)?,
-                old_path: None,
-                kind: EntryKind::Directory,
-                size_bytes: 0,
-                mtime_ns: 0,
-                at_ms: now_ms(),
-            };
-            crate::mutation::append_change(&transaction, &change)?;
-            crate::mutation::prune_changes(&transaction, max_changes)?;
-
-            prune_tombstones(&transaction, generation, retention, oldest_cursor)?;
-
-            let entries: i64 = transaction.query_row(
-                "SELECT COUNT(*) FROM entries WHERE root_id = ?1 AND deleted_generation IS NULL",
-                [root.0],
-                |row| row.get(0),
-            )?;
-
-            let state = if complete {
-                RootState::Current
-            } else if permission_denied > 0 && limited.is_none() {
-                RootState::PermissionLimited
-            } else {
-                RootState::Stale
-            };
-            let state_reason = if complete {
-                None
-            } else if let Some(kind) = limited {
-                Some(StaleReason::BudgetExhausted { budget: kind }.as_string())
-            } else {
-                Some(StaleReason::PermissionDenied.as_string())
-            };
-
-            transaction.execute(
-                "UPDATE roots
-                    SET committed_generation = ?2, building_generation = NULL, complete = ?3,
-                        entry_count = ?4, last_scan_ms = ?5,
-                        last_reconcile_finished_ms = ?5, last_error = NULL
-                  WHERE root_id = ?1",
-                rusqlite::params![
-                    root.0,
-                    generation_id,
-                    i64::from(complete),
-                    entries,
-                    now_ms()
-                ],
-            )?;
-            crate::set_state(&transaction, root, state, state_reason.as_deref())?;
-
-            let head: u64 = schema::read_meta(&transaction, "committed_generation")?
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            if generation.0 > head {
-                schema::write_meta(
-                    &transaction,
-                    "committed_generation",
-                    &generation.0.to_string(),
-                )?;
-            }
-
-            transaction.execute(
-                "DELETE FROM entries_staging WHERE generation = ?1 AND root_id = ?2",
-                rusqlite::params![generation_id, root.0],
-            )?;
-            transaction.commit()?;
-
-            tracing::info!(
-                root = root.0,
-                %generation,
-                entries,
-                collected,
-                complete,
-                "committed an index generation"
-            );
-            Ok((entries as u64, state))
+            self.commit_transaction(connection, complete, retention, max_changes, oldest_cursor)
         })?;
 
         let _ = reason;
@@ -479,6 +323,122 @@ impl ScanSession {
         }
         self.claim.take();
         Ok(outcome)
+    }
+
+    /// The body of [`Self::commit`]'s one transaction, pulled out only so the method above stays
+    /// short: merge staging into `entries`, collect (only if `complete`, only in this session's
+    /// scope), refresh the accelerator, log the rescan marker, and move the root forward.
+    fn commit_transaction(
+        &self,
+        connection: &mut Connection,
+        complete: bool,
+        retention: u64,
+        max_changes: u64,
+        oldest_cursor: Option<Generation>,
+    ) -> Result<(u64, RootState)> {
+        let root = self.root;
+        let generation = self.generation;
+        let scope = &self.options.scope;
+        let permission_denied = self.permission_denied;
+        let limited = self.limited;
+
+        let transaction = connection.transaction()?;
+        let generation_id = generation.0 as i64;
+
+        merge_staging_into_entries(&transaction, root, generation_id)?;
+
+        // Collection: only for a complete pass, only inside the scope it covered.
+        let collected = if complete {
+            collect_tombstones(&transaction, root, generation_id, scope)?
+        } else {
+            0
+        };
+
+        refresh_fts(&transaction, root, generation)?;
+
+        // A wholesale re-enumeration is one marker, not a million events: a consumer whose
+        // projection spans this root re-reads it rather than replaying it.
+        let change = Change {
+            seq: 0,
+            generation,
+            root,
+            op: ChangeOp::Rescan,
+            entry_id: None,
+            path: read_root_path(&transaction, root)?,
+            old_path: None,
+            kind: EntryKind::Directory,
+            size_bytes: 0,
+            mtime_ns: 0,
+            at_ms: now_ms(),
+        };
+        crate::mutation::append_change(&transaction, &change)?;
+        crate::mutation::prune_changes(&transaction, max_changes)?;
+
+        prune_tombstones(&transaction, generation, retention, oldest_cursor)?;
+
+        let entries: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM entries WHERE root_id = ?1 AND deleted_generation IS NULL",
+            [root.0],
+            |row| row.get(0),
+        )?;
+
+        let state = if complete {
+            RootState::Current
+        } else if permission_denied > 0 && limited.is_none() {
+            RootState::PermissionLimited
+        } else {
+            RootState::Stale
+        };
+        let state_reason = if complete {
+            None
+        } else if let Some(kind) = limited {
+            Some(StaleReason::BudgetExhausted { budget: kind }.as_string())
+        } else {
+            Some(StaleReason::PermissionDenied.as_string())
+        };
+
+        transaction.execute(
+            "UPDATE roots
+                SET committed_generation = ?2, building_generation = NULL, complete = ?3,
+                    entry_count = ?4, last_scan_ms = ?5,
+                    last_reconcile_finished_ms = ?5, last_error = NULL
+              WHERE root_id = ?1",
+            rusqlite::params![
+                root.0,
+                generation_id,
+                i64::from(complete),
+                entries,
+                now_ms()
+            ],
+        )?;
+        crate::set_state(&transaction, root, state, state_reason.as_deref())?;
+
+        let head: u64 = schema::read_meta(&transaction, "committed_generation")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        if generation.0 > head {
+            schema::write_meta(
+                &transaction,
+                "committed_generation",
+                &generation.0.to_string(),
+            )?;
+        }
+
+        transaction.execute(
+            "DELETE FROM entries_staging WHERE generation = ?1 AND root_id = ?2",
+            rusqlite::params![generation_id, root.0],
+        )?;
+        transaction.commit()?;
+
+        tracing::info!(
+            root = root.0,
+            %generation,
+            entries,
+            collected,
+            complete,
+            "committed an index generation"
+        );
+        Ok((entries as u64, state))
     }
 
     /// Throws the generation away. The previous one stays visible; that is the whole point.
@@ -530,10 +490,10 @@ impl ScanSession {
 
 impl Drop for ScanSession {
     fn drop(&mut self) {
-        if !self.finished {
-            if let Err(error) = self.abort_inner() {
-                tracing::warn!(%error, "could not clean up an abandoned scan generation");
-            }
+        if !self.finished
+            && let Err(error) = self.abort_inner()
+        {
+            tracing::warn!(%error, "could not clean up an abandoned scan generation");
         }
     }
 }
@@ -642,6 +602,90 @@ pub(crate) fn fts_present(connection: &rusqlite::Connection) -> bool {
             |row| row.get::<_, i64>(0),
         )
         .is_ok()
+}
+
+/// The body of [`ScanSession::commit_transaction`]'s merge step, pulled out only so that function
+/// stays short: staged rows for this generation are upserted into `entries`, then parent links
+/// are resolved now that the rows they point at exist.
+fn merge_staging_into_entries(
+    transaction: &Transaction<'_>,
+    root: RootId,
+    generation_id: i64,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO entries
+           (root_id, parent_id, name_bytes, name_display, name_fold, path_bytes,
+            path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden,
+            dev, inode, nlink, mime, written_generation, last_seen_generation,
+            deleted_generation)
+         SELECT root_id, NULL, name_bytes, name_display, name_fold, path_bytes,
+                path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode,
+                hidden, dev, inode, nlink, mime, ?1, ?1, NULL
+           FROM entries_staging WHERE generation = ?1 AND root_id = ?2
+         ON CONFLICT (root_id, path_bytes) DO UPDATE SET
+            name_bytes = excluded.name_bytes,
+            name_display = excluded.name_display,
+            name_fold = excluded.name_fold,
+            kind = excluded.kind,
+            size_bytes = excluded.size_bytes,
+            alloc_bytes = excluded.alloc_bytes,
+            mtime_ns = excluded.mtime_ns,
+            ctime_ns = excluded.ctime_ns,
+            mode = excluded.mode,
+            hidden = excluded.hidden,
+            dev = excluded.dev,
+            inode = excluded.inode,
+            nlink = excluded.nlink,
+            mime = excluded.mime,
+            written_generation = ?1,
+            last_seen_generation = ?1,
+            deleted_generation = NULL",
+        rusqlite::params![generation_id, root.0],
+    )?;
+
+    // Parent links, resolved once the rows they point at exist.
+    transaction.execute(
+        "UPDATE entries AS e
+            SET parent_id = (SELECT p.entry_id FROM entries p
+                              WHERE p.root_id = e.root_id
+                                AND p.path_bytes = (SELECT s.parent_bytes
+                                                      FROM entries_staging s
+                                                     WHERE s.generation = ?1
+                                                       AND s.root_id = e.root_id
+                                                       AND s.path_bytes = e.path_bytes))
+          WHERE e.root_id = ?2 AND e.written_generation = ?1",
+        rusqlite::params![generation_id, root.0],
+    )?;
+    Ok(())
+}
+
+/// The body of [`ScanSession::commit_transaction`]'s collection step: tombstones every row **not**
+/// seen this generation, scoped to whatever the session actually covered — a subtree repair must
+/// never garbage-collect the rest of the root.
+fn collect_tombstones(
+    transaction: &Transaction<'_>,
+    root: RootId,
+    generation_id: i64,
+    scope: &ScanScope,
+) -> Result<usize> {
+    Ok(match scope {
+        ScanScope::Root => transaction.execute(
+            "UPDATE entries SET deleted_generation = ?1
+              WHERE root_id = ?2 AND deleted_generation IS NULL
+                AND last_seen_generation < ?1",
+            rusqlite::params![generation_id, root.0],
+        )?,
+        ScanScope::Subtree(prefix) => {
+            let (low, high) = prefix.subtree_bounds();
+            transaction.execute(
+                "UPDATE entries SET deleted_generation = ?1
+                  WHERE root_id = ?2 AND deleted_generation IS NULL
+                    AND last_seen_generation < ?1
+                    AND path_bytes >= ?3 AND path_bytes < ?4",
+                rusqlite::params![generation_id, root.0, low, high],
+            )?
+        }
+    })
 }
 
 /// Drops tombstones nobody can still be looking at: older than the retention window, and older

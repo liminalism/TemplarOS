@@ -518,7 +518,7 @@ pub fn drift(root: &Path) -> Result<Vec<String>> {
                 "{path} differs from {DECLARATION}; run `cargo xtask seeds`"
             )),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                problems.push(format!("{path} is missing; run `cargo xtask seeds`"))
+                problems.push(format!("{path} is missing; run `cargo xtask seeds`"));
             }
             Err(error) => return Err(error).with_context(|| format!("reading {path}")),
         }

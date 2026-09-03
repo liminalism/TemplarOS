@@ -195,10 +195,10 @@ impl Grub {
         if let Some(id) = self.known_good_id() {
             entries.push(BootEntry::known_good(&id));
         }
-        if let Some(candidate) = candidate {
-            if entries.iter().all(|e| e.id != candidate.id) {
-                entries.push(BootEntry::for_deployment(candidate));
-            }
+        if let Some(candidate) = candidate
+            && entries.iter().all(|e| e.id != candidate.id)
+        {
+            entries.push(BootEntry::for_deployment(candidate));
         }
         if entries.is_empty() {
             return Ok(());

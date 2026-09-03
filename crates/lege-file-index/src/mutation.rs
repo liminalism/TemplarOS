@@ -180,6 +180,10 @@ impl crate::Index {
     ///
     /// A batch larger than `max_batch` is split, and each part commits on its own — a watcher
     /// storm must not turn into one unbounded transaction.
+    // `batch` is taken by value: this is the frozen C5 contract signature (F1-contract.md §7),
+    // which F2/Files/CLI already code against. The chunk-splitting path below needs an owned
+    // `MutationSource` to build each sub-batch; the transaction path only ever borrows it.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn apply(&self, batch: MutationBatch) -> Result<Applied> {
         let limit = self.config().max_batch;
         if batch.mutations.len() > limit {
@@ -200,113 +204,8 @@ impl crate::Index {
         }
 
         let max_changes = self.config().max_changes;
-        let (applied, invalidations) = self.with_write(|connection| {
-            let transaction = connection.transaction()?;
-            let generation = crate::next_generation(&transaction)?;
-            let mut changes = Vec::new();
-            let mut skipped = 0usize;
-            let mut moved_descendants = 0u64;
-            let mut invalidations = Vec::new();
-            let mut touched_roots: Vec<RootId> = Vec::new();
-
-            for mutation in &batch.mutations {
-                match mutation {
-                    Mutation::Upsert { root, path, meta }
-                    | Mutation::Touch { root, path, meta } => {
-                        match upsert(&transaction, generation, *root, path, meta)? {
-                            Some(change) => changes.push(change),
-                            None => skipped += 1,
-                        }
-                    }
-                    Mutation::Remove { root, path } => {
-                        match remove(&transaction, generation, *root, path)? {
-                            Some(change) => changes.push(change),
-                            None => skipped += 1,
-                        }
-                    }
-                    Mutation::Move {
-                        root,
-                        from,
-                        to,
-                        meta,
-                    } => match rename(&transaction, generation, *root, from, to, meta)? {
-                        RenameOutcome::Skipped => skipped += 1,
-                        RenameOutcome::Applied {
-                            change,
-                            descendants,
-                        } => {
-                            moved_descendants += descendants;
-                            changes.push(change);
-                        }
-                    },
-                    Mutation::Invalidate {
-                        root,
-                        subtree,
-                        reason,
-                    } => {
-                        tracing::debug!(
-                            root = root.0,
-                            subtree = %subtree.display(),
-                            reason = %reason.as_string(),
-                            "invalidating a subtree"
-                        );
-                        invalidations.push((*root, reason.clone()));
-                    }
-                }
-                let root = mutation.root();
-                if !touched_roots.contains(&root) {
-                    touched_roots.push(root);
-                }
-            }
-
-            if changes.is_empty() {
-                // Nothing moved: roll the transaction back so the generation counter does not
-                // advance for a batch that changed nothing.
-                transaction.rollback()?;
-                let generation = self.generation()?;
-                return Ok((
-                    Applied {
-                        generation,
-                        changes: Vec::new(),
-                        skipped,
-                        moved_descendants,
-                    },
-                    invalidations,
-                ));
-            }
-
-            for change in &mut changes {
-                change.seq = append_change(&transaction, change)?;
-            }
-            prune_changes(&transaction, max_changes)?;
-            for root in &touched_roots {
-                refresh_fts(&transaction, *root, generation)?;
-                transaction.execute(
-                    "UPDATE roots
-                        SET committed_generation = ?2,
-                            entry_count = (SELECT COUNT(*) FROM entries
-                                            WHERE root_id = ?1 AND deleted_generation IS NULL)
-                      WHERE root_id = ?1",
-                    rusqlite::params![root.0, generation.0 as i64],
-                )?;
-            }
-            schema::write_meta(
-                &transaction,
-                "committed_generation",
-                &generation.0.to_string(),
-            )?;
-            transaction.commit()?;
-
-            Ok((
-                Applied {
-                    generation,
-                    changes,
-                    skipped,
-                    moved_descendants,
-                },
-                invalidations,
-            ))
-        })?;
+        let (applied, invalidations) =
+            self.with_write(|connection| self.apply_transaction(connection, &batch, max_changes))?;
 
         for (root, reason) in invalidations {
             self.mark_stale(root, &reason)?;
@@ -317,6 +216,122 @@ impl crate::Index {
             sink.generation_advanced(applied.generation, &applied.changes);
         }
         Ok(applied)
+    }
+
+    /// The body of [`Self::apply`]'s one transaction, pulled out only so the method above stays
+    /// short: apply every mutation in `batch`, log the changes, and move every touched root's
+    /// generation forward. An empty result rolls the transaction back rather than advancing the
+    /// generation counter for a batch that changed nothing.
+    fn apply_transaction(
+        &self,
+        connection: &mut Connection,
+        batch: &MutationBatch,
+        max_changes: u64,
+    ) -> Result<(Applied, Vec<(RootId, StaleReason)>)> {
+        let transaction = connection.transaction()?;
+        let generation = crate::next_generation(&transaction)?;
+        let mut changes = Vec::new();
+        let mut skipped = 0usize;
+        let mut moved_descendants = 0u64;
+        let mut invalidations = Vec::new();
+        let mut touched_roots: Vec<RootId> = Vec::new();
+
+        for mutation in &batch.mutations {
+            match mutation {
+                Mutation::Upsert { root, path, meta } | Mutation::Touch { root, path, meta } => {
+                    match upsert(&transaction, generation, *root, path, meta)? {
+                        Some(change) => changes.push(change),
+                        None => skipped += 1,
+                    }
+                }
+                Mutation::Remove { root, path } => {
+                    match remove(&transaction, generation, *root, path)? {
+                        Some(change) => changes.push(change),
+                        None => skipped += 1,
+                    }
+                }
+                Mutation::Move {
+                    root,
+                    from,
+                    to,
+                    meta,
+                } => match rename(&transaction, generation, *root, from, to, meta)? {
+                    RenameOutcome::Skipped => skipped += 1,
+                    RenameOutcome::Applied {
+                        change,
+                        descendants,
+                    } => {
+                        moved_descendants += descendants;
+                        changes.push(change);
+                    }
+                },
+                Mutation::Invalidate {
+                    root,
+                    subtree,
+                    reason,
+                } => {
+                    tracing::debug!(
+                        root = root.0,
+                        subtree = %subtree.display(),
+                        reason = %reason.as_string(),
+                        "invalidating a subtree"
+                    );
+                    invalidations.push((*root, reason.clone()));
+                }
+            }
+            let root = mutation.root();
+            if !touched_roots.contains(&root) {
+                touched_roots.push(root);
+            }
+        }
+
+        if changes.is_empty() {
+            // Nothing moved: roll the transaction back so the generation counter does not
+            // advance for a batch that changed nothing.
+            transaction.rollback()?;
+            let generation = self.generation()?;
+            return Ok((
+                Applied {
+                    generation,
+                    changes: Vec::new(),
+                    skipped,
+                    moved_descendants,
+                },
+                invalidations,
+            ));
+        }
+
+        for change in &mut changes {
+            change.seq = append_change(&transaction, change)?;
+        }
+        prune_changes(&transaction, max_changes)?;
+        for root in &touched_roots {
+            refresh_fts(&transaction, *root, generation)?;
+            transaction.execute(
+                "UPDATE roots
+                    SET committed_generation = ?2,
+                        entry_count = (SELECT COUNT(*) FROM entries
+                                        WHERE root_id = ?1 AND deleted_generation IS NULL)
+                  WHERE root_id = ?1",
+                rusqlite::params![root.0, generation.0 as i64],
+            )?;
+        }
+        schema::write_meta(
+            &transaction,
+            "committed_generation",
+            &generation.0.to_string(),
+        )?;
+        transaction.commit()?;
+
+        Ok((
+            Applied {
+                generation,
+                changes,
+                skipped,
+                moved_descendants,
+            },
+            invalidations,
+        ))
     }
 
     /// A bounded page of the change log after `seq`.
@@ -504,44 +519,11 @@ fn rename(
 
     // A directory move takes its subtree's paths with it, so a folder drag costs one rewrite
     // rather than a full re-enumeration of everything under it.
-    let mut descendants = 0u64;
-    if stored.kind == EntryKind::Directory || meta.kind == EntryKind::Directory {
-        let (low, high) = from.subtree_bounds();
-        let rows: Vec<(i64, Vec<u8>)> = {
-            let mut statement = transaction.prepare(
-                "SELECT entry_id, path_bytes FROM entries
-                  WHERE root_id = ?1 AND deleted_generation IS NULL
-                    AND path_bytes >= ?2 AND path_bytes < ?3",
-            )?;
-            let mapped = statement
-                .query_map(rusqlite::params![root.0, low.clone(), high], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?;
-            let mut rows = Vec::new();
-            for row in mapped {
-                rows.push(row?);
-            }
-            rows
-        };
-        let prefix_len = low.len() - 1; // the "from" path without its trailing separator
-        let mut statement = transaction.prepare(
-            "UPDATE entries SET path_bytes = ?1, path_display = ?2, written_generation = ?3,
-                                last_seen_generation = ?3
-              WHERE entry_id = ?4",
-        )?;
-        for (id, old) in rows {
-            let mut rebuilt = to.as_bytes().to_vec();
-            rebuilt.extend_from_slice(&old[prefix_len..]);
-            let rebuilt = NativePath::from_bytes(rebuilt);
-            statement.execute(rusqlite::params![
-                rebuilt.as_bytes(),
-                rebuilt.display(),
-                generation_id,
-                id
-            ])?;
-            descendants += 1;
-        }
-    }
+    let descendants = if stored.kind == EntryKind::Directory || meta.kind == EntryKind::Directory {
+        rename_descendants(transaction, root, from, to, generation_id)?
+    } else {
+        0
+    };
 
     Ok(RenameOutcome::Applied {
         change: Change {
@@ -559,6 +541,54 @@ fn rename(
         },
         descendants,
     })
+}
+
+/// The body of [`rename`]'s directory-subtree rewrite, pulled out only so that function stays
+/// short: every live descendant of `from` is rewritten to sit under `to` instead, in one prepared
+/// statement per row rather than a full re-enumeration of the moved subtree.
+fn rename_descendants(
+    transaction: &Transaction<'_>,
+    root: RootId,
+    from: &NativePath,
+    to: &NativePath,
+    generation_id: i64,
+) -> Result<u64> {
+    let (low, high) = from.subtree_bounds();
+    let rows: Vec<(i64, Vec<u8>)> = {
+        let mut statement = transaction.prepare(
+            "SELECT entry_id, path_bytes FROM entries
+              WHERE root_id = ?1 AND deleted_generation IS NULL
+                AND path_bytes >= ?2 AND path_bytes < ?3",
+        )?;
+        let mapped = statement.query_map(rusqlite::params![root.0, low.clone(), high], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row?);
+        }
+        rows
+    };
+    let prefix_len = low.len() - 1; // the "from" path without its trailing separator
+    let mut statement = transaction.prepare(
+        "UPDATE entries SET path_bytes = ?1, path_display = ?2, written_generation = ?3,
+                            last_seen_generation = ?3
+          WHERE entry_id = ?4",
+    )?;
+    let mut descendants = 0u64;
+    for (id, old) in rows {
+        let mut rebuilt = to.as_bytes().to_vec();
+        rebuilt.extend_from_slice(&old[prefix_len..]);
+        let rebuilt = NativePath::from_bytes(rebuilt);
+        statement.execute(rusqlite::params![
+            rebuilt.as_bytes(),
+            rebuilt.display(),
+            generation_id,
+            id
+        ])?;
+        descendants += 1;
+    }
+    Ok(descendants)
 }
 
 fn live_row(

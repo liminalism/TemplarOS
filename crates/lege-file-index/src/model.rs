@@ -133,9 +133,10 @@ fn trim_trailing_separators(bytes: &[u8]) -> &[u8] {
 }
 
 /// What an entry is. Symlinks are their own kind and are never followed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntryKind {
+    #[default]
     Regular,
     Directory,
     Symlink,
@@ -527,12 +528,6 @@ pub struct EntryMeta {
     pub mime: Option<String>,
 }
 
-impl Default for EntryKind {
-    fn default() -> Self {
-        Self::Regular
-    }
-}
-
 impl EntryMeta {
     /// Built from `symlink_metadata`, never `metadata`: the index describes the link, not its
     /// target, and following links turns a walk into a graph traversal with cycles.
@@ -593,16 +588,11 @@ pub struct EntryRow {
 
 /// Whether a repair covers a whole root or one subtree. Garbage collection is scoped to it, so a
 /// subtree repair cannot delete the rest of the root.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ScanScope {
+    #[default]
     Root,
     Subtree(NativePath),
-}
-
-impl Default for ScanScope {
-    fn default() -> Self {
-        Self::Root
-    }
 }
 
 /// Milliseconds since the Unix epoch, the unit every `*_ms` column uses.
