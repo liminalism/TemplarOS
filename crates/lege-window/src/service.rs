@@ -889,6 +889,7 @@ impl<I: IdentityCache> WindowService<I> {
             maximized: window.maximized,
             geometry: window.geometry,
             layer: self.layer_of(window.id).unwrap_or(Layer::Normal),
+            group: None,
         }
     }
 }

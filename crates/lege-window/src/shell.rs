@@ -5,6 +5,16 @@ use crate::{Layer, Rect, WindowId};
 use lege_types::{AppId, InstanceId};
 use serde::{Deserialize, Serialize};
 
+/// A window group's identity as the shell sees it (`lege_shell_toplevel_v1.group`). The
+/// compositor owns groups; this is a view. `accent` is 0x00RRGGBB, shared by every member, so
+/// the band stripe, the outline on the workspace and the tile's edge on Home are one colour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub group_id: u64,
+    pub name: String,
+    pub accent: u32,
+}
+
 /// What the shell receives about one window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellToplevel {
@@ -23,6 +33,9 @@ pub struct ShellToplevel {
     /// and it sizes preview buffers from it before any capture exists.
     pub geometry: Rect,
     pub layer: Layer,
+    /// The window group this window belongs to, if any (planning doc
+    /// `docs/planning/window-groups-and-application-integration.md` §2).
+    pub group: Option<GroupInfo>,
 }
 
 /// How the dock groups windows.
@@ -67,6 +80,7 @@ mod tests {
             maximized: false,
             geometry: Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
+            group: None,
         }
     }
 

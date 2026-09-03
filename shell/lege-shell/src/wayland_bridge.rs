@@ -151,6 +151,7 @@ impl TrackedToplevel {
             maximized: self.maximized,
             geometry: self.geometry,
             layer: self.layer,
+            group: None,
         }
     }
 }

@@ -31,7 +31,7 @@ pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_r
 pub use service::{
     CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowService,
 };
-pub use shell::{DockGrouping, ShellToplevel, grouping_key};
+pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
 
 // Re-exported so `WindowClaims::default()` and friends stay reachable as `lege_window::WindowClaims`
 // for crates that otherwise only need this crate.

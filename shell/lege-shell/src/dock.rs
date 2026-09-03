@@ -93,6 +93,7 @@ mod tests {
             maximized: false,
             geometry: lege_window::Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
+            group: None,
         }
     }
 
