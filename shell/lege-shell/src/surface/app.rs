@@ -137,18 +137,16 @@ enum DataUpdate {
     },
 }
 
-/// The previews handed to a covered field: one empty map, so suppression costs no allocation and
-/// no clone of the cache it is standing in for.
-static EMPTY_PREVIEWS: std::sync::LazyLock<HashMap<String, pixelkit_raster::Bitmap>> =
-    std::sync::LazyLock::new(HashMap::new);
-
 /// Whether the field is behind something and its window previews should stop.
 ///
-/// The Home Field is a background layer, so with a fullscreen or maximized window in front of it
-/// nobody is looking at it — except through that window, if the window happens to be translucent,
-/// and then the live previews underneath a terminal show the terminal, which is what the fifth
-/// hands-on run reported. Revealing Home (bare Super) puts the field in front again and the
-/// previews come back, as does un-maximizing or parking the window that was covering it.
+/// Nothing of the field is visible under a window at all — `FieldScreen::occlude_windows` paints
+/// flat ground over every window's rectangle — so with a fullscreen or maximized window in front
+/// of it there is nothing to capture *for*. This is the capture half of that rule: it saves the
+/// per-window shm round trip while the field cannot be seen. Revealing Home (bare Super) puts the
+/// field in front again and the previews come back, as does un-maximizing or parking the window.
+///
+/// The cache is kept, never cleared, so coming back shows the picture that was already there
+/// rather than a blank tile filling in a frame or two later.
 ///
 /// A shelved window covers nothing: parking is how you get the field back.
 fn previews_covered(home_revealed: bool, toplevels: &[lege_window::ShellToplevel]) -> bool {
@@ -1398,11 +1396,7 @@ impl ShellApp {
             field: &self.field,
             toplevels: &toplevels,
             icons: &self.icons,
-            previews: if previews_covered {
-                &EMPTY_PREVIEWS
-            } else {
-                &self.previews
-            },
+            previews: &self.previews,
             drawer_feeds: &self.drawer_feeds,
             treemap: self.treemap.as_ref().map(|(_, bitmap)| bitmap),
             composition: &self.composition,

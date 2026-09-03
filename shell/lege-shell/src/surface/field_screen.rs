@@ -815,7 +815,52 @@ impl FieldScreen {
             self.draw_empty_state(ui, rest, data.connected);
         }
         self.draw_omnibox(ui, data, &mut actions);
+        self.occlude_windows(ui, area, data);
         actions
+    }
+
+    /// Paint flat ground where a window is, so nothing of Home shows through a translucent one.
+    ///
+    /// The Home Field is the backdrop, so a client with an alpha channel — a terminal with
+    /// `background_opacity` under 1 is the ordinary case — composites over whatever the field
+    /// last drew there. What came through was tiles, text and live window previews, and a preview
+    /// of the very terminal you were looking through it was the worst of them (the fifth hands-on
+    /// run). Behind a window there should be the windows behind it and then the ground, and
+    /// nothing else: the compositor still composites those, because this fills only the field's
+    /// own surface, not theirs.
+    ///
+    /// Nothing is hidden that anyone can see: these rectangles are exactly the ones a window is
+    /// covering. Home in the gaps between windows is untouched, and a revealed Home is in front
+    /// of every window, so it is not occluded at all.
+    ///
+    /// Window geometry is in the compositor's one global logical space and the field's surface is
+    /// one output, so this is right for the single-output case and conservative for any other: a
+    /// rectangle that does not intersect the surface fills nothing.
+    fn occlude_windows(&self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) {
+        if data.home_revealed {
+            return;
+        }
+        for window in data.toplevels {
+            if window.shelved || window.layer != lege_window::Layer::Normal {
+                continue;
+            }
+            let geometry = window.geometry;
+            if geometry.width <= 0 || geometry.height <= 0 {
+                continue;
+            }
+            let rect = Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
+            let (left, top) = (rect.x.max(area.x), rect.y.max(area.y));
+            let (right, bottom) = (
+                rect.right().min(area.right()),
+                rect.bottom().min(area.bottom()),
+            );
+            if right > left && bottom > top {
+                ui.painter.fill_rect(
+                    Rect::new(left, top, right - left, bottom - top),
+                    design::GROUND,
+                );
+            }
+        }
     }
 
     fn draw_empty_state(&self, ui: &mut Ui<'_>, area: Rect, connected: bool) {
@@ -6038,6 +6083,42 @@ mod tests {
         assert_eq!(h.doc.parent_of(focused), None);
         h.key(KeyInput::Escape);
         assert_eq!(h.screen.zoomed, None);
+    }
+
+    /// Nothing of Home is drawn where a window is, so a translucent client composites over flat
+    /// ground and the windows behind it — never over tiles, text or a live preview of itself.
+    #[test]
+    fn a_windows_rectangle_is_flat_ground_so_nothing_of_home_shows_through_it() {
+        let mut h = Harness::new();
+        h.toplevels[0].shelved = true;
+        h.toplevels[1].shelved = true;
+        let tile = h.rect_of(field_model::files_tile_id());
+        let (x, y) = ((tile.x + tile.w / 2) as u32, (tile.y + tile.h / 2) as u32);
+        let at = |h: &Harness, x: u32, y: u32| h.buffer.pixels[(y * h.buffer.width + x) as usize];
+
+        h.frame();
+        let bare = at(&h, x, y);
+        assert_ne!(
+            bare & 0x00ff_ffff,
+            design::GROUND,
+            "with nothing in front of it the Files object is drawn on the field"
+        );
+
+        // A window over that tile: what a translucent client composites over is ground alone.
+        h.toplevels[0].shelved = false;
+        h.toplevels[0].geometry = lege_window::Rect::new(tile.x, tile.y, tile.w, tile.h);
+        h.frame();
+        assert_eq!(
+            at(&h, x, y) & 0x00ff_ffff,
+            design::GROUND,
+            "under a window the field is ground and nothing else"
+        );
+
+        // Parking it covers nothing, which is the whole point of parking, and revealing Home puts
+        // the field in front of every window, so neither occludes anything.
+        h.toplevels[0].shelved = true;
+        h.frame();
+        assert_eq!(at(&h, x, y), bare, "a parked window covers nothing");
     }
 
     #[test]
