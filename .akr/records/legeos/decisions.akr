@@ -26,6 +26,28 @@ record legeos.decision.agplv3-own-code/1 : decision {
     supersedes [ @legeos.decision.toolchain-licence-namespace ]
 }
 
+record legeos.decision.appearance-is-a-working-field-with-two-themes/1 : decision {
+    title "Appearance: Home is a working field, not wallpaper; two themes (monotone, Temple) share one thin geometry; TempleOS is borrowed as a premise, not a palette"
+    state proposed
+    scope [
+        path "apps/lege-settings/**",
+        path "crates/lege-session-core/src/settings.rs",
+        path "shell/lege-shell/src/surface/**"
+    ]
+    topic appearance
+    decision """
+        The shell offers two themes selected by a shell.appearance.theme setting, both built on the same structure: a light (or dark) ground that exists to carry information, wallpaper off by default; one-pixel rules and hairline borders instead of shadows, glass and cards, with padding measured in text lines; the information row as a single compact status line (clock, then only conditions that are true) in a semi-monospace face; typography (headings, rules, indentation) as the grouping device, borders reserved for containers (folders, trays, projects, window groups); objects useful where they are, the representation ladder reading as one document growing rather than a card opening a window. Monotone: a single accent hue and grey rules. Temple: a saturated cyan and a royal blue for structural lines, focus and links, with red, green, yellow and magenta only for semantic state; never the 16-colour VGA palette across the whole shell. Mechanically, surface/design.rs's constants become one of two token sets, including the window-group accent palette; the visual baseline renders once per theme. What LegeOS takes from TempleOS is the premise that the home screen is itself a working information environment rather than a backdrop for shortcuts, which is what the Home Field already is.
+        """
+    context """
+        The user on 2026-09-03 said they lean towards a monotone theme as one option and a TempleOS theme as another, and shared an analysis of TempleOS's visual grammar (white working field, thin blue/cyan geometry, text as structure, embedded live objects, commands and GUI as peers, density without crudeness) with the recommendation to adopt it as a design language for the Home Field rather than as a skin. Renaming (labels and the product's name) is a separate later step.
+        """
+    consequences """
+        Not implemented this pass. The window-group outline and tile edge use an accent that will be per-theme. Any new surface drawn now (group tiles, the search panel, the Files context menu) uses hairline edges and no shadows so it needs no redesign when the themes land. A work record follows when implementation is scheduled.
+        """
+    derived_from [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+}
+
 record legeos.decision.base-ubuntu-2604-kernel-70/1 : decision {
     title "D1/ADR-0007 — Base is Ubuntu 26.04 LTS 'resolute' with Ubuntu's linux-generic 7.0; mainline 7.2 only as a transaction candidate"
     state active
@@ -492,7 +514,7 @@ record legeos.decision.toolchain-licence-namespace/3 : decision {
 }
 
 record legeos.decision.window-groups-are-explicit-and-compositor-owned/1 : decision {
-    title "Window groups are explicit, owned by lege-window, stacked as one, and one container tile on Home"
+    title "Window groups are explicit, owned by lege-window, stacked as one, placed beside on grouping, outlined as one, and one container tile on Home; Alt+Tab inside, Super+Tab across"
     state proposed
     scope [
         path "compositor/lege-comp/**",
@@ -503,13 +525,13 @@ record legeos.decision.window-groups-are-explicit-and-compositor-owned/1 : decis
     ]
     topic window-groups
     decision """
-        A window group is an explicit, user-made set of two or more application windows that behave as one unit of work. Five rules: (1) groups are explicit — made by dropping one window or session tile on another, or by a chord; never inferred from proximity, application or time (docs/homefield.md's proximity rule). (2) The compositor owns groups through WindowService: membership lives in lege-window, the shell learns it over lege_shell_v1 (version 4, additions only), so Alt+Tab and Ctrl+Tab work with the shell dead. (3) A group is one thing to stack: activating any member raises every member contiguously, relative order kept, the activated one on top; geometry never changes. (4) Ungrouped windows are the loose set: with no groups Alt+Tab cycles every window as today and Ctrl+Tab does nothing. (5) A group has at least two members; it dissolves when the second-to-last leaves or closes, and its Home tile is swept like an orphaned session tile. On Home a group is TileKind::WindowGroup, a top-level container holding its members' ParkedSession tiles, dragged as one, parked and returned as one. Alt+Tab cycles within the active window's group; Ctrl+Tab (and Super+Tab as a permanent alias) cycles between groups by each group's last-active member; a Settings1 key shell.keys.group-cycle can retire the Ctrl+Tab binding.
+        A window group is an explicit, user-made set of two or more application windows that behave as one unit of work. Seven rules: (1) groups are explicit — made by dropping one window's title band on another's band, by dropping one session tile on another on Home, or by the Super+G chord; never inferred from proximity, application or time (docs/homefield.md's proximity rule). (2) The compositor owns groups through WindowService: membership lives in lege-window, the shell learns it over lege_shell_v1 (toplevel v3 `group` event, manager v5), so Alt+Tab and Super+Tab work with the shell dead. (3) A group is one thing to stack: activating any member raises every member contiguously, relative order kept, the activated one on top; geometry never changes. (4) Ungrouped windows are the loose set: with no groups Alt+Tab cycles every window as today and Super+Tab does nothing. (5) A group has at least two members; it dissolves when the second-to-last leaves or closes, and its Home tile is swept like an orphaned session tile. (6) Grouping places, it never merges: the dropped or chorded window is set down beside the target on the nearest free side, edge to edge; nothing is stacked, tabbed or folded into one frame (no iOS-style folder); only the band is a drop target, so ordinary overlapping placement is untouched; a band drag moves the whole group and Shift+drag moves one member. (7) A group is visibly one thing: a two-pixel outline in the group's accent around the union of the members' rectangles, the same colour as a stripe in each member's band and as the Home tile's edge; the accent is assigned from a short palette by group id in lege-window, and the outline is per-window compositor chrome in stacking order. Chords: Alt+Tab / Alt+Shift+Tab inside the group; Super+Tab / Super+Shift+Tab across groups by each group's last-active member; Super+G group with the previously focused window; Super+Shift+G ungroup. There is no Ctrl+Tab binding and no setting for one. On Home a group is TileKind::WindowGroup, a top-level container of its members' ParkedSession tiles, dragged, parked and returned as one.
         """
     context """
-        The user asked on 2026-09-03 for grouped windows that can be dragged together on Home as one window group, with Alt+Tab switching inside a group and Ctrl+Tab between groups. lege-window already has a stored-nothing spatial step (Super+Left/Right via contiguous_window) and a shelf; lege-field already has container tiles (Project) and rigid group moves (MoveMany). Ctrl+Tab is the tab-cycling chord in Firefox, Chromium, Kitty, VS Code and GNOME Terminal, and the compositor's keybinding table has a rule that a reserved chord collides with nothing an application binds; the user's choice is kept, with Super+Tab as alias and a setting to drop the Ctrl+Tab binding.
+        The user asked on 2026-09-03 for grouped windows that can be dragged together on Home as one window group, with Alt+Tab switching inside a group and Ctrl+Tab between groups. On reading the plan the user chose Super+Tab outright (Ctrl+Tab belongs to tabbed applications, and a compositor chord would take it from them), and specified that dropping one window on another must place it beside the other rather than combine them, with a coloured outline around the whole group as the indicator. lege-window already has a stored-nothing spatial step (Super+Left/Right via contiguous_window) and a shelf; lege-field already has container tiles (Project) and rigid group moves (MoveMany).
         """
     consequences """
-        Plan in docs/planning/window-groups-and-application-integration.md and @legeos.work.window-groups (WG1 model, WG2 compositor, WG3 protocol v4, WG4 Home tile, WG5 hands-on). The existing Super+Left/Right spatial step keeps its stored-nothing semantics and is renamed away from 'group' in the action manifest to avoid two meanings. Applications lose Ctrl+Tab while the default binding stands.
+        Plan in docs/planning/window-groups-and-application-integration.md §2–3 and @legeos.work.window-groups (WG1 model, WG2 compositor, WG3 protocol, WG4 Home tile, WG5 hands-on). The existing Super+Left/Right spatial step keeps its stored-nothing semantics and is renamed window.step-right/left in the action manifest so 'group' means one thing. Applications keep Ctrl+Tab. The group accent palette becomes per-theme when the two themes land (@legeos.decision.appearance-is-a-working-field-with-two-themes).
         """
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
 }

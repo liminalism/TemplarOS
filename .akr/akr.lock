@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:6d013828cd3f90db1c24127ebe13309167c0e69f3e51c0f81be4f993f8a15cea"
+    source_graph "sha256:e6be3814c2d54ff0711215650c098b4baee0814f3d67d27549a23d6bfc71b617"
 }
 
 source ".akr/project.akr" {
@@ -24,8 +24,8 @@ source ".akr/records/legeos/constraints.akr" {
 }
 
 source ".akr/records/legeos/decisions.akr" {
-    hash "sha256:8f3ddd57fd2aa2d0cd29a4363acdcb2f9521a46c2038f67c6d5dda2200b88d16"
-    records 23
+    hash "sha256:59a7996eabb11fc5cb1f2c6487c65ff7a0ce8cca231258c0ac3860db111c53e8"
+    records 24
 }
 
 source ".akr/records/legeos/evidence.akr" {
@@ -54,7 +54,7 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:c546b4c4b38f76261d1ff8dec852ace4457d04a72ac98219790015fb5b4eb2bc"
+    hash "sha256:9687c263167b4e70212ec0128b4865d867f07cc85024951e43e1da5bbd9b2012"
     records 61
 }
 
@@ -74,6 +74,18 @@ resolution @legeos.decision.agplv3-own-code/1 {
     slot supersedes
     to @legeos.decision.toolchain-licence-namespace/3
     hash "sha256:716930a57026db5c3efdba7eb452b2e024e07e51dd15fdf0c8af7838db53635c"
+}
+
+resolution @legeos.decision.appearance-is-a-working-field-with-two-themes/1 {
+    slot derived_from
+    to @legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1
+    hash "sha256:bd71240defdbc25a3adc5bea9bbc729a4e35c633cfddeb7050eda7a3ab9468c9"
+}
+
+resolution @legeos.decision.appearance-is-a-working-field-with-two-themes/1 {
+    slot implements
+    to @legeos.decision.representation-ladder-is-the-organizing-principle/1
+    hash "sha256:9e4bc8301c70fd3278fd00ded146db6e65c2436752f8e1eb9cdf8a65eaeff1de"
 }
 
 resolution @legeos.decision.base-ubuntu-2604-kernel-70/1 {
@@ -1423,7 +1435,7 @@ resolution @legeos.work.window-groups/1 {
 resolution @legeos.work.window-groups/1 {
     slot implements
     to @legeos.decision.window-groups-are-explicit-and-compositor-owned/1
-    hash "sha256:4d67370a1d10e2985d607dcde9ceb5d9449648b5e3bb71a875254f7f6b539274"
+    hash "sha256:0f6721512bd89ee558e8b66177df5b92af5ca281b87361b2d6a6ec2155c02f74"
 }
 
 resolution @legeos.work.window-groups/1 {
@@ -1435,73 +1447,67 @@ resolution @legeos.work.window-groups/1 {
 resolution @legeos.work.window-groups-compositor/1 {
     slot depends_on
     to @legeos.work.window-groups-model/1
-    hash "sha256:1b0bdf2704fb8957fca2b5dba6650f79469ce8dd1cc366cef62c375736f51882"
+    hash "sha256:8870942e6572b8a75805bc68dd2a45c19bad25e298e9b7f85073872cc1f13abb"
 }
 
 resolution @legeos.work.window-groups-compositor/1 {
     slot implements
     to @legeos.decision.window-groups-are-explicit-and-compositor-owned/1
-    hash "sha256:4d67370a1d10e2985d607dcde9ceb5d9449648b5e3bb71a875254f7f6b539274"
+    hash "sha256:0f6721512bd89ee558e8b66177df5b92af5ca281b87361b2d6a6ec2155c02f74"
 }
 
 resolution @legeos.work.window-groups-compositor/1 {
     slot part_of
     to @legeos.work.window-groups/1
-    hash "sha256:132295d3b8b9a232fd0331072d6335fec28efb4fc5c9628e4f38d1c923fd7369"
+    hash "sha256:db477f4440bedce9c733812ab2022f5e7fbf37742aab5888f2052a6c509a778f"
 }
 
 resolution @legeos.work.window-groups-home-tile/1 {
     slot depends_on
     to @legeos.work.window-groups-protocol/1
-    hash "sha256:f2b92281e2ea4c5f994bc0742e53e5767754fcdf65b3c0a208e7657a3e80107e"
-}
-
-resolution @legeos.work.window-groups-home-tile/1 {
-    slot implements
-    to @legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1
-    hash "sha256:bd71240defdbc25a3adc5bea9bbc729a4e35c633cfddeb7050eda7a3ab9468c9"
+    hash "sha256:e69250f54b2bbcb748353309739250e55abcfe9b7f57362dc8fa3330cf97dfb1"
 }
 
 resolution @legeos.work.window-groups-home-tile/1 {
     slot implements
     to @legeos.decision.window-groups-are-explicit-and-compositor-owned/1
-    hash "sha256:4d67370a1d10e2985d607dcde9ceb5d9449648b5e3bb71a875254f7f6b539274"
+    hash "sha256:0f6721512bd89ee558e8b66177df5b92af5ca281b87361b2d6a6ec2155c02f74"
 }
 
 resolution @legeos.work.window-groups-home-tile/1 {
     slot part_of
     to @legeos.work.window-groups/1
-    hash "sha256:132295d3b8b9a232fd0331072d6335fec28efb4fc5c9628e4f38d1c923fd7369"
+    hash "sha256:db477f4440bedce9c733812ab2022f5e7fbf37742aab5888f2052a6c509a778f"
 }
 
 resolution @legeos.work.window-groups-model/1 {
     slot implements
     to @legeos.decision.window-groups-are-explicit-and-compositor-owned/1
-    hash "sha256:4d67370a1d10e2985d607dcde9ceb5d9449648b5e3bb71a875254f7f6b539274"
+    hash "sha256:0f6721512bd89ee558e8b66177df5b92af5ca281b87361b2d6a6ec2155c02f74"
 }
 
 resolution @legeos.work.window-groups-model/1 {
     slot part_of
     to @legeos.work.window-groups/1
-    hash "sha256:132295d3b8b9a232fd0331072d6335fec28efb4fc5c9628e4f38d1c923fd7369"
+    hash "sha256:db477f4440bedce9c733812ab2022f5e7fbf37742aab5888f2052a6c509a778f"
 }
 
 resolution @legeos.work.window-groups-protocol/1 {
     slot depends_on
     to @legeos.work.window-groups-model/1
-    hash "sha256:1b0bdf2704fb8957fca2b5dba6650f79469ce8dd1cc366cef62c375736f51882"
+    hash "sha256:8870942e6572b8a75805bc68dd2a45c19bad25e298e9b7f85073872cc1f13abb"
 }
 
 resolution @legeos.work.window-groups-protocol/1 {
     slot implements
     to @legeos.decision.window-groups-are-explicit-and-compositor-owned/1
-    hash "sha256:4d67370a1d10e2985d607dcde9ceb5d9449648b5e3bb71a875254f7f6b539274"
+    hash "sha256:0f6721512bd89ee558e8b66177df5b92af5ca281b87361b2d6a6ec2155c02f74"
 }
 
 resolution @legeos.work.window-groups-protocol/1 {
     slot part_of
     to @legeos.work.window-groups/1
-    hash "sha256:132295d3b8b9a232fd0331072d6335fec28efb4fc5c9628e4f38d1c923fd7369"
+    hash "sha256:db477f4440bedce9c733812ab2022f5e7fbf37742aab5888f2052a6c509a778f"
 }
 
 seal @legeos.assessment.desktop-test-readiness-20260827/1 {
@@ -2829,6 +2835,11 @@ seal @legeos.work.adaptive-files-and-omnibox/1 {
     hash "sha256:37e425aae7a84929f82aedf57d3af623150daf67d94101c388a41462331bfd84"
 }
 
+seal @legeos.work.application-integration-interim/1 {
+    state active
+    hash "sha256:f9006beefe7d6804f1548e55c71244931d72d7d056547f29a4c8f3ba10d9173f"
+}
+
 seal @legeos.work.compositor-window-authority/1 {
     state completed
     hash "sha256:e6d0e04128fdc6037fdc50307a9eb8b2ceda69755ed9caa54a6e0796b7a36e35"
@@ -3057,4 +3068,29 @@ seal @legeos.work.wayland-clipboard-and-dnd-transport/1 {
 seal @legeos.work.window-controls-and-mouse-parity/1 {
     state completed
     hash "sha256:62d42fdd8d33bc269db85d27fd5b68513872c6fa39e1f8becb10f59734426e03"
+}
+
+seal @legeos.work.window-groups/1 {
+    state active
+    hash "sha256:db477f4440bedce9c733812ab2022f5e7fbf37742aab5888f2052a6c509a778f"
+}
+
+seal @legeos.work.window-groups-compositor/1 {
+    state active
+    hash "sha256:cced4c4beb40299946b410be6362892ef962e8af9a13685b3b33de20747e52c8"
+}
+
+seal @legeos.work.window-groups-home-tile/1 {
+    state active
+    hash "sha256:befe7886c62f112d047d1106ef9abd99b761567441d03f7da1b22a76e94fbc2f"
+}
+
+seal @legeos.work.window-groups-model/1 {
+    state active
+    hash "sha256:8870942e6572b8a75805bc68dd2a45c19bad25e298e9b7f85073872cc1f13abb"
+}
+
+seal @legeos.work.window-groups-protocol/1 {
+    state active
+    hash "sha256:e69250f54b2bbcb748353309739250e55abcfe9b7f57362dc8fa3330cf97dfb1"
 }
