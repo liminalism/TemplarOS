@@ -604,10 +604,14 @@ impl ShellApp {
                 if self.terminal_relayed.as_deref() == Some(wire.as_str()) {
                     return;
                 }
+                // Nothing is recorded as relayed until there is a connection to relay it over,
+                // so a shell that started before the compositor answered still tells it once it
+                // does rather than believing it already had.
+                let Some(bridge) = &self.bridge else {
+                    return;
+                };
                 self.terminal_relayed = Some(wire.clone());
-                if let Some(bridge) = &self.bridge
-                    && let Err(error) = bridge.set_terminal(&wire)
-                {
+                if let Err(error) = bridge.set_terminal(&wire) {
                     // Ordinary against a compositor older than version 5: the chord is not there
                     // to be told about yet.
                     tracing::debug!(%error, "relaying the terminal provider to the compositor");
@@ -623,13 +627,13 @@ impl ShellApp {
     ///
     /// One launch per press. With no terminal selected there is nothing to start, and saying so
     /// is better than a chord that silently does nothing.
-    fn drain_terminal_requests(&mut self) {
+    fn drain_terminal_requests(&mut self) -> bool {
         let Some(bridge) = self.bridge.as_mut() else {
-            return;
+            return false;
         };
         let requests = bridge.take_terminal_requests();
         if requests == 0 {
-            return;
+            return false;
         }
         let Some(app_id) = self.terminal_provider.clone() else {
             let now_ms = self.started.elapsed().as_millis() as u64;
@@ -637,12 +641,13 @@ impl ShellApp {
                 "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
                 now_ms,
             );
-            return;
+            return true;
         };
         for _ in 0..requests {
             self.record_recent(&app_id);
             self.spawn_launch(app_id.clone());
         }
+        true
     }
 
     /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
@@ -1150,7 +1155,6 @@ impl ShellApp {
 
     #[allow(clippy::too_many_lines)]
     fn redraw_home(&mut self) {
-        self.drain_terminal_requests();
         let toplevels = self
             .bridge
             .as_ref()
@@ -2999,6 +3003,13 @@ impl ApplicationHandler<Wake> for ShellApp {
         {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
             self.bridge = None;
+        }
+        // Answered here rather than on the next paint: the terminal chord is a keypress a person
+        // is waiting on, and Home is only redrawn when something asks it to be.
+        if self.drain_terminal_requests()
+            && let Some(home) = &self.home
+        {
+            home.request_redraw();
         }
         self.drain_updates();
         self.ensure_toast(event_loop);
