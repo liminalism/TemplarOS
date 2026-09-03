@@ -14,6 +14,9 @@ use lege_window::{CommandContext, CommandEffect, RevealHome, WindowCommand};
 use smithay::{
     backend::input::KeyState,
     input::keyboard::{Keysym, ModifiersState, keysyms},
+    // For `LegeShellManagerV1::version` — the terminal chord's `terminal_requested` is a
+    // `since = "5"` event and is guarded on the bound object's version like every other one.
+    reexports::wayland_server::Resource,
 };
 
 /// One compositor-reserved recovery action, independent of whether a shell is connected.
@@ -49,6 +52,8 @@ pub enum RecoveryAction {
     StepLeft,
     /// Park the activated window onto Home's shelf.
     ParkFocused,
+    /// `Super+grave`: show the drop-down terminal, or put it away again (§4.6). Never closes it.
+    ToggleTerminal,
 }
 
 /// How many spatial hops one step may take to find the next window along. A first rule rather
@@ -75,6 +80,7 @@ const STEP_HOPS: u8 = 2;
 /// | Super+G                | group with the last window|
 /// | Super+Shift+G          | leave the group           |
 /// | Super+Left / Super+Right | step left / step right    |
+/// | Super+`                | show/hide the terminal    |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
 /// | Ctrl+Alt+P             | park the active window    |
 /// | Super (press)          | reveal Home immediately   |
@@ -134,6 +140,12 @@ pub fn recovery_action(
         if !modifiers.shift {
             if raw == keysyms::KEY_d || raw == keysyms::KEY_D {
                 return Some(RecoveryAction::RevealHome);
+            }
+            // The drop-down terminal. A bare ` or ~ cannot be a global chord — both are typed
+            // characters, in the home directory, in Markdown and in every shell — so a
+            // compositor grab on either would take them from every application (§4.6).
+            if raw == keysyms::KEY_grave {
+                return Some(RecoveryAction::ToggleTerminal);
             }
             if raw == keysyms::KEY_Left {
                 return Some(RecoveryAction::StepLeft);
@@ -386,6 +398,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 }
             }
             RecoveryAction::ParkFocused => self.park_focused(ctx),
+            RecoveryAction::ToggleTerminal => self.toggle_terminal(),
             RecoveryAction::GroupWithPrevious => self.group_with_previous(),
             RecoveryAction::UngroupFocused => {
                 if let Some(window_id) = self.activated_window() {
@@ -520,6 +533,114 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .map_or("", lege_window::GroupRecord::display_name);
         let name = if name.is_empty() { "Group" } else { name };
         format!("{name} — {}", windows_counted(count))
+    }
+
+    /// `Super+grave`, the drop-down terminal (§4.6). "The terminal" is the most recently
+    /// activated window whose canonical application id is the one the shell named with
+    /// `set_terminal` — most recently activated meaning topmost in the stacking order, since
+    /// activating is what raises a window.
+    ///
+    /// No such window: ask the shell to launch the provider (`terminal_requested`), once.
+    /// Shelved, or simply not focused: bring it back and focus it. Focused: park it and hand the
+    /// keyboard back to the window that had it. **Never closed** — an accidental press has to
+    /// cost nothing, which is the whole difference between this and a chord that quits things.
+    fn toggle_terminal(&mut self) {
+        let Some(window_id) = self
+            .shell_protocol
+            .terminal_app_id
+            .clone()
+            .and_then(|app_id| self.terminal_window(&app_id))
+        else {
+            self.request_terminal();
+            return;
+        };
+        let Some(window) = self.window_service.window(window_id) else {
+            return;
+        };
+        if window.activated && !window.shelved {
+            self.hide_terminal(window_id);
+            return;
+        }
+        if window.shelved {
+            let ctx = CommandContext {
+                trusted_shell: true,
+                now_monotonic_ns: crate::window_bridge::now_monotonic_ns(&self.clock),
+            };
+            if let Ok(CommandEffect::Unshelved { geometry, .. }) = self
+                .window_service
+                .handle_command(WindowCommand::Unshelve { window_id }, ctx)
+            {
+                crate::space_sync::apply_resized_geometry(self, window_id, geometry, false);
+            }
+        }
+        crate::input::activate_window(self, window_id);
+    }
+
+    /// The terminal's window: the topmost client window whose *resolved* identity is `app_id`.
+    /// Identity comes from the cgroup through `DbusIdentityCache`, never from what the client
+    /// called itself, so this cannot be spoofed by an application setting an `app_id`.
+    fn terminal_window(&self, app_id: &str) -> Option<lege_window::WindowId> {
+        self.window_service.stacking_order().into_iter().find(|id| {
+            self.window_service.is_client_window(*id)
+                && self.window_service.window(*id).is_some_and(|window| {
+                    window
+                        .identity
+                        .app_id
+                        .as_ref()
+                        .is_some_and(|resolved| resolved.as_str() == app_id)
+                })
+        })
+    }
+
+    /// Park the terminal and give the keyboard back to whatever had it before the terminal took
+    /// it, falling back to the topmost window still on screen — or to Home when there is none.
+    fn hide_terminal(&mut self, window_id: lege_window::WindowId) {
+        let ctx = CommandContext {
+            trusted_shell: true,
+            now_monotonic_ns: crate::window_bridge::now_monotonic_ns(&self.clock),
+        };
+        if self
+            .window_service
+            .handle_command(WindowCommand::Shelve { window_id }, ctx)
+            .is_err()
+        {
+            return;
+        }
+        crate::space_sync::sync_after_change(self);
+        let back = self.previous_focus.filter(|id| {
+            *id != window_id
+                && self.window_service.is_visible(*id)
+                && self.window_service.is_client_window(*id)
+        });
+        if let Some(back) = back {
+            crate::input::activate_window(self, back);
+            return;
+        }
+        let any_left = self.window_service.stacking_order().into_iter().any(|id| {
+            self.window_service.is_visible(id) && self.window_service.is_client_window(id)
+        });
+        crate::input::refocus_after_reveal(self, !any_left);
+    }
+
+    /// Ask the shell to launch the `terminal` provider. Sent to one manager, once per press: with
+    /// no shell there is nothing to ask, and the chord simply does nothing — which is the honest
+    /// half of "with the shell dead the chord still toggles an existing terminal; only the launch
+    /// needs the shell".
+    ///
+    /// Sending an event straight from a keybinding does not cross COMPOSITOR.md's "never encode
+    /// events synchronously from a call site that touched `WindowService`" rule: this path
+    /// touched nothing — there was no window to touch.
+    fn request_terminal(&mut self) {
+        let Some(manager) = self
+            .shell_protocol
+            .managers
+            .iter()
+            .find(|manager| manager.version() >= 5)
+        else {
+            tracing::debug!("terminal chord: no terminal window, and no shell to ask for one");
+            return;
+        };
+        manager.terminal_requested();
     }
 
     fn park_focused(&mut self, ctx: CommandContext) {
@@ -738,8 +859,35 @@ mod tests {
     /// ours, so an application can still bind them.
     #[test]
     fn the_shiftless_logo_chords_are_not_claimed_with_shift_held() {
-        for key in [keysyms::KEY_d, keysyms::KEY_Right, keysyms::KEY_Left] {
+        for key in [
+            keysyms::KEY_d,
+            keysyms::KEY_Right,
+            keysyms::KEY_Left,
+            keysyms::KEY_grave,
+        ] {
             assert_eq!(recovery_action(logo_shift(), Keysym::new(key), false), None);
+        }
+    }
+
+    /// The terminal chord is `Super+grave` and nothing else: a bare backtick or tilde is a
+    /// character people type constantly, and grabbing either would take it from every
+    /// application (§4.6).
+    #[test]
+    fn super_grave_toggles_the_terminal_and_a_bare_backtick_is_never_reserved() {
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_grave), false),
+            Some(RecoveryAction::ToggleTerminal)
+        );
+        for keysym in [keysyms::KEY_grave, keysyms::KEY_asciitilde] {
+            assert_eq!(
+                recovery_action(mods(false, false, false), Keysym::new(keysym), false),
+                None
+            );
+            assert_eq!(
+                recovery_action(mods(false, false, false), Keysym::new(keysym), true),
+                None,
+                "not even while Home is revealed"
+            );
         }
     }
 
@@ -963,6 +1111,7 @@ mod tests {
                 Key::Character('d') => keysyms::KEY_d,
                 Key::Character('p') => keysyms::KEY_p,
                 Key::Character('g') => keysyms::KEY_g,
+                Key::Grave => keysyms::KEY_grave,
                 // Not a combination the keysym table can answer: the bare tap is a gesture,
                 // tracked by `SuperTapTracker`, and the rest belong to the shell.
                 _ => return None,
@@ -1000,6 +1149,7 @@ mod tests {
             ),
             (RecoveryAction::GroupWithPrevious, "window.group"),
             (RecoveryAction::UngroupFocused, "window.ungroup"),
+            (RecoveryAction::ToggleTerminal, "terminal.toggle"),
         ];
         for (action, id) in expected {
             let declaration = action::action(id).unwrap_or_else(|| panic!("{id} is not declared"));

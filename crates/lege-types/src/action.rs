@@ -42,6 +42,10 @@ pub enum Key {
     Right,
     Up,
     Down,
+    /// The backtick key, left of 1 on most layouts. Not a [`Key::Character`]: it has no case to
+    /// match insensitively, and the one chord that uses it (`Super+grave`, the drop-down
+    /// terminal) means the *key*, whichever character the layout puts on it.
+    Grave,
     /// A function key, by number. F1 is the conventional route to contextual help.
     Function(u8),
     /// The logo key pressed with nothing else — a gesture, not a combination. Press reveals
@@ -67,6 +71,7 @@ impl fmt::Display for Key {
             Self::Right => formatter.write_str("Right"),
             Self::Up => formatter.write_str("Up"),
             Self::Down => formatter.write_str("Down"),
+            Self::Grave => formatter.write_str("`"),
             Self::Function(number) => write!(formatter, "F{number}"),
             Self::LogoTap => formatter.write_str("Super"),
         }
@@ -578,6 +583,20 @@ pub const MANIFEST: &[ActionDecl] = &[
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
+    },
+    // The drop-down terminal (§4.6). `Super+grave`, because a bare ` or ~ is a typed character
+    // everywhere — the home directory, Markdown, every shell — and a compositor grab on one would
+    // take it from every application. A second press parks the terminal; it never closes it.
+    // Distinct from `Ctrl+Alt+T`, which launches a *new* terminal window every time.
+    ActionDecl {
+        id: "terminal.toggle",
+        label: "Show or hide the terminal",
+        control: Some("Terminal"),
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO, Key::Grave)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
     },
     ActionDecl {
         id: "window.close",

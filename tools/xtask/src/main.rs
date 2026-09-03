@@ -118,6 +118,13 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
         "window.ungroup",
         "compositor chord; the shell lane's group-tile menu row is the pointer route",
     ),
+    // 2026-09-03, the drop-down terminal (§4.6). The compositor reserves Super+grave; the pointer
+    // route is the shell's — the terminal provider's own launcher row, which arrives with the
+    // Providers1 `terminal` role.
+    (
+        "terminal.toggle",
+        "compositor chord; the shell's launcher row for the terminal provider is the pointer route",
+    ),
 ];
 
 /// Every declared action's `cli_verb` reaches a real `lege` subcommand, every action id a shell
