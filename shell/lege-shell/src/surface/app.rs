@@ -1238,6 +1238,16 @@ impl ShellApp {
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
+            // `window.group`, which is the one window verb naming two windows and so cannot go
+            // through `perform_on_window`.
+            FieldAction::JoinWindowGroup { window, other } => {
+                self.bridge_call("join_group", |bridge| bridge.join_group(window, other));
+            }
+            FieldAction::RenameWindowGroup { window, name } => {
+                self.bridge_call("set_group_name", |bridge| {
+                    bridge.set_group_name(window, &name)
+                });
+            }
             FieldAction::RevealHome => {
                 self.bridge_call("reveal_home", |bridge| {
                     bridge.reveal_home(RevealHome::Toggle)
@@ -1506,6 +1516,23 @@ impl ShellApp {
             }
             "window.show-all" => {
                 self.bridge_call("show_all_windows", ShellBridge::show_all_windows);
+            }
+            // The window-group verbs. Every one is sent to a window and applies to its whole
+            // group; the compositor owns membership, so the Home tile only catches up on the next
+            // refresh. Against a compositor older than `lege_shell_v1` version 5 the bridge
+            // refuses these and says so, rather than sending a request that would end the
+            // connection the whole shell is drawn on.
+            "window.ungroup" => {
+                self.bridge_call("leave_group", |bridge| bridge.leave_group(window));
+            }
+            "window.activate-group" => {
+                self.bridge_call("activate_group", |bridge| bridge.activate_group(window));
+            }
+            "window.shelve-group" => {
+                self.bridge_call("shelve_group", |bridge| bridge.shelve_group(window));
+            }
+            "window.unshelve-group" => {
+                self.bridge_call("unshelve_group", |bridge| bridge.unshelve_group(window));
             }
             other => tracing::warn!(action = %other, "no window route for this action yet"),
         }

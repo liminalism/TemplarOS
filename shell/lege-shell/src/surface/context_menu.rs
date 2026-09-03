@@ -51,6 +51,10 @@ pub enum MenuScope {
     Tile,
     /// Needs a tile that stands for a live window.
     Window,
+    /// Needs a live window that is currently in a window group.
+    GroupedWindow,
+    /// Needs a window group's own tile under the pointer.
+    WindowGroup,
     /// Needs at least one tile on the shelf. Offered on bare background like the other field
     /// rows, but only when there is actually something to bring back — a permanently visible
     /// "bring shelved tiles back" would be a row that does nothing almost every time it is read.
@@ -97,6 +101,14 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("windows.restore-arrangement", MenuScope::Field),
     MenuItem::new("pane.new", MenuScope::Field),
     MenuItem::new("window.escape-fullscreen", MenuScope::Window),
+    // Window groups. `window.group` is not here: grouping needs a second window to name, which a
+    // menu row over one tile has no way to say — its pointer route is the drop of one session
+    // tile on another, and the compositor's `Super+G` is the keyboard one.
+    MenuItem::new("window.activate-group", MenuScope::WindowGroup),
+    MenuItem::new("window.shelve-group", MenuScope::WindowGroup),
+    MenuItem::new("window.unshelve-group", MenuScope::WindowGroup),
+    MenuItem::new("window.rename-group", MenuScope::WindowGroup),
+    MenuItem::new("window.ungroup", MenuScope::GroupedWindow),
     MenuItem::new("window.cycle-forward", MenuScope::Window),
     MenuItem::new("window.cycle-backward", MenuScope::Window),
     MenuItem::new("window.group-next", MenuScope::Window),
@@ -121,6 +133,11 @@ pub struct MenuTarget {
     pub window: Option<WindowId>,
     /// Whether the field has anything on its shelf right now.
     pub shelved: bool,
+    /// The tile under the pointer is a window group's own tile, and [`Self::window`] is one of
+    /// its members — every group request on the wire is sent to a member and applies to the set.
+    pub window_group: bool,
+    /// The window under the pointer belongs to a window group.
+    pub in_window_group: bool,
 }
 
 impl MenuTarget {
@@ -130,6 +147,12 @@ impl MenuTarget {
             MenuScope::Tile => self.tile.is_some(),
             MenuScope::Window => self.window.is_some(),
             MenuScope::Shelf => self.shelved,
+            MenuScope::WindowGroup => self.window_group && self.window.is_some(),
+            // A group's own tile is not one of its members: "take out of group" over it would
+            // have no window to mean, so it is offered over a member's tile only.
+            MenuScope::GroupedWindow => {
+                self.in_window_group && self.window.is_some() && !self.window_group
+            }
         }
     }
 
@@ -538,12 +561,21 @@ mod tests {
         let tile = MenuTarget {
             tile: Some(TileId(7)),
             window: None,
-            shelved: false,
+            ..MenuTarget::default()
         };
         let window = MenuTarget {
             tile: Some(TileId(7)),
             window: Some(WindowId(3)),
-            shelved: false,
+            ..MenuTarget::default()
+        };
+        let grouped = MenuTarget {
+            in_window_group: true,
+            ..window
+        };
+        let group_tile = MenuTarget {
+            window_group: true,
+            in_window_group: true,
+            ..window
         };
         let shelf = MenuTarget {
             shelved: true,
@@ -580,6 +612,28 @@ mod tests {
         // Reset is a field row, so it is reachable from bare background — that is the whole
         // point, since a field can be reset when no tile is worth pointing at.
         assert!(ids(nothing).contains(&"field.reset"));
+
+        // Window groups. A window in no group is offered none of it; a member is offered the way
+        // out; the group's own tile is offered the verbs that act on the set. "Take out of group"
+        // is not among them, because a group's tile is not one of its members.
+        for id in [
+            "window.ungroup",
+            "window.activate-group",
+            "window.shelve-group",
+            "window.rename-group",
+        ] {
+            assert!(!ids(window).contains(&id), "{id} over an ungrouped window");
+        }
+        assert!(ids(grouped).contains(&"window.ungroup"));
+        assert!(!ids(grouped).contains(&"window.activate-group"));
+        assert!(ids(group_tile).contains(&"window.activate-group"));
+        assert!(ids(group_tile).contains(&"window.shelve-group"));
+        assert!(ids(group_tile).contains(&"window.unshelve-group"));
+        assert!(ids(group_tile).contains(&"window.rename-group"));
+        assert!(
+            !ids(group_tile).contains(&"window.ungroup"),
+            "a group's own tile is not one of its members"
+        );
     }
 
     #[test]

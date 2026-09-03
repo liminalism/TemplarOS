@@ -45,6 +45,29 @@ pub enum Target {
     },
     /// A project container (its frame or its interior).
     Project { id: TileId },
+    /// A window group's tile (its frame or its interior).
+    WindowGroup { id: TileId },
+}
+
+/// Where the lifted tile is coming *from*: bare field, or the inside of a container.
+///
+/// The grammar needs this for exactly one drop — a member dragged out of a window group onto the
+/// bare field, which is how a window leaves its group — and takes it as a value for the same
+/// reason [`DropModifiers`] is a value: the answer changes what the compositor is asked to do,
+/// and the caller is the only one that knows where the tile was.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DropOrigin {
+    /// The lifted tile is currently inside a window-group tile.
+    pub in_window_group: bool,
+}
+
+impl DropOrigin {
+    pub const LOOSE: DropOrigin = DropOrigin {
+        in_window_group: false,
+    };
+    pub const IN_WINDOW_GROUP: DropOrigin = DropOrigin {
+        in_window_group: true,
+    };
 }
 
 /// One named, previewable operation. The shell turns it into field ops and service calls.
@@ -77,6 +100,16 @@ pub enum Operation {
     GroupIntoNewProject {
         with: TileId,
     },
+    /// Put this window in that one's window group (`lege_shell_toplevel_v1.join_group`), making
+    /// one of the two when there is none yet. `with` is either another session tile or a group
+    /// tile; either way the compositor decides what the group becomes, and the Home tile follows
+    /// on the next merge.
+    JoinWindowGroup {
+        with: TileId,
+    },
+    /// Take this window out of its window group (`lege_shell_toplevel_v1.leave_group`): a member
+    /// dragged from inside the group's tile onto the bare field.
+    LeaveWindowGroup,
     /// Copy the dropped item into the folder this tile binds. A real file operation: the shell
     /// hands it to `Files.Operations1` and the service, not the shell, decides what a conflict,
     /// a permission failure or a device boundary means.
@@ -103,6 +136,8 @@ impl Operation {
             Self::ScopeWidget { .. } => Some("SCOPE TO PROJECT"),
             Self::AddToProject { .. } => Some("ADD TO PROJECT"),
             Self::GroupIntoNewProject { .. } => Some("NEW PROJECT FROM THESE TWO"),
+            Self::JoinWindowGroup { .. } => Some("GROUP THESE WINDOWS"),
+            Self::LeaveWindowGroup => Some("TAKE OUT OF GROUP"),
             // Named in full, and named differently from each other, because these are the two
             // drops in the whole grammar that change a file rather than a relationship. "MOVE"
             // and "COPY" are not interchangeable words to somebody watching their only copy of
@@ -130,26 +165,48 @@ impl Operation {
 }
 
 /// The grammar table. `source` is the lifted tile's kind, `source_id` its id (so a tile is
-/// never grouped with itself), and `modifiers` is what the pointer asked for — consulted only
-/// where the answer genuinely differs, which is a real file onto a real folder.
+/// never grouped with itself), `origin` says where the tile was lifted from, and `modifiers` is
+/// what the pointer asked for — consulted only where the answer genuinely differs, which is a
+/// real file onto a real folder.
 pub fn operation_for(
     source_id: TileId,
     source: &TileKind,
     target: &Target,
+    origin: DropOrigin,
     modifiers: DropModifiers,
 ) -> Option<Operation> {
     match target {
+        // The one drop where where-it-came-from decides the meaning: a member dragged out of its
+        // group tile onto bare field leaves the group. Onto bare field *only* — dropped inside
+        // the group's own interior it is a plain rearrangement, and a group's tile is nowhere
+        // near the shelf.
+        Target::Empty {
+            container: None,
+            cell,
+        } if origin.in_window_group && matches!(source, TileKind::ParkedSession { .. }) => {
+            let _ = cell;
+            Some(Operation::LeaveWindowGroup)
+        }
         Target::Empty { container, cell } => Some(Operation::Relocate {
             container: *container,
             to: *cell,
         }),
         Target::Shelf => Some(Operation::Stash),
+        // A window's tile dropped on a group's tile joins that group; nothing else has any
+        // business inside a group, which holds windows and only windows.
+        Target::WindowGroup { id } => {
+            if *id == source_id {
+                return None;
+            }
+            matches!(source, TileKind::ParkedSession { .. })
+                .then_some(Operation::JoinWindowGroup { with: *id })
+        }
         Target::Project { id } => {
             if *id == source_id {
                 return None;
             }
             Some(match source {
-                TileKind::Project { .. } => return None,
+                TileKind::Project { .. } | TileKind::WindowGroup { .. } => return None,
                 TileKind::App { .. } => Operation::PinTool { project: *id },
                 TileKind::ParkedSession { .. } => Operation::ParkSession { project: *id },
                 TileKind::Widget { .. } => Operation::ScopeWidget { project: *id },
@@ -168,6 +225,14 @@ pub fn operation_for(
                 return None;
             }
             match (source, kind) {
+                // Two windows, dropped one on the other: the gesture that makes a group. This is
+                // the Home half of dropping one title band on another on the workspace, and it
+                // takes the place the old "new project from these two" answer had for a pair of
+                // session tiles — two windows put together are a window group, which is the
+                // lighter of the two things and the one that was actually meant.
+                (TileKind::ParkedSession { .. }, TileKind::ParkedSession { .. }) => {
+                    Some(Operation::JoinWindowGroup { with: *id })
+                }
                 (TileKind::File { .. }, TileKind::App { .. }) if *accepts_open => {
                     Some(Operation::OpenWith { app: *id })
                 }
@@ -188,10 +253,22 @@ pub fn operation_for(
                 }
                 // Everything else involving a folder still refuses rather than grouping: a folder
                 // is not a loose tile to be swept into a project by accident, and dropping some
-                // other kind of tile *onto* one has no file meaning at all. Projects refuse for
-                // their own reason — a container never groups into another tile.
-                (TileKind::Folder { .. } | TileKind::Project { .. }, _)
-                | (_, TileKind::Folder { .. } | TileKind::Project { .. }) => None,
+                // other kind of tile *onto* one has no file meaning at all. Projects and window
+                // groups refuse for their own reason — a container never groups into another
+                // tile. (A group tile as a *target* never reaches here: `Target::WindowGroup`
+                // answers for it above, the way `Target::Project` does for a project.)
+                (
+                    TileKind::Folder { .. }
+                    | TileKind::Project { .. }
+                    | TileKind::WindowGroup { .. },
+                    _,
+                )
+                | (
+                    _,
+                    TileKind::Folder { .. }
+                    | TileKind::Project { .. }
+                    | TileKind::WindowGroup { .. },
+                ) => None,
                 _ => Some(Operation::GroupIntoNewProject { with: *id }),
             }
         }
@@ -225,6 +302,7 @@ mod tests {
                     kind: app.clone(),
                     accepts_open: true
                 },
+                DropOrigin::LOOSE,
                 DropModifiers::default()
             ),
             Some(Operation::OpenWith { app: TileId(2) })
@@ -238,6 +316,7 @@ mod tests {
                     kind: TileKind::Tray { tray_id: TrayId(1) },
                     accepts_open: false
                 },
+                DropOrigin::LOOSE,
                 DropModifiers::default()
             ),
             Some(Operation::AddReference { tray: TileId(3) })
@@ -247,6 +326,7 @@ mod tests {
                 TileId(1),
                 &app,
                 &Target::Project { id: project },
+                DropOrigin::LOOSE,
                 DropModifiers::default()
             ),
             Some(Operation::PinTool { project })
@@ -259,6 +339,7 @@ mod tests {
                     identifier: "w".into()
                 },
                 &Target::Project { id: project },
+                DropOrigin::LOOSE,
                 DropModifiers::default()
             ),
             Some(Operation::ParkSession { project })
@@ -271,6 +352,7 @@ mod tests {
                     container: None,
                     cell: Cell::new(2, 2)
                 },
+                DropOrigin::LOOSE,
                 DropModifiers::default()
             ),
             Some(Operation::Relocate {
@@ -279,7 +361,13 @@ mod tests {
             })
         );
         assert_eq!(
-            operation_for(TileId(1), &file(), &Target::Shelf, DropModifiers::default()),
+            operation_for(
+                TileId(1),
+                &file(),
+                &Target::Shelf,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
             Some(Operation::Stash)
         );
     }
@@ -295,7 +383,13 @@ mod tests {
             accepts_open: false,
         };
         assert_eq!(
-            operation_for(TileId(1), &app, &other, DropModifiers::default()),
+            operation_for(
+                TileId(1),
+                &app,
+                &other,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
             Some(Operation::GroupIntoNewProject { with: TileId(2) })
         );
         let itself = Target::Tile {
@@ -304,14 +398,157 @@ mod tests {
             accepts_open: false,
         };
         assert_eq!(
-            operation_for(TileId(1), &app, &itself, DropModifiers::default()),
+            operation_for(
+                TileId(1),
+                &app,
+                &itself,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
             None
         );
         // A file on an app that does not open it is not "open"; it groups like anything else.
         assert_eq!(
-            operation_for(TileId(1), &file(), &other, DropModifiers::default()),
+            operation_for(
+                TileId(1),
+                &file(),
+                &other,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
             Some(Operation::GroupIntoNewProject { with: TileId(2) })
         );
+    }
+
+    fn session(name: &str) -> TileKind {
+        TileKind::ParkedSession {
+            app_id: None,
+            identifier: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn two_windows_dropped_together_make_a_window_group_not_a_project() {
+        let target = Target::Tile {
+            id: TileId(2),
+            kind: session("b"),
+            accepts_open: false,
+        };
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &session("a"),
+                &target,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            Some(Operation::JoinWindowGroup { with: TileId(2) })
+        );
+    }
+
+    #[test]
+    fn a_window_dropped_on_a_group_joins_it_and_nothing_else_may() {
+        let group = Target::WindowGroup { id: TileId(9) };
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &session("a"),
+                &group,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            Some(Operation::JoinWindowGroup { with: TileId(9) })
+        );
+        // A group holds windows. A file, a folder, an application or another container dropped on
+        // one has no meaning, and a refusal is the honest answer.
+        for source in [
+            file(),
+            folder("/home/u/Notes"),
+            TileKind::App {
+                app_id: "org.legeos.Files".parse().unwrap(),
+            },
+            TileKind::WindowGroup {
+                identifier: "3".into(),
+            },
+        ] {
+            assert_eq!(
+                operation_for(
+                    TileId(1),
+                    &source,
+                    &group,
+                    DropOrigin::LOOSE,
+                    DropModifiers::default()
+                ),
+                None,
+                "{source:?} onto a window group"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_dragged_onto_the_bare_field_leaves_its_group() {
+        let bare = Target::Empty {
+            container: None,
+            cell: Cell::new(3, 1),
+        };
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &session("a"),
+                &bare,
+                DropOrigin::IN_WINDOW_GROUP,
+                DropModifiers::default()
+            ),
+            Some(Operation::LeaveWindowGroup)
+        );
+        // The same drop from bare field is placement, as it always was.
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &session("a"),
+                &bare,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            Some(Operation::Relocate {
+                container: None,
+                to: Cell::new(3, 1)
+            })
+        );
+        // And rearranging inside the group's own interior is placement too: the tile has not
+        // left anything.
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &session("a"),
+                &Target::Empty {
+                    container: Some(TileId(9)),
+                    cell: Cell::new(0, 1)
+                },
+                DropOrigin::IN_WINDOW_GROUP,
+                DropModifiers::default()
+            ),
+            Some(Operation::Relocate {
+                container: Some(TileId(9)),
+                to: Cell::new(0, 1)
+            })
+        );
+    }
+
+    #[test]
+    fn both_group_answers_are_announced_before_release() {
+        assert_eq!(
+            Operation::JoinWindowGroup { with: TileId(2) }.label(),
+            Some("GROUP THESE WINDOWS")
+        );
+        assert_eq!(
+            Operation::LeaveWindowGroup.label(),
+            Some("TAKE OUT OF GROUP")
+        );
+        assert!(Operation::LeaveWindowGroup.is_semantic());
+        // Neither touches the filesystem: they change a relationship the compositor owns.
+        assert!(!Operation::LeaveWindowGroup.is_file_operation());
+        assert!(!Operation::JoinWindowGroup { with: TileId(2) }.is_file_operation());
     }
 
     fn folder(path: &str) -> TileKind {
@@ -332,11 +569,23 @@ mod tests {
     fn drag_drop_a_file_onto_a_folder_is_a_named_move_or_a_named_copy() {
         let target = onto(2, folder("/home/u/Documents"));
         assert_eq!(
-            operation_for(TileId(1), &file(), &target, DropModifiers::MOVE),
+            operation_for(
+                TileId(1),
+                &file(),
+                &target,
+                DropOrigin::LOOSE,
+                DropModifiers::MOVE
+            ),
             Some(Operation::MoveInto { folder: TileId(2) })
         );
         assert_eq!(
-            operation_for(TileId(1), &file(), &target, DropModifiers::COPY),
+            operation_for(
+                TileId(1),
+                &file(),
+                &target,
+                DropOrigin::LOOSE,
+                DropModifiers::COPY
+            ),
             Some(Operation::CopyInto { folder: TileId(2) })
         );
         // A folder is a file too: dropping one into another is the same operation.
@@ -345,6 +594,7 @@ mod tests {
                 TileId(1),
                 &folder("/home/u/Notes"),
                 &target,
+                DropOrigin::LOOSE,
                 DropModifiers::MOVE
             ),
             Some(Operation::MoveInto { folder: TileId(2) })
@@ -356,6 +606,7 @@ mod tests {
                     TileId(2),
                     &folder("/home/u/Documents"),
                     &onto(2, folder("/home/u/Documents")),
+                    DropOrigin::LOOSE,
                     modifiers
                 ),
                 None
@@ -402,7 +653,7 @@ mod tests {
         let pane = onto(3, TileKind::Tray { tray_id: TrayId(1) });
         for modifiers in [DropModifiers::MOVE, DropModifiers::COPY] {
             assert_eq!(
-                operation_for(TileId(1), &file(), &pane, modifiers),
+                operation_for(TileId(1), &file(), &pane, DropOrigin::LOOSE, modifiers),
                 Some(Operation::AddReference { tray: TileId(3) })
             );
         }
@@ -420,6 +671,7 @@ mod tests {
                 TileId(1),
                 &folder("/home/u/Notes"),
                 &onto(2, app.clone()),
+                DropOrigin::LOOSE,
                 DropModifiers::MOVE
             ),
             None
@@ -430,6 +682,7 @@ mod tests {
                 TileId(1),
                 &app,
                 &onto(2, folder("/home/u/Notes")),
+                DropOrigin::LOOSE,
                 DropModifiers::COPY
             ),
             None
@@ -442,6 +695,7 @@ mod tests {
                     scope: None
                 },
                 &onto(2, folder("/home/u/Notes")),
+                DropOrigin::LOOSE,
                 DropModifiers::MOVE
             ),
             None

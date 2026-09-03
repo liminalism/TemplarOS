@@ -78,12 +78,23 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum
 
 use crate::data_device::{ClipboardPayload, ForeignSelection, InputSerials, choose_target};
 use lege_types::{AppId, InstanceId};
-use lege_window::{Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Edge};
+use lege_window::{GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Edge};
 
 /// The highest `lege_shell_v1` version this shell speaks (`interfaces/wayland/lege-shell-v1.xml`).
 /// Bound at the lower of this and what the compositor advertises, so a newer shell against an
 /// older compositor still gets version 1's events rather than a protocol error.
-const SHELL_PROTOCOL_VERSION: u32 = 4;
+///
+/// Version 5 is the window-group and drop-down-terminal set. The manager's version is what gates
+/// *every* interface in this protocol, including `lege_shell_toplevel_v1`'s own version 3
+/// additions: a toplevel object is created by an event on a child of the manager, so libwayland
+/// gives it the manager's bound version rather than the interface's own maximum. That is why the
+/// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
+/// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
+/// that compositor has never heard of.
+const SHELL_PROTOCOL_VERSION: u32 = 5;
+
+/// The manager version that carries `lege_shell_toplevel_v1`'s window-group requests.
+const GROUP_SINCE: u32 = 5;
 
 use crate::protocol::lege_shell_v1::{
     lege_shell_manager_v1::{self, LegeShellManagerV1},
@@ -103,6 +114,16 @@ use crate::protocol::lege_shell_v1::{
 #[derive(Clone)]
 struct TrackedToplevel {
     proxy: LegeShellToplevelV1,
+    state: ToplevelState,
+}
+
+/// Everything the wire has said about one toplevel, with no connection-scoped object in it.
+///
+/// Split out from [`TrackedToplevel`] so the event → [`ShellToplevel`] mapping is a pure function
+/// of the events received, testable without a live compositor — which is the only part of this
+/// module that has ever been testable at all (see the test module at the bottom for why).
+#[derive(Clone, Debug)]
+struct ToplevelState {
     canonical_app_id: Option<AppId>,
     instance_id: Option<InstanceId>,
     title: String,
@@ -115,12 +136,23 @@ struct TrackedToplevel {
     /// `ext_foreign_toplevel_handle_v1.identifier`, relayed once by the compositor (version 2).
     identifier: Option<String>,
     layer: Layer,
+    /// The window group this window belongs to, as the `group` event last reported it
+    /// (version 3). `None` is "in no group" — the wire says so with a `group_id` of 0.
+    group: Option<GroupInfo>,
 }
 
 impl TrackedToplevel {
     fn new(proxy: LegeShellToplevelV1) -> Self {
         TrackedToplevel {
             proxy,
+            state: ToplevelState::default(),
+        }
+    }
+}
+
+impl Default for ToplevelState {
+    fn default() -> Self {
+        ToplevelState {
             canonical_app_id: None,
             instance_id: None,
             title: String::new(),
@@ -135,6 +167,69 @@ impl TrackedToplevel {
             // learned about (see the module doc on `GetToplevelList` below); `Normal` is the
             // least surprising guess and self-corrects the moment any state changes.
             layer: Layer::Normal,
+            group: None,
+        }
+    }
+}
+
+impl ToplevelState {
+    /// Fold one `lege_shell_toplevel_v1` event in. `Closed` never reaches here — it removes the
+    /// whole entry, which the dispatcher handles before looking one up.
+    fn apply(&mut self, event: lege_shell_toplevel_v1::Event) {
+        match event {
+            lege_shell_toplevel_v1::Event::Identity {
+                canonical_app_id,
+                instance_id,
+                verified,
+            } => {
+                self.canonical_app_id = canonical_app_id.as_deref().and_then(|id| id.parse().ok());
+                self.instance_id = instance_id.as_deref().and_then(InstanceId::parse);
+                self.verified_identity = verified != 0;
+            }
+            lege_shell_toplevel_v1::Event::Title { title } => self.title = title,
+            lege_shell_toplevel_v1::Event::State {
+                activated,
+                fullscreen,
+                shelved,
+                shelf_rank: _,
+            } => {
+                // `shelf_rank` is the wire's authoritative shelve order (see
+                // `interfaces/wayland/lege-shell-v1.xml`); `crate::drawers::window_shelf`
+                // currently sorts by `window_id` instead (its own module doc explains why: the
+                // sanitized `ShellToplevel` this crate renders against has no such field yet).
+                // Wiring it through is the natural follow-up once that struct grows one — not a
+                // silent loss, since the events themselves carry it either way.
+                self.activated = activated != 0;
+                self.fullscreen = fullscreen != 0;
+                self.shelved = shelved != 0;
+            }
+            lege_shell_toplevel_v1::Event::Layer { layer } => {
+                if let WEnum::Value(layer) = layer {
+                    self.layer = layer_from_wire(layer);
+                }
+            }
+            lege_shell_toplevel_v1::Event::Identifier { identifier } => {
+                self.identifier = Some(identifier);
+            }
+            lege_shell_toplevel_v1::Event::Geometry {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                self.geometry = Rect::new(x, y, width, height);
+            }
+            lege_shell_toplevel_v1::Event::Maximized { maximized } => {
+                self.maximized = maximized != 0;
+            }
+            lege_shell_toplevel_v1::Event::Group {
+                group_id,
+                name,
+                accent,
+            } => {
+                self.group = group_from_wire(group_id, name, accent);
+            }
+            lege_shell_toplevel_v1::Event::Closed => unreachable!("handled by the dispatcher"),
         }
     }
 
@@ -151,9 +246,23 @@ impl TrackedToplevel {
             maximized: self.maximized,
             geometry: self.geometry,
             layer: self.layer,
-            group: None,
+            group: self.group.clone(),
         }
     }
+}
+
+/// The `group` event's three arguments as the shell's own value.
+///
+/// `group_id` 0 is the wire's "in no group", and the protocol promises `name` is then empty and
+/// `accent` 0 — but this does not check that, because a window in no group has no name and no
+/// accent to disagree about: the `None` discards both either way.
+fn group_from_wire(group_id: u32, name: String, accent: u32) -> Option<GroupInfo> {
+    (group_id != 0).then(|| GroupInfo {
+        group_id: u64::from(group_id),
+        name,
+        // `0x00RRGGBB` on the wire; any alpha byte a compositor sets is not ours to interpret.
+        accent: accent & 0x00ff_ffff,
+    })
 }
 
 /// The synthetic [`WindowId`] standing in for the server's real one — see [`TrackedToplevel`]'s
@@ -483,8 +592,12 @@ impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
             lege_shell_manager_v1::Event::HomeRevealed { revealed } => {
                 state.home_revealed = revealed != 0;
             }
-            // Version 5: bound only once `SHELL_PROTOCOL_VERSION` reaches 5, with the
-            // window-group and drop-down-terminal work.
+            // Version 5, and now bound — but both belong to the drop-down terminal (§4.6 of
+            // `docs/planning/window-groups-and-application-integration.md`), which is a separate
+            // lane. Ignored rather than removed: a `terminal_requested` this shell drops means
+            // `Super+grave` cannot *launch* a terminal, which is exactly the degradation the
+            // plan describes for a dead shell, and `group_cycle_binding` only reports a chord
+            // this shell does not yet display.
             lege_shell_manager_v1::Event::TerminalRequested
             | lege_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
         }
@@ -532,57 +645,7 @@ impl Dispatch<LegeShellToplevelV1, ()> for BridgeState {
         let Some(tracked) = state.toplevels.get_mut(&proxy.id()) else {
             return;
         };
-        match event {
-            lege_shell_toplevel_v1::Event::Identity {
-                canonical_app_id,
-                instance_id,
-                verified,
-            } => {
-                tracked.canonical_app_id =
-                    canonical_app_id.as_deref().and_then(|id| id.parse().ok());
-                tracked.instance_id = instance_id.as_deref().and_then(InstanceId::parse);
-                tracked.verified_identity = verified != 0;
-            }
-            lege_shell_toplevel_v1::Event::Title { title } => tracked.title = title,
-            lege_shell_toplevel_v1::Event::State {
-                activated,
-                fullscreen,
-                shelved,
-                shelf_rank: _,
-            } => {
-                // `shelf_rank` is the wire's authoritative shelve order (see
-                // `interfaces/wayland/lege-shell-v1.xml`); `crate::drawers::window_shelf`
-                // currently sorts by `window_id` instead (its own module doc explains why: the
-                // sanitized `ShellToplevel` this crate renders against has no such field yet).
-                // Wiring it through is the natural follow-up once that struct grows one — not a
-                // silent loss, since the events themselves carry it either way.
-                tracked.activated = activated != 0;
-                tracked.fullscreen = fullscreen != 0;
-                tracked.shelved = shelved != 0;
-            }
-            lege_shell_toplevel_v1::Event::Layer { layer } => {
-                if let WEnum::Value(layer) = layer {
-                    tracked.layer = layer_from_wire(layer);
-                }
-            }
-            lege_shell_toplevel_v1::Event::Identifier { identifier } => {
-                tracked.identifier = Some(identifier);
-            }
-            lege_shell_toplevel_v1::Event::Geometry {
-                x,
-                y,
-                width,
-                height,
-            } => {
-                tracked.geometry = Rect::new(x, y, width, height);
-            }
-            lege_shell_toplevel_v1::Event::Maximized { maximized } => {
-                tracked.maximized = maximized != 0;
-            }
-            // Version 3 of the toplevel: carried by manager version 5, not bound yet.
-            lege_shell_toplevel_v1::Event::Group { .. } => {}
-            lege_shell_toplevel_v1::Event::Closed => unreachable!("handled above"),
-        }
+        tracked.state.apply(event);
     }
 }
 
@@ -896,7 +959,7 @@ impl ShellBridge {
         self.state
             .toplevels
             .iter()
-            .map(|(id, tracked)| tracked.snapshot(synthetic_window_id(id)))
+            .map(|(id, tracked)| tracked.state.snapshot(synthetic_window_id(id)))
             .collect()
     }
 
@@ -957,6 +1020,97 @@ impl ShellBridge {
         }
         toplevel.set_maximized(u32::from(maximized));
         self.connection.flush().context("flushing set_maximized")
+    }
+
+    /// The `lege_shell_v1` version actually negotiated with this compositor. Window groups need
+    /// version 5; anything below that is a compositor from before they existed, and a request it
+    /// has never heard of is a protocol error that kills the connection — so every group
+    /// operation refuses here rather than on the wire.
+    fn group_requests_available(&self) -> Result<()> {
+        if self.manager.version() < GROUP_SINCE {
+            bail!(
+                "the compositor speaks lege_shell_v1 version {}, which has no window groups",
+                self.manager.version()
+            );
+        }
+        Ok(())
+    }
+
+    /// Put `window` in `other`'s window group, making one of the two when `other` has none
+    /// (version 5). The compositor also sets `window` down beside `other` — grouping places, it
+    /// never merges — so this is the pointer half of dropping one title band on another.
+    pub fn join_group(&self, window_id: WindowId, other_id: WindowId) -> Result<()> {
+        self.group_requests_available()?;
+        if window_id == other_id {
+            bail!("a window cannot be grouped with itself: {window_id:?}");
+        }
+        let Some(other) = self.toplevel_object(other_id).cloned() else {
+            bail!("no such window on this connection: {other_id:?}");
+        };
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.join_group(&other);
+        self.connection.flush().context("flushing join_group")
+    }
+
+    /// Take `window` out of whatever group it is in (version 5). A group left with one member
+    /// dissolves on its own in the compositor; there is no request for that and none is needed.
+    pub fn leave_group(&self, window_id: WindowId) -> Result<()> {
+        self.group_requests_available()?;
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.leave_group();
+        self.connection.flush().context("flushing leave_group")
+    }
+
+    /// Raise every member of `window`'s group together, `window` on top, and focus it
+    /// (version 5) — what pressing a group tile's title on Home means.
+    ///
+    /// The token is handled exactly as [`ShellBridge::activate`]'s is: the compositor grants a
+    /// trusted-shell activation whatever string arrives, because this connection *is* the
+    /// evidence. The argument exists for the ordinary application-to-application handoff, which
+    /// this is not.
+    pub fn activate_group(&self, window_id: WindowId) -> Result<()> {
+        self.group_requests_available()?;
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.activate_group("lege-shell-ui".to_owned());
+        self.connection.flush().context("flushing activate_group")
+    }
+
+    /// Park every member of `window`'s group as one (version 5): one shelf entry for the set,
+    /// so the group returns the way it left.
+    pub fn shelve_group(&self, window_id: WindowId) -> Result<()> {
+        self.group_requests_available()?;
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.shelve_group();
+        self.connection.flush().context("flushing shelve_group")
+    }
+
+    /// Bring every member of `window`'s group back (version 5).
+    pub fn unshelve_group(&self, window_id: WindowId) -> Result<()> {
+        self.group_requests_available()?;
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.unshelve_group();
+        self.connection.flush().context("flushing unshelve_group")
+    }
+
+    /// Name `window`'s group (version 5). The name is the group's, not the window's: every
+    /// member's next `group` event carries it, and the Home tile takes its title from there.
+    pub fn set_group_name(&self, window_id: WindowId, name: &str) -> Result<()> {
+        self.group_requests_available()?;
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        toplevel.set_group_name(name.to_owned());
+        self.connection.flush().context("flushing set_group_name")
     }
 
     /// The compositor's "show every window" recovery view, from the shell's own UI rather than
@@ -1067,7 +1221,7 @@ impl ShellBridge {
             .toplevels
             .iter()
             .find(|(id, _)| synthetic_window_id(id) == window_id)
-            .and_then(|(_, tracked)| tracked.identifier.as_deref())
+            .and_then(|(_, tracked)| tracked.state.identifier.as_deref())
     }
 
     fn wrap_surface(&self, window: &winit::window::Window) -> Result<WlSurface> {
@@ -1100,11 +1254,82 @@ mod tests {
         }
     }
 
+    fn group_event(group_id: u32, name: &str, accent: u32) -> lege_shell_toplevel_v1::Event {
+        lege_shell_toplevel_v1::Event::Group {
+            group_id,
+            name: name.to_owned(),
+            accent,
+        }
+    }
+
+    #[test]
+    fn a_group_event_reaches_the_shell_toplevel() {
+        let mut state = ToplevelState::default();
+        state.apply(group_event(7, "Writing", 0x0033_88ff));
+        assert_eq!(
+            state.snapshot(WindowId(1)).group,
+            Some(GroupInfo {
+                group_id: 7,
+                name: "Writing".to_owned(),
+                accent: 0x0033_88ff,
+            })
+        );
+    }
+
+    #[test]
+    fn group_id_zero_is_no_group() {
+        let mut state = ToplevelState::default();
+        assert_eq!(state.snapshot(WindowId(1)).group, None);
+        state.apply(group_event(7, "Writing", 0x0033_88ff));
+        // Leaving a group is the same event with a zero id, and it must clear the name and the
+        // accent too — a stale accent would tint a tile that is no longer in any group.
+        state.apply(group_event(0, "", 0));
+        assert_eq!(state.snapshot(WindowId(1)).group, None);
+    }
+
+    #[test]
+    fn a_group_accent_keeps_only_its_colour_bytes() {
+        let mut state = ToplevelState::default();
+        state.apply(group_event(2, "Reading", 0xff11_2233));
+        assert_eq!(
+            state.snapshot(WindowId(1)).group.map(|group| group.accent),
+            Some(0x0011_2233)
+        );
+    }
+
+    #[test]
+    fn a_group_event_disturbs_nothing_else_the_wire_said() {
+        let mut state = ToplevelState::default();
+        state.apply(lege_shell_toplevel_v1::Event::Title {
+            title: "Notes".to_owned(),
+        });
+        state.apply(lege_shell_toplevel_v1::Event::State {
+            activated: 1,
+            fullscreen: 0,
+            shelved: 1,
+            shelf_rank: 3,
+        });
+        state.apply(lege_shell_toplevel_v1::Event::Geometry {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+        });
+        state.apply(group_event(4, "Work", 0x0000_ff00));
+        let snapshot = state.snapshot(WindowId(9));
+        assert_eq!(snapshot.window_id, WindowId(9));
+        assert_eq!(snapshot.title, "Notes");
+        assert!(snapshot.activated && snapshot.shelved && !snapshot.fullscreen);
+        assert_eq!(snapshot.geometry, Rect::new(10, 20, 300, 200));
+        assert_eq!(snapshot.group.map(|group| group.group_id), Some(4));
+    }
+
     // `synthetic_window_id`, `wrap_surface`, `connect` and every `ShellBridge` method beyond this
     // need a live Wayland connection to exercise — there is no fixture for "an `ObjectId` handed
     // out by a real libwayland connection" the way `dock.rs`/`window_shelf.rs` fixture
-    // `ShellToplevel`s directly. That is why this module keeps the wire-encoding arithmetic
-    // (testable, and tested above) strictly separate from the connection plumbing around it
-    // (exercised only by actually running the shell against a compositor — see the crate's top
-    // module doc and the milestone report for what that run did and did not cover).
+    // `ShellToplevel`s directly. That is why this module keeps the wire decoding (testable, and
+    // tested above, now that `ToplevelState` holds no proxy) strictly separate from the
+    // connection plumbing around it (exercised only by actually running the shell against a
+    // compositor — see the crate's top module doc and the milestone report for what that run did
+    // and did not cover).
 }

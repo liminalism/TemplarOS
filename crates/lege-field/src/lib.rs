@@ -48,7 +48,7 @@ pub use field::{
     Cell, Container, FieldDocument, Landing, Located, PixelRect, Placement, Tray, cell_at,
     cell_rect, tile_rect,
 };
-pub use grammar::{DropModifiers, Operation, Target, operation_for};
+pub use grammar::{DropModifiers, DropOrigin, Operation, Target, operation_for};
 pub use migrate::{DOCUMENT_MIGRATIONS, DocumentMigration, LoadError, load_document};
 pub use ops::{FieldError, FieldOp, apply, reshape};
 pub use panel::{Arrangement, Edge, Orientation, Panel, PanelId, arrangement_layout, panel_id_for};
