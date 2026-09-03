@@ -102,6 +102,22 @@
       "signals": {},
       "properties": {}
     },
+    "org.legeos.Files.Index1": {
+      "methods": {
+        "ChangesSince": "(tu)->(s)",
+        "CloseCursor": "(s)->()",
+        "FetchPage": "(suu)->(s)",
+        "OpenSnapshot": "(s)->(hs)",
+        "Reconcile": "(s)->(s)",
+        "Roots": "()->(s)",
+        "Search": "(s)->(sts)"
+      },
+      "signals": {
+        "GenerationAdvanced": "(tu)",
+        "RootStateChanged": "(xss)"
+      },
+      "properties": {}
+    },
     "org.legeos.Files.Operations1": {
       "methods": {
         "CanUndo": "(s)->(bs)",
