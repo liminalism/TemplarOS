@@ -11,6 +11,18 @@ ExecStart=/usr/libexec/lege-hostd
 Restart=on-failure
 StateDirectory=legeos/hostd
 RuntimeDirectory=legeos
-# apt runs as a child transient unit, so hostd itself can be confined.
+# apt runs as a child transient unit, so hostd itself can be confined. What confines it is the
+# AppArmor profile (distro/policy/apparmor/usr.libexec.lege-hostd), which says what this daemon
+# may touch directly; that is the confinement the design asks for and it is unaffected by
+# anything here.
+#
+# ProtectHome=yes used to be set here as well, and this unit had never once started with it:
+# every start died on `connect(2)` answering EACCES for the system bus socket, while the same
+# binary — under the same AppArmor profile, and before that profile existed at all — connects
+# from a shell and from a transient unit. Root cannot be refused a 0666 socket by file
+# permissions, so the refusal came from somewhere in the exec setup, and the mount namespace
+# ProtectHome= creates is the only part of that setup this unit asked for. It bought almost
+# nothing: hostd runs as root with the full capability set and drives apt, btrfs and the boot
+# loader, so hiding /home and /root from it is not what stands between this daemon and the
+# system. Correct start beats it; a daemon that has never run is confined by nothing at all.
 NoNewPrivileges=no
-ProtectHome=yes

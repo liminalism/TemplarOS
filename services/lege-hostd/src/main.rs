@@ -74,6 +74,79 @@ fn real_config(root: &std::path::Path, connection: zbus::Connection) -> HostdCon
     }
 }
 
+/// The system bus, by its real path rather than the `/var/run` compatibility symlink.
+///
+/// zbus's built-in default is the address the D-Bus specification writes down,
+/// `unix:path=/var/run/dbus/system_bus_socket`, which reaches the socket through the
+/// `/var/run -> /run` symlink. Every other system daemon on this machine connects to
+/// `/run/dbus/system_bus_socket` directly. Taking the short way removes a path component whose
+/// resolution a service's mount namespace can change, and costs nothing where the two names are
+/// the same file.
+const SYSTEM_BUS_ADDRESS: &str = "unix:path=/run/dbus/system_bus_socket";
+
+/// `DBUS_SYSTEM_BUS_ADDRESS` still wins, so a test harness or a container can point this daemon
+/// somewhere else exactly as it could before.
+fn system_bus_address() -> String {
+    std::env::var("DBUS_SYSTEM_BUS_ADDRESS").unwrap_or_else(|_| SYSTEM_BUS_ADDRESS.to_owned())
+}
+
+/// What this process can actually see of the bus socket, for the error message.
+///
+/// `connect(2)` answering `Permission denied` names neither who was refused nor what they were
+/// refused on, and those two facts are most of the difference between a policy denial, a socket
+/// that is not in this process's mount namespace, and a socket whose mode really does exclude us.
+/// Stating them next to the failure makes the journal line diagnose itself instead of starting an
+/// investigation.
+fn describe_bus_reachability(address: &str) -> String {
+    let Some(path) = address.strip_prefix("unix:path=") else {
+        return format!("  address {address} is not a unix socket path");
+    };
+    let socket = match std::fs::metadata(path) {
+        Ok(metadata) => {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+            format!(
+                "{path}: mode {:o}, uid {}, gid {}, is a socket: {}",
+                metadata.permissions().mode() & 0o7777,
+                metadata.uid(),
+                metadata.gid(),
+                metadata.file_type().is_socket(),
+            )
+        }
+        Err(error) => format!("{path}: {error}"),
+    };
+    let mount_namespace = std::fs::read_link("/proc/self/ns/mnt")
+        .map_or_else(|_| "unreadable".to_owned(), |ns| ns.display().to_string());
+    format!(
+        "  as: {}\n  socket: {socket}\n  confinement: {}\n  mount namespace: {mount_namespace}",
+        proc_status_field("Uid").map_or_else(
+            || "unknown identity".to_owned(),
+            |uid| format!("uid {uid} (real/effective/saved/fs)")
+        ),
+        read_trimmed("/proc/self/attr/current").unwrap_or_else(|| "unreadable".to_owned()),
+    )
+}
+
+/// One field of `/proc/self/status` — how this daemon asks who it is without an `unsafe` call
+/// into libc, which the crate forbids.
+fn proc_status_field(name: &str) -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        Some(
+            line.strip_prefix(name)?
+                .strip_prefix(':')?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("/"),
+        )
+    })
+}
+
+fn read_trimmed(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| text.trim().to_owned())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -94,11 +167,17 @@ async fn main() -> Result<()> {
     if let Err(error) = lege_build::write_stamp("lege-hostd") {
         tracing::warn!(%error, "could not write the build stamp");
     }
-    let connection = connection::Builder::system()?
+    let address = system_bus_address();
+    let connection = connection::Builder::address(address.as_str())?
         .name(names::BUS_NAME)?
         .build()
         .await
-        .context("claiming org.legeos.Host on the system bus")?;
+        .with_context(|| {
+            format!(
+                "claiming org.legeos.Host on the system bus at {address}\n{}",
+                describe_bus_reachability(&address)
+            )
+        })?;
 
     let state = Arc::new(
         HostdState::new(real_config(&cli.root, connection.clone()))
