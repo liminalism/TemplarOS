@@ -61,6 +61,10 @@ pub struct SetManifest {
     /// What the set's binaries make of each persistent store.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub schemas: std::collections::BTreeMap<String, lege_build::StoreSchema>,
+    /// Which toolchain and host built the set, and which Ubuntu index it resolved against.
+    /// Defaulted, so a set published before provenance was recorded still reads.
+    #[serde(default, skip_serializing_if = "lege_build::Provenance::is_empty")]
+    pub provenance: lege_build::Provenance,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -101,6 +105,12 @@ impl Repo {
     #[must_use]
     pub fn new(root: PathBuf, runner: Arc<dyn CommandRunner>) -> Self {
         Self { root, runner }
+    }
+
+    /// The archive at `root`, driven by real processes.
+    #[must_use]
+    pub fn open(root: PathBuf) -> Self {
+        Self::new(root, Arc::new(super::cmd::RealCommandRunner::default()))
     }
 
     fn pool(&self) -> PathBuf {
@@ -298,6 +308,22 @@ impl Repo {
         build_set: &str,
         compatibility: &Compatibility,
     ) -> Result<SetManifest> {
+        let provenance = provenance_beside(packages, build_set);
+        self.publish_with_provenance(packages, build_set, compatibility, &provenance)
+    }
+
+    /// [`Repo::publish_with`], stating the set's provenance rather than reading it off the disk
+    /// next to the packages.
+    ///
+    /// # Errors
+    /// As [`Repo::publish`].
+    pub fn publish_with_provenance(
+        &self,
+        packages: &[(String, String, PathBuf)],
+        build_set: &str,
+        compatibility: &Compatibility,
+        provenance: &lege_build::Provenance,
+    ) -> Result<SetManifest> {
         if packages.is_empty() {
             bail!("refusing to publish an empty set");
         }
@@ -307,6 +333,17 @@ impl Repo {
             bail!("{package} is version {version}, not {build_set}: this is not one set");
         }
         self.init()?;
+        // The set is *staged* from here until the markers move. A publish that dies halfway —
+        // out of disk, gpg gone, the machine rebooted — therefore leaves an archive that says so,
+        // instead of one whose `current` names a set only half of which is on disk.
+        write_public(&self.root.join("staged"), build_set.as_bytes())?;
+
+        let set_dir = self.sets().join(build_set);
+        let debs_dir = set_dir.join("debs");
+        fs::create_dir_all(&debs_dir).context("creating the set directory")?;
+        for dir in [&set_dir, &debs_dir] {
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o755));
+        }
 
         let mut published = Vec::new();
         for (package, version, source) in packages {
@@ -317,6 +354,18 @@ impl Repo {
             fs::copy(source, &target)
                 .with_context(|| format!("copying {} into the pool", source.display()))?;
             let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o644));
+            // One directory holding exactly this set, so an image build or a provisioner can be
+            // pointed at a *named set* rather than at the whole pool, which holds three of them.
+            // A hard link costs nothing; a copy is the fallback when the pool is another
+            // filesystem.
+            let linked = debs_dir.join(name);
+            let _ = fs::remove_file(&linked);
+            if fs::hard_link(&target, &linked).is_err() {
+                fs::copy(&target, &linked).with_context(|| {
+                    format!("placing {} in the set directory", name.to_string_lossy())
+                })?;
+                let _ = fs::set_permissions(&linked, fs::Permissions::from_mode(0o644));
+            }
             published.push(PublishedPackage {
                 package: package.clone(),
                 version: version.clone(),
@@ -331,10 +380,8 @@ impl Repo {
             packages: published,
             interfaces: compatibility.interfaces.clone(),
             schemas: compatibility.schemas.clone(),
+            provenance: provenance.clone(),
         };
-        let set_dir = self.sets().join(build_set);
-        fs::create_dir_all(&set_dir).context("creating the set directory")?;
-        let _ = fs::set_permissions(&set_dir, fs::Permissions::from_mode(0o755));
         write_public(
             &set_dir.join("manifest.json"),
             &serde_json::to_vec_pretty(&manifest)?,
@@ -342,6 +389,8 @@ impl Repo {
 
         self.reindex()?;
         self.advance_markers(build_set)?;
+        // Only now is the set the archive's own: staged means "not yet current", and it is.
+        let _ = fs::remove_file(self.root.join("staged"));
         self.prune(DEFAULT_KEEP)?;
         Ok(manifest)
     }
@@ -456,6 +505,19 @@ impl Repo {
         read_marker(&self.root.join("previous"))
     }
 
+    /// A set written into the archive whose promotion to `current` did not complete — a publish
+    /// still running, or one that failed.
+    ///
+    /// Deliberately *not* called `candidate`: that word already means a boot deployment awaiting
+    /// assessment (`distro/deploy`), and an archive state and a boot state that share a name are
+    /// two things one operator will eventually confuse for each other.
+    ///
+    /// # Errors
+    /// Never for a missing marker.
+    pub fn staged(&self) -> Result<Option<String>> {
+        read_marker(&self.root.join("staged"))
+    }
+
     /// Every published set, newest first.
     ///
     /// # Errors
@@ -492,7 +554,7 @@ impl Repo {
     /// If the archive cannot be read, or a file cannot be removed.
     pub fn prune(&self, keep: usize) -> Result<Vec<String>> {
         let sets = self.published_sets()?;
-        let protected: Vec<String> = [self.current()?, self.previous()?]
+        let protected: Vec<String> = [self.current()?, self.previous()?, self.staged()?]
             .into_iter()
             .flatten()
             .collect();
@@ -524,6 +586,358 @@ impl Repo {
             }
         }
         Ok(())
+    }
+
+    /// The directory holding exactly one published set's `.deb` files.
+    ///
+    /// What an image build or a provisioner is pointed at when it must consume *a named set*
+    /// rather than whatever the pool happens to hold.
+    #[must_use]
+    pub fn set_debs(&self, build_set: &str) -> PathBuf {
+        self.sets().join(build_set).join("debs")
+    }
+
+    /// Checks that the archive holds coherent, signed, installable sets — and says so in a report
+    /// rather than in an exit code.
+    ///
+    /// Publishing already refuses a mixed set, but publishing is not the only thing that touches
+    /// an archive: pool files are deleted by hand, a set directory is copied off a dying disk, a
+    /// signature is made by a key that has since been replaced. Everything here is therefore
+    /// re-checked against what is on disk *now*, not against what publish believed then.
+    ///
+    /// `matrix` is passed in rather than looked up, so this runs from an installed binary with no
+    /// source checkout: [`lege_build::components::Matrix::embedded`] is a complete answer.
+    ///
+    /// # Errors
+    /// If the archive cannot be read at all. A *failing* archive is a report with `ok == false`,
+    /// not an error: the caller wants to be told everything that is wrong, not the first thing.
+    pub fn verify(
+        &self,
+        matrix: &lege_build::components::Matrix,
+        only: Option<&str>,
+    ) -> Result<VerifyReport> {
+        let current = self.current()?;
+        let previous = self.previous()?;
+        let staged = self.staged()?;
+        let mut problems = Vec::new();
+
+        let scope: Vec<(String, &str)> = match only {
+            Some(set) => vec![(
+                set.to_owned(),
+                role_of(
+                    set,
+                    current.as_deref(),
+                    previous.as_deref(),
+                    staged.as_deref(),
+                ),
+            )],
+            None => [
+                current.as_ref().map(|set| (set.clone(), "current")),
+                previous
+                    .as_ref()
+                    .filter(|set| Some(*set) != current.as_ref())
+                    .map(|set| (set.clone(), "previous")),
+                staged.as_ref().map(|set| (set.clone(), "staged")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        };
+        if scope.is_empty() {
+            problems.push("the archive has published no set".to_owned());
+        }
+        if let Some(set) = &staged {
+            problems.push(format!(
+                "{set} is staged but never became current: a publish did not finish"
+            ));
+        }
+
+        problems.extend(self.index_problems());
+        let sets = scope
+            .into_iter()
+            .map(|(set, role)| self.verdict(matrix, &set, role))
+            .collect::<Vec<_>>();
+
+        let ok = problems.is_empty() && sets.iter().all(|verdict| verdict.ok);
+        Ok(VerifyReport {
+            root: self.root.display().to_string(),
+            current,
+            previous,
+            staged,
+            sets,
+            problems,
+            ok,
+        })
+    }
+
+    /// The index and its signatures, as they are on disk right now.
+    fn index_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for name in ["Packages", "Release", "InRelease", "Release.gpg"] {
+            if !self.root.join(name).is_file() {
+                problems.push(format!("{name} is missing; the archive is not indexed"));
+            }
+        }
+
+        // Regenerating the index is the pool's hash check: `Packages` carries a SHA256 line per
+        // file, so a `.deb` replaced in the pool since publishing cannot reproduce the same text.
+        match self
+            .runner
+            .run(&self.root, "apt-ftparchive", &["packages", "pool"])
+        {
+            Err(error) => problems.push(format!("apt-ftparchive could not read the pool: {error}")),
+            Ok(output) if !output.status.success() => problems.push(format!(
+                "apt-ftparchive could not read the pool: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Ok(output) => match fs::read(self.root.join("Packages")) {
+                Ok(on_disk) if on_disk != output.stdout => problems.push(
+                    "the pool no longer matches Packages: a file was added, removed or modified \
+                     since the index was written"
+                        .to_owned(),
+                ),
+                Ok(_) => {}
+                Err(error) => problems.push(format!("Packages cannot be read: {error}")),
+            },
+        }
+
+        let homedir = self.gnupg().display().to_string();
+        for (name, args) in [
+            ("InRelease", vec!["--verify", "InRelease"]),
+            ("Release.gpg", vec!["--verify", "Release.gpg", "Release"]),
+        ] {
+            let mut argv = vec!["--homedir", homedir.as_str(), "--batch"];
+            argv.extend(args);
+            match self.runner.run(&self.root, "gpg", &argv) {
+                Err(error) => problems.push(format!("{name} could not be verified: {error}")),
+                Ok(output) if !output.status.success() => problems.push(format!(
+                    "{name} does not verify against this archive's key: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )),
+                Ok(_) => {}
+            }
+        }
+        problems
+    }
+
+    /// One set: one id, every component present, every file where the manifest says it is.
+    fn verdict(
+        &self,
+        matrix: &lege_build::components::Matrix,
+        build_set: &str,
+        role: &str,
+    ) -> SetVerdict {
+        let mut problems = Vec::new();
+        let manifest = match self.manifest(build_set) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return SetVerdict {
+                    build_set: build_set.to_owned(),
+                    role: role.to_owned(),
+                    ok: false,
+                    problems: vec![format!("{error:#}")],
+                    pinned: Vec::new(),
+                };
+            }
+        };
+
+        if lege_build::parse_build_set_id(build_set).is_none() {
+            problems.push(format!("{build_set} is not a build-set id"));
+        }
+        for package in &manifest.packages {
+            if package.version != manifest.build_set {
+                problems.push(format!(
+                    "mixed set: {} is version {}, but the set is {}",
+                    package.package, package.version, manifest.build_set
+                ));
+            }
+        }
+        for component in &matrix.components {
+            if !manifest
+                .packages
+                .iter()
+                .any(|package| package.package == component.package)
+            {
+                problems.push(format!(
+                    "incomplete set: no package for {} ({})",
+                    component.package, component.name
+                ));
+            }
+        }
+        for package in &manifest.packages {
+            let path = self.root.join(&package.file);
+            match fs::metadata(&path) {
+                Err(_) => problems.push(format!(
+                    "{} is gone from the pool, so this set can no longer be installed",
+                    package.file
+                )),
+                Ok(metadata) if metadata.len() != package.size_bytes => problems.push(format!(
+                    "{} is {} bytes, but the manifest recorded {}",
+                    package.file,
+                    metadata.len(),
+                    package.size_bytes
+                )),
+                Ok(_) => {}
+            }
+        }
+
+        SetVerdict {
+            build_set: build_set.to_owned(),
+            role: role.to_owned(),
+            ok: problems.is_empty(),
+            problems,
+            pinned: manifest.pinned_packages(),
+        }
+    }
+}
+
+/// What a set is to this archive right now.
+fn role_of(
+    set: &str,
+    current: Option<&str>,
+    previous: Option<&str>,
+    staged: Option<&str>,
+) -> &'static str {
+    if current == Some(set) {
+        "current"
+    } else if previous == Some(set) {
+        "previous"
+    } else if staged == Some(set) {
+        "staged"
+    } else {
+        "retained"
+    }
+}
+
+/// What `lege dev repo verify` found.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VerifyReport {
+    pub root: String,
+    pub current: Option<String>,
+    pub previous: Option<String>,
+    pub staged: Option<String>,
+    pub sets: Vec<SetVerdict>,
+    /// Problems with the archive itself rather than with one set.
+    pub problems: Vec<String>,
+    pub ok: bool,
+}
+
+/// One set's verdict.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SetVerdict {
+    pub build_set: String,
+    /// `current`, `previous`, `staged` or `retained`.
+    pub role: String,
+    pub ok: bool,
+    pub problems: Vec<String>,
+    /// `pkg=version` for every package — the pin simulation. Printed, never run.
+    pub pinned: Vec<String>,
+}
+
+impl VerifyReport {
+    /// The report as the operator reads it. The last line is the verdict, so a terminal that
+    /// scrolled still answers the question.
+    #[must_use]
+    pub fn render(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!("{}\n", self.root);
+        for (label, marker) in [
+            ("current ", &self.current),
+            ("previous", &self.previous),
+            ("staged  ", &self.staged),
+        ] {
+            let _ = writeln!(
+                out,
+                "  {label}  {}",
+                marker.clone().unwrap_or_else(|| "(none)".to_owned())
+            );
+        }
+        for verdict in &self.sets {
+            let _ = writeln!(
+                out,
+                "  {} {}  {}",
+                verdict.role,
+                verdict.build_set,
+                if verdict.ok {
+                    format!("ok ({} pinned package(s))", verdict.pinned.len())
+                } else {
+                    format!("{} problem(s)", verdict.problems.len())
+                }
+            );
+            for problem in &verdict.problems {
+                let _ = writeln!(out, "    ! {problem}");
+            }
+        }
+        for problem in &self.problems {
+            let _ = writeln!(out, "  ! {problem}");
+        }
+        if let Some(previous) = self.sets.iter().find(|verdict| verdict.role == "previous") {
+            let _ = writeln!(
+                out,
+                "  rollback  {}",
+                if previous.ok {
+                    format!(
+                        "apt-get install --yes --allow-downgrades {}",
+                        previous.pinned.join(" ")
+                    )
+                } else {
+                    "NOT INSTALLABLE — this archive cannot roll back".to_owned()
+                }
+            );
+        }
+        let _ = writeln!(out, "verify: {}", if self.ok { "ok" } else { "FAILED" });
+        out
+    }
+}
+
+/// `lege dev repo verify`.
+///
+/// Lives here rather than in `dev/mod.rs` so the whole archive surface — layout, states and the
+/// checks over them — is one file.
+///
+/// # Errors
+/// If the archive cannot be read, or (as a non-zero exit) if verification failed.
+pub fn verify_command(root: PathBuf, set: Option<&str>, json: bool) -> Result<String> {
+    let repo = Repo::open(root);
+    let matrix = lege_build::components::Matrix::embedded();
+    let report = repo.verify(&matrix, set)?;
+    let rendered = if json {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        report.render()
+    };
+    if report.ok {
+        Ok(rendered)
+    } else {
+        bail!("{rendered}")
+    }
+}
+
+/// The provenance recorded next to a set's packages, when they came straight out of
+/// `cargo xtask build-set`.
+///
+/// `build-set.json` sits in the directory holding the `.deb` files — that is the handoff format's
+/// own rule ([`lege_build::BuildSet::read`]) — so publishing can carry the toolchain and index
+/// facts into the archive without every caller having to thread them through. A set assembled
+/// from elsewhere simply has no provenance, which is honest.
+fn provenance_beside(
+    packages: &[(String, String, PathBuf)],
+    build_set: &str,
+) -> lege_build::Provenance {
+    let Some(dir) = packages
+        .first()
+        .and_then(|(_, _, path)| path.parent())
+        .map(Path::to_path_buf)
+    else {
+        return lege_build::Provenance::default();
+    };
+    let Ok((set, _)) = lege_build::BuildSet::read(&dir.join("build-set.json")) else {
+        return lege_build::Provenance::default();
+    };
+    if set.id == build_set {
+        set.provenance
+    } else {
+        lege_build::Provenance::default()
     }
 }
 
@@ -601,6 +1015,19 @@ mod tests {
                 (package.to_owned(), version.to_owned(), file)
             })
             .collect()
+    }
+
+    /// The fake `gpg` records its argv and writes nothing, so stand in for the two signatures it
+    /// would have produced. Their *content* is never what verification trusts — `gpg --verify` is,
+    /// and the fake answers that — but their absence is itself a finding, so they have to exist.
+    fn signed(repo: &Repo) {
+        for name in ["InRelease", "Release.gpg"] {
+            fs::write(
+                repo.root.join(name),
+                b"-----BEGIN PGP SIGNED MESSAGE-----\n",
+            )
+            .unwrap();
+        }
     }
 
     const SET: &str = "0.1.0~dev2000+gaaaaaaa";
@@ -761,6 +1188,75 @@ mod tests {
         let dropped = sets_to_drop(&sets, &protected, 3);
         assert!(!dropped.contains(&sets[4]), "{dropped:?}");
         assert_eq!(dropped, vec![sets[3].clone()]);
+    }
+
+    #[test]
+    fn verify_detects_a_mixed_set() {
+        // A set can become mixed after publishing: someone drops one newer .deb into an old set's
+        // manifest, or copies a set directory off another machine. Publishing's own check cannot
+        // see that; verification is what does.
+        let (repo, _runner, scratch) = repo("verify-mixed");
+        repo.publish(&build_set(&scratch, SET), SET).unwrap();
+        let manifest_path = repo.sets().join(SET).join("manifest.json");
+        let mut manifest: SetManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.packages[0].version = NEWER.to_owned();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let report = repo
+            .verify(&lege_build::components::Matrix::embedded(), None)
+            .unwrap();
+        assert!(!report.ok, "{}", report.render());
+        let current = &report.sets[0];
+        assert_eq!(current.role, "current");
+        assert!(
+            current
+                .problems
+                .iter()
+                .any(|problem| problem.contains("mixed set")),
+            "{:#?}",
+            current.problems
+        );
+        assert!(report.render().ends_with("verify: FAILED\n"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn verify_detects_a_missing_component_without_a_source_checkout() {
+        // The matrix is passed in, and here it is the copy compiled into the binary — which is
+        // the whole point: an installed machine has no `distro/deploy/components.toml` and must
+        // still be able to say "this set is missing the compositor".
+        let (repo, _runner, scratch) = repo("verify-missing");
+        let embedded = lege_build::components::Matrix::embedded();
+        let mut packages = build_set(&scratch, SET);
+        let dropped = packages.pop().expect("the matrix is not empty").0;
+
+        repo.publish(&packages, SET).unwrap();
+        signed(&repo);
+        let report = repo.verify(&embedded, None).unwrap();
+        assert!(!report.ok, "{}", report.render());
+        assert!(
+            report.sets[0]
+                .problems
+                .iter()
+                .any(|problem| problem.contains("incomplete set") && problem.contains(&dropped)),
+            "{:#?}",
+            report.sets[0].problems
+        );
+
+        // The same archive with the whole set present verifies, and names the pins a rollback
+        // would use without running apt.
+        repo.publish(&build_set(&scratch, SET), SET).unwrap();
+        signed(&repo);
+        let good = repo.verify(&embedded, None).unwrap();
+        assert!(good.ok, "{}", good.render());
+        assert_eq!(good.sets[0].pinned.len(), embedded.components.len());
+        assert!(good.staged.is_none(), "a finished publish stages nothing");
+        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]

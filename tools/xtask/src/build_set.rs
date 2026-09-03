@@ -32,25 +32,73 @@ pub struct Options {
     pub print_id: bool,
     /// Override the epoch — reproducible builds and tests.
     pub epoch: Option<u64>,
+    /// D1's package-closure report, whose observation time and verdict travel with the set.
+    pub closure_report: Option<PathBuf>,
 }
 
-pub fn run(root: &Path, options: &Options) -> Result<()> {
-    let matrix = Matrix::read(&root.join("distro/deploy/components.toml"))
-        .context("reading the component matrix")?;
+/// The build-set id this checkout would produce right now, and the epoch inside it.
+///
+/// Shared with `cargo xtask archive changelog`, which must derive the changelog head entry from
+/// *this* id and no other — one authority means one function.
+///
+/// # Errors
+/// If the workspace version cannot be read from `Cargo.toml`.
+pub fn current_id(root: &Path, epoch: Option<u64>) -> Result<(String, u64)> {
     let version = workspace_version(root)?;
     let git_sha =
         git(root, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".into());
     let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
         .is_some_and(|status| !status.trim().is_empty());
-    let epoch = options.epoch.unwrap_or_else(now_secs);
-    let id = lege_build::build_set_id(&version, epoch, &git_sha, dirty);
+    let epoch = epoch.unwrap_or_else(now_secs);
+    Ok((
+        lege_build::build_set_id(&version, epoch, &git_sha, dirty),
+        epoch,
+    ))
+}
+
+pub fn run(root: &Path, options: &Options) -> Result<()> {
+    let matrix = Matrix::read(&root.join("distro/deploy/components.toml"))
+        .context("reading the component matrix")?;
+    let git_sha =
+        git(root, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".into());
+    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.trim().is_empty());
+    let (id, epoch) = current_id(root, options.epoch)?;
 
     if options.print_id {
         println!("{id}");
         return Ok(());
     }
 
+    let provenance = crate::archive::provenance(root, options.closure_report.as_deref());
     println!("build set {id}");
+    println!(
+        "  changelog head: {}",
+        lege_build::changelog_entry(
+            &id,
+            crate::archive::DISTRIBUTION,
+            crate::archive::MAINTAINER,
+            epoch
+        )
+        .lines()
+        .next()
+        .unwrap_or_default()
+    );
+    if !provenance.rustc.is_empty() || !provenance.host.is_empty() {
+        println!(
+            "  provenance: {} on {} ({})",
+            provenance.rustc, provenance.host, provenance.arch
+        );
+    }
+    if let Some(resolution) = &provenance.ubuntu_index_resolution {
+        println!(
+            "  ubuntu index: {resolution}{}",
+            provenance
+                .ubuntu_index_observed_at
+                .as_ref()
+                .map_or_else(String::new, |at| format!(", observed {at}"))
+        );
+    }
     if dirty {
         println!(
             "  the working tree has uncommitted changes; the id says so, and so will every package"
@@ -93,6 +141,7 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
         )]
         .into_iter()
         .collect(),
+        provenance,
     };
     let manifest = deb_dir.join("build-set.json");
     fs::write(&manifest, serde_json::to_vec_pretty(&set)?).context("writing build-set.json")?;

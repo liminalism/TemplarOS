@@ -235,6 +235,12 @@ enum RepoCommand {
         #[arg(long, default_value_t = lege::dev::repo::DEFAULT_KEEP)]
         keep: usize,
     },
+    /// Check that the archive holds coherent, signed, installable sets.
+    Verify {
+        /// One set, rather than current, previous and anything staged.
+        #[arg(long)]
+        set: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -553,6 +559,7 @@ fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) 
             RepoCommand::Publish { build_set } => dev::repo_publish(repo, &build_set),
             RepoCommand::Status => dev::repo_status(repo),
             RepoCommand::Prune { keep } => dev::repo_prune(repo, keep),
+            RepoCommand::Verify { set } => dev::repo::verify_command(repo, set.as_deref(), json),
         },
         DevCommand::Install { build_set, dry_run } => {
             dev::install_set(repo, root, build_set.as_deref(), dry_run)

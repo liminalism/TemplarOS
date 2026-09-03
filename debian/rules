@@ -9,6 +9,22 @@ export RUSTFLAGS = -Cdebuginfo=1
 	dh $@
 
 override_dh_auto_configure:
+	# One version authority (@legeos.decision.build-set-id-is-the-version-authority): the source
+	# package must ship the same version string `cargo deb --deb-version` stamps on every binary
+	# package. debian/changelog is generated from the build-set id by
+	# `cargo xtask archive changelog --write`, which ci/source-build.sh runs against the
+	# disposable copy of the tree. When the build set is named, disagreement is a build failure —
+	# a source package that quietly ships a different version is exactly the mixed set this
+	# machinery exists to prevent.
+	@if [ -n "$$LEGEOS_BUILD_SET_ID" ]; then \
+		changelog_version=$$(dpkg-parsechangelog -S Version); \
+		if [ "$$changelog_version" != "$$LEGEOS_BUILD_SET_ID" ]; then \
+			echo "debian/changelog says $$changelog_version but the build set is $$LEGEOS_BUILD_SET_ID;" >&2; \
+			echo "run: cargo xtask archive changelog --write debian/changelog" >&2; \
+			exit 1; \
+		fi; \
+		echo "changelog and build set agree: $$changelog_version"; \
+	fi
 	mkdir -p $(CARGO_HOME)
 	# vendor/ is shipped in the orig tarball (`just vendor`); make cargo use it and nothing else.
 	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n' > $(CARGO_HOME)/config.toml

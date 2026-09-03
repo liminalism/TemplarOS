@@ -1,8 +1,9 @@
 //! `cargo xtask <command>` — repository checks that must not drift.
 
+mod archive;
 mod build_set;
-mod signatures;
 mod seeds;
+mod signatures;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -51,21 +52,20 @@ enum Command {
         /// Override the epoch in the id (reproducible builds, tests).
         #[arg(long)]
         epoch: Option<u64>,
+        /// D1's package-closure report; its observation time travels with the set as provenance.
+        #[arg(long)]
+        closure_report: Option<PathBuf>,
+    },
+    /// Build identity on the archive side: the generated `debian/changelog` head entry, and the
+    /// provenance a build set records.
+    Archive {
+        #[command(subcommand)]
+        command: archive::ArchiveCommand,
     },
     /// Freeze every shipped D-Bus signature into interfaces/baseline.json.
     InterfaceBaseline,
     /// No shipped D-Bus signature has changed or disappeared since the baseline.
     CheckInterfaceSignatures,
-    /// Print the component matrix — one field per component, for the shell scripts that used to
-    /// keep their own copy of the package list.
-    Components {
-        /// Which field to print: `name`, `package`, `crate`, `unit` or `activation`.
-        #[arg(long, default_value = "package")]
-        field: String,
-    },
-}
-
-/// How a shell surface declares that an action is reachable by pointer. Each is a literal
     /// Render every generated package artifact from `distro/seeds/selection.toml`: the seed
     /// files, the mkosi package drop-ins and the metapackage control files.
     Seeds {
@@ -79,6 +79,24 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Print the component matrix — one field per component, for the shell scripts that used to
+    /// keep their own copy of the package list.
+    Components {
+        /// Which field to print: `name`, `package`, `crate`, `unit` or `activation`.
+        #[arg(long, default_value = "package")]
+        field: String,
+    },
+}
+
+/// The one thing `seeds` does that is not rendering.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SeedsAction {
+    /// Direct and transitive packages, installed size, recommends, missing names and provider
+    /// roles — resolved against whatever archive indexes this machine actually has.
+    Closure,
+}
+
+/// How a shell surface declares that an action is reachable by pointer. Each is a literal
 /// constructor with the action id as its first string argument, so a route is a thing that
 /// exists in the source rather than a claim in a comment.
 ///
@@ -88,14 +106,6 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     // `crate::surface::field_screen`: a region that performs an action directly.
     "FieldAction::RunAction(\"",
     // `crate::surface::widgets`: a clickable region declared on a system tile.
-/// The one thing `seeds` does that is not rendering.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum SeedsAction {
-    /// Direct and transitive packages, installed size, recommends, missing names and provider
-    /// roles — resolved against whatever archive indexes this machine actually has.
-    Closure,
-}
-
     "WidgetRegion::new(\"",
     // `crate::surface::context_menu`: a row on the field's secondary-click menu.
     "MenuItem::new(\"",
@@ -431,16 +441,24 @@ fn main() -> Result<()> {
             dry_run,
             print_id,
             epoch,
+            closure_report,
         } => build_set::run(
             &root,
             &build_set::Options {
                 dry_run,
                 print_id,
                 epoch,
+                closure_report,
             },
         ),
+        Command::Archive { command } => archive::run(&root, &command),
         Command::InterfaceBaseline => signatures::write_baseline(&root),
         Command::CheckInterfaceSignatures => signatures::check(&root),
+        Command::Seeds { action, check, out } => match (action, check) {
+            (Some(SeedsAction::Closure), _) => seeds::closure(&root, out.as_deref()),
+            (None, true) => seeds::check(&root),
+            (None, false) => seeds::generate(&root),
+        },
         Command::Components { field } => components(&root, &field),
     }
 }
@@ -454,11 +472,6 @@ fn components(root: &Path, field: &str) -> Result<()> {
     for component in &matrix.components {
         let value = match field {
             "name" => component.name.clone(),
-        Command::Seeds { action, check, out } => match (action, check) {
-            (Some(SeedsAction::Closure), _) => seeds::closure(&root, out.as_deref()),
-            (None, true) => seeds::check(&root),
-            (None, false) => seeds::generate(&root),
-        },
             "package" => component.package.clone(),
             "crate" => component.crate_name.clone(),
             "unit" => component.unit.clone().unwrap_or_default(),
@@ -966,6 +979,11 @@ fn check_packaging(root: &Path) -> Result<()> {
     problems.extend(seed_problems(&seeds, &built));
     let metapackages = metapackage_controls(root)?;
     problems.extend(metapackage_dependency_problems(&metapackages, &built));
+    // The seeds, the image package lists and those metapackage control files are all rendered from
+    // distro/seeds/selection.toml. Checking the names in them is only half the job: a hand edit to
+    // a generated file survives every other check here and then loses the next time anyone runs
+    // `cargo xtask seeds`.
+    problems.extend(seeds::drift(root)?);
     if !problems.is_empty() {
         for problem in &problems {
             eprintln!("check-packaging: {problem}");
@@ -979,11 +997,6 @@ fn check_packaging(root: &Path) -> Result<()> {
          {} unit ExecStart binary/ies all installed by a package; \
          {} seed(s) and {} metapackage(s) name only packages that exist",
         control_packages.len(),
-    // The seeds, the image package lists and those metapackage control files are all rendered from
-    // distro/seeds/selection.toml. Checking the names in them is only half the job: a hand edit to
-    // a generated file survives every other check here and then loses the next time anyone runs
-    // `cargo xtask seeds`.
-    problems.extend(seeds::drift(root)?);
         matrix.components.len(),
         units.len(),
         seeds.len(),

@@ -375,6 +375,7 @@ mod tests {
             false,
         )
         .unwrap();
+            provenance: lege_build::Provenance::default(),
         assert!(report.conditions.blocked.is_empty(), "{report:#?}");
     }
 
@@ -385,6 +386,7 @@ mod tests {
         let error = run(
             &Matrix::embedded(),
             &next,
+            provenance: lege_build::Provenance::default(),
             Some(&deployed("old")),
             false,
             false,
