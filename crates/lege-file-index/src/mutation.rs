@@ -211,7 +211,8 @@ impl crate::Index {
 
             for mutation in &batch.mutations {
                 match mutation {
-                    Mutation::Upsert { root, path, meta } | Mutation::Touch { root, path, meta } => {
+                    Mutation::Upsert { root, path, meta }
+                    | Mutation::Touch { root, path, meta } => {
                         match upsert(&transaction, generation, *root, path, meta)? {
                             Some(change) => changes.push(change),
                             None => skipped += 1,
@@ -230,7 +231,10 @@ impl crate::Index {
                         meta,
                     } => match rename(&transaction, generation, *root, from, to, meta)? {
                         RenameOutcome::Skipped => skipped += 1,
-                        RenameOutcome::Applied { change, descendants } => {
+                        RenameOutcome::Applied {
+                            change,
+                            descendants,
+                        } => {
                             moved_descendants += descendants;
                             changes.push(change);
                         }
@@ -509,9 +513,10 @@ fn rename(
                   WHERE root_id = ?1 AND deleted_generation IS NULL
                     AND path_bytes >= ?2 AND path_bytes < ?3",
             )?;
-            let mapped = statement.query_map(rusqlite::params![root.0, low.clone(), high], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?;
+            let mapped = statement
+                .query_map(rusqlite::params![root.0, low.clone(), high], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
             let mut rows = Vec::new();
             for row in mapped {
                 rows.push(row?);
@@ -710,7 +715,11 @@ pub(crate) fn prune_changes(connection: &Connection, max_changes: u64) -> Result
         |row| row.get(0),
     )?;
     connection.execute("DELETE FROM changes WHERE seq < ?1", [floor])?;
-    schema::write_meta(connection, "min_retained_change_seq", &(floor - 1).to_string())?;
+    schema::write_meta(
+        connection,
+        "min_retained_change_seq",
+        &(floor - 1).to_string(),
+    )?;
     Ok(())
 }
 

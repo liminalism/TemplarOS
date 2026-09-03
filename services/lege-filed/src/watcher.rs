@@ -25,7 +25,7 @@ use std::{
 use lege_file_index::{
     Index, Mutation, MutationBatch, MutationSource, NativePath, RootId, RootStatus, ScanOptions,
     ScanScope, StaleReason,
-    coalesce::{Coalescer, CoalesceConfig, SystemClock},
+    coalesce::{CoalesceConfig, Coalescer, SystemClock},
     reconcile::{self, Trigger},
     watch::{EventSource, InotifySource, RepairRequest, WatchBudget, WatchOwner},
 };
@@ -169,7 +169,8 @@ impl<S: EventSource> WatchLoop<S> {
     fn arm_only(&mut self, status: &RootStatus) {
         // Arming the root directory alone is cheap and closes the window on the top of the tree;
         // the repair pass arms the rest as it walks.
-        self.owner.arm_directory(status.root, &status.path.to_path());
+        self.owner
+            .arm_directory(status.root, &status.path.to_path());
     }
 
     /// One turn of the loop: wait for events, coalesce, commit, then do a slice of repair work.
@@ -182,7 +183,9 @@ impl<S: EventSource> WatchLoop<S> {
             self.queue_repair(&request);
         }
         for root in pumped.offline {
-            let _ = self.index.mark_offline(root, "the filesystem was unmounted");
+            let _ = self
+                .index
+                .mark_offline(root, "the filesystem was unmounted");
         }
 
         if self.coalescer.ready(self.clock.as_ref())
@@ -403,9 +406,7 @@ mod tests {
         execute::{self, Cancel, ExecutorConfig},
         operations::{self, OperationId, OperationKind, Options},
     };
-    use lege_file_index::{
-        EntryMeta, IndexConfig, MutationBatch, RootPolicy, ScanOptions,
-    };
+    use lege_file_index::{EntryMeta, IndexConfig, MutationBatch, RootPolicy, ScanOptions};
     use std::fs;
 
     /// A file operation updates the index the moment it commits, and the watcher's later account

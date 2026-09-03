@@ -101,7 +101,10 @@ async fn main() -> Result<()> {
     // `--index-budget-bytes` is accepted but not yet wired to a byte-budgeted scan; recorded so
     // the flag surface does not have to change again once it is.
     if let Some(budget_bytes) = cli.index_budget_bytes {
-        tracing::debug!(budget_bytes, "a byte scan budget was requested but is not yet enforced");
+        tracing::debug!(
+            budget_bytes,
+            "a byte scan budget was requested but is not yet enforced"
+        );
     }
     tracing::info!(path = %index_db_path.display(), "file index ready");
 
@@ -114,9 +117,10 @@ async fn main() -> Result<()> {
     };
     let core = index.core().clone();
     for root in &index_roots {
-        if let Err(error) =
-            core.add_root(&lege_file_index::NativePath::from_path(root), lege_file_index::RootPolicy::default_home())
-        {
+        if let Err(error) = core.add_root(
+            &lege_file_index::NativePath::from_path(root),
+            lege_file_index::RootPolicy::default_home(),
+        ) {
             tracing::warn!(root = %root.display(), %error, "could not register index root");
         }
     }
@@ -211,8 +215,8 @@ async fn main() -> Result<()> {
     // and a root that already has a committed generation is served from it immediately (the
     // warm-start policy) rather than rescanned synchronously.
     let watcher_plan = classify_roots(&core)?;
-    let _watcher_handle = lege_filed::watcher::spawn(core, watcher_plan)
-        .context("starting the index watcher")?;
+    let _watcher_handle =
+        lege_filed::watcher::spawn(core, watcher_plan).context("starting the index watcher")?;
 
     tracing::info!(name = names::BUS_NAME, "lege-filed ready");
     pending::<()>().await;

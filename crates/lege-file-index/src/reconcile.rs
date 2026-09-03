@@ -17,8 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    EntryKind, EntryMeta, Index, IndexError, NativePath, RootId, RootPolicy, RootState, ScanOptions,
-    ScanOutcome, ScanScope, ScannedEntry, StaleReason,
+    EntryKind, EntryMeta, Index, IndexError, NativePath, RootId, RootPolicy, RootState,
+    ScanOptions, ScanOutcome, ScanScope, ScannedEntry, StaleReason,
     watch::{EventSource, WatchOwner},
 };
 
@@ -147,7 +147,6 @@ pub fn reconcile<S: EventSource>(
         )?;
         return Err(error);
     }
-
 
     let outcome = session.commit()?;
     Ok((outcome, report))

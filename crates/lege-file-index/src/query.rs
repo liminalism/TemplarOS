@@ -283,8 +283,13 @@ pub struct PlannedQuery {
 /// Behind a trait on purpose: FTS5 is a measured choice, not an architectural one, and a sorted or
 /// memory-mapped index can replace it without any consumer noticing.
 pub trait QueryPlanner: Send + Sync + std::fmt::Debug {
-    fn plan(&self, query: &Query, needle: &str, fts_available: bool, candidate_limit: usize)
-    -> PlannedQuery;
+    fn plan(
+        &self,
+        query: &Query,
+        needle: &str,
+        fts_available: bool,
+        candidate_limit: usize,
+    ) -> PlannedQuery;
     fn name(&self) -> &'static str;
 }
 
@@ -406,7 +411,12 @@ impl crate::Index {
             });
         }
 
-        let plan = planner.plan(query, &needle, self.fts_available(), self.config().candidate_limit);
+        let plan = planner.plan(
+            query,
+            &needle,
+            self.fts_available(),
+            self.config().candidate_limit,
+        );
         let candidate_limit = self.config().candidate_limit;
         let rows: Vec<EntryRow> = self.with_read(|connection| {
             let mut statement = connection.prepare(&plan.sql)?;
@@ -508,8 +518,9 @@ impl crate::Index {
         let mut hits = Vec::with_capacity(slice.len());
         let mut dropped = 0u32;
         self.with_read(|connection| {
-            let mut statement = connection
-                .prepare(&format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE entry_id = ?1"))?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {ENTRY_COLUMNS} FROM entries WHERE entry_id = ?1"
+            ))?;
             for (index, entry_id) in slice.iter().enumerate() {
                 match statement.query_row([entry_id.0], entry_row_from_row) {
                     Ok(row) => {
@@ -650,8 +661,7 @@ impl WirePath {
 /// dependency it does not need.
 #[must_use]
 pub fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let bits = (u32::from(chunk[0]) << 16)

@@ -559,7 +559,14 @@ pub fn render_index_hits(result: &IndexSearchResult) -> String {
     let mut lines: Vec<String> = result
         .hits
         .iter()
-        .map(|hit| format!("{:<10} {:>10}  {}", hit.rank, human_bytes(hit.row.size_bytes), hit.row.path.display))
+        .map(|hit| {
+            format!(
+                "{:<10} {:>10}  {}",
+                hit.rank,
+                human_bytes(hit.row.size_bytes),
+                hit.row.path.display
+            )
+        })
         .collect();
     if result.truncated {
         lines.push("(truncated: narrow the query for an exact count)".to_owned());

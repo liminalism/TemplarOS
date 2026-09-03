@@ -47,10 +47,8 @@ pub mod guard {
             // separate binary, so `cfg!(test)` is false inside this library when one runs it —
             // without this check the guard would cover unit tests only, which is the half that
             // needs it least.
-            std::env::current_exe().is_ok_and(|exe| {
-                exe.components()
-                    .any(|part| part.as_os_str() == "deps")
-            })
+            std::env::current_exe()
+                .is_ok_and(|exe| exe.components().any(|part| part.as_os_str() == "deps"))
         })
     }
 
@@ -611,10 +609,9 @@ impl<S: EventSource> WatchOwner<S> {
                     });
                 }
             }
-            RawKind::Overflow
-            | RawKind::Unmounted
-            | RawKind::SelfGone
-            | RawKind::WatchDropped => unreachable!("handled above"),
+            RawKind::Overflow | RawKind::Unmounted | RawKind::SelfGone | RawKind::WatchDropped => {
+                unreachable!("handled above")
+            }
         }
     }
 
@@ -662,9 +659,7 @@ impl<S: EventSource> WatchOwner<S> {
 
     fn complete_move(&mut self, pending: &PendingMove, to: &Path, pumped: &mut Pumped) {
         let Some(meta) = stat(to) else { return };
-        let same_root = self
-            .root_of(to)
-            .is_some_and(|root| root.id == pending.root);
+        let same_root = self.root_of(to).is_some_and(|root| root.id == pending.root);
         if !same_root {
             // Out of this root's world: a removal here, and whoever owns the destination will see
             // its own create.

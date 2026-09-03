@@ -238,10 +238,7 @@ impl ScanSession {
                      ON CONFLICT (root_id, path_bytes) DO NOTHING",
                 )?;
                 for entry in &rows {
-                    let name = entry
-                        .path
-                        .file_name()
-                        .unwrap_or_else(|| entry.path.clone());
+                    let name = entry.path.file_name().unwrap_or_else(|| entry.path.clone());
                     statement.execute(rusqlite::params![
                         generation,
                         root,
@@ -553,7 +550,11 @@ impl crate::Index {
                 &transaction,
                 root,
                 RootState::Building,
-                options.reason.as_ref().map(StaleReason::as_string).as_deref(),
+                options
+                    .reason
+                    .as_ref()
+                    .map(StaleReason::as_string)
+                    .as_deref(),
             )?;
             transaction.execute(
                 "UPDATE roots SET building_generation = ?2, last_reconcile_started_ms = ?3

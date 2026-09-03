@@ -48,6 +48,91 @@ record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.d2-archive-verify-20260903/1 : evidence {
+    title "D2: archive verification catches mixed sets, missing components, tampered pool files and an unfinished publish"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege repo && cargo run -q -p lege -- dev --repo <tmp>/archive repo init && ... repo publish --build-set target/debian/build-set.json && ... repo verify"
+    summary """
+        `lege dev repo verify` detects the failures it exists for. 31 lege tests pass under the `repo` filter (all pre-existing archive tests plus verify-detects-mixed-set and verify-detects-missing-component, the latter verifying from Matrix::embedded() with no source checkout). End to end in a tempdir archive with real gpg and apt-ftparchive: a real 13-package set published, sets/<id>/debs created with all 13 hard links, verify reported current ok with 13 pins; appending 8 bytes to a pool .deb produced "is 8578088 bytes, but the manifest recorded 8578080" plus "the pool no longer matches Packages" and exit 1; deleting a pool file produced "is gone from the pool"; a hand-written staged marker produced "staged but never became current". Nothing outside the tempdir was touched.
+        """
+}
+
+record legeos.evidence.d2-source-build-not-executed-20260903/1 : evidence {
+    title "D2: ci/source-build.sh exists but was not executed — no chroot backend on this host"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "ci/source-build.sh"
+    summary """
+        The clean-root source build did NOT run on this host: neither mmdebstrap nor podman is installed, so ci/source-build.sh printed "NOT EXECUTED (neither mmdebstrap nor podman is installed on this host)" and exited 0 without building anything. The lane is written and syntax-checked (bash -n) and is wired into ci/run.sh, but no Ubuntu 26.04 source build has been observed and none is claimed. Running it needs `sudo apt-get install mmdebstrap` (or podman) and is a user-run step.
+        """
+}
+
+record legeos.evidence.d2-version-authority-20260903/1 : evidence {
+    title "D2: one version authority — changelog derived from the build-set id, guarded in debian/rules"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege-build && just deb-plan && cargo run -q -p xtask -- archive changelog --write <tmp>/debian/changelog --epoch 1788400000 && LEGEOS_BUILD_SET_ID=0.1.0~dev1788400000+g8b284c9.dirty make -f debian/rules override_dh_auto_configure"
+    summary """
+        The debian/changelog head entry is generated from the BuildSetId and the source build refuses to disagree with it: 22 lege-build tests pass including the derivation test; `just deb-plan` prints build set 0.1.0~dev1788441091+g8b284c9.dirty and the changelog head line carrying that same id; `cargo xtask archive changelog --write` into a disposable copy produced that stanza, and debian/rules' configure guard printed "changelog and build set agree" for the matching id and exited 1 with "debian/changelog says … but the build set is …" for a mismatched one.
+        """
+}
+
+record legeos.evidence.d5-deploy-dry-run-names-everything-20260903/1 : evidence {
+    title "D5: the dry run names the root snapshot and the status section names all six identities"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo run -q -p lege -- dev deploy --dry-run"
+    artifact ".agent/scratch/de01/D5-deploy-dry-run.txt"
+    summary """
+        lege dev deploy --dry-run on this ext4 dev host says "no root snapshot: root is not btrfs"; against a btrfs fixture root it prints the exact btrfs subvolume snapshot -r command, and lege dev status names installed set, running set, rollback set, root snapshot, booted deployment and known-good deployment. Nothing was published, installed, restarted or snapshotted.
+        """
+}
+
+record legeos.evidence.d5-dev-status-and-activation-20260903/1 : evidence {
+    title "D5: lege dev tests green with the identities section and the silent-sessiond fixture"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege dev::"
+    summary """
+        cargo test -p lege dev::: 78 pass, 0 fail, including the new a_session_daemon_that_is_running_but_silent_fails_the_deployment_and_names_the_rollback, which also proves a sessiond that is merely not running is not reported as broken.
+        """
+}
+
+record legeos.evidence.d5-hostd-transaction-and-retention-20260903/1 : evidence {
+    title "D5: hostd tests green with the identity, retention and disk-classification work"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege-hostd"
+    summary """
+        cargo test -p lege-hostd: 72 + 4 pass, 0 fail, including the new a_restart_during_the_trial_can_still_promote_or_roll_back, running_out_of_disk_while_staging_is_classified_and_names_where_the_machine_still_is, retention_keeps_the_known_good_and_booted_deployments_whatever_the_pressure and a_legacy_array_registry_still_loads_with_its_known_good_recovered.
+        """
+}
+
+record legeos.evidence.daily-driver-matrix-20260903/1 : evidence {
+    title "Daily-driver capability matrix — what is automated, what is manual, what is blocked"
+    state verified
+    result inconclusive
+    method observation
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    artifact "docs/planning/daily-driver-matrix.md"
+    summary """
+        Nine daily-driver journeys audited against HEAD: two automated (file chooser, default-handler resolution), three manual, three blocked (no media player until the seeds land it, no mount/eject verb on Volumes1, no secret-service provider), one deferred. No hardware evidence is claimed and no end-to-end browser run has happened.
+        """
+}
+
 record legeos.evidence.desktop-audit-hardware-flag-20260827/1 : evidence {
     title "The two outputs and exit codes were byte-identical; Context.hardware has no production reads, so lege doctor --hardware does not execute the TOML hardware matrix it is documented as running."
     state verified
@@ -179,6 +264,66 @@ record legeos.evidence.file-folder-properties-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.file-index-core.generations-lossless-paths/1 : evidence {
+    title "lege-file-index generation/path/cursor tests green"
+    state verified
+    result pass
+    method command
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    command "cargo test -p lege-file-index"
+    summary """
+        22 passed, 2 ignored (scale/benchmark, run by coordinator): a killed rebuild leaves the prior generation readable, a non-UTF-8 path round-trips, and a cursor stays pinned to its generation. Fixed one pre-existing failure (the_change_log_is_bounded_and_says_so asserted changes_since(0,...) succeeded after pruning had already moved the retained floor past 0, contradicting the frozen SnapshotRequired contract; rewrote the test to assert from the actual floor and confirm seq 0 now correctly errors).
+        """
+}
+
+record legeos.evidence.file-index-core.index1-gates/1 : evidence {
+    title "Index1 D-Bus gates green (baseline not yet refrozen)"
+    state verified
+    result pass
+    method command
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        org.legeos.Files.Index1 (services/lege-filed/src/index_host.rs, interfaces/dbus/org.legeos.Files.Index1.xml, crates/lege-client/src/proxies/files.rs FilesIndexProxy) passes all three: 33 server/33 client interfaces documented, all client proxies have a live server, and interface-signatures reports the new interface as an addition (1 new, 0 breaking) — baseline not re-frozen; that is the coordinator's step.
+        """
+}
+
+record legeos.evidence.file-index-core.warm-start-compat/1 : evidence {
+    title "search.rs delegate + budget-incomplete tests green"
+    state verified
+    result pass
+    method command
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    command "cargo test -p lege-filed search"
+    summary """
+        11 passed: search.rs now delegates to lege_file_index while keeping Entry/Hit/Rank/SavedQuery and every Search1-facing signature; the two rewritten cap tests (a_depth_budget_yields_incomplete, an_entry_budget_yields_incomplete) assert complete=false and RootState::Stale rather than a silent truncation. Warm-start is now the watcher's classify_roots (main.rs): a root with a committed generation is served immediately, never rescanned synchronously — covered by main.rs's own rewritten test (a_root_with_a_committed_generation_is_served_and_an_empty_one_is_scheduled_to_scan, not part of this exact command but in the same crate/build). Full `cargo test -p lege-filed` is 108 passed/1 ignored (also verified).
+        """
+}
+
+record legeos.evidence.file-index-maintenance-reconcile/1 : evidence {
+    title "honest-freshness: reconcile + watcher command chain passes"
+    state verified
+    result pass
+    method command
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    command "cargo test -p lege-file-index reconcile && cargo test -p lege-filed watcher"
+    summary """
+        reconcile_overflow_marks_stale_then_reconciles and reconcile_downtime_keeps_old_generation_visible drive current->stale(watcher-overflow|downtime)->building(reconcile)->current while the prior generation stays queryable throughout and a budget-interrupted pass never reaches current; watcher_operation_hook_dedupes_watch_event shows a filed Copy's direct mutation is queryable before any watcher event, and the watcher's later echo of the same change is skipped (Applied::skipped=1, no generation bump); watcher_fixture_guard_holds is the mechanized trash/watcher fixture guard. All 5 pass; full lege-filed suite is 108/108 (1 ignored) and lege-file-index is 25/25 (2 ignored scale/benchmark).
+        """
+}
+
+record legeos.evidence.file-index-maintenance-watch/1 : evidence {
+    title "events-become-queryable: cargo test -p lege-file-index watch passes"
+    state verified
+    result pass
+    method command
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    command "cargo test -p lege-file-index watch"
+    summary """
+        watch_create_appears_within_bound: two events in one burst pumped through FakeSource, collapsed by a fake-clock Coalescer at 250ms quiet, applied as one MutationBatch (one generation bump, 2 changes), then both files are searchable via Index::search — satisfies events-become-queryable.
+        """
+}
+
 record legeos.evidence.file-operations-from-home-20260831/1 : evidence {
     title "File operations from Home: all five checks green; the Wayland transport boundary is a recorded follow-up"
     state verified
@@ -257,6 +402,19 @@ record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
     command "cargo test -p lege-filed video_preview"
     summary """
         The unit test passed with a 1000-second duration producing an ffmpeg -ss value of 30.000000, and a real MP4 rendered a 256x144 PNG through the ffmpeg video-at-3% route.
+        """
+}
+
+record legeos.evidence.grub-entries-carry-deployment-id-20260903/1 : evidence {
+    title "GRUB entries carry the deployment id"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege-hostd boot_entries"
+    artifact "services/lege-hostd/src/boot_entries.rs"
+    summary """
+        2 passed: the generated GRUB entries carry legeos.deployment=<id> and --id '<id>' for both the known-good deployment and the staged candidate; a rollback drops the candidate's entry; an id that could break out of the config is refused.
         """
 }
 
@@ -389,6 +547,30 @@ record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
     command "journalctl -b -1 _SYSTEMD_USER_UNIT=lege-comp.service --no-pager -n 400"
     summary """
         The installed run stayed alive, presented the Home surface, and libinput added twelve event devices; the old binary also mapped a separate 64px ShellOverlay. Code inspection showed libinput relative PointerMotion was unhandled and the DRM renderer composed no cursor.
+        """
+}
+
+record legeos.evidence.hardware-probe-tests-20260903/1 : evidence {
+    title "The probe module, the four-outcome report and the boot-health delegation are green: 9 + 36 + 23 + 4 tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege-hwdetect; cargo test -p lege doctor::; cargo test -p lege-boot-health; cargo test -p lege-hostd --test hardware_matrix"
+    summary """
+        lege-hwdetect 9/9 (7 pre-existing plus the two new probe properties: a timed-out probe is NotExecuted, never Fail; a missing binary is Skipped, never Fail or Pass). lege doctor:: 36/36, including the four pre-existing hardware tests and the new one asserting a single fixture report contains all four outcomes and that no tests/hardware case is ever reported as executed. lege-boot-health 23/23 unchanged after its four probe functions were made thin wrappers over lege-hwdetect::probes — a timeout still maps to Status::Fail there, so the promotion and forced-reboot logic is untouched. lege-hostd hardware_matrix 4/4 after three manual cases were added from X1's C6 matrix. rustfmt clean on every file touched; clippy clean on lege-hwdetect and lege-boot-health (the three lege warnings are in cli/lege/src/dev, D5's lane).
+        """
+}
+
+record legeos.evidence.hardware-qualification-report-20260903/1 : evidence {
+    title "lege doctor --hardware now executes ten bounded read-only probes and emits one four-outcome report; every manual case is not-executed"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo run -q -p lege -- doctor --hardware --json"
+    summary """
+        On the Intel Iris Xe + RTX 4060 Laptop dev host: 39 findings — 20 pass, 1 fail, 7 skipped, 11 not executed (report kept at .agent/scratch/de01/D4-doctor-hardware.json via `akr scratch keep`). Ten probes ran read-only and timeout-bounded: kernel-release (6.17.0-41-generic), drm-connected-output (card2-eDP-2), drm-modesetting, nvidia-module (610.43.02 matches nvidia-driver-610-open), nvidia-smi (RTX 4060 Laptop GPU), vulkan-devices (3 devices), prime-offload (available, not exercised), vaapi (59 profiles, Intel iHD 25.4.5) all passed; cuda-device-query was skipped (deviceQuery is not installed). nvidia-module-signer FAILED: the module is signed by a locally enrolled MOK with no linux-modules-nvidia-* package installed — this host is DKMS-built, which LegeOS forbids. All eleven tests/hardware cases were emitted as not-executed with their steps. NOTHING MANUAL RAN: no suspend, reboot, GPU-mode change, cable operation or driver change was performed or attempted, and no hardware case may be read as passed.
         """
 }
 
@@ -841,6 +1023,19 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.image-summary-mkosi-absent-20260903/1 : evidence {
+    title "mkosi absent: the image summary could not validate the repart change"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "mkosi --directory distro/image summary"
+    artifact "distro/image/mkosi.repart/10-root.conf"
+    summary """
+        mkosi is not installed on this host (command not found, exit 127), so the repart change adding /@deployments could not be validated by the image tool. Only the mkosi step was run, not `just image summary`, because that recipe's first line regenerates D1's mkosi.conf.d/50-seeds.conf while D1 is editing the seeds.
+        """
+}
+
 record legeos.evidence.installed-home-visible-20260824/1 : evidence {
     title "Installed LegeOS session reaches Home on the laptop"
     state verified
@@ -849,6 +1044,19 @@ record legeos.evidence.installed-home-visible-20260824/1 : evidence {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     summary """
         The user reported that the display issue is fixed and the installed LegeOS session now visibly reaches the Home screen on the real laptop.
+        """
+}
+
+record legeos.evidence.layout-declaration-matches-repart-20260903/1 : evidence {
+    title "The layout declaration matches repart and hostd"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p lege-hostd layout"
+    artifact "distro/deploy/layout.toml"
+    summary """
+        distro/deploy/layout.toml parses, declares @deployments alongside @ @home @var @snapshots, and agrees with mkosi.repart 00-esp.conf/10-root.conf on partition type, format and size, and with hostd's compiled-in command-line key, ESP directory and id grammar.
         """
 }
 
@@ -1162,6 +1370,56 @@ record legeos.evidence.offline-desktop-package-build-20260831/1 : evidence {
     command "env CARGO_NET_OFFLINE=true just deb"
     summary """
         The preview companion tests and self-check passed and all 13 expected LegeOS Debian packages were produced without network access.
+        """
+}
+
+record legeos.evidence.package-closure-resolution-unavailable/1 : evidence {
+    title "The package closure cannot be resolved on this host: no Ubuntu archive index exists"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo run -q -p xtask -- seeds closure --out .agent/scratch/de01/D1-closure.json; just image summary"
+    summary """
+        cargo xtask seeds closure reports resolution=unavailable at 2026-09-03T13:10Z: apt-cache policy answers only from /var/lib/dpkg/status and file:/var/lib/legeos/devrepo, so none of the 94 direct packages for declared codename resolute could be resolved; transitive, installed size, recommends and missing are empty because nothing was asked, not because nothing is missing. Host is ubuntu 25.10 questing; mkosi is absent so `just image summary` composes and then fails at mkosi (127).
+        """
+}
+
+record legeos.evidence.package-selection-generated-and-checked/1 : evidence {
+    title "One declaration drives the seeds, image lists and metapackages; drift fails the gate"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo run -q -p xtask -- seeds && cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging && cargo test -p xtask seeds && cargo test -p xtask check_packaging"
+    artifact "distro/seeds/selection.toml"
+    summary """
+        cargo xtask seeds regenerates 25 artifacts from distro/seeds/selection.toml (14 layers, 8 metapackages); seeds --check and check-packaging both go green at HEAD and both go red when a generated file is hand-edited; cargo test -p xtask seeds (3) and check_packaging (10) pass.
+        """
+}
+
+record legeos.evidence.portal-model-tests-20260903/1 : evidence {
+    title "The portal's FileChooser and AppChooser models are testable without a compositor, and pass"
+    state verified
+    result pass
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "cargo test -p xdg-desktop-portal-lege"
+    summary """
+        23 portal tests pass with no display: the 20 that existed plus three model-level ones covering the full directory listing, the request's filters, and the LegeOS default handler being recognised in the frontend's own spelling of a choice.
+        """
+}
+
+record legeos.evidence.provision-qemu-not-executed-20260903/1 : evidence {
+    title "Provisioning smoke: plan and refusals checked, QEMU boot not executed"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    command "bash tests/integration/provision-qemu.sh"
+    artifact "tests/integration/provision-qemu.sh"
+    summary """
+        The provisioner's plan matched the layout declaration, wrote nothing, bakes in no credentials, and refused every destructive target and an unprivileged --apply. The QEMU boot did NOT run: qemu-system-x86_64 is present but there is no image to boot (mkosi is absent on this host), so the script printed NOT EXECUTED. No target was ever provisioned.
         """
 }
 

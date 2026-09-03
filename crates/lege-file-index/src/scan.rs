@@ -84,9 +84,9 @@ fn walk(
     for entry in entries {
         match entry {
             Ok(entry) => children.push(entry.path()),
-            Err(error) => session.note_unreadable(
-                error.kind() == std::io::ErrorKind::PermissionDenied,
-            ),
+            Err(error) => {
+                session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied)
+            }
         }
     }
     children.sort();

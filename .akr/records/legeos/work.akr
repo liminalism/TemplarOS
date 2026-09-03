@@ -145,6 +145,55 @@ record legeos.work.application-integration-interim/2 : work {
     supersedes [ @legeos.work.application-integration-interim/1 ]
 }
 
+record legeos.work.build-set-archive-verification/1 : work {
+    title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
+    state proposed
+    scope [
+        path "ci/**",
+        path "cli/lege/src/dev/repo.rs",
+        path "crates/lege-build/**",
+        path "debian/changelog",
+        path "debian/rules",
+        path "distro/apt/**",
+        path "tools/xtask/src/archive.rs",
+        path "tools/xtask/src/build_set.rs",
+        path "tools/xtask/src/signatures.rs"
+    ]
+    intent """
+        Make the BuildSetId the one version authority (generate the debian/changelog head entry from it for source builds), add `lege dev repo verify` (one id across the set, no missing component against components.toml, valid InRelease/Release.gpg, previous set still installable), give the archive a staged/candidate marker distinct from the boot-deployment candidate vocabulary, record provenance (toolchain, host, Ubuntu index time), add a disposable Ubuntu 26.04 source-build lane under ci/ that reports not-executed when mmdebstrap/podman are absent, and provide the mkosi drop-in that points the image at a named published set.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: BuildSetId, keep-3 pruning, signing and mixed-set rejection already exist (crates/lege-build, cli/lege/src/dev/repo.rs); debian/changelog carries an independent 0.1.0~dev1; no verify command, no clean-root lane, no local-snapshot consumption by just image.
+        """
+    acceptance {
+        check archive-verify {
+            statement """
+                `lege dev repo verify` detects a mixed set, a missing component and a bad signature in fixtures, and reports the current and previous sets as installable.
+                """
+            method command
+            command "cargo test -p lege repo"
+        }
+        check image-drop-in {
+            statement """
+                A documented mkosi drop-in makes `just image` consume a named published set from the local archive (or the drop-in is documented as not exercised because mkosi is absent).
+                """
+            method manual
+        }
+        check one-version-authority {
+            statement """
+                The debian/changelog head entry used by the source build is derived from the BuildSetId; a test proves the derivation and `just deb-plan` prints the same id.
+                """
+            method command
+            command "cargo test -p lege-build && just deb-plan"
+        }
+    }
+    implements [ @legeos.decision.debian-packaging ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.deployment-activation-and-resourced
+    ]
+}
+
 record legeos.work.compositor-window-authority/1 : work {
     title "The compositor's window authority: typed layers, one scene, explicit minimisation, recovery without the shell"
     state completed
@@ -240,6 +289,56 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
     }
     derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.deployment-rollback-completion/1 : work {
+    title "D5 — persisted deployment identities, bounded retention, snapshot before userspace mutation, and one diagnostic naming every set and deployment"
+    state proposed
+    scope [
+        path "cli/lege/src/dev/**",
+        path "cli/lege/src/main.rs",
+        path "distro/deploy/components.toml",
+        path "services/lege-boot-health/**",
+        path "services/lege-hostd/src/**",
+        path "services/lege-hostd/tests/**"
+    ]
+    intent """
+        Assign and persist previous/current/known-good deployment identities; add restart tests for Trial→Promoted/RolledBack; replace the fabricated zero deployment size with a real estimate and bounded retention that never drops the known-good or booted deployment; classify disk exhaustion during Staging; snapshot the root subvolume before a userspace apt install when on Btrfs and show it in `lege dev deploy --dry-run`; add a broken-sessiond fixture to the activation gate; and one status section naming installed set, running set, rollback set, root snapshot, booted deployment and known-good deployment.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: the phase machine, journal and resume are tested for Downloading/Staging/Verifying/AwaitingReboot; userspace and boot rollback are already separate paths; previous_deployment is declared but never assigned; retention trims with a fabricated 0 size.
+        """
+    acceptance {
+        check dry-run-names-everything {
+            statement """
+                `lege dev deploy --dry-run` and the status section name the installed, running and rollback sets, the root snapshot, the booted and the known-good deployment; the live rollback, logout and reboot remain user-run.
+                """
+            method command
+            command "cargo test -p lege dev::"
+        }
+        check identities-persist {
+            statement """
+                previous, current and known-good deployment identities survive a hostd restart and a resume from the Trial phase promotes or rolls back correctly.
+                """
+            method command
+            command "cargo test -p lege-hostd"
+        }
+        check retention-and-disk {
+            statement """
+                Retention keeps N deployments but never the known-good or booted one, and disk exhaustion during Staging is a classified failure with the previous set named.
+                """
+            method command
+            command "cargo test -p lege-hostd storage"
+        }
+    }
+    implements [
+        @legeos.decision.boot-deploy-secure-boot,
+        @legeos.decision.one-privileged-host-daemon
+    ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.deployment-activation-and-resourced
+    ]
 }
 
 record legeos.work.design-consolidation-roadmap/1 : work {
@@ -357,6 +456,99 @@ record legeos.work.desktop-validation-foundations/1 : work {
     }
     derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
+}
+
+record legeos.work.developer-edition-daily-driver/1 : work {
+    title "X1 — a usable FileChooser, an OpenURI portal, the portal in the nested session, and an auditable daily-driver capability matrix"
+    state proposed
+    scope [
+        path "docs/planning/daily-driver-matrix.md",
+        path "portals/xdg-desktop-portal-lege/**",
+        path "scripts/nested-session.sh",
+        path "tests/integration/nested-session.sh"
+    ]
+    intent """
+        In the mid-plan's priority order: make the native FileChooser usable for browser upload and download (full scrolling listing, hidden toggle, request filters, save-as filename, start folder from Recents1); add org.freedesktop.impl.portal.OpenURI resolving through Associations1 and claim it in legeos.portal; document Flatpak portal selection; audit clipboard, media, suspend, keys, removable storage, secrets and MIME into docs/planning/daily-driver-matrix.md with automated/manual/blocked per row; message package needs to the package-selection lane and manual cases to the hardware lane; start the portal in both nested-session harnesses so the user can run a journey.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: FileChooser/AppChooser/Background are native Pixelkit dialogs in the portal process (the 2026-08-27 NoUiAvailable finding is stale) but the file dialog shows ten entries per directory; OpenURI is absent though the docs claim it; clipboard transport is real in the shell; no harness starts the portal.
+        """
+    acceptance {
+        check capability-matrix {
+            statement """
+                docs/planning/daily-driver-matrix.md marks each of the nine daily-driver areas automated, manual or blocked with its package or provider need, and claims no hardware evidence.
+                """
+            method manual
+        }
+        check portal-model-tests {
+            statement """
+                The dialog model lists every directory entry, applies request filters, and OpenURI resolves the default handler through Associations1, all without a display.
+                """
+            method command
+            command "cargo test -p xdg-desktop-portal-lege"
+        }
+        check user-journey {
+            statement """
+                The user completes a browser upload and download, opens an external URL and a downloaded file, and plays media in a LegeOS session.
+                """
+            method manual
+        }
+    }
+    implements [ @legeos.decision.flatpak-and-crash-handling ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.desktop-validation-foundations
+    ]
+}
+
+record legeos.work.developer-edition-package-closure/1 : work {
+    title "D1 — one package-selection declaration drives the seeds, the image list, the metapackages and a closure report"
+    state proposed
+    scope [
+        path "distro/base.toml",
+        path "distro/image/compose.sh",
+        path "distro/image/mkosi.conf",
+        path "distro/image/mkosi.conf.d/**",
+        path "distro/metapackages/**",
+        path "distro/seeds/**",
+        path "tools/xtask/src/main.rs",
+        path "tools/xtask/src/seeds.rs"
+    ]
+    intent """
+        Replace the flat seed lists, the hand-maintained 10-packages-base.conf list and the hand-written metapackage control.in files with one declaration (distro/seeds/selection.toml: layers bootstrap/hardware/graphics/session/desktop/browser/media/dev-rust/dev-cuda/opt-a11y/opt-ime/opt-bluetooth, a reason per direct package, role providers, the no-snap conflict). `cargo xtask seeds` generates 50-seeds.conf and the metapackage control files (adding legeos-dev-rust and legeos-dev-cuda) and emits a closure report (direct, transitive, installed size, recommends, missing packages, duplicate providers) against the host's Ubuntu 26.04 indexes with the observation time recorded; check-packaging fails when the generated output and the checked-in files differ.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: compose.sh iterates only minimal/session/desktop/hardware/ime/a11y so dev.seed is never consumed; legeos-session-meta omits legeos-boot-health; no closure tooling, no CUDA selection, no snapshot identity. Recommends are hard-off in the deploy path but on in the image; a --no-recommends image experiment is documented, not applied blindly.
+        """
+    acceptance {
+        check closure-report {
+            statement """
+                `cargo xtask seeds closure` reports direct and transitive packages, installed size, recommends, missing packages and duplicate providers for the Developer Edition layers, naming the Ubuntu index observation time or stating that resolution was unavailable.
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds closure"
+        }
+        check generated-not-maintained {
+            statement """
+                50-seeds.conf, the base package drop-in and every metapackage control file are generated from distro/seeds/selection.toml, and `cargo xtask seeds --check` fails when the checked-in files drift from the declaration.
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds --check"
+        }
+        check image-consumes-closure {
+            statement """
+                `just image summary` consumes exactly the generated package list (or records that mkosi is absent on this host).
+                """
+            method command
+            command "just image summary"
+        }
+    }
+    implements [
+        @legeos.decision.debian-packaging,
+        @legeos.decision.flatpak-and-crash-handling,
+        @legeos.decision.mkosi-images
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.display-manager-session-startup-reliability/1 : work {
@@ -532,6 +724,98 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
     implements [ @legeos.decision.session-greeter-lock/2 ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
     supersedes [ @legeos.work.display-manager-session-startup-reliability/3 ]
+}
+
+record legeos.work.file-index-core/1 : work {
+    title "F1 — the lege-file-index core crate, the cache database with generations, and the org.legeos.Files.Index1 contract"
+    state proposed
+    scope [
+        path "Cargo.toml",
+        path "cli/lege/src/files.rs",
+        path "crates/lege-client/src/proxies/files.rs",
+        path "crates/lege-file-index/**",
+        path "interfaces/dbus/org.legeos.Files.Index1.xml",
+        path "services/lege-filed/Cargo.toml",
+        path "services/lege-filed/src/dbus.rs",
+        path "services/lege-filed/src/index_host.rs",
+        path "services/lege-filed/src/main.rs",
+        path "services/lege-filed/src/search.rs",
+        path "session/units/user/lege-filed.service"
+    ]
+    intent """
+        Phase 0 and 1 of docs/planning/shared-incremental-file-index.md: a pure crates/lege-file-index (schema v1 with generations, native-byte paths plus display text, object keys, root freshness states, one writer with WAL readers, atomic generation commit that preserves the last good generation, uncapped streaming scan under configured budgets yielding an explicit incomplete state, FTS5-trigram substring search behind a QueryPlanner trait, paged cursors bound to a generation, sealed snapshot framing, Mutation and Change types for the maintenance lane); lege-filed opens $XDG_CACHE_HOME/legeos/file-index-v1.sqlite3, Search1 delegates to the core, Index1 (Roots, Search, FetchPage, OpenSnapshot, ChangesSince, signals) is hosted, proxied in lege-client and reachable as `lege files index status|search|reconcile`.
+        """
+    note """
+        Plan of record: docs/planning/shared-incremental-file-index.md via the parent @legeos.work.shared-incremental-file-index. HEAD reconciliation 2026-09-03: search.rs is a delete-then-insert, 50k-capped LIKE index inside the shared state mutex; FTS5 trigram is available from the bundled SQLite 3.53.2 without a feature change; Index1 exists nowhere. The two-million-entry release fixture is an ignored test whose command is recorded; the coordinator runs it at the integrated gate.
+        """
+    acceptance {
+        check generations-and-lossless-paths {
+            statement """
+                A killed rebuild leaves the previous committed generation readable, a non-UTF-8 path round-trips through index, search and snapshot, and a cursor stays pinned to the generation it was opened on.
+                """
+            method command
+            command "cargo test -p lege-file-index"
+        }
+        check index1-gates {
+            statement """
+                org.legeos.Files.Index1 passes check-interfaces, check-proxies and check-interface-signatures after the baseline is re-frozen.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
+        }
+        check warm-start-and-compat {
+            statement """
+                A warm lege-filed start serves the prior generation without walking a root, Search1 clients keep working, and a budget-limited scan reports incomplete rather than complete.
+                """
+            method command
+            command "cargo test -p lege-filed search"
+        }
+    }
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.shared-incremental-file-index
+    ]
+}
+
+record legeos.work.file-index-maintenance/1 : work {
+    title "F2 — one watcher owner keeps the index current, operations mutate it directly, and freshness degrades honestly"
+    state proposed
+    scope [
+        path "crates/lege-file-index/src/coalesce.rs",
+        path "crates/lege-file-index/src/reconcile.rs",
+        path "crates/lege-file-index/src/watch.rs",
+        path "crates/lege-file-index/tests/**",
+        path "services/lege-filed/src/execute.rs",
+        path "services/lege-filed/src/operations.rs",
+        path "services/lege-filed/src/watcher.rs"
+    ]
+    intent """
+        Phase 2 of docs/planning/shared-incremental-file-index.md against the frozen core contract: a Linux watcher backend chosen from measured inotify/fanotify needs, normalized and coalesced events committed one generation per batch, direct mutation from successful lege-filed operations with the later watch event deduplicated, overflow/rename-ambiguity/mount-disappearance handling, downtime and offline-root reconciliation through observable current→stale→reconciling→current transitions that never discard the prior generation, and a startup that never scans synchronously. The fixture rule from the trash incident is mechanized: test code cannot construct TrashMounts::System or watch a non-temporary root.
+        """
+    note """
+        Start gate: the coordinator's C5 freeze message. Before it, only fixtures and the backend decision. HEAD reconciliation 2026-09-03: no watcher dependency anywhere; operations.rs and execute.rs never touch the index.
+        """
+    acceptance {
+        check events-become-queryable {
+            statement """
+                A create, move, rename or delete becomes queryable within the agreed bound under a fake clock, and a filed operation's direct mutation deduplicates the later watch event.
+                """
+            method command
+            command "cargo test -p lege-file-index watch"
+        }
+        check honest-freshness {
+            statement """
+                Forced overflow and daemon downtime drive current→stale→reconciling→current while the prior generation stays visible, and starting the daemon returns existing results before reconciliation.
+                """
+            method command
+            command "cargo test -p lege-file-index reconcile && cargo test -p lege-filed watcher"
+        }
+    }
+    depends_on [ @legeos.work.file-index-core ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.shared-incremental-file-index
+    ]
 }
 
 record legeos.work.file-operations-from-home/1 : work {
@@ -2198,6 +2482,107 @@ record legeos.work.project-semantic-service/1 : work {
     depends_on [ @legeos.work.logical-app-and-variant-identity ]
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.reference-hardware-qualification/1 : work {
+    title "D4 — lege doctor --hardware executes bounded read-only probes and emits one qualification report with four outcomes"
+    state proposed
+    scope [
+        path "cli/lege/src/doctor/hardware.rs",
+        path "cli/lege/src/doctor/mod.rs",
+        path "crates/lege-hwdetect/**",
+        path "distro/hardware/**",
+        path "services/lege-boot-health/src/main.rs",
+        path "tests/hardware/**"
+    ]
+    intent """
+        Add crates/lege-hwdetect probes (timeout-bounded, read-only: kernel and module versions, module signer, nvidia-smi, vulkaninfo, PRIME offload, CUDA deviceQuery where present, VA-API), have lege-boot-health delegate its existing four probes to them, add a NotExecuted outcome distinct from Skipped, and make `lege doctor --hardware` run the safe subset and print or JSON-emit one qualification report in which manual cases stay NotExecuted with their steps. Send the exact NVIDIA/CUDA package list to the package-selection lane.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: the runner exists and is honest (cases compiled in, all emitted as Skipped) but executes no probes; boot-health already has bounded probes; Outcome has Pass/Fail/Skipped only.
+        """
+    acceptance {
+        check four-outcome-report {
+            statement """
+                `lege doctor --hardware --json` on the reference profile emits a report distinguishing pass, fail, skipped and not-executed, with manual cases not-executed.
+                """
+            method command
+            command "cargo test -p lege doctor::hardware"
+        }
+        check manual-matrix-user-run {
+            statement """
+                Suspend/resume, output hotplug, GPU-mode transitions and Secure Boot checks are executed by the user on the reference laptop and recorded as evidence.
+                """
+            method manual
+        }
+        check probes-are-bounded-and-honest {
+            statement """
+                A hung probe becomes NotExecuted, a missing binary becomes Skipped, and neither is reported as Pass or Fail.
+                """
+            method command
+            command "cargo test -p lege-hwdetect probes"
+        }
+    }
+    implements [
+        @legeos.decision.base-ubuntu-2604-kernel-70,
+        @legeos.decision.one-privileged-host-daemon
+    ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.desktop-validation-foundations
+    ]
+}
+
+record legeos.work.reference-machine-provisioning/1 : work {
+    title "D3 — one storage/deployment layout declaration, a narrow target-machine provisioner, and GRUB entries that carry legeos.deployment="
+    state proposed
+    scope [
+        path "distro/deploy/README.md",
+        path "distro/deploy/layout.toml",
+        path "distro/image/mkosi.extra/**",
+        path "distro/image/mkosi.postinst",
+        path "distro/image/mkosi.repart/**",
+        path "docs/adr/0004-boot-deploy-secure-boot.md",
+        path "installer/**",
+        path "services/lege-hostd/src/boot_entries.rs",
+        path "services/lege-hostd/src/deploy.rs",
+        path "tests/integration/provision-qemu.sh"
+    ]
+    intent """
+        Declare the GPT/UEFI and Btrfs layout once (distro/deploy/layout.toml: @, @home, @var, @snapshots, @deployments, deployment id, the legeos.deployment= command-line key) and have both the mkosi repart configuration and a declarative provisioner (installer/provision.sh, every destructive step parameterised by a disk-image path) consume it. Provision from an Ubuntu 26.04 base: subvolumes, canonical sources plus the local LegeOS archive, the legeos-* metapackages, the Ubuntu-signed kernel with its matching NVIDIA LRM while retaining the previous kernel, OS identity, user, units and `lege doctor --root`. With ADR-0004 resolved to Canonical shim + GRUB, a GRUB entry writer (services/lege-hostd/src/boot_entries.rs, called from the Grub backend) generates entries that carry the deployment id and a known-good entry. Move dev-image credentials to a dev-only drop-in, document the recovery-shell route, and add a QEMU provisioning test that prints not-executed when qemu is absent.
+        """
+    note """
+        HEAD reconciliation 2026-09-03: repart declares @ @home @var @snapshots while the engine stages @deployments/<id>; systemd-boot entries carry the id but the Grub backend writes no entry; installer/ is a README; mkosi.conf sets RootPassword=legeos and Autologin=yes; no QEMU test.
+        """
+    acceptance {
+        check disposable-provisioning {
+            statement """
+                A disposable image file is provisioned and booted under QEMU, or the script reports not-executed because qemu is absent; the real target disk is a user-run gate with a checklist.
+                """
+            method observation
+        }
+        check grub-entries-carry-id {
+            statement """
+                The GRUB entry writer produces entries whose command line carries legeos.deployment=<id> for the candidate and the known-good deployment, and a test proves it.
+                """
+            method command
+            command "cargo test -p lege-hostd boot_entries"
+        }
+        check one-layout-declaration {
+            statement """
+                The repart configuration and the provisioner both derive from distro/deploy/layout.toml, which declares @deployments alongside the existing subvolumes; `just image summary` still validates.
+                """
+            method command
+            command "cargo test -p lege-hostd layout && just image summary"
+        }
+    }
+    implements [
+        @legeos.decision.base-ubuntu-2604-kernel-70,
+        @legeos.decision.boot-deploy-secure-boot,
+        @legeos.decision.mkosi-images
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    resolves [ @legeos.question.grub-entries-must-carry-the-deployment-id ]
 }
 
 record legeos.work.representation-chrome-and-continuity/1 : work {

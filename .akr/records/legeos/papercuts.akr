@@ -37,6 +37,18 @@ record legeos.papercut.a-bounded-d-bus-integration-script-using-an/1 : papercut 
     created_at 2026-08-24
 }
 
+record legeos.papercut.a-campaign-lane-could-not-reach-its-peers-no/1 : papercut {
+    title "A campaign lane could not reach its peers: no ListAgents tool is…"
+    state verified
+    statement """
+        A campaign lane could not reach its peers: no ListAgents tool is exposed to a subagent, and SendMessage to the documented peer names ("D1 seeds", "D1", "D4 hardware") all answered "No agent named ... is reachable". Messaging only worked once the coordinator supplied raw agent ids out of band, which cost a full turn of the contract handshake.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    about "claude-code"
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.a-multi-file-patch-for-browse1-failed/1 : papercut {
     title "A multi-file patch for Browse1 failed atomically because two hunks for…"
     state verified
@@ -47,6 +59,17 @@ record legeos.papercut.a-multi-file-patch-for-browse1-failed/1 : papercut {
     about "apply_patch"
     author "gpt-5-codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.a-prior-continuation-s-the-change-log-is/1 : papercut {
+    title "A prior continuation's the_change_log_is_bounded_and_says_so test…"
+    state verified
+    statement """
+        A prior continuation's the_change_log_is_bounded_and_says_so test asserted changes_since(0, 100) succeeds even after 20 mutations against a max_changes=8 budget had already pruned past seq 0 — contradicting the frozen "seq < floor is always SnapshotRequired" rule. First action on resuming this lane was `cargo test -p lege-file-index`; fixing what fails caught it immediately, so the rule stands as documented, but it's a reminder that a budget-tight fixture test needs to query the actual floor (Index::diagnostics) rather than assume seq 0 stays valid.
+        """
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    author "claude"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.a-second-promise-batched-diagnostic-script/1 : papercut {
@@ -219,6 +242,17 @@ record legeos.papercut.correcting-my-earlier-papercut-allow/1 : papercut {
     created_at 2026-09-01
 }
 
+record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : papercut {
+    title "distro/metapackages/README.md promised a distro/metapackages/build.sh…"
+    state verified
+    statement """
+        distro/metapackages/README.md promised a distro/metapackages/build.sh that never existed, and distro/image/compose.sh silently iterated a hardcoded seed list (minimal session desktop hardware ime a11y), so dev.seed and both nvidia seeds were declared and consumed by nothing. A generator that skips inputs without saying so is worse than no generator; `cargo xtask seeds` now renders every layer and fails on drift.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut {
     title "Every reported Home Field failure — slow/lossy typing, a dead…"
     state verified
@@ -239,6 +273,28 @@ record legeos.papercut.first-user-run-of-the-deploy-path-failed-at/1 : papercut 
     observed_at git:223c1761dba27a030f4a14e64f61a38eebe42b73
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.in-a-shared-working-tree-cargo-test-p-lege-and/1 : papercut {
+    title "In a shared working tree, `cargo test -p lege` and `cargo check -p…"
+    state verified
+    statement """
+        In a shared working tree, `cargo test -p lege` and `cargo check -p lege` are only as green as every other lane's in-flight edit: mine failed twice on other lanes' half-edits in cli/lege/src/dev (a missing report::identities_as_json, then a BuildSet/SetManifest `provenance` field the gates.rs fixtures had not caught up with) despite nothing of mine being involved. Retrying a minute later worked both times, but a lane cannot tell "my change broke it" from "someone else is mid-edit" without reading the error.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
+}
+
+record legeos.papercut.in-lege-hostd-every-fake-fakeapt/1 : papercut {
+    title "In lege-hostd every fake (FakeApt, FakeSnapshotter, FakeCommandRunner,…"
+    state verified
+    statement """
+        In lege-hostd every fake (FakeApt, FakeSnapshotter, FakeCommandRunner, FixedClock) is #[cfg(test)] inside a binary crate, so nothing under services/lege-hostd/tests/ can use them — a transaction or deployment test can only be written as a unit test in src, and the crate's one integration test (hardware_matrix.rs) only works because it reads TOML. Making the fakes a `testing` feature module, or moving the engine into a small library crate, would let the transaction pipeline be exercised from a real integration test.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut {
@@ -309,6 +365,18 @@ record legeos.papercut.knowledge-evidence-add-many-returned-wrote/1 : papercut {
     created_at 2026-08-31
 }
 
+record legeos.papercut.knowledge-evidence-add-rejected-an-artifact/1 : papercut {
+    title "knowledge.evidence_add rejected an artifact under .agent/scratch even…"
+    state verified
+    statement """
+        knowledge.evidence_add rejected an artifact under .agent/scratch even though I had already run `akr scratch keep de01/D4-doctor-hardware.json` on that exact file; V-025 seems to recognise only top-level scratch entries, and its help text ("keep it with `akr scratch keep de01` first") pushes you to pin a whole shared directory other lanes are also writing into. Keeping one file should satisfy the rule.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    about "akr"
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.knowledge-get-on-legeos-work-home-field/1 : papercut {
     title "knowledge.get on @legeos.work.home-field truncates at 2 of 9 acceptance…"
     state verified
@@ -331,6 +399,18 @@ record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     about "akr"
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.knowledge-validate-resolved-the-shared-parent/1 : papercut {
+    title "knowledge.validate resolved the shared parent directory instead of the…"
+    state verified
+    statement """
+        knowledge.validate resolved the shared parent directory instead of the LegeOS child workspace, so it reported no .akr; running the CLI from LegeOS worked.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    about "akr"
+    author "codex"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.lege-build-s-tests-created-a-scratch-directory/1 : papercut {
@@ -388,6 +468,28 @@ record legeos.papercut.making-the-integration-smoke-hermetic-by/1 : papercut {
     created_at 2026-08-27
 }
 
+record legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 : papercut {
+    title "No existing pattern in the repo for a custom-named D-Bus error…"
+    state verified
+    statement """
+        No existing pattern in the repo for a custom-named D-Bus error (org.legeos.Files.Index1.Error.SnapshotRequired) or a method returning a file descriptor; had to read zbus_macros' derive(DBusError) source directly to find the right manual zbus::DBusError impl and Fd<'static>::from(OwnedFd) conversion. Worth a short doc note or a second example interface once one exists, so the next custom-error interface doesn't need to re-derive it from the dependency source.
+        """
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    author "claude"
+    created_at 2026-09-03
+}
+
+record legeos.papercut.on-this-host-var-lib-legeos-devrepo-has-current/1 : papercut {
+    title "On this host /var/lib/legeos/devrepo has current/previous/pool but no…"
+    state verified
+    statement """
+        On this host /var/lib/legeos/devrepo has current/previous/pool but no sets/ directory at all — it was published by a `lege dev` predating set manifests — so `lege dev repo verify` there reports "…was never published to this archive" for the set `current` names, and D1's new image drop-in correctly writes nothing. It is honest but surprising: a one-line hint in the verify output ("this archive predates set manifests; republish to record one") would save the next person the detour.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.on-this-ntfs-fuse-workspace-systemd-analyze/1 : papercut {
     title "On this NTFS/FUSE workspace, systemd-analyze verify warns that every…"
     state verified
@@ -433,6 +535,17 @@ record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercu
     created_at 2026-08-17
 }
 
+record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
+    title "reconcile::reconcile() unconditionally called index.mark_stale() before…"
+    state verified
+    statement """
+        reconcile::reconcile() unconditionally called index.mark_stale() before a repair pass; for a fresh Empty root (first-ever scan) that's an illegal Empty->Stale transition (Empty may only go to Building/Offline) and failed a real test. Fixed by also excluding RootState::Empty from the pre-repair mark_stale guard in crates/lege-file-index/src/reconcile.rs.
+        """
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 : papercut {
     title "scripts/nested-session.sh stop leaves lege-sessiond and lege-filed…"
     state verified
@@ -465,6 +578,17 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     about "systemd-analyze"
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-acceptance-command-just-image-summary/1 : papercut {
+    title "The acceptance command `just image summary` cannot be run without side…"
+    state verified
+    statement """
+        The acceptance command `just image summary` cannot be run without side effects on someone else's file: the recipe's first line is `./distro/image/compose.sh`, which rewrites the generated `mkosi.conf.d/50-seeds.conf` from `distro/seeds/*.seed`. Validating a change to `mkosi.repart/*.conf` therefore also regenerates the package list, which is a different concern and a different owner. A `just image mkosi-only` (or a `--no-compose` flag) would let a repart change be checked on its own.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.the-akr-start-output-did-not-show-copyable/1 : papercut {
@@ -624,6 +748,17 @@ record legeos.papercut.the-home-field-s-own-reflow-focus-ops-tests-are/1 : paper
     created_at 2026-08-26
 }
 
+record legeos.papercut.the-image-seeded-cosmic-term-while-the-terminal/1 : papercut {
+    title "The image seeded cosmic-term while the Terminal provider role's default…"
+    state verified
+    statement """
+        The image seeded cosmic-term while the Terminal provider role's default is kitty (crates/lege-session-core/src/providers.rs:157) and legeos-shell ships /etc/xdg/kitty/kitty.conf as a deb asset — so the declared default terminal was not in any package list. Found while writing distro/seeds/selection.toml; fixed there by seeding kitty with the role and dropping cosmic-term. Two independent lists of package names is how this happens.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.the-installed-legeos-set-on-the-development/1 : papercut {
     title "The installed LegeOS set on the development machine was mixed-age: ten…"
     state verified
@@ -655,6 +790,17 @@ record legeos.papercut.the-m2-acceptance-command-lists-six-xtask/1 : papercut {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-mechanized-fixture-guard-test-in-services/1 : papercut {
+    title "The mechanized fixture guard test in services/lege-filed/src/watcher.rs…"
+    state verified
+    statement """
+        The mechanized fixture guard test in services/lege-filed/src/watcher.rs scans every src/*.rs file's #[cfg(test)] region for the literal "TrashMounts::System" -- but the guard test's own doc comment and assert message live inside that same #[cfg(test)] mod and both quoted the literal, so the test flagged itself. Fixed by building the needle via string concatenation at runtime and rephrasing the prose to never spell it contiguously. Worth a lint/self-check note for any future source-scanning test in this codebase.
+        """
+    observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
+    author "claude"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.the-output-suggested-a-ready-made-context/1 : papercut {
@@ -768,6 +914,18 @@ record legeos.papercut.while-checking-two-focused-lege-filed-filters-i/1 : paper
     created_at 2026-08-24
 }
 
+record legeos.papercut.while-locating-a-public-planning-doc-reference/1 : papercut {
+    title "While locating a public planning-doc reference, FFF grep ranked…"
+    state verified
+    statement """
+        While locating a public planning-doc reference, FFF grep ranked `.akr/records/legeos/milestones.akr` ahead of the document even though this workspace explicitly forbids browsing `.akr/records/`. A default `.akr/` exclusion would keep discovery within allowed project surfaces.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    about "FFF"
+    author "codex"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.while-locating-the-resolved-smithay-source-i/1 : papercut {
     title "While locating the resolved Smithay source, I passed `--no-deps=false`…"
     state verified
@@ -857,6 +1015,17 @@ record legeos.papercut.while-verifying-m2-its-structural-checks/1 : papercut {
     observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
     author "codex"
     created_at 2026-08-27
+}
+
+record legeos.papercut.working-the-portal-lane-the-generated-docs/1 : papercut {
+    title "Working the portal lane, the generated docs contradicted themselves…"
+    state verified
+    statement """
+        Working the portal lane, the generated docs contradicted themselves about the same fact: docs/generated/CURRENT-STATE.md:185 says the OpenURI portal does not exist, while line 857 of the same file lists OpenURI among the interfaces the backend serves. Three source comments (portals/README.md, the crate description, main.rs's module doc) repeated the second claim, so the first thing this lane had to do was prove from the installed xdg-desktop-portal binary which one was true.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    author "claude"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.xtask-interface-baseline-prints-froze-170/1 : papercut {

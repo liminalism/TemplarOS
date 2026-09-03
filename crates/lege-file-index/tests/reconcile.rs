@@ -18,7 +18,11 @@ fn open(dir: &std::path::Path) -> Index {
 }
 
 fn hits(index: &Index, text: &str) -> usize {
-    index.search(&Query::new(text)).expect("a search").hits.len()
+    index
+        .search(&Query::new(text))
+        .expect("a search")
+        .hits
+        .len()
 }
 
 /// Build a small tree, index it completely, and hand back the pieces.
@@ -84,7 +88,11 @@ fn reconcile_overflow_marks_stale_then_reconciles() {
         1,
         "a stale root keeps answering from the generation it already has"
     );
-    assert_eq!(hits(&index, "unseen"), 0, "the missed file is genuinely missing");
+    assert_eq!(
+        hits(&index, "unseen"),
+        0,
+        "the missed file is genuinely missing"
+    );
 
     // The repair the overflow asked for.
     let (outcome, report) = reconcile::reconcile(
@@ -99,7 +107,11 @@ fn reconcile_overflow_marks_stale_then_reconciles() {
 
     assert!(outcome.complete);
     assert_eq!(index.root_status(root).unwrap().state, RootState::Current);
-    assert_eq!(hits(&index, "unseen"), 1, "the repair found what the overflow lost");
+    assert_eq!(
+        hits(&index, "unseen"),
+        1,
+        "the repair found what the overflow lost"
+    );
     assert_eq!(hits(&index, "first"), 1, "and kept what was already there");
     assert!(report.dirs_walked >= 2);
 }
@@ -153,7 +165,11 @@ fn reconcile_downtime_keeps_old_generation_visible() {
     )
     .expect("the interrupted pass");
     assert!(!partial.complete, "a budget stopped it");
-    assert_ne!(partial.state, RootState::Current, "an incomplete pass is never current");
+    assert_ne!(
+        partial.state,
+        RootState::Current,
+        "an incomplete pass is never current"
+    );
     assert_eq!(
         hits(&index, "first"),
         1,
@@ -174,6 +190,10 @@ fn reconcile_downtime_keeps_old_generation_visible() {
     assert!(outcome.complete);
     assert_eq!(index.root_status(root).unwrap().state, RootState::Current);
     assert_eq!(hits(&index, "added-while-down"), 1);
-    assert_eq!(hits(&index, "second"), 0, "collected only by a complete pass");
+    assert_eq!(
+        hits(&index, "second"),
+        0,
+        "collected only by a complete pass"
+    );
     assert!(outcome.generation.0 > generation_before);
 }

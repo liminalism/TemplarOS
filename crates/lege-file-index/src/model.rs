@@ -199,7 +199,9 @@ pub struct EntryId(pub i64);
 
 /// A database-wide monotone counter. Every answer the index gives names the one it was produced
 /// at, so no consumer can render a result without being able to say how old it is.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub struct Generation(pub u64);
 
 impl std::fmt::Display for Generation {
@@ -271,11 +273,7 @@ impl RootState {
             Self::Empty => matches!(next, Self::Building | Self::Offline),
             Self::Building => matches!(
                 next,
-                Self::Current
-                    | Self::PermissionLimited
-                    | Self::Stale
-                    | Self::Empty
-                    | Self::Offline
+                Self::Current | Self::PermissionLimited | Self::Stale | Self::Empty | Self::Offline
             ),
             Self::Current | Self::PermissionLimited => matches!(
                 next,
@@ -302,17 +300,26 @@ pub enum StaleReason {
     /// The kernel queue overflowed; events between then and now are unknown.
     WatcherOverflow,
     /// The watch budget ran out: some directories are unwatched.
-    WatcherExhausted { armed: u64, refused: u64 },
-    WatcherFailed { detail: String },
+    WatcherExhausted {
+        armed: u64,
+        refused: u64,
+    },
+    WatcherFailed {
+        detail: String,
+    },
     /// A rename could not be paired with its partner.
     RenameAmbiguous,
     MountDisappeared,
     PolicyChanged,
-    BudgetExhausted { budget: BudgetKind },
+    BudgetExhausted {
+        budget: BudgetKind,
+    },
     PermissionDenied,
     /// The daemon was not running, so the gap cannot be reconstructed from events.
     Downtime,
-    Inconsistent { detail: String },
+    Inconsistent {
+        detail: String,
+    },
     /// A background repair scan, in progress. Paired with `RootState::Building`.
     Reconcile,
 }
@@ -619,7 +626,10 @@ mod tests {
         assert_eq!(NativePath::from_path(&path.to_path()), path);
         assert_eq!(path.file_name().unwrap().as_bytes(), b"report.pdf");
         assert_eq!(path.parent().unwrap().as_bytes(), b"/tmp/caf\xff\xfe");
-        assert!(path.display().contains('\u{fffd}'), "display is the lossy one");
+        assert!(
+            path.display().contains('\u{fffd}'),
+            "display is the lossy one"
+        );
     }
 
     #[test]
@@ -655,7 +665,10 @@ mod tests {
         let policy = RootPolicy::default_home();
         for name in ["/home/u/Trash", "/media/x/.Trash-1000", "/home/u/.git"] {
             assert!(
-                policy.is_skipped(&NativePath::from_bytes(name.as_bytes().to_vec()), EntryKind::Directory),
+                policy.is_skipped(
+                    &NativePath::from_bytes(name.as_bytes().to_vec()),
+                    EntryKind::Directory
+                ),
                 "{name} was not skipped"
             );
         }

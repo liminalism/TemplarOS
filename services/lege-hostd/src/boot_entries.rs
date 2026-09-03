@@ -139,7 +139,10 @@ pub fn render(entries: &[BootEntry]) -> String {
 pub fn write_entries(boot_root: &Path, entries: &[BootEntry]) -> Result<PathBuf> {
     for entry in entries {
         if !is_valid_deployment_id(&entry.id) {
-            bail!("refusing to write a GRUB entry for invalid deployment id {:?}", entry.id);
+            bail!(
+                "refusing to write a GRUB entry for invalid deployment id {:?}",
+                entry.id
+            );
         }
     }
     let path = boot_root.join(ENTRIES_FILE);
@@ -233,10 +236,14 @@ mod tests {
         };
 
         // A promotion records the known-good deployment and generates its entry.
-        backend.stage_candidate(&deployment("install-1", false), 3).unwrap();
+        backend
+            .stage_candidate(&deployment("install-1", false), 3)
+            .unwrap();
         backend.mark_good().unwrap();
         // Then a new candidate is staged on top of it.
-        backend.stage_candidate(&deployment("txn-20260903T120000Z", false), 3).unwrap();
+        backend
+            .stage_candidate(&deployment("txn-20260903T120000Z", false), 3)
+            .unwrap();
 
         let generated = dir.path().join("boot").join(ENTRIES_FILE);
         let body = fs::read_to_string(&generated).unwrap();
@@ -260,7 +267,10 @@ mod tests {
         assert_eq!(body.matches("menuentry ").count(), 2, "in:\n{body}");
         assert!(body.find("install-1").unwrap() < body.find("txn-20260903T120000Z").unwrap());
         // What GRUB is asked to boot is exactly what the entry is named.
-        assert_eq!(commands.calls().last().unwrap().args, ["txn-20260903T120000Z"]);
+        assert_eq!(
+            commands.calls().last().unwrap().args,
+            ["txn-20260903T120000Z"]
+        );
 
         // A rollback leaves the previous deployment as the only entry.
         backend.rollback(&deployment("install-1", true)).unwrap();
@@ -318,7 +328,9 @@ mod tests {
             format!("/boot/{ENTRIES_FILE}")
         );
         assert_eq!(
-            layout["boot"]["grub"]["menuentry_id_template"].as_str().unwrap(),
+            layout["boot"]["grub"]["menuentry_id_template"]
+                .as_str()
+                .unwrap(),
             "{id}"
         );
         assert_eq!(layout["root"]["label"].as_str().unwrap(), ROOT_FS_LABEL);

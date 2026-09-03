@@ -54,7 +54,10 @@ impl zbus::DBusError for Index1Error {
         }
     }
 
-    fn create_reply(&self, call: &zbus::message::Header<'_>) -> zbus::Result<zbus::message::Message> {
+    fn create_reply(
+        &self,
+        call: &zbus::message::Header<'_>,
+    ) -> zbus::Result<zbus::message::Message> {
         match self {
             Self::Fdo(error) => zbus::DBusError::create_reply(error, call),
             Self::SnapshotRequired(reason) => {
@@ -248,12 +251,12 @@ impl IndexApi {
     /// `$XDG_RUNTIME_DIR` — this build does not attempt `memfd_create` sealing, and the manifest
     /// says so honestly (`sealed: false`) rather than claiming a guarantee it did not take.
     async fn open_snapshot(&self, request_json: &str) -> Result<(Fd<'static>, String)> {
-        let request: SnapshotRequest = serde_json::from_str(request_json)
-            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        let request: SnapshotRequest =
+            serde_json::from_str(request_json).map_err(|error| Index1Error::Fdo(failed(error)))?;
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
-        let mut file = tempfile::tempfile_in(&runtime_dir)
-            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        let mut file =
+            tempfile::tempfile_in(&runtime_dir).map_err(|error| Index1Error::Fdo(failed(error)))?;
         let manifest: SnapshotManifest = self.0.index.core().write_snapshot(&mut file, &request)?;
         file.seek(SeekFrom::Start(0))
             .map_err(|error| Index1Error::Fdo(failed(error)))?;
@@ -275,11 +278,14 @@ impl IndexApi {
     /// however long a full reconcile takes — the difference from the old, synchronous
     /// `Search1.IndexRoot`.
     async fn reconcile(&self, roots_json: &str) -> Result<String> {
-        let requested: Vec<index_core::RootId> = serde_json::from_str(roots_json)
-            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        let requested: Vec<index_core::RootId> =
+            serde_json::from_str(roots_json).map_err(|error| Index1Error::Fdo(failed(error)))?;
         let core = self.0.index.core().clone();
         let targets = if requested.is_empty() {
-            core.roots()?.into_iter().map(|status| status.root).collect()
+            core.roots()?
+                .into_iter()
+                .map(|status| status.root)
+                .collect()
         } else {
             requested
         };
@@ -340,13 +346,15 @@ impl Index1Signals {
 }
 
 impl index_core::ChangeSink for Index1Signals {
-    fn generation_advanced(&self, generation: index_core::Generation, changes: &[index_core::Change]) {
+    fn generation_advanced(
+        &self,
+        generation: index_core::Generation,
+        changes: &[index_core::Change],
+    ) {
         let emitter = self.emitter.clone();
         let count = changes.len() as u32;
         tokio::spawn(async move {
-            if let Err(error) =
-                IndexApi::generation_advanced(&emitter, generation.0, count).await
-            {
+            if let Err(error) = IndexApi::generation_advanced(&emitter, generation.0, count).await {
                 tracing::warn!(%error, "could not emit GenerationAdvanced");
             }
         });

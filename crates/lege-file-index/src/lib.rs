@@ -361,8 +361,9 @@ impl Index {
 
     pub fn roots(&self) -> Result<Vec<RootStatus>> {
         self.with_read(|connection| {
-            let mut statement =
-                connection.prepare(&format!("SELECT {ROOT_COLUMNS} FROM roots ORDER BY root_id"))?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {ROOT_COLUMNS} FROM roots ORDER BY root_id"
+            ))?;
             let rows = statement.query_map([], root_status_from_row)?;
             let mut roots = Vec::new();
             for row in rows {
@@ -398,9 +399,9 @@ impl Index {
         let mut best: Option<RootStatus> = None;
         for root in self.roots()? {
             if path.starts_with(&root.path)
-                && best
-                    .as_ref()
-                    .is_none_or(|current| root.path.as_bytes().len() > current.path.as_bytes().len())
+                && best.as_ref().is_none_or(|current| {
+                    root.path.as_bytes().len() > current.path.as_bytes().len()
+                })
             {
                 best = Some(root);
             }
@@ -429,12 +430,7 @@ impl Index {
             let changed: usize = transaction.execute(
                 "UPDATE roots SET policy_json = ?2, policy_hash = ?3, cross_mount = ?4
                   WHERE root_id = ?1 AND policy_hash <> ?3",
-                rusqlite::params![
-                    root.0,
-                    json,
-                    policy.hash(),
-                    i64::from(policy.cross_mount)
-                ],
+                rusqlite::params![root.0, json, policy.hash(), i64::from(policy.cross_mount)],
             )?;
             if changed > 0 {
                 let current = read_root(&transaction, root)?;
@@ -605,10 +601,8 @@ impl Index {
                     AND deleted_generation IS NULL
                   ORDER BY path_bytes"
             ))?;
-            let rows = statement.query_map(
-                rusqlite::params![root.0, low, high],
-                entry_row_from_row,
-            )?;
+            let rows =
+                statement.query_map(rusqlite::params![root.0, low, high], entry_row_from_row)?;
             let mut entries = Vec::new();
             for row in rows {
                 let entry = row?;
@@ -646,7 +640,9 @@ impl Index {
     pub fn diagnostics(&self) -> Result<Diagnostics> {
         let roots = self.roots()?;
         let cursor_count = self.0.cursors.lock().len();
-        let db_bytes = std::fs::metadata(&self.0.path).map(|meta| meta.len()).unwrap_or(0);
+        let db_bytes = std::fs::metadata(&self.0.path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         self.with_read(|connection| {
             let head: i64 = connection
                 .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
@@ -886,7 +882,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(!outcome.complete, "a budget-limited pass claimed completeness");
+        assert!(
+            !outcome.complete,
+            "a budget-limited pass claimed completeness"
+        );
         assert_eq!(outcome.limited, Some(BudgetKind::Entries));
         let status = index.root_status(root).unwrap();
         assert_eq!(status.state, RootState::Stale);
@@ -897,7 +896,10 @@ mod tests {
         let outcome = index.scan_root(root, ScanOptions::default()).unwrap();
         assert!(outcome.complete);
         assert_eq!(index.root_status(root).unwrap().state, RootState::Current);
-        assert!(outcome.entries >= 21, "the whole tree should be indexed now");
+        assert!(
+            outcome.entries >= 21,
+            "the whole tree should be indexed now"
+        );
     }
 
     #[test]
@@ -935,7 +937,11 @@ mod tests {
             "the depth budget did not bound the branch"
         );
         assert!(
-            !index.search(&Query::new("shallow")).unwrap().hits.is_empty(),
+            !index
+                .search(&Query::new("shallow"))
+                .unwrap()
+                .hits
+                .is_empty(),
             "a depth budget must not abandon the rest of the tree"
         );
         assert_eq!(
@@ -984,11 +990,20 @@ mod tests {
             "an uncommitted generation was published"
         );
         assert!(
-            index.search(&Query::new("half-written")).unwrap().hits.is_empty(),
+            index
+                .search(&Query::new("half-written"))
+                .unwrap()
+                .hits
+                .is_empty(),
             "staging rows from a killed scan became visible"
         );
         // And the daemon converges without anyone deleting the database by hand.
-        assert!(index.scan_root(root, ScanOptions::default()).unwrap().complete);
+        assert!(
+            index
+                .scan_root(root, ScanOptions::default())
+                .unwrap()
+                .complete
+        );
     }
 
     /// A path is bytes. If it survives indexing, searching and the bulk snapshot unchanged, an
@@ -1017,7 +1032,10 @@ mod tests {
             .expect("the non-UTF-8 path did not survive indexing and search");
         assert_eq!(found.row.path.as_bytes(), expected.as_bytes());
         assert_eq!(found.row.name.as_bytes(), raw_name.as_slice());
-        assert!(std::fs::metadata(found.row.path.to_path()).is_ok(), "the stored path no longer opens the file");
+        assert!(
+            std::fs::metadata(found.row.path.to_path()).is_ok(),
+            "the stored path no longer opens the file"
+        );
 
         let entry = index.entry(root, &expected).unwrap();
         assert_eq!(entry.map(|row| row.path), Some(expected.clone()));
@@ -1069,14 +1087,21 @@ mod tests {
                 ],
             ))
             .unwrap();
-        assert!(applied.generation > pinned, "the batch did not advance the generation");
+        assert!(
+            applied.generation > pinned,
+            "the batch did not advance the generation"
+        );
 
         let page = index.fetch_page(&result.cursor, 0, 10).unwrap();
         assert_eq!(
             page.generation, pinned,
             "the cursor drifted to a newer generation"
         );
-        assert_eq!(page.hits.len(), total as usize, "the pinned set changed size");
+        assert_eq!(
+            page.hits.len(),
+            total as usize,
+            "the pinned set changed size"
+        );
         assert_eq!(page.dropped, 1, "a removed row was not reported as absent");
         assert!(
             page.hits.iter().any(|hit| !hit.present),
@@ -1117,7 +1142,10 @@ mod tests {
         let index = index_at(dir.path());
         let status = index.root_status(root).unwrap();
         assert_eq!(status.state, RootState::Current);
-        assert_eq!(status.generation, first.generation, "a warm start rescanned");
+        assert_eq!(
+            status.generation, first.generation,
+            "a warm start rescanned"
+        );
         assert_eq!(
             index.search(&Query::new("report")).unwrap().hits.len(),
             expected,
@@ -1157,7 +1185,10 @@ mod tests {
                 }],
             ))
             .unwrap();
-        assert_eq!(applied.skipped, 1, "a redundant mutation was applied anyway");
+        assert_eq!(
+            applied.skipped, 1,
+            "a redundant mutation was applied anyway"
+        );
         assert!(applied.changes.is_empty());
         assert_eq!(
             index.generation().unwrap(),
@@ -1188,7 +1219,11 @@ mod tests {
                 }],
             ))
             .unwrap();
-        assert_eq!(applied.changes.len(), 1, "a folder move is one event, not one per file");
+        assert_eq!(
+            applied.changes.len(),
+            1,
+            "a folder move is one event, not one per file"
+        );
         assert_eq!(applied.changes[0].op, ChangeOp::Moved);
         assert_eq!(applied.changes[0].old_path.as_ref(), Some(&from));
         assert!(applied.moved_descendants >= 3);
@@ -1196,7 +1231,10 @@ mod tests {
         assert!(index.entry(root, &from).unwrap().is_none());
         assert!(
             index
-                .entry(root, &NativePath::from_path(&home.join("archive/2026/annual-report.md")))
+                .entry(
+                    root,
+                    &NativePath::from_path(&home.join("archive/2026/annual-report.md"))
+                )
                 .unwrap()
                 .is_some(),
             "a descendant kept its old path after the directory moved"
@@ -1306,7 +1344,10 @@ mod tests {
         let floor = index.diagnostics().unwrap().change_seq_floor;
         assert!(floor > 0, "pruning never advanced the retained floor");
         let batch = index.changes_since(floor, 100).unwrap();
-        assert!(batch.changes.len() <= 8, "the change log grew without bound");
+        assert!(
+            batch.changes.len() <= 8,
+            "the change log grew without bound"
+        );
         assert!(
             matches!(
                 index.changes_since(0, 10),
@@ -1376,7 +1417,11 @@ mod tests {
             .search(&Query::new("report").in_roots(vec![one]))
             .unwrap();
         assert_eq!(scoped.hits.len(), 1);
-        assert_eq!(scoped.roots.len(), 1, "a scoped search reports its scope's freshness");
+        assert_eq!(
+            scoped.roots.len(),
+            1,
+            "a scoped search reports its scope's freshness"
+        );
         assert!(index.search(&Query::new("   ")).unwrap().hits.is_empty());
     }
 
@@ -1396,7 +1441,8 @@ mod tests {
             1
         );
         assert!(
-            hits.iter().all(|hit| hit.row.name.display().contains("report_")),
+            hits.iter()
+                .all(|hit| hit.row.name.display().contains("report_")),
             "underscore matched as a wildcard"
         );
         assert!(index.search(&Query::new("%")).unwrap().hits.is_empty());
@@ -1469,14 +1515,19 @@ mod tests {
         let started = std::time::Instant::now();
         let outcome = stage_synthetic(&index, root, 2_000_000);
         let indexed = started.elapsed();
-        assert!(outcome.complete, "two million entries were reported as incomplete");
+        assert!(
+            outcome.complete,
+            "two million entries were reported as incomplete"
+        );
         assert_eq!(outcome.entries, 2_000_000, "entries were truncated");
         assert_eq!(index.root_status(root).unwrap().state, RootState::Current);
 
         let mut latencies = Vec::new();
         for needle in ["file-1999999", "dir999", "annual", "file-42.txt"] {
             let started = std::time::Instant::now();
-            let result = index.search(&Query::new(needle).with_page_size(100)).unwrap();
+            let result = index
+                .search(&Query::new(needle).with_page_size(100))
+                .unwrap();
             latencies.push((needle, started.elapsed(), result.hits.len()));
         }
         println!("indexed 2,000,000 entries in {indexed:?}");
@@ -1514,7 +1565,9 @@ mod tests {
             let mut hits = 0;
             for _ in 0..5 {
                 let started = std::time::Instant::now();
-                let result = index.search(&Query::new(needle).with_page_size(100)).unwrap();
+                let result = index
+                    .search(&Query::new(needle).with_page_size(100))
+                    .unwrap();
                 best = best.min(started.elapsed());
                 hits = result.hits.len();
             }

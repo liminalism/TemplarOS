@@ -190,11 +190,10 @@ pub fn migrate(connection: &Connection) -> Result<()> {
                 detail: format!("format version {stored}, this build speaks {FORMAT_VERSION}"),
             });
         }
-        let applied: u32 = connection.query_row(
-            "SELECT COUNT(*) FROM index_migrations",
-            [],
-            |row| row.get(0),
-        )?;
+        let applied: u32 =
+            connection.query_row("SELECT COUNT(*) FROM index_migrations", [], |row| {
+                row.get(0)
+            })?;
         if applied > schema_version() {
             return Err(IndexError::Corrupt {
                 detail: format!(
@@ -265,9 +264,11 @@ pub fn ensure_fts(connection: &Connection) -> bool {
 
 pub fn read_meta(connection: &Connection, key: &str) -> Result<Option<String>> {
     let value = connection
-        .query_row("SELECT value FROM index_meta WHERE key = ?1", [key], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_row(
+            "SELECT value FROM index_meta WHERE key = ?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        )
         .map(Some)
         .or_else(|error| match error {
             rusqlite::Error::QueryReturnedNoRows => Ok(None),

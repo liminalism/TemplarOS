@@ -134,7 +134,10 @@ impl crate::Index {
                         payload.extend_from_slice(&row.meta.nlink.to_le_bytes());
                     }
                     if mask.contains(FieldMask::OBJECT_KEY) {
-                        let key = row.meta.object_key.unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
+                        let key = row
+                            .meta
+                            .object_key
+                            .unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
                         payload.extend_from_slice(&key.dev.to_le_bytes());
                         payload.extend_from_slice(&key.ino.to_le_bytes());
                     }

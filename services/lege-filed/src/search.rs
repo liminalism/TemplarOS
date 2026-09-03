@@ -139,7 +139,10 @@ impl Index {
             store,
             core,
             _core_scratch: Some(Arc::new(scratch)),
-            skip_names: DEFAULT_SKIP_NAMES.iter().map(|name| (*name).to_owned()).collect(),
+            skip_names: DEFAULT_SKIP_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             max_depth: 24,
             max_entries: 50_000,
         }
@@ -159,7 +162,10 @@ impl Index {
             store,
             core,
             _core_scratch: None,
-            skip_names: DEFAULT_SKIP_NAMES.iter().map(|name| (*name).to_owned()).collect(),
+            skip_names: DEFAULT_SKIP_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             max_depth: usize::MAX,
             max_entries: usize::MAX,
         })
@@ -476,7 +482,10 @@ mod tests {
         index.max_depth = 3;
         index.index_root(dir.path()).unwrap();
         let status = index.root_status(dir.path()).unwrap().unwrap();
-        assert!(!status.complete, "a depth-budgeted pass reported itself complete");
+        assert!(
+            !status.complete,
+            "a depth-budgeted pass reported itself complete"
+        );
         assert_eq!(status.state, lege_file_index::RootState::Stale);
         assert!(index.search("buried", &[], 10).unwrap().is_empty());
 
@@ -498,7 +507,10 @@ mod tests {
 
         index.index_root(dir.path()).unwrap();
         let status = index.root_status(dir.path()).unwrap().unwrap();
-        assert!(!status.complete, "an entry-budgeted pass reported itself complete");
+        assert!(
+            !status.complete,
+            "an entry-budgeted pass reported itself complete"
+        );
         assert_eq!(status.state, lege_file_index::RootState::Stale);
 
         index.max_entries = usize::MAX;

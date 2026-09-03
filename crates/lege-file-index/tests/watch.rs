@@ -92,7 +92,10 @@ fn watch_create_appears_within_bound() {
 
     let pumped = fixture.owner.pump(Duration::ZERO, &fixture.clock);
     assert_eq!(pumped.mutations.len(), 2);
-    assert!(pumped.repairs.is_empty(), "nothing was lost, so nothing to repair");
+    assert!(
+        pumped.repairs.is_empty(),
+        "nothing was lost, so nothing to repair"
+    );
 
     let mut coalescer = Coalescer::new(CoalesceConfig::default());
     for mutation in pumped.mutations {
@@ -105,7 +108,10 @@ fn watch_create_appears_within_bound() {
     );
 
     fixture.clock.advance(250);
-    assert!(coalescer.ready(&fixture.clock), "250 ms of quiet closes the batch");
+    assert!(
+        coalescer.ready(&fixture.clock),
+        "250 ms of quiet closes the batch"
+    );
     let batch = coalescer.take(MutationSource::Watcher).expect("a batch");
     let applied = fixture.index.apply(batch).expect("applying the batch");
 
@@ -119,7 +125,10 @@ fn watch_create_appears_within_bound() {
     for name in ["second", "third"] {
         let result = fixture.index.search(&Query::new(name)).expect("a search");
         assert!(
-            result.hits.iter().any(|hit| hit.row.path.display().ends_with(&format!("{name}.txt"))),
+            result
+                .hits
+                .iter()
+                .any(|hit| hit.row.path.display().ends_with(&format!("{name}.txt"))),
             "{name}.txt should be searchable one batch after it was created"
         );
     }

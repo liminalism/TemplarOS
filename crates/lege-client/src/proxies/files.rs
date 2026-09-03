@@ -187,10 +187,7 @@ pub trait FilesIndex {
     fn close_cursor(&self, cursor: &str) -> zbus::Result<()>;
 
     /// A sealed `LEGEIDX1` bulk snapshot: `(fd, manifest_json)`.
-    fn open_snapshot(
-        &self,
-        request_json: &str,
-    ) -> zbus::Result<(zbus::zvariant::OwnedFd, String)>;
+    fn open_snapshot(&self, request_json: &str) -> zbus::Result<(zbus::zvariant::OwnedFd, String)>;
 
     /// A bounded page of the change log after `seq`. `Index1.Error.SnapshotRequired` below the
     /// retained floor.

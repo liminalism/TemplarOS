@@ -12,6 +12,50 @@ record legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 : obser
     method manual
 }
 
+record legeos.observation.deployments-subvolume-not-declared-by-repart/1 : observation {
+    title "The repart declaration creates @ @home @var @snapshots, but the update engine stages candidates under @deployments/<id>, which nothing declares"
+    state superseded
+    scope [
+        path "distro/image/mkosi.repart/**",
+        path "services/lege-hostd/src/deploy.rs",
+        path "services/lege-hostd/src/updates.rs"
+    ]
+    statement """
+        distro/image/mkosi.repart/10-root.conf declares Subvolumes=/@ /@home /@var /@snapshots, while services/lege-hostd/src/deploy.rs and updates.rs stage a candidate deployment as a snapshot under @deployments/<id>. No declaration creates @deployments, so a fresh image and the engine disagree about the storage layout. The campaign freezes @deployments/<id> as authoritative and has the layout declaration add it.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    method observation
+    watches [
+        "distro/image/mkosi.repart/**",
+        "services/lege-hostd/src/deploy.rs",
+        "services/lege-hostd/src/updates.rs",
+        "distro/deploy/layout.toml"
+    ]
+    blocks [ @legeos.work.reference-machine-provisioning ]
+}
+
+record legeos.observation.deployments-subvolume-not-declared-by-repart/2 : observation {
+    title "The repart declaration creates @ @home @var @snapshots, but the update engine stages candidates under @deployments/<id>, which nothing declares"
+    state verified
+    scope [
+        path "distro/image/mkosi.repart/**",
+        path "services/lege-hostd/src/deploy.rs",
+        path "services/lege-hostd/src/updates.rs"
+    ]
+    statement """
+        distro/image/mkosi.repart/10-root.conf declares Subvolumes=/@ /@home /@var /@snapshots, while services/lege-hostd/src/deploy.rs and updates.rs stage a candidate deployment as a snapshot under @deployments/<id>. No declaration creates @deployments, so a fresh image and the engine disagree about the storage layout. The campaign freezes @deployments/<id> as authoritative and has the layout declaration add it.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    method observation
+    watches [
+        "distro/image/mkosi.repart/**",
+        "services/lege-hostd/src/deploy.rs",
+        "services/lege-hostd/src/updates.rs"
+    ]
+    blocks [ @legeos.work.reference-machine-provisioning ]
+    supersedes [ @legeos.observation.deployments-subvolume-not-declared-by-repart/1 ]
+}
+
 record legeos.observation.hands-on-run-20260831-findings/1 : observation {
     title "Hands-on run after logout/login: usable but rough — placement, inert tiling menu, no tile drag, widget sprawl, label noise, no drive route"
     state verified
@@ -156,6 +200,26 @@ record legeos.observation.home-refresh-costs-profiled-20260902/1 : observation {
         "services/lege-sessiond/src/apis/lifecycle.rs"
     ]
     derived_from [ @legeos.work.home-field ]
+}
+
+record legeos.observation.openuri-is-the-frontends-portal/1 : observation {
+    title "There is no OpenURI backend interface to implement: the portal frontend owns OpenURI, and launches the handler outside LegeOS identity"
+    state verified
+    scope [ path "crates/lege-associationd/**", path "portals/xdg-desktop-portal-lege/**" ]
+    statement """
+        `org.freedesktop.impl.portal.OpenURI` does not exist. On the declared Ubuntu base, `xdg-desktop-portal 1.20.3+ds-1ubuntu1.1` knows 25 impl interfaces and OpenURI is not among them (`strings /usr/libexec/xdg-desktop-portal | grep 'impl.portal'`); no `/usr/share/dbus-1/interfaces/*OpenURI*` XML is installed; and none of the six installed backends (gtk, kde, cosmic, lxqt, kwallet, gnome-keyring) claims it. The frontend implements `org.freedesktop.portal.OpenURI` itself: it finds the default handler through GAppInfo and `mimeapps.list`, delegates only the 'which application' question to `org.freedesktop.impl.portal.AppChooser`, and then launches the chosen desktop entry in its own scope.
+
+        Two consequences for LegeOS, both live at this commit. First, the launch does not go through `Launcher1`, so a file opened from a browser is not started into a LegeOS cgroup; since identity comes from the cgroup by design, that process is anonymous to `AppIdentity1` and to every policy keyed on it. Second, `lege-associationd` regenerates its `mimeapps.list` export after every association mutation (`crates/lege-associationd/src/dbus.rs`) but nothing writes it at session start (`services/lege-sessiond/src/main.rs` wires `AssociationApi` without an initial export), so a fresh home — or one whose file was removed — can disagree with `Associations1` until something changes a default.
+
+        The portal backend was corrected to match this reality rather than to claim an OpenURI interface nothing would call: `legeos.portal` still claims exactly four interfaces, and the AppChooser leg was fixed to recognise a LegeOS canonical app id among the desktop file ids the frontend offers (`AppIdentity1.ListApplications`), which is what makes the LegeOS default actually win.
+        """
+    observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
+    method observation
+    watches [
+        "portals/xdg-desktop-portal-lege/**",
+        "crates/lege-associationd/**",
+        "services/lege-sessiond/src/main.rs"
+    ]
 }
 
 record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {

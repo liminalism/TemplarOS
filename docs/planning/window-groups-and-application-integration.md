@@ -212,6 +212,12 @@ fsearch integration (interim):
   (`docs/planning/shared-incremental-file-index.md`), which has FSearch consume lege-filed's
   one index rather than keeping a second.
 - Not planned: reading fsearch's database format, or replacing `Files.Search1`.
+- **Superseded later on 2026-09-03:** do not implement the interim two-database arrangement. The
+  adopted direction is one persistent, incrementally maintained index owned by `lege-filed`, with
+  FSearch and Silvaview-rs as clients. The investigation and delivery plan are in
+  [`shared-incremental-file-index.md`](shared-incremental-file-index.md). `Files.Search1` remains as
+  a compatibility facade while the new client-neutral index API lands; FSearch's private database
+  format is not the sharing boundary.
 
 *Built:* the panel, the `file-search` role with FSearch as its derived candidate, the last
 row and the "Search here…" menu verb. `Super+F` was deliberately not added — the panel opens

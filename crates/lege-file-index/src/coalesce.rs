@@ -65,8 +65,7 @@ impl FakeClock {
     }
 
     pub fn advance(&self, ms: i64) {
-        self.ms
-            .fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
+        self.ms.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -223,9 +222,16 @@ pub fn collapse(mutations: Vec<Mutation>) -> Vec<Mutation> {
         }
 
         let mutation = match mutation {
-            Mutation::Move { root, from, to, meta } if is_temporary(&from) => {
-                Mutation::Upsert { root, path: to, meta }
-            }
+            Mutation::Move {
+                root,
+                from,
+                to,
+                meta,
+            } if is_temporary(&from) => Mutation::Upsert {
+                root,
+                path: to,
+                meta,
+            },
             other => other,
         };
 
