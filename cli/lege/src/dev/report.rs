@@ -227,7 +227,6 @@ pub fn render_activation(report: &super::activate::ActivationReport) -> String {
             StepOutcome::Activated => ("✓", "restarted, and the new build answered".to_owned()),
             StepOutcome::Failed(reason) => ("✗", reason.clone()),
             StepOutcome::Deferred(reason) => ("·", reason.clone()),
-            StepOutcome::NotReached => ("—", "not attempted".to_owned()),
         };
         let _ = writeln!(out, "  {glyph}  {component:<width$}  {text}");
     }

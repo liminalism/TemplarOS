@@ -17,7 +17,13 @@ Type=notify
 # manager's inherited DISPLAY/WAYLAND_DISPLAY: that manager can survive logout and retain the
 # previous desktop's environment.  The stable socket name is also the contract used by
 # lege-session (ordinary clients) and lege-shell.service (the private trusted-shell connection).
-ExecStart=/usr/bin/lege-comp --backend udev --socket-name legeos-0
+#
+# The name is `wayland-0`, not something of ours, because confined applications are allowed to
+# reach exactly that shape and no other: snapd's wayland interface grants
+# `owner /run/user/[0-9]*/wayland-[0-9]* rw,` and nothing else, so a socket called `legeos-0` is
+# a socket every snap is denied — which is how Chromium and Firefox came to report "Failed to
+# connect to Wayland display: Permission denied" on a working desktop.
+ExecStart=/usr/bin/lege-comp --backend udev --socket-name wayland-0
 Restart=no
 # A compositor that cannot finish DRM/input/event-loop initialization must give control back to
 # the display manager instead of holding the VT on a black frame forever.

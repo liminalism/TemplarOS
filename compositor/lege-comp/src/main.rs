@@ -61,8 +61,13 @@ struct Cli {
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
 
-    /// Exact public Wayland socket name. The installed session uses `legeos-0`; direct and
+    /// Exact public Wayland socket name. The installed session uses `wayland-0`; direct and
     /// nested development runs omit this and receive the first available `wayland-N` name.
+    ///
+    /// Public sockets are always `wayland-N`, because that is the only name a confined
+    /// application is permitted to open (snapd's wayland interface allows
+    /// `owner /run/user/[0-9]*/wayland-[0-9]* rw,`). The trusted-shell socket derives from this
+    /// one but is deliberately outside that pattern — see `src/shell_socket.rs`.
     #[arg(long, value_name = "NAME")]
     socket_name: Option<String>,
 }

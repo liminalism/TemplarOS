@@ -14,9 +14,13 @@
 //!   that systemd started something. The gate waits for the restart counter to hold still and for
 //!   the component's own stamp to say the new build set — the same evidence `lege dev status`
 //!   uses, so the report cannot disagree with the deployment that produced it.
-//! * **One retry, then stop.** A component that fails its gate twice is not going to succeed on
-//!   the third try, and continuing down the list would spread a broken build across the session.
-//!   The run stops with the rollback command ready to paste.
+//! * **One retry, then on to the next.** A component that fails its gate twice is not going to
+//!   succeed on the third try. It is still only that component: the packages are already
+//!   installed, so the rest of the session is running new code against an old unit whether or not
+//!   this tool restarts it, and stopping the run there leaves the shell — the thing being tested —
+//!   on the previous build for a reason that has nothing to do with it. So every component is
+//!   attempted, every outcome is reported, and the run ends by naming everything that failed and
+//!   how to roll the whole set back.
 
 use super::converge::{Convergence, Verdict};
 use lege_build::{
@@ -325,8 +329,6 @@ pub enum StepOutcome {
     Failed(String),
     /// Left for the person: a logout, a reboot, a manual restart, a block.
     Deferred(String),
-    /// Not attempted, because an earlier step failed.
-    NotReached,
 }
 
 /// The result of running a plan.
@@ -337,14 +339,20 @@ pub struct ActivationReport {
 }
 
 impl ActivationReport {
+    /// Every component that was restarted and did not come back, in the order they were tried.
+    ///
+    /// All of them, not the first: once the run stopped abandoning the list at the first failure,
+    /// a deployment can end with more than one thing broken, and a final line that named only one
+    /// of them would send someone to fix that and miss the rest.
     #[must_use]
-    pub fn failure(&self) -> Option<(&str, &str)> {
+    pub fn failures(&self) -> Vec<(&str, &str)> {
         self.outcomes
             .iter()
-            .find_map(|(component, outcome)| match outcome {
+            .filter_map(|(component, outcome)| match outcome {
                 StepOutcome::Failed(reason) => Some((component.as_str(), reason.as_str())),
                 _ => None,
             })
+            .collect()
     }
 }
 
@@ -357,20 +365,19 @@ pub struct Effects<'a> {
     pub stamps: &'a dyn Stamps,
 }
 
-/// Runs a plan.
+/// Runs a plan, all of it.
 ///
-/// Stops at the first component that cannot be brought up, leaving the rest `NotReached`, so a
-/// half-activated session is never mistaken for a finished deployment.
+/// Every step is attempted even after one has failed. The install is already done by the time
+/// activation starts, so a component that will not restart is stale either way; refusing to
+/// restart the ones after it does not undo anything, it only adds more stale components — and the
+/// shell, which is what a person deploying is almost always here to look at, sits at the end of
+/// the order behind everything else. The report says what each one did, and the caller still
+/// fails the deployment.
 #[must_use]
 pub fn execute(plan: &ActivationPlan, matrix: &Matrix, effects: &Effects<'_>) -> ActivationReport {
     let mut outcomes = Vec::new();
-    let mut stopped = false;
     for step in &plan.steps {
         let component = step.component().to_owned();
-        if stopped {
-            outcomes.push((component, StepOutcome::NotReached));
-            continue;
-        }
         let outcome = match step {
             Step::Nothing { .. } => StepOutcome::Skipped,
             Step::Relaunch { .. }
@@ -382,7 +389,6 @@ pub fn execute(plan: &ActivationPlan, matrix: &Matrix, effects: &Effects<'_>) ->
                 unit, scope, gate, ..
             } => restart_with_gate(matrix, &component, unit, *scope, gate, effects),
         };
-        stopped = matches!(outcome, StepOutcome::Failed(_));
         outcomes.push((component, outcome));
     }
     ActivationReport {
@@ -646,11 +652,16 @@ mod tests {
         /// Units whose restart counter keeps climbing while settling — a crash loop.
         looping: RefCell<BTreeSet<String>>,
         inactive: RefCell<BTreeSet<String>>,
+        /// Units systemd will not restart at all — the hostd failure this tool met in practice.
+        refused: RefCell<BTreeSet<String>>,
         counter: RefCell<HashMap<String, u32>>,
     }
 
     impl Systemctl for FakeSystem {
         fn restart(&self, _scope: Scope, unit: &str) -> anyhow::Result<()> {
+            if self.refused.borrow().contains(unit) {
+                anyhow::bail!("Unit {unit} failed to load");
+            }
             self.restarts.borrow_mut().push(unit.to_owned());
             Ok(())
         }
@@ -733,7 +744,7 @@ mod tests {
         );
         assert_eq!(outcome(&report, "shell"), StepOutcome::Activated);
         assert_eq!(system.restarts.borrow().as_slice(), ["lege-shell.service"]);
-        assert!(report.failure().is_none());
+        assert!(report.failures().is_empty());
     }
 
     #[test]
@@ -817,10 +828,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_stops_the_run_rather_than_spreading_a_broken_build() {
+    fn a_failure_does_not_keep_the_shell_from_being_restarted() {
+        // resourced sorts before shell in the matrix. The shell is what a person deploying is
+        // here to look at; a governor that will not come back is its own problem and must not
+        // silently leave the shell on the previous build.
         let matrix = Matrix::embedded();
-        // resourced sorts before shell in the matrix, so a failure there must leave the shell
-        // untouched rather than pressing on.
         let plan = plan(
             &matrix,
             &convergence(&["resourced", "shell"]),
@@ -846,14 +858,88 @@ mod tests {
             outcome(&report, "resourced"),
             StepOutcome::Failed(_)
         ));
-        assert_eq!(outcome(&report, "shell"), StepOutcome::NotReached);
+        assert_eq!(outcome(&report, "shell"), StepOutcome::Activated);
         assert!(
-            !system
+            system
                 .restarts
                 .borrow()
                 .contains(&"lege-shell.service".to_owned()),
-            "the shell must not be touched after a failure"
+            "the shell must still be restarted after an earlier failure"
         );
-        assert_eq!(report.failure().map(|(name, _)| name), Some("resourced"));
+        assert_eq!(
+            report
+                .failures()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["resourced"]
+        );
+    }
+
+    #[test]
+    fn every_failure_is_reported_not_just_the_first() {
+        let matrix = Matrix::embedded();
+        let plan = plan(
+            &matrix,
+            &convergence(&["resourced", "shell"]),
+            &Conditions::default(),
+        );
+        let system = FakeSystem::default();
+        for unit in ["lege-resourced.service", "lege-shell.service"] {
+            system.looping.borrow_mut().insert(unit.to_owned());
+        }
+        let stamps = stamps_at(SET);
+        let report = execute(
+            &plan,
+            &matrix,
+            &Effects {
+                systemctl: &system,
+                bus: &FakeBus::default(),
+                clock: &FakeClock,
+                stamps: &stamps,
+            },
+        );
+        assert_eq!(
+            report
+                .failures()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["resourced", "shell"]
+        );
+    }
+
+    #[test]
+    fn a_restart_systemd_refuses_still_leaves_the_rest_attempted() {
+        // The shape of the deployment that produced this change: hostd's unit could not be
+        // restarted at all, and nine components after it were reported "not attempted" even
+        // though every package was already installed.
+        let matrix = Matrix::embedded();
+        let plan = plan(
+            &matrix,
+            &convergence(&["hostd", "shell"]),
+            &Conditions::default(),
+        );
+        let system = FakeSystem::default();
+        system
+            .refused
+            .borrow_mut()
+            .insert("lege-hostd.service".to_owned());
+        let stamps = stamps_at(SET);
+        let report = execute(
+            &plan,
+            &matrix,
+            &Effects {
+                systemctl: &system,
+                bus: &FakeBus::default(),
+                clock: &FakeClock,
+                stamps: &stamps,
+            },
+        );
+        let StepOutcome::Failed(reason) = outcome(&report, "hostd") else {
+            panic!("a refused restart must fail");
+        };
+        assert!(reason.contains("refused"), "{reason}");
+        assert_eq!(outcome(&report, "shell"), StepOutcome::Activated);
     }
 }

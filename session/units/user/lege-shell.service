@@ -7,9 +7,12 @@ Requisite=lege-comp.service
 
 [Service]
 Type=simple
-# Ordinary applications inherit WAYLAND_DISPLAY=legeos-0 from lege-session.  The shell alone
+# Ordinary applications inherit WAYLAND_DISPLAY=wayland-0 from lege-session.  The shell alone
 # connects to the compositor's second socket, which is what grants its private protocol access.
-Environment=WAYLAND_DISPLAY=legeos-0-shell
+# That second name is deliberately *not* `wayland-0-something`: snapd's wayland interface allows
+# `wayland-[0-9]*`, which a suffixed name would match, and the trusted-shell socket is the one
+# socket no confined application may ever reach.
+Environment=WAYLAND_DISPLAY=legeos-shell-wayland-0
 ExecStart=/usr/bin/lege-shell --surface
 # Everything decorative restarts without terminating applications.
 Restart=always
