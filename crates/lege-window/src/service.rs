@@ -1102,13 +1102,18 @@ impl<I: IdentityCache> WindowService<I> {
     /// the ordinary switcher too — with no group anywhere it behaves exactly like
     /// [`Self::cycle_focus`] (planning doc §2 rule 4).
     pub fn cycle_within_group(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
-        let scope = current.and_then(|id| self.group_of(id));
+        let Some(current) = current else {
+            // Nothing is focused — nothing to be *inside* of. The switcher must still land
+            // somewhere, so it starts from the top of everything, exactly as `cycle_focus` does.
+            return self.cycle_focus(None, forward);
+        };
+        let scope = self.group_of(current);
         let order: Vec<WindowId> = self
             .switchable_order()
             .into_iter()
             .filter(|id| self.group_of(*id) == scope)
             .collect();
-        step_through(&order, current, forward)
+        step_through(&order, Some(current), forward)
     }
 
     /// `Super+Tab`: the window to land on in the next (or previous) *group*.
@@ -2111,6 +2116,20 @@ mod tests {
         let loose = service.cycle_within_group(Some(ids[2]), true);
         assert_eq!(loose, Some(ids[3]));
         assert_eq!(service.cycle_within_group(Some(ids[3]), true), Some(ids[2]));
+    }
+
+    /// With nothing focused there is no group to be inside of, and the switcher must still land
+    /// somewhere: it starts from the top of everything, exactly as it did before groups existed.
+    #[test]
+    fn cycling_with_nothing_focused_starts_from_the_top_of_every_window() {
+        let (mut service, ids) = service_with(2);
+        service.group(ids[0], ids[1]).unwrap();
+        assert!(service.windows().all(|window| !window.activated));
+        assert_eq!(
+            service.cycle_within_group(None, true),
+            service.cycle_focus(None, true)
+        );
+        assert!(service.cycle_within_group(None, true).is_some());
     }
 
     /// `Super+Tab` moves between groups and lands on each group's last active member; the loose
