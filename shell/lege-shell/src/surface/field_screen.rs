@@ -2998,27 +2998,8 @@ impl FieldScreen {
             // too small to list anything grows to a size that can; a window already at that size
             // shrinks back to a tray. Both go through the field's own resize, so both undo.
             TileKind::Folder { .. } => {
-                let collapsed = tile.spans.min;
-                let expanded = Span::new(
-                    tile.spans
-                        .max
-                        .cols
-                        .min(FOLDER_OPEN_SPAN.cols)
-                        .max(collapsed.cols),
-                    tile.spans
-                        .max
-                        .rows
-                        .min(FOLDER_OPEN_SPAN.rows)
-                        .max(collapsed.rows),
-                );
-                let now = data.field.location(tile.id).map(|at| at.placement.span);
-                let span = if now == Some(collapsed) {
-                    expanded
-                } else {
-                    collapsed
-                };
-                if now != Some(span) {
-                    actions.push(FieldAction::Apply(FieldOp::Resize { id: tile.id, span }));
+                if let Some(op) = folder_toggle_op(data.field, tile.id) {
+                    actions.push(FieldAction::Apply(op));
                 }
             }
             TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {}
@@ -3176,6 +3157,41 @@ impl FieldScreen {
         }
     }
 
+    /// The one control that grows and shrinks a folder window, in the top right of its body.
+    ///
+    /// It has to be here rather than on the tile's ground, because a window listing a full
+    /// directory has no ground left to press. It carries no name: the tile's own band above it
+    /// already says which folder this is, and saying it twice is the thing the fifth hands-on run
+    /// objected to.
+    fn paint_folder_toggle(
+        ui: &mut Ui<'_>,
+        toggle: Rect,
+        id: TileId,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let collapsed = data.field.tile(id).map(|tile| tile.spans.min);
+        let expanded = data
+            .field
+            .location(id)
+            .is_some_and(|at| Some(at.placement.span) != collapsed);
+        if ui.input.hovering(toggle) {
+            ui.painter.fill_rect(toggle, ui.theme.hover);
+        }
+        ui.label_styled(
+            toggle,
+            if expanded { "\u{2013}" } else { "\u{2b}" },
+            design::state_style(ui),
+            design::TEXT_DIM,
+            Align::Centre,
+        );
+        if ui.input.take_click(toggle)
+            && let Some(op) = folder_toggle_op(data.field, id)
+        {
+            actions.push(FieldAction::Apply(op));
+        }
+    }
+
     /// The step back up, drawn above a folder window's list when it has navigated below the
     /// directory it was opened at. At the anchor there is nothing to say that the tile's own
     /// title does not already say, so the whole body is the listing and this draws nothing.
@@ -3184,16 +3200,15 @@ impl FieldScreen {
     fn paint_folder_crumb(
         &mut self,
         ui: &mut Ui<'_>,
-        inner: Rect,
-        row_height: i32,
+        crumb: Rect,
         id: TileId,
         anchor: &Path,
         here: &Path,
+        body: Rect,
     ) -> Rect {
         if here == anchor {
-            return inner;
+            return body;
         }
-        let (crumb, rest) = inner.split_top(row_height);
         if ui.input.hovering(crumb) {
             ui.painter.fill_rect(crumb, ui.theme.hover);
         }
@@ -3216,7 +3231,7 @@ impl FieldScreen {
                 }
             }
         }
-        rest
+        body
     }
 
     /// A folder window's body: what is actually in the directory, listed.
@@ -3249,7 +3264,10 @@ impl FieldScreen {
             return;
         }
         let row_height = ui.px(FOLDER_ROW_HEIGHT);
-        let list = self.paint_folder_crumb(ui, inner, row_height, id, anchor, &here);
+        let (header, body) = inner.split_top(row_height);
+        let (toggle, crumb_area) = header.split_right(row_height);
+        Self::paint_folder_toggle(ui, toggle, id, data, actions);
+        let list = self.paint_folder_crumb(ui, crumb_area, id, anchor, &here, body);
         actions.push(FieldAction::BrowseFolder(here.clone()));
         let Some(listing) = data.folder_listings.get(&here) else {
             ui.label_styled(
@@ -4057,6 +4075,35 @@ fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Opti
         lege_window::geometry::Direction::Left
     };
     lege_window::geometry::contiguous_window(&windows, from, direction, STEP_HOPS)
+}
+
+/// A folder tray's expand/collapse, as one field operation.
+///
+/// A tray is a door; the expanded size is the one at which the room behind it is worth looking at,
+/// clamped to the kind's ceiling. Both directions go through the field's own resize, so both undo
+/// and both yield to their neighbours like any other resize.
+fn folder_toggle_op(doc: &FieldDocument, id: TileId) -> Option<FieldOp> {
+    let tile = doc.tile(id)?;
+    let collapsed = tile.spans.min;
+    let expanded = Span::new(
+        tile.spans
+            .max
+            .cols
+            .min(FOLDER_OPEN_SPAN.cols)
+            .max(collapsed.cols),
+        tile.spans
+            .max
+            .rows
+            .min(FOLDER_OPEN_SPAN.rows)
+            .max(collapsed.rows),
+    );
+    let now = doc.location(id).map(|at| at.placement.span)?;
+    let span = if now == collapsed {
+        expanded
+    } else {
+        collapsed
+    };
+    (now != span).then_some(FieldOp::Resize { id, span })
 }
 
 /// Where the Files object goes when it opens: a window over the field, not the field itself.
