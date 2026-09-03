@@ -161,8 +161,12 @@ const DEFAULT_TERMINAL: &str = "kitty";
 /// Every other exclusive role is claimed: an application says `X-LegeOS-Provides=lock-screen` in
 /// its entry, or calls `Providers1.Declare`. A terminal emulator claims nothing — it is an
 /// ordinary application that happens to be the one thing "Open terminal here" needs — so the
-/// declaration is derived from the `Categories=` the entry already carries, and re-derived on
-/// every scan rather than stored as a claim the application made.
+/// declaration is derived from the `Categories=` the entry already carries.
+///
+/// A derived declaration is never written down (see `ensure_derived_provider_declarations` in
+/// the daemon): it is re-read from the installed set on every start, so installing a terminal
+/// makes it a candidate and removing one stops it being offered, with nothing to go stale in
+/// between.
 ///
 /// Trust is the same gate a claimed declaration passes: a `.desktop` file this account can
 /// rewrite must not become the session's terminal any more than it may become its lock screen.
