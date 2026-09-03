@@ -169,6 +169,29 @@ fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// One window, exactly as the compositor would report it, with no clock or host in it.
+    fn baseline_toplevel(
+        id: u64,
+        app: &str,
+        title: &str,
+        group: Option<lege_window::GroupInfo>,
+    ) -> lege_window::ShellToplevel {
+        lege_window::ShellToplevel {
+            window_id: lege_window::WindowId(id),
+            canonical_app_id: Some(app.parse().expect("a canonical app id")),
+            instance_id: None,
+            title: title.to_owned(),
+            verified_identity: true,
+            activated: false,
+            fullscreen: false,
+            shelved: false,
+            maximized: false,
+            geometry: lege_window::Rect::new(0, 0, 640, 480),
+            layer: lege_window::Layer::Normal,
+            group,
+        }
+    }
+
     /// Fixed-pixel baseline for the default Home Field. Unlike `render_field`, this fixture reads
     /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
     /// therefore be reviewed and deliberately update this hash; environment changes cannot make
@@ -177,8 +200,8 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn visual_regression_home_field_baseline() {
         // 1280x832 -> a 12x8 grid: roomy enough that every object class — drawers, widgets,
-        // the system shelf, a project, a bound folder and a shortcut pane — actually places,
-        // so the baseline reviews all of their material roles at once.
+        // the system shelf, a project, a window group, a bound folder and a shortcut pane —
+        // actually places, so the baseline reviews all of their material roles at once.
         let (width, height) = (1280_u32, 832_u32);
         let (cols, rows) =
             field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
@@ -189,8 +212,21 @@ mod tests {
             is_open: true,
             ..field_model::ProjectInfo::default()
         }];
+        // Two windows in one group, so the baseline reviews the window-group tile as well: a
+        // container drawn in the group's own accent, holding its members' session tiles. Fixed
+        // ids, titles and accent, like everything else here — this fixture reads no clock, no
+        // filesystem and no service.
+        let group = lege_window::GroupInfo {
+            group_id: 3,
+            name: "Writing".to_owned(),
+            accent: 0x0033_88ff,
+        };
+        let toplevels = vec![
+            baseline_toplevel(1, "org.legeos.Files", "Notes", Some(group.clone())),
+            baseline_toplevel(2, "org.legeos.Reader", "Draft", Some(group)),
+        ];
         let live = LiveState {
-            toplevels: &[],
+            toplevels: &toplevels,
             projects: &projects,
         };
         field_model::merge(&mut field, &live);
@@ -350,7 +386,7 @@ mod tests {
         let data = FieldData {
             notifications: &[],
             field: &field,
-            toplevels: &[],
+            toplevels: &toplevels,
             icons: &empty_bitmaps,
             previews: &empty_bitmaps,
             drawer_feeds: &drawer_feeds,
@@ -426,7 +462,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x33ce_e9e2_8bc5_df05,
+            hash, 0xe7ab_5f4b_0617_079b,
             "review the Home Field pixels before updating this baseline"
         );
     }
