@@ -344,6 +344,18 @@ record legeos.evidence.hands-on-3-select-then-open-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.hands-on-4-gate-20260903/1 : evidence {
+    title "Hands-on 4: full gate green at the merged integration branch"
+    state verified
+    result pass
+    method command
+    observed_at git:8880b9b6f57d0ff16a65b41df5ba5c2a6e79aa64
+    command "just check"
+    summary """
+        Full gate exit 0 at the merge of both agent branches: fmt, clippy -D warnings, 55 test suites ok, MSRV, tree-check, deps-check, check-interfaces, check-interface-signatures (171 members unchanged), check-proxies, check-packaging, check-assets, check-actions.
+        """
+}
+
 record legeos.evidence.hands-on-4-launcher-20260903/1 : evidence {
     title "Hands-on 4: launcher fixes gated (registry scans snap directory; Home field apps-only)"
     state verified

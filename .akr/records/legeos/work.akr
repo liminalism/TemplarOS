@@ -1028,7 +1028,7 @@ record legeos.work.hands-on-run-3-fixes/2 : work {
 
 record legeos.work.hands-on-run-4-fixes/1 : work {
     title "Act on the fourth hands-on run: a deploy that finishes, snap browsers that connect, per-window compositing, a screen timeout, and a launcher that finds applications"
-    state proposed
+    state active
     scope [
         path "apps/lege-settings/**",
         path "cli/lege/src/dev/**",
@@ -1044,8 +1044,50 @@ record legeos.work.hands-on-run-4-fixes/1 : work {
         Fix what the fourth hands-on run found: (1) lege-hostd's EACCES on the system bus socket, and lege dev deploy stopping activation at the first failed unit although every package was installed; (2) snap Chromium and Firefox refused by AppArmor because the public Wayland socket is named legeos-0 rather than wayland-N; (3) every band and grip rendered above every window so titles bleed through a translucent window, plus the reported focus fighting; (4) no screen timeout: a compositor idle timer, outputs off and back on, the timeout from Power1's stored idle policy, and a Settings control; (5) the launcher: sessiond never scanned the snap desktop directory so snap browsers were not in the registry, and the Home field federated files with applications.
         """
     note """
-        (5) landed at d391fc1 and dfa1fda. (1)–(4) are in progress by two Opus agents in worktrees off trash-undo-and-audit and are recorded here on merge. Until (1) lands, a failed deploy leaves packages installed and the shell restarts by hand: systemctl --user restart lege-shell.service.
+        Landed at 8880b9b. (1) hostd: root cause established by elimination as the ProtectHome=yes mount namespace (the unit had never started; AppArmor in complain mode with zero denials, DAC and bus limits ruled out); ProtectHome dropped, the daemon connects to /run/dbus directly and its failure line now prints uid, socket mode/owner, confinement label and mount namespace; the user can confirm with sudo strace or two systemd-run probes named in the agent report. Deploy runs every activation step and lists every failure. (2) Public socket wayland-0 (new_auto elsewhere); trusted-shell socket legeos-shell-wayland-0, a prefix on purpose because AppArmor's * does not stop at a dash; verified nested with snap Chromium. (3) src/scene.rs builds the frame per window in stacking order, band and grip directly above their own surface; press_target_at is the one hit test and a press on band/grip/edge now activates the window (that was the focus fight). (4) src/idle.rs plus lege_shell_v1 v4 set_idle_timeout, DrmCompositor::clear for DPMS off, Settings System page control from Never to 30 minutes, Power1 documents which field is enforced. (5) d391fc1, dfa1fda. Compositor, hostd and socket changes need a logout; hostd needs the deploy's system-unit restart.
         """
+    acceptance {
+        check gates-green {
+            statement """
+                just check exits 0 at the merged branch
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.hands-on-4-gate-20260903 ]
+        }
+        check hostd-starts {
+            statement """
+                After deploy, lege-hostd.service is active and lege dev deploy activates every component
+                """
+            method manual
+        }
+        check launcher-finds-snap-apps {
+            statement """
+                The registry scans the snap desktop directory and the Home field offers applications only
+                """
+            method command
+            command "cargo test -p lege-sessiond && cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.hands-on-4-launcher-20260903 ]
+        }
+        check per-window-compositing {
+            statement """
+                A window behind a translucent Kitty shows through at Kitty's opacity, and a click on any band or grip focuses that window
+                """
+            method manual
+        }
+        check screen-timeout {
+            statement """
+                Settings › System shows Screen turns off after; the screen turns off after the chosen idle time and back on at the next input
+                """
+            method manual
+        }
+        check snap-browsers-connect {
+            statement """
+                After logout and login, snap Chromium and Firefox open on the Wayland display
+                """
+            method manual
+        }
+    }
     after [ @legeos.work.hands-on-run-3-fixes ]
     part_of [ @legeos.work.home-surface-usability-next ]
 }
