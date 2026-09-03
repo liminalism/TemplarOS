@@ -1,16 +1,27 @@
 //! `xdg-desktop-portal-lege` — one backend, all clients of the same services:
-//! FileChooser → `org.legeos.Files` (shared last-directory policy), AppChooser/OpenURI →
-//! `org.legeos.Associations1`, Settings → `org.legeos.Settings1`, Background → `AppIdentity1` +
-//! `Resources1`.
+//! FileChooser → `org.legeos.Files` (shared last-directory policy), AppChooser →
+//! `org.legeos.Associations1` + `org.legeos.AppIdentity1`, Settings → `org.legeos.Settings1`,
+//! Background → `AppIdentity1` + `Resources1`.
+//!
+//! Four interfaces, and only those four: the ones `legeos.portal` claims. **There is no OpenURI
+//! backend here, and there is no such thing to write** — `org.freedesktop.impl.portal.OpenURI`
+//! is not an interface the portal frontend defines or calls. `xdg-desktop-portal` implements
+//! `org.freedesktop.portal.OpenURI` itself: it finds the default handler through
+//! GAppInfo/`mimeapps.list` (which `lege-associationd` generates), asks *our* `AppChooser` only
+//! when it has to ask, and then launches the chosen desktop entry in its own scope. So "open
+//! this downloaded file" is served here by AppChooser, and the agreement between LegeOS
+//! defaults and what the frontend picks lives in that exported `mimeapps.list`.
 //!
 //! Real freedesktop portal interfaces, matched against the actual specification (fetched from
 //! `flatpak/xdg-desktop-portal`'s `data/org.freedesktop.impl.portal.*.xml`), not new
 //! `org.legeos.*` XML — see each interface module for what is genuinely implemented versus a
-//! modelled seam awaiting the shell's toolkit (`file_chooser::FileChooserUi`,
-//! `app_chooser::AppChooserUi`, `background::BackgroundUi`).
+//! modelled seam (`file_chooser::FileChooserUi`, `app_chooser::AppChooserUi`,
+//! `background::BackgroundUi`), each of which has a native Pixelkit implementation used whenever
+//! there is a display to show it on.
 
 mod app_chooser;
 mod background;
+mod browser;
 mod clients;
 mod dialog;
 mod file_chooser;
@@ -127,6 +138,7 @@ async fn serve(connection: &zbus::Connection) -> Result<()> {
             PATH,
             app_chooser::AppChooserApi {
                 associations,
+                apps: Arc::clone(&app_state),
                 ui: app_chooser_ui,
             },
         )

@@ -102,10 +102,16 @@ start_service filed "$bin/lege-filed" --reserve-percent 0 \
     --index-root "$root/tests/fixtures"
 start_service resourced "$bin/lege-resourced" --interval-ms 250 \
     --state-dir "$LEGE_NESTED_ROOT/state/resources"
+# The portal backend belongs in the journey for the same reason the daemons do: a sandboxed
+# application reaches this system through it. Safe here where it would not be on a shared bus —
+# this session's bus is private (dbus-run-session, above), so claiming the freedesktop name
+# cannot collide with a portal the person is using.
+start_service portal env WAYLAND_DISPLAY=legeos-integration "$bin/xdg-desktop-portal-lege"
 
 wait_for_name org.legeos.Session
 wait_for_name org.legeos.Files
 wait_for_name org.legeos.Resources
+wait_for_name org.freedesktop.impl.portal.desktop.legeos
 
 # Exercise typed state over D-Bus and verify the read-after-write/history path.
 "$bin/lege" app list --json | grep -q 'org.legeos.Viewer'

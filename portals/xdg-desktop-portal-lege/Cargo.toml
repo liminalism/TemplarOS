@@ -1,6 +1,6 @@
 [package]
 name = "xdg-desktop-portal-lege"
-description = "The single LegeOS xdg-desktop-portal backend: FileChooser (filed), OpenURI (associations), Background (providers), Settings (skeleton)"
+description = "The single LegeOS xdg-desktop-portal backend: FileChooser (filed), AppChooser (associations), Background (providers), Settings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

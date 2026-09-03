@@ -94,7 +94,7 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, legeos-sessiond, legeos-filed
 Provides: xdg-desktop-portal-backend
 Description: LegeOS xdg-desktop-portal backend
- One backend for FileChooser, AppChooser/OpenURI, Background and Settings, all clients of the same services.
+ One backend for FileChooser, AppChooser, Background and Settings, all clients of the same services.
 
 Package: legeos-cli
 Architecture: any

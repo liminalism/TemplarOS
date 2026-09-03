@@ -337,6 +337,9 @@ mod tests {
         async fn report(&self) -> anyhow::Result<String> {
             Ok(self.report.clone())
         }
+        async fn list_applications(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+            Ok(Vec::new())
+        }
     }
 
     #[tokio::test]

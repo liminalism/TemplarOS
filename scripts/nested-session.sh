@@ -161,6 +161,32 @@ start_filed() {
     sleep 0.5
 }
 
+# The portal backend, so a nested browser or Flatpak application can be driven through the real
+# FileChooser and AppChooser rather than through a description of them. Unlike the daemons above
+# it claims a *freedesktop* well-known name on the shared user bus, so it starts only when nothing
+# else owns that name — the same courtesy `refuse_over_live_session` pays `org.legeos.Session`.
+start_portal() {
+    if alive portal; then
+        echo "portal already running"
+        return 0
+    fi
+    if [ ! -x "$bin/xdg-desktop-portal-lege" ]; then
+        echo "  no $bin/xdg-desktop-portal-lege — portal journeys will not run" >&2
+        return 0
+    fi
+    if busctl --user status org.freedesktop.impl.portal.desktop.legeos >/dev/null 2>&1; then
+        echo "  org.freedesktop.impl.portal.desktop.legeos already has an owner that this script" >&2
+        echo "  did not start; not starting a second portal backend against it." >&2
+        return 0
+    fi
+    echo "starting portal"
+    nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
+        "$bin/xdg-desktop-portal-lege" \
+        >"$(logfile portal)" 2>&1 &
+    echo $! >"$(pidfile portal)"
+    sleep 0.5
+}
+
 start_shell() {
     stop_one shell
     [ -x "$bin/lege-shell" ] || { echo "missing $bin/lege-shell" >&2; return 1; }
@@ -175,7 +201,7 @@ start_shell() {
 
 case "${1:-start}" in
 start)
-    start_comp && start_sessiond && start_filed && start_shell \
+    start_comp && start_sessiond && start_filed && start_portal && start_shell \
         && echo "nested session up — logs in $run"
     ;;
 shell)
@@ -191,18 +217,18 @@ apps)
     "$bin/lege" app list 2>/dev/null | head -40
     ;;
 logs)
-    for name in comp sessiond filed shell; do
+    for name in comp sessiond filed portal shell; do
         echo "===== $name"
         tail -n "${2:-25}" "$(logfile "$name")" 2>/dev/null || echo "(no log)"
     done
     ;;
 stop)
-    for name in shell filed sessiond comp; do stop_one "$name"; done
+    for name in shell portal filed sessiond comp; do stop_one "$name"; done
     clear_stale_sockets
     echo "nested session stopped"
     ;;
 status)
-    for name in comp sessiond filed shell; do
+    for name in comp sessiond filed portal shell; do
         printf '%-10s %s\n' "$name" "$(alive "$name" && echo running || echo stopped)"
     done
     ;;

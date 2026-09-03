@@ -10,7 +10,7 @@
 //! [`NoUiAvailable`] until a toolkit exists to show it.
 
 use crate::{
-    clients::AssociationsClient,
+    clients::{AppStateClient, AssociationsClient},
     request::{owned_value, response, with_request},
 };
 use async_trait::async_trait;
@@ -20,8 +20,11 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 /// What the human would be asked, if anyone could ask them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppChoiceRequest {
-    pub app_id: String,
+    /// The choices as the frontend spelled them — one of these is the answer.
     pub choices: Vec<String>,
+    /// What to show for each of `choices`, in the same order.
+    pub labels: Vec<String>,
+    pub app_id: String,
     pub content_type: Option<String>,
     pub uri: Option<String>,
 }
@@ -52,12 +55,20 @@ impl AppChooserUi for NativeUi {
             || "Choose an application".to_owned(),
             |kind| format!("Open {kind} with"),
         );
-        tokio::task::spawn_blocking(move || {
-            crate::dialog::choice("Open with".into(), message, request.choices)
+        // The person picks a name; the frontend is answered with the id it offered for it.
+        let choices = request.choices.clone();
+        let labels = request.labels.clone();
+        let picked = tokio::task::spawn_blocking(move || {
+            crate::dialog::choice("Open with".into(), message, labels)
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        request
+            .labels
+            .iter()
+            .position(|label| *label == picked)
+            .and_then(|at| choices.get(at).cloned())
     }
 }
 
@@ -68,15 +79,58 @@ fn get_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
         .filter(|value| !value.is_empty())
 }
 
-/// Whether `resolved` is a usable, confident answer that the frontend actually offered.
-fn confident_and_offered(resolved: &str, choices: &[String]) -> bool {
-    !resolved.is_empty() && choices.iter().any(|choice| choice == resolved)
+/// The frontend's own spelling of `resolved`, if it offered that application at all.
+///
+/// The two sides name applications differently: `org.freedesktop.impl.portal.AppChooser`'s
+/// `choices` are desktop file ids (`firefox`, sometimes `firefox.desktop`), while `Associations1`
+/// answers with a LegeOS canonical app id. `applications` is `AppIdentity1.ListApplications`'s
+/// `(app_id, display_name, desktop_file_id)`, which is what lets the two meet. The answer is
+/// always the string the *caller* used — a backend must hand back a choice the frontend offered,
+/// never a name of its own.
+fn offered_spelling(
+    resolved: &str,
+    choices: &[String],
+    applications: &[(String, String, String)],
+) -> Option<String> {
+    if resolved.is_empty() {
+        return None;
+    }
+    let desktop_id = applications
+        .iter()
+        .find(|(app_id, _, _)| app_id == resolved)
+        .map(|(_, _, desktop_file_id)| desktop_file_id.as_str());
+    choices
+        .iter()
+        .find(|choice| {
+            let choice = stem(choice);
+            choice == stem(resolved) || desktop_id.is_some_and(|id| choice == stem(id))
+        })
+        .cloned()
+}
+
+/// A desktop file id without its `.desktop` suffix — the two spellings mean the same entry.
+fn stem(value: &str) -> &str {
+    value.strip_suffix(".desktop").unwrap_or(value)
+}
+
+/// What to show a person for `choice`, preferring the application's own display name over a
+/// desktop file id nobody would recognise.
+fn label_for(choice: &str, applications: &[(String, String, String)]) -> String {
+    applications
+        .iter()
+        .find(|(app_id, _, desktop_file_id)| {
+            stem(app_id) == stem(choice) || stem(desktop_file_id) == stem(choice)
+        })
+        .map(|(_, display_name, _)| display_name.clone())
+        .filter(|display_name| !display_name.is_empty())
+        .unwrap_or_else(|| choice.to_owned())
 }
 
 /// `org.freedesktop.impl.portal.AppChooser`.
 #[derive(Debug)]
 pub struct AppChooserApi {
     pub associations: Arc<dyn AssociationsClient>,
+    pub apps: Arc<dyn AppStateClient>,
     pub ui: Arc<dyn AppChooserUi>,
 }
 
@@ -112,23 +166,32 @@ impl AppChooserApi {
         let content_type = get_string(options, "content_type");
         let activation_token = get_string(options, "activation_token").unwrap_or_default();
 
+        // One call, used twice: to recognise the resolved default among the offered choices, and
+        // to label the chooser with names a person recognises. A failure here only costs us the
+        // mapping, never the choice.
+        let applications = self.apps.list_applications().await.unwrap_or_default();
+
         let automatic = self
             .resolve_automatically(uri.as_deref(), content_type.as_deref())
             .await
-            .filter(|resolved| confident_and_offered(resolved, &choices));
+            .and_then(|resolved| offered_spelling(&resolved, &choices, &applications));
 
-        let chosen = match automatic {
-            Some(choice) => Some(choice),
-            None => {
-                self.ui
-                    .choose(AppChoiceRequest {
-                        app_id: app_id.to_owned(),
-                        choices,
-                        content_type,
-                        uri,
-                    })
-                    .await
-            }
+        let chosen = if let Some(choice) = automatic {
+            Some(choice)
+        } else {
+            let labels = choices
+                .iter()
+                .map(|choice| label_for(choice, &applications))
+                .collect();
+            self.ui
+                .choose(AppChoiceRequest {
+                    app_id: app_id.to_owned(),
+                    choices: choices.clone(),
+                    labels,
+                    content_type,
+                    uri,
+                })
+                .await
         };
 
         match chosen {
@@ -198,6 +261,23 @@ mod tests {
         }
     }
 
+    /// `AppIdentity1.ListApplications` for the tests: `(app_id, display_name, desktop_file_id)`.
+    #[derive(Debug, Default)]
+    struct FakeApps(Vec<(String, String, String)>);
+
+    #[async_trait]
+    impl AppStateClient for FakeApps {
+        async fn list_instances(&self) -> anyhow::Result<Vec<(String, String, String, String)>> {
+            Ok(Vec::new())
+        }
+        async fn report(&self) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        async fn list_applications(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+            Ok(self.0.clone())
+        }
+    }
+
     fn options(pairs: &[(&str, &str)]) -> HashMap<String, OwnedValue> {
         pairs
             .iter()
@@ -218,6 +298,7 @@ mod tests {
         );
         let api = AppChooserApi {
             associations: Arc::new(associations),
+            apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
         let (code, results) = api
@@ -247,6 +328,7 @@ mod tests {
         );
         let api = AppChooserApi {
             associations: Arc::new(associations),
+            apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
         let (code, _) = api
@@ -267,6 +349,7 @@ mod tests {
         };
         let api = AppChooserApi {
             associations: Arc::new(associations),
+            apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
         let (code, results) = api
@@ -287,6 +370,7 @@ mod tests {
     async fn nothing_resolves_and_no_ui_is_available_cancels() {
         let api = AppChooserApi {
             associations: Arc::new(FakeAssociations::default()),
+            apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
         let (code, results) = api
@@ -298,5 +382,60 @@ mod tests {
             .await;
         assert_eq!(code, response::CANCELLED);
         assert!(results.is_empty());
+    }
+
+    /// The journey behind "open this downloaded file": `xdg-desktop-portal` implements
+    /// `org.freedesktop.portal.OpenURI` itself and delegates only the *which application*
+    /// question to this backend — offering desktop file ids, not LegeOS app ids. Before this
+    /// mapping existed the LegeOS default never matched an offered choice, so a system that knew
+    /// the answer asked the person anyway.
+    #[tokio::test]
+    async fn openuri_resolves_default_handler() {
+        let mut associations = FakeAssociations::default();
+        associations.by_uri.insert(
+            "file:///home/u/Downloads/report.pdf".into(),
+            (
+                "org.legeos.Viewer".into(),
+                "application/pdf".into(),
+                "global-mime-default".into(),
+            ),
+        );
+        let api = AppChooserApi {
+            associations: Arc::new(associations),
+            apps: Arc::new(FakeApps(vec![(
+                "org.legeos.Viewer".into(),
+                "Document Viewer".into(),
+                "org.legeos.Viewer.desktop".into(),
+            )])),
+            // No dialog: if the default did not resolve, this cancels rather than guessing.
+            ui: Arc::new(NoUiAvailable),
+        };
+
+        let (code, results) = api
+            .choose_application(
+                "org.mozilla.firefox",
+                vec!["org.legeos.Viewer.desktop".into(), "gimp".into()],
+                &options(&[("uri", "file:///home/u/Downloads/report.pdf")]),
+            )
+            .await;
+
+        assert_eq!(code, response::SUCCESS);
+        assert_eq!(
+            String::try_from(results["choice"].clone()).unwrap(),
+            "org.legeos.Viewer.desktop",
+            "answered with the frontend's own spelling of the choice it offered"
+        );
+
+        // And when a person must be asked, they are asked with names, not desktop file ids.
+        let applications = vec![(
+            "org.legeos.Viewer".to_owned(),
+            "Document Viewer".to_owned(),
+            "org.legeos.Viewer.desktop".to_owned(),
+        )];
+        assert_eq!(
+            label_for("org.legeos.Viewer.desktop", &applications),
+            "Document Viewer"
+        );
+        assert_eq!(label_for("gimp", &applications), "gimp");
     }
 }

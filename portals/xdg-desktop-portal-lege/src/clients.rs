@@ -111,6 +111,14 @@ pub trait AppStateClient: Send + Sync + std::fmt::Debug {
     async fn list_instances(&self) -> Result<Vec<(String, String, String, String)>>;
     /// Full `Report` JSON (`InstanceReport` entries carry `instance_id`, `foreground`, `visible`).
     async fn report(&self) -> Result<String>;
+    /// `(canonical_app_id, display_name, desktop_file_id)` for every installed application.
+    ///
+    /// `AppChooser` needs this because the two sides of a choice speak different names: the
+    /// portal frontend offers *desktop file ids*, while `Associations1` answers with LegeOS
+    /// canonical app ids. Without the mapping a resolved default never matches an offered
+    /// choice, and every open falls through to asking the person something the system already
+    /// knew.
+    async fn list_applications(&self) -> Result<Vec<(String, String, String)>>;
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +133,20 @@ impl AppStateClient for LiveAppState {
             .list_instances()
             .await
             .context("AppIdentity1.ListInstances")
+    }
+
+    async fn list_applications(&self) -> Result<Vec<(String, String, String)>> {
+        Ok(AppIdentityProxy::new(&self.0)
+            .await
+            .context("connecting to org.legeos.AppIdentity1")?
+            .list_applications()
+            .await
+            .context("AppIdentity1.ListApplications")?
+            .into_iter()
+            .map(|(app_id, display_name, desktop_file_id, ..)| {
+                (app_id, display_name, desktop_file_id)
+            })
+            .collect())
     }
 
     async fn report(&self) -> Result<String> {
