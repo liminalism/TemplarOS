@@ -143,6 +143,50 @@ impl Backend for UdevBackendData {
     fn seat_name(&self) -> String {
         self.session.seat()
     }
+
+    /// Idle blanking on real hardware (`src/idle.rs`): DPMS off, and back on.
+    ///
+    /// `DrmCompositor::clear` puts the CRTC into DPMS off and disables every plane; the surface
+    /// re-enables itself on the next `queue_frame`, which is exactly what waking does. Waking
+    /// also has to `reset_buffers` and kick a render by hand, because this backend's redraw
+    /// cadence is page-flip completion and a dark output has no flips in flight to carry it (the
+    /// same reason `schedule_retry` exists for a damage-free frame). Blanking is not attempted
+    /// while the session is paused for a VT switch: the CRTC is not ours to touch then.
+    fn set_blanked(state: &mut State, blanked: bool) {
+        if state.backend_data.paused {
+            return;
+        }
+        let surfaces: Vec<(DrmNode, crtc::Handle)> = state
+            .backend_data
+            .devices
+            .iter()
+            .flat_map(|(node, device)| device.surfaces.keys().map(move |crtc| (*node, *crtc)))
+            .collect();
+
+        for (node, crtc) in surfaces {
+            let Some(surface) = state
+                .backend_data
+                .devices
+                .get_mut(&node)
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+            else {
+                continue;
+            };
+            if blanked {
+                if let Err(error) = surface
+                    .drm_output
+                    .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                {
+                    tracing::warn!(%error, ?crtc, "turning the output off");
+                }
+            } else {
+                surface.drm_output.reset_buffers();
+                state
+                    .loop_handle
+                    .insert_idle(move |state| render_surface(state, node, crtc));
+            }
+        }
+    }
 }
 
 type State = LegeCompState<UdevBackendData>;
@@ -770,6 +814,12 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
 /// retry: true on any failure or a damage-free frame (nothing queued, so no page-flip completion
 /// will come to drive the next attempt), false once a flip is queued.
 fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output: &Output) -> bool {
+    // A blanked output stays blanked: queueing a frame is what would re-enable DPMS
+    // (`DrmCompositor::clear`'s contract), so the idle blank has to be checked here rather than
+    // only where it was decided.
+    if state.idle.blanked() {
+        return false;
+    }
     let backend = &mut state.backend_data;
     let Some(device) = backend.devices.get_mut(&node) else {
         return false;
@@ -857,7 +907,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
 /// is coming) and a `render_frame`/`queue_frame` failure. Falls back to a plain 16ms poll if the
 /// output's mode isn't known yet.
 fn schedule_retry(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
-    if state.backend_data.paused {
+    if state.backend_data.paused || state.idle.blanked() {
         return;
     }
     let delay = state

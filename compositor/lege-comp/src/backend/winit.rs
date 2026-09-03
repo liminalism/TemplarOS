@@ -33,6 +33,16 @@ impl Backend for WinitBackendData {
     fn seat_name(&self) -> String {
         OUTPUT_NAME.to_owned()
     }
+
+    /// Idle blanking nested (`src/idle.rs`): there is no CRTC here to put into DPMS off, so the
+    /// nested output is painted black instead — the redraw path below hands the damage tracker an
+    /// empty element list while `state.idle.blanked()`. That is not a stand-in for the real
+    /// thing, it is the honest nested equivalent: the timing, the inhibitors and the wake are the
+    /// same code as on hardware, and only the last inch differs.
+    fn set_blanked(state: &mut State, blanked: bool) {
+        tracing::info!(blanked, "nested output blanking");
+        let _ = state;
+    }
 }
 
 type State = LegeCompState<WinitBackendData>;
@@ -146,27 +156,37 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                             // The same shared scene builder the udev backend uses, so the two
                             // backends cannot disagree about draw order — which is the winit
                             // backend's whole claim (module doc): what is exercised here is the
-                            // real thing.
-                            let elements = crate::scene::collect(
-                                &mut state.chrome,
-                                &state.windows,
-                                &crate::chrome::ChromeInputs {
-                                    space: &state.space,
-                                    window_service: &state.window_service,
-                                    recovery_protocol: &state.recovery_protocol,
-                                    show_all_windows: state.show_all_windows.as_deref(),
-                                    session_lock: &state.session_lock,
-                                    switcher: state.switcher.as_ref(),
-                                },
-                                &output_for_loop,
-                                renderer,
-                            );
+                            // real thing. Nothing at all while the session is idle-blanked, so
+                            // the clear colour below is the whole frame.
+                            let elements = if state.idle.blanked() {
+                                Vec::new()
+                            } else {
+                                crate::scene::collect(
+                                    &mut state.chrome,
+                                    &state.windows,
+                                    &crate::chrome::ChromeInputs {
+                                        space: &state.space,
+                                        window_service: &state.window_service,
+                                        recovery_protocol: &state.recovery_protocol,
+                                        show_all_windows: state.show_all_windows.as_deref(),
+                                        session_lock: &state.session_lock,
+                                        switcher: state.switcher.as_ref(),
+                                    },
+                                    &output_for_loop,
+                                    renderer,
+                                )
+                            };
+                            let clear = if state.idle.blanked() {
+                                [0.0, 0.0, 0.0, 1.0]
+                            } else {
+                                [0.05, 0.05, 0.07, 1.0]
+                            };
                             match damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
                                 0,
                                 &elements,
-                                [0.05, 0.05, 0.07, 1.0],
+                                clear,
                             ) {
                                 Ok(result) => {
                                     // Previews queued since the last frame, with the renderer

@@ -559,6 +559,48 @@ const BACKLIGHT_CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increa
 /// One fetch over one connection, because it is one tile. Three separate widgets meant three
 /// connections and three chances for the shelf to disagree with itself about whether the session
 /// bus was there.
+/// The session's screen-off delay in seconds, from `org.legeos.Power1`'s stored profile for
+/// whichever power source the machine is on. Zero means never — and so does an unreachable
+/// service, because a shell that cannot read the policy must not invent one.
+///
+/// The two fields read here mirror `lege_session_core::power::PowerProfile` (`screen_off_after`,
+/// a `serde`-encoded `Option<Duration>`) and `lege_client::status::BatteryState::on_mains`.
+/// They are read as JSON rather than through `lege-session-core` deliberately: that crate carries
+/// `rusqlite`, and a shell has no business linking SQLite to learn one number.
+pub async fn fetch_idle_timeout() -> u32 {
+    let Ok(connection) = session().await else {
+        return 0;
+    };
+    let on_mains = async {
+        let proxy = BatteryProxy::new(&connection).await.ok()?;
+        let json = proxy.get().await.ok()?;
+        serde_json::from_str::<lege_client::status::BatteryState>(&json)
+            .ok()
+            .map(|state| state.on_mains)
+    }
+    .await
+    // A machine with no battery service is a machine on mains.
+    .unwrap_or(true);
+    let source = if on_mains { "mains" } else { "battery" };
+
+    let profile = async {
+        let proxy = lege_client::proxies::PowerProxy::new(&connection)
+            .await
+            .ok()?;
+        let json = proxy.get_profile(source).await.ok()?;
+        serde_json::from_str::<serde_json::Value>(&json).ok()
+    }
+    .await;
+
+    profile
+        .as_ref()
+        .and_then(|profile| profile.get("screen_off_after"))
+        .and_then(|value| value.get("secs"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|secs| u32::try_from(secs).ok())
+        .unwrap_or(0)
+}
+
 pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot {
     use crate::surface::widgets::WidgetSnapshot;
     use crate::surface::widgets::settings;

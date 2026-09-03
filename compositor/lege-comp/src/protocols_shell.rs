@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 3;
+pub const SHELL_PROTOCOL_VERSION: u32 = 4;
 
 /// Bookkeeping for currently-bound `lege_shell_v1` objects.
 #[derive(Debug, Default)]
@@ -163,6 +163,12 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
             }
             lege_shell_manager_v1::Request::RestoreArrangement => {
                 crate::xdg_shell::apply_arrangement(state, WindowCommand::RestoreArrangement);
+            }
+            lege_shell_manager_v1::Request::SetIdleTimeout { seconds } => {
+                // Policy in, enforcement here: the number is `Power1`'s `screen_off_after`, which
+                // the shell read and relayed, and this process is the only one that can see the
+                // seat go quiet (`src/idle.rs`).
+                state.set_idle_timeout(seconds);
             }
         }
     }

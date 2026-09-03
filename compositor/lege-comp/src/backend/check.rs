@@ -94,6 +94,13 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     );
     println!("  private protocols:    lege_shell_v1, lege_recovery_v1");
     println!(
+        "  idle screen-off:      {}",
+        state.idle.timeout().map_or_else(
+            || "never (until the shell sends one)".to_owned(),
+            |delay| { format!("{}s", delay.as_secs()) }
+        )
+    );
+    println!(
         "  shell-only globals:   ext_foreign_toplevel_image_capture_source_manager_v1, \
          ext_image_copy_capture_manager_v1"
     );
@@ -239,6 +246,9 @@ mod tests {
             "wp_viewporter",
             "wp_fractional_scale_manager_v1",
             "wp_presentation",
+            // A client saying "do not turn the screen off while I am playing this"
+            // (`src/idle.rs`). Ordinary clients may bind it: that is the protocol's whole point.
+            "zwp_idle_inhibit_manager_v1",
         ] {
             assert!(
                 advertised.iter().any(|name| name == required),

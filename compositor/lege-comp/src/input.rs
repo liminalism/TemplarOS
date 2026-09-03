@@ -592,6 +592,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
         event: InputEvent<I>,
         output_name: Option<&str>,
     ) {
+        // Every event, before it is dispatched anywhere: this is the session's only idle source
+        // (`src/idle.rs`), and "any input at all" is the whole condition.
+        self.note_activity();
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(&event),

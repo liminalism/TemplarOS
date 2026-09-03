@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="3">
+  <interface name="lege_shell_manager_v1" version="4">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -110,6 +110,25 @@
       <entry name="main_and_stack" value="4"/>
       <entry name="cushion" value="5"/>
     </enum>
+    <request name="set_idle_timeout" since="4">
+      <description summary="how long the session may be idle before the screen turns off">
+        The compositor is the session's only honest idle source — it sees every input event, and
+        nothing else in the session does. The *policy* is not its to decide: `org.legeos.Power1`
+        records `screen_off_after` per power source, the shell reads it, and this request is how
+        the number reaches the one process that can act on it. Sent on connect and again whenever
+        the stored value changes.
+
+        `seconds` of 0 means never. Any other value arms a countdown that restarts on every
+        keyboard, pointer and touch event, and that is suspended entirely while any
+        `zwp_idle_inhibit_manager_v1` inhibitor is alive. On expiry the compositor turns every
+        output off (DPMS off on real hardware); the next input turns them back on.
+
+        Turning the screen off is *not* locking it and not dimming it. `Power1`'s `lock_after`
+        and `dim_after` are separate intervals with separate meanings, and neither is enforced
+        by this request.
+      </description>
+      <arg name="seconds" type="uint" summary="idle seconds before the screen turns off; 0 never"/>
+    </request>
     <enum name="edge">
       <entry name="top" value="0"/>
       <entry name="bottom" value="1"/>

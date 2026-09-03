@@ -83,7 +83,7 @@ use lege_window::{Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Ed
 /// The highest `lege_shell_v1` version this shell speaks (`interfaces/wayland/lege-shell-v1.xml`).
 /// Bound at the lower of this and what the compositor advertises, so a newer shell against an
 /// older compositor still gets version 1's events rather than a protocol error.
-const SHELL_PROTOCOL_VERSION: u32 = 3;
+const SHELL_PROTOCOL_VERSION: u32 = 4;
 
 use crate::protocol::lege_shell_v1::{
     lege_shell_manager_v1::{self, LegeShellManagerV1},
@@ -1005,6 +1005,20 @@ impl ShellBridge {
         self.connection
             .flush()
             .context("flushing restore_arrangement")
+    }
+
+    /// Tell the compositor how long the session may be idle before the screen turns off
+    /// (version 4). `seconds` of 0 is never.
+    ///
+    /// The value is `org.legeos.Power1`'s `screen_off_after` for the current power source. The
+    /// shell is the relay and nothing more: the policy is sessiond's, and the enforcement is the
+    /// compositor's, because the compositor is the only process that can see the seat go quiet.
+    pub fn set_idle_timeout(&self, seconds: u32) -> Result<()> {
+        if self.manager.version() < 4 {
+            bail!("the compositor speaks lege_shell_v1 < 4, which has no set_idle_timeout");
+        }
+        self.manager.set_idle_timeout(seconds);
+        self.connection.flush().context("flushing set_idle_timeout")
     }
 
     /// Whether a "go home" reveal is in effect, as last reported by the compositor.

@@ -73,13 +73,28 @@ pub fn client_is_trusted_shell(client: &Client) -> bool {
 /// What each backend (winit, udev) supplies. Kept intentionally small: everything that is not
 /// backend-specific — protocol state, `WindowService`, input policy — lives on `LegeCompState`
 /// itself so it is shared, not duplicated, between the two backends (COMPOSITOR.md "Backends").
-pub trait Backend {
+pub trait Backend: Sized {
     /// Human-readable seat name advertised over `wl_seat`.
     fn seat_name(&self) -> String;
 
     /// Give the backend a chance to import a client buffer early (DMA-BUF direct scanout paths);
     /// a no-op is always correct, just less efficient.
     fn early_import(&mut self, _surface: &WlSurface) {}
+
+    /// Turn every output off (idle blanking) or back on — DPMS on real hardware, a black frame
+    /// nested (`src/idle.rs`).
+    ///
+    /// Takes the whole state rather than `&mut self` because waking is not only a DRM call: the
+    /// udev backend's redraw cadence is driven by page-flip completion, and a blanked output has
+    /// no flips in flight to drive the frame that would light it again, so waking has to reach
+    /// the event loop as well as the device. A backend with no outputs to blank (the self-check)
+    /// correctly does nothing.
+    fn set_blanked(state: &mut LegeCompState<Self>, blanked: bool)
+    where
+        Self: 'static,
+    {
+        let _ = (state, blanked);
+    }
 }
 
 /// Everything the render-thread loop owns. Generic over `B` so the same state (and every handler
@@ -110,6 +125,10 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub xdg_dialog_state: XdgDialogState,
     pub xdg_activation_state: XdgActivationState,
     pub session_lock_manager_state: SessionLockManagerState,
+    /// `zwp_idle_inhibit_manager_v1`: a client (a video player, a presentation) declaring that the
+    /// screen must not turn off while its surface is up. Held so the global stays registered;
+    /// the count that matters lives in `idle`.
+    pub idle_inhibit_manager_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub dmabuf_state: DmabufState,
@@ -162,6 +181,9 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
     pub chrome: crate::chrome::ChromeState,
+    /// Idle screen blanking: the configured delay, the armed timer, and whether the outputs are
+    /// off right now (`src/idle.rs`). The compositor is the session's only idle source.
+    pub idle: crate::idle::IdleState,
 }
 
 impl<B: Backend + 'static> LegeCompState<B> {
@@ -243,6 +265,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
             xdg_dialog_state: XdgDialogState::new::<Self>(dh),
             xdg_activation_state: XdgActivationState::new::<Self>(dh),
             session_lock_manager_state: SessionLockManagerState::new::<Self, _>(dh, |_| true),
+            idle_inhibit_manager_state:
+                smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(dh),
             foreign_toplevel_list_state:
                 smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(dh),
             dmabuf_state: smithay::wayland::dmabuf::DmabufState::new(),
@@ -274,7 +298,70 @@ impl<B: Backend + 'static> LegeCompState<B> {
             show_all_windows: None,
             switcher: None,
             chrome: crate::chrome::ChromeState::new(),
+            idle: crate::idle::IdleState::default(),
         })
+    }
+
+    /// Something happened on the seat. Wake a blanked screen and restart the idle countdown.
+    ///
+    /// Called from one place — `src/input.rs::process_input_event`, before the event is
+    /// dispatched anywhere — because "any input at all" is the whole condition, and a per-event
+    /// list of what counts would be a list to forget something from.
+    pub fn note_activity(&mut self) {
+        if self.idle.wake() {
+            tracing::info!("input after an idle blank; turning the outputs back on");
+            B::set_blanked(self, false);
+        }
+        self.arm_idle_timer();
+    }
+
+    /// (Re-)arm the idle countdown from now, replacing whatever was armed before. Arms nothing
+    /// when idle blanking is off, when something is inhibiting it, or when the screen is already
+    /// off (`idle::delay_before_blanking`).
+    pub fn arm_idle_timer(&mut self) {
+        if let Some(token) = self.idle.take_timer() {
+            self.loop_handle.remove(token);
+        }
+        let Some(timer) = self.idle.timer_source() else {
+            return;
+        };
+        match self
+            .loop_handle
+            .insert_source(timer, |_, (), state: &mut Self| {
+                state.blank_now();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            }) {
+            Ok(token) => self.idle.set_timer(token),
+            Err(error) => tracing::warn!(%error, "arming the idle timer"),
+        }
+    }
+
+    /// The idle timer fired: turn the outputs off.
+    fn blank_now(&mut self) {
+        let _ = self.idle.take_timer();
+        if self.idle.expire() {
+            tracing::info!(
+                timeout_s = self.idle.timeout().map_or(0, |d| d.as_secs()),
+                "idle timeout reached; turning the outputs off"
+            );
+            B::set_blanked(self, true);
+        }
+    }
+
+    /// The session's screen-off delay changed (`lege_shell_v1.set_idle_timeout`, ultimately
+    /// `Power1`'s `screen_off_after`). Zero is never. A screen that is currently off comes back
+    /// on, so a person who has just turned blanking off is not left looking at a dark screen.
+    pub fn set_idle_timeout(&mut self, seconds: u32) {
+        let timeout = crate::idle::timeout_from_seconds(seconds);
+        if self.idle.timeout() == timeout {
+            return;
+        }
+        let _ = self.idle.set_timeout(timeout);
+        tracing::info!(seconds, "idle screen-off delay set");
+        if timeout.is_none() && self.idle.wake() {
+            B::set_blanked(self, false);
+        }
+        self.arm_idle_timer();
     }
 
     /// Create the two private protocol globals (`lege_shell_v1`, `lege_recovery_v1`).
@@ -289,6 +376,21 @@ impl<B: Backend + 'static> LegeCompState<B> {
             1,
             crate::protocols_recovery::RecoveryManagerGlobalData,
         );
+    }
+}
+
+impl<B: Backend + 'static> smithay::wayland::idle_inhibit::IdleInhibitHandler for LegeCompState<B> {
+    fn inhibit(&mut self, _surface: WlSurface) {
+        self.idle.add_inhibitor();
+        // Re-arm rather than merely counting: with an inhibitor up there is no timer at all
+        // (`idle::delay_before_blanking`), so the one already armed has to come back out of the
+        // event loop.
+        self.arm_idle_timer();
+    }
+
+    fn uninhibit(&mut self, _surface: WlSurface) {
+        self.idle.remove_inhibitor();
+        self.arm_idle_timer();
     }
 }
 

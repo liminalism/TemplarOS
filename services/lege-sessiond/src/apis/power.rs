@@ -1,25 +1,28 @@
 //! `org.legeos.Power1`: get, set and reset the stored [`PowerProfile`] for a power source.
 //!
-//! **That is the whole of it.** This module's documentation used to claim "idle/lid/brightness
-//! policy over logind/upower", which described the intended shape of the feature rather than the
-//! code underneath it: nothing here talks to logind or upower, nothing watches for idleness, and
-//! setting `suspend_after` has never suspended anything. The three methods read and write a JSON
-//! document in the state store, and a reader who trusted the old summary would have gone looking
-//! for an idle watcher that does not exist.
+//! **That is the whole of what happens here.** Nothing in this module talks to logind or upower
+//! and nothing in it watches for idleness: the three methods read and write a JSON document in
+//! the state store, and that is all they do.
 //!
-//! What is stored is a real and useful thing — the profile a future idle watcher would enforce,
-//! and the one a settings UI edits — so the interface is not vapour. It is simply a *record* of
-//! policy and not an enforcer of it, and the difference matters to anyone deciding whether this
-//! machine will lock itself.
+//! One field of that document is nonetheless enforced, elsewhere. `screen_off_after` is read by
+//! `lege-shell` and relayed to `lege-comp` over `lege_shell_v1.set_idle_timeout`, and the
+//! compositor turns the outputs off after that much idle time and back on at the next input
+//! (`compositor/lege-comp/src/idle.rs`). It had to be the compositor: it is the only process in
+//! the session that sees the seat, so it is the only one that can tell idleness from silence.
+//! Writing a new value here therefore does change what the machine does — for that one field.
 //!
-//! The unimplemented half is deliberate remaining scope, not an oversight: an idle watcher needs
-//! an idle source (the compositor's, since logind's `IdleHint` is not driven by a Wayland session
-//! on its own), a way to dim and blank through `Backlight1`, and a lock surface to drive — and
+//! What is stored is a real and useful thing — one field of it drives the screen today, and the
+//! whole of it is what a settings UI edits — but the difference between "recorded" and "enforced"
+//! still matters field by field, and matters most to anyone deciding whether this machine will
+//! lock itself. It will not.
+//!
+//! The rest is deliberate remaining scope, not an oversight. `dim_after` needs a backlight ramp
+//! through `Backlight1`; `lock_after` needs a lock surface to drive, and
 //! `Session.Lifecycle1.Lock` is itself still a `NotSupported` stub for want of a Wayland
-//! lock-manager client. Building the watcher before those exist would produce a timer that fires
-//! into nothing. Battery state, one of the things the old summary promised, does now exist and is
-//! `org.legeos.Battery1`; brightness is `org.legeos.Backlight1`. Neither belongs here: those are
-//! hardware readings and this is stored policy.
+//! lock-manager client; `suspend_after` and the lid actions need logind. Arming those timers
+//! before the things they drive exist would produce timers that fire into nothing. Battery state
+//! is `org.legeos.Battery1` and brightness is `org.legeos.Backlight1`. Neither belongs here:
+//! those are hardware readings and this is stored policy.
 //!
 //! Overrides are stored in the generic `settings_values` table under an internal key
 //! (`_internal.power.profile.<source>`) rather than the typed [`SettingsSchema`] — a whole
@@ -78,10 +81,11 @@ impl PowerApi {
 
     /// Store a profile as this source's override.
     ///
-    /// Stores it, and only stores it. No timer is armed by this call and no idle watcher reads
-    /// the result: an enforcer is deliberate remaining scope (see the module documentation for
-    /// what it needs first). Anything relying on `suspend_after` to suspend the machine is
-    /// relying on something that does not exist yet.
+    /// Stores it, and only stores it: no timer is armed by this call. The shell re-reads
+    /// `screen_off_after` and relays it to the compositor, which is what makes that one field
+    /// take effect (module documentation); every other field is still a value kept and not a
+    /// thing scheduled, so anything relying on `suspend_after` to suspend the machine is relying
+    /// on something that does not exist yet.
     async fn set_profile(&self, source: &str, profile_json: &str) -> fdo::Result<()> {
         parse_source(source)?;
         let _profile: PowerProfile = serde_json::from_str(profile_json)

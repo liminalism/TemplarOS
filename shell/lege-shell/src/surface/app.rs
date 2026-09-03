@@ -65,6 +65,9 @@ enum DataUpdate {
     /// keys the per-item dismiss and invoke controls act on.
     NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
     HomeFieldSettings(HomeFieldSettings),
+    /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
+    /// the compositor, which is the only process that can see the seat go idle.
+    IdleTimeout(u32),
     /// The persisted recent-apps list. Applied only while the in-memory list is still empty,
     /// so a launch that happened before the load landed is not overwritten by a stale read.
     RecentApps(crate::recents::RecentApps),
@@ -216,6 +219,9 @@ struct ShellApp {
     wake_proxy: EventLoopProxy<Wake>,
 
     bridge: Option<ShellBridge>,
+    /// The screen-off delay last relayed to the compositor, so an unchanged reading costs
+    /// nothing (`DataUpdate::IdleTimeout`). `None` until the first read lands.
+    idle_timeout: Option<u32>,
     home: Option<HostedWindow>,
 
     text: pixelkit_text::TextCache,
@@ -334,6 +340,7 @@ impl ShellApp {
             data_rx,
             wake_proxy,
             bridge: None,
+            idle_timeout: None,
             home: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
@@ -432,6 +439,12 @@ impl ShellApp {
                 // paths that do not announce themselves, which is why it is slow rather than off.
                 if ticks == 1 || ticks.is_multiple_of(APPS_REFRESH_TICKS) {
                     let _ = tx.send(DataUpdate::Apps(crate::data::fetch_apps().await));
+                    // Same cadence and the same reason: a person changes when their screen turns
+                    // off about as often as they install software, and `Power1` has no change
+                    // signal to sleep on.
+                    let _ = tx.send(DataUpdate::IdleTimeout(
+                        crate::data::fetch_idle_timeout().await,
+                    ));
                 }
                 let _ = tx.send(DataUpdate::Projects(projects));
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
@@ -714,6 +727,19 @@ impl ShellApp {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
                         settings.throw && !settings.reduced_motion;
+                }
+                DataUpdate::IdleTimeout(seconds) => {
+                    // Only on a change, and only over a live connection: the compositor keeps
+                    // whatever it was last told, so re-sending the same number every three
+                    // seconds would be a protocol round trip for nothing.
+                    if self.idle_timeout != Some(seconds) {
+                        self.idle_timeout = Some(seconds);
+                        if let Some(bridge) = &self.bridge
+                            && let Err(error) = bridge.set_idle_timeout(seconds)
+                        {
+                            tracing::warn!(%error, "relaying the screen-off delay to the compositor");
+                        }
+                    }
                 }
                 DataUpdate::RecentApps(loaded) => {
                     if self.recent.ids().is_empty() {

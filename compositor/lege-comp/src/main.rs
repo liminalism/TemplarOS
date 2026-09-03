@@ -7,6 +7,7 @@ mod chrome;
 mod cursor;
 mod foreign_toplevel;
 mod handlers;
+mod idle;
 mod input;
 mod keybindings;
 mod keymap;

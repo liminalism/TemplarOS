@@ -121,6 +121,9 @@ enum SystemCommand {
     ToggleMute,
     SetBrightness(u32),
     StepBrightness(i32),
+    /// How long the session may be idle before the screen turns off, in seconds; 0 is never.
+    /// `Power1` policy, enforced by the compositor (`compositor/lege-comp/src/idle.rs`).
+    SetScreenOff(u32),
 }
 
 #[derive(Debug)]
@@ -241,7 +244,7 @@ async fn run_setting_command(command: Command) -> ResultMessage {
 /// was asked to do. A failure is reported *and* followed by the re-read, so a refused write leaves
 /// the controls showing the level that is really set rather than the one that was attempted.
 async fn run_system_command(command: SystemCommand) -> ResultMessage {
-    use crate::system::{self, SystemControl};
+    use crate::system::{self, SystemControl, SystemSource};
     let outcome = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
         let bus = system::Bus::connect(&connection).await?;
@@ -252,6 +255,16 @@ async fn run_system_command(command: SystemCommand) -> ResultMessage {
             SystemCommand::ToggleMute => bus.toggle_muted().await,
             SystemCommand::SetBrightness(percent) => bus.set_brightness(percent).await,
             SystemCommand::StepBrightness(delta) => bus.adjust_brightness(delta).await,
+            SystemCommand::SetScreenOff(seconds) => {
+                // Which source's profile to write is a reading of the machine, not a choice on
+                // the page — writing "on battery" while the laptop is plugged in would be a
+                // control that appears to do nothing.
+                let battery = bus.battery().await.ok().and_then(|json| {
+                    serde_json::from_str::<lege_client::status::BatteryState>(&json).ok()
+                });
+                let source = system::source_name(system::power_source_for(battery.as_ref()));
+                bus.set_screen_off_after(source, seconds).await
+            }
         };
         Ok::<_, anyhow::Error>((system::read(&bus).await, attempted))
     }
@@ -673,6 +686,46 @@ impl SettingsApp {
             }
             // A display has no mute, so `level_controls` is never asked for one here.
             None | Some(LevelChange::ToggleMute | LevelChange::Set(_)) => {}
+        }
+
+        // Choices rather than a track: seven named delays a person picks from, because "how long
+        // before the screen turns off" is a decision with a handful of sensible answers and not a
+        // continuum. The row is the widest on the page, so it gets its own controls rect.
+        let screen_off_line = crate::system::screen_off_line(&self.system);
+        let selected = crate::system::screen_off_seconds(&self.system);
+        let row = Rect::new(
+            area.x,
+            area.y + ui.px(88) * 3,
+            area.w,
+            ui.px(78).min(area.h),
+        );
+        ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+        ui.painter
+            .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+        ui.label(
+            Rect::new(
+                row.x + ui.px(12),
+                row.y + ui.px(7),
+                row.w - ui.px(24),
+                ui.px(24),
+            ),
+            "Screen turns off after",
+            ui.theme.text,
+            Align::Left,
+        );
+        ui.label(
+            Rect::new(
+                row.x + ui.px(12),
+                row.y + ui.px(33),
+                row.w - ui.px(24),
+                ui.px(20),
+            ),
+            &screen_off_line,
+            ui.theme.text_dim,
+            Align::Left,
+        );
+        if let Some(seconds) = screen_off_choice(ui, row, selected) {
+            self.system(SystemCommand::SetScreenOff(seconds));
         }
     }
 
@@ -1172,6 +1225,38 @@ fn system_row(ui: &mut Ui<'_>, area: Rect, index: i32, name: &str, detail: &str)
         controls_width - ui.px(12),
         ui.px(38),
     )
+}
+
+/// The seven named screen-off delays as one strip of buttons, right-aligned in `row`. Returns the
+/// one that was pressed.
+///
+/// `selected` is `None` when `Power1` did not answer: nothing is drawn as chosen, because with no
+/// stored value every choice on the strip would be a guess, and a settings page that guesses is
+/// worse than one that says it does not know. The row's own sentence says which it is.
+fn screen_off_choice(ui: &mut Ui<'_>, row: Rect, selected: Option<u32>) -> Option<u32> {
+    let gap = ui.px(6);
+    let width = ui.px(62);
+    let strip_width = width * crate::system::SCREEN_OFF_CHOICES.len() as i32
+        + gap * (crate::system::SCREEN_OFF_CHOICES.len() as i32 - 1);
+    let mut x = row.right() - ui.px(12) - strip_width;
+    let y = row.bottom() - ui.px(12) - ui.px(30);
+    let mut pressed = None;
+    for (label, seconds) in crate::system::SCREEN_OFF_CHOICES {
+        let button = Rect::new(x, y, width, ui.px(30));
+        x += width + gap;
+        if selected == Some(seconds) {
+            ui.painter
+                .fill_rounded_rect(button, ui.px(6), ui.theme.accent);
+            ui.label(button, label, ui.theme.panel, Align::Centre);
+        } else if selected.is_none() {
+            // Inert and dimmed rather than absent: a control that vanishes leaves a person
+            // hunting for it (`level_controls`' own reasoning).
+            ui.label(button, label, ui.theme.text_dim, Align::Centre);
+        } else if ui.button(button, label) {
+            pressed = Some(seconds);
+        }
+    }
+    pressed
 }
 
 /// The controls for one hardware level: a stepper either side of a track that can be clicked or
