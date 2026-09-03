@@ -377,6 +377,49 @@ pub fn switcher_row(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
+/// The switcher's title row: the group's name on its own accent, or "Groups" on the panel
+/// colour. Same shape as a [`switcher_row`], one size smaller and always in contrast-picked ink,
+/// so the HUD reads as a labelled list rather than as a list with an odd first entry.
+pub fn switcher_heading(
+    painter: &mut Painter<'_>,
+    pixel_w: i32,
+    pixel_h: i32,
+    heading: &str,
+    background: u32,
+    fonts: Fonts<'_>,
+    scale: f32,
+) {
+    let area = canvas(pixel_w, pixel_h);
+    painter.fill_rect(area, background);
+    let Some((cache, face)) = fonts else { return };
+    if heading.is_empty() {
+        return;
+    }
+    let ink = layout::text_ink_for(background);
+    let style = TextStyle::new(face, (13.0 * scale).max(8.0));
+    let padding = (10.0 * scale).round() as i32;
+    let text_area = PxRect::new(
+        area.x + padding,
+        area.y,
+        (area.w - 2 * padding).max(0),
+        area.h,
+    );
+    let line_height = cache.line_height(style);
+    let y = area.y + ((area.h - line_height) / 2).max(0);
+    cache.draw_fitted(painter, heading, text_area, y, style, ink, Align::Left);
+}
+
+/// A window group's accent (0x00RRGGBB, `lege_window::group`) as a colour this module can fill
+/// with. The model stores colours with no alpha channel at all — it has no idea what a renderer
+/// is — and every chrome widget is opaque, so this is the one place the two meet.
+pub fn opaque(accent: u32) -> u32 {
+    pixelkit_raster::color::from_rgb(
+        ((accent >> 16) & 0xFF) as u8,
+        ((accent >> 8) & 0xFF) as u8,
+        (accent & 0xFF) as u8,
+    )
+}
+
 /// What a locked session shows before the greeter (a real `ext-session-lock-v1` client) takes
 /// over — deliberately plain (task brief): a flat colour and, if a font is available, one short
 /// line of static text. No branding, no imagery, nothing that could itself fail to load.

@@ -45,12 +45,23 @@ const SWITCHER_ROW_HEIGHT: i32 = 30;
 /// Logical-pixel height of a scatter tile's title strip (`chrome::layout::scatter_label_band`).
 const SCATTER_LABEL_HEIGHT: i32 = 26;
 
-/// The compositor-drawn fallback switcher's transient state (`WindowService::cycle_focus`,
-/// `src/keybindings.rs`): which windows to list, in display order, and which one was just
-/// selected. Cleared by `src/input.rs` on the next input that is not itself another switcher step
-/// — this module owns no clock, so there is no timed fade, only "until you do something else".
+/// The compositor-drawn fallback switcher's transient state (`WindowService::cycle_within_group`
+/// and `cycle_groups`, `src/keybindings.rs`): what to list, in display order, and which entry was
+/// just selected. Cleared by `src/input.rs` on the next input that is not itself another switcher
+/// step — this module owns no clock, so there is no timed fade, only "until you do something
+/// else".
+///
+/// Two switchers share it. `Alt+Tab` lists the focused window's group under the group's name, in
+/// its accent; `Super+Tab` lists the groups themselves with their member counts under "Groups".
+/// One HUD, because they are the same gesture at two scales, and because a second panel widget
+/// would be a second thing to keep alive with the shell dead.
 #[derive(Clone, Debug)]
 pub struct SwitcherState {
+    /// A title row above the entries: the group's name, or "Groups". `None` for the plain,
+    /// groupless list — a person with no groups sees exactly the switcher they always had.
+    pub heading: Option<String>,
+    /// The group's accent, painted behind the heading so the HUD and the band agree at a glance.
+    pub accent: Option<u32>,
     pub entries: Vec<(WindowId, String)>,
     pub selected: WindowId,
 }
@@ -69,6 +80,7 @@ pub struct ChromeState {
     scatter_cards: HashMap<WindowId, CachedWidget>,
     scatter_labels: HashMap<WindowId, CachedWidget>,
     switcher_rows: HashMap<WindowId, CachedWidget>,
+    switcher_heading: CachedWidget,
 }
 
 impl std::fmt::Debug for ChromeState {
@@ -108,6 +120,7 @@ impl ChromeState {
             scatter_cards: HashMap::new(),
             scatter_labels: HashMap::new(),
             switcher_rows: HashMap::new(),
+            switcher_heading: CachedWidget::new(),
         }
     }
 
@@ -368,12 +381,29 @@ fn collect_switcher(
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    let panel = layout::switcher_panel(local_rect, switcher.entries.len(), SWITCHER_ROW_HEIGHT);
+    let heading_rows = usize::from(switcher.heading.is_some());
+    let panel = layout::switcher_panel(
+        local_rect,
+        switcher.entries.len() + heading_rows,
+        SWITCHER_ROW_HEIGHT,
+    );
     let mut live = std::collections::HashSet::new();
+
+    if let Some(heading) = &switcher.heading {
+        collect_switcher_heading(
+            chrome,
+            heading,
+            switcher.accent,
+            layout::switcher_row(panel, 0, SWITCHER_ROW_HEIGHT),
+            output_scale,
+            renderer,
+            elements,
+        );
+    }
 
     for (index, (window_id, title)) in switcher.entries.iter().enumerate() {
         live.insert(*window_id);
-        let row = layout::switcher_row(panel, index, SWITCHER_ROW_HEIGHT);
+        let row = layout::switcher_row(panel, index + heading_rows, SWITCHER_ROW_HEIGHT);
         let selected = *window_id == switcher.selected;
         let background = if selected {
             paint::SWITCHER_SELECTED_COLOR
@@ -408,6 +438,47 @@ fn collect_switcher(
         }
     }
     chrome.switcher_rows.retain(|id, _| live.contains(id));
+}
+
+/// The switcher's title row: the group's name in its accent, or "Groups" on the panel colour.
+/// One row-shaped widget of its own — it belongs to no window, so it cannot live in the
+/// per-window row cache.
+#[allow(clippy::too_many_arguments)]
+fn collect_switcher_heading(
+    chrome: &mut ChromeState,
+    heading: &str,
+    accent: Option<u32>,
+    row: Rect,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let background = accent.map_or(paint::SWITCHER_PANEL_COLOR, paint::opaque);
+    let key = WidgetKey::new(heading.to_owned(), background);
+    let heading = heading.to_owned();
+    let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
+    let location = local_physical(row, output_scale);
+    if let Some(element) = chrome.switcher_heading.ensure(
+        key,
+        (row.width, row.height),
+        output_scale,
+        location,
+        &mut chrome.scratch,
+        renderer,
+        move |painter, pixel_w, pixel_h| {
+            paint::switcher_heading(
+                painter,
+                pixel_w,
+                pixel_h,
+                &heading,
+                background,
+                fonts,
+                scale_factor(pixel_w, row.width),
+            );
+        },
+    ) {
+        elements.push(element);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

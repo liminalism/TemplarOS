@@ -23,10 +23,22 @@ pub enum RecoveryAction {
     ShowAllWindows,
     /// `WindowService::handle_command(EscapeFullscreenOrModal { window_id: None }, ..)`.
     EscapeFullscreenOrModal,
-    /// `WindowService::cycle_focus(current, forward: true)`.
+    /// `WindowService::cycle_within_group(current, forward: true)` — `Alt+Tab` moves *inside* the
+    /// focused window's group, and the loose set is a group for this purpose, so with no group
+    /// anywhere this is exactly the switcher it has always been.
     CycleFocusForward,
-    /// `WindowService::cycle_focus(current, forward: false)`.
+    /// `WindowService::cycle_within_group(current, forward: false)`.
     CycleFocusBackward,
+    /// `Super+Tab`: `WindowService::cycle_groups(current, forward: true)` — the next group,
+    /// landing on its last active member; the loose set counts as one group.
+    GroupCycleForward,
+    /// `Super+Shift+Tab`: the previous group.
+    GroupCycleBackward,
+    /// `Super+G`: group the focused window with the previously focused one and set it down
+    /// beside it (`src/window_groups.rs`, planning doc §2 rules 1 and 6).
+    GroupWithPrevious,
+    /// `Super+Shift+G`: take the focused window out of its group.
+    UngroupFocused,
     /// "Go home": toggle the reveal that hides every client window behind the Home Surface
     /// (`WindowCommand::RevealHome`).
     RevealHome,
@@ -45,18 +57,23 @@ pub enum RecoveryAction {
 const STEP_HOPS: u8 = 2;
 
 /// Which [`RecoveryAction`], if any, `keysym` held with exactly `modifiers` performs while a
-/// "go home" reveal is (`home_revealed`) or is not in effect. Every recovery action has a
+/// "go home" reveal is (`home_revealed`) or is not in effect. Every *recovery* action has a
 /// binding that needs no logo/"super" key (not present on every keyboard, and this table must
-/// work on any keyboard by design), colliding with nothing an ordinary application binds;
-/// Super+D is an *additional* convenience for keyboards that have the key, the one arm here that
-/// requires it rather than refusing it:
+/// work on any keyboard by design), colliding with nothing an ordinary application binds. The
+/// logo chords are the additions for keyboards that have the key: Super+D for Home, the spatial
+/// step, and the window-group chords, which are conveniences rather than recovery routes — a
+/// keyboard with no logo key can still reach every window through Alt+Tab and the shelf:
 ///
 /// | Combination            | Action                    |
 /// |------------------------|---------------------------|
 /// | Ctrl+Alt+Escape        | escape fullscreen/modal   |
 /// | Ctrl+Alt+Space         | show every window         |
-/// | Alt+Tab                | cycle switcher forward    |
-/// | Alt+Shift+Tab          | cycle switcher backward   |
+/// | Alt+Tab                | next window in the group  |
+/// | Alt+Shift+Tab          | previous window in it     |
+/// | Super+Tab              | next window group         |
+/// | Super+Shift+Tab        | previous window group     |
+/// | Super+G                | group with the last window|
+/// | Super+Shift+G          | leave the group           |
 /// | Super+Left / Super+Right | step left / step right    |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
 /// | Ctrl+Alt+P             | park the active window    |
@@ -90,22 +107,40 @@ pub fn recovery_action(
             return Some(RecoveryAction::ParkFocused);
         }
     }
-    if modifiers.alt && !modifiers.ctrl && !modifiers.logo && raw == keysyms::KEY_Tab {
+    if modifiers.alt && !modifiers.ctrl && !modifiers.logo && is_tab(raw) {
         return Some(if modifiers.shift {
             RecoveryAction::CycleFocusBackward
         } else {
             RecoveryAction::CycleFocusForward
         });
     }
-    if modifiers.logo && !modifiers.ctrl && !modifiers.alt && !modifiers.shift {
-        if raw == keysyms::KEY_d || raw == keysyms::KEY_D {
-            return Some(RecoveryAction::RevealHome);
+    if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
+        // Shift-able group chords first: `Super+Tab` and `Super+G` both take a Shift variant, so
+        // they are checked before the no-Shift block below rather than duplicated inside it.
+        if is_tab(raw) {
+            return Some(if modifiers.shift {
+                RecoveryAction::GroupCycleBackward
+            } else {
+                RecoveryAction::GroupCycleForward
+            });
         }
-        if raw == keysyms::KEY_Left {
-            return Some(RecoveryAction::StepLeft);
+        if raw == keysyms::KEY_g || raw == keysyms::KEY_G {
+            return Some(if modifiers.shift {
+                RecoveryAction::UngroupFocused
+            } else {
+                RecoveryAction::GroupWithPrevious
+            });
         }
-        if raw == keysyms::KEY_Right {
-            return Some(RecoveryAction::StepRight);
+        if !modifiers.shift {
+            if raw == keysyms::KEY_d || raw == keysyms::KEY_D {
+                return Some(RecoveryAction::RevealHome);
+            }
+            if raw == keysyms::KEY_Left {
+                return Some(RecoveryAction::StepLeft);
+            }
+            if raw == keysyms::KEY_Right {
+                return Some(RecoveryAction::StepRight);
+            }
         }
     }
     if home_revealed
@@ -118,6 +153,22 @@ pub fn recovery_action(
         return Some(RecoveryAction::RevealHome);
     }
     None
+}
+
+/// "1 window" / "3 windows", for the group switcher's rows.
+fn windows_counted(count: usize) -> String {
+    if count == 1 {
+        "1 window".to_owned()
+    } else {
+        format!("{count} windows")
+    }
+}
+
+/// Whether `keysym` is a Tab, **including the one Shift produces**. With a Shift level in the
+/// layout, `Shift+Tab` resolves to `ISO_Left_Tab` rather than `Tab`, so a table that only looked
+/// for `Tab` would silently have no backward switcher at all on an ordinary keyboard.
+fn is_tab(raw: u32) -> bool {
+    raw == keysyms::KEY_Tab || raw == keysyms::KEY_ISO_Left_Tab
 }
 
 /// Whether this is either physical Super/logo key. The input handler uses this to implement the
@@ -335,40 +386,140 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 }
             }
             RecoveryAction::ParkFocused => self.park_focused(ctx),
+            RecoveryAction::GroupWithPrevious => self.group_with_previous(),
+            RecoveryAction::UngroupFocused => {
+                if let Some(window_id) = self.activated_window() {
+                    crate::window_groups::ungroup_window(self, window_id);
+                }
+            }
+            RecoveryAction::GroupCycleForward | RecoveryAction::GroupCycleBackward => {
+                let current = self.activated_window();
+                let forward = matches!(action, RecoveryAction::GroupCycleForward);
+                if let Some(next) = self.window_service.cycle_groups(current, forward) {
+                    crate::input::activate_window(self, next);
+                    self.switcher = Some(self.group_switcher(next));
+                }
+            }
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
-                let current = self
-                    .window_service
-                    .windows()
-                    .find(|window| window.activated)
-                    .map(|window| window.id);
+                let current = self.activated_window();
                 let forward = matches!(action, RecoveryAction::CycleFocusForward);
-                if let Some(next) = self.window_service.cycle_focus(current, forward) {
+                // Inside the focused window's group, or the loose set when it is in none
+                // (planning doc §2 rule 4: the feature costs nothing until a group exists).
+                if let Some(next) = self.window_service.cycle_within_group(current, forward) {
                     crate::input::activate_window(self, next);
                     // Draw the compositor-owned fallback switcher HUD (`src/chrome/mod.rs`) so
-                    // cycling is visible without the shell — stacking order for a stable,
-                    // deterministic list (`WindowService::windows()`'s own order is not
-                    // guaranteed). `src/input.rs` clears this on the next input that is not
-                    // itself another switcher step.
-                    let entries = self
-                        .window_service
-                        .stacking_order()
-                        .into_iter()
-                        .filter_map(|id| {
-                            self.window_service
-                                .window(id)
-                                .filter(|window| {
-                                    self.window_service.is_client_window(id) && !window.shelved
-                                })
-                                .map(|window| (id, window.title.clone()))
-                        })
-                        .collect();
-                    self.switcher = Some(crate::chrome::SwitcherState {
-                        entries,
-                        selected: next,
-                    });
+                    // cycling is visible without the shell. `src/input.rs` clears it on the next
+                    // input that is not itself another switcher step.
+                    self.switcher = Some(self.within_group_switcher(next));
                 }
             }
         }
+    }
+
+    /// The window that currently holds the keyboard, if any.
+    fn activated_window(&self) -> Option<lege_window::WindowId> {
+        self.window_service
+            .windows()
+            .find(|window| window.activated)
+            .map(|window| window.id)
+    }
+
+    /// `Super+G`: group the focused window with the one focused before it, and set the focused
+    /// one down beside that (planning doc §2.1). The previously focused window is the anchor, so
+    /// the window the person is looking at is the one that moves — moving the *other* one would
+    /// rearrange a window they are not currently attending to.
+    fn group_with_previous(&mut self) {
+        let Some(focused) = self.activated_window() else {
+            return;
+        };
+        let Some(previous) = self.previous_focus.filter(|id| *id != focused) else {
+            tracing::debug!("Super+G with no previously focused window to group with");
+            return;
+        };
+        crate::window_groups::group_windows(self, previous, focused);
+    }
+
+    /// The `Alt+Tab` HUD: this group's members under the group's name, in stacking order. A loose
+    /// window gets the plain list it always had, with no heading.
+    fn within_group_switcher(
+        &self,
+        selected: lege_window::WindowId,
+    ) -> crate::chrome::SwitcherState {
+        let group = self.window_service.group_of(selected);
+        let entries = self
+            .window_service
+            .stacking_order()
+            .into_iter()
+            .filter(|id| self.window_service.group_of(*id) == group)
+            .filter_map(|id| {
+                self.window_service
+                    .window(id)
+                    .filter(|window| self.window_service.is_client_window(id) && !window.shelved)
+                    .map(|window| (id, window.title.clone()))
+            })
+            .collect();
+        let record = group.and_then(|group| self.window_service.group_record(group));
+        crate::chrome::SwitcherState {
+            heading: record.map(|record| match record.display_name() {
+                "" => "Group".to_owned(),
+                name => name.to_owned(),
+            }),
+            accent: record.map(|record| record.accent),
+            entries,
+            selected,
+        }
+    }
+
+    /// The `Super+Tab` HUD: one row per group with its member count, the loose set last under
+    /// "Other windows" — the same list `cycle_groups` steps through, in the same order.
+    fn group_switcher(&self, selected: lege_window::WindowId) -> crate::chrome::SwitcherState {
+        let entries = self
+            .window_service
+            .group_cycle_targets()
+            .into_iter()
+            .map(|target| (target, self.group_label(target)))
+            .collect();
+        crate::chrome::SwitcherState {
+            heading: Some("Groups".to_owned()),
+            accent: None,
+            entries,
+            selected,
+        }
+    }
+
+    /// One row of the group switcher: the group's name and how many of its windows are on the
+    /// workspace, or "Other windows" for the loose set (planning doc §2 rule 4 — the loose set is
+    /// a group here, and saying so is what makes the list complete).
+    fn group_label(&self, target: lege_window::WindowId) -> String {
+        let unshelved = |id: &lege_window::WindowId| {
+            self.window_service
+                .window(*id)
+                .is_some_and(|window| !window.shelved)
+        };
+        let Some(group) = self.window_service.group_of(target) else {
+            let count = self
+                .window_service
+                .windows()
+                .filter(|window| {
+                    self.window_service.is_client_window(window.id)
+                        && !window.shelved
+                        && window.group.is_none()
+                })
+                .count();
+            return format!("Other windows — {}", windows_counted(count));
+        };
+        let count = self
+            .window_service
+            .group_members(group)
+            .iter()
+            .filter(|id| unshelved(id))
+            .count();
+        let name = self
+            .window_service
+            .group_record(group)
+            .map_or("", lege_window::GroupRecord::display_name);
+        let name = if name.is_empty() { "Group" } else { name };
+        format!("{name} — {}", windows_counted(count))
     }
 
     fn park_focused(&mut self, ctx: CommandContext) {
@@ -490,13 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn super_d_goes_home_and_is_the_only_logo_binding() {
+    fn super_d_goes_home_and_unclaimed_logo_chords_stay_free() {
         assert_eq!(
             recovery_action(logo(), Keysym::new(keysyms::KEY_d), false),
             Some(RecoveryAction::RevealHome)
         );
-        // The logo key never changes the meaning of the any-keyboard combinations, and no other
-        // logo chord is reserved.
+        // The logo key never changes the meaning of the any-keyboard combinations, and a logo
+        // chord this table does not name is left to whatever the user is running.
         let with_logo = ModifiersState {
             ctrl: true,
             alt: true,
@@ -515,6 +666,81 @@ mod tests {
             recovery_action(logo(), Keysym::new(keysyms::KEY_Escape), false),
             None
         );
+    }
+
+    fn logo_shift() -> ModifiersState {
+        ModifiersState {
+            logo: true,
+            shift: true,
+            ..Default::default()
+        }
+    }
+
+    /// Shift+Tab is `ISO_Left_Tab` on an ordinary layout, not a shifted `Tab`. Both switchers
+    /// have to know that, or "previous" quietly does nothing at all.
+    #[test]
+    fn shift_tab_reaches_the_backward_switcher_as_iso_left_tab_too() {
+        for backward in [keysyms::KEY_Tab, keysyms::KEY_ISO_Left_Tab] {
+            assert_eq!(
+                recovery_action(mods(false, true, true), Keysym::new(backward), false),
+                Some(RecoveryAction::CycleFocusBackward)
+            );
+            assert_eq!(
+                recovery_action(logo_shift(), Keysym::new(backward), false),
+                Some(RecoveryAction::GroupCycleBackward)
+            );
+        }
+    }
+
+    /// `Super+Tab` crosses between groups — and `Ctrl+Tab` is reserved by nothing here, because
+    /// it belongs to the browser, the terminal and the editor (planning doc §2.1).
+    #[test]
+    fn super_tab_cycles_groups_and_ctrl_tab_is_never_reserved() {
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_Tab), false),
+            Some(RecoveryAction::GroupCycleForward)
+        );
+        for modifiers in [mods(true, false, false), mods(true, false, true)] {
+            assert_eq!(
+                recovery_action(modifiers, Keysym::new(keysyms::KEY_Tab), false),
+                None,
+                "Ctrl+Tab must reach the application"
+            );
+        }
+    }
+
+    #[test]
+    fn super_g_groups_with_the_previous_window_and_shift_leaves_the_group() {
+        assert_eq!(
+            recovery_action(logo(), Keysym::new(keysyms::KEY_g), false),
+            Some(RecoveryAction::GroupWithPrevious)
+        );
+        assert_eq!(
+            recovery_action(logo_shift(), Keysym::new(keysyms::KEY_G), false),
+            Some(RecoveryAction::UngroupFocused)
+        );
+        // Neither is reachable without the logo key: G is a letter people type.
+        assert_eq!(
+            recovery_action(
+                mods(false, false, false),
+                Keysym::new(keysyms::KEY_g),
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_g), false),
+            None
+        );
+    }
+
+    /// The Shift-less logo chords stay Shift-less: Super+Shift+D and Super+Shift+Right are not
+    /// ours, so an application can still bind them.
+    #[test]
+    fn the_shiftless_logo_chords_are_not_claimed_with_shift_held() {
+        for key in [keysyms::KEY_d, keysyms::KEY_Right, keysyms::KEY_Left] {
+            assert_eq!(recovery_action(logo_shift(), Keysym::new(key), false), None);
+        }
     }
 
     #[test]
@@ -736,6 +962,7 @@ mod tests {
                 Key::Character('h') => keysyms::KEY_h,
                 Key::Character('d') => keysyms::KEY_d,
                 Key::Character('p') => keysyms::KEY_p,
+                Key::Character('g') => keysyms::KEY_g,
                 // Not a combination the keysym table can answer: the bare tap is a gesture,
                 // tracked by `SuperTapTracker`, and the rest belong to the shell.
                 _ => return None,
@@ -763,6 +990,16 @@ mod tests {
             (RecoveryAction::StepRight, "window.step-right"),
             (RecoveryAction::StepLeft, "window.step-left"),
             (RecoveryAction::ParkFocused, "window.park"),
+            (
+                RecoveryAction::GroupCycleForward,
+                "window.group-cycle-forward",
+            ),
+            (
+                RecoveryAction::GroupCycleBackward,
+                "window.group-cycle-backward",
+            ),
+            (RecoveryAction::GroupWithPrevious, "window.group"),
+            (RecoveryAction::UngroupFocused, "window.ungroup"),
         ];
         for (action, id) in expected {
             let declaration = action::action(id).unwrap_or_else(|| panic!("{id} is not declared"));

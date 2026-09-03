@@ -120,6 +120,11 @@ impl Modifiers {
         shift: true,
         ..Modifiers::NONE
     };
+    pub const LOGO_SHIFT: Modifiers = Modifiers {
+        logo: true,
+        shift: true,
+        ..Modifiers::NONE
+    };
 }
 
 impl fmt::Display for Modifiers {
@@ -320,6 +325,8 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    // Alt+Tab moves inside the focused window's *group*; with no group anywhere the loose set is
+    // the group, so this is the switcher it has always been (planning doc §2 rules 3-4).
     ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",
@@ -336,6 +343,29 @@ pub const MANIFEST: &[ActionDecl] = &[
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::ALT_SHIFT, Key::Tab)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    // Super+Tab crosses between groups, and there is deliberately no Ctrl+Tab and no setting:
+    // Ctrl+Tab is the tab-cycling chord in every browser, terminal and editor, and a
+    // compositor-reserved chord wins (planning doc §2.1).
+    ActionDecl {
+        id: "window.group-cycle-forward",
+        label: "Next window group",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO, Key::Tab)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.group-cycle-backward",
+        label: "Previous window group",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO_SHIFT, Key::Tab)],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
@@ -477,6 +507,29 @@ pub const MANIFEST: &[ActionDecl] = &[
         // Compositor-owned so the one-workspace substitute remains available with the shell
         // dead, alongside show-all and the fallback switcher.
         chords: &[Chord::new(Modifiers::CTRL_ALT, Key::Character('p'))],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    // Window groups: explicit, user-made, and never inferred (planning doc §2 rule 1). Grouping
+    // also *places* — the joining window is set down beside the other one, edge to edge — which
+    // is why this is one action and not "group" plus "arrange".
+    ActionDecl {
+        id: "window.group",
+        label: "Group with the last window",
+        control: Some("Group"),
+        category: ActionCategory::Window,
+        chords: &[Chord::new(Modifiers::LOGO, Key::Character('g'))],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.ungroup",
+        label: "Leave group",
+        control: Some("Ungroup"),
+        category: ActionCategory::Window,
+        chords: &[Chord::new(Modifiers::LOGO_SHIFT, Key::Character('g'))],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,

@@ -86,8 +86,19 @@ impl<B: Backend + 'static> WaylandDndGrabHandler for LegeCompState<B> {}
 /// ordinary pointer click here and from a successful xdg-activation grant
 /// (`src/xdg_shell.rs::XdgActivationHandler::request_activation`).
 pub fn activate_window<B: Backend + 'static>(state: &mut LegeCompState<B>, window_id: WindowId) {
+    // Who had the keyboard *before* this — what `Super+G` groups the focused window with. Read
+    // before the activation, because `WindowService::activate` clears the flag it comes from.
+    let outgoing = state
+        .window_service
+        .windows()
+        .find(|window| window.activated)
+        .map(|window| window.id)
+        .filter(|id| *id != window_id);
     if !state.window_service.activate(window_id) {
         return;
+    }
+    if let Some(outgoing) = outgoing {
+        state.previous_focus = Some(outgoing);
     }
     let Some(wl_surface) = state.windows.surface_for(window_id).cloned() else {
         return;

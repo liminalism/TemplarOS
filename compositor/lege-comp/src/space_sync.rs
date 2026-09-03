@@ -116,6 +116,10 @@ pub fn on_window_destroyed<B: Backend + 'static>(
 ) {
     let record = state.window_service.window(window_id).cloned();
     state.window_service.on_toplevel_destroyed(window_id);
+    if state.previous_focus == Some(window_id) {
+        // `Super+G` must never name a window that is gone; the next activation refills this.
+        state.previous_focus = None;
+    }
 
     if let Some(record) = record {
         let pid_still_live = state

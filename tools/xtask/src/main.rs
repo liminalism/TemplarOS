@@ -90,7 +90,30 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
 /// not yet placeable on a surface fails loudly *here*, with a written reason, instead of quietly
 /// re-creating the keyboard-only set this check was written to eliminate. Each entry is
 /// `(action id, why)` and every one of them is a bug with a date on it.
-const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[];
+const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
+    // 2026-09-03, window groups (docs/planning/window-groups-and-application-integration.md §3).
+    // The compositor implements all four chords and the pointer route for grouping already
+    // exists on the workspace — dropping a window's band on another's band groups them, and the
+    // Home tile gestures are WG4 — but the *menu* rows belong to the shell's context menu
+    // (`shell/lege-shell/src/surface/context_menu.rs`, MenuScope::Window), which is a separate
+    // lane. Remove these four the moment those rows land.
+    (
+        "window.group-cycle-forward",
+        "compositor chord; the shell's window context menu still needs the row",
+    ),
+    (
+        "window.group-cycle-backward",
+        "compositor chord; the shell's window context menu still needs the row",
+    ),
+    (
+        "window.group",
+        "compositor chord and band drop; the shell's window context menu still needs the row",
+    ),
+    (
+        "window.ungroup",
+        "compositor chord; the shell's window context menu still needs the row",
+    ),
+];
 
 /// Every declared action's `cli_verb` reaches a real `lege` subcommand, every action id a shell
 /// surface performs is declared, and every action with an accelerator also has a pointer route.
