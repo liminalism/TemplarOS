@@ -21,14 +21,17 @@
 
 #![forbid(unsafe_code)]
 
+pub mod coalesce;
 pub mod error;
 pub mod generation;
 pub mod model;
 pub mod mutation;
 pub mod query;
+pub mod reconcile;
 pub mod scan;
 pub mod schema;
 pub mod snapshot;
+pub mod watch;
 
 pub use error::{IndexError, Result};
 pub use generation::{
