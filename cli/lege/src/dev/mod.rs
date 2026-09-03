@@ -108,11 +108,11 @@ pub fn installed_versions(status_text: &str, packages: &[&str]) -> BTreeMap<Stri
 ///
 /// # Errors
 /// If the convergence cannot be serialised for `--json`.
-pub fn status(repo_root: PathBuf, root: &Path, target: Option<&str>, json: bool) -> Result<String> {
+pub fn status(repo_root: &Path, root: &Path, target: Option<&str>, json: bool) -> Result<String> {
     let matrix = load_matrix(root);
     let observation = observe(root, &matrix);
     let convergence = converge::converge(&matrix, &observation, target);
-    let identities = identities(&repo_root, root, &convergence);
+    let identities = identities(repo_root, root, &convergence);
     if json {
         let mut value = report::as_json(&convergence);
         if let Some(object) = value.as_object_mut() {
@@ -440,6 +440,26 @@ pub struct DeployOptions {
 /// # Errors
 /// If the set was never built, apt refuses it, or a component fails its health gate — in which
 /// case the rollback command is printed, or run for you with `--auto-rollback`.
+/// The whole userspace, on btrfs, before apt touches anything; on any other filesystem the line
+/// says so instead of pretending.
+fn snapshot_root_before_install(
+    runner: &dyn cmd::CommandRunner,
+    root: &Path,
+    set_id: &str,
+    out: &mut String,
+) -> Result<()> {
+    match gates::root_snapshot(root, set_id) {
+        Some(snapshot) => {
+            gates::take_root_snapshot(runner, root, &snapshot).with_context(|| {
+                format!("taking the root snapshot at {}", snapshot.target.display())
+            })?;
+            let _ = writeln!(out, "root snapshot: {}", snapshot.target.display());
+        }
+        None => out.push_str("root snapshot: none — root is not btrfs\n"),
+    }
+    Ok(())
+}
+
 pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Result<String> {
     let (set, _) = lege_build::BuildSet::read(&options.build_set).with_context(|| {
         format!(
@@ -476,15 +496,7 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     // Before apt touches anything: the whole userspace, on btrfs, for the failure that a
     // reinstall of the previous debs cannot undo because the maintainer scripts already ran.
     let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
-    match gates::root_snapshot(root, &set.id) {
-        Some(snapshot) => {
-            gates::take_root_snapshot(runner.as_ref(), root, &snapshot).with_context(|| {
-                format!("taking the root snapshot at {}", snapshot.target.display())
-            })?;
-            let _ = writeln!(out, "root snapshot: {}", snapshot.target.display());
-        }
-        None => out.push_str("root snapshot: none — root is not btrfs\n"),
-    }
+    snapshot_root_before_install(runner.as_ref(), root, &set.id, &mut out)?;
     let gate = gates::run(
         &matrix,
         &set,
