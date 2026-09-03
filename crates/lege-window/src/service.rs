@@ -3,15 +3,16 @@
 
 use crate::{
     geometry::{
-        Output, Point, RecoveryAffordance, Rect, ResizeEdges, choose_target_output,
+        Output, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect, choose_target_output,
         recovery_affordance, repair_window, resize_grip, resize_rect,
     },
+    group::{GroupId, GroupRecord, accent_for},
     layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition},
-    shell::ShellToplevel,
+    shell::{GroupInfo, ShellToplevel},
 };
 use lege_types::{AppId, InstanceId, WindowClaims};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct WindowId(pub u64);
@@ -90,6 +91,9 @@ pub struct WindowRecord {
     /// The geometry to return to on unmaximize — what the window had before
     /// [`WindowService::set_maximized`] grew it.
     pub restore_geometry: Option<Rect>,
+    /// The window group this window belongs to, if any (`crate::group`). Membership lives here,
+    /// on the window, so no window can be in two groups.
+    pub group: Option<GroupId>,
 }
 
 /// Why one command was refused by the compositor before it could touch [`WindowService`] state.
@@ -144,6 +148,10 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
+    /// Every live window group. Ordered so that iteration — the switcher's group list, the
+    /// snapshot — is deterministic rather than hash-ordered.
+    groups: BTreeMap<GroupId, GroupRecord>,
+    next_group_id: u64,
 }
 
 impl<I: IdentityCache> WindowService<I> {
@@ -160,6 +168,8 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
             arrangement_baseline: None,
+            groups: BTreeMap::new(),
+            next_group_id: 1,
         }
     }
 
@@ -228,6 +238,7 @@ impl<I: IdentityCache> WindowService<I> {
                 shelf_rank: None,
                 maximized: false,
                 restore_geometry: None,
+                group: None,
             },
         );
         // A window the user just opened must be seen: a reveal that hid everything ends the
@@ -292,8 +303,14 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     pub fn on_toplevel_destroyed(&mut self, window_id: WindowId) {
+        let group = self.group_of(window_id);
         self.windows.remove(&window_id);
         self.layers.remove(window_id);
+        // Rule 5: a group has at least two members, so the last-but-one departure — a window
+        // closing included — dissolves it rather than leaving a group of one.
+        if let Some(group) = group {
+            self.settle_group(group);
+        }
         if self.drag.is_some_and(|drag| drag.window_id == window_id) {
             self.drag = None;
         }
@@ -739,6 +756,11 @@ impl<I: IdentityCache> WindowService<I> {
 
     /// Give `window_id` keyboard focus: clears `activated` on every other window and raises it
     /// to the top of its layer. Returns `false` if the window does not exist.
+    ///
+    /// A grouped window raises its **whole group** contiguously, keeping the members' relative
+    /// order with the activated one on top (planning doc §2 rule 3). That is what makes a group
+    /// behave as one set of windows rather than as a label — and it is also why it is safe:
+    /// raising changes rank, never geometry, so the recovery invariant cannot notice it.
     pub fn activate(&mut self, window_id: WindowId) -> bool {
         if !self.windows.contains_key(&window_id) {
             return false;
@@ -746,7 +768,21 @@ impl<I: IdentityCache> WindowService<I> {
         for window in self.windows.values_mut() {
             window.activated = window.id == window_id;
         }
-        self.layers.raise(window_id);
+        if let Some(group) = self.group_of(window_id) {
+            let mut order: Vec<WindowId> = self
+                .layers
+                .order()
+                .into_iter()
+                .filter(|id| *id != window_id && self.group_of(*id) == Some(group))
+                .collect();
+            order.insert(0, window_id);
+            self.layers.raise_many(&order);
+            if let Some(record) = self.groups.get_mut(&group) {
+                record.last_active = window_id;
+            }
+        } else {
+            self.layers.raise(window_id);
+        }
         // Activating a window (a click on its tile from the Home Field, say) is the user asking
         // for it: a reveal that was hiding it ends here, for free, with nothing else to undo.
         self.home_revealed = false;
@@ -818,30 +854,337 @@ impl<I: IdentityCache> WindowService<I> {
     /// are reached through the Window Shelf, not the switcher. `current` of `None`, or a window
     /// no longer in the order, starts from the top.
     pub fn cycle_focus(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
+        step_through(&self.switchable_order(), current, forward)
+    }
+
+    // ---- Window groups ---------------------------------------------------------------------
+    //
+    // Explicit, compositor-owned sets of two or more windows that park, return and stack as one
+    // (`crate::group`, planning doc §2). Everything below is membership and stacking; the only
+    // geometry any of it touches is `place_beside`/`move_group`, and both end in `repair_window`.
+
+    /// Every live group, by id.
+    pub fn groups(&self) -> &BTreeMap<GroupId, GroupRecord> {
+        &self.groups
+    }
+
+    pub fn group_record(&self, group: GroupId) -> Option<&GroupRecord> {
+        self.groups.get(&group)
+    }
+
+    /// Which group `window_id` belongs to, if any.
+    pub fn group_of(&self, window_id: WindowId) -> Option<GroupId> {
+        self.windows.get(&window_id).and_then(|window| window.group)
+    }
+
+    /// Every member of `group`, by window id — a stable order that does not depend on stacking.
+    pub fn group_members(&self, group: GroupId) -> Vec<WindowId> {
+        let mut members: Vec<WindowId> = self
+            .windows
+            .values()
+            .filter(|window| window.group == Some(group))
+            .map(|window| window.id)
+            .collect();
+        members.sort_unstable();
+        members
+    }
+
+    /// `group`'s members in stacking order, top-most first.
+    pub fn group_stacking(&self, group: GroupId) -> Vec<WindowId> {
+        self.layers
+            .order()
+            .into_iter()
+            .filter(|id| self.group_of(*id) == Some(group))
+            .collect()
+    }
+
+    /// Put `b` in `a`'s group, making one if neither has one and merging the two if both do.
+    ///
+    /// `a` is the anchor: when both windows are already grouped, `a`'s group — its id, name and
+    /// accent — is the one that survives, and `b`'s members all move into it. When only `b` has a
+    /// group, `b`'s group survives and `a` joins it: dissolving a live group (with its name and
+    /// its colour) to honour an identity rule would be a worse answer than the one the user can
+    /// already see on screen.
+    ///
+    /// Returns the surviving group, or `None` if either window is unknown, is not a client
+    /// window, or the two are the same window. **Placement is not done here** — see
+    /// [`Self::place_beside`] and `WindowCommand::Group`, the route that both groups and places
+    /// (planning doc §2 rule 6).
+    pub fn group(&mut self, a: WindowId, b: WindowId) -> Option<GroupId> {
+        if a == b || !self.is_client_window(a) || !self.is_client_window(b) {
+            return None;
+        }
+        let group = match (self.group_of(a), self.group_of(b)) {
+            (Some(existing), _) | (None, Some(existing)) => existing,
+            (None, None) => {
+                let id = GroupId(self.next_group_id);
+                self.next_group_id = self.next_group_id.saturating_add(1);
+                self.groups.insert(
+                    id,
+                    GroupRecord {
+                        name: None,
+                        accent: accent_for(id),
+                        last_active: a,
+                    },
+                );
+                id
+            }
+        };
+        if let Some(other) = self.group_of(b)
+            && other != group
+        {
+            for member in self.group_members(other) {
+                self.set_group(member, Some(group));
+            }
+            self.groups.remove(&other);
+        }
+        self.set_group(a, Some(group));
+        self.set_group(b, Some(group));
+        if let Some(record) = self.groups.get_mut(&group) {
+            record.last_active = a;
+        }
+        Some(group)
+    }
+
+    /// Take `window_id` out of its group, dissolving the group if that leaves it with fewer than
+    /// two members. Returns the group it left.
+    pub fn ungroup(&mut self, window_id: WindowId) -> Option<GroupId> {
+        let group = self.group_of(window_id)?;
+        self.set_group(window_id, None);
+        self.settle_group(group);
+        Some(group)
+    }
+
+    /// Name `window_id`'s group. Returns the group, or `None` if the window is in none.
+    pub fn set_group_name(&mut self, window_id: WindowId, name: Option<String>) -> Option<GroupId> {
+        let group = self.group_of(window_id)?;
+        let record = self.groups.get_mut(&group)?;
+        record.name = name.filter(|name| !name.is_empty());
+        Some(group)
+    }
+
+    /// Set one window's membership without touching the group table.
+    fn set_group(&mut self, window_id: WindowId, group: Option<GroupId>) {
+        if let Some(window) = self.windows.get_mut(&window_id) {
+            window.group = group;
+        }
+    }
+
+    /// Keep `group` honest after a membership change: dissolve it when fewer than two members are
+    /// left (rule 5), and keep `last_active` pointing at a member that still exists.
+    fn settle_group(&mut self, group: GroupId) {
+        let members = self.group_members(group);
+        if members.len() < 2 {
+            for member in members {
+                self.set_group(member, None);
+            }
+            self.groups.remove(&group);
+            return;
+        }
+        if let Some(record) = self.groups.get_mut(&group)
+            && !members.contains(&record.last_active)
+        {
+            record.last_active = members[0];
+        }
+    }
+
+    /// Shelve every member of `window_id`'s group under **one** shelf rank, so the Window Shelf
+    /// lists the group as a single entry rather than as scattered windows. A window in no group
+    /// is shelved alone. Returns the windows now on the shelf.
+    pub fn shelve_group(&mut self, window_id: WindowId) -> Vec<WindowId> {
+        let members = self.group_or_window(window_id);
+        if members.is_empty() {
+            return Vec::new();
+        }
+        let rank = self.next_shelf_rank;
+        self.next_shelf_rank = self.next_shelf_rank.saturating_add(1);
+        for id in &members {
+            if let Some(window) = self.windows.get_mut(id) {
+                window.shelved = true;
+                window.shelf_rank = Some(rank);
+                window.activated = false;
+            }
+        }
+        members
+    }
+
+    /// Bring every shelved member of `window_id`'s group back, each geometry re-validated against
+    /// the current topology exactly as [`Self::unshelve`] does. Returns what came back.
+    pub fn unshelve_group(&mut self, window_id: WindowId) -> Vec<(WindowId, Rect)> {
+        self.group_or_window(window_id)
+            .into_iter()
+            .filter_map(|id| self.unshelve(id).map(|geometry| (id, geometry)))
+            .collect()
+    }
+
+    /// `window_id`'s group's members, or just `window_id` when it is in no group. Empty for a
+    /// window the service does not know.
+    fn group_or_window(&self, window_id: WindowId) -> Vec<WindowId> {
+        match self.group_of(window_id) {
+            Some(group) => self.group_members(group),
+            None if self.windows.contains_key(&window_id) => vec![window_id],
+            None => Vec::new(),
+        }
+    }
+
+    /// Move `anchor` to `geometry` and every other member of its group by the same displacement,
+    /// repairing each one. Returns every window that moved, with the geometry to configure.
+    ///
+    /// This is the discrete "move the group": the Home tile, a finished band drag. An interactive
+    /// drag moves the followers as it goes and repairs once at the end, exactly as it does for a
+    /// lone window (COMPOSITOR.md's drag rows).
+    pub fn move_group(&mut self, anchor: WindowId, geometry: Rect) -> Vec<(WindowId, Rect)> {
+        let Some(current) = self.window(anchor).map(|window| window.geometry) else {
+            return Vec::new();
+        };
+        let dx = geometry.x.saturating_sub(current.x);
+        let dy = geometry.y.saturating_sub(current.y);
+        let mut moves = Vec::new();
+        for id in self.group_or_window(anchor) {
+            let Some(window) = self.windows.get(&id) else {
+                continue;
+            };
+            let target = if id == anchor {
+                geometry
+            } else {
+                Rect {
+                    x: window.geometry.x.saturating_add(dx),
+                    y: window.geometry.y.saturating_add(dy),
+                    ..window.geometry
+                }
+            };
+            let repaired = repair_window(target, &self.outputs);
+            self.set_geometry(id, repaired);
+            moves.push((id, repaired));
+        }
+        moves
+    }
+
+    /// Set `window_id` down beside `target` — the nearest free side, edge to edge
+    /// (`geometry::place_beside`). A window already beside its target is left exactly where the
+    /// user put it. Returns the geometry to configure, or `None` when nothing moved.
+    pub fn place_beside(&mut self, window_id: WindowId, target: WindowId) -> Option<Rect> {
+        if window_id == target {
+            return None;
+        }
+        let window = self.window(window_id)?.geometry;
+        let target_geometry = self.window(target)?.geometry;
+        if crate::geometry::is_beside(window, target_geometry) {
+            return None;
+        }
+        let placed = crate::geometry::place_beside(window, target_geometry, &self.outputs);
+        let record = self.windows.get_mut(&window_id)?;
+        // A maximized window that is set down beside something is no longer maximized: its
+        // geometry would otherwise be re-derived from its output on the next topology change,
+        // which would silently undo the placement.
+        record.maximized = false;
+        record.restore_geometry = None;
+        record.geometry = placed;
+        Some(placed)
+    }
+
+    /// The rectangle the compositor draws a group's outline around: the union of its
+    /// **unshelved** members' geometries (planning doc §2 rule 7). `None` for an unknown group or
+    /// one whose members are all shelved.
+    pub fn group_outline(&self, group: GroupId) -> Option<Rect> {
+        let rects: Vec<Rect> = self
+            .group_members(group)
+            .into_iter()
+            .filter_map(|id| self.windows.get(&id))
+            .filter(|window| !window.shelved)
+            .map(|window| window.geometry)
+            .collect();
+        bounding_rect(&rects)
+    }
+
+    /// `Alt+Tab`: the next (or previous) window **inside `current`'s group**, in stacking order,
+    /// shelved windows skipped. A window in no group cycles the loose set, which is why this is
+    /// the ordinary switcher too — with no group anywhere it behaves exactly like
+    /// [`Self::cycle_focus`] (planning doc §2 rule 4).
+    pub fn cycle_within_group(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
+        let scope = current.and_then(|id| self.group_of(id));
         let order: Vec<WindowId> = self
-            .layers
+            .switchable_order()
+            .into_iter()
+            .filter(|id| self.group_of(*id) == scope)
+            .collect();
+        step_through(&order, current, forward)
+    }
+
+    /// `Super+Tab`: the window to land on in the next (or previous) *group*.
+    ///
+    /// One entry per group, ordered by the stacking order of their top-most member, plus one
+    /// entry for the loose set (its top-most ungrouped window). A group's entry is its
+    /// `last_active` member when that member is still live and unshelved, otherwise its top-most
+    /// one — so coming back to a group comes back to the window you left it on.
+    pub fn cycle_groups(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
+        let targets = self.group_cycle_targets();
+        if targets.is_empty() {
+            return None;
+        }
+        let scope = current.and_then(|id| self.group_of(id));
+        let here = current.and_then(|current| {
+            self.windows.get(&current)?;
+            targets
+                .iter()
+                .position(|target| self.group_of(*target) == scope)
+        });
+        let Some(position) = here else {
+            return Some(targets[0]);
+        };
+        let len = targets.len();
+        let next = if forward {
+            (position + 1) % len
+        } else {
+            (position + len - 1) % len
+        };
+        Some(targets[next])
+    }
+
+    /// One focus target per group, in stacking order, with the loose set counted as one group —
+    /// the list `Super+Tab` steps through and the group switcher HUD renders.
+    pub fn group_cycle_targets(&self) -> Vec<WindowId> {
+        let mut targets = Vec::new();
+        let mut seen: std::collections::BTreeSet<GroupId> = std::collections::BTreeSet::new();
+        let mut loose_taken = false;
+        for id in self.switchable_order() {
+            match self.group_of(id) {
+                Some(group) => {
+                    if !seen.insert(group) {
+                        continue;
+                    }
+                    let landing = self
+                        .groups
+                        .get(&group)
+                        .map(|record| record.last_active)
+                        .filter(|member| {
+                            self.group_of(*member) == Some(group)
+                                && self.windows.get(member).is_some_and(|w| !w.shelved)
+                        })
+                        .unwrap_or(id);
+                    targets.push(landing);
+                }
+                None => {
+                    if !loose_taken {
+                        loose_taken = true;
+                        targets.push(id);
+                    }
+                }
+            }
+        }
+        targets
+    }
+
+    /// Every window a switcher may land on, top-most first: client windows that are not shelved.
+    fn switchable_order(&self) -> Vec<WindowId> {
+        self.layers
             .order()
             .into_iter()
             .filter(|id| {
                 self.is_client_window(*id)
                     && self.windows.get(id).is_some_and(|window| !window.shelved)
             })
-            .collect();
-        if order.is_empty() {
-            return None;
-        }
-        let Some(position) =
-            current.and_then(|id| order.iter().position(|candidate| *candidate == id))
-        else {
-            return Some(order[0]);
-        };
-        let len = order.len();
-        let next = if forward {
-            (position + 1) % len
-        } else {
-            (position + len - 1) % len
-        };
-        Some(order[next])
+            .collect()
     }
 
     pub fn window(&self, window_id: WindowId) -> Option<&WindowRecord> {
@@ -889,9 +1232,35 @@ impl<I: IdentityCache> WindowService<I> {
             maximized: window.maximized,
             geometry: window.geometry,
             layer: self.layer_of(window.id).unwrap_or(Layer::Normal),
-            group: None,
+            group: window.group.and_then(|id| {
+                self.groups.get(&id).map(|record| GroupInfo {
+                    group_id: id.0,
+                    name: record.display_name().to_owned(),
+                    accent: record.accent,
+                })
+            }),
         }
     }
+}
+
+/// One step forward or backward through `order`, wrapping. `current` absent from the list — a
+/// window that has just been shelved, or one in another group — starts from the top, which is
+/// what makes every switcher land somewhere rather than nowhere.
+fn step_through(order: &[WindowId], current: Option<WindowId>, forward: bool) -> Option<WindowId> {
+    if order.is_empty() {
+        return None;
+    }
+    let Some(position) = current.and_then(|id| order.iter().position(|candidate| *candidate == id))
+    else {
+        return Some(order[0]);
+    };
+    let len = order.len();
+    let next = if forward {
+        (position + 1) % len
+    } else {
+        (position + len - 1) % len
+    };
+    Some(order[next])
 }
 
 /// Where a maximized window goes: the usable area of the output nearest `current`. Always
@@ -1607,6 +1976,304 @@ mod tests {
                     second.window(second_id).unwrap().geometry,
                 );
             }
+        }
+    }
+
+    // ---- Window groups -----------------------------------------------------------------
+
+    /// Three windows on one output, none of them grouped yet.
+    fn service_with(count: u32) -> (WindowService<FakeCache>, Vec<WindowId>) {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let ids = (0..count)
+            .map(|index| {
+                let offset = 40 * i32::try_from(index).unwrap_or(0);
+                service.on_toplevel_mapped(
+                    index + 1,
+                    ClientKind::Application,
+                    WindowClaims::default(),
+                    format!("window {index}"),
+                    Rect::new(200 + offset, 200 + offset, 300, 200),
+                )
+            })
+            .collect();
+        (service, ids)
+    }
+
+    #[test]
+    fn grouping_two_loose_windows_makes_one_group_of_exactly_them() {
+        let (mut service, ids) = service_with(3);
+        let group = service.group(ids[0], ids[1]).expect("two client windows");
+        assert_eq!(service.group_members(group), vec![ids[0], ids[1]]);
+        assert_eq!(service.group_of(ids[2]), None);
+        assert_eq!(service.groups().len(), 1);
+        assert_eq!(
+            service.group_record(group).unwrap().accent,
+            crate::group::accent_for(group)
+        );
+    }
+
+    /// Merging: `a` is the anchor, so its group's id, name and accent survive and `b`'s members
+    /// all move across.
+    #[test]
+    fn merging_two_groups_keeps_the_anchors_identity() {
+        let (mut service, ids) = service_with(4);
+        let first = service.group(ids[0], ids[1]).unwrap();
+        let second = service.group(ids[2], ids[3]).unwrap();
+        service.set_group_name(ids[0], Some("Writing".into()));
+        assert_ne!(first, second);
+
+        let survivor = service.group(ids[0], ids[2]).unwrap();
+        assert_eq!(survivor, first);
+        assert_eq!(service.groups().len(), 1);
+        assert_eq!(service.group_members(first), ids);
+        assert_eq!(
+            service.group_record(first).unwrap().display_name(),
+            "Writing"
+        );
+    }
+
+    /// A window with no group joining one that has a group joins *that* group rather than
+    /// dissolving it — the one case where the anchor's identity does not survive, because the
+    /// anchor has none.
+    #[test]
+    fn a_loose_anchor_joins_the_group_the_other_window_is_already_in() {
+        let (mut service, ids) = service_with(3);
+        let group = service.group(ids[1], ids[2]).unwrap();
+        assert_eq!(service.group(ids[0], ids[1]), Some(group));
+        assert_eq!(service.group_members(group), ids);
+        assert_eq!(service.groups().len(), 1);
+    }
+
+    #[test]
+    fn a_group_dissolves_when_leaving_would_leave_one_member() {
+        let (mut service, ids) = service_with(3);
+        let group = service.group(ids[0], ids[1]).unwrap();
+        service.group(ids[0], ids[2]).unwrap();
+        assert_eq!(service.ungroup(ids[2]), Some(group));
+        assert_eq!(service.group_members(group).len(), 2);
+
+        assert_eq!(service.ungroup(ids[1]), Some(group));
+        assert!(service.groups().is_empty());
+        assert_eq!(service.group_of(ids[0]), None);
+    }
+
+    #[test]
+    fn closing_the_second_to_last_member_dissolves_the_group() {
+        let (mut service, ids) = service_with(2);
+        let group = service.group(ids[0], ids[1]).unwrap();
+        service.on_toplevel_destroyed(ids[1]);
+        assert!(service.groups().is_empty());
+        assert_eq!(service.group_of(ids[0]), None);
+        assert!(service.group_outline(group).is_none());
+    }
+
+    /// Rule 3: activating one member raises every member, contiguously — nothing outside the
+    /// group ends up stacked between two of its windows — with the activated one on top.
+    #[test]
+    fn activating_a_member_raises_the_whole_group_contiguously() {
+        let (mut service, ids) = service_with(3);
+        service.group(ids[0], ids[2]).unwrap();
+        service.activate(ids[1]);
+        assert_eq!(service.stacking_order()[0], ids[1]);
+
+        service.activate(ids[2]);
+        let order = service.stacking_order();
+        assert_eq!(order, vec![ids[2], ids[0], ids[1]]);
+    }
+
+    #[test]
+    fn shelving_a_group_parks_every_member_under_one_shelf_rank() {
+        let (mut service, ids) = service_with(3);
+        service.group(ids[0], ids[1]).unwrap();
+        let shelved = service.shelve_group(ids[1]);
+        assert_eq!(shelved, vec![ids[0], ids[1]]);
+        let ranks: Vec<Option<u64>> = shelved
+            .iter()
+            .map(|id| service.window(*id).unwrap().shelf_rank)
+            .collect();
+        assert_eq!(ranks[0], ranks[1]);
+        assert!(service.window(ids[2]).unwrap().shelf_rank.is_none());
+
+        let back = service.unshelve_group(ids[0]);
+        assert_eq!(back.len(), 2);
+        assert!(service.windows().all(|window| !window.shelved));
+    }
+
+    /// `Alt+Tab` stays inside the group; a loose window cycles the loose set and never reaches a
+    /// grouped one.
+    #[test]
+    fn cycling_within_a_group_never_leaves_it_and_the_loose_set_is_its_own_scope() {
+        let (mut service, ids) = service_with(4);
+        service.group(ids[0], ids[1]).unwrap();
+        assert_eq!(service.cycle_within_group(Some(ids[0]), true), Some(ids[1]));
+        assert_eq!(service.cycle_within_group(Some(ids[1]), true), Some(ids[0]));
+
+        let loose = service.cycle_within_group(Some(ids[2]), true);
+        assert_eq!(loose, Some(ids[3]));
+        assert_eq!(service.cycle_within_group(Some(ids[3]), true), Some(ids[2]));
+    }
+
+    /// `Super+Tab` moves between groups and lands on each group's last active member; the loose
+    /// set counts as one group.
+    #[test]
+    fn cycling_groups_lands_on_each_groups_last_active_member() {
+        let (mut service, ids) = service_with(4);
+        service.group(ids[0], ids[1]).unwrap();
+        service.activate(ids[1]);
+        service.activate(ids[3]);
+
+        let targets = service.group_cycle_targets();
+        assert_eq!(
+            targets.len(),
+            2,
+            "one group plus the loose set: {targets:?}"
+        );
+        let next = service.cycle_groups(Some(ids[3]), true).unwrap();
+        assert_eq!(next, ids[1], "back to the group's last active member");
+        let back = service.cycle_groups(Some(next), true).unwrap();
+        assert_eq!(service.group_of(back), None, "and on to the loose set");
+    }
+
+    #[test]
+    fn placing_beside_puts_the_window_on_the_targets_free_side_and_leaves_neighbours_alone() {
+        let (mut service, ids) = service_with(2);
+        let target = service.window(ids[0]).unwrap().geometry;
+        let placed = service.place_beside(ids[1], ids[0]).expect("it moved");
+        assert_eq!(placed.x, target.right(), "edge to edge on the right");
+        assert!(placed.intersection(target).is_none());
+        assert!(crate::is_recoverable(placed, service.outputs()));
+        // Already beside it: nothing moves a second time.
+        assert_eq!(service.place_beside(ids[1], ids[0]), None);
+    }
+
+    #[test]
+    fn the_group_outline_is_the_union_of_the_unshelved_members() {
+        let (mut service, ids) = service_with(2);
+        let group = service.group(ids[0], ids[1]).unwrap();
+        service.set_geometry(ids[0], Rect::new(100, 100, 200, 200));
+        service.set_geometry(ids[1], Rect::new(400, 300, 100, 100));
+        assert_eq!(
+            service.group_outline(group),
+            Some(Rect::new(100, 100, 400, 300))
+        );
+
+        service.shelve(ids[1]);
+        assert_eq!(
+            service.group_outline(group),
+            Some(Rect::new(100, 100, 200, 200)),
+            "a parked member is not on the workspace and so is not inside the outline"
+        );
+    }
+
+    /// The shell's only view of a group is this event's payload, so it carries everything a
+    /// surface needs to draw the same group the same way: id, name and accent.
+    #[test]
+    fn the_shell_view_of_a_grouped_window_carries_id_name_and_accent() {
+        let (mut service, ids) = service_with(2);
+        let group = service.group(ids[0], ids[1]).unwrap();
+        service.set_group_name(ids[0], Some("Writing".into()));
+        let toplevels = service.shell_toplevels();
+        let info = toplevels[0].group.clone().expect("a grouped window");
+        assert_eq!(info.group_id, group.0);
+        assert_eq!(info.name, "Writing");
+        assert_eq!(info.accent, crate::group::accent_for(group));
+        assert_eq!(
+            toplevels[1].group.as_ref().map(|g| g.group_id),
+            Some(group.0)
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Rule 3's safety argument: raising a group is a stacking change and nothing else, so
+        /// no sequence of activations can move a window a single pixel.
+        #[test]
+        fn raising_a_group_never_changes_geometry(steps in prop::collection::vec(0usize..4, 1..40)) {
+            let (mut service, ids) = service_with(4);
+            service.group(ids[0], ids[2]).unwrap();
+            let before: Vec<Rect> = ids.iter().map(|id| service.window(*id).unwrap().geometry).collect();
+            for step in steps {
+                service.activate(ids[step]);
+            }
+            for (id, geometry) in ids.iter().zip(before) {
+                prop_assert_eq!(service.window(*id).unwrap().geometry, geometry);
+            }
+        }
+
+        /// Membership is not geometry: shelving, maximizing, arranging and losing an output
+        /// change where windows are, never who they are grouped with. And the two structural
+        /// invariants hold throughout: no window is in two groups (membership lives on the
+        /// window, so this is by construction) and a live group always has two or more members.
+        #[test]
+        fn membership_survives_shelving_maximizing_arranging_and_hotplug(
+            steps in prop::collection::vec(0u8..7, 1..30),
+            topology in crate::test_support::arb_topology(),
+        ) {
+            let (mut service, ids) = service_with(3);
+            let group = service.group(ids[0], ids[1]).unwrap();
+            for step in steps {
+                match step {
+                    0 => { service.shelve(ids[0]); }
+                    1 => { service.unshelve(ids[0]); }
+                    2 => { service.set_maximized(ids[1], true); }
+                    3 => { service.set_maximized(ids[1], false); }
+                    4 => { service.arrange_windows(crate::ArrangementPreset::Halves); }
+                    5 => { service.restore_arrangement(); }
+                    _ => { service.on_outputs_changed(topology.clone()); }
+                }
+                prop_assert_eq!(service.group_of(ids[0]), Some(group));
+                prop_assert_eq!(service.group_of(ids[1]), Some(group));
+                prop_assert_eq!(service.group_of(ids[2]), None);
+                for (id, record) in service.groups() {
+                    prop_assert!(service.group_members(*id).len() >= 2, "{record:?} is a group of one");
+                    prop_assert!(service.group_members(*id).contains(&record.last_active));
+                }
+            }
+        }
+
+        /// Whatever a group is asked to do, every member stays reachable: `place_beside` and
+        /// `move_group` both end in `repair_window`, on every topology.
+        #[test]
+        fn placing_and_moving_a_group_keeps_every_member_recoverable(
+            topology in crate::test_support::arb_topology(),
+            destination in arb_window(),
+        ) {
+            let mut service = WindowService::new(FakeCache::default(), topology);
+            let a = service.on_toplevel_mapped(1, ClientKind::Application, WindowClaims::default(), String::new(), Rect::new(100, 100, 400, 300));
+            let b = service.on_toplevel_mapped(2, ClientKind::Application, WindowClaims::default(), String::new(), Rect::new(900, 500, 500, 400));
+            service.group(a, b).unwrap();
+            service.place_beside(b, a);
+            for id in [a, b] {
+                prop_assert!(crate::is_recoverable(service.window(id).unwrap().geometry, service.outputs()));
+            }
+            for (_, geometry) in service.move_group(a, destination) {
+                prop_assert!(crate::is_recoverable(geometry, service.outputs()));
+            }
+        }
+
+        /// Rule 6 is "beside", not "on top of": whenever the target's output has room for the
+        /// window on any side, the placed window does not overlap the target.
+        #[test]
+        fn placing_beside_never_overlaps_the_target(
+            window in arb_window(),
+            target in arb_window(),
+        ) {
+            let outputs = outputs();
+            let area = outputs[0].usable();
+            let horizontal = window.height <= area.height
+                && ((area.right() - target.right()).max(0) >= window.width
+                    || (target.x - area.x).max(0) >= window.width);
+            let vertical = window.width <= area.width
+                && ((area.bottom() - target.bottom()).max(0) >= window.height
+                    || (target.y - area.y).max(0) >= window.height);
+            prop_assume!(horizontal || vertical);
+
+            let placed = crate::place_beside(window, target, &outputs);
+            prop_assert_eq!(placed.width, window.width);
+            prop_assert_eq!(placed.height, window.height);
+            prop_assert!(placed.intersection(target).is_none(), "{placed:?} overlaps {target:?}");
+            prop_assert!(crate::is_recoverable(placed, &outputs));
         }
     }
 }

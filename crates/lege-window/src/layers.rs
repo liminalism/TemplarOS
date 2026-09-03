@@ -259,6 +259,20 @@ impl<Id: Copy + Eq + Hash> LayerStack<Id> {
         Some(position)
     }
 
+    /// Raise several ids at once, keeping the order given: `ids[0]` ends up top-most, each of the
+    /// rest immediately below the one before it. Ids with no position are skipped.
+    ///
+    /// This is how a window group is raised as one thing ([`crate::WindowService::activate`]):
+    /// each member gets a consecutive fresh rank, so nothing outside the group can end up
+    /// stacked between two of its members — a *contiguous* raise, which "raise each of them in
+    /// turn" only accidentally is. Like [`Self::raise`], it changes rank and nothing else: no
+    /// layer changes, no geometry changes, no authorization question.
+    pub fn raise_many(&mut self, ids: &[Id]) {
+        for id in ids.iter().rev() {
+            self.raise(*id);
+        }
+    }
+
     pub fn remove(&mut self, id: Id) {
         self.positions.remove(&id);
     }
@@ -445,6 +459,31 @@ mod tests {
             stack.explain(2, 1).unwrap(),
             "Normal sits above HomeSurface in the fixed layer order"
         );
+    }
+
+    /// A window group is raised as one thing: the members end up on top in the order given, with
+    /// nothing from outside the group stacked between any two of them.
+    #[test]
+    fn raise_many_lifts_a_set_contiguously_in_the_order_given() {
+        let mut stack: LayerStack<u32> = LayerStack::new();
+        for id in 1..=4 {
+            stack
+                .assign(id, Layer::Normal, ClientKind::Application)
+                .unwrap();
+        }
+        // 3 and 1 are the group; 4 is an unrelated window that was on top.
+        stack.raise_many(&[3, 1]);
+        assert_eq!(stack.order(), vec![3, 1, 4, 2]);
+    }
+
+    #[test]
+    fn raise_many_ignores_ids_with_no_position() {
+        let mut stack: LayerStack<u32> = LayerStack::new();
+        stack
+            .assign(1, Layer::Normal, ClientKind::Application)
+            .unwrap();
+        stack.raise_many(&[9, 1]);
+        assert_eq!(stack.order(), vec![1]);
     }
 
     #[test]

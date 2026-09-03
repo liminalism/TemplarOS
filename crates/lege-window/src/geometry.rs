@@ -558,6 +558,147 @@ pub fn move_into_view(window: Rect, outputs: &[Output]) -> Rect {
     }
 }
 
+/// How far apart two windows may sit and still count as [`is_beside`] each other — the same
+/// order of size as [`RESIZE_MARGIN`], so a pair a person set down "touching" stays touching
+/// after a client rounded its own size by a pixel or two.
+pub const BESIDE_TOLERANCE: i32 = 8;
+
+/// Whether `window` is already set down beside `target`: not overlapping it, within
+/// [`BESIDE_TOLERANCE`] of one of its edges, and sharing some length of that edge. This is the
+/// question [`place_beside`] asks before it moves anything, so grouping two windows that are
+/// already neighbours leaves them exactly where the user put them.
+pub fn is_beside(window: Rect, target: Rect) -> bool {
+    if window.intersection(target).is_some() {
+        return false;
+    }
+    // In `i64`: a window record's coordinates come from clients and from restored sessions, and
+    // the difference of two extremes does not fit in an `i32`.
+    let gap = |a: i32, b: i32| (i64::from(a) - i64::from(b)).abs();
+    let overlaps = |low_a: i32, high_a: i32, low_b: i32, high_b: i32| {
+        i64::from(high_a.min(high_b)) - i64::from(low_a.max(low_b)) > 0
+    };
+    let horizontal_overlap = overlaps(window.x, window.right(), target.x, target.right());
+    let vertical_overlap = overlaps(window.y, window.bottom(), target.y, target.bottom());
+    let horizontal_gap = gap(window.x, target.right()).min(gap(target.x, window.right()));
+    let vertical_gap = gap(window.y, target.bottom()).min(gap(target.y, window.bottom()));
+    let tolerance = i64::from(BESIDE_TOLERANCE);
+    (vertical_overlap && horizontal_gap <= tolerance)
+        || (horizontal_overlap && vertical_gap <= tolerance)
+}
+
+/// Where `window` goes when it is set down beside `target` — the placement half of "grouping
+/// places, it never merges" (planning doc §2 rule 6).
+///
+/// The side `window` is already nearest to — of those with room for it on `target`'s output —
+/// wins: edge to edge, aligned with the target on the other axis and clamped so the whole window
+/// stays on that output. Ties go to right, then left, then below, then above. Nothing is stacked,
+/// tabbed or folded, and the size is never changed.
+///
+/// When no side has room — a target that already fills its output, a window wider than the
+/// screen — the side with the most room is used anyway and the result goes through
+/// [`repair_window`], so the window stays reachable even though it then overlaps the target.
+/// Recoverability is the invariant; "beside" is the intent.
+pub fn place_beside(window: Rect, target: Rect, outputs: &[Output]) -> Rect {
+    let area = (!outputs.is_empty()).then(|| choose_target_output(target, outputs).usable());
+
+    let mut candidates = [
+        // Right, then left: `y` aligned with the target.
+        Rect {
+            x: target.right(),
+            y: target.y,
+            ..window
+        },
+        Rect {
+            x: target.x.saturating_sub(window.width),
+            y: target.y,
+            ..window
+        },
+        // Below, then above: `x` aligned with the target.
+        Rect {
+            x: target.x,
+            y: target.bottom(),
+            ..window
+        },
+        Rect {
+            x: target.x,
+            y: target.y.saturating_sub(window.height),
+            ..window
+        },
+    ];
+    if let Some(area) = area {
+        for (index, candidate) in candidates.iter_mut().enumerate() {
+            // Slide along the shared edge only: a candidate is never moved across the edge it
+            // was placed against, so clamping can align it with the output without ever putting
+            // it back on top of the target.
+            if index < 2 {
+                candidate.y = clamp(
+                    candidate.y,
+                    area.y,
+                    area.bottom().saturating_sub(candidate.height.max(1)),
+                );
+            } else {
+                candidate.x = clamp(
+                    candidate.x,
+                    area.x,
+                    area.right().saturating_sub(candidate.width.max(1)),
+                );
+            }
+        }
+    }
+
+    // Which side the window is *already* nearest, from its offset from the target's centre: the
+    // dominant axis first (its near side, then its far side), then the other axis. Measuring the
+    // distance the window would travel instead would make the choice depend on the window's
+    // proportions rather than on where the user left it — a wide, short window would always be
+    // pushed below a target it was sitting beside, which is not what "the nearest side" means to
+    // anyone looking at the screen. An equal offset, and a window on top of its target, fall
+    // through to the declared preference order: right, left, below, above.
+    let dx = i64::from(window.center().x) - i64::from(target.center().x);
+    let dy = i64::from(window.center().y) - i64::from(target.center().y);
+    let preference: [usize; 4] = match (dx.abs() >= dy.abs(), dx >= 0, dy >= 0) {
+        (true, true, _) => [0, 1, 2, 3],
+        (true, false, _) => [1, 0, 2, 3],
+        (false, _, true) => [2, 3, 0, 1],
+        (false, _, false) => [3, 2, 0, 1],
+    };
+
+    let fits =
+        |candidate: Rect| area.is_none_or(|area| area.intersection(candidate) == Some(candidate));
+    let chosen = preference
+        .into_iter()
+        .find(|index| fits(candidates[*index]))
+        .or_else(|| {
+            // Nothing fits — a target that already fills its output, or a window wider than the
+            // screen. Take the side with the most room (`min_by_key` keeps the first of equals,
+            // so ties still fall through the preference order) and let `repair_window` have the
+            // last word: staying reachable outranks staying beside.
+            preference.into_iter().min_by_key(|index| {
+                std::cmp::Reverse(
+                    area.map_or(i64::MAX, |area| area.intersection_area(candidates[*index])),
+                )
+            })
+        })
+        .unwrap_or(0);
+    repair_window(candidates[chosen], outputs)
+}
+
+/// The smallest rectangle containing every rectangle given — the group outline's shape
+/// (`WindowService::group_outline`). `None` for an empty slice.
+pub fn bounding_rect(rects: &[Rect]) -> Option<Rect> {
+    let mut rects = rects.iter();
+    let first = *rects.next()?;
+    Some(rects.fold(first, |union, rect| {
+        let x = union.x.min(rect.x);
+        let y = union.y.min(rect.y);
+        Rect {
+            x,
+            y,
+            width: union.right().max(rect.right()).saturating_sub(x),
+            height: union.bottom().max(rect.bottom()).saturating_sub(y),
+        }
+    }))
+}
+
 /// Lay out `windows` across `outputs` as a grid per output, without consulting the shell. Used
 /// by the compositor-owned "show every window" recovery view (planning doc 01 §3), which must
 /// work even when the shell process is dead. Every returned rectangle is fully contained in the
@@ -1529,5 +1670,57 @@ mod tests {
         );
         assert!(huge.width <= 1920 && huge.height <= 1040);
         assert!(huge.x >= 0 && huge.y >= 40);
+    }
+
+    /// The side the window is already on wins, and the placement is edge to edge.
+    #[test]
+    fn place_beside_uses_the_side_the_window_is_already_nearest() {
+        let outputs = edp();
+        let target = Rect::new(700, 400, 400, 300);
+        let from_the_right = place_beside(Rect::new(900, 420, 300, 200), target, &outputs);
+        assert_eq!(from_the_right, Rect::new(1100, 400, 300, 200));
+        let from_the_left = place_beside(Rect::new(500, 420, 300, 200), target, &outputs);
+        assert_eq!(from_the_left, Rect::new(400, 400, 300, 200));
+        let from_below = place_beside(Rect::new(720, 650, 300, 200), target, &outputs);
+        assert_eq!(from_below, Rect::new(700, 700, 300, 200));
+        let from_above = place_beside(Rect::new(720, 200, 300, 200), target, &outputs);
+        assert_eq!(from_above, Rect::new(700, 200, 300, 200));
+    }
+
+    /// A side with no room on the output is not chosen: a target against the right edge sends the
+    /// window to its left instead, still edge to edge and still on screen.
+    #[test]
+    fn place_beside_skips_a_side_with_no_room_on_the_output() {
+        let outputs = edp();
+        let target = Rect::new(1500, 400, 400, 300);
+        let placed = place_beside(Rect::new(1700, 420, 300, 200), target, &outputs);
+        assert_eq!(placed, Rect::new(1200, 400, 300, 200));
+        assert!(placed.intersection(target).is_none());
+        assert!(is_recoverable(placed, &outputs));
+    }
+
+    #[test]
+    fn windows_that_touch_are_beside_each_other_and_overlapping_ones_are_not() {
+        let target = Rect::new(700, 400, 400, 300);
+        assert!(is_beside(Rect::new(1100, 400, 300, 200), target));
+        assert!(
+            is_beside(Rect::new(1104, 400, 300, 200), target),
+            "a few pixels of gap is still beside"
+        );
+        assert!(!is_beside(Rect::new(1200, 400, 300, 200), target));
+        assert!(!is_beside(Rect::new(900, 420, 300, 200), target));
+        assert!(
+            !is_beside(Rect::new(1100, 900, 300, 200), target),
+            "flush with the target's right edge but sharing none of it"
+        );
+    }
+
+    #[test]
+    fn a_bounding_rect_covers_every_rectangle_and_nothing_covers_none() {
+        assert_eq!(bounding_rect(&[]), None);
+        assert_eq!(
+            bounding_rect(&[Rect::new(100, 100, 200, 200), Rect::new(400, 300, 100, 100)]),
+            Some(Rect::new(100, 100, 400, 300))
+        );
     }
 }
