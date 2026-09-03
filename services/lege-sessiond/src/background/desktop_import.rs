@@ -24,16 +24,62 @@ use std::{collections::BTreeSet, path::PathBuf};
 /// system); the Flatpak export trees are a separate namespace and neither shadow it nor are
 /// shadowed by it.
 pub fn application_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
-    ];
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-    {
-        dirs.push(data_home.join("flatpak/exports/share/applications"));
-        dirs.push(data_home.join("applications"));
+    application_dirs_from(
+        std::env::var_os("XDG_DATA_DIRS").as_deref(),
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            }),
+    )
+}
+
+/// The well-known system data roots, searched whether or not `XDG_DATA_DIRS` names them.
+///
+/// The environment is consulted but never trusted to be complete: sessiond runs as a systemd
+/// user service, and the environment it inherits is whatever the session imported, which on a
+/// plain login is the spec default `/usr/local/share:/usr/share` — without the snap export
+/// directory a Firefox or Chromium installed as a snap lives in, so the registry silently had no
+/// browser. The same rule `lege doctor` applies (`cli/lege/src/doctor/checks.rs`).
+const WELL_KNOWN_DATA_ROOTS: [&str; 4] = [
+    "/usr/local/share",
+    "/usr/share",
+    "/var/lib/flatpak/exports/share",
+    "/var/lib/snapd/desktop",
+];
+
+/// [`application_dirs`] over an explicit environment, lowest precedence first. The chain is
+/// `XDG_DATA_DIRS` (highest first, as the spec has it) with the well-known roots appended as the
+/// fallback tail, deduplicated at the highest position each root holds, then reversed so a
+/// later directory shadows an earlier one; the person's own directories come last of all.
+fn application_dirs_from(
+    data_dirs: Option<&std::ffi::OsStr>,
+    data_home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut highest_first: Vec<PathBuf> = Vec::new();
+    let named = data_dirs
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|dir| dir.is_absolute());
+    for root in named.chain(WELL_KNOWN_DATA_ROOTS.iter().map(PathBuf::from)) {
+        if !highest_first.contains(&root) {
+            highest_first.push(root);
+        }
+    }
+    let mut dirs: Vec<PathBuf> = highest_first
+        .into_iter()
+        .rev()
+        .map(|root| root.join("applications"))
+        .collect();
+    if let Some(data_home) = data_home {
+        for dir in [
+            data_home.join("flatpak/exports/share/applications"),
+            data_home.join("applications"),
+        ] {
+            dirs.retain(|known| *known != dir);
+            dirs.push(dir);
+        }
     }
     dirs
 }
@@ -250,6 +296,66 @@ pub fn regroup_and_persist(registry: &Registry, store: &Store) -> Result<usize> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The snap export directory is scanned whether or not the environment names it, the
+    /// environment only adds roots, the person's own directory comes last, and a root named
+    /// twice is scanned once.
+    #[test]
+    fn application_dirs_always_include_the_snap_exports_and_end_with_the_persons_own() {
+        let dirs = application_dirs_from(
+            Some(std::ffi::OsStr::new(
+                "/home/p/.nix-profile/share:/usr/share:/opt/extra/share:relative/share",
+            )),
+            Some(PathBuf::from("/home/p/.local/share")),
+        );
+        let text: Vec<String> = dirs.iter().map(|dir| dir.display().to_string()).collect();
+        assert!(
+            text.contains(&"/var/lib/snapd/desktop/applications".to_owned()),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&"/opt/extra/share/applications".to_owned()),
+            "{text:?}"
+        );
+        assert!(
+            !text.iter().any(|dir| dir.starts_with("relative")),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.iter()
+                .filter(|dir| dir.as_str() == "/usr/share/applications")
+                .count(),
+            1,
+            "{text:?}"
+        );
+        // XDG precedence: the nix profile is named first in the environment, so it shadows
+        // /usr/share and is scanned after it.
+        let usr = text
+            .iter()
+            .position(|d| d == "/usr/share/applications")
+            .unwrap();
+        let nix = text
+            .iter()
+            .position(|d| d == "/home/p/.nix-profile/share/applications")
+            .unwrap();
+        assert!(nix > usr, "{text:?}");
+        assert_eq!(
+            text.last().map(String::as_str),
+            Some("/home/p/.local/share/applications")
+        );
+
+        let bare = application_dirs_from(None, None);
+        assert_eq!(
+            bare.last().map(|d| d.display().to_string()).as_deref(),
+            Some("/usr/local/share/applications"),
+            "with no environment the spec default still ranks /usr/local/share highest"
+        );
+        assert!(
+            bare.iter()
+                .any(|d| d.ends_with("snapd/desktop/applications"))
+        );
+    }
+
     use lege_types::{AppAliases, AppManifest, ResourceClass};
     use std::collections::HashMap;
 
