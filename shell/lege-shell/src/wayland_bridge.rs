@@ -478,8 +478,15 @@ impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        let lege_shell_manager_v1::Event::HomeRevealed { revealed } = event;
-        state.home_revealed = revealed != 0;
+        match event {
+            lege_shell_manager_v1::Event::HomeRevealed { revealed } => {
+                state.home_revealed = revealed != 0;
+            }
+            // Version 5: bound only once `SHELL_PROTOCOL_VERSION` reaches 5, with the
+            // window-group and drop-down-terminal work.
+            lege_shell_manager_v1::Event::TerminalRequested
+            | lege_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
+        }
     }
 }
 
@@ -571,6 +578,8 @@ impl Dispatch<LegeShellToplevelV1, ()> for BridgeState {
             lege_shell_toplevel_v1::Event::Maximized { maximized } => {
                 tracked.maximized = maximized != 0;
             }
+            // Version 3 of the toplevel: carried by manager version 5, not bound yet.
+            lege_shell_toplevel_v1::Event::Group { .. } => {}
             lege_shell_toplevel_v1::Event::Closed => unreachable!("handled above"),
         }
     }

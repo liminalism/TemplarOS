@@ -170,6 +170,12 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
                 // seat go quiet (`src/idle.rs`).
                 state.set_idle_timeout(seconds);
             }
+            // Version 5 (the drop-down terminal): declared in the interface, implemented with
+            // the window-group work. The global is advertised at `SHELL_PROTOCOL_VERSION`, so
+            // this cannot arrive until that constant is raised.
+            lege_shell_manager_v1::Request::SetTerminal { app_id } => {
+                tracing::debug!(app_id, "set_terminal arrived before the compositor implements it");
+            }
         }
     }
 
@@ -494,6 +500,16 @@ impl<B: Backend + 'static> Dispatch2<LegeShellToplevelV1, LegeCompState<B>> for 
             }
             lege_shell_toplevel_v1::Request::SetMaximized { maximized } => {
                 crate::xdg_shell::apply_maximized(state, window_id, maximized != 0);
+            }
+            // Version 3 (window groups): declared in the interface, implemented with the
+            // window-group work; unreachable while the manager is advertised below 5.
+            lege_shell_toplevel_v1::Request::JoinGroup { .. }
+            | lege_shell_toplevel_v1::Request::LeaveGroup
+            | lege_shell_toplevel_v1::Request::ActivateGroup { .. }
+            | lege_shell_toplevel_v1::Request::ShelveGroup
+            | lege_shell_toplevel_v1::Request::UnshelveGroup
+            | lege_shell_toplevel_v1::Request::SetGroupName { .. } => {
+                tracing::debug!(?window_id, "a group request arrived before the compositor implements groups");
             }
         }
     }

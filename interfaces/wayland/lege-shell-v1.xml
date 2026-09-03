@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="4">
+  <interface name="lege_shell_manager_v1" version="5">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -129,6 +129,35 @@
       </description>
       <arg name="seconds" type="uint" summary="idle seconds before the screen turns off; 0 never"/>
     </request>
+    <request name="set_terminal" since="5">
+      <description summary="which application is the drop-down terminal">
+        The terminal chord (`Super+grave`) is a compositor keybinding, so it keeps working with
+        the shell dead; but *which* terminal is a Providers1 choice (the `terminal` role), made
+        in Settings and read by the shell. This request is how the choice reaches the compositor:
+        the canonical application id of the selected terminal, sent on connect and again whenever
+        the selection changes. An empty string means no terminal is selected.
+
+        With a terminal named, the chord toggles that application's most recently activated
+        window: shelved or absent from the top, it is unshelved and activated; on top and focused,
+        it is shelved (never closed — a stray press must cost nothing) and focus returns to the
+        window that had it. With no such window mapped, the compositor sends
+        `terminal_requested` and the shell launches the provider through the ordinary launch
+        chain, so identity still comes from the cgroup.
+      </description>
+      <arg name="app_id" type="string" summary="canonical application id, or empty for none"/>
+    </request>
+    <event name="terminal_requested" since="5">
+      <description summary="the terminal chord was pressed and no terminal window exists">
+        The shell answers by launching the `terminal` provider. Sent at most once per press.
+      </description>
+    </event>
+    <event name="group_cycle_binding" since="5">
+      <description summary="the chord that moves between window groups, for the cheat sheet">
+        Sent on connect: 0 is `Super+Tab` (the default). Reserved so a future setting can move
+        the chord without a protocol change; the shell renders whatever it is told.
+      </description>
+      <arg name="binding" type="uint"/>
+    </event>
     <enum name="edge">
       <entry name="top" value="0"/>
       <entry name="bottom" value="1"/>
@@ -154,7 +183,7 @@
     </event>
   </interface>
 
-  <interface name="lege_shell_toplevel_v1" version="2">
+  <interface name="lege_shell_toplevel_v1" version="3">
     <!-- The same opaque string `ext_foreign_toplevel_handle_v1.identifier` carries for this
          window, sent once, before the first `identity`. It is what lets the shell pair a window
          preview obtained through the standard capture protocols with the window's entry here. -->
@@ -191,6 +220,18 @@
          Ordinary application toplevels report `normal` or `app_on_top`; the compositor is the
          sole source of truth, so the shell never has to infer stacking from anything else. -->
     <event name="layer"><arg name="layer" type="uint" enum="lege_shell_manager_v1.layer"/></event>
+    <!-- Window-group membership (`lege_window::WindowService` owns groups; the compositor is
+         the source of truth, this event is the shell's only view of it). Sent after `identity`
+         on creation and again whenever the window joins, leaves or is renamed within a group.
+         `group_id` 0 means the window is in no group, and then `name` is empty and `accent` 0.
+         `accent` is a 0x00RRGGBB colour every member of the group shares — the band stripe
+         and the outline around the group on the workspace, and the tile's edge on Home, all use
+         it, so a group looks like one thing everywhere it appears. -->
+    <event name="group" since="3">
+      <arg name="group_id" type="uint"/>
+      <arg name="name" type="string"/>
+      <arg name="accent" type="uint"/>
+    </event>
     <event name="closed"/>
     <request name="activate">
       <arg name="activation_token" type="string"/>
@@ -201,6 +242,31 @@
     <request name="unshelve"/>
     <request name="set_maximized" since="2">
       <arg name="maximized" type="uint"/>
+    </request>
+    <!-- Group requests. Every one is refused silently for a window the compositor no longer
+         knows; a group with fewer than two members dissolves on its own, so there is no
+         `dissolve` request. -->
+    <request name="join_group" since="3">
+      <description summary="put this window in `other`'s group">
+        If `other` is in no group, a new group is made of the two. If both are in groups, the
+        groups merge and `other`'s identity (id, name, accent) survives. The compositor also
+        places this window beside `other` — the nearest free side — when it is not already
+        adjacent, exactly as a band dropped on `other`'s band does.
+      </description>
+      <arg name="other" type="object" interface="lege_shell_toplevel_v1"/>
+    </request>
+    <request name="leave_group" since="3"/>
+    <request name="activate_group" since="3">
+      <description summary="raise every member together, this window on top, and focus it">
+        A trusted-shell activation like `activate`, but the token is checked once for the
+        group; the Home tile's title press uses it.
+      </description>
+      <arg name="activation_token" type="string"/>
+    </request>
+    <request name="shelve_group" since="3"/>
+    <request name="unshelve_group" since="3"/>
+    <request name="set_group_name" since="3">
+      <arg name="name" type="string"/>
     </request>
   </interface>
 </protocol>
