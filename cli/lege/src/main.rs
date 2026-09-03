@@ -617,8 +617,8 @@ async fn run() -> Result<()> {
                     let detail = doctor::abbreviate(&finding.detail);
                     abbreviated |= detail != finding.detail;
                     println!(
-                        "{:<8} {:<20} {}{}",
-                        format!("{:?}", finding.outcome).to_lowercase(),
+                        "{:<12} {:<20} {}{}",
+                        finding.outcome.label(),
                         finding.id,
                         finding.summary,
                         if detail.is_empty() {

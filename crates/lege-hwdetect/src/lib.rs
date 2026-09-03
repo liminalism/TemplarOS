@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
+pub mod probes;
+
 pub const VENDOR_INTEL: u16 = 0x8086;
 pub const VENDOR_AMD: u16 = 0x1002;
 pub const VENDOR_NVIDIA: u16 = 0x10de;

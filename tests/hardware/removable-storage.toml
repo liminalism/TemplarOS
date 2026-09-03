@@ -1,0 +1,18 @@
+# From X1's daily-driver matrix (C6). BLOCKED IN CODE, not merely untested:
+# interfaces/dbus/org.legeos.Files.Volumes1.xml exposes InfoForPath, List and CheckReserve and no
+# mount or eject verb, so there is currently no surface for a user to drive. Record this case as
+# not executed with that reason; do not record it as a hardware failure.
+id = "removable-storage"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "insert a USB stick with a FAT32 and an ext4 partition",
+  "observe whether the volume appears in Files and in Volumes1.List",
+  "mount it, copy a file to it and back, then eject it from the desktop",
+  "remove the stick and confirm nothing is left mounted",
+]
+expect = [
+  "the volume appears in Volumes1.List within a second of insertion",
+  "mount and eject are driveable from the desktop — TODAY THEY ARE NOT: Volumes1 has no mount or eject verb",
+  "copied data survives a round trip and the eject flushes before the device is safe to remove",
+  "blocked on the missing Volumes1 verbs: this case cannot pass until they exist",
+]

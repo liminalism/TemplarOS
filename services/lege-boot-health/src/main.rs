@@ -53,13 +53,12 @@
 
 use anyhow::Result;
 use clap::Parser;
-use lege_hwdetect::{GpuVendor, classify, dpkg, scan_outputs, scan_sysfs};
+use lege_hwdetect::probes::{self, Probe, ProbeOutcome};
 use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Whether `lege-sessiond` (or whatever ends up calling it) is actually calling
@@ -439,17 +438,33 @@ fn phase_from_transaction_json(json: &str) -> Option<String> {
 }
 
 /// Runs `check` on a worker thread so a hang cannot block boot past `timeout`.
+///
+/// A boot verdict has no fourth state to report a timeout into: an unproven check at boot must
+/// hold the boot back, so a timed-out check is a failure here even though the same timeout is
+/// [`ProbeOutcome::NotExecuted`] in `lege doctor`'s report, where nothing is being decided.
 fn bounded(
     name: &'static str,
     timeout: Duration,
     check: impl FnOnce() -> Check + Send + 'static,
 ) -> Check {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(check());
-    });
-    rx.recv_timeout(timeout)
-        .unwrap_or_else(|_| Check::fail(name, format!("timed out after {timeout:?}")))
+    probes::bounded(timeout, check, || {
+        Check::fail(name, format!("timed out after {timeout:?}"))
+    })
+}
+
+/// Map a [`Probe`] onto this binary's three-state boot check.
+///
+/// `Skipped` stays `Skipped` — a missing `vulkaninfo` must never read as a working Vulkan stack,
+/// and must never fail a boot either. `NotExecuted` becomes `Fail` for the reason in [`bounded`].
+/// The boot log is one line per check, so only the probe's summary crosses over; the captured
+/// output is for `lege doctor`'s report, not for the journal.
+fn check_from(probe: &Probe) -> Check {
+    let detail = probe.summary.clone();
+    match probe.outcome {
+        ProbeOutcome::Pass => Check::pass(probe.id, detail),
+        ProbeOutcome::Fail | ProbeOutcome::NotExecuted => Check::fail(probe.id, detail),
+        ProbeOutcome::Skipped => Check::skipped(probe.id, detail),
+    }
 }
 
 fn print_human_summary(report: &Report) {
@@ -487,101 +502,18 @@ fn print_human_summary(report: &Report) {
 }
 
 fn drm_connected_output(root: &Path) -> Check {
-    match scan_outputs(&root.join("sys")) {
-        Ok(outputs) => {
-            let connected = outputs.iter().filter(|o| o.connected).count();
-            if connected > 0 {
-                Check::pass("drm-connected-output", format!("{connected} connected"))
-            } else {
-                Check::fail("drm-connected-output", "no connected DRM output")
-            }
-        }
-        Err(error) => Check::fail("drm-connected-output", error.to_string()),
-    }
+    check_from(&probes::drm_connected_output(root, probes::DEFAULT_TIMEOUT))
 }
 
 fn nvidia_module_state(root: &Path) -> Check {
-    let gpus = match scan_sysfs(&root.join("sys")) {
-        Ok(gpus) => gpus,
-        Err(error) => return Check::fail("nvidia-module", error.to_string()),
-    };
-    let profile = classify(gpus);
-    let has_nvidia = profile
-        .gpus
-        .iter()
-        .any(|gpu| gpu.vendor == GpuVendor::Nvidia);
-    if !has_nvidia {
-        return Check::pass("nvidia-module", "no NVIDIA GPU present");
-    }
-
-    let module_version = fs::read_to_string(root.join("sys/module/nvidia/version"))
-        .ok()
-        .map(|s| s.trim().to_owned());
-    let Some(module_version) = module_version else {
-        return Check::fail(
-            "nvidia-module",
-            "NVIDIA GPU present but the nvidia module is not loaded",
-        );
-    };
-
-    let packages = dpkg::scan_status(&root.join("var/lib/dpkg/status"));
-    let userspace = dpkg::find_installed(&packages, "nvidia-driver-");
-    let Some(userspace) = userspace.first() else {
-        return Check::fail(
-            "nvidia-module",
-            format!(
-                "module {module_version} loaded but no nvidia-driver-* userspace package is installed"
-            ),
-        );
-    };
-
-    if branch_of(&module_version) == branch_of(&userspace.version) {
-        Check::pass(
-            "nvidia-module",
-            format!(
-                "module {module_version} matches userspace {}",
-                userspace.version
-            ),
-        )
-    } else {
-        Check::fail(
-            "nvidia-module",
-            format!(
-                "module {module_version} does not match userspace {} — kernel and NVIDIA did not move as a pair",
-                userspace.version
-            ),
-        )
-    }
-}
-
-/// The leading numeric component of a driver version string (`"580.65.06"` → `"580"`), the same
-/// coarse comparison `lege-hostd`'s transaction verification uses.
-fn branch_of(version: &str) -> &str {
-    version.split(['.', '-']).next().unwrap_or(version)
+    check_from(&probes::nvidia_module_state(root, probes::DEFAULT_TIMEOUT))
 }
 
 fn drm_modesetting_initialized(root: &Path) -> Check {
-    let drm = root.join("sys/class/drm");
-    let has_card = fs::read_dir(&drm).is_ok_and(|entries| {
-        entries.filter_map(Result::ok).any(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.starts_with("card") && !name.contains('-')
-        })
-    });
-    if !has_card {
-        return Check::fail(
-            "drm-modesetting",
-            format!("no cardN entries under {}", drm.display()),
-        );
-    }
-    let cmdline = fs::read_to_string(root.join("proc/cmdline")).unwrap_or_default();
-    if cmdline.split_whitespace().any(|word| word == "nomodeset") {
-        return Check::fail(
-            "drm-modesetting",
-            "nomodeset present on the kernel command line",
-        );
-    }
-    Check::pass("drm-modesetting", "card present, nomodeset absent")
+    check_from(&probes::drm_modesetting_initialized(
+        root,
+        probes::DEFAULT_TIMEOUT,
+    ))
 }
 
 /// `writer_wired` is [`SESSION_HEALTHY_REPORT_WIRED`] at every real call site; a parameter here purely so
@@ -610,77 +542,13 @@ fn marker_check(name: &'static str, root: &Path, relative: &str, writer_wired: b
 /// Vulkan first, then OpenGL — degrade gracefully (report `Skipped`, not `Pass`) if neither probe
 /// tool is installed.
 fn graphics_probe(timeout: Duration) -> Check {
-    graphics_probe_with_candidates(&[("vulkaninfo", &["--summary"]), ("eglinfo", &[])], timeout)
-}
-
-fn graphics_probe_with_candidates(candidates: &[(&str, &[&str])], timeout: Duration) -> Check {
-    for &(tool, args) in candidates {
-        match run_with_timeout(tool, args, timeout) {
-            Ok(output) if output.status.success() => {
-                let first_line = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned();
-                return Check::pass("graphics-probe", format!("{tool}: {first_line}"));
-            }
-            Ok(output) => {
-                return Check::fail(
-                    "graphics-probe",
-                    format!("{tool} exited with {}", output.status),
-                );
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Check::fail("graphics-probe", format!("{tool}: {error}")),
-        }
-    }
-    Check::skipped(
-        "graphics-probe",
-        "neither vulkaninfo nor eglinfo is installed",
-    )
-}
-
-fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> std::io::Result<Output> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            use std::io::Read;
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            if let Some(mut out) = child.stdout.take() {
-                let _ = out.read_to_end(&mut stdout);
-            }
-            if let Some(mut err) = child.stderr.take() {
-                let _ = err.read_to_end(&mut stderr);
-            }
-            return Ok(Output {
-                status,
-                stdout,
-                stderr,
-            });
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("{program} timed out after {timeout:?}"),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    check_from(&probes::graphics_probe(Path::new("/"), timeout))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lege_hwdetect::probes::run_with_timeout;
 
     fn fixture() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
@@ -979,21 +847,30 @@ mod tests {
             ("lege-boot-health-test-missing-vulkaninfo", &[]),
             ("lege-boot-health-test-missing-eglinfo", &[]),
         ];
-        let check = graphics_probe_with_candidates(candidates, Duration::from_secs(2));
+        let check = check_from(&probes::graphics_probe_with_candidates(
+            candidates,
+            Duration::from_secs(2),
+        ));
         assert_eq!(check.status, Status::Skipped);
     }
 
     #[test]
     fn graphics_probe_passes_when_the_first_candidate_succeeds() {
         let candidates: &[(&str, &[&str])] = &[("printf", &["Vulkan Instance Version: 1.3\n"])];
-        let check = graphics_probe_with_candidates(candidates, Duration::from_secs(2));
+        let check = check_from(&probes::graphics_probe_with_candidates(
+            candidates,
+            Duration::from_secs(2),
+        ));
         assert_eq!(check.status, Status::Pass);
     }
 
     #[test]
     fn graphics_probe_fails_when_a_present_tool_exits_nonzero() {
         let candidates: &[(&str, &[&str])] = &[("false", &[])];
-        let check = graphics_probe_with_candidates(candidates, Duration::from_secs(2));
+        let check = check_from(&probes::graphics_probe_with_candidates(
+            candidates,
+            Duration::from_secs(2),
+        ));
         assert_eq!(check.status, Status::Fail);
     }
 

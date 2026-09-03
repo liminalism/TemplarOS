@@ -1,0 +1,15 @@
+# From X1's daily-driver matrix (C6). The routing under test is compositor -> Backlight1/Audio1;
+# no probe can press a key, so this case is manual by construction.
+id = "brightness-and-audio-keys"
+profiles = ["hybrid-intel-nvidia"]
+steps = [
+  "press XF86MonBrightnessUp and XF86MonBrightnessDown several times, including at both ends of the range",
+  "press XF86AudioRaiseVolume, XF86AudioLowerVolume and XF86AudioMute",
+  "repeat with a fullscreen application focused, and with the Home Field focused",
+]
+expect = [
+  "each brightness key changes the panel brightness and the value hostd reports over Backlight1",
+  "brightness clamps at the ends instead of wrapping or blanking the panel",
+  "each audio key changes the sink volume and Audio1 reports the same value",
+  "the keys work identically whichever surface has focus — no application swallows them",
+]

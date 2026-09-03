@@ -19,6 +19,11 @@ test_matrix = [
   "driver-update-and-rollback",
   "wayland-and-xwayland-apps",
   "cuda-and-vulkan-where-installed",
+  # From X1's daily-driver capability matrix (C6); all three are manual, and two are blocked on
+  # work outside this profile — see the case files for what blocks them.
+  "hardware-video-decode",
+  "brightness-and-audio-keys",
+  "removable-storage",
 ]
 
 [[gpus]]

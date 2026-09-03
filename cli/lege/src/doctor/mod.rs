@@ -22,7 +22,27 @@ pub enum Severity {
 pub enum Outcome {
     Pass,
     Fail,
+    /// The question does not apply to this machine, or the tool that answers it is not installed
+    /// — never a `Pass`.
     Skipped,
+    /// Nobody asked the question: a manual hardware case that only a human can run, a probe that
+    /// timed out, or a probe that would have had to execute against a root that is not this
+    /// machine. Distinct from `Skipped` because "we cannot answer" and "we did not try" are
+    /// different admissions, and neither may ever be reported as a pass.
+    NotExecuted,
+}
+
+impl Outcome {
+    /// The lower-case word for terminal output. `{:?}` would render `NotExecuted` as
+    /// `notexecuted`; the hyphen is the same spelling `--json` uses.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Skipped => "skipped",
+            Self::NotExecuted => "not-executed",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,11 +152,12 @@ pub fn summarise(findings: &[Finding]) -> String {
         .map(|f| f.id)
         .collect();
     let tally = format!(
-        "{} checks: {} passed, {} failed, {} skipped",
+        "{} checks: {} passed, {} failed, {} skipped, {} not executed",
         findings.len(),
         count(Outcome::Pass),
         failed.len(),
         count(Outcome::Skipped),
+        count(Outcome::NotExecuted),
     );
     if failed.is_empty() {
         tally
@@ -203,13 +224,17 @@ mod tests {
             finding_of("os-release", Outcome::Skipped, ""),
             finding_of("session-units", Outcome::Pass, ""),
             finding_of("mime-handlers", Outcome::Fail, ""),
+            finding_of("suspend-resume", Outcome::NotExecuted, ""),
         ];
         assert_eq!(
             summarise(&findings),
-            "3 checks: 1 passed, 1 failed, 1 skipped\nfailed: mime-handlers"
+            "4 checks: 1 passed, 1 failed, 1 skipped, 1 not executed\nfailed: mime-handlers"
         );
 
         let clean = vec![finding_of("session-units", Outcome::Pass, "")];
-        assert_eq!(summarise(&clean), "1 checks: 1 passed, 0 failed, 0 skipped");
+        assert_eq!(
+            summarise(&clean),
+            "1 checks: 1 passed, 0 failed, 0 skipped, 0 not executed"
+        );
     }
 }
