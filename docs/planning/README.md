@@ -7,3 +7,7 @@ Current focused assessments:
 - [`hotfixability-current-state.md`](hotfixability-current-state.md) — how far the installed desktop,
   restartable services, compositor boundary, and boot deployments support developing LegeOS while it
   is in daily use.
+- [`window-groups-and-application-integration.md`](window-groups-and-application-integration.md) — the
+  fourth hands-on run's findings, the window-group design (explicit, compositor-owned, one tile on Home,
+  `Alt+Tab` inside and `Ctrl+Tab` across) and the interim application integration choices: the Home
+  field as a launcher, fsearch for search, Kitty as the terminal, and the Files object's context menu.

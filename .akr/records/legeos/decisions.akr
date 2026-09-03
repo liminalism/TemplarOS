@@ -393,6 +393,30 @@ record legeos.decision.session-greeter-lock/2 : decision {
     supported_by [ @legeos.evidence.m0-smoke ]
 }
 
+record legeos.decision.the-home-field-is-a-launcher-not-a-search/1 : decision {
+    title "The field on bare Home is the application launcher (Apps); file search belongs to the Files object, and deep search to fsearch"
+    state proposed
+    scope [
+        path "crates/lege-session-core/**",
+        path "crates/lege-types/src/action.rs",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    topic home-search
+    decision """
+        The field at the top of bare Home is the application launcher, labelled Apps, and answers with applications only; it never asks the file service. A file search belongs to the Files object, scoped to the location it shows (folders before files, capped per source). Projects are tiles and actions have the context menu and cheat sheet, so neither is a search result. Deep search over everything indexed is the job of a real search tool: fsearch becomes the default candidate of a new exclusive ProviderRole::FileSearch, launched with --search <query> from the Files object's last row and a context-menu verb; lege-filed keeps its index for the scoped in-place search, and a later step feeds fsearch's include list from Files.Search1.Roots.
+        """
+    context """
+        The federated omnibox (WS2 of the 2026-09-01 consolidation roadmap) returned unrelated files for a browser's name and no browser: sessiond's desktop-entry import scanned four hard-coded directories and never /var/lib/snapd/desktop/applications, so snap Firefox was not in the registry, and files ranked beside the few apps that were. The user decided on 2026-09-03: search is for apps only, is not called Search, and fsearch is integrated for real search since files are already indexed.
+        """
+    consequences """
+        Landed at d391fc1 (registry scans XDG_DATA_DIRS plus the well-known roots including snapd) and dfa1fda (Scope::Applications, apps-only federate, no escape row, label Apps, visual baseline 0x33ce_e9e2_8bc5_df05). This supersedes the federated-omnibox half of @legeos.work.adaptive-files-and-omnibox; its adaptive Files surface half stands. fsearch and terminal roles are planned in @legeos.work.application-integration-interim.
+        """
+    contradicts [ @legeos.work.adaptive-files-and-omnibox ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    acknowledged true
+}
+
 record legeos.decision.toolchain-licence-namespace/1 : decision {
     title "D8/ADR-0008 — Rust 2024 edition, dev toolchain 1.97.1, MSRV 1.93 (Ubuntu 26.04 rustc), MPL-2.0 for own code, org.legeos namespace"
     state superseded
@@ -465,4 +489,27 @@ record legeos.decision.toolchain-licence-namespace/3 : decision {
         @legeos.evidence.m0-workspace-builds-and-tests,
         @legeos.evidence.rust-1-97-baseline-20260831
     ]
+}
+
+record legeos.decision.window-groups-are-explicit-and-compositor-owned/1 : decision {
+    title "Window groups are explicit, owned by lege-window, stacked as one, and one container tile on Home"
+    state proposed
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    topic window-groups
+    decision """
+        A window group is an explicit, user-made set of two or more application windows that behave as one unit of work. Five rules: (1) groups are explicit — made by dropping one window or session tile on another, or by a chord; never inferred from proximity, application or time (docs/homefield.md's proximity rule). (2) The compositor owns groups through WindowService: membership lives in lege-window, the shell learns it over lege_shell_v1 (version 4, additions only), so Alt+Tab and Ctrl+Tab work with the shell dead. (3) A group is one thing to stack: activating any member raises every member contiguously, relative order kept, the activated one on top; geometry never changes. (4) Ungrouped windows are the loose set: with no groups Alt+Tab cycles every window as today and Ctrl+Tab does nothing. (5) A group has at least two members; it dissolves when the second-to-last leaves or closes, and its Home tile is swept like an orphaned session tile. On Home a group is TileKind::WindowGroup, a top-level container holding its members' ParkedSession tiles, dragged as one, parked and returned as one. Alt+Tab cycles within the active window's group; Ctrl+Tab (and Super+Tab as a permanent alias) cycles between groups by each group's last-active member; a Settings1 key shell.keys.group-cycle can retire the Ctrl+Tab binding.
+        """
+    context """
+        The user asked on 2026-09-03 for grouped windows that can be dragged together on Home as one window group, with Alt+Tab switching inside a group and Ctrl+Tab between groups. lege-window already has a stored-nothing spatial step (Super+Left/Right via contiguous_window) and a shelf; lege-field already has container tiles (Project) and rigid group moves (MoveMany). Ctrl+Tab is the tab-cycling chord in Firefox, Chromium, Kitty, VS Code and GNOME Terminal, and the compositor's keybinding table has a rule that a reserved chord collides with nothing an application binds; the user's choice is kept, with Super+Tab as alias and a setting to drop the Ctrl+Tab binding.
+        """
+    consequences """
+        Plan in docs/planning/window-groups-and-application-integration.md and @legeos.work.window-groups (WG1 model, WG2 compositor, WG3 protocol v4, WG4 Home tile, WG5 hands-on). The existing Super+Left/Right spatial step keeps its stored-nothing semantics and is renamed away from 'group' in the action manifest to avoid two meanings. Applications lose Ctrl+Tab while the default binding stands.
+        """
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
 }

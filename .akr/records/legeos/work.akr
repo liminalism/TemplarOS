@@ -92,6 +92,32 @@ record legeos.work.adaptive-files-and-omnibox/1 : work {
     part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
+record legeos.work.application-integration-interim/1 : work {
+    title "Interim application integration — fsearch as the search provider, Kitty as the terminal provider, and a Files object worth building"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-appd/**",
+        path "crates/lege-session-core/**",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-types/src/provider.rs",
+        path "debian/**",
+        path "distro/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Three integration choices the user made on 2026-09-03. (a) fsearch: ProviderRole::FileSearch, exclusive, default candidate the installed fsearch; the Files object's search gets a last row 'Search everywhere with FSearch' and the context menu a 'Search here…' verb, both launching the provider with --search <query> through the launch chain; lege-filed keeps its scoped index; later, sessiond feeds fsearch's include list from Files.Search1.Roots. (b) Kitty: ProviderRole::Terminal, exclusive, default kitty; Ctrl+Alt+T reserved to launch the selected terminal; 'Open terminal here' in the Files context menu with --directory; Terminal=true desktop entries wrapped by the provider's declared exec form in appd's launcher; /etc/xdg/kitty/kitty.conf shipped by legeos-shell with the LegeOS palette, remember_window_size no and wayland_titlebar_color system, overridable by ~/.config/kitty. (c) Files object: secondary-click menu on rows and empty space reusing surface/context_menu.rs and the declared files.* verbs (Open, Open with…, Open terminal here, Copy path, Rename, Move to trash, Properties; New folder, Paste, Select all, Sort by…, Show hidden); multi-select with Ctrl/Shift/Ctrl+A driving bulk verbs; in-surface keyboard verbs (F2, Delete, Ctrl+C/X/V, Ctrl+Z, Backspace, Enter); drag-and-drop between Files, folder tiles and the shortcuts pane over the wl_data_device transport; properties as a pane representation.
+        """
+    note """
+        Plan text: docs/planning/window-groups-and-application-integration.md §4. Order: terminal and fsearch roles together (both Providers1 work), then Files items 1–3, then 4–5. Not planned: reading fsearch's database or replacing Files.Search1.
+        """
+    depends_on [ @legeos.work.wayland-clipboard-and-dnd-transport ]
+    implements [ @legeos.decision.the-home-field-is-a-launcher-not-a-search ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.compositor-window-authority/1 : work {
     title "The compositor's window authority: typed layers, one scene, explicit minimisation, recovery without the shell"
     state completed
@@ -998,6 +1024,30 @@ record legeos.work.hands-on-run-3-fixes/2 : work {
     derived_from [ @legeos.observation.hands-on-run-3-findings-20260903 ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.hands-on-run-3-fixes/1 ]
+}
+
+record legeos.work.hands-on-run-4-fixes/1 : work {
+    title "Act on the fourth hands-on run: a deploy that finishes, snap browsers that connect, per-window compositing, a screen timeout, and a launcher that finds applications"
+    state proposed
+    scope [
+        path "apps/lege-settings/**",
+        path "cli/lege/src/dev/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-session-core/**",
+        path "distro/deploy/**",
+        path "interfaces/**",
+        path "services/lege-hostd/**",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Fix what the fourth hands-on run found: (1) lege-hostd's EACCES on the system bus socket, and lege dev deploy stopping activation at the first failed unit although every package was installed; (2) snap Chromium and Firefox refused by AppArmor because the public Wayland socket is named legeos-0 rather than wayland-N; (3) every band and grip rendered above every window so titles bleed through a translucent window, plus the reported focus fighting; (4) no screen timeout: a compositor idle timer, outputs off and back on, the timeout from Power1's stored idle policy, and a Settings control; (5) the launcher: sessiond never scanned the snap desktop directory so snap browsers were not in the registry, and the Home field federated files with applications.
+        """
+    note """
+        (5) landed at d391fc1 and dfa1fda. (1)–(4) are in progress by two Opus agents in worktrees off trash-undo-and-audit and are recorded here on merge. Until (1) lands, a failed deploy leaves packages installed and the shell restarts by hand: systemctl --user restart lege-shell.service.
+        """
+    after [ @legeos.work.hands-on-run-3-fixes ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.home-field/1 : work {
@@ -2551,4 +2601,82 @@ record legeos.work.window-controls-and-mouse-parity/1 : work {
         """
     part_of [ @legeos.work.home-widgets ]
     verified_by [ @legeos.evidence.window-controls-20260825 ]
+}
+
+record legeos.work.window-groups/1 : work {
+    title "Window groups — one unit of work: grouped windows park, return, stack and drag together; Alt+Tab inside, Ctrl+Tab across"
+    state proposed
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-client/**",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Implement @legeos.decision.window-groups-are-explicit-and-compositor-owned in four steps then a hands-on: WG1 the model in lege-window (GroupId, membership on WindowRecord, group/ungroup/dissolve, raise_many and group-contiguous activate, shelve/unshelve/move_group, cycle_within_group and cycle_groups, group on ShellToplevel, new WindowCommands, property tests); WG2 the compositor (Alt+Tab within group, Ctrl+Tab and Super+Tab across groups, Ctrl+Alt+G group with previous, HUDs, band accent stripe and name, Shift+band-drop grouping, Shift+band-drag moves the group, COMPOSITOR.md rows, shell.keys.group-cycle setting); WG3 lege_shell_v1 version 4 additions (toplevel group event; join_group, leave_group, activate_group, shelve_group, unshelve_group, set_group_name) with proxies and bridge; WG4 the Home tile (TileKind::WindowGroup container of ParkedSession tiles, merge_sessions placement and sweep, drop-to-group and drag-out gestures, container drag as one, title click activates, Park shelves the group, representation ladder rungs, visual baseline); WG5 the user's hands-on acceptance.
+        """
+    note """
+        Plan text: docs/planning/window-groups-and-application-integration.md §2–3. Order WG1 → WG2 → WG3 → WG4; one agent. Ctrl+Tab conflict with tabbed applications is accepted by the user and mitigated by the Super+Tab alias and the setting.
+        """
+    after [ @legeos.work.hands-on-run-4-fixes ]
+    implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.window-groups-compositor/1 : work {
+    title "WG2 — the compositor: Alt+Tab inside, Ctrl+Tab and Super+Tab across, Ctrl+Alt+G, HUDs, band accent, Shift-drop grouping, group drag"
+    state proposed
+    scope [ path "compositor/lege-comp/**", path "crates/lege-types/src/action.rs" ]
+    intent """
+        CycleFocusForward/Backward become within-group; new GroupCycleForward/Backward on Ctrl+Tab, Ctrl+Shift+Tab, Super+Tab, Super+Shift+Tab; Ctrl+Alt+G groups the active window with the previously active one and Ctrl+Alt+Shift+G ungroups, with context-menu rows so no chord is the only route; the switcher HUD lists the group's members under its name and the group HUD lists groups with counts and the loose set as Other windows; grouped bands carry a 4 px accent stripe and the group name; Shift + band drop on another window's band groups them with a drop highlight; Shift + band drag moves the group; the existing Super+Left/Right spatial step is renamed away from 'group' in the manifest; COMPOSITOR.md rows; Settings1 shell.keys.group-cycle read through the shell's settings relay or the compositor's own channel.
+        """
+    depends_on [ @legeos.work.window-groups-model ]
+    implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
+    part_of [ @legeos.work.window-groups ]
+}
+
+record legeos.work.window-groups-home-tile/1 : work {
+    title "WG4 — the Home tile: TileKind::WindowGroup container of session tiles, dragged as one, drop-to-group and drag-out, ladder rungs"
+    state proposed
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    intent """
+        TileKind::WindowGroup { identifier } is a top-level container (is_container alongside Project) holding its members' ParkedSession tiles; merge_sessions places a grouped window's tile inside the group tile, creating it at the first member's place, moves a departing member's tile out to the nearest free cell, and sweeps an empty group tile like an orphaned session tile; gestures: session tile dropped on session tile joins, tile dragged out onto the bare field leaves, the group tile drags as one container, title click activates the group, Park shelves it, rename sets the name; rungs: Micro count badge, Small name and count, Wide member titles, Large member previews, Full the existing zoom; a group tile joins the visual baseline fixture.
+        """
+    depends_on [ @legeos.work.window-groups-protocol ]
+    implements [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.window-groups-are-explicit-and-compositor-owned
+    ]
+    part_of [ @legeos.work.window-groups ]
+}
+
+record legeos.work.window-groups-model/1 : work {
+    title "WG1 — the group model in lege-window: membership, contiguous raise, group shelve/move, within-group and across-group cycling, commands"
+    state proposed
+    scope [ path "crates/lege-window/**" ]
+    intent """
+        GroupId and GroupRecord {name, accent, last_active}; WindowRecord.group; group(a,b) joining or merging, ungroup, dissolve at fewer than two members and on destroy; LayerStack::raise_many and activate raising the whole group contiguously with the activated member on top; shelve_group/unshelve_group with one shelf rank for the set; move_group by the anchor's displacement, repaired per member; cycle_within_group and cycle_groups (targets are each group's last_active unshelved member plus the loose set's topmost window, in stacking order); group on ShellToplevel and the snapshot; WindowCommand Group/Ungroup/ActivateGroup/ShelveGroup/UnshelveGroup/SetGroupName. Property tests: raising changes no geometry; membership survives shelve, maximize, arrangement and output change; no window in two groups; a live group has two or more members; is_recoverable holds after every group operation.
+        """
+    implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
+    part_of [ @legeos.work.window-groups ]
+}
+
+record legeos.work.window-groups-protocol/1 : work {
+    title "WG3 — lege_shell_v1 version 4: the group event and the join/leave/activate/shelve/unshelve/name requests, proxies and bridge"
+    state proposed
+    scope [
+        path "compositor/lege-comp/src/protocols_shell.rs",
+        path "crates/lege-client/**",
+        path "interfaces/baseline.json",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/src/wayland_bridge.rs"
+    ]
+    intent """
+        Additions only, no shipped signature changed: lege_shell_toplevel_v1.group event since 4 (group_id uint, 0 = none; name string; accent uint) and requests join_group(other), leave_group, activate_group, shelve_group, unshelve_group, set_group_name(string) since 4; lege-client proxies and the shell bridge follow; check-interface-signatures then interface-baseline; check-proxies gates.
+        """
+    depends_on [ @legeos.work.window-groups-model ]
+    implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
+    part_of [ @legeos.work.window-groups ]
 }

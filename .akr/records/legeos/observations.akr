@@ -57,6 +57,31 @@ record legeos.observation.hands-on-run-3-findings-20260903/1 : observation {
     derived_from [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.observation.hands-on-run-4-findings-20260903/1 : observation {
+    title "Hands-on run 4 (2026-09-03): the deploy stopped at hostd, snap browsers cannot connect, bands render above every window, no screen timeout, the launcher could not find snap applications"
+    state verified
+    scope [
+        path "cli/lege/src/dev/**",
+        path "compositor/lege-comp/**",
+        path "services/lege-hostd/**",
+        path "services/lege-sessiond/src/background/desktop_import.rs",
+        path "shell/lege-shell/src/omnibox.rs"
+    ]
+    statement """
+        Running sudo lege dev deploy on build set 0.1.0~dev1788393589+gcbd0efa installed all 13 packages, then failed at hostd: lege-hostd exits with 'Failed to connect to address unix:path=/var/run/dbus/system_bus_socket: Permission denied (os error 13)' (the same crash-loop since 2026-09-01; unit Type=dbus, root, ProtectHome=yes, socket srw-rw-rw- root), and the tool marked every later component 'not attempted'. Snap Chromium prints 'Failed to connect to Wayland display: Permission denied (13)': snapd's AppArmor profile allows only owner /run/user/[0-9]*/wayland-[0-9]* while the compositor listens on $XDG_RUNTIME_DIR/legeos-0. In backend/udev.rs and backend/winit.rs every chrome element (band, grip) is pushed before all space elements, so all bands render above all windows and a lower window's title shows through a translucent upper window at full opacity. Power1 records an idle policy and nothing enforces it; there is no idle source. sessiond's application_dirs() scanned /usr/share/applications, the two flatpak export trees and ~/.local/share/applications only, so snap Firefox (only in /var/lib/snapd/desktop/applications) was absent from the registry (502 entries, no firefox) while Chromium appeared through the apt shim; the Home field federated files, projects and actions with applications, so 'firefox' returned files. Also reported: no right-click menu in the Files object; windows fight for focus; text input is snappier than COSMIC.
+        """
+    observed_at git:dfa1fda3427e2b34d8043252c4049839f8af1e18
+    method manual
+    watches [
+        "services/lege-hostd/**",
+        "cli/lege/src/dev/**",
+        "compositor/lege-comp/src/backend/**",
+        "compositor/lege-comp/src/state.rs",
+        "services/lege-sessiond/src/background/desktop_import.rs",
+        "shell/lege-shell/src/omnibox.rs"
+    ]
+}
+
 record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observation {
     title "Hardware Home loads and cursor works, but file panes expose no usable file content"
     state verified

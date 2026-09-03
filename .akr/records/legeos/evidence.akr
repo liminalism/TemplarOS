@@ -344,6 +344,18 @@ record legeos.evidence.hands-on-3-select-then-open-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.hands-on-4-launcher-20260903/1 : evidence {
+    title "Hands-on 4: launcher fixes gated (registry scans snap directory; Home field apps-only)"
+    state verified
+    result pass
+    method command
+    observed_at git:dfa1fda3427e2b34d8043252c4049839f8af1e18
+    command "cargo test -p lege-sessiond && cargo test -p lege-shell && cargo clippy -p lege-shell -p lege-sessiond -p lege-types --all-targets -- -D warnings && cargo run -q -p xtask -- check-actions"
+    summary """
+        sessiond 61 tests and shell 276 tests pass, clippy clean, check-actions clean: application_dirs_from always includes the snap exports and honours XDG precedence; bare Home offers applications only and never asks the file service; visual baseline 0x33ce_e9e2_8bc5_df05 reviewed (placeholder 'Open an application').
+        """
+}
+
 record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
     title "Hardware input journal identifies compositor-side omission"
     state verified
