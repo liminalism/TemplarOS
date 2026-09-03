@@ -44,6 +44,9 @@ use text::ChromeFonts;
 const SWITCHER_ROW_HEIGHT: i32 = 30;
 /// Logical-pixel height of a scatter tile's title strip (`chrome::layout::scatter_label_band`).
 const SCATTER_LABEL_HEIGHT: i32 = 26;
+/// Logical-pixel thickness of a window group's outline (planning doc §2 rule 7: "two logical
+/// pixels in the group's accent colour").
+const GROUP_OUTLINE_THICKNESS: i32 = 2;
 
 /// The compositor-drawn fallback switcher's transient state (`WindowService::cycle_within_group`
 /// and `cycle_groups`, `src/keybindings.rs`): what to list, in display order, and which entry was
@@ -81,6 +84,8 @@ pub struct ChromeState {
     scatter_labels: HashMap<WindowId, CachedWidget>,
     switcher_rows: HashMap<WindowId, CachedWidget>,
     switcher_heading: CachedWidget,
+    /// The four bars of one group's outline, kept against the member that draws them.
+    outlines: HashMap<WindowId, Vec<CachedWidget>>,
 }
 
 impl std::fmt::Debug for ChromeState {
@@ -121,6 +126,7 @@ impl ChromeState {
             scatter_labels: HashMap::new(),
             switcher_rows: HashMap::new(),
             switcher_heading: CachedWidget::new(),
+            outlines: HashMap::new(),
         }
     }
 
@@ -136,6 +142,7 @@ impl ChromeState {
     pub fn retain_window_chrome(&mut self, live: &std::collections::HashSet<WindowId>) {
         self.bands.retain(|id, _| live.contains(id));
         self.grips.retain(|id, _| live.contains(id));
+        self.outlines.retain(|id, _| live.contains(id));
     }
 
     /// Drop every window's band and grip: the lock screen or the pressure overlay owns the
@@ -143,6 +150,7 @@ impl ChromeState {
     fn forget_window_chrome(&mut self) {
         self.bands.clear();
         self.grips.clear();
+        self.outlines.clear();
     }
 }
 
@@ -157,6 +165,10 @@ pub struct ChromeInputs<'a> {
     pub show_all_windows: Option<&'a [(WindowId, Rect)]>,
     pub session_lock: &'a crate::session_lock::SessionLockState,
     pub switcher: Option<&'a SwitcherState>,
+    /// The window whose band a band drag is currently hovering, if any: it draws as a drop
+    /// target, which is the whole visible difference between "moving a window over another" and
+    /// "about to group them" (`src/input.rs`, planning doc §2 rule 6).
+    pub drop_target: Option<WindowId>,
 }
 
 /// The window-independent chrome to draw over `output` this frame, front-to-back (index 0
@@ -261,10 +273,18 @@ pub fn collect_output_chrome(
 /// XWayland windows, anything borderless — would otherwise have no pointer route to a resize at
 /// all, and an affordance nobody can see is not one. The service decides which windows have a
 /// grip (not maximized, not fullscreen, tall enough); this only paints what it is told.
+///
+/// A group's outline is window chrome too, and for the same reason: it must survive the shell
+/// dying, and it must never float above a window that has nothing to do with the group. It is
+/// emitted with the group's **bottom-most** visible member, so anything stacked above that member
+/// — including an unrelated window sitting between two members — occludes it exactly as it
+/// occludes that member's own band.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_window_chrome(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
     window_id: WindowId,
+    drop_target: Option<WindowId>,
     output_rect: Rect,
     output_scale: f64,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
@@ -274,12 +294,22 @@ pub fn collect_window_chrome(
         chrome,
         window_service,
         window_id,
+        drop_target == Some(window_id),
         output_rect,
         output_scale,
         renderer,
         elements,
     );
     collect_grip(
+        chrome,
+        window_service,
+        window_id,
+        output_rect,
+        output_scale,
+        renderer,
+        elements,
+    );
+    collect_group_outline(
         chrome,
         window_service,
         window_id,
@@ -578,10 +608,12 @@ fn collect_scatter(
     chrome.scatter_labels.retain(|id, _| live.contains(id));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_band(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
     window_id: WindowId,
+    drop_target: bool,
     output_rect: Rect,
     output_scale: f64,
     renderer: &mut GlesRenderer,
@@ -597,12 +629,24 @@ fn collect_band(
     if output_rect.intersection(band).is_none() {
         return;
     }
-    let background = if affordance.requires_compositor_paint {
+    let background = if drop_target {
+        // A band being hovered by another window's band drag: releasing here groups the two, and
+        // saying so before the release is the difference between a gesture and an accident.
+        paint::BAND_DROP_TARGET_COLOR
+    } else if affordance.requires_compositor_paint {
         paint::RECOVERY_TAB_COLOR
     } else {
         paint::RECOVERY_BAND_COLOR
     };
-    let key = WidgetKey::new(window.title.clone(), background);
+    // The group's stripe and name, if this window is in one: the same accent the outline and the
+    // Home tile use, so one group looks like one thing wherever it appears (§2 rule 7).
+    let group = window_service
+        .group_of(window_id)
+        .and_then(|group| window_service.group_record(group))
+        .map(|record| (record.accent, record.display_name().to_owned()));
+    let key = WidgetKey::new(window.title.clone(), background)
+        .with_secondary(group.clone().map(|(_, name)| name).unwrap_or_default())
+        .with_variant(group.as_ref().map_or(0, |(accent, _)| *accent));
     let title = window.title.clone();
     let location = to_physical(
         band,
@@ -637,11 +681,85 @@ fn collect_band(
                 .map(|(button, rect)| (*button, paint::scaled_px(*rect, scale)))
                 .collect();
             paint::recovery_band(
-                painter, pixel_w, pixel_h, background, &title, &buttons, fonts, scale,
+                painter,
+                pixel_w,
+                pixel_h,
+                background,
+                &title,
+                group
+                    .as_ref()
+                    .map(|(accent, name)| (*accent, name.as_str())),
+                &buttons,
+                fonts,
+                scale,
             );
         },
     ) {
         elements.push(element);
+    }
+}
+
+/// The 2-logical-pixel outline around the union of a group's unshelved members
+/// (`WindowService::group_outline`, §2 rule 7), drawn as four bars *just outside* that union so
+/// it never covers a member's own pixels — and drawn by the group's bottom-most visible member,
+/// so an unrelated window above it covers the outline rather than the other way round.
+fn collect_group_outline(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    window_id: WindowId,
+    output_rect: Rect,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let outline = window_service
+        .group_of(window_id)
+        .filter(|group| {
+            // Exactly one member draws it: the last one in stacking order that is on screen.
+            window_service
+                .group_stacking(*group)
+                .into_iter()
+                .rfind(|id| window_service.is_visible(*id))
+                == Some(window_id)
+        })
+        .and_then(|group| {
+            let accent = window_service.group_record(group)?.accent;
+            Some((window_service.group_outline(group)?, accent))
+        });
+    let Some((outline, accent)) = outline else {
+        chrome.outlines.remove(&window_id);
+        return;
+    };
+    let colour = paint::opaque(accent);
+    let widgets = chrome
+        .outlines
+        .entry(window_id)
+        .or_insert_with(|| (0..4).map(|_| CachedWidget::new()).collect());
+    for (widget, bar) in widgets
+        .iter_mut()
+        .zip(layout::outline_bars(outline, GROUP_OUTLINE_THICKNESS))
+    {
+        if output_rect.intersection(bar).is_none() {
+            continue;
+        }
+        let location = to_physical(
+            bar,
+            Point::from((output_rect.x, output_rect.y)),
+            output_scale,
+        );
+        if let Some(element) = widget.ensure(
+            WidgetKey::new("group-outline", colour),
+            (bar.width, bar.height),
+            output_scale,
+            location,
+            &mut chrome.scratch,
+            renderer,
+            move |painter, pixel_w, pixel_h| {
+                paint::group_outline_bar(painter, pixel_w, pixel_h, colour);
+            },
+        ) {
+            elements.push(element);
+        }
     }
 }
 

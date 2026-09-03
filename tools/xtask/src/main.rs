@@ -82,7 +82,17 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     // rather than compositor chords — so without this needle the row would be invisible here and
     // a file verb could end up keyboard-only without the check noticing.
     "FileVerbRoute::new(\"",
+    // `lege_comp::window_groups::POINTER_GESTURES`: a pointer gesture the *compositor* performs
+    // (dropping one window's band on another's groups them). Not every pointer route is a shell
+    // widget — some are gestures on the workspace, which the shell cannot see and which keep
+    // working when it is dead — and a rule that only counted shell rows would push those actions
+    // onto the exemption list as if they were keyboard-only.
+    "PointerGesture(\"",
 ];
+
+/// Where a pointer route can be declared. The shell is where most of them are — menu rows,
+/// regions, verb buttons — and the compositor is where the workspace's own gestures are.
+const POINTER_ROUTE_ROOTS: &[&str] = &["shell/lege-shell/src", "compositor/lege-comp/src"];
 
 /// Declared actions that carry a chord and, for now, legitimately have no pointer route.
 ///
@@ -92,26 +102,21 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
 /// `(action id, why)` and every one of them is a bug with a date on it.
 const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
     // 2026-09-03, window groups (docs/planning/window-groups-and-application-integration.md §3).
-    // The compositor implements all four chords and the pointer route for grouping already
-    // exists on the workspace — dropping a window's band on another's band groups them, and the
-    // Home tile gestures are WG4 — but the *menu* rows belong to the shell's context menu
-    // (`shell/lege-shell/src/surface/context_menu.rs`, MenuScope::Window), which is a separate
-    // lane. Remove these four the moment those rows land.
+    // The compositor reserves Super+Tab, Super+Shift+Tab and Super+Shift+G; their pointer routes
+    // are the shell's — the group tile's "Raise"/"Ungroup" rows and the switcher — and land with
+    // the shell lane. `window.group` needs no entry: dropping one window's band on another's is
+    // its pointer route, declared in `lege_comp::window_groups::POINTER_GESTURES`.
     (
         "window.group-cycle-forward",
-        "compositor chord; the shell's window context menu still needs the row",
+        "compositor chord; no surface offers moving between groups by pointer yet",
     ),
     (
         "window.group-cycle-backward",
-        "compositor chord; the shell's window context menu still needs the row",
-    ),
-    (
-        "window.group",
-        "compositor chord and band drop; the shell's window context menu still needs the row",
+        "compositor chord; no surface offers moving between groups by pointer yet",
     ),
     (
         "window.ungroup",
-        "compositor chord; the shell's window context menu still needs the row",
+        "compositor chord; the shell lane's group-tile menu row is the pointer route",
     ),
 ];
 
@@ -291,7 +296,10 @@ fn declared_actions(manifest: &str) -> Vec<(String, bool)> {
 /// at the first `#[cfg(test)]` in a file, which is where this repository always puts them.
 fn pointer_routes(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     let mut routes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for path in rust_sources(&root.join("shell/lege-shell/src")) {
+    for path in POINTER_ROUTE_ROOTS
+        .iter()
+        .flat_map(|dir| rust_sources(&root.join(dir)))
+    {
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let source = source.split("\n#[cfg(test)]").next().unwrap_or_default();

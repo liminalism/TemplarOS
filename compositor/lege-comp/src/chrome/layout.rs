@@ -237,6 +237,34 @@ pub fn band_buttons(band: Rect) -> Vec<(BandButton, Rect)> {
         .collect()
 }
 
+/// Logical width of the accent stripe a grouped window wears at the left of its band (planning
+/// doc §2 rule 7: "a stripe of the same colour in each member's band").
+pub const GROUP_STRIPE_WIDTH: i32 = 4;
+
+/// The four bars of a group outline of `thickness`, drawn **outside** `union` — top, bottom,
+/// left, right. Outside, because the union's edges are the members' own outer edges: an outline
+/// straddling them would sit on top of the very windows it is describing, and one drawn inside
+/// would eat a client's pixels.
+pub fn outline_bars(union: Rect, thickness: i32) -> [Rect; 4] {
+    let thickness = thickness.max(1);
+    [
+        Rect::new(
+            union.x - thickness,
+            union.y - thickness,
+            union.width + 2 * thickness,
+            thickness,
+        ),
+        Rect::new(
+            union.x - thickness,
+            union.bottom(),
+            union.width + 2 * thickness,
+            thickness,
+        ),
+        Rect::new(union.x - thickness, union.y, thickness, union.height),
+        Rect::new(union.right(), union.y, thickness, union.height),
+    ]
+}
+
 /// The band button containing `point`, if any — the same rectangles [`band_buttons`] draws, so
 /// the drawn control and the clickable area cannot drift apart.
 pub fn band_button_at(band: Rect, point: lege_window::Point) -> Option<BandButton> {
