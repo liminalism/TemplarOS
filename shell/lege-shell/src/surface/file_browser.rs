@@ -42,6 +42,9 @@ pub enum FileVerb {
     NewFolder,
     Properties,
     CopyPath,
+    /// Hand the question to the `file-search` provider — the application that searches every
+    /// file on the machine, rather than the folder being looked at.
+    SearchHere,
     /// Start the selected `terminal` provider in this folder — the row's own directory, or the
     /// folder holding the file. Where exactly is `Files.Actions1.TerminalDirectory`'s answer,
     /// not this surface's guess.
@@ -95,7 +98,7 @@ impl FileVerb {
     /// Whether this verb acts on the selection. The rest act on the folder being shown, and
     /// offering them with nothing selected is correct rather than a mistake.
     pub fn needs_selection(self) -> bool {
-        !matches!(self, Self::Paste | Self::NewFolder)
+        !matches!(self, Self::Paste | Self::NewFolder | Self::SearchHere)
     }
 
     /// What a button or a menu row calls it.
@@ -110,6 +113,7 @@ impl FileVerb {
             Self::Properties => "Properties",
             Self::CopyPath => "Copy path",
             Self::OpenTerminal => "Open terminal here",
+            Self::SearchHere => "Search here…",
         }
     }
 
@@ -123,6 +127,7 @@ impl FileVerb {
             .map(|route| route.verb)
             .or(match action {
                 "files.open-terminal" => Some(Self::OpenTerminal),
+                "files.search-here" => Some(Self::SearchHere),
                 _ => None,
             })
     }
@@ -139,6 +144,9 @@ pub struct FileRequest {
     pub directory: Option<PathBuf>,
     /// The name a rename was given, once the person has typed one. `None` for every other verb.
     pub new_name: Option<String>,
+    /// The question a search verb hands on, when this surface is showing one. `None` for every
+    /// other verb, and for a folder being browsed rather than searched.
+    pub query: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -569,6 +577,12 @@ impl FilesBrowseView {
             paths,
             directory: directory.map(Path::to_path_buf),
             new_name: None,
+            // Only a search verb carries one, and only when this surface is showing a search:
+            // the question a person has already typed is the question they mean to widen.
+            query: match (verb, state.location()) {
+                (FileVerb::SearchHere, FilesLocation::Search { query, .. }) => Some(query.clone()),
+                _ => None,
+            },
         }))
     }
 
@@ -987,6 +1001,7 @@ impl FilesBrowseView {
             paths: vec![path],
             directory: directory.map(Path::to_path_buf),
             new_name: Some(new_name),
+            query: None,
         }))
     }
 
@@ -1514,6 +1529,7 @@ mod tests {
                 "files.select-all",
                 "files.sort",
                 "files.show-hidden",
+                "files.search-here",
             ]
         );
     }
@@ -1524,7 +1540,12 @@ mod tests {
     fn a_feed_offers_no_paste_and_no_new_folder() {
         assert_eq!(
             menu_rows(false, false),
-            vec!["files.select-all", "files.sort", "files.show-hidden"]
+            vec![
+                "files.select-all",
+                "files.sort",
+                "files.show-hidden",
+                "files.search-here"
+            ]
         );
     }
 

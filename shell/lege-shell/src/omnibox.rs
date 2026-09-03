@@ -51,7 +51,24 @@ impl Hit {
     }
 }
 
-/// One row of the dropdown.
+/// What a row carries beyond a name and a second line.
+///
+/// One field rather than three optional ones, because the three cases are exclusive: a row is an
+/// application in the launcher's list, a file in the search panel, or the panel's own last row,
+/// which is not a result at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowExtra {
+    /// An application in the launcher's dropdown. Nothing more to say than its name and id.
+    None,
+    /// A file or folder in the search panel, with the two facts the panel shows in its own
+    /// columns: how big it is and when it last changed.
+    File { size_bytes: u64, mtime_ms: i64 },
+    /// "Search everywhere with FSearch": the panel's last row, which hands the question to the
+    /// `file-search` provider instead of answering it.
+    Everywhere,
+}
+
+/// One row of the dropdown, or of the search panel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Row {
     pub hit: Hit,
@@ -59,6 +76,29 @@ pub struct Row {
     /// The second line: a path, a project's state, what an action does.
     pub detail: String,
     pub kind: MatchKind,
+    /// What else this row carries — and, taken across the list, which of the two surfaces it is
+    /// (see [`is_panel`]).
+    pub extra: RowExtra,
+}
+
+/// The application id the "Search everywhere" row carries.
+///
+/// Not an installed application, and deliberately so: *which* program searches everywhere is a
+/// `Providers1` choice (the `file-search` role), and this module is pure — it has no bus to ask
+/// on. The row names the intent, the host resolves it to the selected provider and hands over
+/// the query. A reserved id rather than a new `Hit` variant so every existing caller keeps
+/// compiling and treating it as what it is: something to launch.
+pub const SEARCH_EVERYWHERE: &str = "legeos.search-everywhere";
+
+/// What the last row says. The provider is named because a person choosing to leave one search
+/// for another deserves to know which program they are about to be handed to.
+const SEARCH_EVERYWHERE_LABEL: &str = "Search everywhere with FSearch";
+
+/// Whether this list is the Files object's search, which is shown as a panel rather than as a
+/// dropdown under the field (plan §4.2): its rows carry three facts each, and a dropdown row
+/// has room for one.
+pub fn is_panel(rows: &[Row]) -> bool {
+    rows.iter().any(|row| row.extra != RowExtra::None)
 }
 
 /// Where the question is being asked from. Derived from the surface, never chosen by the user —
@@ -163,6 +203,21 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
             ))
     });
     rows.truncate(limit);
+    // The way out of this search and into the one that covers the whole machine. Appended after
+    // the cap, never sorted with the results and never cut by the limit: it is not a result, and
+    // a person looking for the row that widens the search must find it in the same place every
+    // time — the bottom.
+    if matches!(scope, Scope::Location(_))
+        && let Ok(id) = SEARCH_EVERYWHERE.parse::<AppId>()
+    {
+        rows.push(Row {
+            hit: Hit::App { id },
+            label: SEARCH_EVERYWHERE_LABEL.to_owned(),
+            detail: format!("every indexed file, for “{}”", query.trim()),
+            kind: MatchKind::NameSubstring,
+            extra: RowExtra::Everywhere,
+        });
+    }
     rows
 }
 
@@ -188,6 +243,7 @@ fn apps(entries: &[AppEntry], needle: &str) -> Vec<Row> {
             label: row.entry.label().to_owned(),
             detail: row.entry.id.as_str().to_owned(),
             kind: row.kind,
+            extra: RowExtra::None,
         })
         .collect()
 }
@@ -225,6 +281,10 @@ fn files_split(files: Option<FileResults<'_>>, needle: &str) -> (Vec<Row>, Vec<R
                 .parent()
                 .map_or_else(String::new, |parent| parent.display().to_string()),
             kind,
+            extra: RowExtra::File {
+                size_bytes: entry.size_bytes,
+                mtime_ms: entry.mtime_ms,
+            },
         };
         if entry.is_dir() {
             directories.push(row);
@@ -293,8 +353,75 @@ mod tests {
         }
     }
 
+    /// The row that widens the search is always there, always last, and is never sorted in
+    /// among the results or cut by the cap: it is the answer to "not this", and it has to be in
+    /// the same place every time.
+    #[test]
+    fn a_file_search_always_ends_with_the_way_out_of_it() {
+        let entries: Vec<BrowseEntry> = (0..30)
+            .map(|n| entry(&format!("/home/a/paper-{n}.pdf"), false))
+            .collect();
+        let apps: Vec<AppEntry> = Vec::new();
+        let files = FileResults {
+            query: "paper",
+            entries: &entries,
+        };
+        let rows = federate(
+            sources(&apps, Some(files)),
+            "paper",
+            &Scope::Location(FilesLocation::Directory("/home/a".into())),
+            TOTAL_CAP,
+        );
+        let last = rows.last().expect("a search always has this row");
+        assert_eq!(last.extra, RowExtra::Everywhere);
+        assert_eq!(
+            last.hit,
+            Hit::App {
+                id: SEARCH_EVERYWHERE.parse().unwrap()
+            }
+        );
+        assert!(rows.len() > 1, "and the results above it");
+        assert!(
+            rows[..rows.len() - 1]
+                .iter()
+                .all(|row| matches!(row.extra, RowExtra::File { .. })),
+            "every result carries the size and time the panel shows"
+        );
+        assert!(is_panel(&rows), "which makes this list a panel");
+    }
+
+    /// A search that found nothing still offers the way out — that is the moment it is most
+    /// wanted — while the launcher's own list stays a dropdown with no such row.
+    #[test]
+    fn the_launcher_has_no_search_everywhere_row_and_is_never_a_panel() {
+        let apps = [app("org.legeos.Files", "Files")];
+        let launcher = federate(sources(&apps, None), "fil", &Scope::Applications, TOTAL_CAP);
+        assert!(!launcher.is_empty());
+        assert!(launcher.iter().all(|row| row.extra == RowExtra::None));
+        assert!(!is_panel(&launcher));
+
+        let empty = federate(
+            sources(&apps, None),
+            "nothing-matches-this",
+            &Scope::Location(FilesLocation::Directory("/home/a".into())),
+            TOTAL_CAP,
+        );
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].extra, RowExtra::Everywhere);
+        assert!(is_panel(&empty));
+    }
+
     fn labels(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|row| row.label.as_str()).collect()
+    }
+
+    /// The results only. A location's list always ends with the row that hands the question to
+    /// the search application, and that row is not an answer to the question.
+    fn results(rows: &[Row]) -> Vec<&str> {
+        rows.iter()
+            .filter(|row| row.extra != RowExtra::Everywhere)
+            .map(|row| row.label.as_str())
+            .collect()
     }
 
     fn sources<'a>(apps: &'a [AppEntry], files: Option<FileResults<'a>>) -> Sources<'a> {
@@ -335,7 +462,7 @@ mod tests {
             entries: &entries,
         });
         let rows = federate(sources(&apps, files), "firefox", &in_work(), 12);
-        assert_eq!(labels(&rows), ["firefox-bookmarks.html"]);
+        assert_eq!(results(&rows), ["firefox-bookmarks.html"]);
     }
 
     /// Match strength ranks applications: the exact name first, then a word of the name, then
@@ -369,7 +496,7 @@ mod tests {
         assert_eq!(file_state(None, "  "), FileState::Idle);
 
         let rows = federate(sources(&[], stale), "repo", &in_work(), 12);
-        assert!(rows.is_empty(), "{:?}", labels(&rows));
+        assert!(results(&rows).is_empty(), "{:?}", labels(&rows));
     }
 
     /// A directory outranks the files inside it at the same strength: a search for a folder must
@@ -385,7 +512,7 @@ mod tests {
             entries: &entries,
         });
         let rows = federate(sources(&[], files), "report", &in_work(), 12);
-        assert_eq!(labels(&rows), ["report", "report.pdf"]);
+        assert_eq!(results(&rows), ["report", "report.pdf"]);
         assert!(matches!(rows[0].hit, Hit::Directory { .. }));
     }
 
@@ -403,7 +530,7 @@ mod tests {
         });
         let rows = federate(sources(&[], files), "sample", &in_work(), TOTAL_CAP);
         assert_eq!(rows[0].label, "sample", "the folder lost its place");
-        assert_eq!(rows.len(), 1 + FILE_CAP, "{:?}", labels(&rows));
+        assert_eq!(results(&rows).len(), 1 + FILE_CAP, "{:?}", labels(&rows));
     }
 
     /// An empty query is not a list, on Home or inside a location: recents sit under the

@@ -142,6 +142,7 @@ pub const FILES_MENU: &[MenuItem] = &[
     MenuItem::new("files.select-all", MenuScope::FilesGround),
     MenuItem::new("files.sort", MenuScope::FilesGround),
     MenuItem::new("files.show-hidden", MenuScope::FilesGround),
+    MenuItem::new("files.search-here", MenuScope::FilesGround),
 ];
 
 /// What the Files object's menu was opened over: one of its rows, or the ground between them.

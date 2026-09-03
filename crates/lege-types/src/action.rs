@@ -685,6 +685,19 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    // The way out of the folder you are in and into the search that covers the machine. Like
+    // "Open terminal here" it needs an application the person chose, so it is not offered when
+    // no file-search provider is installed.
+    ActionDecl {
+        id: "files.search-here",
+        label: "Search here…",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::FileSearch),
+    },
     ActionDecl {
         id: "files.copy",
         label: "Copy",

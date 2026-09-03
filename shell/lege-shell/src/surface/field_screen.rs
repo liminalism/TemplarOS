@@ -1184,11 +1184,11 @@ impl FieldScreen {
         if !self.search_focused {
             return None;
         }
-        crate::surface::omnibox_screen::panel_rect(
+        crate::surface::omnibox_screen::area(
             ui,
             self.omnibox_anchor,
             self.bounds,
-            self.omnibox_rows.len(),
+            &self.omnibox_rows,
             self.omnibox_files,
         )
     }

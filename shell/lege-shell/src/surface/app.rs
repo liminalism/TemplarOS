@@ -241,6 +241,10 @@ struct ShellApp {
     /// pure omnibox because which application answers "search everywhere" is a Providers1
     /// choice, and the panel names the intent rather than the program.
     file_search_provider: Option<AppId>,
+    /// The last question asked of a location, so the panel's "Search everywhere" row can hand
+    /// it on. The row is composed by a pure module with no bus and no clock; the question it is
+    /// about is the one this host asked on its behalf.
+    location_query: String,
     home: Option<HostedWindow>,
 
     text: pixelkit_text::TextCache,
@@ -363,6 +367,7 @@ impl ShellApp {
             terminal_provider: None,
             terminal_relayed: None,
             file_search_provider: None,
+            location_query: String::new(),
             home: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
@@ -642,6 +647,9 @@ impl ShellApp {
 
     /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
     fn note_search(&mut self, scope: Scope, query: String) {
+        if matches!(scope, Scope::Location(_)) {
+            query.trim().clone_into(&mut self.location_query);
+        }
         if query.trim().is_empty() {
             self.search_pending = None;
             self.search_results = None;
@@ -1290,6 +1298,14 @@ impl ShellApp {
 
             FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
             FieldAction::Launch(app_id) => {
+                // The panel's last row is not an application: it is the intent "search
+                // everywhere", and which program that is is a Providers1 choice. Resolved here,
+                // where the bus is, rather than in the pure module that composed the row.
+                if app_id.as_str() == crate::omnibox::SEARCH_EVERYWHERE {
+                    let query = self.location_query.clone();
+                    self.search_everywhere(Some(query).filter(|q| !q.is_empty()));
+                    return;
+                }
                 self.record_recent(&app_id);
                 self.spawn_launch(app_id);
             }
@@ -2158,6 +2174,7 @@ impl ShellApp {
                 };
                 self.spawn_properties(path);
             }
+            FileVerb::SearchHere => self.search_everywhere(request.query.clone()),
             FileVerb::OpenTerminal => {
                 let Some(path) = request.paths.first().cloned() else {
                     return;
@@ -2432,6 +2449,30 @@ impl ShellApp {
             let _ = tx.send(DataUpdate::Notice(notice));
             let _ = proxy_wake.send_event(Wake);
         });
+    }
+
+    /// Hand a question to the application that searches every file on the machine.
+    ///
+    /// `--search` is FSearch's own option for a pattern to start with. There is no option to
+    /// scope it to a folder — it answers from its own index of everything — so "Search here…"
+    /// with nothing typed opens it on that index rather than pretending to narrow it.
+    fn search_everywhere(&mut self, query: Option<String>) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let Some(provider) = self.file_search_provider.clone() else {
+            self.field_screen.report(
+                "No search application is selected — choose one in Settings ▸ Providers".to_owned(),
+                now_ms,
+            );
+            return;
+        };
+        let arguments = match query {
+            Some(query) if !query.trim().is_empty() => {
+                vec!["--search".to_owned(), query.trim().to_owned()]
+            }
+            _ => Vec::new(),
+        };
+        self.record_recent(&provider);
+        self.spawn_launch_with_args(provider, arguments);
     }
 
     /// Start the selected terminal in the folder this file is in.

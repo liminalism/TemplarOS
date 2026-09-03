@@ -3,7 +3,8 @@
 <!-- Bus: org.legeos.Session. Path: /org/legeos/Session/Providers.
      One selected provider per exclusive role (network-status-ui, notification-server, file-chooser,
      file-manager, lock-screen, association-broker, clipboard-manager, power-manager,
-     screenshot-service, input-method, portal-backend, greeter, terminal).
+     screenshot-service, input-method, portal-backend, greeter, terminal,
+     file-search).
      Implemented in services/lege-sessiond/src/apis/providers.rs. -->
 <node>
   <interface name="org.legeos.Providers1">
