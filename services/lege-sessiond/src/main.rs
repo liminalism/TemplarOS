@@ -138,6 +138,35 @@ fn ensure_sessiond_provider_declaration(store: &Store, providers: &Arc<RwLock<Pr
     providers.write().declare(app_id, capability);
 }
 
+/// Declare the roles installed applications fill by what they *are* rather than by claiming them
+/// (`lege_session_core::providers::derived_capabilities`).
+///
+/// **Not persisted, deliberately.** The declarations table exists so a claim an application made
+/// — `X-LegeOS-Provides=`, or `Providers1.Declare` — survives a restart. A derived declaration
+/// has nothing to survive: it is read off the installed set, and the installed set is read on
+/// every start. Writing it down would only create a way for the two to disagree, and they would:
+/// nothing removes a row when the application it names is uninstalled, so a terminal that is no
+/// longer on the machine would go on being offered — and, being the distribution default, would
+/// go on *winning*.
+///
+/// Selections are a different matter and are stored: which terminal a person chose is a choice,
+/// and this only ever changes what the choice is made from.
+fn ensure_derived_provider_declarations(
+    catalog: &dyn AppCatalog,
+    providers: &Arc<RwLock<ProviderRegistry>>,
+) {
+    let mut declared = 0usize;
+    for manifest in catalog.manifests() {
+        for capability in lege_session_core::providers::derived_capabilities(&manifest) {
+            providers.write().declare(manifest.id.clone(), capability);
+            declared += 1;
+        }
+    }
+    if declared > 0 {
+        tracing::info!(count = declared, "derived provider declarations");
+    }
+}
+
 /// Everything the daemon needs, loaded and cross-linked once. Kept as one struct so `main`
 /// reads as a short sequence of named steps instead of two dozen `let` bindings.
 struct Services {
@@ -243,6 +272,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
         lege_session_core::providers::load(&store).context("loading provider registry")?,
     ));
     ensure_sessiond_provider_declaration(&store, &providers);
+    ensure_derived_provider_declarations(catalog.as_ref(), &providers);
     let schema = Arc::new(RwLock::new(baseline_schema()));
     let settings_values = Arc::new(RwLock::new(
         lege_session_core::settings::load_values(&store).context("loading settings values")?,

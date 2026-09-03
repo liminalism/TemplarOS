@@ -103,4 +103,11 @@ name = "legeos-shell"
 section = "x11"
 priority = "optional"
 depends = "$auto, legeos-sessiond, legeos-filed, wl-clipboard"
-assets = [["target/release/lege-shell", "usr/bin/lege-shell", "755"]]
+assets = [
+    ["target/release/lege-shell", "usr/bin/lege-shell", "755"],
+    # kitty reads $XDG_CONFIG_DIRS before the person's own $XDG_CONFIG_HOME, so this is a
+    # default the shell ships rather than a policy it imposes: ~/.config/kitty wins over
+    # every line in it. It lives with the shell because it is the shell's palette
+    # (`src/surface/design.rs`) that it carries.
+    ["../../distro/policy/xdg/kitty.conf", "etc/xdg/kitty/kitty.conf", "644"],
+]

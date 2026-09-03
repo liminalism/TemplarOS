@@ -42,6 +42,13 @@ pub enum FileVerb {
     NewFolder,
     Properties,
     CopyPath,
+    /// Hand the question to the `file-search` provider — the application that searches every
+    /// file on the machine, rather than the folder being looked at.
+    SearchHere,
+    /// Start the selected `terminal` provider in this folder — the row's own directory, or the
+    /// folder holding the file. Where exactly is `Files.Actions1.TerminalDirectory`'s answer,
+    /// not this surface's guess.
+    OpenTerminal,
 }
 
 /// One button on the file-verb row: the declared action it performs, and the verb that performs
@@ -91,7 +98,7 @@ impl FileVerb {
     /// Whether this verb acts on the selection. The rest act on the folder being shown, and
     /// offering them with nothing selected is correct rather than a mistake.
     pub fn needs_selection(self) -> bool {
-        !matches!(self, Self::Paste | Self::NewFolder)
+        !matches!(self, Self::Paste | Self::NewFolder | Self::SearchHere)
     }
 
     /// What a button or a menu row calls it.
@@ -105,7 +112,24 @@ impl FileVerb {
             Self::NewFolder => "New folder",
             Self::Properties => "Properties",
             Self::CopyPath => "Copy path",
+            Self::OpenTerminal => "Open terminal here",
+            Self::SearchHere => "Search here…",
         }
+    }
+
+    /// The verb one declared action performs, for a menu row that names the action rather than
+    /// the verb. `None` for an action this surface answers itself — selecting everything and
+    /// changing the sort are moves of the view, not requests to a service.
+    pub fn for_action(action: &str) -> Option<FileVerb> {
+        FILE_VERB_ROUTES
+            .iter()
+            .find(|route| route.action == action)
+            .map(|route| route.verb)
+            .or(match action {
+                "files.open-terminal" => Some(Self::OpenTerminal),
+                "files.search-here" => Some(Self::SearchHere),
+                _ => None,
+            })
     }
 }
 
@@ -120,6 +144,9 @@ pub struct FileRequest {
     pub directory: Option<PathBuf>,
     /// The name a rename was given, once the person has typed one. `None` for every other verb.
     pub new_name: Option<String>,
+    /// The question a search verb hands on, when this surface is showing one. `None` for every
+    /// other verb, and for a folder being browsed rather than searched.
+    pub query: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -163,6 +190,10 @@ pub struct FileBrowserData<'a> {
 pub struct FilesBrowseView {
     /// The open rename dialogue, if any.
     rename: Option<RenameDialog>,
+    /// The secondary-click menu over a row or over the ground between rows. The field's widget
+    /// (`crate::surface::context_menu`) with the Files object's own row table, so a verb cannot
+    /// mean one thing on the toolbar and another in the menu.
+    menu: crate::surface::context_menu::ContextMenu,
 }
 
 /// Renaming one item: which one, what the person has typed, and why it is refused so far.
@@ -257,14 +288,29 @@ impl FilesBrowseView {
             state.observe(listing.map(|listing| listing.directory.as_path()));
         }
 
-        // The rename dialogue owns the frame while it is open: it takes the keys, so nothing
-        // underneath can act on a keystroke meant for the name being typed.
-        let renaming = self.rename.is_some();
-        let mut action = if keyboard_enabled && !renaming {
-            self.handle_keys(ui, state, data.sources, listing, visible_entries)
+        // An open menu owns this frame's input, and it is consulted before anything underneath
+        // is drawn — the same two-step the field's menu follows, and for the same reason: the
+        // menu is painted over the listing, so the row beneath would otherwise take the click.
+        let menu_directory = listing.map(|listing| listing.directory.clone());
+        let mut action = if self.menu.is_open() {
+            self.menu.update(ui, area).and_then(|chosen| {
+                self.run_menu_action(
+                    chosen.action,
+                    state,
+                    menu_directory.as_deref(),
+                    visible_entries,
+                )
+            })
         } else {
             None
         };
+
+        // The rename dialogue owns the frame while it is open: it takes the keys, so nothing
+        // underneath can act on a keystroke meant for the name being typed.
+        let renaming = self.rename.is_some();
+        if action.is_none() && keyboard_enabled && !renaming && !self.menu.is_open() {
+            action = self.handle_keys(ui, state, data.sources, listing, visible_entries);
+        }
 
         ui.panel(area);
         let (roots_area, browser_area) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
@@ -305,7 +351,7 @@ impl FilesBrowseView {
                     Align::Left,
                 );
             } else {
-                let drawn = Self::draw_entries(ui, entries_area, state, visible_entries, false);
+                let drawn = self.draw_entries(ui, entries_area, state, visible_entries, false);
                 if action.is_none() {
                     action = drawn;
                 }
@@ -321,7 +367,7 @@ impl FilesBrowseView {
             let drawn = if state.view == ViewMode::Thumbnails {
                 Self::draw_thumbnails(ui, entries_area, state, visible_entries, data.thumbnails)
             } else {
-                Self::draw_entries(ui, entries_area, state, visible_entries, listing.truncated)
+                self.draw_entries(ui, entries_area, state, visible_entries, listing.truncated)
             };
             if action.is_none() {
                 action = drawn;
@@ -343,6 +389,21 @@ impl FilesBrowseView {
                 Align::Left,
             );
         }
+
+        // Whatever the rows did not take is the ground between them, and the ground has a menu
+        // of its own: New folder, Paste, Select all, Sort by…, Show hidden — the five things
+        // that are about the folder rather than about one file in it.
+        if !self.menu.is_open() && ui.input.take_context_click(entries_area) {
+            let target = crate::surface::context_menu::FilesTarget {
+                row: false,
+                directory: state.directory().is_some(),
+            };
+            if let Some(at) = ui.input.cursor() {
+                self.menu.open_rows_at(at, target.rows());
+            }
+        }
+        // Painted over everything the object drew this frame; its input was taken at the top.
+        self.menu.paint(ui, area);
 
         // Drawn last so it sits over the listing, and consulted before the automatic load
         // below: a dialogue waiting for an answer must not be reloaded out from under itself.
@@ -445,6 +506,50 @@ impl FilesBrowseView {
         Self::can_request(verb, state, directory)
     }
 
+    /// Perform one row of the context menu.
+    ///
+    /// Every row that names a file verb goes through [`Self::request`] — the same call the
+    /// toolbar button and the accelerator make — so the three routes cannot disagree about what
+    /// a verb does or about when it applies. The rest are moves of the view itself: selecting
+    /// everything, changing the sort and showing hidden files are what the toolbar's own
+    /// controls do, and they reach the same state.
+    fn run_menu_action(
+        &mut self,
+        action: &'static str,
+        state: &mut FilesSurfaceState,
+        directory: Option<&Path>,
+        entries: &[BrowseEntry],
+    ) -> Option<FileBrowserAction> {
+        match action {
+            "files.open" => {
+                let entry = entries.get(state.focus)?;
+                let entry = entry.clone();
+                activate(state, &entry)
+            }
+            "files.select-all" => {
+                let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+                state.selection.select_all(&order);
+                state.focus_area = FocusArea::Entries;
+                None
+            }
+            "files.sort" => {
+                state.cycle_sort_field(entries);
+                None
+            }
+            "files.show-hidden" => {
+                state.show_hidden = !state.show_hidden;
+                Some(FileBrowserAction::Load {
+                    location: state.location().clone(),
+                    show_hidden: state.show_hidden,
+                })
+            }
+            other => {
+                let verb = FileVerb::for_action(other)?;
+                self.request(verb, state, directory)
+            }
+        }
+    }
+
     /// Whether `verb` applies right now, and the request it would make. No side effects.
     fn can_request(
         verb: FileVerb,
@@ -459,7 +564,7 @@ impl FilesBrowseView {
         // no single answer, so the surface does not ask.
         if matches!(
             verb,
-            FileVerb::Rename | FileVerb::Properties | FileVerb::CopyPath
+            FileVerb::Rename | FileVerb::Properties | FileVerb::CopyPath | FileVerb::OpenTerminal
         ) && paths.len() != 1
         {
             return None;
@@ -472,6 +577,12 @@ impl FilesBrowseView {
             paths,
             directory: directory.map(Path::to_path_buf),
             new_name: None,
+            // Only a search verb carries one, and only when this surface is showing a search:
+            // the question a person has already typed is the question they mean to widen.
+            query: match (verb, state.location()) {
+                (FileVerb::SearchHere, FilesLocation::Search { query, .. }) => Some(query.clone()),
+                _ => None,
+            },
         }))
     }
 
@@ -890,6 +1001,7 @@ impl FilesBrowseView {
             paths: vec![path],
             directory: directory.map(Path::to_path_buf),
             new_name: Some(new_name),
+            query: None,
         }))
     }
 
@@ -1094,6 +1206,7 @@ impl FilesBrowseView {
     }
 
     fn draw_entries(
+        &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
         state: &mut FilesSurfaceState,
@@ -1111,6 +1224,7 @@ impl FilesBrowseView {
         }
         let heights = vec![ui.px(ENTRY_HEIGHT); entries.len()];
         let mut selected = None;
+        let mut secondary: Option<(i32, i32)> = None;
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         ui.scroll_list(&mut state.entry_scroll, area, &heights, |ui, index, row| {
             let entry = &entries[index];
@@ -1154,6 +1268,17 @@ impl FilesBrowseView {
                 ui.theme.text_dim,
                 Align::Right,
             );
+            // A secondary press is a menu about *this* row, so it selects it first — a menu
+            // whose Rename acted on whatever happened to be selected elsewhere would be a menu
+            // that lies about what it is over.
+            if ui.input.take_context_click(row) {
+                state.focus_area = FocusArea::Entries;
+                state.focus = index;
+                if !state.selection.contains(&entry.path) {
+                    state.selection.replace(entry.path.clone());
+                }
+                secondary = ui.input.cursor();
+            }
             if ui.input.take_click(row) {
                 state.focus_area = FocusArea::Entries;
                 let previous = state.focus;
@@ -1179,6 +1304,13 @@ impl FilesBrowseView {
                 }
             }
         });
+        if let Some(at) = secondary {
+            let target = crate::surface::context_menu::FilesTarget {
+                row: true,
+                directory: state.directory().is_some(),
+            };
+            self.menu.open_rows_at(at, target.rows());
+        }
         if truncated {
             let note = Rect::new(area.x, area.bottom() - ui.px(24), area.w, ui.px(24));
             ui.painter.fill_rect(note, ui.theme.panel_alt);
@@ -1333,6 +1465,14 @@ mod tests {
     }
 
     impl Harness {
+        /// Secondary-click somewhere and report what the surface asked for.
+        fn context_click(&mut self, x: f32, y: f32) -> Option<FileBrowserAction> {
+            self.input.cursor_moved(x, y);
+            self.input.mouse(MouseButton::Right, true);
+            self.input.mouse(MouseButton::Right, false);
+            self.frame()
+        }
+
         /// Press a key with modifiers and report what the surface asked for.
         fn press(&mut self, key: KeyInput, modifiers: Modifiers) -> Option<FileBrowserAction> {
             self.input.modifiers_changed(modifiers);
@@ -1354,6 +1494,184 @@ mod tests {
         fn here(&self) -> FilesLocation {
             self.state.location().clone()
         }
+    }
+
+    /// The ids a target's menu offers, in the order it offers them.
+    fn menu_rows(row: bool, directory: bool) -> Vec<&'static str> {
+        crate::surface::context_menu::FilesTarget { row, directory }
+            .rows()
+            .into_iter()
+            .map(|item| item.action)
+            .collect()
+    }
+
+    /// A row's menu is about one file; the ground's is about the folder. Neither offers the
+    /// other's rows, because a menu that offers Paste over a file is a menu that has to explain
+    /// which of the two things it meant.
+    #[test]
+    fn the_files_menu_offers_what_is_under_the_pointer() {
+        assert_eq!(
+            menu_rows(true, true),
+            vec![
+                "files.open",
+                "files.open-terminal",
+                "files.copy-path",
+                "files.rename",
+                "files.properties",
+                "files.trash",
+            ]
+        );
+        assert_eq!(
+            menu_rows(false, true),
+            vec![
+                "files.new-folder",
+                "files.paste",
+                "files.select-all",
+                "files.sort",
+                "files.show-hidden",
+                "files.search-here",
+            ]
+        );
+    }
+
+    /// Recent and Trash are somewhere to look, not somewhere to put anything: no folder, so no
+    /// Paste and no New folder. The rows that are about the view itself stay.
+    #[test]
+    fn a_feed_offers_no_paste_and_no_new_folder() {
+        assert_eq!(
+            menu_rows(false, false),
+            vec![
+                "files.select-all",
+                "files.sort",
+                "files.show-hidden",
+                "files.search-here"
+            ]
+        );
+    }
+
+    /// The property the menu exists for: every row that names a file verb makes exactly the
+    /// request the toolbar button of the same name makes. They are one call, not two code paths
+    /// that happen to agree today.
+    #[test]
+    fn every_menu_row_asks_for_what_its_toolbar_button_asks_for() {
+        let mut harness = Harness::new();
+        harness.frame();
+        harness.select(&["/home/test/Downloads/paper.pdf"]);
+        let directory = PathBuf::from("/home/test/Downloads");
+        let entries = harness.listing.entries.clone();
+
+        for action in ["files.copy-path", "files.properties", "files.trash"] {
+            let verb = FileVerb::for_action(action).expect("a declared file verb");
+            let by_menu = harness.screen.run_menu_action(
+                action,
+                &mut harness.state,
+                Some(&directory),
+                &entries,
+            );
+            let by_toolbar = FilesBrowseView::can_request(verb, &harness.state, Some(&directory));
+            assert_eq!(by_menu, by_toolbar, "{action}");
+            assert!(by_menu.is_some(), "{action} applies to one selected file");
+        }
+
+        // Paste and New folder are about the folder, not the selection, and reach the same
+        // request from the menu as from the row above the listing.
+        for action in ["files.paste", "files.new-folder"] {
+            let verb = FileVerb::for_action(action).expect("a declared file verb");
+            assert_eq!(
+                harness.screen.run_menu_action(
+                    action,
+                    &mut harness.state,
+                    Some(&directory),
+                    &entries
+                ),
+                FilesBrowseView::can_request(verb, &harness.state, Some(&directory)),
+                "{action}"
+            );
+        }
+    }
+
+    /// The three rows that are moves of the view rather than requests to a service reach the
+    /// same state the toolbar's own controls do.
+    #[test]
+    fn the_menu_rows_that_change_the_view_do_what_the_toolbar_does() {
+        let mut harness = Harness::new();
+        harness.frame();
+        let directory = PathBuf::from("/home/test/Downloads");
+        let entries = harness.listing.entries.clone();
+
+        assert_eq!(
+            harness.screen.run_menu_action(
+                "files.select-all",
+                &mut harness.state,
+                Some(&directory),
+                &entries
+            ),
+            None,
+            "selecting everything asks the host for nothing"
+        );
+        assert_eq!(harness.state.selected_paths().len(), entries.len());
+
+        let before = harness.state.sort;
+        harness.screen.run_menu_action(
+            "files.sort",
+            &mut harness.state,
+            Some(&directory),
+            &entries,
+        );
+        assert_ne!(harness.state.sort, before, "Sort by… moves the sort on");
+
+        assert!(!harness.state.show_hidden);
+        let reload = harness.screen.run_menu_action(
+            "files.show-hidden",
+            &mut harness.state,
+            Some(&directory),
+            &entries,
+        );
+        assert!(harness.state.show_hidden);
+        assert_eq!(
+            reload,
+            Some(FileBrowserAction::Load {
+                location: FilesLocation::Directory(directory),
+                show_hidden: true,
+            }),
+            "the folder is re-read, because hidden files change what is in it"
+        );
+    }
+
+    /// Secondary-click on a row selects it and opens its menu; choosing Move to Trash there
+    /// makes the request the toolbar's Trash button makes, for that row.
+    #[test]
+    fn a_secondary_click_on_a_row_opens_its_menu_and_the_rows_act_on_it() {
+        let mut harness = Harness::new();
+        harness.frame();
+        assert_eq!(harness.context_click(400.0, 168.0), None, "the menu opened");
+        assert_eq!(
+            harness.state.selected_paths(),
+            vec![PathBuf::from("/home/test/Downloads/paper.pdf")],
+            "the menu is about the row it was opened over"
+        );
+
+        // Row 5 of six, at the pointer: 5px of padding, then 28px rows.
+        let trashed = verb_of(harness.click(534.0, 327.0));
+        assert_eq!(
+            trashed,
+            Some((
+                FileVerb::Trash,
+                vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
+            ))
+        );
+    }
+
+    /// Secondary-click on the ground between rows opens the folder's menu instead, and a press
+    /// outside it dismisses it without acting on anything underneath.
+    #[test]
+    fn a_secondary_click_on_the_ground_opens_the_folders_menu() {
+        let mut harness = Harness::new();
+        harness.frame();
+        assert_eq!(harness.context_click(400.0, 400.0), None);
+        // Row 0 is New folder.
+        let asked = verb_of(harness.click(534.0, 419.0));
+        assert_eq!(asked.map(|(verb, _)| verb), Some(FileVerb::NewFolder));
     }
 
     fn control() -> Modifiers {

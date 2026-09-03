@@ -4,6 +4,14 @@
 //! the control has focus and a person is mid-question. The row shape is the launcher tile's —
 //! a mark, a name, and a second line saying which thing this is — kept because it was the right
 //! shape and the launcher tile is what this replaces.
+//!
+//! Two shapes, one list. The launcher's answer is a dropdown under the field: a name and an id
+//! per row, and nothing that needs room. A file search's answer is a **panel** (plan §4.2) — a
+//! partial-screen sheet, about two thirds of the field each way and centred, with a hairline
+//! edge and no shadow (plan §6) — because each of its rows carries a path, a size and a time,
+//! and a dropdown row has room for one of the three. Which shape is not a mode and not a
+//! setting: [`crate::omnibox::is_panel`] reads it off the rows, so the surface that composed
+//! them decides, and the two can never disagree about which is on screen.
 
 use pixelkit_raster::{Bitmap, Rect, ScaleFilter};
 use pixelkit_shell::KeyInput;
@@ -11,7 +19,7 @@ use pixelkit_text::{Align, TextStyle};
 use pixelkit_ui::Ui;
 use std::collections::HashMap;
 
-use crate::omnibox::{FileState, Hit, Row};
+use crate::omnibox::{FileState, Hit, Row, RowExtra};
 use crate::surface::design::{self, Elevation};
 
 /// One row's height in logical pixels: enough for a 20px mark, a name and a detail line, with
@@ -74,6 +82,41 @@ impl OmniboxState {
 /// Where the dropdown will be, given what it has to show. Pure geometry, so the field can know
 /// the pointer is over the list *before* the tiles underneath get a chance to claim the click —
 /// the same rule the context menu follows, and for the same reason.
+/// How much of the field the search panel takes, as a fraction: two thirds each way, centred.
+const PANEL_NUMERATOR: i32 = 2;
+const PANEL_DENOMINATOR: i32 = 3;
+/// The panel's own header, naming its three columns.
+const PANEL_HEADER: i32 = 22;
+
+/// Where the results are, whichever shape they take. The one function a caller should ask, so
+/// that hit-testing and drawing cannot end up with two different rectangles.
+pub fn area(
+    ui: &Ui<'_>,
+    anchor: Rect,
+    bounds: Rect,
+    rows: &[Row],
+    files: FileState,
+) -> Option<Rect> {
+    if crate::omnibox::is_panel(rows) {
+        return Some(panel_area(bounds));
+    }
+    panel_rect(ui, anchor, bounds, rows.len(), files)
+}
+
+/// The search panel's rectangle: two thirds of the field each way, centred on it. Independent of
+/// how many rows there are — a panel that resized as answers arrived would move the row under
+/// the pointer between one frame and the next.
+fn panel_area(bounds: Rect) -> Rect {
+    let w = (bounds.w * PANEL_NUMERATOR / PANEL_DENOMINATOR).max(1);
+    let h = (bounds.h * PANEL_NUMERATOR / PANEL_DENOMINATOR).max(1);
+    Rect::new(
+        bounds.x + (bounds.w - w) / 2,
+        bounds.y + (bounds.h - h) / 2,
+        w,
+        h,
+    )
+}
+
 pub fn panel_rect(
     ui: &Ui<'_>,
     anchor: Rect,
@@ -107,6 +150,9 @@ pub fn draw(
     icons: &HashMap<String, Bitmap>,
     files: FileState,
 ) -> OmniboxOutcome {
+    if crate::omnibox::is_panel(rows) {
+        return draw_panel(ui, panel_area(bounds), rows, state, files);
+    }
     let note = matches!(files, FileState::Searching);
     let visible = rows.len().min(MAX_VISIBLE);
     let Some(panel) = panel_rect(ui, anchor, bounds, rows.len(), files) else {
@@ -148,6 +194,204 @@ pub fn draw(
         );
     }
     outcome
+}
+
+/// The search panel: directories then files, each with its path, size and time, and the row
+/// that hands the question to the search application pinned to the bottom.
+///
+/// Pinned rather than merely last: it is always reachable without scrolling, because it is the
+/// answer to "this is not what I was looking for" and that is exactly the moment a person is
+/// least willing to hunt for a control.
+fn draw_panel(
+    ui: &mut Ui<'_>,
+    panel: Rect,
+    rows: &[Row],
+    state: &OmniboxState,
+    files: FileState,
+) -> OmniboxOutcome {
+    // A hairline edge and no shadow: this is a sheet of the same surface, not a card floating
+    // over it (plan §6).
+    design::shell(
+        ui,
+        panel,
+        design::SHELL,
+        design::EDGE_STRONG,
+        Elevation::Rest,
+    );
+    let inner = panel.inset(ui.px(6));
+    let row_height = ui.px(ROW_HEIGHT);
+    let (header, body) = inner.split_top(ui.px(PANEL_HEADER));
+    draw_panel_header(ui, header);
+
+    // The last row is the way out, and it keeps its place at the foot of the panel whatever the
+    // list above it does.
+    let everywhere = rows
+        .iter()
+        .position(|row| row.extra == RowExtra::Everywhere);
+    let (body, footer) = if everywhere.is_some() {
+        body.split_top((body.h - row_height).max(0))
+    } else {
+        (body, Rect::new(body.x, body.bottom(), body.w, 0))
+    };
+
+    let results: Vec<(usize, &Row)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.extra != RowExtra::Everywhere)
+        .collect();
+    let visible = (body.h / row_height).max(0) as usize;
+    // Scroll only as far as the highlight demands, so the list does not move under a person who
+    // is reading rather than stepping.
+    let first = state
+        .highlighted
+        .min(results.len().saturating_sub(1))
+        .saturating_sub(visible.saturating_sub(1));
+
+    let mut outcome = OmniboxOutcome::None;
+    let mut y = body.y;
+    for (index, row) in results.iter().skip(first).take(visible) {
+        let rect = Rect::new(body.x, y, body.w, row_height);
+        if draw_panel_row(ui, rect, row, *index == state.highlighted) {
+            outcome = commit(row);
+        }
+        y += row_height;
+    }
+    if results.is_empty() {
+        ui.label_styled(
+            Rect::new(body.x + ui.px(10), body.y, body.w, row_height),
+            match files {
+                // An answer that has not arrived is not "nothing found", and saying so would be
+                // a lie that flickers into truth a moment later.
+                FileState::Ready => "No matches here.",
+                FileState::Idle | FileState::Searching => "Searching…",
+            },
+            design::state_style(ui),
+            design::TEXT_FAINT,
+            Align::Left,
+        );
+    }
+
+    if let Some(index) = everywhere {
+        ui.painter.fill_rect(
+            Rect::new(footer.x, footer.y, footer.w, ui.scale.hairline()),
+            design::EDGE,
+        );
+        if draw_panel_row(ui, footer, &rows[index], index == state.highlighted) {
+            outcome = commit(&rows[index]);
+        }
+    }
+    outcome
+}
+
+/// The three columns, named once at the top rather than guessed at per row.
+fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
+    let (modified, rest) = header.split_right(ui.px(150).min(header.w / 4));
+    let (size, name) = rest.split_right(ui.px(100).min(rest.w / 4));
+    let style = TextStyle::tracked(ui.theme.body.face, 10.0, 0.10);
+    for (rect, text, align) in [
+        (
+            Rect::new(name.x + ui.px(10), name.y, name.w, name.h),
+            "NAME",
+            Align::Left,
+        ),
+        (size, "SIZE", Align::Right),
+        (
+            Rect::new(
+                modified.x,
+                modified.y,
+                (modified.w - ui.px(10)).max(0),
+                modified.h,
+            ),
+            "MODIFIED",
+            Align::Right,
+        ),
+    ] {
+        ui.label_styled(rect, text, style, design::TEXT_FAINT, align);
+    }
+    ui.painter.fill_rect(
+        Rect::new(
+            header.x,
+            header.bottom() - ui.scale.hairline(),
+            header.w,
+            ui.scale.hairline(),
+        ),
+        design::EDGE,
+    );
+}
+
+/// One panel row: the name and its folder on the left, the size and the time in their columns.
+fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> bool {
+    let hovered = ui.input.hovering(rect);
+    if highlighted || hovered {
+        ui.painter.fill_rounded_rect(
+            rect.inset(ui.px(1)),
+            ui.px(design::CHIP_RADIUS),
+            design::ACCENT_SOFT,
+        );
+    }
+    let (changed_at, left_of_it) = rect.split_right(ui.px(150).min(rect.w / 4));
+    let (size, name) = left_of_it.split_right(ui.px(100).min(left_of_it.w / 4));
+    let text = Rect::new(
+        name.x + ui.px(10),
+        name.y,
+        (name.w - ui.px(10)).max(0),
+        name.h,
+    );
+    let (title, detail) = text.split_top(rect.h / 2);
+    let marker = if matches!(row.hit, Hit::Directory { .. }) {
+        "/"
+    } else {
+        ""
+    };
+    ui.label_styled(
+        title,
+        &format!("{}{marker}", row.label),
+        design::title_style(ui),
+        if highlighted || hovered {
+            design::ACCENT
+        } else {
+            design::TEXT
+        },
+        Align::Left,
+    );
+    ui.label_styled(
+        detail,
+        &row.detail,
+        design::state_style(ui),
+        design::TEXT_FAINT,
+        Align::Left,
+    );
+    if let RowExtra::File {
+        size_bytes,
+        mtime_ms,
+    } = row.extra
+    {
+        let size_label = if matches!(row.hit, Hit::Directory { .. }) {
+            "—".to_owned()
+        } else {
+            crate::format::bytes(size_bytes)
+        };
+        ui.label_styled(
+            size,
+            &size_label,
+            design::state_style(ui),
+            design::TEXT_FAINT,
+            Align::Right,
+        );
+        ui.label_styled(
+            Rect::new(
+                changed_at.x,
+                changed_at.y,
+                (changed_at.w - ui.px(10)).max(0),
+                changed_at.h,
+            ),
+            &crate::format::timestamp_ms(mtime_ms),
+            design::state_style(ui),
+            design::TEXT_FAINT,
+            Align::Right,
+        );
+    }
+    ui.input.take_click(rect)
 }
 
 /// What choosing a row means: every row is a result.
@@ -248,7 +492,77 @@ mod tests {
             label: label.to_owned(),
             detail: String::new(),
             kind: MatchKind::NamePrefix,
+            extra: RowExtra::None,
         }
+    }
+
+    fn file_row(label: &str, path: &str) -> Row {
+        Row {
+            extra: RowExtra::File {
+                size_bytes: 2048,
+                mtime_ms: 1_700_000_000_000,
+            },
+            ..row(label, Hit::File { path: path.into() })
+        }
+    }
+
+    fn everywhere_row() -> Row {
+        Row {
+            extra: RowExtra::Everywhere,
+            ..row(
+                "Search everywhere with FSearch",
+                Hit::App {
+                    id: crate::omnibox::SEARCH_EVERYWHERE.parse().unwrap(),
+                },
+            )
+        }
+    }
+
+    /// A launcher answer is a dropdown under the field; a file search's is a panel, about two
+    /// thirds of the field each way and centred on it. The rect a click is tested against and
+    /// the rect that gets drawn are the same one, which is what [`area`] exists to guarantee.
+    #[test]
+    fn a_file_search_is_a_centred_panel_and_a_launcher_answer_is_a_dropdown() {
+        let mut buffer = pixelkit_raster::WindowBuffer::new(1200, 900);
+        let mut text = pixelkit_text::TextCache::new(crate::surface::fonts::set());
+        let mut input = pixelkit_shell::Input::new();
+        let mut kernel = pixelkit_raster::RasterKernel::new();
+        let ui = Ui::new(
+            pixelkit_raster::Painter::new(&mut buffer),
+            &mut text,
+            &mut input,
+            crate::surface::design::theme(),
+            pixelkit_shell::Scale::ONE,
+            &mut kernel,
+        );
+        let bounds = Rect::new(0, 0, 1200, 900);
+        let anchor = Rect::new(450, 40, 300, 30);
+
+        let panel = area(
+            &ui,
+            anchor,
+            bounds,
+            &[file_row("paper.pdf", "/home/a/paper.pdf"), everywhere_row()],
+            FileState::Ready,
+        )
+        .expect("a search always has a panel, even with no matches");
+        assert_eq!(panel, Rect::new(200, 150, 800, 600));
+
+        let dropdown = area(
+            &ui,
+            anchor,
+            bounds,
+            &[row(
+                "Files",
+                Hit::App {
+                    id: "org.legeos.Files".parse().unwrap(),
+                },
+            )],
+            FileState::Idle,
+        )
+        .expect("one row is a dropdown");
+        assert_eq!(dropdown.x, anchor.x, "anchored under the field it answers");
+        assert!(dropdown.y > anchor.bottom());
     }
 
     /// Every kind of hit is distinguishable without an icon, so the dropdown never shows a row

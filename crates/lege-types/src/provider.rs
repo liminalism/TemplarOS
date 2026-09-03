@@ -22,11 +22,18 @@ pub enum ProviderRole {
     InputMethod,
     PortalBackend,
     Greeter,
+    /// The terminal emulator the desktop opens: the drop-down chord's target, "Open terminal
+    /// here" in the Files object, and whatever else needs *a* terminal rather than one it named.
+    Terminal,
+    /// The application that searches every file on the machine. `Files.Search1` answers inside
+    /// the folder you are looking at; this is where "search everywhere" goes. It is launched
+    /// and nothing more: LegeOS neither reads nor feeds whatever index it keeps.
+    FileSearch,
 }
 
 impl ProviderRole {
     /// Every role, in a stable order (used by `lege doctor` and the settings UI).
-    pub const ALL: [ProviderRole; 12] = [
+    pub const ALL: [ProviderRole; 14] = [
         Self::NetworkStatusUi,
         Self::NotificationServer,
         Self::FileChooser,
@@ -39,6 +46,8 @@ impl ProviderRole {
         Self::InputMethod,
         Self::PortalBackend,
         Self::Greeter,
+        Self::Terminal,
+        Self::FileSearch,
     ];
 
     /// Kebab-case name as used in manifests and on the CLI.
@@ -56,6 +65,8 @@ impl ProviderRole {
             Self::InputMethod => "input-method",
             Self::PortalBackend => "portal-backend",
             Self::Greeter => "greeter",
+            Self::Terminal => "terminal",
+            Self::FileSearch => "file-search",
         }
     }
 }

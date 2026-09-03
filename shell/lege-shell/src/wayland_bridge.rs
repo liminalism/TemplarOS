@@ -281,6 +281,10 @@ pub struct BridgeState {
     toplevels: HashMap<ObjectId, TrackedToplevel>,
     /// `lege_shell_manager_v1.home_revealed`'s last word, whichever side started the reveal.
     home_revealed: bool,
+    /// Presses of the terminal chord the compositor could not answer itself because no terminal
+    /// window exists. Counted rather than flagged: two quick presses are two launches asked for,
+    /// and a flag would silently drop the second.
+    terminal_requests: u32,
     /// Window previews over the standard capture protocols (`crate::previews`).
     pub(crate) previews: crate::previews::PreviewState,
     /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
@@ -592,14 +596,15 @@ impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
             lege_shell_manager_v1::Event::HomeRevealed { revealed } => {
                 state.home_revealed = revealed != 0;
             }
-            // Version 5, and now bound — but both belong to the drop-down terminal (§4.6 of
-            // `docs/planning/window-groups-and-application-integration.md`), which is a separate
-            // lane. Ignored rather than removed: a `terminal_requested` this shell drops means
-            // `Super+grave` cannot *launch* a terminal, which is exactly the degradation the
-            // plan describes for a dead shell, and `group_cycle_binding` only reports a chord
-            // this shell does not yet display.
-            lege_shell_manager_v1::Event::TerminalRequested
-            | lege_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
+            // The chord was pressed with no terminal window to toggle, so the launch is ours:
+            // the compositor cannot start an application, and identity comes from the cgroup of
+            // the unit the launcher starts.
+            lege_shell_manager_v1::Event::TerminalRequested => {
+                state.terminal_requests = state.terminal_requests.saturating_add(1);
+            }
+            // Version 5: bound only once `SHELL_PROTOCOL_VERSION` reaches 5, with the
+            // window-group work.
+            lege_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
         }
     }
 }
@@ -1183,6 +1188,28 @@ impl ShellBridge {
         }
         self.manager.set_idle_timeout(seconds);
         self.connection.flush().context("flushing set_idle_timeout")
+    }
+
+    /// Tell the compositor which application is the drop-down terminal (version 5): the
+    /// canonical id of the selected `terminal` provider, or the empty string when none is.
+    ///
+    /// Sent on connect and on every change of the selection. The chord itself is the
+    /// compositor's — it has to keep toggling an existing terminal with this process dead — so
+    /// this is the one thing the shell has to tell it: *which* window that is.
+    pub fn set_terminal(&self, app_id: &str) -> Result<()> {
+        if self.manager.version() < 5 {
+            bail!("the compositor speaks lege_shell_v1 < 5, which has no set_terminal");
+        }
+        self.manager.set_terminal(app_id.to_owned());
+        self.connection.flush().context("flushing set_terminal")
+    }
+
+    /// How many times the chord asked for a terminal to be *started* since this was last called.
+    ///
+    /// Draining rather than reading: each press is one launch, and a request left in place would
+    /// be answered again on the next frame.
+    pub fn take_terminal_requests(&mut self) -> u32 {
+        std::mem::take(&mut self.state.terminal_requests)
     }
 
     /// Whether a "go home" reveal is in effect, as last reported by the compositor.

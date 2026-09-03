@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use lege_state::Store;
-use lege_types::{AppId, ProviderCapability, ProviderRole};
+use lege_types::{AppId, AppManifest, ProviderCapability, ProviderRole};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -139,6 +139,72 @@ impl ProviderRegistry {
             .map(|role| (*role, self.resolve(*role)))
             .collect()
     }
+}
+
+/// The freedesktop category every terminal emulator carries. A terminal does not declare
+/// `X-LegeOS-Provides=terminal` — no terminal on this machine has ever heard of LegeOS — so the
+/// role has to be read off what the entry already says about itself.
+const TERMINAL_CATEGORY: &str = "TerminalEmulator";
+
+/// The file-search application LegeOS integrates, by executable name. Its desktop id is
+/// `io.github.cboxdoerfer.FSearch.desktop` and its `Exec=` is plain `fsearch`; the executable is
+/// the more stable of the two, since a repackaging can change the id and not the program.
+const DEFAULT_FILE_SEARCH: &str = "fsearch";
+
+/// The terminal LegeOS ships with, by executable name. It wins by priority when it is installed,
+/// exactly as a distribution default is supposed to: installing a second terminal does not
+/// silently take the role, and choosing one in Settings still overrules both.
+const DEFAULT_TERMINAL: &str = "kitty";
+
+/// The roles an installed application fills by *being what it is*, rather than by declaring them.
+///
+/// Every other exclusive role is claimed: an application says `X-LegeOS-Provides=lock-screen` in
+/// its entry, or calls `Providers1.Declare`. A terminal emulator claims nothing — it is an
+/// ordinary application that happens to be the one thing "Open terminal here" needs — so the
+/// declaration is derived from the `Categories=` the entry already carries.
+///
+/// A derived declaration is never written down (see `ensure_derived_provider_declarations` in
+/// the daemon): it is re-read from the installed set on every start, so installing a terminal
+/// makes it a candidate and removing one stops it being offered, with nothing to go stale in
+/// between.
+///
+/// Trust is the same gate a claimed declaration passes: a `.desktop` file this account can
+/// rewrite must not become the session's terminal any more than it may become its lock screen.
+pub fn derived_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
+    if !manifest.trust().may_hold_exclusive_role() {
+        return Vec::new();
+    }
+    let mut derived = Vec::new();
+    if manifest
+        .categories
+        .iter()
+        .any(|category| category == TERMINAL_CATEGORY)
+    {
+        derived.push(ProviderCapability {
+            role: ProviderRole::Terminal,
+            priority: if executable_is(manifest, DEFAULT_TERMINAL) {
+                100
+            } else {
+                50
+            },
+        });
+    }
+    if executable_is(manifest, DEFAULT_FILE_SEARCH) {
+        derived.push(ProviderCapability {
+            role: ProviderRole::FileSearch,
+            priority: 100,
+        });
+    }
+    derived
+}
+
+/// Whether this manifest's executable is `name` — the file the launcher actually runs, not the
+/// display name, which is localised, and not the desktop id, which a repackaging can change.
+fn executable_is(manifest: &AppManifest, name: &str) -> bool {
+    manifest
+        .executable
+        .file_name()
+        .is_some_and(|file| file == std::ffi::OsStr::new(name))
 }
 
 fn role_by_name(name: &str) -> Result<ProviderRole> {
@@ -383,6 +449,120 @@ mod tests {
 
     fn cap(role: ProviderRole, priority: u32) -> ProviderCapability {
         ProviderCapability { role, priority }
+    }
+
+    /// A `.desktop`-derived manifest, at the trust its origin implies.
+    fn app(id: &str, executable: &str, categories: &[&str], packaged: bool) -> AppManifest {
+        use lege_types::{AppAliases, AppOriginKind, AppProvenance, ResourceClass};
+        AppManifest {
+            id: id.parse().unwrap(),
+            display_name: id.to_owned(),
+            primary_desktop_file_id: format!("{id}.desktop"),
+            executable: std::path::PathBuf::from(format!("/usr/bin/{executable}")),
+            aliases: AppAliases::default(),
+            mime_types: std::collections::BTreeSet::default(),
+            resource_class: ResourceClass::Interactive,
+            supports_checkpoint: false,
+            icon: None,
+            categories: categories.iter().map(|c| (*c).to_owned()).collect(),
+            keywords: std::collections::BTreeSet::default(),
+            no_display: false,
+            provenance: Some(AppProvenance::from_origin(if packaged {
+                AppOriginKind::DistroPackage
+            } else {
+                AppOriginKind::UserDesktopEntry
+            })),
+        }
+    }
+
+    #[test]
+    fn a_terminal_emulator_declares_the_terminal_role_by_its_category() {
+        let kitty = app(
+            "desktop-import.kitty",
+            "kitty",
+            &["System", "TerminalEmulator"],
+            true,
+        );
+        assert_eq!(
+            derived_capabilities(&kitty),
+            vec![cap(ProviderRole::Terminal, 100)],
+            "the terminal LegeOS ships with wins by priority"
+        );
+
+        let cosmic = app(
+            "desktop-import.com.system76.CosmicTerm",
+            "cosmic-term",
+            &["COSMIC", "System", "TerminalEmulator"],
+            true,
+        );
+        assert_eq!(
+            derived_capabilities(&cosmic),
+            vec![cap(ProviderRole::Terminal, 50)],
+            "another terminal is a candidate, not the default"
+        );
+    }
+
+    #[test]
+    fn fsearch_declares_the_file_search_role() {
+        let fsearch = app(
+            "desktop-import.io.github.cboxdoerfer.FSearch",
+            "fsearch",
+            &["GTK", "Utility", "Core"],
+            true,
+        );
+        assert_eq!(
+            derived_capabilities(&fsearch),
+            vec![cap(ProviderRole::FileSearch, 100)]
+        );
+        // Anything else has to say so itself, with `X-LegeOS-Provides=file-search`: there is no
+        // category that means "searches files", so there is nothing to read it off.
+        let other = app("desktop-import.grep-gui", "grep-gui", &["Utility"], true);
+        assert!(derived_capabilities(&other).is_empty());
+    }
+
+    #[test]
+    fn an_application_that_is_not_a_terminal_derives_nothing() {
+        let viewer = app(
+            "desktop-import.viewer",
+            "lege-viewer",
+            &["Graphics", "Viewer"],
+            true,
+        );
+        assert!(derived_capabilities(&viewer).is_empty());
+    }
+
+    /// The same gate `Providers1.Declare` applies: a file this account can rewrite must not take
+    /// the session's terminal role by writing `TerminalEmulator` into its own categories.
+    #[test]
+    fn a_terminal_this_account_can_rewrite_derives_nothing() {
+        let mine = app("desktop-import.mine", "kitty", &["TerminalEmulator"], false);
+        assert!(derived_capabilities(&mine).is_empty());
+    }
+
+    /// Two terminals installed: exactly one fills the role, and it is the shipped default until
+    /// the person chooses otherwise — the whole point of the role being exclusive.
+    #[test]
+    fn exactly_one_terminal_fills_the_role() {
+        let mut registry = ProviderRegistry::default();
+        let kitty: AppId = "desktop-import.kitty".parse().unwrap();
+        let cosmic: AppId = "desktop-import.cosmic-term".parse().unwrap();
+        registry.declare(kitty.clone(), cap(ProviderRole::Terminal, 100));
+        registry.declare(cosmic.clone(), cap(ProviderRole::Terminal, 50));
+
+        assert_eq!(
+            registry.provider(ProviderRole::Terminal),
+            Some(kitty.clone())
+        );
+        assert!(registry.may_autostart(&kitty, ProviderRole::Terminal));
+        assert!(!registry.may_autostart(&cosmic, ProviderRole::Terminal));
+        assert_eq!(
+            registry.candidates(ProviderRole::Terminal).len(),
+            2,
+            "both are still offered in Settings"
+        );
+
+        registry.select(ProviderRole::Terminal, cosmic.clone());
+        assert_eq!(registry.provider(ProviderRole::Terminal), Some(cosmic));
     }
 
     #[test]

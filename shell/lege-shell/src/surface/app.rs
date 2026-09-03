@@ -68,6 +68,14 @@ enum DataUpdate {
     /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
     /// the compositor, which is the only process that can see the seat go idle.
     IdleTimeout(u32),
+    /// Who fills an exclusive `Providers1` role the shell acts on: the `terminal` the drop-down
+    /// chord toggles, and the `file-search` the search panel's last row hands the query to.
+    /// `None` is "nobody", which is a fact worth relaying — the compositor stops looking for a
+    /// terminal window it will never find.
+    Provider {
+        role: &'static str,
+        app_id: Option<String>,
+    },
     /// The persisted recent-apps list. Applied only while the in-memory list is still empty,
     /// so a launch that happened before the load landed is not overwritten by a stale read.
     RecentApps(crate::recents::RecentApps),
@@ -222,6 +230,21 @@ struct ShellApp {
     /// The screen-off delay last relayed to the compositor, so an unchanged reading costs
     /// nothing (`DataUpdate::IdleTimeout`). `None` until the first read lands.
     idle_timeout: Option<u32>,
+    /// The selected `terminal` provider — what the drop-down chord launches when no terminal
+    /// window exists. `None` when nothing fills the role.
+    terminal_provider: Option<AppId>,
+    /// What `set_terminal` last told the compositor, so an unchanged reading costs no round
+    /// trip. `None` until the first read lands; the empty string is a real value meaning "no
+    /// terminal is selected", and the compositor needs to be told that too.
+    terminal_relayed: Option<String>,
+    /// The selected `file-search` provider — FSearch by default. Read here rather than in the
+    /// pure omnibox because which application answers "search everywhere" is a Providers1
+    /// choice, and the panel names the intent rather than the program.
+    file_search_provider: Option<AppId>,
+    /// The last question asked of a location, so the panel's "Search everywhere" row can hand
+    /// it on. The row is composed by a pure module with no bus and no clock; the question it is
+    /// about is the one this host asked on its behalf.
+    location_query: String,
     home: Option<HostedWindow>,
 
     text: pixelkit_text::TextCache,
@@ -341,6 +364,10 @@ impl ShellApp {
             wake_proxy,
             bridge: None,
             idle_timeout: None,
+            terminal_provider: None,
+            terminal_relayed: None,
+            file_search_provider: None,
+            location_query: String::new(),
             home: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
@@ -446,6 +473,15 @@ impl ShellApp {
                         crate::data::fetch_idle_timeout().await,
                     ));
                 }
+                // The two roles the shell itself acts on. Cheap (one `Report`), and the backstop
+                // under the `Providers1.Changed` watch: a selection made while the shell was
+                // starting still reaches the compositor.
+                for role in ["terminal", "file-search"] {
+                    let _ = tx.send(DataUpdate::Provider {
+                        role,
+                        app_id: crate::data::selected_provider(role).await,
+                    });
+                }
                 let _ = tx.send(DataUpdate::Projects(projects));
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
@@ -547,8 +583,78 @@ impl ShellApp {
     /// per keystroke, short enough that a person who stopped typing does not notice waiting.
     const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
 
+    /// Record who fills a role the shell acts on, and tell the compositor when it is the one it
+    /// needs to know.
+    ///
+    /// Only on a change, and only over a live connection: the compositor keeps whatever it was
+    /// last told, so re-sending the same id every three seconds would be a round trip for
+    /// nothing — the same rule `DataUpdate::IdleTimeout` follows.
+    fn note_provider(&mut self, role: &'static str, app_id: Option<String>) {
+        let parsed = app_id.and_then(|id| match id.parse::<AppId>() {
+            Ok(app_id) => Some(app_id),
+            Err(error) => {
+                tracing::warn!(%error, role, "the selected provider is not a valid app id");
+                None
+            }
+        });
+        match role {
+            "terminal" => {
+                let wire = parsed.as_ref().map_or("", AppId::as_str).to_owned();
+                self.terminal_provider = parsed;
+                if self.terminal_relayed.as_deref() == Some(wire.as_str()) {
+                    return;
+                }
+                // Nothing is recorded as relayed until there is a connection to relay it over,
+                // so a shell that started before the compositor answered still tells it once it
+                // does rather than believing it already had.
+                let Some(bridge) = &self.bridge else {
+                    return;
+                };
+                self.terminal_relayed = Some(wire.clone());
+                if let Err(error) = bridge.set_terminal(&wire) {
+                    // Ordinary against a compositor older than version 5: the chord is not there
+                    // to be told about yet.
+                    tracing::debug!(%error, "relaying the terminal provider to the compositor");
+                }
+            }
+            "file-search" => self.file_search_provider = parsed,
+            other => tracing::debug!(role = other, "a provider nothing here acts on"),
+        }
+    }
+
+    /// Answer the terminal chord pressed with no terminal window to toggle: launch the selected
+    /// `terminal` provider through the ordinary launch chain, with no arguments.
+    ///
+    /// One launch per press. With no terminal selected there is nothing to start, and saying so
+    /// is better than a chord that silently does nothing.
+    fn drain_terminal_requests(&mut self) -> bool {
+        let Some(bridge) = self.bridge.as_mut() else {
+            return false;
+        };
+        let requests = bridge.take_terminal_requests();
+        if requests == 0 {
+            return false;
+        }
+        let Some(app_id) = self.terminal_provider.clone() else {
+            let now_ms = self.started.elapsed().as_millis() as u64;
+            self.field_screen.report(
+                "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
+                now_ms,
+            );
+            return true;
+        };
+        for _ in 0..requests {
+            self.record_recent(&app_id);
+            self.spawn_launch(app_id.clone());
+        }
+        true
+    }
+
     /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
     fn note_search(&mut self, scope: Scope, query: String) {
+        if matches!(scope, Scope::Location(_)) {
+            query.trim().clone_into(&mut self.location_query);
+        }
         if query.trim().is_empty() {
             self.search_pending = None;
             self.search_results = None;
@@ -735,6 +841,7 @@ impl ShellApp {
                         }
                     }
                 }
+                DataUpdate::Provider { role, app_id } => self.note_provider(role, app_id),
                 DataUpdate::RecentApps(loaded) => {
                     if self.recent.ids().is_empty() {
                         self.recent = loaded;
@@ -1195,6 +1302,14 @@ impl ShellApp {
 
             FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
             FieldAction::Launch(app_id) => {
+                // The panel's last row is not an application: it is the intent "search
+                // everywhere", and which program that is is a Providers1 choice. Resolved here,
+                // where the bus is, rather than in the pure module that composed the row.
+                if app_id.as_str() == crate::omnibox::SEARCH_EVERYWHERE {
+                    let query = self.location_query.clone();
+                    self.search_everywhere(Some(query).filter(|q| !q.is_empty()));
+                    return;
+                }
                 self.record_recent(&app_id);
                 self.spawn_launch(app_id);
             }
@@ -1861,6 +1976,40 @@ impl ShellApp {
         });
     }
 
+    /// Re-read the roles the shell acts on the moment `Providers1.Changed` says one changed —
+    /// what makes choosing a terminal in Settings reach the compositor at once rather than on
+    /// the next slow sweep.
+    fn spawn_providers_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = lege_client::proxies::ProvidersProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                for role in ["terminal", "file-search"] {
+                    if tx
+                        .send(DataUpdate::Provider {
+                            role,
+                            app_id: crate::data::selected_provider(role).await,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = proxy_wake.send_event(Wake);
+            }
+        });
+    }
+
     fn spawn_trash_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -1945,6 +2094,7 @@ impl ShellApp {
     /// The whole point of this function is that it is the *only* one: keyboard and pointer both
     /// arrive here, and each verb goes to the same `lege-filed` interface the Files app uses, so
     /// the two surfaces cannot drift into different ideas of what "delete" means.
+    #[allow(clippy::too_many_lines)]
     fn perform_file_verb(&mut self, request: &FileRequest) {
         let now_ms = self.started.elapsed().as_millis() as u64;
         match request.verb {
@@ -2054,6 +2204,20 @@ impl ShellApp {
                     return;
                 };
                 self.spawn_properties(path);
+            }
+            FileVerb::SearchHere => self.search_everywhere(request.query.clone()),
+            FileVerb::OpenTerminal => {
+                let Some(path) = request.paths.first().cloned() else {
+                    return;
+                };
+                let Some(terminal) = self.terminal_provider.clone() else {
+                    self.field_screen.report(
+                        "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
+                        now_ms,
+                    );
+                    return;
+                };
+                self.spawn_open_terminal(terminal, path);
             }
             FileVerb::CopyPath => {
                 let Some(path) = request.paths.first() else {
@@ -2315,6 +2479,65 @@ impl ShellApp {
             };
             let _ = tx.send(DataUpdate::Notice(notice));
             let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Hand a question to the application that searches every file on the machine.
+    ///
+    /// `--search` is FSearch's own option for a pattern to start with. There is no option to
+    /// scope it to a folder — it answers from its own index of everything — so "Search here…"
+    /// with nothing typed opens it on that index rather than pretending to narrow it.
+    fn search_everywhere(&mut self, query: Option<String>) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let Some(provider) = self.file_search_provider.clone() else {
+            self.field_screen.report(
+                "No search application is selected — choose one in Settings ▸ Providers".to_owned(),
+                now_ms,
+            );
+            return;
+        };
+        let arguments = match query {
+            Some(query) if !query.trim().is_empty() => {
+                vec!["--search".to_owned(), query.trim().to_owned()]
+            }
+            _ => Vec::new(),
+        };
+        self.record_recent(&provider);
+        self.spawn_launch_with_args(provider, arguments);
+    }
+
+    /// Start the selected terminal in the folder this file is in.
+    ///
+    /// *Which* folder is `Files.Actions1.TerminalDirectory`'s answer, not this shell's: a
+    /// directory opens in itself and a file opens in its parent, and the service owning that
+    /// rule is what keeps the Files app and Home from disagreeing about where a terminal lands.
+    /// `--directory` is the argument, which is kitty's spelling and the one the plan named; a
+    /// terminal that spells it differently will need its own form declared per provider.
+    fn spawn_open_terminal(&self, terminal: AppId, path: PathBuf) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let actions = lege_client::proxies::FilesActionsProxy::new(&connection).await?;
+                let directory = actions.terminal_directory(&path.to_string_lossy()).await?;
+                let launcher = LauncherProxy::new(&connection).await?;
+                launcher
+                    .launch(
+                        &terminal.to_string(),
+                        vec!["--directory".to_owned(), directory.clone()],
+                        "",
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>(directory)
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = tx.send(DataUpdate::Notice(format!(
+                    "Could not open a terminal here — {error:#}"
+                )));
+                let _ = proxy_wake.send_event(Wake);
+            }
         });
     }
 
@@ -2687,6 +2910,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.spawn_refresh_loop();
         self.spawn_trash_watch();
         self.spawn_notifications_watch();
+        self.spawn_providers_watch();
         if let Some(home) = &self.home {
             home.request_redraw();
         }
@@ -2806,6 +3030,13 @@ impl ApplicationHandler<Wake> for ShellApp {
         {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
             self.bridge = None;
+        }
+        // Answered here rather than on the next paint: the terminal chord is a keypress a person
+        // is waiting on, and Home is only redrawn when something asks it to be.
+        if self.drain_terminal_requests()
+            && let Some(home) = &self.home
+        {
+            home.request_redraw();
         }
         self.drain_updates();
         self.ensure_toast(event_loop);

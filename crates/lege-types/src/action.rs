@@ -698,6 +698,73 @@ pub const MANIFEST: &[ActionDecl] = &[
     // agreed name per verb, so the Home surface and the Files app cannot call the same thing two
     // different things.
     ActionDecl {
+        id: "files.open",
+        label: "Open",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    // The one file verb that needs an application the person chose rather than one LegeOS
+    // ships: whichever terminal fills the exclusive `terminal` role, started in the folder
+    // being looked at. With no terminal installed the row is not offered, which is what
+    // `Requires::Provider` says.
+    ActionDecl {
+        id: "files.open-terminal",
+        label: "Open terminal here",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::Terminal),
+    },
+    ActionDecl {
+        id: "files.select-all",
+        label: "Select all",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.sort",
+        label: "Sort by…",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "files.show-hidden",
+        label: "Show hidden",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    // The way out of the folder you are in and into the search that covers the machine. Like
+    // "Open terminal here" it needs an application the person chose, so it is not offered when
+    // no file-search provider is installed.
+    ActionDecl {
+        id: "files.search-here",
+        label: "Search here…",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::FileSearch),
+    },
+    ActionDecl {
         id: "files.copy",
         label: "Copy",
         control: None,

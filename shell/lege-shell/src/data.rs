@@ -934,6 +934,55 @@ pub async fn browse_directory(
         .map_err(|error| format!("malformed directory data for {}: {error}", path.display()))
 }
 
+/// `Providers1.Report`'s resolution, as far as a client needs it: who fills the role, if anyone.
+///
+/// Mirrors `lege_session_core::providers::Resolution`'s `#[serde(tag = "kind")]` wire shape.
+/// The shell keeps its own copy of the shape for the same reason `lege-settings` does — the JSON
+/// is the contract, and depending on the daemon crate for it would drag SQLite into a shell.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+enum ProviderResolution {
+    Selected { app_id: String },
+    DefaultedByPriority { app_id: String },
+    SelectionStale {},
+    NoProvider,
+}
+
+impl ProviderResolution {
+    /// The application allowed to fill the role. A stale selection is nobody: the application it
+    /// names is not installed, and launching it would fail in a way nothing here could explain.
+    fn provider(self) -> Option<String> {
+        match self {
+            Self::Selected { app_id } | Self::DefaultedByPriority { app_id } => Some(app_id),
+            Self::SelectionStale {} | Self::NoProvider => None,
+        }
+    }
+}
+
+/// Who fills one exclusive role (`org.legeos.Providers1`), or `None` when nobody does — which
+/// includes the service not answering, because a shell with no session daemon has no provider
+/// either way.
+///
+/// `Report` rather than a per-role call because that is the whole surface Providers1 offers for
+/// reading a resolution, and one round trip answers for every role.
+pub async fn selected_provider(role: &str) -> Option<String> {
+    let connection = session().await.ok()?;
+    let proxy = lege_client::proxies::ProvidersProxy::new(&connection)
+        .await
+        .ok()?;
+    let report = proxy.report().await.ok()?;
+    resolution_for(&report, role)
+}
+
+/// The provider for `role` in a `Providers1.Report` answer. Pure, so the parse is testable
+/// without a bus.
+fn resolution_for(report: &[(String, String)], role: &str) -> Option<String> {
+    let (_, json) = report.iter().find(|(name, _)| name == role)?;
+    serde_json::from_str::<ProviderResolution>(json)
+        .ok()?
+        .provider()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenFileResult {
     pub app_id: String,
@@ -1048,6 +1097,39 @@ mod tests {
             self.0.lock().unwrap().push((app_id.to_owned(), arguments));
             Ok("instance-1".to_owned())
         }
+    }
+
+    /// The four resolutions a role can be in, as the daemon writes them, read back as "who may
+    /// be launched". A stale selection is nobody: the application it names is not installed.
+    #[test]
+    fn the_providers_report_says_who_fills_a_role() {
+        let report = vec![
+            (
+                "terminal".to_owned(),
+                r#"{"kind":"selected","app_id":"desktop-import.kitty.desktop"}"#.to_owned(),
+            ),
+            (
+                "file-search".to_owned(),
+                r#"{"kind":"defaulted-by-priority","app_id":"desktop-import.fsearch.desktop","competitors":[]}"#
+                    .to_owned(),
+            ),
+            (
+                "greeter".to_owned(),
+                r#"{"kind":"selection-stale","app_id":"gone.away"}"#.to_owned(),
+            ),
+            ("lock-screen".to_owned(), r#"{"kind":"no-provider"}"#.to_owned()),
+        ];
+        assert_eq!(
+            resolution_for(&report, "terminal").as_deref(),
+            Some("desktop-import.kitty.desktop")
+        );
+        assert_eq!(
+            resolution_for(&report, "file-search").as_deref(),
+            Some("desktop-import.fsearch.desktop")
+        );
+        assert_eq!(resolution_for(&report, "greeter"), None);
+        assert_eq!(resolution_for(&report, "lock-screen"), None);
+        assert_eq!(resolution_for(&report, "input-method"), None);
     }
 
     #[tokio::test]
