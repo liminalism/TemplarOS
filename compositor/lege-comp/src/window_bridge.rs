@@ -121,6 +121,14 @@ impl WindowIndex {
         self.elements.get(surface)
     }
 
+    /// Every `Window` the compositor is tracking, mapped into `Space` or not — the iteration
+    /// `Space::elements()` cannot give, because a shelved or reveal-hidden window is unmapped
+    /// from `Space` and still has to be configured (`src/input.rs::activate_window` clears the
+    /// `activated` state on every one of them, not only the visible ones).
+    pub fn elements(&self) -> impl Iterator<Item = &Window> {
+        self.elements.values()
+    }
+
     /// The `Window` wrapping the surface `window_id` was assigned for, mapped into `Space` or not.
     pub fn element_of(&self, window_id: WindowId) -> Option<&Window> {
         let surface = self.reverse.get(&window_id)?;
