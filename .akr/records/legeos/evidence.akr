@@ -320,6 +320,18 @@ record legeos.evidence.hands-on-3-frame-geometry-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.hands-on-3-gate-20260903/1 : evidence {
+    title "fmt, clippy -D warnings, workspace tests, MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks all pass; exit 0."
+    state verified
+    result pass
+    method command
+    observed_at git:2536a81ae698512535354276a6c9638b421f134a
+    command "just check"
+    summary """
+        fmt, clippy -D warnings, workspace tests, MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks all pass; exit 0.
+        """
+}
+
 record legeos.evidence.hands-on-3-select-then-open-20260903/1 : evidence {
     title "2 passed: a row's first press selects, the second opens; search results take the same two presses."
     state verified

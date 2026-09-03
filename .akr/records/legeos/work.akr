@@ -882,7 +882,7 @@ record legeos.work.hands-on-run-2-fixes/1 : work {
 
 record legeos.work.hands-on-run-3-fixes/1 : work {
     title "Act on the third hands-on run: a usable Files object, a real window frame with controls, and resizable windows"
-    state active
+    state superseded
     scope [
         path "apps/lege-files/**",
         path "compositor/lege-comp/**",
@@ -937,6 +937,67 @@ record legeos.work.hands-on-run-3-fixes/1 : work {
     }
     derived_from [ @legeos.observation.hands-on-run-3-findings-20260903 ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.hands-on-run-3-fixes/2 : work {
+    title "Act on the third hands-on run: a usable Files object, a real window frame with controls, and resizable windows"
+    state active
+    scope [
+        path "apps/lege-files/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "debian/control",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Fix every deficiency in @legeos.observation.hands-on-run-3-findings-20260903 and hand the user a build set they can hot-swap in place. Shell (hot-swappable): (1) a row's first press selects and the second opens, so the selection-gated file verbs have something to act on; (2) Copy path puts the Files.Actions1-rendered text on the clipboard through wl-copy, as the Files app does; (3) a change of reveal state in either direction collapses the expanded Files object; (4) the rail drops PLACE/DRIVE captions, the crumb reads Home ▸ Files, breadcrumb segments are measured not guessed. Files app: the rail names its places once. Compositor (needs a new session): (5) a client window's geometry is its frame and the surface is mapped at and configured to the client area under the band (WindowService::client_area, subtracted in space_sync alone), so the band no longer covers client pixels; (6) the band carries park, maximize and close controls hit-tested against the rectangles chrome draws; (7) a press within RESIZE_MARGIN outside a framed window's edge starts an edge resize, corners included, the window on top first; (8) xdg-decoration is answered ServerSide unless the client insists; (9) a client that commits a size of its own choosing after acking the last configure gets its frame re-fitted, on xdg and X11 alike. Packaging: legeos-shell depends on wl-clipboard.
+        """
+    note """
+        The compositor half cannot be hot-swapped by design (lege-comp.service is Restart=no; lege dev reports it as needs-session). The user must log out and back in for the frame, the controls and the edge resize to appear; the shell and Files app changes take effect on `sudo lege dev deploy`.
+        """
+    acceptance {
+        check band-controls {
+            statement """
+                Band buttons pack against the right edge in park/maximize/close order, hit-test where they are drawn, and a narrow band keeps close and gives up the rest.
+                """
+            method command
+            command "cargo test -p lege-comp -- band_buttons_pack_against_the_right_edge_close_last a_narrow_band_keeps_close_and_gives_up_the_rest"
+            verified_by [ @legeos.evidence.hands-on-3-band-controls-20260903 ]
+        }
+        check frame-geometry {
+            statement """
+                client_area sits under the band and frame_around inverts it; resize_edges_at grabs edges only outside the frame, corners included.
+                """
+            method command
+            command "cargo test -p lege-window -- the_client_area_sits_under_the_band edges_are_grabbed_just_outside_the_frame"
+            verified_by [ @legeos.evidence.hands-on-3-frame-geometry-20260903 ]
+        }
+        check gates-green {
+            statement """
+                The full repository gate passes with all of the above merged.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.hands-on-3-gate-20260903 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At a real seat after logout/login: a terminal's first line is visible under its band; the band's close, park and maximize buttons work; a window resizes from its corner grip and from just outside its edges; in the Files object a click selects and the verbs act on the selection; Copy path pastes into a terminal; a bare Super press closes the expanded Files object.
+                """
+            method manual
+        }
+        check select-then-open {
+            statement """
+                In the expanded Files object a row's first press selects it, a second press on the selected row opens it, and search results take the same two presses.
+                """
+            method command
+            command "cargo test -p lege-shell -- file_browser_pointer_activates_folders_and_files file_browser_search_results_use_the_same_clickable_rows"
+            verified_by [ @legeos.evidence.hands-on-3-select-then-open-20260903 ]
+        }
+    }
+    derived_from [ @legeos.observation.hands-on-run-3-findings-20260903 ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.hands-on-run-3-fixes/1 ]
 }
 
 record legeos.work.home-field/1 : work {
