@@ -36,6 +36,7 @@
 *.swp
 .DS_Store
 /distro/image/mkosi.conf.d/50-seeds.conf
+/distro/image/mkosi.conf.d/40-local-archive.conf
 /distro/image/mkosi.extra/usr/
 
 # Claude Code agent worktrees

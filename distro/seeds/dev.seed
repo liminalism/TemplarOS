@@ -1,7 +1,0 @@
-build-essential
-rustc
-cargo
-just
-cargo-deb
-mkosi
-git

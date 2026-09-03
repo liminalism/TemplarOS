@@ -2,6 +2,7 @@
 
 mod build_set;
 mod signatures;
+mod seeds;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -65,6 +66,19 @@ enum Command {
 }
 
 /// How a shell surface declares that an action is reachable by pointer. Each is a literal
+    /// Render every generated package artifact from `distro/seeds/selection.toml`: the seed
+    /// files, the mkosi package drop-ins and the metapackage control files.
+    Seeds {
+        /// `closure`: report what the selection resolves to instead of rendering anything.
+        #[arg(value_enum)]
+        action: Option<SeedsAction>,
+        /// Fail when a generated file has drifted from the declaration, instead of rewriting it.
+        #[arg(long)]
+        check: bool,
+        /// Write the closure report to this file instead of standard output.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 /// constructor with the action id as its first string argument, so a route is a thing that
 /// exists in the source rather than a claim in a comment.
 ///
@@ -74,6 +88,14 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     // `crate::surface::field_screen`: a region that performs an action directly.
     "FieldAction::RunAction(\"",
     // `crate::surface::widgets`: a clickable region declared on a system tile.
+/// The one thing `seeds` does that is not rendering.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SeedsAction {
+    /// Direct and transitive packages, installed size, recommends, missing names and provider
+    /// roles — resolved against whatever archive indexes this machine actually has.
+    Closure,
+}
+
     "WidgetRegion::new(\"",
     // `crate::surface::context_menu`: a row on the field's secondary-click menu.
     "MenuItem::new(\"",
@@ -432,6 +454,11 @@ fn components(root: &Path, field: &str) -> Result<()> {
     for component in &matrix.components {
         let value = match field {
             "name" => component.name.clone(),
+        Command::Seeds { action, check, out } => match (action, check) {
+            (Some(SeedsAction::Closure), _) => seeds::closure(&root, out.as_deref()),
+            (None, true) => seeds::check(&root),
+            (None, false) => seeds::generate(&root),
+        },
             "package" => component.package.clone(),
             "crate" => component.crate_name.clone(),
             "unit" => component.unit.clone().unwrap_or_default(),
@@ -952,6 +979,11 @@ fn check_packaging(root: &Path) -> Result<()> {
          {} unit ExecStart binary/ies all installed by a package; \
          {} seed(s) and {} metapackage(s) name only packages that exist",
         control_packages.len(),
+    // The seeds, the image package lists and those metapackage control files are all rendered from
+    // distro/seeds/selection.toml. Checking the names in them is only half the job: a hand edit to
+    // a generated file survives every other check here and then loses the next time anyone runs
+    // `cargo xtask seeds`.
+    problems.extend(seeds::drift(root)?);
         matrix.components.len(),
         units.len(),
         seeds.len(),

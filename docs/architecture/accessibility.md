@@ -15,7 +15,7 @@ What is **not yet implemented** — deliberately deferred, not shipped:
 
 - **No assistive-technology bridge.** The shell paints with its own rasterizer and registers no
   AT-SPI objects: no name, role or state is exposed for any tile, drawer row or widget region,
-  and no a11y bus is spoken anywhere in the workspace. `a11y.seed` installs Orca,
+  and no a11y bus is spoken anywhere in the workspace. `opt-a11y.seed` installs Orca,
   at-spi2-core and speech-dispatcher so the stack is present for when the bridge exists, but a
   screen reader meets a silent desktop today. Do not describe LegeOS as screen-reader usable.
 - **No high-contrast variant.** No high-contrast token, theme or setting exists in the shell.

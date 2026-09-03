@@ -53,4 +53,5 @@ assets = [
     # The component matrix travels with the tool that reads it.
     # cargo-deb resolves asset paths relative to this crate's directory.
     ["../../distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
+    ["../../distro/seeds/flatpak-refs.list", "usr/share/legeos/flatpak-refs.list", "644"],
 ]
