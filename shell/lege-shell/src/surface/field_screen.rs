@@ -815,7 +815,7 @@ impl FieldScreen {
             self.draw_empty_state(ui, rest, data.connected);
         }
         self.draw_omnibox(ui, data, &mut actions);
-        self.occlude_windows(ui, area, data);
+        Self::occlude_windows(ui, area, data);
         actions
     }
 
@@ -836,7 +836,7 @@ impl FieldScreen {
     /// Window geometry is in the compositor's one global logical space and the field's surface is
     /// one output, so this is right for the single-output case and conservative for any other: a
     /// rectangle that does not intersect the surface fills nothing.
-    fn occlude_windows(&self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) {
+    fn occlude_windows(ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) {
         if data.home_revealed {
             return;
         }
