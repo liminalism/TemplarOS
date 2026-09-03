@@ -33,7 +33,12 @@ use std::collections::{HashMap, HashSet};
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 4;
+pub const SHELL_PROTOCOL_VERSION: u32 = 5;
+
+/// The value of `lege_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
+/// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
+/// setting). The event exists so a future setting could move it without a protocol change.
+pub const GROUP_CYCLE_BINDING_SUPER_TAB: u32 = 0;
 
 /// Bookkeeping for currently-bound `lege_shell_v1` objects.
 #[derive(Debug, Default)]
@@ -51,6 +56,12 @@ pub struct ShellProtocolState {
     /// was on, and the claim itself. Released automatically when the surface is destroyed
     /// (`lege-shell-v1.xml`'s `set_exclusive_zone` doc) — enforced in `on_shell_surface_destroyed`.
     pub exclusive_zones: HashMap<ObjectId, (String, Exclusive)>,
+    /// The canonical application id of the selected `terminal` provider, from
+    /// `set_terminal` (§4.6). Deliberately kept when the shell disconnects: the chord toggles an
+    /// existing terminal window with the shell dead, and only *launching* one needs it back.
+    /// Compared as a string against `CachedIdentity`'s resolved id — the compositor never
+    /// interprets an application id, it only recognises one.
+    pub terminal_app_id: Option<String>,
 }
 
 /// Global-visibility filter: only the trusted-shell connection ever sees `lege_shell_manager_v1`
@@ -71,6 +82,9 @@ impl<B: Backend + 'static> GlobalDispatch2<LegeShellManagerV1, LegeCompState<B>>
         let manager = data_init.init(resource, ());
         if manager.version() >= 2 {
             manager.home_revealed(u32::from(state.window_service.home_revealed()));
+        }
+        if manager.version() >= 5 {
+            manager.group_cycle_binding(GROUP_CYCLE_BINDING_SUPER_TAB);
         }
         state.shell_protocol.managers.push(manager);
     }
@@ -170,11 +184,15 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
                 // seat go quiet (`src/idle.rs`).
                 state.set_idle_timeout(seconds);
             }
-            // Version 5 (the drop-down terminal): declared in the interface, implemented with
-            // the window-group work. The global is advertised at `SHELL_PROTOCOL_VERSION`, so
-            // this cannot arrive until that constant is raised.
+            // Which application is "the terminal" is a Providers1 choice the shell relays; what
+            // the chord does with it is the compositor's (§4.6, `src/keybindings.rs`).
             lege_shell_manager_v1::Request::SetTerminal { app_id } => {
-                tracing::debug!(app_id, "set_terminal arrived before the compositor implements it");
+                state.shell_protocol.terminal_app_id =
+                    Some(app_id).filter(|app_id| !app_id.is_empty());
+                tracing::info!(
+                    terminal = ?state.shell_protocol.terminal_app_id,
+                    "the drop-down terminal's application id"
+                );
             }
         }
     }
@@ -501,15 +519,48 @@ impl<B: Backend + 'static> Dispatch2<LegeShellToplevelV1, LegeCompState<B>> for 
             lege_shell_toplevel_v1::Request::SetMaximized { maximized } => {
                 crate::xdg_shell::apply_maximized(state, window_id, maximized != 0);
             }
-            // Version 3 (window groups): declared in the interface, implemented with the
-            // window-group work; unreachable while the manager is advertised below 5.
-            lege_shell_toplevel_v1::Request::JoinGroup { .. }
-            | lege_shell_toplevel_v1::Request::LeaveGroup
-            | lege_shell_toplevel_v1::Request::ActivateGroup { .. }
-            | lege_shell_toplevel_v1::Request::ShelveGroup
-            | lege_shell_toplevel_v1::Request::UnshelveGroup
-            | lege_shell_toplevel_v1::Request::SetGroupName { .. } => {
-                tracing::debug!(?window_id, "a group request arrived before the compositor implements groups");
+            // Window groups (version 3). Every one of these is silently ignored for a window the
+            // compositor no longer knows or a group that no longer exists: the shell's view of a
+            // group arrives by event and can always be one frame stale, and a stale request is
+            // not a protocol error.
+            lege_shell_toplevel_v1::Request::JoinGroup { other } => {
+                // `this.join_group(other)` joins *this* window to `other`'s group, so `other` is
+                // the anchor whose group identity survives a merge.
+                if let Some(anchor) = window_id_for_toplevel(state, &other) {
+                    crate::window_groups::group_windows(state, anchor, window_id);
+                }
+            }
+            lege_shell_toplevel_v1::Request::LeaveGroup => {
+                crate::window_groups::ungroup_window(state, window_id);
+            }
+            lege_shell_toplevel_v1::Request::ActivateGroup { activation_token } => {
+                // The same trusted activation `activate` performs — a group is not a way around
+                // the focus-stealing checks — and `WindowService::activate` raises the whole
+                // group with the named member on top.
+                let grant = ActivationGrant {
+                    token: activation_token,
+                    requesting_instance: None,
+                    target_instance: None,
+                    expires_at_monotonic_ns: ctx.now_monotonic_ns.saturating_add(5_000_000_000),
+                    had_recent_input_evidence: true,
+                };
+                if state
+                    .window_service
+                    .handle_command(WindowCommand::ActivateGroup { window_id, grant }, ctx)
+                    .is_ok()
+                {
+                    crate::input::activate_window(state, window_id);
+                    crate::space_sync::sync_after_change(state);
+                }
+            }
+            lege_shell_toplevel_v1::Request::ShelveGroup => {
+                crate::window_groups::shelve_group(state, window_id);
+            }
+            lege_shell_toplevel_v1::Request::UnshelveGroup => {
+                crate::window_groups::unshelve_group(state, window_id);
+            }
+            lege_shell_toplevel_v1::Request::SetGroupName { name } => {
+                crate::window_groups::set_group_name(state, window_id, name);
             }
         }
     }
@@ -524,6 +575,30 @@ impl<B: Backend + 'static> Dispatch2<LegeShellToplevelV1, LegeCompState<B>> for 
             .shell_protocol
             .toplevel_objects
             .retain(|_, object| object != resource);
+    }
+}
+
+/// One toplevel's window-group membership, sent right after `identity` exactly as
+/// `interfaces/wayland/lege-shell-v1.xml` promises: `group_id` 0 for a window in no group, and
+/// then an empty name and no accent. A no-op on an object below version 3.
+///
+/// Sent on every sync rather than only on change, like every other event here — `sync_toplevels`
+/// always sends a full state (`src/space_sync.rs`'s module doc), and a group that joined, was
+/// renamed or dissolved is exactly the kind of change a diff would be tempted to miss.
+fn send_group(object: &LegeShellToplevelV1, toplevel: &lege_window::ShellToplevel) {
+    if object.version() < 3 {
+        return;
+    }
+    match &toplevel.group {
+        Some(group) => object.group(
+            // A group id is a `u64` in the model and a `uint` on the wire. Saturating rather than
+            // wrapping, because wrapping could land on 0 — which means "no group" — and tell the
+            // shell the exact opposite of the truth.
+            u32::try_from(group.group_id).unwrap_or(u32::MAX),
+            group.name.clone(),
+            group.accent,
+        ),
+        None => object.group(0, String::new(), 0),
     }
 }
 
@@ -608,6 +683,7 @@ pub fn sync_toplevels<B: Backend + 'static>(
             toplevel.instance_id.map(|id| id.to_string()),
             u32::from(toplevel.verified_identity),
         );
+        send_group(&object, toplevel);
         object.title(toplevel.title.clone());
         let shelf_rank = snapshot
             .shelf

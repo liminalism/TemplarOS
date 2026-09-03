@@ -42,6 +42,10 @@ pub enum Key {
     Right,
     Up,
     Down,
+    /// The backtick key, left of 1 on most layouts. Not a [`Key::Character`]: it has no case to
+    /// match insensitively, and the one chord that uses it (`Super+grave`, the drop-down
+    /// terminal) means the *key*, whichever character the layout puts on it.
+    Grave,
     /// A function key, by number. F1 is the conventional route to contextual help.
     Function(u8),
     /// The logo key pressed with nothing else — a gesture, not a combination. Press reveals
@@ -67,6 +71,7 @@ impl fmt::Display for Key {
             Self::Right => formatter.write_str("Right"),
             Self::Up => formatter.write_str("Up"),
             Self::Down => formatter.write_str("Down"),
+            Self::Grave => formatter.write_str("`"),
             Self::Function(number) => write!(formatter, "F{number}"),
             Self::LogoTap => formatter.write_str("Super"),
         }
@@ -117,6 +122,11 @@ impl Modifiers {
     };
     pub const CTRL_SHIFT: Modifiers = Modifiers {
         ctrl: true,
+        shift: true,
+        ..Modifiers::NONE
+    };
+    pub const LOGO_SHIFT: Modifiers = Modifiers {
+        logo: true,
         shift: true,
         ..Modifiers::NONE
     };
@@ -320,6 +330,8 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    // Alt+Tab moves inside the focused window's *group*; with no group anywhere the loose set is
+    // the group, so this is the switcher it has always been (planning doc §2 rules 3-4).
     ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",
@@ -340,9 +352,36 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Window,
     },
+    // Super+Tab crosses between groups, and there is deliberately no Ctrl+Tab and no setting:
+    // Ctrl+Tab is the tab-cycling chord in every browser, terminal and editor, and a
+    // compositor-reserved chord wins (planning doc §2.1).
     ActionDecl {
-        id: "window.group-next",
-        label: "Next in group",
+        id: "window.group-cycle-forward",
+        label: "Next window group",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO, Key::Tab)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.group-cycle-backward",
+        label: "Previous window group",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO_SHIFT, Key::Tab)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    // The spatial step: the next window to the right or left of this one, by geometry
+    // (`lege_window::geometry::contiguous_window`). It stores nothing and means nothing — which
+    // is exactly why it is *not* called a group any more: a window group is an explicit, stored,
+    // visible thing (`window.group`), and one word cannot mean both.
+    ActionDecl {
+        id: "window.step-right",
+        label: "Step right",
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Right)],
@@ -351,8 +390,8 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Window,
     },
     ActionDecl {
-        id: "window.group-previous",
-        label: "Previous in group",
+        id: "window.step-left",
+        label: "Step left",
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Left)],
@@ -480,15 +519,17 @@ pub const MANIFEST: &[ActionDecl] = &[
     // ---- Window groups ----------------------------------------------------------------
     // A window group is an explicit set of windows that park, return and stack as one
     // (`docs/planning/window-groups-and-application-integration.md` §2). Every row here is
-    // declared without a chord and reached from Home: grouping is a drop of one window's tile on
-    // another's, and the rest are the group tile's own controls and menu rows. The compositor
-    // owns the chords for grouping and for cycling, and attaches them to these same ids.
+    // reached from Home: grouping is a drop of one window's tile on another's, and the rest are
+    // the group tile's own controls and menu rows. The compositor owns the chords, and attaches
+    // them to these same ids: `Super+G` groups the focused window with the previously focused
+    // one, `Super+Shift+G` takes it out, and dropping one window's band on another's band is the
+    // same gesture as the tile drop, on the workspace instead of on Home.
     ActionDecl {
         id: "window.group",
         label: "Group these windows",
         control: Some("Group"),
         category: ActionCategory::Window,
-        chords: &[],
+        chords: &[Chord::new(Modifiers::LOGO, Key::Character('g'))],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
@@ -498,7 +539,7 @@ pub const MANIFEST: &[ActionDecl] = &[
         label: "Take out of group",
         control: Some("Ungroup"),
         category: ActionCategory::Window,
-        chords: &[],
+        chords: &[Chord::new(Modifiers::LOGO_SHIFT, Key::Character('g'))],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
@@ -542,6 +583,20 @@ pub const MANIFEST: &[ActionDecl] = &[
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
+    },
+    // The drop-down terminal (§4.6). `Super+grave`, because a bare ` or ~ is a typed character
+    // everywhere — the home directory, Markdown, every shell — and a compositor grab on one would
+    // take it from every application. A second press parks the terminal; it never closes it.
+    // There is no `Ctrl+Alt+T`; this is the one terminal chord.
+    ActionDecl {
+        id: "terminal.toggle",
+        label: "Show or hide the terminal",
+        control: Some("Terminal"),
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::LOGO, Key::Grave)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
     },
     ActionDecl {
         id: "window.close",

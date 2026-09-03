@@ -41,6 +41,10 @@ pub const SWITCHER_SELECTED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x35, 
 pub const LOCK_SCREEN_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x16, 0x1A);
 pub const BUTTON_COLOR: u32 = pixelkit_raster::color::from_rgb(0x3A, 0x3F, 0x4B);
 pub const BUTTON_SELECTED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
+/// A band being hovered by another window's band drag: release here and the two are grouped.
+/// Deliberately not one of the group accents — the target may already have one, and "you are
+/// about to drop something here" is a state of the gesture, not of a group.
+pub const BAND_DROP_TARGET_COLOR: u32 = pixelkit_raster::color::from_rgb(0x35, 0x47, 0x63);
 
 /// Scale a *logical* rectangle up to the physical pixel space a widget's own buffer is drawn in
 /// (`chrome/cache.rs`'s `buffer_scale`) — used for anything laid out once in logical coordinates
@@ -62,12 +66,19 @@ fn canvas(pixel_w: i32, pixel_h: i32) -> PxRect {
 /// A window's recovery band or recovery tab (`lege_window::geometry::recovery_affordance`):
 /// opaque `background`, the window's title elided to fit, in contrast-picked ink. With no font,
 /// exactly the flat rectangle chrome drew before this module existed.
+///
+/// `group` is the window's group accent and name, if it is in one: the accent becomes a stripe
+/// down the left of the band, and the name is drawn before the title. The stripe is what makes a
+/// group visible with no font at all, and legible at a glance on a band that may be 96 pixels
+/// wide — the name is the elaboration, not the signal.
+#[allow(clippy::too_many_arguments)]
 pub fn recovery_band(
     painter: &mut Painter<'_>,
     pixel_w: i32,
     pixel_h: i32,
     background: u32,
     title: &str,
+    group: Option<(u32, &str)>,
     buttons: &[(layout::BandButton, PxRect)],
     fonts: Fonts<'_>,
     scale: f32,
@@ -80,7 +91,21 @@ pub fn recovery_band(
         band_button(painter, *button, *rect, ink, scale);
         title_right = title_right.min(rect.x);
     }
+
+    let mut left = area.x;
+    if let Some((accent, _)) = group {
+        let stripe = ((layout::GROUP_STRIPE_WIDTH as f32 * scale).round() as i32).max(1);
+        painter.fill_rect(PxRect::new(area.x, area.y, stripe, area.h), opaque(accent));
+        left += stripe;
+    }
+
     let Some((cache, face)) = fonts else { return };
+    let label = match group {
+        Some((_, name)) if !name.is_empty() && !title.is_empty() => format!("{name} — {title}"),
+        Some((_, name)) if !name.is_empty() => name.to_owned(),
+        _ => title.to_owned(),
+    };
+    let title = label.as_str();
     if title.is_empty() {
         return;
     }
@@ -88,9 +113,9 @@ pub fn recovery_band(
     let style = TextStyle::new(face, (14.0 * scale).max(8.0));
     let padding = (8.0 * scale).round() as i32;
     let text_area = PxRect::new(
-        area.x + padding,
+        left + padding,
         area.y,
-        (title_right - area.x - 2 * padding).max(0),
+        (title_right - left - 2 * padding).max(0),
         area.h,
     );
     let line_height = cache.line_height(style);
@@ -377,6 +402,57 @@ pub fn switcher_row(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
+/// The switcher's title row: the group's name on its own accent, or "Groups" on the panel
+/// colour. Same shape as a [`switcher_row`], one size smaller and always in contrast-picked ink,
+/// so the HUD reads as a labelled list rather than as a list with an odd first entry.
+pub fn switcher_heading(
+    painter: &mut Painter<'_>,
+    pixel_w: i32,
+    pixel_h: i32,
+    heading: &str,
+    background: u32,
+    fonts: Fonts<'_>,
+    scale: f32,
+) {
+    let area = canvas(pixel_w, pixel_h);
+    painter.fill_rect(area, background);
+    let Some((cache, face)) = fonts else { return };
+    if heading.is_empty() {
+        return;
+    }
+    let ink = layout::text_ink_for(background);
+    let style = TextStyle::new(face, (13.0 * scale).max(8.0));
+    let padding = (10.0 * scale).round() as i32;
+    let text_area = PxRect::new(
+        area.x + padding,
+        area.y,
+        (area.w - 2 * padding).max(0),
+        area.h,
+    );
+    let line_height = cache.line_height(style);
+    let y = area.y + ((area.h - line_height) / 2).max(0);
+    cache.draw_fitted(painter, heading, text_area, y, style, ink, Align::Left);
+}
+
+/// One bar of a window group's outline: a flat rectangle in the group's accent
+/// (`chrome::layout::outline_bars`). Four of these, drawn just outside the union of the group's
+/// windows, are the whole of rule 7's outline — no corners to join, nothing to anti-alias, and
+/// nothing that can fail to load.
+pub fn group_outline_bar(painter: &mut Painter<'_>, pixel_w: i32, pixel_h: i32, colour: u32) {
+    painter.fill_rect(canvas(pixel_w, pixel_h), colour);
+}
+
+/// A window group's accent (0x00RRGGBB, `lege_window::group`) as a colour this module can fill
+/// with. The model stores colours with no alpha channel at all — it has no idea what a renderer
+/// is — and every chrome widget is opaque, so this is the one place the two meet.
+pub fn opaque(accent: u32) -> u32 {
+    pixelkit_raster::color::from_rgb(
+        ((accent >> 16) & 0xFF) as u8,
+        ((accent >> 8) & 0xFF) as u8,
+        (accent & 0xFF) as u8,
+    )
+}
+
 /// What a locked session shows before the greeter (a real `ext-session-lock-v1` client) takes
 /// over — deliberately plain (task brief): a flat colour and, if a font is available, one short
 /// line of static text. No branding, no imagery, nothing that could itself fail to load.
@@ -420,6 +496,7 @@ mod tests {
                 32,
                 RECOVERY_BAND_COLOR,
                 "Waterfox",
+                None,
                 &[],
                 None,
                 1.0,
@@ -435,7 +512,17 @@ mod tests {
         let mut buffer = WindowBuffer::new(64, 32);
         {
             let mut painter = Painter::new(&mut buffer);
-            recovery_band(&mut painter, 64, 32, RECOVERY_TAB_COLOR, "", &[], None, 1.0);
+            recovery_band(
+                &mut painter,
+                64,
+                32,
+                RECOVERY_TAB_COLOR,
+                "",
+                None,
+                &[],
+                None,
+                1.0,
+            );
         }
         for x in 0..64 {
             for y in 0..32 {
@@ -553,6 +640,7 @@ mod tests {
                     32,
                     RECOVERY_BAND_COLOR,
                     "Waterfox",
+                    None,
                     &[],
                     Some((&mut cache, test_fonts::LATIN)),
                     1.0,

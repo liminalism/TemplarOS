@@ -82,7 +82,17 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     // rather than compositor chords — so without this needle the row would be invisible here and
     // a file verb could end up keyboard-only without the check noticing.
     "FileVerbRoute::new(\"",
+    // `lege_comp::window_groups::POINTER_GESTURES`: a pointer gesture the *compositor* performs
+    // (dropping one window's band on another's groups them). Not every pointer route is a shell
+    // widget — some are gestures on the workspace, which the shell cannot see and which keep
+    // working when it is dead — and a rule that only counted shell rows would push those actions
+    // onto the exemption list as if they were keyboard-only.
+    "PointerGesture(\"",
 ];
+
+/// Where a pointer route can be declared. The shell is where most of them are — menu rows,
+/// regions, verb buttons — and the compositor is where the workspace's own gestures are.
+const POINTER_ROUTE_ROOTS: &[&str] = &["shell/lege-shell/src", "compositor/lege-comp/src"];
 
 /// Declared actions that carry a chord and, for now, legitimately have no pointer route.
 ///
@@ -90,7 +100,28 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
 /// not yet placeable on a surface fails loudly *here*, with a written reason, instead of quietly
 /// re-creating the keyboard-only set this check was written to eliminate. Each entry is
 /// `(action id, why)` and every one of them is a bug with a date on it.
-const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[];
+const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
+    // 2026-09-03, window groups (docs/planning/window-groups-and-application-integration.md §3).
+    // The compositor reserves Super+Tab and Super+Shift+Tab; a pointer route to moving between
+    // groups (the switcher, or a menu row) is still owed by the shell. `window.group` needs no
+    // entry: dropping one window's band on another's is its pointer route, declared in
+    // `lege_comp::window_groups::POINTER_GESTURES`; `window.ungroup` has the group tile's row.
+    (
+        "window.group-cycle-forward",
+        "compositor chord; no surface offers moving between groups by pointer yet",
+    ),
+    (
+        "window.group-cycle-backward",
+        "compositor chord; no surface offers moving between groups by pointer yet",
+    ),
+    // 2026-09-03, the drop-down terminal (§4.6). The compositor reserves Super+grave; the pointer
+    // route is the shell's — the terminal provider's own launcher row, which arrives with the
+    // Providers1 `terminal` role.
+    (
+        "terminal.toggle",
+        "compositor chord; the shell's launcher row for the terminal provider is the pointer route",
+    ),
+];
 
 /// Every declared action's `cli_verb` reaches a real `lege` subcommand, every action id a shell
 /// surface performs is declared, and every action with an accelerator also has a pointer route.
@@ -268,7 +299,10 @@ fn declared_actions(manifest: &str) -> Vec<(String, bool)> {
 /// at the first `#[cfg(test)]` in a file, which is where this repository always puts them.
 fn pointer_routes(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     let mut routes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for path in rust_sources(&root.join("shell/lege-shell/src")) {
+    for path in POINTER_ROUTE_ROOTS
+        .iter()
+        .flat_map(|dir| rust_sources(&root.join(dir)))
+    {
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let source = source.split("\n#[cfg(test)]").next().unwrap_or_default();

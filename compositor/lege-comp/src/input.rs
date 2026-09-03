@@ -86,8 +86,19 @@ impl<B: Backend + 'static> WaylandDndGrabHandler for LegeCompState<B> {}
 /// ordinary pointer click here and from a successful xdg-activation grant
 /// (`src/xdg_shell.rs::XdgActivationHandler::request_activation`).
 pub fn activate_window<B: Backend + 'static>(state: &mut LegeCompState<B>, window_id: WindowId) {
+    // Who had the keyboard *before* this — what `Super+G` groups the focused window with. Read
+    // before the activation, because `WindowService::activate` clears the flag it comes from.
+    let outgoing = state
+        .window_service
+        .windows()
+        .find(|window| window.activated)
+        .map(|window| window.id)
+        .filter(|id| *id != window_id);
     if !state.window_service.activate(window_id) {
         return;
+    }
+    if let Some(outgoing) = outgoing {
+        state.previous_focus = Some(outgoing);
     }
     let Some(wl_surface) = state.windows.surface_for(window_id).cloned() else {
         return;
@@ -377,16 +388,35 @@ fn start_gesture<B: Backend + 'static>(
     if !started {
         return;
     }
+    // A band drag moves the whole group; `Shift` held moves that member alone (planning doc
+    // §2.1). Decided once, here, from the modifiers as the gesture starts — mid-drag the answer
+    // must not change under the pointer.
+    let followers = match gesture {
+        Gesture::Move if !shift_held(state) => {
+            crate::window_groups::drag_followers(state, window_id)
+        }
+        _ => Vec::new(),
+    };
     let grab = WindowGestureGrab {
         start_data,
         window_id,
         gesture,
+        followers,
     };
     pointer.set_grab(state, grab, serial, Focus::Clear);
 }
 
 /// Linux kernel `input-event-codes.h` `BTN_LEFT`.
 const BTN_LEFT: u32 = 0x110;
+
+/// Whether either Shift is held right now, from the seat's own modifier state — the one modifier
+/// a pointer gesture consults, and only at the moment it starts.
+fn shift_held<B: Backend + 'static>(state: &LegeCompState<B>) -> bool {
+    state
+        .seat
+        .get_keyboard()
+        .is_some_and(|keyboard| keyboard.modifier_state().shift)
+}
 
 fn to_lege_point(point: Point<f64, Logical>) -> LegePoint {
     LegePoint {
@@ -414,6 +444,10 @@ pub struct WindowGestureGrab<B: Backend + 'static> {
     start_data: PointerGrabStartData<LegeCompState<B>>,
     window_id: WindowId,
     gesture: Gesture,
+    /// The other members of the dragged window's group, with their offsets from it: a band drag
+    /// moves the whole group. Empty for a resize, for an ungrouped window and for a `Shift`-held
+    /// drag, which moves that member alone.
+    followers: Vec<(WindowId, lege_window::Point)>,
 }
 
 impl<B: Backend + 'static> std::fmt::Debug for WindowGestureGrab<B> {
@@ -442,7 +476,27 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
             Gesture::Move => {
                 if let Some((_, geometry)) = data.window_service.update_drag(pointer) {
                     crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+                    // The rest of the group rides along at its own offset — no repair while the
+                    // gesture is in flight, exactly as for the dragged window itself.
+                    for (id, offset) in &self.followers {
+                        let Some(size) = data.window_service.window(*id).map(|w| w.geometry) else {
+                            continue;
+                        };
+                        let placed = lege_window::Rect::new(
+                            geometry.x.saturating_add(offset.x),
+                            geometry.y.saturating_add(offset.y),
+                            size.width,
+                            size.height,
+                        );
+                        data.window_service.set_geometry(*id, placed);
+                        crate::space_sync::apply_dragged_geometry(data, *id, placed);
+                    }
                 }
+                // Which band, if any, this drag is hovering: releasing there groups the two
+                // (planning doc §2 rule 6). Only a band — an ordinary drop anywhere else,
+                // including on top of another window, still just moves a window.
+                data.drop_target =
+                    crate::window_groups::band_drop_target(data, self.window_id, pointer);
             }
             Gesture::Resize { .. } => {
                 if let Some((_, geometry)) = data.window_service.update_resize(pointer) {
@@ -475,6 +529,24 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
                 Gesture::Move => {
                     if let Some((_, geometry)) = data.window_service.finish_drag() {
                         crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
+                        if !self.followers.is_empty() {
+                            // The invariant is enforced once, at the end, for the whole group:
+                            // `move_group` carries every member through the anchor's own repair
+                            // displacement and then repairs each of them in turn.
+                            for (id, moved) in
+                                data.window_service.move_group(self.window_id, geometry)
+                            {
+                                crate::space_sync::apply_dragged_geometry(data, id, moved);
+                            }
+                        }
+                    }
+                    // Dropped on another window's band: that is the gesture that groups
+                    // (planning doc §2 rule 6). It happens after the drag has settled, so the
+                    // placement `place_beside` computes starts from where the window was let go.
+                    if let Some(target) = data.drop_target.take()
+                        && target != self.window_id
+                    {
+                        crate::window_groups::group_windows(data, target, self.window_id);
                     }
                 }
                 Gesture::Resize { .. } => {
@@ -580,7 +652,12 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut LegeCompState<B>) {}
+    /// The grab ending for any reason at all — including one this grab did not handle, such as
+    /// the seat being taken away — clears the drop-target highlight, so a band can never be left
+    /// glowing at a drag that is over.
+    fn unset(&mut self, data: &mut LegeCompState<B>) {
+        data.drop_target = None;
+    }
 }
 
 impl<B: Backend + 'static> LegeCompState<B> {

@@ -148,6 +148,7 @@ pub fn collect(
                     chrome,
                     inputs.window_service,
                     window_id,
+                    inputs.drop_target,
                     output_rect,
                     output_scale,
                     &mut chrome_elements,

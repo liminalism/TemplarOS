@@ -10,6 +10,7 @@ use crate::{
     IdentityCache, Rect, WindowId, WindowService,
     arrangement::ArrangementPreset,
     geometry::{move_into_view, scatter_layout},
+    group::GroupId,
     service::EscapeAction,
 };
 use lege_types::InstanceId;
@@ -82,6 +83,37 @@ pub enum WindowCommand {
     /// ([`WindowService::restore_arrangement`]), repaired only where the output topology makes
     /// the old rectangle unreachable.
     RestoreArrangement,
+    /// Put `b` in `a`'s group — making one if neither has one, merging if both do — and set `b`
+    /// down beside `a` (`WindowService::group` then `WindowService::place_beside`). Grouping
+    /// places; it never stacks, tabs or folds windows together (planning doc §2 rule 6).
+    Group {
+        a: WindowId,
+        b: WindowId,
+    },
+    /// Take one window out of its group; the group dissolves if that leaves fewer than two.
+    Ungroup {
+        window_id: WindowId,
+    },
+    /// Activate `window_id`, which raises its whole group with it. The grant is checked exactly
+    /// as [`WindowCommand::Activate`]'s is — a group is not a way around focus stealing.
+    ActivateGroup {
+        window_id: WindowId,
+        grant: ActivationGrant,
+    },
+    /// Park every member of this window's group under one shelf rank, so the shelf lists the
+    /// group as a unit.
+    ShelveGroup {
+        window_id: WindowId,
+    },
+    /// Bring every shelved member of this window's group back.
+    UnshelveGroup {
+        window_id: WindowId,
+    },
+    /// Name this window's group (empty clears the name).
+    SetGroupName {
+        window_id: WindowId,
+        name: String,
+    },
 }
 
 /// What [`WindowCommand::RevealHome`] should do to the reveal that may or may not be in effect.
@@ -140,6 +172,31 @@ pub enum CommandEffect {
     Arranged {
         moves: Vec<(WindowId, Rect)>,
     },
+    /// Two windows are now one group. `geometry` is where the joining window was set down, absent
+    /// when it was already beside its target and nothing moved.
+    Grouped {
+        group: GroupId,
+        window_id: WindowId,
+        geometry: Option<Rect>,
+    },
+    /// A window left `group`. The group may no longer exist — it dissolves below two members —
+    /// so the caller re-reads membership rather than assuming it survived.
+    Ungrouped {
+        group: GroupId,
+        window_id: WindowId,
+    },
+    /// Every window a group-wide shelve parked.
+    GroupShelved {
+        windows: Vec<WindowId>,
+    },
+    /// Every window a group-wide unshelve brought back, with the geometry to configure.
+    GroupUnshelved {
+        windows: Vec<(WindowId, Rect)>,
+    },
+    /// A group's name changed; the shell re-reads it from the next `group` event.
+    GroupRenamed {
+        group: GroupId,
+    },
 }
 
 /// Why a command was refused.
@@ -154,6 +211,11 @@ pub enum CommandError {
     /// The grant's token already activated a window once; xdg-activation tokens are single-use.
     GrantAlreadyUsed,
     NothingToEscape,
+    /// A group request named two windows that cannot be grouped: the same window twice, or one
+    /// that is not an application window (shell chrome, the Home Surface).
+    NotGroupable,
+    /// A group request named a window that is in no group.
+    NotGrouped,
 }
 
 impl fmt::Display for CommandError {
@@ -166,6 +228,8 @@ impl fmt::Display for CommandError {
             Self::GrantInstanceMismatch => "activation grant does not name this window's instance",
             Self::GrantAlreadyUsed => "activation grant has already been used",
             Self::NothingToEscape => "no fullscreen or modal window to escape",
+            Self::NotGroupable => "these two windows cannot be grouped",
+            Self::NotGrouped => "that window is in no group",
         };
         formatter.write_str(message)
     }
@@ -187,7 +251,11 @@ impl<I: IdentityCache> WindowService<I> {
         }
 
         match command {
-            WindowCommand::Activate { window_id, grant } => {
+            // One arm, deliberately: activating a grouped window already raises its whole group
+            // (`WindowService::activate`), so `ActivateGroup` differs from `Activate` only in
+            // which surface asked — and a group is not a way around the focus-stealing checks.
+            WindowCommand::Activate { window_id, grant }
+            | WindowCommand::ActivateGroup { window_id, grant } => {
                 self.handle_activate(window_id, &grant, ctx.now_monotonic_ns)
             }
             WindowCommand::Close { window_id } => {
@@ -267,6 +335,13 @@ impl<I: IdentityCache> WindowService<I> {
             WindowCommand::RestoreArrangement => Ok(CommandEffect::Arranged {
                 moves: self.restore_arrangement(),
             }),
+            WindowCommand::Group { a, b } => self.apply_group(a, b),
+            WindowCommand::Ungroup { window_id } => self.apply_ungroup(window_id),
+            WindowCommand::ShelveGroup { window_id } => self.apply_shelve_group(window_id),
+            WindowCommand::UnshelveGroup { window_id } => self.apply_unshelve_group(window_id),
+            WindowCommand::SetGroupName { window_id, name } => {
+                self.apply_set_group_name(window_id, name)
+            }
             WindowCommand::RevealHome { reveal } => {
                 let revealed = match reveal {
                     RevealHome::Show => true,
@@ -277,6 +352,51 @@ impl<I: IdentityCache> WindowService<I> {
                 Ok(CommandEffect::HomeRevealed { revealed })
             }
         }
+    }
+
+    /// [`WindowCommand::Group`]: group, then place. The two halves are one command because rule 6
+    /// says they are one thing — a group whose windows were left overlapping wherever they
+    /// happened to be would not read as one piece of work.
+    fn apply_group(&mut self, a: WindowId, b: WindowId) -> Result<CommandEffect, CommandError> {
+        let group = self.group(a, b).ok_or(CommandError::NotGroupable)?;
+        let geometry = self.place_beside(b, a);
+        Ok(CommandEffect::Grouped {
+            group,
+            window_id: b,
+            geometry,
+        })
+    }
+
+    fn apply_ungroup(&mut self, window_id: WindowId) -> Result<CommandEffect, CommandError> {
+        self.window(window_id).ok_or(CommandError::UnknownWindow)?;
+        let group = self.ungroup(window_id).ok_or(CommandError::NotGrouped)?;
+        Ok(CommandEffect::Ungrouped { group, window_id })
+    }
+
+    fn apply_shelve_group(&mut self, window_id: WindowId) -> Result<CommandEffect, CommandError> {
+        self.window(window_id).ok_or(CommandError::UnknownWindow)?;
+        Ok(CommandEffect::GroupShelved {
+            windows: self.shelve_group(window_id),
+        })
+    }
+
+    fn apply_unshelve_group(&mut self, window_id: WindowId) -> Result<CommandEffect, CommandError> {
+        self.window(window_id).ok_or(CommandError::UnknownWindow)?;
+        Ok(CommandEffect::GroupUnshelved {
+            windows: self.unshelve_group(window_id),
+        })
+    }
+
+    fn apply_set_group_name(
+        &mut self,
+        window_id: WindowId,
+        name: String,
+    ) -> Result<CommandEffect, CommandError> {
+        self.window(window_id).ok_or(CommandError::UnknownWindow)?;
+        let group = self
+            .set_group_name(window_id, Some(name))
+            .ok_or(CommandError::NotGrouped)?;
+        Ok(CommandEffect::GroupRenamed { group })
     }
 
     fn handle_activate(

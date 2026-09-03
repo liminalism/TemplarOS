@@ -23,6 +23,7 @@ mod shell_socket;
 mod space_sync;
 mod state;
 mod window_bridge;
+mod window_groups;
 mod xdg_shell;
 mod xwayland;
 

@@ -14,6 +14,7 @@
 pub mod arrangement;
 pub mod commands;
 pub mod geometry;
+pub mod group;
 pub mod layers;
 mod service;
 mod shell;
@@ -23,10 +24,12 @@ pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };
 pub use geometry::{
-    Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, client_area, frame_around,
-    is_recoverable, logical_to_physical, move_into_view, physical_to_logical, recovery_affordance,
-    recovery_band, repair_window, resize_edges_at, resize_grip, resize_rect, scatter_layout,
+    Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect,
+    client_area, frame_around, is_beside, is_recoverable, logical_to_physical, move_into_view,
+    physical_to_logical, place_beside, recovery_affordance, recovery_band, repair_window,
+    resize_edges_at, resize_grip, resize_rect, scatter_layout,
 };
+pub use group::{GROUP_ACCENTS, GroupId, GroupRecord, accent_for};
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};
 pub use service::{
     CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowService,

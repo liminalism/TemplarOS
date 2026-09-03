@@ -177,6 +177,16 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// Non-`None` while the compositor-drawn fallback switcher (`WindowService::cycle_focus`,
     /// `src/keybindings.rs`) is showing.
     pub switcher: Option<crate::chrome::SwitcherState>,
+    /// The window whose band a band drag is hovering: releasing there groups the two
+    /// (`src/input.rs`, planning doc §2 rule 6). Non-`None` only during a drag, and only while
+    /// the pointer is actually over another window's band — it is what that band draws itself as
+    /// a drop target from.
+    pub drop_target: Option<lege_window::WindowId>,
+    /// The window that held the keyboard before the current one — what `Super+G` groups the
+    /// focused window *with* (`src/keybindings.rs`). Tracked here rather than derived, because
+    /// nothing in `WindowService` remembers a window's previous activation: activation is a flag,
+    /// and the previous holder of it is gone by the time anything could ask.
+    pub previous_focus: Option<lege_window::WindowId>,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
@@ -297,6 +307,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
             screencopy: crate::screencopy::ScreencopyState::new::<B>(dh),
             show_all_windows: None,
             switcher: None,
+            drop_target: None,
+            previous_focus: None,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
         })

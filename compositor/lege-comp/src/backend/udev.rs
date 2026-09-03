@@ -855,6 +855,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
             show_all_windows: state.show_all_windows.as_deref(),
             session_lock: &state.session_lock,
             switcher: state.switcher.as_ref(),
+            drop_target: state.drop_target,
         },
         output,
         renderer,
