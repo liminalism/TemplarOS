@@ -62,6 +62,7 @@ pub enum Rank {
     PathOnly,
 }
 
+#[cfg(test)]
 impl Rank {
     fn score(self) -> u8 {
         match self {
@@ -308,6 +309,7 @@ impl Index {
     }
 }
 
+#[cfg(test)]
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.to_string_lossy().into_owned(),
