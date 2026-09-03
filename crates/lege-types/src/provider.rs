@@ -26,8 +26,8 @@ pub enum ProviderRole {
     /// here" in the Files object, and whatever else needs *a* terminal rather than one it named.
     Terminal,
     /// The application that searches every file on the machine. `Files.Search1` answers inside
-    /// the folder you are looking at; this is where "search everywhere" goes, and it keeps its
-    /// own index.
+    /// the folder you are looking at; this is where "search everywhere" goes. It is launched
+    /// and nothing more: LegeOS neither reads nor feeds whatever index it keeps.
     FileSearch,
 }
 
