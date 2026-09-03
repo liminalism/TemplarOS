@@ -22,6 +22,10 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 root=$(CDPATH= cd -- "$here/.." && pwd -P)
 run="$root/.agent/scratch/nested-session"
 socket=legeos-nested
+# The trusted-shell socket is named the way the compositor names it: a prefix, never a suffix.
+# A `wayland-0-shell` would fall inside snapd's `wayland-[0-9]*` permission, and that socket is
+# the one no confined application may ever open (compositor/lege-comp/src/shell_socket.rs).
+shell_socket="legeos-shell-$socket"
 profile=${LEGEOS_NESTED_PROFILE:-debug}
 bin="$root/target/$profile"
 
@@ -73,7 +77,7 @@ wait_for_log() {
 # Sockets from a previous run, which nothing else removes.
 clear_stale_sockets() {
     rm -f "${XDG_RUNTIME_DIR}/${socket}" "${XDG_RUNTIME_DIR}/${socket}.lock" \
-        "${XDG_RUNTIME_DIR}/${socket}-shell" "${XDG_RUNTIME_DIR}/${socket}-shell.lock"
+        "${XDG_RUNTIME_DIR}/${shell_socket}" "${XDG_RUNTIME_DIR}/${shell_socket}.lock"
 }
 
 start_comp() {
@@ -95,7 +99,7 @@ start_comp() {
         || { echo "trusted-shell socket never announced; see $(logfile comp)" >&2; return 1; }
     wait_for_log "compositor is ready" \
         || { echo "compositor never presented a frame; see $(logfile comp)" >&2; return 1; }
-    echo "  sockets ready: $socket, $socket-shell"
+    echo "  sockets ready: $socket, $shell_socket"
 }
 
 start_sessiond() {
@@ -141,8 +145,8 @@ start_filed() {
 start_shell() {
     stop_one shell
     [ -x "$bin/lege-shell" ] || { echo "missing $bin/lege-shell" >&2; return 1; }
-    echo "starting shell (trusted socket $socket-shell)"
-    nested_env WAYLAND_DISPLAY="$socket-shell" RUST_LOG="${RUST_LOG:-info}" \
+    echo "starting shell (trusted socket $shell_socket)"
+    nested_env WAYLAND_DISPLAY="$shell_socket" RUST_LOG="${RUST_LOG:-info}" \
         "$bin/lege-shell" --surface \
         >"$(logfile shell)" 2>&1 &
     echo $! >"$(pidfile shell)"

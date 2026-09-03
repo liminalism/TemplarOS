@@ -768,8 +768,8 @@ mod readiness_tests {
     #[test]
     fn relative_wayland_display_resolves_beneath_runtime_dir() {
         assert_eq!(
-            resolve_wayland_socket(OsStr::new("legeos-0"), Some(OsStr::new("/run/user/1000"))),
-            Some(PathBuf::from("/run/user/1000/legeos-0"))
+            resolve_wayland_socket(OsStr::new("wayland-0"), Some(OsStr::new("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000/wayland-0"))
         );
     }
 
@@ -779,6 +779,6 @@ mod readiness_tests {
             resolve_wayland_socket(OsStr::new("/tmp/nested-wayland"), None),
             Some(PathBuf::from("/tmp/nested-wayland"))
         );
-        assert_eq!(resolve_wayland_socket(OsStr::new("legeos-0"), None), None);
+        assert_eq!(resolve_wayland_socket(OsStr::new("wayland-0"), None), None);
     }
 }

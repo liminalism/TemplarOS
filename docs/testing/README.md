@@ -37,7 +37,7 @@ It logs two socket names. Point a client at the first:
 WAYLAND_DISPLAY=wayland-N weston-terminal      # or cosmic-term, foot, alacritty…
 ```
 
-The second socket, `wayland-N-shell`, is the private one. Connecting there — and only there — is
+The second socket, `legeos-shell-wayland-N`, is the private one. Connecting there — and only there — is
 what makes a client the trusted shell, which is the sole way to see the `lege_shell_v1` and
 `lege_recovery_v1` protocols. Nothing a client can *say* grants that trust.
 
@@ -54,7 +54,7 @@ What to exercise by hand, because no test covers it:
   Every window must disappear behind the Home Surface with nothing else changing; `Escape`, the
   same key again, or clicking a window's entry must bring the exact prior stack back.
 * **Kill `lege-shell` while revealed.** The windows must reappear on their own.
-* On the Home Field (`WAYLAND_DISPLAY=wayland-N-shell lege-shell --surface`): click an application
+* On the Home Field (`WAYLAND_DISPLAY=legeos-shell-wayland-N lege-shell --surface`): click an application
   tile's body — it launches; click an open window's tile — it comes to the front (and any reveal
   ends); press its `park` control — it vanishes from the screen and its tile reads *parked*; click
   the parked tile — it comes back at its old geometry. Drag a tile by its title band: a ghost shows

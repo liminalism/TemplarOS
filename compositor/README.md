@@ -21,7 +21,7 @@ GPL-3.0-only rather than AGPL-3.0-only (ADR-0012, ADR-0013); `cargo deny` allows
 
 `lege-comp --backend winit` (the default whenever `WAYLAND_DISPLAY`/`DISPLAY` is already set) hosts the
 compositor inside the current session as an ordinary window, and logs the socket name it created
-(`wayland-N`) and its private trusted-shell socket (`wayland-N-shell`) at startup. Point a client at the
+(`wayland-N`) and its private trusted-shell socket (`legeos-shell-wayland-N`) at startup. Point a client at the
 former to test against it, e.g. `WAYLAND_DISPLAY=wayland-N weston-terminal`. `--backend udev` runs against
 real DRM/KMS hardware via `LibSeatSession` and is not exercisable from a nested session.
 

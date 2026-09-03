@@ -14,13 +14,21 @@ use crate::state::{Backend, ClientState, LegeCompState};
 use smithay::wayland::socket::ListeningSocketSource;
 use std::sync::Arc;
 
-/// Open the trusted-shell socket (named `{main_socket_name}-shell`) and register its calloop
-/// source. Returns the socket name for logging/env-var wiring.
+/// Open the trusted-shell socket (named `legeos-shell-{main_socket_name}`) and register its
+/// calloop source. Returns the socket name for logging/env-var wiring.
+///
+/// The name is a *prefix* of the public one, not a suffix, and that is load-bearing. The public
+/// socket is `wayland-N` so that confined applications can reach it — snapd's wayland interface
+/// allows `owner /run/user/[0-9]*/wayland-[0-9]* rw,` — and AppArmor's `*` does not stop at a
+/// dash, so `wayland-0-shell` would fall inside that same permission. Every snap on the machine
+/// would be allowed to open the one socket whose sole purpose is to be unreachable by anything
+/// but the shell. Putting the distinguishing part first keeps the name outside the glob while
+/// still deriving it from the public socket, so a nested run on `wayland-3` gets its own.
 pub fn install<B: Backend + 'static>(
     state: &mut LegeCompState<B>,
     main_socket_name: &str,
 ) -> anyhow::Result<String> {
-    let requested_name = format!("{main_socket_name}-shell");
+    let requested_name = format!("legeos-shell-{main_socket_name}");
     let source = ListeningSocketSource::with_name(&requested_name).map_err(|error| {
         anyhow::anyhow!("opening trusted-shell socket {requested_name}: {error}")
     })?;

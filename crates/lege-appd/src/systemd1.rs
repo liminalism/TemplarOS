@@ -331,7 +331,7 @@ mod tests {
             instance_id,
             &["/tmp/report.pdf".to_owned()],
             Some("activation-token"),
-            &["WAYLAND_DISPLAY=legeos-0".to_owned()],
+            &["WAYLAND_DISPLAY=wayland-0".to_owned()],
         );
         let by_name = |key: &str| {
             properties
@@ -357,7 +357,7 @@ mod tests {
         // The launched application is *told* which compositor to join. Leaving this to the systemd
         // user manager's global environment is what sent twenty terminals to a socket belonging to
         // a session that had already ended.
-        assert!(environment.contains(&"WAYLAND_DISPLAY=legeos-0".to_owned()));
+        assert!(environment.contains(&"WAYLAND_DISPLAY=wayland-0".to_owned()));
 
         // A launch that dies immediately must leave something behind to read.
         assert_eq!(

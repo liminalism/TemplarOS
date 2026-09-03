@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TARGET: &str = "legeos-session.target";
 const COMPOSITOR_UNIT: &str = "lege-comp.service";
-const WAYLAND_DISPLAY: &str = "legeos-0";
+const WAYLAND_DISPLAY: &str = "wayland-0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Step {
@@ -41,7 +41,7 @@ const START_STEPS: &[Step] = &[
     },
     Step {
         program: "systemctl",
-        args: &["--user", "set-environment", "WAYLAND_DISPLAY=legeos-0"],
+        args: &["--user", "set-environment", "WAYLAND_DISPLAY=wayland-0"],
     },
     // Autostart is arbitrated by sessiond (one provider per role); mask the generic runner.
     Step {
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
     let cli = Cli::parse();
 
-    debug_assert_eq!(WAYLAND_DISPLAY, "legeos-0");
+    debug_assert_eq!(WAYLAND_DISPLAY, "wayland-0");
     if cli.dry_run {
         for step in START_STEPS {
             tracing::info!(program = step.program, args = ?step.args, "session step");
@@ -143,7 +143,7 @@ mod tests {
         );
         assert_eq!(
             START_STEPS[2].args,
-            ["--user", "set-environment", "WAYLAND_DISPLAY=legeos-0"]
+            ["--user", "set-environment", "WAYLAND_DISPLAY=wayland-0"]
         );
         assert!(!START_STEPS[1].args.contains(&"DISPLAY"));
         assert!(!START_STEPS[1].args.contains(&"WAYLAND_DISPLAY"));
@@ -155,13 +155,35 @@ mod tests {
         let shell = include_str!("../../units/user/lege-shell.service");
         let target = include_str!("../../units/user/legeos-session.target");
 
-        assert!(compositor.contains("--backend udev --socket-name legeos-0"));
+        assert!(compositor.contains("--backend udev --socket-name wayland-0"));
         assert!(compositor.contains("Type=notify"));
         assert!(compositor.contains("TimeoutStartSec=15s"));
-        assert!(shell.contains("Environment=WAYLAND_DISPLAY=legeos-0-shell"));
+        assert!(shell.contains("Environment=WAYLAND_DISPLAY=legeos-shell-wayland-0"));
         assert!(shell.contains("ExecStart=/usr/bin/lege-shell --surface"));
         assert!(target.contains("Requires=basic.target lege-comp.service"));
         assert!(target.contains("BindsTo=lege-comp.service"));
+    }
+
+    /// snapd's wayland interface allows a confined application exactly
+    /// `owner /run/user/[0-9]*/wayland-[0-9]* rw,`. The public socket has to fall inside that or
+    /// no snap can open the display; the trusted-shell socket has to fall outside it or every
+    /// snap can open the one socket that grants the private protocol. AppArmor's `*` does not
+    /// stop at a dash, so "wayland-0" plus any suffix is inside the pattern — which is why the
+    /// shell's name is prefixed rather than suffixed.
+    #[test]
+    fn snaps_may_reach_the_public_socket_and_never_the_trusted_shell_one() {
+        fn snap_reachable(name: &str) -> bool {
+            name.strip_prefix("wayland-")
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        }
+
+        assert!(snap_reachable(WAYLAND_DISPLAY), "{WAYLAND_DISPLAY}");
+        let shell = include_str!("../../units/user/lege-shell.service");
+        let name = shell
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=WAYLAND_DISPLAY="))
+            .expect("the shell unit names its socket");
+        assert!(!snap_reachable(name), "{name} is reachable by every snap");
     }
 
     #[test]
