@@ -41,19 +41,9 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{
-            ImportDma, ImportMemWl,
-            element::{
-                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
-            },
-            gles::GlesRenderer,
-        },
+        renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
         session::{Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
-    },
-    desktop::{
-        Window,
-        space::{SpaceRenderElements, space_render_elements},
     },
     output::{Mode, Output, PhysicalProperties},
     reexports::{
@@ -75,19 +65,10 @@ use smithay::{
 use smithay_drm_extras::{display_info, drm_scanner::DrmScanner};
 use std::{collections::HashMap, time::Duration};
 
-// The scene this backend hands to `DrmOutput::render_frame`, front-to-back: compositor-drawn
-// chrome (recovery band/tab, pressure overlay, scatter backdrop — `crate::chrome`) always wins
-// over window content, matching `src/backend/winit.rs`'s `render_output` ordering and
-// `src/input.rs`'s hit-testing priority for the same rectangles.
-//
-// `render_elements!` (Smithay macro, `#[macro_export]`'d — not doc-commentable, hence `//` above
-// rather than `///`) generates `UdevRenderElement` and its `RenderElement<GlesRenderer>` impl.
-smithay::backend::renderer::element::render_elements! {
-    UdevRenderElement<=GlesRenderer>;
-    Cursor=crate::cursor::CursorRenderElement,
-    Custom=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
-}
+// The scene this backend hands to `DrmOutput::render_frame` is built by `crate::scene`, which
+// both backends share: whole-output chrome above everything, then each window's own band and
+// grip immediately above its own surface, top of the stacking order first. See that module for
+// why the order is a correctness question rather than a cosmetic one.
 
 /// Clear colour behind every output — matches `src/backend/winit.rs`'s so a window dragged
 /// between the two backends during development looks the same.
@@ -666,7 +647,7 @@ fn connector_connected(
 
     let mut locked = device.drm_output_manager.lock();
     let renderer = &mut device.renderer;
-    let drm_output = locked.initialize_output::<GlesRenderer, UdevRenderElement>(
+    let drm_output = locked.initialize_output::<GlesRenderer, crate::scene::SceneElement>(
         crtc,
         drm_mode,
         &[connector.handle()],
@@ -812,10 +793,11 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     // `state.chrome`/`state.space`/`state.window_service`/... are fields of `state` disjoint
     // from `state.backend_data` (which `device`/`renderer` above borrow from) — Rust's borrow
     // checker tracks that disjointness through this whole function, which is exactly why
-    // `chrome::collect_elements` takes these pieces individually (`ChromeInputs`) rather than
+    // `crate::scene::collect` takes these pieces individually (`ChromeInputs`) rather than
     // `&LegeCompState<B>` as a whole (see that type's doc).
-    let chrome_elements = crate::chrome::collect_elements(
+    let scene_elements = crate::scene::collect(
         &mut state.chrome,
+        &state.windows,
         &crate::chrome::ChromeInputs {
             space: &state.space,
             window_service: &state.window_service,
@@ -828,20 +810,14 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         renderer,
     );
 
-    let space_elements =
-        match space_render_elements::<_, Window, _>(renderer, [&state.space], output, 1.0) {
-            Ok(elements) => elements,
-            Err(error) => {
-                tracing::warn!(%error, ?crtc, "failed to collect space render elements");
-                return true;
-            }
-        };
-
-    let mut elements: Vec<UdevRenderElement> =
-        Vec::with_capacity(cursor_elements.len() + chrome_elements.len() + space_elements.len());
-    elements.extend(cursor_elements.into_iter().map(UdevRenderElement::Cursor));
-    elements.extend(chrome_elements.into_iter().map(UdevRenderElement::Custom));
-    elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
+    let mut elements: Vec<crate::scene::SceneElement> =
+        Vec::with_capacity(cursor_elements.len() + scene_elements.len());
+    elements.extend(
+        cursor_elements
+            .into_iter()
+            .map(crate::scene::SceneElement::Cursor),
+    );
+    elements.extend(scene_elements);
 
     // Previews queued since the last frame, with this device's renderer
     // (`src/screencopy.rs`'s module doc). Before the output's own frame so a preview never

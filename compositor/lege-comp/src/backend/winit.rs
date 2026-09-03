@@ -18,7 +18,6 @@ use smithay::{
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
-    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{calloop::EventLoop, wayland_server::Display},
     utils::Transform,
@@ -144,8 +143,13 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                     // (matching `smallvil`'s winit backend, which does the same for the same reason).
                     let rendered = match graphics.bind() {
                         Ok((renderer, mut framebuffer)) => {
-                            let chrome = crate::chrome::collect_elements(
+                            // The same shared scene builder the udev backend uses, so the two
+                            // backends cannot disagree about draw order — which is the winit
+                            // backend's whole claim (module doc): what is exercised here is the
+                            // real thing.
+                            let elements = crate::scene::collect(
                                 &mut state.chrome,
+                                &state.windows,
                                 &crate::chrome::ChromeInputs {
                                     space: &state.space,
                                     window_service: &state.window_service,
@@ -157,20 +161,11 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                                 &output_for_loop,
                                 renderer,
                             );
-                            match render_output::<
-                                _,
-                                smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
-                                _,
-                                _,
-                            >(
-                                &output_for_loop,
+                            match damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
-                                1.0,
                                 0,
-                                [&state.space],
-                                &chrome,
-                                &mut damage_tracker,
+                                &elements,
                                 [0.05, 0.05, 0.07, 1.0],
                             ) {
                                 Ok(result) => {

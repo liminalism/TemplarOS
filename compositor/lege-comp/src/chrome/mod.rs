@@ -12,13 +12,16 @@
 //! `chrome::cache` is what stops a repaint from happening on every frame regardless of whether
 //! anything changed.
 //!
-//! [`collect_elements`] is `src/backend/winit.rs` and `src/backend/udev.rs`'s shared entry point,
-//! called once per output per frame — both backends already keep their `custom_elements` ordered
-//! ahead of `Space`'s own content so chrome always wins over client surfaces
-//! (`src/backend/udev.rs`'s module-level comment); this module's own internal order additionally
-//! makes the lock screen win over the pressure overlay, and the fallback switcher win over the
-//! "show every window" scatter, matching `lege_window::Layer`'s ordering
-//! (`SecureLock` < `Recovery` < `ShellOverlay`).
+//! There are two entry points, and the split is the whole point of them. [`collect_output_chrome`]
+//! paints what belongs to the *output* — the lock screen, the pressure overlay, the fallback
+//! switcher, the "show every window" scatter — which sits above every window there is; its own
+//! internal order makes the lock screen win over the pressure overlay and the switcher win over
+//! the scatter, matching `lege_window::Layer`'s ordering (`SecureLock` < `Recovery` <
+//! `ShellOverlay`). [`collect_window_chrome`] paints what belongs to *one window* — its title
+//! band and its resize grip — and that is emitted per window, interleaved with that window's own
+//! surface, by `src/scene.rs`. A band is part of its window, not of the screen: emitting every
+//! band ahead of every surface (which is what a single flat list did) painted a buried window's
+//! title over the translucent terminal in front of it.
 
 pub mod cache;
 pub mod layout;
@@ -112,9 +115,25 @@ impl ChromeState {
     pub fn has_font(&self) -> bool {
         self.fonts.is_some()
     }
+
+    /// Drop the band and grip bitmaps of every window not in `live` — the retention half of the
+    /// cache, run once per frame by `src/scene.rs` after it has walked the stacking order, so a
+    /// window that closed or was shelved stops holding a GPU texture. `chrome::cache`'s doc: a
+    /// widget that no longer applies is discarded rather than kept "just in case".
+    pub fn retain_window_chrome(&mut self, live: &std::collections::HashSet<WindowId>) {
+        self.bands.retain(|id, _| live.contains(id));
+        self.grips.retain(|id, _| live.contains(id));
+    }
+
+    /// Drop every window's band and grip: the lock screen or the pressure overlay owns the
+    /// screen, so no window chrome is drawn at all this frame.
+    fn forget_window_chrome(&mut self) {
+        self.bands.clear();
+        self.grips.clear();
+    }
 }
 
-/// Everything [`collect_elements`] reads from `LegeCompState` — bundled so the function itself
+/// Everything [`collect_output_chrome`] and `src/scene.rs` read from `LegeCompState` — bundled so the function itself
 /// takes individually-borrowed fields rather than the whole state, which is what lets
 /// `src/backend/udev.rs` call it while a device's `GlesRenderer` (borrowed from
 /// `state.backend_data`, a different field) is simultaneously held mutably.
@@ -127,19 +146,22 @@ pub struct ChromeInputs<'a> {
     pub switcher: Option<&'a SwitcherState>,
 }
 
-/// Every chrome element to draw over `output` this frame, front-to-back (index 0 topmost) —
-/// matching `render_output`/`UdevRenderElement`'s existing convention (`src/backend/udev.rs`'s
-/// module comment). Priority, top to bottom: the lock screen alone; else the pressure overlay
-/// alone; else the fallback switcher, the "show every window" scatter, and every window's
-/// recovery band/tab, together.
-pub fn collect_elements(
+/// The window-independent chrome to draw over `output` this frame, front-to-back (index 0
+/// topmost): the lock screen alone; else the pressure overlay alone; else the fallback switcher
+/// and the "show every window" scatter. Everything here sits **above every window**, which is
+/// what makes it output chrome rather than window chrome.
+///
+/// The returned flag says whether windows still get their own band and grip this frame. The lock
+/// screen and the pressure overlay own the screen outright: drawing a title bar into either of
+/// them would be drawing a control the user is not being offered.
+pub fn collect_output_chrome(
     chrome: &mut ChromeState,
     inputs: &ChromeInputs<'_>,
     output: &Output,
     renderer: &mut GlesRenderer,
-) -> Vec<MemoryRenderBufferRenderElement<GlesRenderer>> {
+) -> (Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, bool) {
     let Some(output_geometry) = inputs.space.output_geometry(output) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let output_scale = output.current_scale().fractional_scale();
     let output_rect = Rect::new(
@@ -164,7 +186,8 @@ pub fn collect_elements(
         {
             elements.push(element);
         }
-        return elements;
+        chrome.forget_window_chrome();
+        return (elements, false);
     }
 
     if let Some(overlay) = &inputs.recovery_protocol.pressure_overlay {
@@ -178,7 +201,8 @@ pub fn collect_elements(
         ) {
             elements.push(element);
         }
-        return elements;
+        chrome.forget_window_chrome();
+        return (elements, false);
     }
 
     if let Some(switcher) = inputs.switcher {
@@ -209,25 +233,48 @@ pub fn collect_elements(
         chrome.scatter_labels.clear();
     }
 
-    collect_bands(
+    (elements, true)
+}
+
+/// One window's own chrome, front-to-back: its title band (`WindowService::recovery_affordance`)
+/// then its resize grip (`WindowService::resize_grip`), appended to `elements`.
+///
+/// Both belong to `window_id` and to nothing else, so `src/scene.rs` emits them immediately
+/// *above that window's surface and below every window in front of it* — never as part of one
+/// flat chrome list, which is what used to paint a buried window's title across the translucent
+/// terminal on top of it.
+///
+/// The grip is drawn for the same reason the band is: a window whose client draws no frame — most
+/// XWayland windows, anything borderless — would otherwise have no pointer route to a resize at
+/// all, and an affordance nobody can see is not one. The service decides which windows have a
+/// grip (not maximized, not fullscreen, tall enough); this only paints what it is told.
+pub fn collect_window_chrome(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    window_id: WindowId,
+    output_rect: Rect,
+    output_scale: f64,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    renderer: &mut GlesRenderer,
+) {
+    collect_band(
         chrome,
-        inputs.window_service,
+        window_service,
+        window_id,
         output_rect,
         output_scale,
         renderer,
-        &mut elements,
+        elements,
     );
-
-    collect_grips(
+    collect_grip(
         chrome,
-        inputs.window_service,
+        window_service,
+        window_id,
         output_rect,
         output_scale,
         renderer,
-        &mut elements,
+        elements,
     );
-
-    elements
 }
 
 fn to_physical(rect: Rect, output_origin: Point<i32, Logical>, scale: f64) -> Point<f64, Physical> {
@@ -460,127 +507,110 @@ fn collect_scatter(
     chrome.scatter_labels.retain(|id, _| live.contains(id));
 }
 
-fn collect_bands(
+fn collect_band(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
+    window_id: WindowId,
     output_rect: Rect,
     output_scale: f64,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    let mut live = std::collections::HashSet::new();
-    for window in window_service.windows() {
-        if !window_service.is_visible(window.id) {
-            continue;
-        }
-        let Some(affordance) = window_service.recovery_affordance(window.id) else {
-            continue;
-        };
-        let band = affordance.band;
-        if output_rect.intersection(band).is_none() {
-            continue;
-        }
-        live.insert(window.id);
-        let background = if affordance.requires_compositor_paint {
-            paint::RECOVERY_TAB_COLOR
-        } else {
-            paint::RECOVERY_BAND_COLOR
-        };
-        let key = WidgetKey::new(window.title.clone(), background);
-        let title = window.title.clone();
-        let location = to_physical(
-            band,
-            Point::from((output_rect.x, output_rect.y)),
-            output_scale,
-        );
-        // The buttons in the band's own coordinates: `layout::band_buttons` places them in the
-        // global band rect (which is also what `src/input.rs` hit-tests), and the widget's
-        // buffer starts at the band's origin.
-        let buttons: Vec<(layout::BandButton, Rect)> = layout::band_buttons(band)
-            .into_iter()
-            .map(|(button, rect)| {
-                (
-                    button,
-                    Rect::new(rect.x - band.x, rect.y - band.y, rect.width, rect.height),
-                )
-            })
-            .collect();
-        let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
-        let widget = chrome.bands.entry(window.id).or_default();
-        if let Some(element) = widget.ensure(
-            key,
-            (band.width, band.height),
-            output_scale,
-            location,
-            &mut chrome.scratch,
-            renderer,
-            move |painter, pixel_w, pixel_h| {
-                let scale = scale_factor(pixel_w, band.width);
-                let buttons: Vec<(layout::BandButton, pixelkit_raster::Rect)> = buttons
-                    .iter()
-                    .map(|(button, rect)| (*button, paint::scaled_px(*rect, scale)))
-                    .collect();
-                paint::recovery_band(
-                    painter, pixel_w, pixel_h, background, &title, &buttons, fonts, scale,
-                );
-            },
-        ) {
-            elements.push(element);
-        }
+    let Some(window) = window_service.window(window_id) else {
+        return;
+    };
+    let Some(affordance) = window_service.recovery_affordance(window_id) else {
+        return;
+    };
+    let band = affordance.band;
+    if output_rect.intersection(band).is_none() {
+        return;
     }
-    chrome.bands.retain(|id, _| live.contains(id));
+    let background = if affordance.requires_compositor_paint {
+        paint::RECOVERY_TAB_COLOR
+    } else {
+        paint::RECOVERY_BAND_COLOR
+    };
+    let key = WidgetKey::new(window.title.clone(), background);
+    let title = window.title.clone();
+    let location = to_physical(
+        band,
+        Point::from((output_rect.x, output_rect.y)),
+        output_scale,
+    );
+    // The buttons in the band's own coordinates: `layout::band_buttons` places them in the
+    // global band rect (which is also what `src/input.rs` hit-tests), and the widget's
+    // buffer starts at the band's origin.
+    let buttons: Vec<(layout::BandButton, Rect)> = layout::band_buttons(band)
+        .into_iter()
+        .map(|(button, rect)| {
+            (
+                button,
+                Rect::new(rect.x - band.x, rect.y - band.y, rect.width, rect.height),
+            )
+        })
+        .collect();
+    let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
+    let widget = chrome.bands.entry(window_id).or_default();
+    if let Some(element) = widget.ensure(
+        key,
+        (band.width, band.height),
+        output_scale,
+        location,
+        &mut chrome.scratch,
+        renderer,
+        move |painter, pixel_w, pixel_h| {
+            let scale = scale_factor(pixel_w, band.width);
+            let buttons: Vec<(layout::BandButton, pixelkit_raster::Rect)> = buttons
+                .iter()
+                .map(|(button, rect)| (*button, paint::scaled_px(*rect, scale)))
+                .collect();
+            paint::recovery_band(
+                painter, pixel_w, pixel_h, background, &title, &buttons, fonts, scale,
+            );
+        },
+    ) {
+        elements.push(element);
+    }
 }
 
-/// Every visible window's compositor-owned resize grip
-/// (`lege_window::WindowService::resize_grip`), drawn for the same reason the recovery band is:
-/// a window whose client draws no frame — most XWayland windows, anything borderless — would
-/// otherwise have no pointer route to a resize at all, and an affordance nobody can see is not
-/// one. The service decides which windows have a grip (not maximized, not fullscreen, tall
-/// enough); this only paints what it is told.
-fn collect_grips(
+fn collect_grip(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
+    window_id: WindowId,
     output_rect: Rect,
     output_scale: f64,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    let mut live = std::collections::HashSet::new();
-    for window in window_service.windows() {
-        if !window_service.is_visible(window.id) {
-            continue;
-        }
-        let Some(grip) = window_service.resize_grip(window.id) else {
-            continue;
-        };
-        if output_rect.intersection(grip).is_none() {
-            continue;
-        }
-        live.insert(window.id);
-        // Nothing about a grip varies with the window but its size, and `ensure` already keys on
-        // that: the cache key is a constant.
-        let key = WidgetKey::new("resize-grip", paint::RECOVERY_BAND_COLOR);
-        let location = to_physical(
-            grip,
-            Point::from((output_rect.x, output_rect.y)),
-            output_scale,
-        );
-        let widget = chrome.grips.entry(window.id).or_default();
-        if let Some(element) = widget.ensure(
-            key,
-            (grip.width, grip.height),
-            output_scale,
-            location,
-            &mut chrome.scratch,
-            renderer,
-            move |painter, pixel_w, pixel_h| {
-                paint::resize_grip(painter, pixel_w, pixel_h, scale_factor(pixel_w, grip.width));
-            },
-        ) {
-            elements.push(element);
-        }
+    let Some(grip) = window_service.resize_grip(window_id) else {
+        return;
+    };
+    if output_rect.intersection(grip).is_none() {
+        return;
     }
-    chrome.grips.retain(|id, _| live.contains(id));
+    // Nothing about a grip varies with the window but its size, and `ensure` already keys on
+    // that: the cache key is a constant.
+    let key = WidgetKey::new("resize-grip", paint::RECOVERY_BAND_COLOR);
+    let location = to_physical(
+        grip,
+        Point::from((output_rect.x, output_rect.y)),
+        output_scale,
+    );
+    let widget = chrome.grips.entry(window_id).or_default();
+    if let Some(element) = widget.ensure(
+        key,
+        (grip.width, grip.height),
+        output_scale,
+        location,
+        &mut chrome.scratch,
+        renderer,
+        move |painter, pixel_w, pixel_h| {
+            paint::resize_grip(painter, pixel_w, pixel_h, scale_factor(pixel_w, grip.width));
+        },
+    ) {
+        elements.push(element);
+    }
 }
 
 /// The real per-axis scale a widget's buffer was actually rasterised at (`pixel_w / logical_w`),

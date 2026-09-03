@@ -13,6 +13,7 @@ mod keymap;
 mod protocols;
 mod protocols_recovery;
 mod protocols_shell;
+mod scene;
 mod screencopy;
 mod session_command;
 mod session_lock;

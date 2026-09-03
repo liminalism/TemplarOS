@@ -21,7 +21,12 @@ must call. The seven properties it must uphold are:
 3. **Identity** — `lege-comp-integration::DbusIdentityCache`; sanitized identity into the toplevel-info path.
 4. **Typed layers** (`lege_window::Layer`) replacing arbitrary always-on-top; `LayerStack` is the sole
    z-order authority — the compositor's own scene-graph stacking must be driven from `WindowService::stacking_order`,
-   never maintained independently.
+   never maintained independently. That governs the *frame's element order* too (`src/scene.rs`): a window's
+   band and grip are part of that window, emitted immediately above its own surface and below every window in
+   front of it, so a higher window occludes a lower window's title exactly as it occludes its content. Only
+   whole-output chrome — the lock screen, the pressure overlay, the fallback switcher, the "show every window"
+   scatter — sits above every window. Collecting chrome as one flat list ahead of all window content instead
+   painted a buried window's title over the translucent terminal in front of it, at full opacity.
 5. **Recovery** — `lege_recovery_v1` pressure overlay + "show every window" scatter (shelved windows
    included) + minimal fallback switcher + fullscreen/modal escape + "go home", all bound to fixed key
    combinations and calling straight into `WindowService`, so all five work without the shell;
