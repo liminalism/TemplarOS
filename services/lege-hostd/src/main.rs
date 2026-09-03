@@ -188,6 +188,11 @@ async fn main() -> Result<()> {
     // attempt, and this is the only moment userspace can tell.
     let reconciliation = state.reconcile_boot();
     tracing::info!(boot = %reconciliation.summary(), "boot reconciliation");
+    // And then the identities: whatever the bootloader did while hostd was not running, the
+    // deployment that actually booted is what the registry must call current.
+    if let Err(error) = state.reconcile_registry() {
+        tracing::warn!(%error, "could not reconcile the deployment registry");
+    }
 
     state.resume();
 

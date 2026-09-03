@@ -68,6 +68,46 @@ pub struct ChangeSet {
     pub other_packages: Vec<String>,
 }
 
+/// Why a transaction failed, when the reason is one a person can act on differently.
+///
+/// Only distinctions that change the advice are worth making: "the disk filled up" means delete
+/// something and try again, and it is the one failure a staged deployment can cause *by
+/// succeeding* at everything else — the snapshot and the install are what consume the space.
+/// Everything else is `Other`, described by the log line rather than by a taxonomy nobody
+/// maintains.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureClass {
+    #[default]
+    Other,
+    /// The volume ran out of space while staging the candidate.
+    DiskExhausted,
+}
+
+impl FailureClass {
+    /// Classify a staging error. Matches on the message as well as the `io::Error` kind because
+    /// the failure usually arrives from `apt` as an exit status with its output attached, not as a
+    /// Rust I/O error at all.
+    #[must_use]
+    pub fn of(error: &anyhow::Error) -> Self {
+        let by_kind = error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .any(|io| io.raw_os_error() == Some(libc::ENOSPC));
+        if by_kind {
+            return Self::DiskExhausted;
+        }
+        let text = format!("{error:#}").to_ascii_lowercase();
+        if text.contains("no space left on device")
+            || text.contains("insufficient free space")
+            || text.contains("not enough free disk space")
+        {
+            return Self::DiskExhausted;
+        }
+        Self::Other
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: String,
@@ -76,6 +116,10 @@ pub struct Transaction {
     /// Deployment identifier of the candidate (snapshot / boot entry).
     pub candidate_deployment: Option<String>,
     pub previous_deployment: Option<String>,
+    /// Set when `phase` is [`Phase::Failed`]. `#[serde(default)]` so a journal written before
+    /// classification existed still loads — a resume must never be blocked by its own history.
+    #[serde(default)]
+    pub failure: Option<FailureClass>,
     pub log: Vec<String>,
 }
 
@@ -87,6 +131,7 @@ impl Transaction {
             phase: Phase::Planned,
             candidate_deployment: None,
             previous_deployment: None,
+            failure: None,
             log: Vec::new(),
         }
     }
@@ -170,8 +215,20 @@ impl Engine {
         self.journal.save(txn)
     }
 
-    /// Plan a new transaction. Fails if one is already in flight and not terminal.
-    pub fn plan(&self, changes: ChangeSet) -> Result<String> {
+    /// Plan a new transaction, recording the deployment it would displace.
+    ///
+    /// The predecessor is recorded at planning time, not at promotion time, because the moment it
+    /// is needed — a candidate that failed to boot, or a staging failure with a full disk — is
+    /// after the machine has stopped cooperating. A rollback target worked out from the registry
+    /// at that point is a target worked out from state the failure may have been about; one
+    /// written down when everything was still healthy is a fact.
+    ///
+    /// Fails if a transaction is already in flight and not terminal.
+    pub fn plan_from(
+        &self,
+        changes: ChangeSet,
+        previous_deployment: Option<String>,
+    ) -> Result<String> {
         {
             let guard = self.current.lock().expect("poisoned");
             if let Some(existing) = guard.as_ref()
@@ -186,6 +243,7 @@ impl Engine {
         }
         let id = format!("txn-{}", clock::stamp(self.clock.now()));
         let mut txn = Transaction::new(id.clone(), changes);
+        txn.previous_deployment = previous_deployment;
         txn.advance(Phase::Downloading, "planned")
             .map_err(anyhow::Error::msg)?;
         self.persist(&txn)?;
@@ -285,7 +343,25 @@ impl Engine {
     }
 
     fn fail(&self, mut txn: Transaction, error: anyhow::Error) -> Result<()> {
-        let reason = error.to_string();
+        let class = FailureClass::of(&error);
+        let mut reason = error.to_string();
+        if class == FailureClass::DiskExhausted {
+            // The one thing a person needs told at this moment is that nothing was lost: the
+            // deployment they are running was never touched, and it is still what boots. Naming
+            // it turns "the update failed" into "you are still on X, free some space".
+            let previous = txn.previous_deployment.clone();
+            reason = match &previous {
+                Some(previous) => format!(
+                    "{reason} — out of disk space while staging; nothing was changed and \
+                     deployment {previous} still boots"
+                ),
+                None => format!(
+                    "{reason} — out of disk space while staging; nothing was changed and the \
+                     running deployment is unaffected"
+                ),
+            };
+        }
+        txn.failure = Some(class);
         txn.advance(Phase::Failed, reason)
             .map_err(anyhow::Error::msg)?;
         self.persist(&txn)?;
@@ -503,7 +579,7 @@ mod tests {
     fn plan_then_run_reaches_awaiting_reboot_and_stages_boot() {
         let dir = tempfile::tempdir().unwrap();
         let h = harness(dir.path());
-        let id = h.engine.plan(changes()).unwrap();
+        let id = h.engine.plan_from(changes(), None).unwrap();
         h.engine.run_to_awaiting_reboot().unwrap();
 
         let txn = h.engine.current().unwrap();
@@ -527,7 +603,7 @@ mod tests {
         );
 
         // A second transaction cannot start while this one is in flight.
-        assert!(h.engine.plan(changes()).is_err());
+        assert!(h.engine.plan_from(changes(), None).is_err());
     }
 
     #[test]
@@ -717,7 +793,7 @@ mod tests {
     fn resuming_an_already_awaiting_reboot_transaction_does_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let h = harness(dir.path());
-        h.engine.plan(changes()).unwrap();
+        h.engine.plan_from(changes(), None).unwrap();
         h.engine.run_to_awaiting_reboot().unwrap();
         let before = h.apt.calls().len();
 
@@ -736,7 +812,7 @@ mod tests {
         h.apt
             .fail_download
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        h.engine.plan(changes()).unwrap();
+        h.engine.plan_from(changes(), None).unwrap();
         assert!(h.engine.run_to_awaiting_reboot().is_err());
         let txn = h.engine.current().unwrap();
         assert_eq!(txn.phase, Phase::Failed);
@@ -779,7 +855,159 @@ mod tests {
     fn plan_ids_are_clock_derived_and_stable() {
         let dir = tempfile::tempdir().unwrap();
         let h = harness(dir.path());
-        let id = h.engine.plan(changes()).unwrap();
+        let id = h.engine.plan_from(changes(), None).unwrap();
         assert_eq!(id, "txn-20260817T100000Z");
+    }
+
+    /// The trial phase is the one a restart can land in for hours: the candidate is booted and
+    /// boot-health has not yet said anything. Both ways out of it have to work in a process that
+    /// did not plan the transaction — which is the only kind of process there is by then, since
+    /// deciding a trial requires the reboot that ended the planning one.
+    #[test]
+    fn a_restart_during_the_trial_can_still_promote_or_roll_back() {
+        for (promote, expected) in [(true, Phase::Promoted), (false, Phase::RolledBack)] {
+            let dir = tempfile::tempdir().unwrap();
+            let dir = dir.path();
+            let journal_dir = dir.join("journal");
+
+            // What the process that rebooted the machine left behind.
+            {
+                let journal = Journal::new(&journal_dir).unwrap();
+                let mut txn = Transaction::new("txn-trial", changes());
+                txn.previous_deployment = Some("txn-earlier".to_owned());
+                for (phase, note) in [
+                    (Phase::Downloading, "planned"),
+                    (Phase::Staging, "downloaded"),
+                    (Phase::Verifying, "installed"),
+                    (Phase::AwaitingReboot, "staged"),
+                    (Phase::Trial, "candidate booted"),
+                ] {
+                    txn.advance(phase, note).unwrap();
+                }
+                txn.candidate_deployment = Some("txn-trial".to_owned());
+                journal.save(&txn).unwrap();
+            }
+
+            // A brand-new process over the same journal.
+            let resumed = harness_over(dir, &journal_dir);
+            let recovered = resumed.engine.current().expect("the trial is resumed");
+            assert_eq!(recovered.phase, Phase::Trial);
+            assert_eq!(
+                recovered.previous_deployment.as_deref(),
+                Some("txn-earlier"),
+                "the displaced deployment survives the restart that has to name it"
+            );
+
+            if promote {
+                resumed.engine.promote().unwrap();
+            } else {
+                resumed.engine.roll_back("boot-health failed").unwrap();
+            }
+
+            // And a third process reads the outcome, not the trial.
+            let after = harness_over(dir, &journal_dir);
+            assert_eq!(after.engine.current(), None, "a decided trial is resolved");
+            let txn = after.engine.transaction("txn-trial").unwrap().unwrap();
+            assert_eq!(txn.phase, expected);
+            assert_eq!(txn.previous_deployment.as_deref(), Some("txn-earlier"));
+        }
+    }
+
+    /// A `Harness` over an existing journal directory — a restart, rather than a fresh machine.
+    fn harness_over(dir: &Path, journal_dir: &Path) -> Harness {
+        let mut h = harness(dir);
+        h.engine = Engine::new(
+            Journal::new(journal_dir).unwrap(),
+            h.apt.clone(),
+            h.snapshotter.clone(),
+            Arc::new(SystemdBoot {
+                commands: h.commands.clone(),
+                esp_root: dir.join("esp"),
+            }),
+            Arc::new(FixedClock(UNIX_EPOCH)),
+            h.root.clone(),
+            dir.join("deployments"),
+            dir.join("esp"),
+        )
+        .unwrap();
+        h.journal_dir = journal_dir.to_path_buf();
+        h
+    }
+
+    /// An apt that fills the disk instead of installing — the failure that arrives as an exit
+    /// status with output attached rather than as a Rust I/O error.
+    #[derive(Debug)]
+    struct FullDiskApt;
+
+    impl Apt for FullDiskApt {
+        fn download(&self, _id: &str, _changes: &ChangeSet) -> Result<()> {
+            Ok(())
+        }
+
+        fn install_into(&self, _id: &str, _changes: &ChangeSet, _target: &Path) -> Result<()> {
+            bail!(
+                "apt-get exited 100: E: You don't have enough free space in /var/cache/apt/archives/.\n\
+                 No space left on device"
+            )
+        }
+    }
+
+    #[test]
+    fn running_out_of_disk_while_staging_is_classified_and_names_where_the_machine_still_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let h = harness(dir);
+        let engine = Engine::new(
+            Journal::new(dir.join("journal")).unwrap(),
+            Arc::new(FullDiskApt),
+            h.snapshotter.clone(),
+            Arc::new(SystemdBoot {
+                commands: h.commands.clone(),
+                esp_root: dir.join("esp"),
+            }),
+            Arc::new(FixedClock(UNIX_EPOCH)),
+            h.root.clone(),
+            dir.join("deployments"),
+            dir.join("esp"),
+        )
+        .unwrap();
+
+        engine
+            .plan_from(changes(), Some("txn-earlier".to_owned()))
+            .unwrap();
+        let error = engine.run_to_awaiting_reboot().unwrap_err();
+        assert!(format!("{error:#}").contains("No space left on device"));
+
+        let txn = engine.current().unwrap();
+        assert_eq!(txn.phase, Phase::Failed);
+        assert_eq!(
+            txn.failure,
+            Some(FailureClass::DiskExhausted),
+            "a full disk is not just any failure: it is the one with an obvious next step"
+        );
+        let last = txn.log.last().expect("the failure is logged");
+        assert!(
+            last.contains("txn-earlier"),
+            "the failure must say where the machine still is: {last}"
+        );
+
+        // And the classification is durable, because the advice is needed after the restart the
+        // person does when they think the machine is broken.
+        let after = Engine::new(
+            Journal::new(dir.join("journal")).unwrap(),
+            Arc::new(FullDiskApt),
+            h.snapshotter.clone(),
+            Arc::new(SystemdBoot {
+                commands: h.commands.clone(),
+                esp_root: dir.join("esp"),
+            }),
+            Arc::new(FixedClock(UNIX_EPOCH)),
+            h.root.clone(),
+            dir.join("deployments"),
+            dir.join("esp"),
+        )
+        .unwrap();
+        let recorded = after.transaction(&txn.id).unwrap().unwrap();
+        assert_eq!(recorded.failure, Some(FailureClass::DiskExhausted));
     }
 }

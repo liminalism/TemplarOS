@@ -233,6 +233,84 @@ pub fn render_activation(report: &super::activate::ActivationReport) -> String {
     out
 }
 
+/// The six things "what is this machine running, and what can it go back to?" is actually asking.
+///
+/// Three of them are about the userspace build set — installed, running, and the set a
+/// `lege dev rollback` would put back — and three are about the boot deployment: the snapshot
+/// taken before the last install, the deployment the running kernel came from, and the deployment
+/// that has passed boot-health and can always be returned to. They were readable one at a time,
+/// from three different commands, in three different vocabularies. Nobody assembles that under
+/// pressure, which is the only time it is needed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Identities {
+    pub installed_set: Option<String>,
+    pub running_set: Option<String>,
+    pub rollback_set: Option<String>,
+    pub root_snapshot: Option<std::path::PathBuf>,
+    pub booted_deployment: Option<String>,
+    pub known_good_deployment: Option<String>,
+}
+
+/// The identities as a block, one per line, in a fixed order.
+///
+/// Every line is printed even when its answer is unknown: "not recorded" is information — it is
+/// how a machine that has never deployed, or one whose registry predates the identities, tells
+/// you that a rollback has nothing to aim at.
+#[must_use]
+pub fn render_identities(identities: &Identities) -> String {
+    let snapshot = identities
+        .root_snapshot
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let rows = [
+        ("installed set", identities.installed_set.as_deref()),
+        ("running set", identities.running_set.as_deref()),
+        ("rollback set", identities.rollback_set.as_deref()),
+        ("root snapshot", snapshot.as_deref()),
+        ("booted deployment", identities.booted_deployment.as_deref()),
+        (
+            "known-good deployment",
+            identities.known_good_deployment.as_deref(),
+        ),
+    ];
+    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    let mut out = String::from("\ndeployment\n");
+    for (label, value) in rows {
+        let _ = writeln!(
+            out,
+            "  {label:<width$}  {}",
+            value.unwrap_or("(not recorded)")
+        );
+    }
+    out
+}
+
+/// What to do about components that did not come back, naming the set to roll back to.
+///
+/// Extracted from the deployment path so the sentence a person acts on in the worst minute of a
+/// deployment is testable without performing one.
+#[must_use]
+pub fn render_rollback_advice(failures: &[(&str, &str)], previous_set: Option<&str>) -> String {
+    let mut out = String::new();
+    for (component, reason) in failures {
+        let _ = writeln!(out, "{component} did not come back: {reason}");
+    }
+    match previous_set {
+        Some(previous) => {
+            let _ = writeln!(
+                out,
+                "\neverything else was activated; roll the whole set back to {previous} with: \
+                 sudo lege dev rollback"
+            );
+        }
+        None => out.push_str(
+            "\neverything else was activated, and there is no previous set to roll back to — \
+             this archive has only ever published one\n",
+        ),
+    }
+    out
+}
+
 /// The same answer as data, for `--json`.
 #[must_use]
 pub fn as_json(convergence: &Convergence) -> serde_json::Value {
@@ -251,6 +329,22 @@ pub fn as_json(convergence: &Convergence) -> serde_json::Value {
                 "explanation": row.explanation(),
             }))
             .collect::<Vec<_>>(),
+    })
+}
+
+/// The identities as data, under `deployment` in `lege dev status --json`.
+#[must_use]
+pub fn identities_as_json(identities: &Identities) -> serde_json::Value {
+    serde_json::json!({
+        "installed_set": identities.installed_set,
+        "running_set": identities.running_set,
+        "rollback_set": identities.rollback_set,
+        "root_snapshot": identities
+            .root_snapshot
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        "booted_deployment": identities.booted_deployment,
+        "known_good_deployment": identities.known_good_deployment,
     })
 }
 

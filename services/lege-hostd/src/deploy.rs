@@ -6,10 +6,11 @@
 //! them so Ubuntu's initramfs post-update hooks cannot rewrite the previous entry out from under
 //! a deployment that is supposed to be immutable.
 //!
-//! ADR-0004 is still *proposed*: which Secure-Boot posture (LegeOS-signed systemd-boot + MOK,
-//! Canonical-signed GRUB + this module's own counter, or SB off for dev) is a decision left to
-//! configuration — [`detect_backend`] is the one place that reads it, and it reads the
-//! installation's actual loader rather than assuming one.
+//! ADR-0004 is settled (`@legeos.decision.boot-deploy-secure-boot`): bare metal boots through
+//! Canonical-signed shim → GRUB → an Ubuntu-signed kernel → Canonical LRM, and the mkosi
+//! developer/VM image keeps systemd-boot. Both backends therefore stay, and [`detect_backend`]
+//! remains the one place that decides between them — by reading the installation's actual loader
+//! rather than assuming which kind of machine this is.
 
 use crate::cmd::CommandRunner;
 use anyhow::{Context, Result, bail};
@@ -167,10 +168,10 @@ impl BootManager for SystemdBoot {
 pub struct Grub {
     pub commands: Arc<dyn CommandRunner>,
     pub state_dir: PathBuf,
-}
     /// The boot directory (`/boot`), where the generated entries file lives. Parameterized so
     /// tests never write to the developer's real one.
     pub boot_root: PathBuf,
+}
 
 impl Grub {
     fn counter_path(&self) -> PathBuf {
@@ -220,12 +221,12 @@ impl BootManager for Grub {
             self.counter_path(),
             format!("{}\n{}\n", candidate.id, tries),
         )?;
-        self.commands.run("grub-reboot", &[&candidate.id])?;
         // The entries have to exist before `grub-reboot` names one of them: `GRUB_DEFAULT=saved`
         // selects a menu entry by id, and an id GRUB cannot find is a boot into whatever the
         // firmware picks instead. Written whole, so the known-good entry (which
         // `refresh_entries` reads from this backend's own record) survives every restage.
         self.refresh_entries(Some(candidate))?;
+        self.commands.run("grub-reboot", &[&candidate.id])?;
         Ok(())
     }
 
@@ -233,19 +234,19 @@ impl BootManager for Grub {
         let Some((id, _)) = self.staged()? else {
             bail!("no candidate is staged to promote");
         };
-        self.commands.run("grub-set-default", &[&id])?;
         self.record_known_good(&id)?;
         self.refresh_entries(None)?;
+        self.commands.run("grub-set-default", &[&id])?;
         let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
 
     fn rollback(&self, previous: &Deployment) -> Result<()> {
-        self.commands.run("grub-set-default", &[&previous.id])?;
         // The candidate's entry goes away with the candidate: leaving it in the menu invites a
         // person at the console to hand-pick the deployment that just failed its health gate.
         self.record_known_good(&previous.id)?;
         self.refresh_entries(None)?;
+        self.commands.run("grub-set-default", &[&previous.id])?;
         let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
@@ -263,26 +264,160 @@ impl BootManager for Grub {
     }
 }
 
+/// The known-deployment registry as persisted at `<state-dir>/deployments.json`.
+///
+/// The three identities are held beside the list rather than derived from it because only one of
+/// them can be recovered from the machine afterwards: `known_good` is a property of a deployment
+/// (and stays mirrored on it, so an old reader still sees it), but *current* and *previous* are
+/// facts about this installation's history — which deployment the update engine last promoted,
+/// and which one it displaced — and nothing on disk remembers them once the transaction journal's
+/// entry ages out. `/proc/cmdline` says what booted, never what the alternative was.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentRegistry {
+    #[serde(default)]
+    pub deployments: Vec<Deployment>,
+    /// The deployment most recently promoted — what a healthy machine is running.
+    #[serde(default)]
+    pub current: Option<String>,
+    /// The deployment `current` displaced: the boot-side rollback target.
+    #[serde(default)]
+    pub previous: Option<String>,
+    /// The deployment that has passed boot-health and may always be returned to.
+    #[serde(default)]
+    pub known_good: Option<String>,
+}
+
+/// Either shape `deployments.json` can have on disk: the object written since the identities
+/// landed, or the bare array every installation before it wrote. A registry file is not something
+/// an update may invalidate — the file that says where to roll back to must survive being read by
+/// the version that finds it — so the older form is read, not rejected.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PersistedRegistry {
+    Modern(DeploymentRegistry),
+    Legacy(Vec<Deployment>),
+}
+
+impl DeploymentRegistry {
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<&Deployment> {
+        self.deployments.iter().find(|d| d.id == id)
+    }
+
+    /// The known-good deployment, preferring the recorded identity and falling back to the flag on
+    /// the deployments themselves — which is all a registry migrated from the legacy array has.
+    #[must_use]
+    pub fn known_good_deployment(&self) -> Option<&Deployment> {
+        self.known_good
+            .as_deref()
+            .and_then(|id| self.find(id))
+            .or_else(|| self.deployments.iter().find(|d| d.known_good))
+    }
+
+    /// Record `deployment` as promoted: it becomes current and known-good, and whatever was
+    /// current before it becomes the rollback target.
+    ///
+    /// Promoting the deployment that is already current is not a no-op only in the boring sense:
+    /// it must not make a deployment its own predecessor, which would name a rollback target that
+    /// is the very thing being rolled back from.
+    pub fn promote(&mut self, deployment: Deployment) {
+        if self.current.as_deref() != Some(deployment.id.as_str()) {
+            self.previous = self.current.take();
+        }
+        self.current = Some(deployment.id.clone());
+        self.known_good = Some(deployment.id.clone());
+        for existing in &mut self.deployments {
+            existing.known_good = false;
+        }
+        match self.deployments.iter_mut().find(|d| d.id == deployment.id) {
+            Some(existing) => {
+                *existing = Deployment {
+                    known_good: true,
+                    ..deployment
+                };
+            }
+            None => self.deployments.push(Deployment {
+                known_good: true,
+                ..deployment
+            }),
+        }
+    }
+
+    /// Reconcile the recorded identities against what the machine actually booted.
+    ///
+    /// Returns whether anything changed, so a startup that learned nothing does not rewrite the
+    /// file. A registry written by an older version has no identities at all; a machine that was
+    /// rolled back by the bootloader itself, or provisioned outside the update engine, boots
+    /// something the registry never called current. In both cases the booted deployment is the
+    /// truth and the registry follows it, keeping the displaced identity as `previous`.
+    pub fn reconcile_booted(&mut self, booted: Option<&str>) -> bool {
+        let mut changed = false;
+        if self.known_good.is_none()
+            && let Some(flagged) = self.deployments.iter().find(|d| d.known_good)
+        {
+            self.known_good = Some(flagged.id.clone());
+            changed = true;
+        }
+        let Some(booted) = booted else {
+            return changed;
+        };
+        if self.current.as_deref() == Some(booted) {
+            return changed;
+        }
+        if self.current.is_some() {
+            self.previous = self.current.take();
+        }
+        self.current = Some(booted.to_owned());
+        true
+    }
+}
+
 /// Load the known-deployment registry (`<state-dir>/deployments.json`) — empty if it does not
 /// exist yet (a fresh install has no deployments beyond the one it booted from).
-pub fn load_deployments(path: &Path) -> Result<Vec<Deployment>> {
+pub fn load_registry(path: &Path) -> Result<DeploymentRegistry> {
     match fs::read(path) {
         Ok(bytes) => {
-            serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
+            let persisted: PersistedRegistry = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            Ok(match persisted {
+                PersistedRegistry::Modern(registry) => registry,
+                PersistedRegistry::Legacy(deployments) => {
+                    let known_good = deployments
+                        .iter()
+                        .find(|d| d.known_good)
+                        .map(|d| d.id.clone());
+                    DeploymentRegistry {
+                        deployments,
+                        current: None,
+                        previous: None,
+                        known_good,
+                    }
+                }
+            })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DeploymentRegistry::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
 /// Persist the registry atomically (write-temp-then-rename, matching the transaction journal).
+pub fn save_registry(path: &Path, registry: &DeploymentRegistry) -> Result<()> {
+    write_atomically(path, &serde_json::to_vec_pretty(registry)?)
+}
+
+/// Write the legacy bare-array form. Kept so the reader above has something to be tested against
+/// that was not produced by the writer that shares its assumptions.
+#[cfg(test)]
 pub fn save_deployments(path: &Path, deployments: &[Deployment]) -> Result<()> {
+    write_atomically(path, &serde_json::to_vec_pretty(deployments)?)
+}
+
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(deployments)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
@@ -317,6 +452,7 @@ pub fn detect_backend(
         Box::new(Grub {
             commands,
             state_dir,
+            boot_root: root.join("boot"),
         })
     }
 }
@@ -409,6 +545,7 @@ mod tests {
         let backend = Grub {
             commands: commands.clone(),
             state_dir: dir.path().to_path_buf(),
+            boot_root: dir.path().join("boot"),
         };
         backend.stage_candidate(&deployment("cand1"), 3).unwrap();
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 3)));
@@ -429,6 +566,7 @@ mod tests {
         let backend = Grub {
             commands: commands.clone(),
             state_dir: dir.path().to_path_buf(),
+            boot_root: dir.path().join("boot"),
         };
         backend.stage_candidate(&deployment("cand1"), 1).unwrap();
         backend.rollback(&deployment("prev1")).unwrap();
@@ -452,7 +590,6 @@ mod tests {
         let esp = dir.path().join("esp");
         let placed = place_boot_files(&dir.path().join("candidate"), &esp, "cand1").unwrap();
         assert!(placed.join("vmlinuz").exists());
-            boot_root: root.join("boot"),
         assert!(placed.join("initrd.img").exists());
     }
 
@@ -468,12 +605,31 @@ mod tests {
     fn deployment_registry_round_trips_and_defaults_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("deployments.json");
-        assert!(load_deployments(&path).unwrap().is_empty());
+        assert!(load_registry(&path).unwrap().deployments.is_empty());
 
         let deployments = vec![deployment("a"), deployment("b")];
         save_deployments(&path, &deployments).unwrap();
-        assert_eq!(load_deployments(&path).unwrap(), deployments);
+        assert_eq!(load_registry(&path).unwrap().deployments, deployments);
+    }
+
+    #[test]
+    fn a_legacy_array_registry_still_loads_with_its_known_good_recovered() {
+        // The file that says where to roll back to must survive being read by the version that
+        // finds it: the bare array every installation before the identities landed wrote, read
+        // back with `known_good` recovered from the flag on the deployment itself.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployments.json");
+        let mut good = deployment("a");
+        good.known_good = true;
+        save_deployments(&path, &[good.clone(), deployment("b")]).unwrap();
+
+        let registry = load_registry(&path).unwrap();
+        assert_eq!(registry.known_good.as_deref(), Some("a"));
+        assert_eq!(registry.known_good_deployment(), Some(&good));
+        assert_eq!(registry.current, None, "a legacy file records no history");
+
+        // And the object form round-trips whole.
+        save_registry(&path, &registry).unwrap();
+        assert_eq!(load_registry(&path).unwrap(), registry);
     }
 }
-            boot_root: dir.path().join("boot"),
-            boot_root: dir.path().join("boot"),

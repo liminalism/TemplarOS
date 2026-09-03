@@ -108,16 +108,116 @@ pub fn installed_versions(status_text: &str, packages: &[&str]) -> BTreeMap<Stri
 ///
 /// # Errors
 /// If the convergence cannot be serialised for `--json`.
-pub fn status(root: &Path, target: Option<&str>, json: bool) -> Result<String> {
+pub fn status(repo_root: PathBuf, root: &Path, target: Option<&str>, json: bool) -> Result<String> {
     let matrix = load_matrix(root);
     let observation = observe(root, &matrix);
     let convergence = converge::converge(&matrix, &observation, target);
+    let identities = identities(&repo_root, root, &convergence);
     if json {
-        serde_json::to_string_pretty(&report::as_json(&convergence))
-            .context("rendering the convergence as JSON")
+        let mut value = report::as_json(&convergence);
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "deployment".to_owned(),
+                report::identities_as_json(&identities),
+            );
+        }
+        serde_json::to_string_pretty(&value).context("rendering the convergence as JSON")
     } else {
-        Ok(report::render(&convergence))
+        let mut out = report::render(&convergence);
+        out.push_str(&report::render_identities(&identities));
+        Ok(out)
     }
+}
+
+/// Read the six identities off the machine: three from the build sets, three from the boot side.
+///
+/// Everything is read through `root`, and nothing here talks to a bus. `lege update deployments`
+/// already asks hostd the boot-side questions, but it needs hostd running and the system bus
+/// answering — which is exactly what is not true on the machine where these questions get asked.
+/// The files hostd writes are there either way.
+#[must_use]
+pub fn identities(
+    repo_root: &Path,
+    root: &Path,
+    convergence: &converge::Convergence,
+) -> report::Identities {
+    let installed = convergence.installed_versions();
+    let mut running: Vec<&str> = convergence
+        .rows
+        .iter()
+        .filter_map(|row| row.running.as_deref())
+        .collect();
+    running.sort_unstable();
+    running.dedup();
+
+    let registry = deployment_registry(root);
+    report::Identities {
+        // A mixed install is named as mixed rather than reduced to one of its versions: that is
+        // the state this whole command exists to make visible.
+        installed_set: (!installed.is_empty()).then(|| installed.join(", ")),
+        running_set: (!running.is_empty()).then(|| running.join(", ")),
+        rollback_set: open_repo(repo_root.to_path_buf()).previous().ok().flatten(),
+        root_snapshot: latest_root_snapshot(root),
+        booted_deployment: booted_deployment(root),
+        known_good_deployment: registry
+            .get("known_good")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                registry
+                    .get("deployments")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find(|deployment| {
+                        deployment
+                            .get("known_good")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                    })
+                    .and_then(|deployment| deployment.get("id")?.as_str())
+                    .map(ToOwned::to_owned)
+            }),
+    }
+}
+
+/// hostd's deployment registry as raw JSON, read rather than deserialised into hostd's own types
+/// — the CLI is a different package from the daemon and must keep reading a file written by a
+/// newer or older one. An unreadable or absent registry is `null`, which every reader above
+/// handles as "not recorded".
+fn deployment_registry(root: &Path) -> serde_json::Value {
+    std::fs::read_to_string(root.join("var/lib/legeos/hostd/deployments.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The deployment the running kernel booted from, out of the kernel command line.
+///
+/// An exact-key scan rather than a substring search, for the same reason hostd's copy is:
+/// `legeos.deployment_backup=` must not match.
+fn booted_deployment(root: &Path) -> Option<String> {
+    let cmdline = std::fs::read_to_string(root.join("proc/cmdline")).ok()?;
+    cmdline
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("legeos.deployment="))
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// The most recent snapshot a deployment took, by name.
+fn latest_root_snapshot(root: &Path) -> Option<PathBuf> {
+    let mut snapshots: Vec<PathBuf> = std::fs::read_dir(root.join("var/lib/legeos/snapshots"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("root-before-"))
+        })
+        .collect();
+    snapshots.sort();
+    snapshots.pop()
 }
 
 /// Opens the local archive with a real command runner.
@@ -373,6 +473,18 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
             let _ = writeln!(out, "snapshot: {}", path.display());
         }
     }
+    // Before apt touches anything: the whole userspace, on btrfs, for the failure that a
+    // reinstall of the previous debs cannot undo because the maintainer scripts already ran.
+    let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
+    match gates::root_snapshot(root, &set.id) {
+        Some(snapshot) => {
+            gates::take_root_snapshot(runner.as_ref(), root, &snapshot).with_context(|| {
+                format!("taking the root snapshot at {}", snapshot.target.display())
+            })?;
+            let _ = writeln!(out, "root snapshot: {}", snapshot.target.display());
+        }
+        None => out.push_str("root snapshot: none — root is not btrfs\n"),
+    }
     let gate = gates::run(
         &matrix,
         &set,
@@ -394,7 +506,6 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
 
     let convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
     let plan = activate::plan(&matrix, &convergence, &gate.conditions);
-    let runner: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
     let target_user = systemd::sudo_target_user();
     let systemctl = systemd::RealSystemctl {
         runner: runner.clone(),
@@ -402,7 +513,7 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
         target_user: target_user.clone(),
     };
     let bus = systemd::RealBusProbe {
-        runner,
+        runner: runner.clone(),
         dir: root.to_path_buf(),
         target_user: target_user.clone(),
     };
@@ -421,13 +532,15 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
 
     let failures = activation.failures();
     if !failures.is_empty() {
-        // Every failure, on its own line. The rest of the list was attempted anyway, so more than
-        // one of them can be broken, and a summary that named only the first would quietly hide
-        // the others behind a fix that does not apply to them.
+        // Every failure, on its own line, and the set to go back to. The rest of the list was
+        // attempted anyway, so more than one of them can be broken, and a summary that named only
+        // the first would quietly hide the others behind a fix that does not apply to them.
+        let previous_set = open_repo(repo_root.clone()).previous().ok().flatten();
         out.push('\n');
-        for (component, reason) in &failures {
-            let _ = writeln!(out, "{component} did not come back: {reason}");
-        }
+        out.push_str(&report::render_rollback_advice(
+            &failures,
+            previous_set.as_deref(),
+        ));
         let names: Vec<&str> = failures.iter().map(|(component, _)| *component).collect();
         let names = names.join(", ");
         if options.auto_rollback {
@@ -438,10 +551,6 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
             // start to finish, not a log of steps that merely happened to end early.
             bail!("DEPLOY FAILED — {names} did not activate; the set was rolled back\n\n{out}");
         }
-        let _ = writeln!(
-            out,
-            "\neverything else was activated; roll the whole set back with: sudo lege dev rollback"
-        );
         bail!(
             "DEPLOY FAILED — {names} did not activate; roll back with: sudo lege dev rollback\n\n{out}"
         );
@@ -469,6 +578,15 @@ fn deploy_plan(
 ) -> String {
     let installer = open_installer(repo_root.to_path_buf(), root);
     let _ = writeln!(out, "\n1. publish {} package(s)", set.packages.len());
+    match gates::root_snapshot(root, &set.id) {
+        Some(snapshot) => {
+            let _ = writeln!(out, "   root snapshot first: {}", snapshot.command_line());
+        }
+        None => out.push_str(
+            "   no root snapshot: root is not btrfs, so the userspace this installs over \
+             cannot be put back wholesale\n",
+        ),
+    }
     match installer.plan(&set.id) {
         Ok(plan) => {
             let _ = writeln!(out, "2. {}", plan.command_line());
@@ -513,6 +631,13 @@ fn deploy_plan(
     let plan = activate::plan(matrix, &convergence, &conditions);
     out.push_str("3. activate:\n");
     out.push_str(&report::render_activation_plan(&plan));
+    // What the machine is now, so the plan above can be read against something. The convergence
+    // here describes the machine *as it would be after the install*, so the identities — which
+    // describe it as it is — are what says where a rollback would land.
+    let now = converge::converge(matrix, &observe(root, matrix), None);
+    out.push_str(&report::render_identities(&identities(
+        repo_root, root, &now,
+    )));
     out.push_str("\ndry run: nothing was published, installed or restarted\n");
     out
 }

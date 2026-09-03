@@ -33,7 +33,9 @@ pub struct HostdState {
     pub commands: Arc<dyn CommandRunner>,
     pub polkit: Arc<dyn PolkitAuthority>,
     pub caller_identity: Arc<dyn CallerIdentity>,
-    pub deployments: Mutex<Vec<Deployment>>,
+    /// Every known deployment plus the three identities — current, previous, known-good — that
+    /// nothing else on the machine remembers.
+    pub deployments: Mutex<deploy::DeploymentRegistry>,
     pub deployments_path: PathBuf,
     /// Sysfs root for hardware detection (`/sys` on a live system).
     pub sys_root: PathBuf,
@@ -146,7 +148,7 @@ impl HostdState {
             config.deployments_dir,
             config.esp_root,
         )?;
-        let deployments = deploy::load_deployments(&config.deployments_path)?;
+        let deployments = deploy::load_registry(&config.deployments_path)?;
         Ok(Self {
             engine,
             boot: config.boot,
@@ -255,15 +257,41 @@ impl HostdState {
         )
     }
 
-    /// `(subvolume path, 0)` for every deployment that is not known-good — the size estimate is
-    /// left at 0 (no du walk implemented yet) rather than fabricated; see the crate report.
+    /// `(subvolume path, estimated bytes)` for every deployment the trim order is allowed to
+    /// delete: never the booted one, never the known-good one, never what the registry calls
+    /// current or previous, and never the newest [`storage::DEFAULT_KEEP_DEPLOYMENTS`] of the
+    /// rest. Oldest first, which is the order they are deleted in.
     fn trimmable_deployments(&self) -> Vec<(String, u64)> {
-        self.deployments
-            .lock()
-            .expect("poisoned")
-            .iter()
-            .filter(|d| !d.known_good)
-            .map(|d| (d.subvolume.clone(), 0))
+        let booted = self.booted_deployment_id();
+        let registry = self.deployments.lock().expect("poisoned");
+        let mut protected: Vec<&str> = Vec::new();
+        for id in [
+            booted.as_deref(),
+            registry.known_good.as_deref(),
+            registry.current.as_deref(),
+            registry.previous.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            protected.push(id);
+        }
+        // A deployment still flagged known-good by a registry that has no identities recorded —
+        // one written before they existed — is protected by the flag alone.
+        for deployment in registry.deployments.iter().filter(|d| d.known_good) {
+            protected.push(&deployment.id);
+        }
+        let ordered: Vec<String> = registry.deployments.iter().map(|d| d.id.clone()).collect();
+        let trimmable =
+            storage::trimmable_deployments(&ordered, &protected, storage::DEFAULT_KEEP_DEPLOYMENTS);
+        trimmable
+            .into_iter()
+            .filter_map(|id| registry.find(id))
+            .map(|deployment| {
+                let subvolume = deployment.subvolume.clone();
+                let size = storage::estimate_size(Path::new(&subvolume));
+                (subvolume, size)
+            })
             .collect()
     }
 
@@ -287,7 +315,21 @@ impl HostdState {
     /// caller gets the id back at once and polls `Current`/`History` for progress, exactly as it
     /// would after hostd restarts mid-transaction and resumes on its own.
     pub fn plan_update(&self, changes: ChangeSet) -> Result<String> {
-        self.engine.plan(changes)
+        self.engine.plan_from(changes, self.displaced_deployment())
+    }
+
+    /// The deployment a new transaction would displace: what actually booted, and failing that
+    /// what the registry calls current, and failing that the known-good one. Recorded on the
+    /// transaction so a failure later can name where the machine still is.
+    fn displaced_deployment(&self) -> Option<String> {
+        if let Some(booted) = self.booted_deployment_id() {
+            return Some(booted);
+        }
+        let registry = self.deployments.lock().expect("poisoned");
+        registry
+            .current
+            .clone()
+            .or_else(|| registry.known_good_deployment().map(|d| d.id.clone()))
     }
 
     /// Drive the current transaction forward. Failures are recorded in the transaction itself
@@ -377,10 +419,9 @@ impl HostdState {
     /// Make the known-good deployment the default again and close the transaction.
     fn abandon_candidate(&self, candidate: &str) -> Result<String> {
         let known_good = {
-            let deployments = self.deployments.lock().expect("poisoned");
-            deployments
-                .iter()
-                .find(|deployment| deployment.known_good)
+            let registry = self.deployments.lock().expect("poisoned");
+            registry
+                .known_good_deployment()
                 .cloned()
                 .context("no known-good deployment to return to")?
         };
@@ -412,19 +453,35 @@ impl HostdState {
     }
 
     pub fn list_deployments(&self) -> Vec<Deployment> {
+        self.deployment_registry().deployments
+    }
+
+    /// The whole registry — list plus the current/previous/known-good identities.
+    pub fn deployment_registry(&self) -> deploy::DeploymentRegistry {
         self.deployments.lock().expect("poisoned").clone()
     }
 
-    fn save_deployments(&self, deployments: &[Deployment]) -> Result<()> {
-        deploy::save_deployments(&self.deployments_path, deployments)
+    fn save_registry(&self, registry: &deploy::DeploymentRegistry) -> Result<()> {
+        deploy::save_registry(&self.deployments_path, registry)
+    }
+
+    /// Bring the recorded identities into line with what actually booted, and persist the result.
+    ///
+    /// Called at startup, right after [`Self::reconcile_boot`]: between the two, a machine that
+    /// was rolled back by its bootloader while hostd was not running comes back with a registry
+    /// that says so, rather than one still claiming the candidate is current.
+    pub fn reconcile_registry(&self) -> Result<()> {
+        let booted = self.booted_deployment_id();
+        let mut registry = self.deployments.lock().expect("poisoned");
+        if registry.reconcile_booted(booted.as_deref()) {
+            deploy::save_registry(&self.deployments_path, &registry)?;
+        }
+        Ok(())
     }
 
     pub fn stage_deployment(&self, id: &str, tries: u8) -> Result<()> {
-        let deployments = self.deployments.lock().expect("poisoned");
-        let candidate = deployments
-            .iter()
-            .find(|d| d.id == id)
-            .context("unknown deployment")?;
+        let registry = self.deployments.lock().expect("poisoned");
+        let candidate = registry.find(id).context("unknown deployment")?;
         self.boot.stage_candidate(candidate, tries)?;
         self.engine.record_trial_boot().ok();
         Ok(())
@@ -432,7 +489,8 @@ impl HostdState {
 
     /// Bless the running deployment. If it is the candidate of a transaction still in
     /// [`Phase::Trial`], the transaction is promoted and the candidate joins the registry as
-    /// known-good — the pairing ADR-0003 requires.
+    /// current and known-good, with whatever was current before it kept as `previous` — the
+    /// pairing ADR-0003 requires, plus the identities nothing else on the machine remembers.
     pub fn mark_good(&self) -> Result<()> {
         self.boot.mark_good()?;
         if let Some(txn) = self.engine.current()
@@ -440,33 +498,29 @@ impl HostdState {
         {
             self.engine.promote()?;
             if let Some(deployment) = self.engine.candidate_deployment() {
-                let mut deployments = self.deployments.lock().expect("poisoned");
-                for existing in deployments.iter_mut() {
-                    existing.known_good = false;
+                let previous = self.engine.current().and_then(|t| t.previous_deployment);
+                let mut registry = self.deployments.lock().expect("poisoned");
+                registry.promote(deployment);
+                // The transaction recorded what it displaced when it was planned, back when the
+                // machine was healthy; prefer that over what the registry happened to hold.
+                if let Some(previous) = previous
+                    && registry.current.as_deref() != Some(previous.as_str())
+                {
+                    registry.previous = Some(previous);
                 }
-                match deployments.iter_mut().find(|d| d.id == deployment.id) {
-                    Some(existing) => existing.known_good = true,
-                    None => deployments.push(Deployment {
-                        known_good: true,
-                        ..deployment
-                    }),
-                }
-                self.save_deployments(&deployments)?;
+                self.save_registry(&registry)?;
             }
         }
         Ok(())
     }
 
     /// Roll back to `id`. If the running deployment was a transaction's candidate still in
-    /// [`Phase::Trial`], the transaction is marked rolled back to match.
+    /// [`Phase::Trial`], the transaction is marked rolled back to match, and the registry records
+    /// that the machine is on `id` again.
     pub fn rollback(&self, id: &str) -> Result<()> {
         let previous = {
-            let deployments = self.deployments.lock().expect("poisoned");
-            deployments
-                .iter()
-                .find(|d| d.id == id)
-                .cloned()
-                .context("unknown deployment")?
+            let registry = self.deployments.lock().expect("poisoned");
+            registry.find(id).cloned().context("unknown deployment")?
         };
         self.boot.rollback(&previous)?;
         if let Some(txn) = self.engine.current()
@@ -474,6 +528,14 @@ impl HostdState {
         {
             self.engine
                 .roll_back(format!("rolled back to known-good deployment {id}"))?;
+        }
+        let mut registry = self.deployments.lock().expect("poisoned");
+        if registry.current.as_deref() != Some(id) {
+            // The rolled-back-from deployment becomes `previous`: it is still on disk, still
+            // stageable, and naming it is how "what did I just leave?" gets answered.
+            registry.previous = registry.current.take();
+            registry.current = Some(id.to_owned());
+            self.save_registry(&registry)?;
         }
         Ok(())
     }
@@ -539,6 +601,7 @@ mod tests {
         config.boot = Arc::new(crate::deploy::Grub {
             commands: Arc::new(FakeCommandRunner::default()),
             state_dir: dir.join("grub"),
+            boot_root: dir.join("boot"),
         });
         config
     }
@@ -731,6 +794,17 @@ mod tests {
         let deployments = state.list_deployments();
         assert_eq!(deployments.len(), 1);
         assert!(deployments[0].known_good);
+
+        // And the identities are recorded, not merely the flag: current and known-good are the
+        // deployment just promoted, and a machine with no history before it has no previous.
+        let registry = state.deployment_registry();
+        assert_eq!(registry.current.as_deref(), Some(id.as_str()));
+        assert_eq!(registry.known_good.as_deref(), Some(id.as_str()));
+        assert_eq!(registry.previous, None);
+
+        // Persisted, not just held: a restart reads them back.
+        let restarted = HostdState::new(config(dir)).unwrap();
+        assert_eq!(restarted.deployment_registry(), registry);
     }
 
     #[test]
@@ -746,8 +820,10 @@ mod tests {
         // The candidate must exist in the registry to be rolled back to; register it as this
         // deployment's own previous state would have been.
         {
-            let mut deployments = state.deployments.lock().unwrap();
-            deployments.push(state.engine.candidate_deployment().unwrap());
+            let mut registry = state.deployments.lock().unwrap();
+            registry
+                .deployments
+                .push(state.engine.candidate_deployment().unwrap());
         }
         state.rollback(&id).unwrap();
         assert_eq!(

@@ -105,6 +105,71 @@ fn statvfs(path: &Path) -> Result<(u64, u64)> {
     Ok((blocks * frsize, bavail * frsize))
 }
 
+/// How many trimmable deployments to keep when there is space pressure.
+///
+/// Two, not one: the deployment being rolled back *from* is worth keeping around long enough to
+/// look at, and a machine that has just promoted a candidate has a previous one that is not yet
+/// the known-good one. One would make every trim pass leave exactly the deployment that is
+/// running and nothing to compare it against.
+pub const DEFAULT_KEEP_DEPLOYMENTS: usize = 2;
+
+/// Which deployments may be deleted to reclaim space, oldest first.
+///
+/// `ordered` is every known deployment id, oldest first (ids are time-ordered by construction).
+/// `protected` is the set that must never be trimmed however tight space gets — the booted
+/// deployment, the known-good one, and whatever the registry currently calls current or previous.
+/// Of what is left, the newest `keep` are retained.
+///
+/// Pure, and separate from the deletion, because "which deployments am I allowed to lose" is the
+/// question the storage reserve gets wrong in the direction that cannot be undone.
+#[must_use]
+pub fn trimmable_deployments<'a>(
+    ordered: &'a [String],
+    protected: &[&str],
+    keep: usize,
+) -> Vec<&'a String> {
+    let eligible: Vec<&String> = ordered
+        .iter()
+        .filter(|id| !protected.contains(&id.as_str()))
+        .collect();
+    let trim = eligible.len().saturating_sub(keep);
+    eligible.into_iter().take(trim).collect()
+}
+
+/// An upper bound on the bytes deleting `path` would return, from the blocks its files occupy.
+///
+/// An *upper* bound, and deliberately described as one: a btrfs snapshot shares extents with the
+/// subvolume it came from, so most of what this counts is not freed by deleting it. Overstating
+/// is the safe direction for a trim order that stops as soon as the volume is healthy — the pass
+/// re-queries usage rather than trusting the estimate — and it is still an enormous improvement
+/// on the zero this used to report, which made deployments look free to keep and left the trim
+/// order unable to converge.
+///
+/// Errors are counted as zero rather than propagated: a deployment whose subvolume has already
+/// gone is worth zero bytes, which is exactly what the caller should do with it.
+#[must_use]
+pub fn estimate_size(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let mut total: u64 = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.path().symlink_metadata() else {
+                continue;
+            };
+            total = total.saturating_add(metadata.blocks().saturating_mul(512));
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    total
+}
+
 /// One cache the trim pass can reclaim space from.
 pub trait TrimAction: Send + Sync + std::fmt::Debug {
     fn target(&self) -> TrimTarget;
@@ -374,5 +439,37 @@ mod tests {
                 .any(|r| r.target == TrimTarget::OldDeployments)
         );
         assert_eq!(snapshotter.deleted.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn retention_keeps_the_known_good_and_booted_deployments_whatever_the_pressure() {
+        let ordered: Vec<String> = ["d1", "d2", "d3", "d4", "d5"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+
+        // d1 is the oldest and is the known-good one; d5 booted. Neither may ever go, and of the
+        // three that remain the newest two are kept, so only d2 is trimmable.
+        let trimmable = trimmable_deployments(&ordered, &["d1", "d5"], DEFAULT_KEEP_DEPLOYMENTS);
+        assert_eq!(trimmable, vec!["d2"]);
+
+        // Under any pressure at all: `keep` going to zero still does not touch the protected two.
+        let trimmable = trimmable_deployments(&ordered, &["d1", "d5"], 0);
+        assert_eq!(trimmable, vec!["d2", "d3", "d4"]);
+
+        // A machine with nothing but its known-good deployment has nothing to give.
+        assert!(trimmable_deployments(&ordered[..1], &["d1"], 0).is_empty());
+
+        // And the estimate is a real number, not the zero that made deployments look free to
+        // keep and left the trim order unable to converge.
+        let dir = tempfile::tempdir().unwrap();
+        let subvolume = dir.path().join("@deployments/d2");
+        fs::create_dir_all(subvolume.join("usr/bin")).unwrap();
+        fs::write(subvolume.join("usr/bin/lege"), vec![7u8; 40_000]).unwrap();
+        assert!(
+            estimate_size(&subvolume) >= 40_000,
+            "a 40 kB deployment must not estimate at zero"
+        );
+        assert_eq!(estimate_size(&dir.path().join("gone")), 0);
     }
 }

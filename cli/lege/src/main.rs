@@ -550,7 +550,7 @@ fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
 fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) -> Result<String> {
     let command = command.unwrap_or(DevCommand::Status { target: None });
     match command {
-        DevCommand::Status { target } => dev::status(root, target.as_deref(), json),
+        DevCommand::Status { target } => dev::status(repo, root, target.as_deref(), json),
         DevCommand::Repo { command } => match command {
             RepoCommand::Init {
                 install_source,

@@ -243,6 +243,87 @@ pub fn snapshot_stores(root: &Path, build_set: &str) -> Result<Vec<std::path::Pa
     Ok(vec![target])
 }
 
+/// A read-only snapshot of the root subvolume, taken before the set is installed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootSnapshot {
+    /// The subvolume being snapshotted — the deployment root itself.
+    pub source: std::path::PathBuf,
+    /// Where the snapshot is made.
+    pub target: std::path::PathBuf,
+}
+
+impl RootSnapshot {
+    /// The exact command, for the dry run to print and the report to quote.
+    #[must_use]
+    pub fn command_line(&self) -> String {
+        format!(
+            "btrfs subvolume snapshot -r {} {}",
+            self.source.display(),
+            self.target.display()
+        )
+    }
+}
+
+/// The root snapshot this deployment would take, or `None` when root is not btrfs.
+///
+/// `gates::snapshot_stores` copies the *state* a migration could put out of reach; this is the
+/// other half — every file apt is about to replace. A build set that installs cleanly and then
+/// turns out to be wrong is not rolled back by reinstalling the previous debs alone: the
+/// maintainer scripts already ran. On btrfs the whole userspace can be put back instead, and the
+/// snapshot costs nothing to take because it shares its extents with what it copies.
+///
+/// `None` on any other filesystem is deliberate and is *said*, not silently skipped: a deployment
+/// that reports a snapshot it did not take would be worse than one that admits there is none.
+#[must_use]
+pub fn root_snapshot(root: &Path, build_set: &str) -> Option<RootSnapshot> {
+    (root_filesystem(root)?.as_str() == "btrfs").then(|| RootSnapshot {
+        source: root.to_path_buf(),
+        target: root
+            .join("var/lib/legeos/snapshots")
+            .join(format!("root-before-{build_set}")),
+    })
+}
+
+/// The filesystem type mounted at `/`, read from `<root>/proc/mounts` — the same
+/// read-the-machine-through-`root` shape as `install::is_root`, so a fixture can describe a btrfs
+/// machine without one being present.
+fn root_filesystem(root: &Path) -> Option<String> {
+    let mounts = std::fs::read_to_string(root.join("proc/mounts")).ok()?;
+    mounts.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let _device = fields.next()?;
+        let mount_point = fields.next()?;
+        let fs_type = fields.next()?;
+        (mount_point == "/").then(|| fs_type.to_owned())
+    })
+}
+
+/// Take the snapshot planned by [`root_snapshot`].
+///
+/// # Errors
+/// If the parent directory cannot be created or `btrfs` refuses.
+pub fn take_root_snapshot(
+    runner: &dyn super::cmd::CommandRunner,
+    root: &Path,
+    snapshot: &RootSnapshot,
+) -> Result<()> {
+    if let Some(parent) = snapshot.target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    runner.run(
+        root,
+        "btrfs",
+        &[
+            "subvolume",
+            "snapshot",
+            "-r",
+            &snapshot.source.display().to_string(),
+            &snapshot.target.display().to_string(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// Where the archive's currently deployed set is described, if it has one.
 ///
 /// # Errors
@@ -294,6 +375,7 @@ mod tests {
             packages: Vec::new(),
             interfaces: signatures("()->(sb)"),
             schemas: schemas(7, 0),
+            provenance: lege_build::Provenance::default(),
         }
     }
 
@@ -304,6 +386,7 @@ mod tests {
             packages: Vec::new(),
             interfaces: signatures("()->(sb)"),
             schemas: schemas(7, 0),
+            provenance: lege_build::Provenance::default(),
         }
     }
 
@@ -375,7 +458,6 @@ mod tests {
             false,
         )
         .unwrap();
-            provenance: lege_build::Provenance::default(),
         assert!(report.conditions.blocked.is_empty(), "{report:#?}");
     }
 
@@ -386,7 +468,6 @@ mod tests {
         let error = run(
             &Matrix::embedded(),
             &next,
-            provenance: lege_build::Provenance::default(),
             Some(&deployed("old")),
             false,
             false,

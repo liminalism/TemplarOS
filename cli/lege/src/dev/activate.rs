@@ -380,8 +380,9 @@ pub fn execute(plan: &ActivationPlan, matrix: &Matrix, effects: &Effects<'_>) ->
         let component = step.component().to_owned();
         let outcome = match step {
             Step::Nothing { .. } => StepOutcome::Skipped,
+            Step::Manual { unit, .. } => manual_step_outcome(matrix, &component, unit, effects)
+                .unwrap_or_else(|| StepOutcome::Deferred(step.explanation())),
             Step::Relaunch { .. }
-            | Step::Manual { .. }
             | Step::NeedsSession { .. }
             | Step::NeedsReboot { .. }
             | Step::Blocked { .. } => StepOutcome::Deferred(step.explanation()),
@@ -395,6 +396,34 @@ pub fn execute(plan: &ActivationPlan, matrix: &Matrix, effects: &Effects<'_>) ->
         build_set: plan.build_set.clone(),
         outcomes,
     }
+}
+
+/// Whether a component this deployment deliberately does not restart is nevertheless broken.
+///
+/// `lege-sessiond` is the case this exists for. It is `manual` because restarting it disconnects
+/// the session, so a deployment installs its new build and leaves the running one alone — and a
+/// deployment into a session whose policy daemon has already died would otherwise print a page of
+/// ticks and the word "succeeded". `Some(Failed)` only when the unit systemd knows about is
+/// *active* and its bus name does not answer: exactly the "running but not working" claim the
+/// restart gate makes, and never a complaint about a daemon that is simply not running, which for
+/// a manual component is ordinary (a root deployment with no session, a machine at a greeter).
+fn manual_step_outcome(
+    matrix: &Matrix,
+    component: &str,
+    unit: &str,
+    effects: &Effects<'_>,
+) -> Option<StepOutcome> {
+    let declared = matrix.components.iter().find(|c| c.name == component)?;
+    let bus_name = bus_name_for(declared)?;
+    if unit.is_empty() || !effects.systemctl.is_active(declared.scope, unit).ok()? {
+        return None;
+    }
+    (!effects.bus.answers(&bus_name)).then(|| {
+        StepOutcome::Failed(format!(
+            "{unit} is running but {bus_name} does not answer; this session is not healthy and \
+             the new build was not activated into it"
+        ))
+    })
 }
 
 /// Restart, gate, and on failure restart once more and gate again.
@@ -941,5 +970,70 @@ mod tests {
         };
         assert!(reason.contains("refused"), "{reason}");
         assert_eq!(outcome(&report, "shell"), StepOutcome::Activated);
+    }
+
+    #[test]
+    fn a_session_daemon_that_is_running_but_silent_fails_the_deployment_and_names_the_rollback() {
+        // sessiond is `manual`: a deployment installs its new build and deliberately does not
+        // restart it, because restarting it disconnects the session. That must not mean a
+        // deployment into a session whose policy daemon has already died reports success.
+        let matrix = Matrix::embedded();
+        let plan = plan(&matrix, &convergence(&["sessiond"]), &Conditions::default());
+        assert!(
+            matches!(step(&plan, "sessiond"), Step::Manual { .. }),
+            "sessiond is still not restarted by a deployment"
+        );
+
+        let system = FakeSystem::default();
+        let bus = FakeBus {
+            silent: ["org.legeos.Session".to_owned()].into_iter().collect(),
+        };
+        let stamps = stamps_at(SET);
+        let report = execute(
+            &plan,
+            &matrix,
+            &Effects {
+                systemctl: &system,
+                bus: &bus,
+                clock: &FakeClock,
+                stamps: &stamps,
+            },
+        );
+        let StepOutcome::Failed(reason) = outcome(&report, "sessiond") else {
+            panic!("a running-but-silent sessiond must fail the deployment");
+        };
+        assert!(reason.contains("does not answer"), "{reason}");
+        assert!(
+            system.restarts.borrow().is_empty(),
+            "and it must fail without anyone restarting it"
+        );
+
+        // The failure carries the sentence a person acts on: which set to go back to.
+        let advice = crate::dev::report::render_rollback_advice(&report.failures(), Some(OLDER));
+        assert!(advice.contains("sessiond did not come back"), "{advice}");
+        assert!(advice.contains(OLDER), "{advice}");
+        assert!(advice.contains("sudo lege dev rollback"), "{advice}");
+
+        // A machine where sessiond is simply not running — a root deployment with no session, a
+        // machine sitting at a greeter — is not a failure, and must not be reported as one.
+        let system = FakeSystem::default();
+        system
+            .inactive
+            .borrow_mut()
+            .insert("lege-sessiond.service".to_owned());
+        let report = execute(
+            &plan,
+            &matrix,
+            &Effects {
+                systemctl: &system,
+                bus: &bus,
+                clock: &FakeClock,
+                stamps: &stamps,
+            },
+        );
+        assert!(
+            matches!(outcome(&report, "sessiond"), StepOutcome::Deferred(_)),
+            "a daemon that is not running is not a broken one"
+        );
     }
 }
