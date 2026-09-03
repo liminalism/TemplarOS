@@ -467,6 +467,18 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     created_at 2026-08-23
 }
 
+record legeos.papercut.the-akr-start-output-did-not-show-copyable/1 : papercut {
+    title "The akr start output did not show copyable context CLI syntax; I…"
+    state verified
+    statement """
+        The akr start output did not show copyable context CLI syntax; I retried context with a positional key and learned it requires --goal. A first papercut attempt also showed that example command backticks are unsafe through the shell.
+        """
+    observed_at git:5b1fd9008a3e14adeadcc9fe309d6e6f44a910ad
+    about "akr"
+    author "codex"
+    created_at 2026-09-03
+}
+
 record legeos.papercut.the-app-manifest-schema-and-both-shipped-distro/1 : papercut {
     title "The app-manifest schema and both shipped distro/app-manifests/*.json…"
     state verified
@@ -643,6 +655,18 @@ record legeos.papercut.the-m2-acceptance-command-lists-six-xtask/1 : papercut {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-output-suggested-a-ready-made-context/1 : papercut {
+    title "The  output suggested a ready-made context request but did not print…"
+    state verified
+    statement """
+        The  output suggested a ready-made context request but did not print copyable CLI syntax; I retried  and learned the command requires .
+        """
+    observed_at git:5b1fd9008a3e14adeadcc9fe309d6e6f44a910ad
+    about "akr"
+    author "codex"
+    created_at 2026-09-03
 }
 
 record legeos.papercut.the-readiness-smoke-targeted-target-debug-lege/1 : papercut {

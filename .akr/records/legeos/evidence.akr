@@ -25,6 +25,18 @@ record legeos.evidence.action-manifest-three-surfaces-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.application-lane-20260903/1 : evidence {
+    title "Terminal and file-search roles derived, set_terminal relayed, Files context menu on declared verbs, search panel, kitty.conf shipped"
+    state verified
+    result pass
+    method command
+    observed_at git:6b354c50fca44b2bc211917ff37f0b49c6e5886f
+    command "cargo test --workspace; lege-sessiond --dry-run"
+    summary """
+        providers tests exactly_one_terminal_fills_the_role and fsearch_declares_the_file_search_role; sessiond --dry-run on this host: 14 roles, terminal DefaultedByPriority kitty (competitors cosmic-term, warp, qterminal), file-search FSearch; Files menu tests every_menu_row_asks_for_what_its_toolbar_button_asks_for and a_secondary_click_on_the_ground_opens_the_folders_menu; omnibox a_file_search_always_ends_with_the_way_out_of_it and a_file_search_is_a_centred_panel_and_a_launcher_answer_is_a_dropdown; /etc/xdg/kitty/kitty.conf is a legeos-shell asset and check-packaging passes. Open with… not yet in the menu.
+        """
+}
+
 record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
     title "Fullscreen stays clean: no arrangement chrome outside Home, fullscreen windows never arranged"
     state verified
@@ -1447,6 +1459,42 @@ record legeos.evidence.window-controls-20260825/1 : evidence {
     command "cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo run -p xtask -- check-actions"
     summary """
         Window controls and mouse parity implemented: interactive resize on both routes (xdg_shell.rs resize_request and X11 _NET_WM_MOVERESIZE, plus a painted compositor-owned bottom-right grip for no-CSD windows, minimum size keeps band+grip grabbable), window.close reachable via a new shell context menu with two-step confirm, secondary-click context menu carries all previously keyboard-only actions with chords as accelerators, and check-actions now fails any declared action with a chord and no pointer route (self-expiring exemption list, currently empty). Latent grab bug fixed: band grabs are primary-button-only. Workspace tests, clippy -D warnings, and all seven xtask checks pass on the combined tree.
+        """
+}
+
+record legeos.evidence.window-groups-gate-20260903/1 : evidence {
+    title "Window groups and the application lane: full gate green at the merged integration branch"
+    state verified
+    result pass
+    method command
+    observed_at git:6b354c50fca44b2bc211917ff37f0b49c6e5886f
+    command "just check"
+    summary """
+        fmt --check, clippy pedantic -D warnings, 55 workspace test suites all ok, MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks all pass at 6b354c5 (check-actions: 57 actions declared, 19 chords all pointer-routed, 3 exempt: group-cycle forward/backward and terminal.toggle await a shell pointer route).
+        """
+}
+
+record legeos.evidence.window-groups-home-tile-20260903/1 : evidence {
+    title "WG3 (shell half) and WG4: the group event reaches the shell view, the group tile holds its members, gestures ask the compositor, baseline reviewed"
+    state verified
+    result pass
+    method command
+    observed_at git:6b354c50fca44b2bc211917ff37f0b49c6e5886f
+    command "cargo test -p lege-shell -p lege-field"
+    summary """
+        Bridge tests a_group_event_reaches_the_shell_toplevel and group_id_zero_is_no_group; field grammar two_windows_dropped_together_make_a_window_group_not_a_project, a_member_dragged_onto_the_bare_field_leaves_its_group; field model a_group_becomes_one_tile_holding_its_members, a_window_that_leaves_its_group_moves_out_and_an_empty_group_tile_is_swept; screen dropping_one_window_on_another_asks_the_compositor_to_group_them; every lege-field invariant property unmodified and passing; visual baseline 0xe7ab_5f4b_0617_079b reviewed: a two-member group tile named Writing with an accent hairline edge, Park control and two member wells.
+        """
+}
+
+record legeos.evidence.window-groups-model-and-compositor-20260903/1 : evidence {
+    title "WG1–WG3 (compositor half) and the terminal chord: model properties and compositor chord tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:6b354c50fca44b2bc211917ff37f0b49c6e5886f
+    command "cargo test -p lege-window -p lege-comp -p lege-types"
+    summary """
+        lege-window 104 tests incl. properties raising_a_group_never_changes_geometry, membership_survives_shelving_maximizing_arranging_and_hotplug, placing_and_moving_a_group_keeps_every_member_recoverable, placing_beside_never_overlaps_the_target; lege-comp 29 tests incl. super_tab_cycles_groups_and_ctrl_tab_is_never_reserved, super_g_groups_with_the_previous_window_and_shift_leaves_the_group, super_grave_toggles_the_terminal_and_a_bare_backtick_is_never_reserved; SHELL_PROTOCOL_VERSION 5 on both ends; lege-comp --check ok; a nested run mapped two kitty windows without error (chords not injectable, so unexercised).
         """
 }
 
