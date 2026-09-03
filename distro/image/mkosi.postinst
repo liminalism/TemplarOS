@@ -18,3 +18,28 @@ systemd-sysusers /usr/lib/sysusers.d/legeos-greeter.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/legeos-greeter.conf
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable greetd.service 2>/dev/null || true
+
+# Flatpak applications (ADR-0011). The browser is a Flatpak, so apt installs nothing for it and
+# something has to add the remote and pull the refs `cargo xtask seeds` generated. Doing it here
+# rather than in a first-boot unit keeps the image self-contained and keeps the file list owned by
+# packages — but it needs a network, so every step tolerates failure and says so. An image built
+# offline still boots; it just has no browser until `flatpak install` is run once.
+refs=""
+for candidate in /usr/share/legeos/flatpak-refs.list /work/src/distro/seeds/flatpak-refs.list; do
+    [ -f "$candidate" ] && { refs="$candidate"; break; }
+done
+if [ -z "$refs" ]; then
+    echo "postinst: no flatpak-refs.list found; no Flatpak applications were seeded"
+elif ! command -v flatpak >/dev/null 2>&1; then
+    echo "postinst: flatpak is not installed in this image; skipping $refs"
+else
+    flatpak remote-add --if-not-exists --system \
+        flathub https://dl.flathub.org/repo/flathub.flatpakrepo || \
+        echo "postinst: could not add the flathub remote (no network?); refs not installed"
+    # `<remote> <ref>` per line; comments and blank lines ignored.
+    sed 's/#.*//' "$refs" | while read -r remote ref; do
+        [ -n "${ref:-}" ] || continue
+        flatpak install -y --noninteractive --system "$remote" "$ref" ||
+            echo "postinst: could not install $ref from $remote; it will have to be installed later"
+    done
+fi

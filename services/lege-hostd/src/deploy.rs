@@ -168,6 +168,9 @@ pub struct Grub {
     pub commands: Arc<dyn CommandRunner>,
     pub state_dir: PathBuf,
 }
+    /// The boot directory (`/boot`), where the generated entries file lives. Parameterized so
+    /// tests never write to the developer's real one.
+    pub boot_root: PathBuf,
 
 impl Grub {
     fn counter_path(&self) -> PathBuf {
@@ -218,6 +221,11 @@ impl BootManager for Grub {
             format!("{}\n{}\n", candidate.id, tries),
         )?;
         self.commands.run("grub-reboot", &[&candidate.id])?;
+        // The entries have to exist before `grub-reboot` names one of them: `GRUB_DEFAULT=saved`
+        // selects a menu entry by id, and an id GRUB cannot find is a boot into whatever the
+        // firmware picks instead. Written whole, so the known-good entry (which
+        // `refresh_entries` reads from this backend's own record) survives every restage.
+        self.refresh_entries(Some(candidate))?;
         Ok(())
     }
 
@@ -226,12 +234,18 @@ impl BootManager for Grub {
             bail!("no candidate is staged to promote");
         };
         self.commands.run("grub-set-default", &[&id])?;
+        self.record_known_good(&id)?;
+        self.refresh_entries(None)?;
         let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
 
     fn rollback(&self, previous: &Deployment) -> Result<()> {
         self.commands.run("grub-set-default", &[&previous.id])?;
+        // The candidate's entry goes away with the candidate: leaving it in the menu invites a
+        // person at the console to hand-pick the deployment that just failed its health gate.
+        self.record_known_good(&previous.id)?;
+        self.refresh_entries(None)?;
         let _ = fs::remove_file(self.counter_path());
         Ok(())
     }
@@ -438,6 +452,7 @@ mod tests {
         let esp = dir.path().join("esp");
         let placed = place_boot_files(&dir.path().join("candidate"), &esp, "cand1").unwrap();
         assert!(placed.join("vmlinuz").exists());
+            boot_root: root.join("boot"),
         assert!(placed.join("initrd.img").exists());
     }
 
@@ -460,3 +475,5 @@ mod tests {
         assert_eq!(load_deployments(&path).unwrap(), deployments);
     }
 }
+            boot_root: dir.path().join("boot"),
+            boot_root: dir.path().join("boot"),

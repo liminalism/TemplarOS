@@ -9,6 +9,7 @@ use zbus::connection;
 
 mod api;
 mod apt;
+mod boot_entries;
 mod clock;
 mod cmd;
 mod deploy;

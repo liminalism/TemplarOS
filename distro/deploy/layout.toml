@@ -1,0 +1,100 @@
+# LegeOS storage and deployment layout — the single declaration (contract C3, ADR-0004).
+#
+# Three things consume this file and must agree with it:
+#   1. distro/image/mkosi.repart/*.conf — the dev/VM image's partitions and subvolumes.
+#      Not generated from here: repart's own syntax is the input mkosi understands, and
+#      `layout_declaration_parses_and_matches_repart` (services/lege-hostd/src/boot_entries.rs)
+#      fails the build when the two drift apart.
+#   2. installer/provision.sh — the narrow target-machine provisioner.
+#   3. services/lege-hostd/src/boot_entries.rs — the deployment id grammar, the kernel command
+#      line and the ESP directory are compiled in there and pinned to this file by the same test.
+#
+# Changing anything here is a C3 contract change: it goes through D3, not around it.
+
+version = 1
+
+# --- Partitions (GPT, UEFI only — no legacy BIOS path) ---------------------------------------
+
+[esp]
+type = "esp"
+format = "vfat"
+size_min = "512M"
+size_max = "1G"
+# Filesystem label. systemd-repart does not set filesystem labels (its `Label=` is the GPT
+# partition label), so the mkosi image has none and is found by partition type; the provisioner
+# sets this one with `mkfs.vfat -n`. Nothing in the boot path depends on it: generated GRUB
+# entries locate the ESP with `search --file`, which works either way.
+label = "LEGEOS_ESP"
+# Where the ESP is mounted on a provisioned target. hostd also accepts `/efi` (a minimal mkosi
+# image) — `deploy::esp_root` is the one place that decides.
+mount = "/boot/efi"
+
+[root]
+type = "root"
+format = "btrfs"
+size_min = "8G"
+# Set by the provisioner (`mkfs.btrfs -L`). This one *is* load-bearing: every generated boot
+# entry says `root=LABEL=legeos-root`, because the label is identical for every deployment and
+# the deployment id on the command line is what tells them apart.
+label = "legeos-root"
+mount = "/"
+mount_options = "compress=zstd:1"
+# @deployments holds the read-only candidate snapshots the update engine stages
+# (services/lege-hostd/src/updates.rs). It is authoritative: the declaration follows the engine.
+subvolumes = ["/@", "/@home", "/@var", "/@snapshots", "/@deployments"]
+
+# There is no separate /boot partition. Kernels and initramfs images live on the ESP inside the
+# deployment's own directory, so Ubuntu's initramfs post-update hooks cannot rewrite a
+# deployment's boot files. /boot is a directory on @, and /boot/grub holds GRUB's own files.
+
+# --- Deployment identity ----------------------------------------------------------------------
+
+[deployment]
+# One path segment, safe as a btrfs subvolume name, a vfat directory name, a GRUB menu entry id
+# and a single kernel command-line word.
+id_pattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+# Rejected explicitly, and why: `/` (path segment), whitespace (the command line is split on it),
+# `:` (illegal on vfat), quotes and `$` (GRUB config and shell quoting).
+id_forbidden = ["/", ":", " ", "\t", "'", "\"", "$"]
+# Who mints ids: the update engine uses its transaction id, the provisioner stamps the first one.
+transaction_id_prefix = "txn-"
+install_id_prefix = "install-"
+# Both stamp with clock::stamp: YYYYMMDDThhmmssZ.
+stamp_format = "%Y%m%dT%H%M%SZ"
+# The subvolume a deployment's root snapshot lives at, relative to the root subvolume set.
+subvolume_template = "@deployments/{id}"
+# The ESP directory hostd owns for a deployment: kernel, initramfs and (systemd-boot) its entry.
+esp_dir_template = "/EFI/legeos/{id}"
+
+[deployment.cmdline]
+# The one thing that distinguishes deployments after the fact. Read by
+# `state::booted_deployment_from_cmdline`; written identically by both boot backends.
+key = "legeos.deployment="
+template = "root=LABEL=legeos-root rw legeos.deployment={id}"
+
+# --- Boot managers ------------------------------------------------------------------------------
+
+# Bare metal (Developer Edition 0.1): Canonical-signed shim -> Canonical-signed GRUB ->
+# Ubuntu-signed kernel -> Canonical-signed matching NVIDIA LRM. No LegeOS signing infrastructure
+# and no MOK enrolment.
+[boot.grub]
+# Written whole by hostd on every stage/promote/rollback. Never hand-edited, never produced by
+# grub-mkconfig.
+entries_file = "/boot/grub/legeos-entries.cfg"
+# Shipped as distro/deploy/grub.d/09_legeos, installed by the provisioner. It makes grub.cfg
+# source the generated file at boot, so hostd never has to run grub-mkconfig.
+stub = "/etc/grub.d/09_legeos"
+# The menu entry id is the bare deployment id, which is exactly what hostd passes to
+# `grub-reboot` and `grub-set-default`.
+menuentry_id_template = "{id}"
+# Set by the provisioner in /etc/default/grub. hostd assumes it and never writes that file.
+default = "saved"
+# hostd keeps the multi-try counter itself: grub-reboot only affects the next boot and nothing
+# in GRUB counts attempts.
+tries_counter = "hostd"
+
+# Dev/VM images built by mkosi keep systemd-boot with Secure Boot off (ADR-0006, ADR-0004).
+[boot.systemd_boot]
+entry_template = "/loader/entries/legeos-{id}.conf"
+# The loader decrements the `+tries` suffix itself; hostd counts nothing there.
+tries_counter = "loader"

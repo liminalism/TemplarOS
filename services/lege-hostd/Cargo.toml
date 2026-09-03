@@ -46,4 +46,5 @@ assets = [
     ["../../distro/policy/polkit/50-legeos-root-services.rules", "usr/share/polkit-1/rules.d/50-legeos-root-services.rules", "644"],
     ["../../distro/policy/dbus/org.legeos.Host.conf", "usr/share/dbus-1/system.d/org.legeos.Host.conf", "644"],
     ["../../distro/policy/apparmor/usr.libexec.lege-hostd", "etc/apparmor.d/usr.libexec.lege-hostd", "644"],
+    ["../../distro/deploy/grub.d/09_legeos", "etc/grub.d/09_legeos", "755"],
 ]

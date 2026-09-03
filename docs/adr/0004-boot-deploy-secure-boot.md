@@ -1,8 +1,9 @@
 # ADR-0004: Boot deployments, rollback and the Secure-Boot posture
 
-* **Status:** proposed
+* **Status:** accepted (2026-09-03; the Secure-Boot posture was resolved from the three options below)
 * **Date:** 2026-08-17
 * **Derived from:** `docs/planning/01-initial-shape.md`, `docs/planning/02-subsequent-shape.md`
+* **Record:** `@legeos.decision.boot-deploy-secure-boot`
 
 ## Context
 The docs require kernel + NVIDIA modules + userspace to succeed or roll back **as a pair**. systemd boot
@@ -20,9 +21,26 @@ Canonical-signed systemd-boot**, so with Secure Boot on, shim will not chain to 
 * `BootManager` trait with two backends: `systemd-boot` (bless-boot) and `grub` (`GRUB_DEFAULT=saved`,
   `grub-reboot`, hostd counter).
 * Dev/VM images (mkosi): systemd-boot, Secure Boot off.
+* **The production bare-metal path is option 2 below: Canonical-signed shim → Canonical-signed GRUB →
+  Ubuntu-signed kernel → Canonical-signed matching NVIDIA LRM.** It gives real Secure Boot with no
+  LegeOS signing infrastructure at all, which is what `@legeos.constraint.first-release-scope` asks
+  for. `lege-hostd` generates the LegeOS menu entries itself
+  (`services/lege-hostd/src/boot_entries.rs` → `/boot/grub/legeos-entries.cfg`, sourced by
+  `/etc/grub.d/09_legeos`), and every generated entry carries `legeos.deployment=<id>` for the
+  candidate and the known-good deployment — which is what closes
+  `@legeos.question.grub-entries-must-carry-the-deployment-id` and lets `reconcile_boot` stop
+  answering "cannot tell".
+* The layout the two backends share is declared once in `distro/deploy/layout.toml` and pinned by
+  `cargo test -p lege-hostd layout`.
 
-## Open (to decide before Stage 3 on real hardware)
-1. LegeOS-signed systemd-boot + one-time MOK enrolment at install (also enables signing own UKIs), or
-2. Canonical-signed GRUB + hostd env-block counter (works with SB out of the box), or
-3. SB off (dev only).
-And for Stage 4: snapshot deployments (current leaning) vs A/B images (systemd-sysupdate).
+## Considered and not taken
+1. **LegeOS-signed systemd-boot + one-time MOK enrolment at install** (which would also enable signing
+   our own UKIs) — deferred until a self-built kernel actually exists. Until then it buys a MOK prompt
+   at install time and a signing pipeline to maintain, in exchange for a loader we have no other reason
+   to replace.
+2. **Canonical-signed GRUB + hostd's own counter** — taken. See above.
+3. **Secure Boot off** — dev/VM images only, never the reference machine.
+
+## Still open
+For Stage 4: snapshot deployments (current leaning, and what the code does today) vs A/B images
+(`systemd-sysupdate`).
