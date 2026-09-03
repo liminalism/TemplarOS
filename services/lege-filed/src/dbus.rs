@@ -243,11 +243,11 @@ fn destination_of(kind: &OperationKind) -> Option<&Path> {
     }
 }
 
-fn failed(error: impl std::fmt::Display) -> fdo::Error {
+pub(crate) fn failed(error: impl std::fmt::Display) -> fdo::Error {
     fdo::Error::Failed(error.to_string())
 }
 
-fn json<T: serde::Serialize>(value: &T) -> fdo::Result<String> {
+pub(crate) fn json<T: serde::Serialize>(value: &T) -> fdo::Result<String> {
     serde_json::to_string(value).map_err(failed)
 }
 
@@ -834,6 +834,7 @@ mod tests {
                 data_home: dir.join("data"),
                 reserve_percent: 0,
                 progress_interval: Duration::from_millis(0),
+                ..ExecutorConfig::default()
             },
             Recents::new(store.clone()),
             Index::new(store.clone()),

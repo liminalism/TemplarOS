@@ -22,6 +22,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Where a committed step's effect on the filesystem goes, so the shared file index learns about
+/// it the instant it happens rather than a coalescing window later through the watcher.
+///
+/// `Send + Sync + Debug` so `ExecutorConfig` keeps `derive(Debug)` with `Option<Arc<dyn
+/// IndexSink>>` in it. The watcher's own echo of the same change is recognized and skipped by the
+/// index (`EntryMeta::matches`), so calling this and then seeing the filesystem event again is
+/// exactly the intended, harmless double-report.
+pub trait IndexSink: Send + Sync + std::fmt::Debug {
+    /// A file or directory came into being at `path`, or a symlink was copied there.
+    fn created(&self, path: &Path);
+    /// `path` is gone: deleted, unlinked, an emptied directory removed, or moved to the trash
+    /// (trash is outside the indexed policy, so this is the right report for that too).
+    fn removed(&self, path: &Path);
+    /// `from` became `to` in place.
+    fn moved(&self, from: &Path, to: &Path);
+}
+
 /// A shared flag the caller flips to stop an operation between steps.
 #[derive(Clone, Debug, Default)]
 pub struct Cancel(Arc<AtomicBool>);
@@ -50,6 +67,9 @@ pub struct ExecutorConfig {
     /// How often progress is written back to the journal. Every item boundary is always
     /// written; this bounds the interval for a single very large file.
     pub progress_interval: Duration,
+    /// The shared file index's sink, if one is wired up. `None` in every context that has no
+    /// index open (most tests, and any build without `lege-file-index` wired into `main`).
+    pub index_sink: Option<Arc<dyn IndexSink>>,
 }
 
 impl Default for ExecutorConfig {
@@ -63,6 +83,7 @@ impl Default for ExecutorConfig {
                 .unwrap_or_else(|| PathBuf::from("/tmp")),
             reserve_percent: 5,
             progress_interval: Duration::from_millis(250),
+            index_sink: None,
         }
     }
 }
@@ -139,6 +160,9 @@ pub fn run(
             operation.error = Some(format!("{error:#}"));
             on_progress(operation);
             return Err(error);
+        }
+        if let Some(sink) = &config.index_sink {
+            crate::operations::notify_index(sink.as_ref(), &operation.steps[cursor]);
         }
 
         let (bytes, boundary) = {
@@ -567,6 +591,7 @@ mod tests {
             data_home: dir.join("data"),
             reserve_percent: 0,
             progress_interval: Duration::from_millis(0),
+            ..ExecutorConfig::default()
         }
     }
 

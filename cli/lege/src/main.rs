@@ -17,10 +17,10 @@ use lege::{
 };
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
-    FilesActionsProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy, FilesTrashProxy,
-    FilesVolumesProxy, HistoryProxy, HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy,
-    HostStorageProxy, HostUpdatesProxy, LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy,
-    ResourcesProxy, SettingsProxy,
+    FilesActionsProxy, FilesIndexProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy,
+    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HostDeploymentsProxy, HostDriversProxy,
+    HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy, PowerProxy,
+    ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
 use std::{
@@ -300,11 +300,16 @@ enum FilesCommand {
         #[arg(long, default_value = "open")]
         operation: String,
     },
-    /// Search indexed roots by name and path.
+    /// Search indexed roots by name and path (`Files.Search1`, the compatibility path).
     Search {
         query: String,
         #[arg(long, default_value_t = 20)]
         limit: u32,
+    },
+    /// The shared file index: freshness, typed search and background repair (`Files.Index1`).
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
     },
     /// Render a path in one of the canonical forms.
     Path {
@@ -313,6 +318,25 @@ enum FilesCommand {
         #[arg(long)]
         form: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum IndexCommand {
+    /// Every registered root's freshness plus the core's own diagnostics.
+    Status,
+    /// Typed search over the shared index — lossless paths, generation and freshness, unlike
+    /// `lege files search`'s `Search1` compatibility path.
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// NUL-delimited native paths instead of the human table (for `xargs -0`).
+        #[arg(long)]
+        print0: bool,
+    },
+    /// Schedule a background repair of the given roots (by id, from `status`), or every
+    /// registered root when none are given. Returns immediately; watch `status` for progress.
+    Reconcile { roots: Vec<i64> },
 }
 
 #[derive(Debug, Subcommand)]
@@ -928,6 +952,10 @@ async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
                 serde_json::from_str(&hits_json).context("parsing Files.Search1.Search JSON")?;
             emit(json, &hits, &render_search_hits(&hits))
         }
+        FilesCommand::Index { command } => {
+            let proxy = FilesIndexProxy::new(&connection).await?;
+            files_index_command(&proxy, command, json).await
+        }
         FilesCommand::Path { path, form } => {
             let proxy = FilesActionsProxy::new(&connection).await?;
             if let Some(form) = form {
@@ -937,6 +965,46 @@ async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
                 let forms = files::ActionsClient::forms(&proxy).await?;
                 emit(json, &forms, &forms.join("\n"))
             }
+        }
+    }
+}
+
+/// `lege files index status|search|reconcile` — the shared index (`Files.Index1`), additive to
+/// `Files.Search1`'s compatibility path above.
+async fn files_index_command(
+    proxy: &FilesIndexProxy<'_>,
+    command: IndexCommand,
+    json: bool,
+) -> Result<()> {
+    match command {
+        IndexCommand::Status => {
+            let response = files::parse_index_roots(&files::IndexClient::roots(proxy).await?)?;
+            emit(json, &response, &files::render_index_roots(&response))
+        }
+        IndexCommand::Search {
+            query,
+            limit,
+            print0,
+        } => {
+            let query_json = serde_json::json!({ "text": query, "page_size": limit });
+            let (_cursor, _generation, page_json) =
+                files::IndexClient::search(proxy, &query_json.to_string()).await?;
+            let result = files::parse_index_search(&page_json)?;
+            if print0 {
+                files::print0_index_hits(&result, &mut std::io::stdout())?;
+                Ok(())
+            } else {
+                emit(json, &result, &files::render_index_hits(&result))
+            }
+        }
+        IndexCommand::Reconcile { roots } => {
+            let request_id =
+                files::IndexClient::reconcile(proxy, &serde_json::to_string(&roots)?).await?;
+            emit(
+                json,
+                &serde_json::json!({"request_id": request_id}),
+                &format!("reconcile scheduled ({request_id}); watch `lege files index status`"),
+            )
         }
     }
 }

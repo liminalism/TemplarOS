@@ -16,6 +16,7 @@ path = "src/main.rs"
 lege-build = { workspace = true }
 lege-types = { workspace = true }
 lege-state = { workspace = true }
+lege-file-index = { workspace = true }
 anyhow = { workspace = true }
 bpg-decode = { workspace = true }
 clap = { workspace = true }
@@ -48,6 +49,7 @@ assets = [
     ["../../target/preview-codecs/licenses/LEGE-PDF-LICENSE", "usr/share/doc/legeos-filed/preview-codecs/LEGE-PDF-LICENSE", "644"],
     ["../../session/units/user/lege-filed.service", "usr/lib/systemd/user/lege-filed.service", "644"],
     ["../../interfaces/dbus/org.legeos.Files.Browse1.xml", "usr/share/dbus-1/interfaces/org.legeos.Files.Browse1.xml", "644"],
+    ["../../interfaces/dbus/org.legeos.Files.Index1.xml", "usr/share/dbus-1/interfaces/org.legeos.Files.Index1.xml", "644"],
     ["../../interfaces/dbus/org.legeos.Files.Previews1.xml", "usr/share/dbus-1/interfaces/org.legeos.Files.Previews1.xml", "644"],
     ["../../interfaces/dbus/org.legeos.Files.Volumes1.xml", "usr/share/dbus-1/interfaces/org.legeos.Files.Volumes1.xml", "644"],
 ]

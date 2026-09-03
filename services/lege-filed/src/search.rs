@@ -1,21 +1,24 @@
 //! Search over indexed roots — what makes every Home Surface drawer searchable, and what lets
 //! a drawer *be* a saved query rather than only a directory.
 //!
-//! Deliberately an index of names, paths and metadata, not of content. Content indexing is a
-//! daemon that reads every file the user owns, and the first release has not earned that: it
-//! costs I/O, battery and a much larger privacy surface, and the drawers the plan describes —
-//! Recent, Downloads, Documents, Drives — are answered by names and metadata. The schema leaves
-//! room for content later; the policy does not pretend to have it now.
+//! This is now a thin delegate onto [`lege_file_index`], the shared, incrementally maintained
+//! index core (`docs/planning/shared-incremental-file-index.md`). Root policy and saved queries
+//! stay authoritative in the general session `Store` (`search_roots`, `saved_queries`); entries
+//! themselves live in the derived, disposable index-core database. `Entry`/`Hit`/`Rank`/
+//! `SavedQuery` and every method signature here are unchanged, so `Files.Search1` and its
+//! existing clients see the same JSON they always have — the compatibility surface the plan of
+//! record calls for.
 
 use anyhow::Result;
 use lege_state::Store;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    sync::Arc,
 };
 
-/// One indexed item.
+/// One indexed item. Unchanged shape: this is exactly what `Files.Search1` clients already
+/// parse.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub path: PathBuf,
@@ -23,6 +26,18 @@ pub struct Entry {
     pub size_bytes: u64,
     pub mtime_ms: i64,
     pub mime: Option<String>,
+}
+
+impl Entry {
+    fn from_row(row: &lege_file_index::EntryRow) -> Self {
+        Self {
+            path: row.path.to_path(),
+            is_dir: row.meta.kind == lege_file_index::EntryKind::Directory,
+            size_bytes: row.meta.size_bytes,
+            mtime_ms: row.meta.mtime_ns / 1_000_000,
+            mime: row.meta.mime.clone(),
+        }
+    }
 }
 
 /// A saved query, which a drawer can be.
@@ -58,6 +73,17 @@ impl Rank {
     }
 }
 
+impl From<lege_file_index::Rank> for Rank {
+    fn from(rank: lege_file_index::Rank) -> Self {
+        match rank {
+            lege_file_index::Rank::Exact => Self::Exact,
+            lege_file_index::Rank::Prefix => Self::Prefix,
+            lege_file_index::Rank::Substring => Self::Substring,
+            lege_file_index::Rank::PathOnly => Self::PathOnly,
+        }
+    }
+}
+
 /// A result with the reason it matched, so a UI can group and explain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
@@ -65,43 +91,122 @@ pub struct Hit {
     pub rank: Rank,
 }
 
-/// The index, in the one per-user state store.
+/// The index: root policy and saved queries in the one per-user state store, entries in the
+/// shared index core.
 #[derive(Clone, Debug)]
 pub struct Index {
     store: Store,
+    core: lege_file_index::Index,
+    /// Kept alive only when `core` was opened against a private temporary database (tests and
+    /// any other caller that did not ask for a durable cache); dropping it deletes the directory.
+    _core_scratch: Option<Arc<tempfile::TempDir>>,
     /// Directories never descended into: caches, version-control internals and the trash. Their
     /// contents are noise in every search result a person actually wants.
     pub skip_names: Vec<String>,
-    /// Depth cap, so a pathological tree cannot make indexing unbounded.
+    /// Depth budget, so a pathological tree cannot make indexing unbounded.
     pub max_depth: usize,
-    /// Entry cap, so a broad tree cannot make indexing unbounded even when it is shallow.
+    /// Entry budget, so a broad tree cannot make indexing unbounded even when it is shallow. A
+    /// budget trip no longer truncates silently: the root commits `complete = false` and lands in
+    /// `RootState::Stale` (see [`Index::root_status`]).
     pub max_entries: usize,
 }
 
+const DEFAULT_SKIP_NAMES: [&str; 8] = [
+    ".git",
+    ".hg",
+    ".svn",
+    ".cache",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".venv",
+];
+
 impl Index {
+    /// The state store plus a private, non-durable index core. This is what every existing test
+    /// and call site uses; it gives each caller its own isolated core, so parallel tests never
+    /// collide. Production code that wants the index to survive a restart uses
+    /// [`Index::with_index_db`].
+    #[must_use]
     pub fn new(store: Store) -> Self {
+        let scratch = tempfile::tempdir().expect("creating a scratch dir for the index core");
+        let core = lege_file_index::Index::open(
+            &scratch.path().join("file-index-v1.sqlite3"),
+            lege_file_index::IndexConfig::default(),
+        )
+        .expect("opening a fresh file-index core cannot fail");
         Self {
             store,
-            skip_names: [
-                ".git",
-                ".hg",
-                ".svn",
-                ".cache",
-                "node_modules",
-                "target",
-                "__pycache__",
-                ".venv",
-            ]
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect(),
+            core,
+            _core_scratch: Some(Arc::new(scratch)),
+            skip_names: DEFAULT_SKIP_NAMES.iter().map(|name| (*name).to_owned()).collect(),
             max_depth: 24,
             max_entries: 50_000,
         }
     }
 
-    /// Register a root and walk it. Re-indexing a root replaces its entries, so a rename cannot
-    /// leave a ghost behind.
+    /// Opens against a durable cache database at `index_db_path`
+    /// (`$XDG_CACHE_HOME/legeos/file-index-v1.sqlite3` in production), so the index survives a
+    /// daemon restart instead of starting empty. `max_entries`/`max_depth` of `usize::MAX` mean
+    /// uncapped.
+    pub fn with_index_db(
+        store: Store,
+        index_db_path: &Path,
+        config: lege_file_index::IndexConfig,
+    ) -> Result<Self> {
+        let core = lege_file_index::Index::open(index_db_path, config)?;
+        Ok(Self {
+            store,
+            core,
+            _core_scratch: None,
+            skip_names: DEFAULT_SKIP_NAMES.iter().map(|name| (*name).to_owned()).collect(),
+            max_depth: usize::MAX,
+            max_entries: usize::MAX,
+        })
+    }
+
+    /// The index core underneath, for the `Index1` D-Bus surface (`index_host.rs`) and anything
+    /// else that needs more than this compatibility facade exposes.
+    #[must_use]
+    pub fn core(&self) -> &lege_file_index::Index {
+        &self.core
+    }
+
+    fn policy(&self) -> lege_file_index::RootPolicy {
+        let mut policy = lege_file_index::RootPolicy::default_home();
+        policy.skip_names.clone_from(&self.skip_names);
+        policy
+    }
+
+    fn budget(&self) -> lege_file_index::ScanBudget {
+        let mut budget = lege_file_index::ScanBudget::default();
+        if self.max_entries < usize::MAX {
+            budget.max_entries = Some(self.max_entries as u64);
+        }
+        if self.max_depth < usize::MAX {
+            budget.max_depth = Some(self.max_depth as u32);
+        }
+        budget
+    }
+
+    /// Registers a root in the index core without scanning it. What a `Files.Search1.IndexRoot`
+    /// call answers from immediately, before a background reconcile brings it up to date.
+    pub fn ensure_root(&self, root: &Path) -> Result<lege_file_index::RootStatus> {
+        let native = lege_file_index::NativePath::from_path(root);
+        Ok(self.core.add_root(&native, self.policy())?)
+    }
+
+    /// The index core's own status for `root`: freshness, completeness and entry count. `None`
+    /// when the root has never been registered.
+    pub fn root_status(&self, root: &Path) -> Result<Option<lege_file_index::RootStatus>> {
+        let native = lege_file_index::NativePath::from_path(root);
+        Ok(self.core.root_by_path(&native)?)
+    }
+
+    /// Register a root and walk it, under this index's depth/entry budget. A budget trip commits
+    /// `complete = false` and leaves the root `Stale` rather than truncating silently — see
+    /// [`Index::root_status`]. Re-indexing a root repairs rather than replaces: renamed or removed
+    /// files are swept only when the pass was complete (§3 of the shared-index plan).
     pub fn index_root(&self, root: &Path) -> Result<usize> {
         let key = root.to_string_lossy().into_owned();
         self.store.transaction(|transaction| {
@@ -110,36 +215,19 @@ impl Index {
                  ON CONFLICT (root) DO UPDATE SET indexed_ms = excluded.indexed_ms",
                 rusqlite::params![key, lege_state::now_ms()],
             )?;
-            transaction.execute("DELETE FROM search_entries WHERE root = ?1", [&key])?;
+            Ok(())
+        })?;
 
-            let mut count = 0;
-            let mut statement = transaction.prepare(
-                "INSERT OR REPLACE INTO search_entries
-                   (path, root, name_fold, is_dir, size_bytes, mtime_ms, mime)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            )?;
-            let mut remaining = self.max_entries;
-            walk(
-                root,
-                0,
-                self.max_depth,
-                &mut remaining,
-                &self.skip_names,
-                &mut |entry| {
-                    statement.execute(rusqlite::params![
-                        entry.path.to_string_lossy(),
-                        key,
-                        fold(&file_name(&entry.path)),
-                        i64::from(entry.is_dir),
-                        entry.size_bytes as i64,
-                        entry.mtime_ms,
-                    ])?;
-                    count += 1;
-                    Ok(())
-                },
-            )?;
-            Ok(count)
-        })
+        let native = lege_file_index::NativePath::from_path(root);
+        let policy = self.policy();
+        let root_id = self.core.add_root(&native, policy.clone())?.root;
+        let options = lege_file_index::ScanOptions {
+            budget: self.budget(),
+            policy,
+            ..lege_file_index::ScanOptions::default()
+        };
+        let outcome = self.core.scan_root(root_id, options)?;
+        Ok(outcome.entries as usize)
     }
 
     pub fn roots(&self) -> Result<Vec<PathBuf>> {
@@ -160,61 +248,31 @@ impl Index {
     /// Search the index. An empty query matches nothing rather than everything: a drawer that
     /// dumps the whole filesystem when a search box is cleared is a bug, not a feature.
     pub fn search(&self, query: &str, roots: &[PathBuf], limit: usize) -> Result<Vec<Hit>> {
-        let needle = fold(query.trim());
+        let needle = query.trim();
         if needle.is_empty() {
             return Ok(Vec::new());
         }
-        let store = self.store.lock();
-        let mut statement = store.prepare(
-            "SELECT path, is_dir, size_bytes, mtime_ms, mime, name_fold FROM search_entries
-              WHERE name_fold LIKE '%' || ?1 || '%' ESCAPE '\\'
-                 OR path LIKE '%' || ?1 || '%' ESCAPE '\\'
-              ORDER BY mtime_ms DESC
-              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(
-            rusqlite::params![escape_like(&needle), (limit * 4).max(limit) as i64],
-            |row| {
-                Ok((
-                    Entry {
-                        path: PathBuf::from(row.get::<_, String>(0)?),
-                        is_dir: row.get::<_, i64>(1)? != 0,
-                        size_bytes: row.get::<_, i64>(2)? as u64,
-                        mtime_ms: row.get(3)?,
-                        mime: row.get(4)?,
-                    },
-                    row.get::<_, String>(5)?,
-                ))
-            },
-        )?;
-
-        let mut hits: Vec<Hit> = rows
-            .filter_map(Result::ok)
-            .filter(|(entry, _)| {
-                roots.is_empty() || roots.iter().any(|root| entry.path.starts_with(root))
+        // Over-fetch, then filter by path prefix in Rust: `roots` here is any path prefix a
+        // caller wants results restricted to (a subdirectory of an indexed root counts), not
+        // necessarily a registered index root, so this cannot be pushed into the core's own
+        // root-scoped `Query.roots`.
+        let over_fetch = (limit.saturating_mul(4)).max(limit).clamp(1, 1000) as u32;
+        let core_query = lege_file_index::Query::new(needle).with_page_size(over_fetch);
+        let result = self.core.search(&core_query)?;
+        let mut hits: Vec<Hit> = result
+            .hits
+            .into_iter()
+            .filter(|hit| {
+                roots.is_empty()
+                    || roots
+                        .iter()
+                        .any(|root| hit.row.path.to_path().starts_with(root))
             })
-            .map(|(entry, name_fold)| {
-                let rank = if name_fold == needle {
-                    Rank::Exact
-                } else if name_fold.starts_with(&needle) {
-                    Rank::Prefix
-                } else if name_fold.contains(&needle) {
-                    Rank::Substring
-                } else {
-                    Rank::PathOnly
-                };
-                Hit { entry, rank }
+            .map(|hit| Hit {
+                entry: Entry::from_row(&hit.row),
+                rank: Rank::from(hit.rank),
             })
             .collect();
-
-        // Best match first, then most recently modified — the two things a person scanning a
-        // result list actually uses.
-        hits.sort_by(|left, right| {
-            left.rank
-                .score()
-                .cmp(&right.rank.score())
-                .then(right.entry.mtime_ms.cmp(&left.entry.mtime_ms))
-        });
         hits.truncate(limit);
         Ok(hits)
     }
@@ -242,85 +300,6 @@ impl Index {
         })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
-}
-
-/// Whether this is one of the trash directories, in any of the shapes the specification allows.
-///
-/// A deleted file should stop turning up in search, and the names cannot be expressed as literal
-/// skip entries: the home trash is `Trash` with no leading dot, and a volume trash is
-/// `.Trash-$uid`, whose suffix is different on every machine.
-fn is_trash_directory(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "Trash" || name.starts_with(".Trash"))
-}
-
-fn walk(
-    path: &Path,
-    depth: usize,
-    max_depth: usize,
-    remaining: &mut usize,
-    skip: &[String],
-    visit: &mut impl FnMut(&Entry) -> Result<()>,
-) -> Result<()> {
-    if *remaining == 0 {
-        return Ok(());
-    }
-    let Ok(metadata) = path.symlink_metadata() else {
-        return Ok(());
-    };
-    // Links are indexed as themselves and never followed: following them turns an index into a
-    // graph traversal with cycles.
-    let is_dir = metadata.is_dir() && !metadata.file_type().is_symlink();
-    visit(&Entry {
-        path: path.to_path_buf(),
-        is_dir,
-        size_bytes: if is_dir { 0 } else { metadata.len() },
-        mtime_ms: metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |elapsed| elapsed.as_millis() as i64),
-        mime: None,
-    })?;
-    *remaining -= 1;
-
-    if !is_dir || depth >= max_depth {
-        return Ok(());
-    }
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return Ok(());
-    };
-    let mut children: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|child| {
-            !is_trash_directory(child) && !skip.iter().any(|name| child.ends_with(name))
-        })
-        .collect();
-    children.sort();
-    for child in children {
-        if *remaining == 0 {
-            break;
-        }
-        walk(&child, depth + 1, max_depth, remaining, skip, visit)?;
-    }
-    Ok(())
-}
-
-/// Case-fold for matching. ASCII lowercasing plus Unicode lowercasing covers the names people
-/// actually search for without pulling in a full collation table.
-fn fold(value: &str) -> String {
-    value.to_lowercase()
-}
-
-/// `LIKE` treats `%` and `_` as wildcards; a file called `report_final` must not match
-/// `reportXfinal`.
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 fn file_name(path: &Path) -> String {
@@ -484,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn a_depth_cap_bounds_indexing() {
+    fn a_depth_budget_yields_incomplete() {
         let dir = tempfile::tempdir().unwrap();
         let mut deep = dir.path().to_path_buf();
         for level in 0..10 {
@@ -496,15 +475,20 @@ mod tests {
         let mut index = Index::new(Store::in_memory().unwrap());
         index.max_depth = 3;
         index.index_root(dir.path()).unwrap();
+        let status = index.root_status(dir.path()).unwrap().unwrap();
+        assert!(!status.complete, "a depth-budgeted pass reported itself complete");
+        assert_eq!(status.state, lege_file_index::RootState::Stale);
         assert!(index.search("buried", &[], 10).unwrap().is_empty());
 
         index.max_depth = 24;
         index.index_root(dir.path()).unwrap();
+        let status = index.root_status(dir.path()).unwrap().unwrap();
+        assert!(status.complete);
         assert_eq!(index.search("buried", &[], 10).unwrap().len(), 1);
     }
 
     #[test]
-    fn an_entry_cap_bounds_broad_indexing() {
+    fn an_entry_budget_yields_incomplete() {
         let dir = tempfile::tempdir().unwrap();
         for child in 0..20 {
             std::fs::write(dir.path().join(format!("file-{child}")), b"x").unwrap();
@@ -512,7 +496,14 @@ mod tests {
         let mut index = Index::new(Store::in_memory().unwrap());
         index.max_entries = 5;
 
-        assert_eq!(index.index_root(dir.path()).unwrap(), 5);
-        assert_eq!(index.search("file-", &[], 100).unwrap().len(), 4);
+        index.index_root(dir.path()).unwrap();
+        let status = index.root_status(dir.path()).unwrap().unwrap();
+        assert!(!status.complete, "an entry-budgeted pass reported itself complete");
+        assert_eq!(status.state, lege_file_index::RootState::Stale);
+
+        index.max_entries = usize::MAX;
+        index.index_root(dir.path()).unwrap();
+        let status = index.root_status(dir.path()).unwrap().unwrap();
+        assert!(status.complete);
     }
 }

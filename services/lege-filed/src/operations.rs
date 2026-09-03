@@ -391,6 +391,31 @@ impl Step {
     }
 }
 
+/// Reports one committed step to the shared file index, the instant it commits.
+///
+/// `CopyToTemporary`/`FlushTemporary`/`VerifyCopy` report nothing: a temporary the operation has
+/// not yet exposed is policy-skipped noise, never a row. `MoveToTrash` reports a removal — trash
+/// is outside the indexed policy — and `RestoreFromTrash` reports the restored path as new only
+/// when the executor filled it in (it always does once the rename itself has happened).
+pub fn notify_index(sink: &dyn crate::execute::IndexSink, step: &Step) {
+    match step {
+        Step::CreateDirectory { destination }
+        | Step::ExposeAtomically { destination, .. }
+        | Step::CopySymlink { destination, .. } => sink.created(destination),
+        Step::RenameInPlace { from, to } => sink.moved(from, to),
+        Step::DeleteSource { source } => sink.removed(source),
+        Step::Unlink { path } | Step::RemoveDirectory { path } | Step::MoveToTrash { path, .. } => {
+            sink.removed(path);
+        }
+        Step::RestoreFromTrash { restored_to, .. } => {
+            if let Some(restored_to) = restored_to {
+                sink.created(restored_to);
+            }
+        }
+        Step::CopyToTemporary { .. } | Step::FlushTemporary { .. } | Step::VerifyCopy { .. } => {}
+    }
+}
+
 /// A journalled operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Operation {

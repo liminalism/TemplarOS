@@ -16,6 +16,7 @@ pub mod actions;
 pub mod browse;
 pub mod dbus;
 pub mod execute;
+pub mod index_host;
 pub mod journal;
 pub mod lastdir;
 pub mod operations;
@@ -24,6 +25,7 @@ pub mod recents;
 pub mod search;
 pub mod storage;
 pub mod trash;
+pub mod watcher;
 
 pub use browse::{BrowseEntry, DirectoryListing, EntryKind, list_directory};
 pub use execute::{Cancel, ExecutorConfig};

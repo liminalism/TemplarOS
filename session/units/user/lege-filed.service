@@ -27,3 +27,7 @@ OOMScoreAdjust=-500
 # this is the unit a session cannot lose.
 ManagedOOMPreference=avoid
 StateDirectory=legeos
+# The shared file index's derived cache database: $XDG_CACHE_HOME/legeos/file-index-v1.sqlite3.
+# It is disposable — a deleted cache costs a rescan, never user data — so it lives outside
+# StateDirectory.
+CacheDirectory=legeos

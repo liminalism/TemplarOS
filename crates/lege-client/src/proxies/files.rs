@@ -166,6 +166,51 @@ pub trait FilesSearch {
 }
 
 #[proxy(
+    interface = "org.legeos.Files.Index1",
+    default_service = "org.legeos.Files",
+    default_path = "/org/legeos/Files"
+)]
+pub trait FilesIndex {
+    /// Every registered root's `RootStatus` plus the core's own `Diagnostics`, as JSON. Native
+    /// path bytes are base64 in a `path_b64` field beside a lossy `display` string.
+    fn roots(&self) -> zbus::Result<String>;
+
+    /// One JSON `Query` argument, so filters/sort/field-mask can grow without a signature
+    /// change. `(cursor, generation, page_json)`.
+    fn search(&self, query_json: &str) -> zbus::Result<(String, u64, String)>;
+
+    /// Random access inside a pinned result set; the cursor's own generation, never a newer one.
+    /// `Index1.Error.SnapshotRequired` when the cursor aged out.
+    fn fetch_page(&self, cursor: &str, offset: u32, count: u32) -> zbus::Result<String>;
+
+    /// Best effort; a client that vanishes is covered by idle expiry regardless.
+    fn close_cursor(&self, cursor: &str) -> zbus::Result<()>;
+
+    /// A sealed `LEGEIDX1` bulk snapshot: `(fd, manifest_json)`.
+    fn open_snapshot(
+        &self,
+        request_json: &str,
+    ) -> zbus::Result<(zbus::zvariant::OwnedFd, String)>;
+
+    /// A bounded page of the change log after `seq`. `Index1.Error.SnapshotRequired` below the
+    /// retained floor.
+    fn changes_since(&self, seq: u64, limit: u32) -> zbus::Result<String>;
+
+    /// Schedules a background repair of the given roots (a JSON array of root ids; empty means
+    /// every registered root) and returns an opaque request id immediately. Progress is observed
+    /// through `roots()` and the signals below.
+    fn reconcile(&self, roots_json: &str) -> zbus::Result<String>;
+
+    /// A generation committed.
+    #[zbus(signal)]
+    fn generation_advanced(&self, generation: u64, change_count: u32) -> zbus::Result<()>;
+
+    /// A root's freshness state changed.
+    #[zbus(signal)]
+    fn root_state_changed(&self, root_id: i64, state: String, reason: String) -> zbus::Result<()>;
+}
+
+#[proxy(
     interface = "org.legeos.Files.Actions1",
     default_service = "org.legeos.Files",
     default_path = "/org/legeos/Files"
