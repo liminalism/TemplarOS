@@ -233,11 +233,19 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     // rather than swept. That is deliberate: a migration is how a retired widget leaves a saved
     // field (`migrate_hardware_tiles`, `migrate_drawer_tiles`), because only a migration knows
     // what should take its place.
+    //
+    // A window group's tile is swept by exactly the same rule and for exactly the same reason:
+    // its subject is the compositor's group, the compositor dissolves a group the moment it drops
+    // below two members, and a tile for a group that no longer exists is a container nobody can
+    // put anything in.
     let gone: Vec<TileId> = doc
         .tiles
         .iter()
         .filter(|tile| {
-            matches!(tile.kind, TileKind::ParkedSession { .. }) && !wanted.contains(&tile.id)
+            matches!(
+                tile.kind,
+                TileKind::ParkedSession { .. } | TileKind::WindowGroup { .. }
+            ) && !wanted.contains(&tile.id)
         })
         .map(|tile| tile.id)
         .collect();
@@ -1016,6 +1024,196 @@ fn merge_sessions(
         };
         try_apply(doc, FieldOp::Place { tile, landing }, applied);
     }
+    merge_window_groups(doc, &toplevels, wanted, applied);
+}
+
+/// The tile id a window group's tile always has. The group id is the compositor's
+/// (`lege_window::GroupInfo::group_id`), so the same group is one tile across refreshes.
+pub fn group_tile_id(group_id: u64) -> TileId {
+    tile_id_for(&format!("group:{group_id}"))
+}
+
+/// The title a group's tile carries: the name the group was given, or how many windows it holds
+/// until somebody names it. Never empty — a tile with no title is a tile that says nothing.
+fn group_title(name: &str, members: usize) -> String {
+    if name.trim().is_empty() {
+        match members {
+            1 => "1 window".to_owned(),
+            other => format!("{other} windows"),
+        }
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Window groups as tiles: one container per group the compositor reports, holding the session
+/// tiles of its members.
+///
+/// This never *makes* a group. `lege_window` owns membership and the compositor is the source of
+/// truth (`docs/planning/window-groups-and-application-integration.md` §2 rule 2); a group tile is
+/// a representation that follows the `group` event, which is why every decision here reads
+/// `ShellToplevel::group` and nothing else. A drop on Home asks the compositor to group two
+/// windows and the tile appears on the *next* merge, so the field and the workspace can never
+/// disagree about what is grouped even for a frame.
+///
+/// Runs after the session tiles are placed, so a member's tile always exists to be moved in.
+fn merge_window_groups(
+    doc: &mut FieldDocument,
+    toplevels: &[&ShellToplevel],
+    wanted: &mut BTreeSet<TileId>,
+    applied: &mut Vec<FieldOp>,
+) {
+    // Grouped by the compositor's group id, in id order so the result never depends on the order
+    // windows happen to arrive in.
+    let mut groups: std::collections::BTreeMap<u64, Vec<&ShellToplevel>> =
+        std::collections::BTreeMap::new();
+    for toplevel in toplevels {
+        if let Some(group) = &toplevel.group {
+            groups.entry(group.group_id).or_default().push(toplevel);
+        }
+    }
+
+    for (group_id, members) in &groups {
+        let tile_id = group_tile_id(*group_id);
+        // Every member reports the same name and accent (the compositor sends the group's, not
+        // the window's), so the first is the group's.
+        let info = members[0]
+            .group
+            .as_ref()
+            .expect("grouped by the presence of `group`");
+        let title = group_title(&info.name, members.len());
+        wanted.insert(tile_id);
+
+        if doc.tile(tile_id).is_none() {
+            // Created at the first member's place: the group appears where the work already was,
+            // not in whatever corner a fresh landing would find.
+            let first = session_tile_id(members[0]);
+            let landing = Landing {
+                container: None,
+                cell: doc
+                    .location(first)
+                    .filter(|located| located.container.is_none())
+                    .map_or_else(|| Cell::new(0, 0), |located| located.placement.cell),
+            };
+            let kind = TileKind::WindowGroup {
+                identifier: group_id.to_string(),
+            };
+            let container_tile = Tile {
+                id: tile_id,
+                spans: SpanRange::for_kind(&kind, doc.cols, doc.rows),
+                kind,
+                title: title.clone(),
+                // The group's own colour, so the tile's edge, the band stripe and the outline on
+                // the workspace are one colour (§2 rule 7).
+                accent: Some(info.accent),
+            };
+            // `CreateProject` is the one op that makes a container; it is named for the first
+            // container there was, not for projects alone, and it absorbs the tiles it is given.
+            // The members whose tiles already sit on the field are absorbed here so the group
+            // arrives holding them rather than empty and then filling.
+            let absorb: Vec<TileId> = members
+                .iter()
+                .map(|member| session_tile_id(member))
+                .filter(|id| doc.location(*id).is_some_and(|at| at.container.is_none()))
+                .collect();
+            try_apply(
+                doc,
+                FieldOp::CreateProject {
+                    project: container_tile,
+                    landing,
+                    absorb,
+                },
+                applied,
+            );
+        } else if let Some(existing) = doc.tile_mut(tile_id) {
+            // Content only, which by the field's own rule moves nothing.
+            if existing.title != title {
+                existing.title = title;
+            }
+            if existing.accent != Some(info.accent) {
+                existing.accent = Some(info.accent);
+            }
+        }
+
+        // Any member whose tile is not inside the group yet — a window that joined an existing
+        // group, or one whose tile could not be absorbed above.
+        if doc.container(tile_id).is_some() {
+            for member in members {
+                let session = session_tile_id(member);
+                let inside = doc
+                    .location(session)
+                    .is_some_and(|at| at.container == Some(tile_id));
+                if doc.tile(session).is_some() && !inside {
+                    try_apply(
+                        doc,
+                        FieldOp::Move {
+                            id: session,
+                            landing: Landing {
+                                container: Some(tile_id),
+                                cell: Cell::new(0, 0),
+                            },
+                        },
+                        applied,
+                    );
+                }
+            }
+        }
+    }
+
+    move_departed_members_out(doc, toplevels, applied);
+}
+
+/// A window that left its group: its tile is still inside a group tile the compositor no longer
+/// puts it in.
+///
+/// Moved out to the nearest free cell — the landing named is the group's own place and the reflow
+/// finds the first free rectangle from there, so the tile lands beside the work it came from
+/// rather than in a far corner. This is also what empties a dissolving group's tile before the
+/// merge's sweep removes it, which is why a dissolved group never takes its members' tiles to the
+/// shelf with it.
+fn move_departed_members_out(
+    doc: &mut FieldDocument,
+    toplevels: &[&ShellToplevel],
+    applied: &mut Vec<FieldOp>,
+) {
+    let mut departures: Vec<(TileId, TileId)> = Vec::new();
+    for toplevel in toplevels {
+        let session = session_tile_id(toplevel);
+        let Some(container) = doc.location(session).and_then(|at| at.container) else {
+            continue;
+        };
+        if !matches!(doc.kind_of(container), Some(TileKind::WindowGroup { .. })) {
+            continue;
+        }
+        let belongs = toplevel
+            .group
+            .as_ref()
+            .is_some_and(|group| group_tile_id(group.group_id) == container);
+        if !belongs {
+            departures.push((session, container));
+        }
+    }
+    for (session, container) in departures {
+        let cell = doc
+            .location(container)
+            .map_or_else(|| Cell::new(0, 0), |located| located.placement.cell);
+        try_apply(
+            doc,
+            FieldOp::Move {
+                id: session,
+                landing: Landing {
+                    container: None,
+                    cell,
+                },
+            },
+            applied,
+        );
+    }
+}
+
+/// The tile id one window's session tile has, wherever the merge needs to name it.
+fn session_tile_id(toplevel: &ShellToplevel) -> TileId {
+    tile_id_for(&format!("session:{}", session_identifier(toplevel, None)))
 }
 
 /// Refresh the titles live state carries (a window's title changes; its tile's does too) —
@@ -1109,6 +1307,42 @@ pub fn window_for_tile<'a>(
         .find(|toplevel| session_identifier(toplevel, None) == *identifier)
 }
 
+/// The windows a group tile stands for, in the order its children are placed.
+///
+/// A group tile's children are session tiles, so this is [`window_for_tile`] over each of them.
+/// A child whose window has closed is simply absent — the tile is swept on the next merge.
+pub fn group_members<'a>(
+    doc: &FieldDocument,
+    tile: TileId,
+    toplevels: &'a [ShellToplevel],
+) -> Vec<&'a ShellToplevel> {
+    if !matches!(doc.kind_of(tile), Some(TileKind::WindowGroup { .. })) {
+        return Vec::new();
+    }
+    doc.placements_in(Some(tile))
+        .into_iter()
+        .filter_map(|(child, _)| window_for_tile(doc, child, toplevels))
+        .collect()
+}
+
+/// One member of `tile`'s group to address the compositor through.
+///
+/// Every group request on the wire is sent *to a window* and applies to its whole group, so any
+/// member will do. The activated one is preferred where there is one, because that is the member
+/// the compositor will treat as the group's own last-active on the way back.
+pub fn group_window<'a>(
+    doc: &FieldDocument,
+    tile: TileId,
+    toplevels: &'a [ShellToplevel],
+) -> Option<&'a ShellToplevel> {
+    let members = group_members(doc, tile, toplevels);
+    members
+        .iter()
+        .find(|toplevel| toplevel.activated)
+        .or_else(|| members.first())
+        .copied()
+}
+
 /// `org.legeos.Files` → `Files` and `desktop-import.org.foo.Editor.desktop` → `Editor`.
 /// Imported desktop IDs used to take the last component literally, making every tile read
 /// "desktop" regardless of the application.
@@ -1145,6 +1379,175 @@ mod tests {
             geometry: Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
             group: None,
+        }
+    }
+
+    /// The same window, in a group. The compositor sends the group's name and accent on every
+    /// member, so the fixture does too.
+    fn grouped(mut toplevel: ShellToplevel, group_id: u64, name: &str) -> ShellToplevel {
+        toplevel.group = Some(lege_window::GroupInfo {
+            group_id,
+            name: name.to_owned(),
+            accent: 0x0033_88ff,
+        });
+        toplevel
+    }
+
+    #[test]
+    fn a_group_becomes_one_tile_holding_its_members() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let toplevels = [
+            grouped(toplevel(1, Some("org.legeos.Files"), "one", false), 7, ""),
+            grouped(toplevel(2, Some("org.example.Editor"), "two", false), 7, ""),
+            toplevel(3, Some("org.example.Player"), "three", false),
+        ];
+        let live = LiveState {
+            toplevels: &toplevels,
+            projects: &[],
+        };
+        merge(&mut doc, &live);
+
+        let group = group_tile_id(7);
+        let tile = doc.tile(group).expect("the group has a tile");
+        assert!(matches!(tile.kind, TileKind::WindowGroup { .. }));
+        // Unnamed, so the tile says how many windows it holds; the accent is the group's.
+        assert_eq!(tile.title, "2 windows");
+        assert_eq!(tile.accent, Some(0x0033_88ff));
+        assert!(doc.container(group).is_some(), "a group is a container");
+
+        let members = group_members(&doc, group, &toplevels);
+        let ids: BTreeSet<u64> = members
+            .iter()
+            .map(|member| member.window_id.0)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids, BTreeSet::from([1, 2]));
+
+        // The ungrouped window's tile stays on the bare field.
+        let loose = session_tile_for(&doc, &toplevels[2]).expect("the loose window has a tile");
+        assert_eq!(
+            doc.location(loose).and_then(|located| located.container),
+            None
+        );
+    }
+
+    #[test]
+    fn a_named_group_takes_its_name_and_a_window_that_joins_later_moves_in() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let before = [
+            grouped(toplevel(1, Some("org.legeos.Files"), "one", false), 7, ""),
+            grouped(toplevel(2, Some("org.example.Editor"), "two", false), 7, ""),
+            toplevel(3, Some("org.example.Player"), "three", false),
+        ];
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &before,
+                projects: &[],
+            },
+        );
+
+        // The third window joins, and the group is named.
+        let after = [
+            grouped(
+                toplevel(1, Some("org.legeos.Files"), "one", false),
+                7,
+                "Writing",
+            ),
+            grouped(
+                toplevel(2, Some("org.example.Editor"), "two", false),
+                7,
+                "Writing",
+            ),
+            grouped(
+                toplevel(3, Some("org.example.Player"), "three", false),
+                7,
+                "Writing",
+            ),
+        ];
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &after,
+                projects: &[],
+            },
+        );
+
+        let group = group_tile_id(7);
+        assert_eq!(doc.tile(group).expect("still a tile").title, "Writing");
+        assert_eq!(group_members(&doc, group, &after).len(), 3);
+    }
+
+    #[test]
+    fn a_window_that_leaves_its_group_moves_out_and_an_empty_group_tile_is_swept() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let together = [
+            grouped(toplevel(1, Some("org.legeos.Files"), "one", false), 7, ""),
+            grouped(toplevel(2, Some("org.example.Editor"), "two", false), 7, ""),
+        ];
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &together,
+                projects: &[],
+            },
+        );
+        let group = group_tile_id(7);
+        assert_eq!(group_members(&doc, group, &together).len(), 2);
+
+        // The compositor dissolves a group the moment it drops below two members, so both windows
+        // come back with no group at all.
+        let apart = [
+            toplevel(1, Some("org.legeos.Files"), "one", false),
+            toplevel(2, Some("org.example.Editor"), "two", false),
+        ];
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &apart,
+                projects: &[],
+            },
+        );
+
+        assert!(doc.tile(group).is_none(), "the group's tile is swept");
+        for toplevel in &apart {
+            let tile = session_tile_for(&doc, toplevel).expect("the window keeps its tile");
+            let located = doc.location(tile).expect("and keeps a place on the field");
+            assert_eq!(
+                located.container, None,
+                "a window out of its group is back on the bare field, not on the shelf"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_whose_windows_all_close_takes_every_tile_with_it() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 10);
+        let together = [
+            grouped(toplevel(1, Some("org.legeos.Files"), "one", false), 7, ""),
+            grouped(toplevel(2, Some("org.example.Editor"), "two", false), 7, ""),
+        ];
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &together,
+                projects: &[],
+            },
+        );
+        let sessions: Vec<TileId> = together
+            .iter()
+            .map(|toplevel| session_tile_for(&doc, toplevel).expect("a tile"))
+            .collect();
+
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &[],
+                projects: &[],
+            },
+        );
+        assert!(doc.tile(group_tile_id(7)).is_none());
+        for session in sessions {
+            assert!(doc.tile(session).is_none(), "a closed window's tile goes");
         }
     }
 

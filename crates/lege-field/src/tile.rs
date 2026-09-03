@@ -17,6 +17,15 @@ pub enum TileKind {
     /// A container: files, tools, sessions and scoped widgets that belong together. Refers to a
     /// `Projects1` project; holds other tiles one level deep.
     Project { project_id: String },
+    /// A window group's tile: the `ParkedSession` tiles of its members, held together as one
+    /// thing to move, park and return.
+    ///
+    /// A container like `Project`, and top level only for the same reason — containers stay one
+    /// deep. It is a *representation*: `lege_window` owns membership and the compositor is the
+    /// source of truth (`docs/planning/window-groups-and-application-integration.md` §2 rule 2),
+    /// so nothing here creates or dissolves a group. `identifier` is the group's id as a decimal
+    /// string, the same shape `ParkedSession::identifier` uses for a window.
+    WindowGroup { identifier: String },
     /// A dormant or running application.
     App { app_id: AppId },
     /// A window collapsed into the field — explicit minimisation made visible. `identifier` is
@@ -51,13 +60,14 @@ pub struct TrayId(pub u64);
 impl TileKind {
     /// Whether this kind is a container that may hold other tiles.
     pub fn is_container(&self) -> bool {
-        matches!(self, Self::Project { .. })
+        matches!(self, Self::Project { .. } | Self::WindowGroup { .. })
     }
 
     /// Short lower-case name for text rendering and logs.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Project { .. } => "project",
+            Self::WindowGroup { .. } => "group",
             Self::App { .. } => "app",
             Self::ParkedSession { .. } => "session",
             Self::Tray { .. } => "tray",
@@ -132,6 +142,17 @@ impl SpanRange {
             TileKind::Project { .. } => Self::new(
                 Span::new(4, 4),
                 Span::new((cols / 2).max(4), (rows / 2).max(4)),
+                Span::new(cols, rows),
+            ),
+            // A window group is a container, but not a project-sized one. Its members are session
+            // tiles, so it wants the room a couple of them need and no more — and its floor is
+            // one cell, because the ladder's lowest rung for a group is a count badge and a tile
+            // that cannot shrink to one could never show it. The interior grid is derived from
+            // `preferred` (`ops::container_for`), not from this floor, so a group squeezed down
+            // to a badge still holds everything it held.
+            TileKind::WindowGroup { .. } => Self::new(
+                Span::new(1, 1),
+                Span::new(cols.clamp(1, 6), rows.clamp(1, 3)),
                 Span::new(cols, rows),
             ),
             TileKind::App { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
@@ -276,6 +297,20 @@ impl RungLadder {
                 wide: Some(RungFloor::new(4, 4, 16)),
                 large: Some(RungFloor::new(4, 4, 36)),
             },
+            // A window group's five rungs are the plan's own list: a count badge, then the name
+            // and how many windows, then the name with the member titles in a row, then their
+            // previews. Full is the zoom, which no span earns — a container reaches it by being
+            // opened, exactly as a project does.
+            //
+            // Wide asks for three columns and Large for two rows, because a row of member titles
+            // needs width and a row of previews needs both. A 2×1 group is still a name and a
+            // count, which is the smallest thing worth saying about a set of windows.
+            TileKind::WindowGroup { .. } => Self {
+                base: Representation::Micro,
+                small: Some(RungFloor::new(2, 1, 2)),
+                wide: Some(RungFloor::new(3, 1, 3)),
+                large: Some(RungFloor::new(4, 2, 8)),
+            },
             // Containers and instruments: Wide is a row and Large is a body, and neither is a
             // line of text. Both floors demand two cells in *each* axis, which is the whole
             // point of the shape ladder — an 8×1 strip has the area of a 4×2 block and room for
@@ -365,7 +400,21 @@ mod tests {
             TileKind::System {
                 probe: "drives".into(),
             },
+            TileKind::WindowGroup {
+                identifier: "4".into(),
+            },
         ]
+    }
+
+    /// The kinds that existed while the ladder was area-only, and so have something for the
+    /// shape ladder to be compared against. `WindowGroup` arrived after it and never had an area
+    /// ladder to agree with — comparing it against one written here would be comparing the shape
+    /// ladder with a transcription of itself.
+    fn kinds_with_an_area_ladder() -> Vec<TileKind> {
+        every_kind()
+            .into_iter()
+            .filter(|kind| !matches!(kind, TileKind::WindowGroup { .. }))
+            .collect()
     }
 
     #[test]
@@ -589,6 +638,11 @@ mod tests {
                 7..=12 => Representation::Wide,
                 _ => Representation::Large,
             },
+            // Never had one; `kinds_with_an_area_ladder` is what keeps this unreachable, and the
+            // panic is what makes that filter's removal visible instead of silent.
+            TileKind::WindowGroup { .. } => {
+                unreachable!("a window group predates no area ladder — it postdates the shape one")
+            }
         }
     }
 
@@ -597,7 +651,7 @@ mod tests {
     /// to slivers, which is the only place area was lying.
     #[test]
     fn the_shape_ladder_agrees_with_the_area_ladder_on_every_ordinary_shape() {
-        for kind in every_kind() {
+        for kind in kinds_with_an_area_ladder() {
             let range = SpanRange::for_kind(&kind, 24, 13);
             for cols in 1..=24u16 {
                 for rows in 1..=13u16 {
@@ -655,7 +709,7 @@ mod tests {
         /// every floor is a conjunction of `>=`.
         #[test]
         fn growing_a_span_in_either_axis_never_lowers_the_rung(
-            kind_index in 0usize..8,
+            kind_index in 0usize..9,
             cols in 1u16..64,
             rows in 1u16..64,
         ) {
