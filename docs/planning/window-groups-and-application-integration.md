@@ -205,16 +205,29 @@ fsearch integration (interim):
 - The Files object's search field gets a last row "Search everywhere with FSearch", and the
   context menu a "Search here…" verb, both launching the provider with `--search <query>`
   through the launch chain (identity from the cgroup as for any application).
-- fsearch keeps its own database; lege-filed keeps indexing for the scoped, in-place search.
-  Two indexes are accepted for now. A later step points fsearch's include list at the same
-  roots `Files.Search1.Roots` reports, from sessiond, so the two agree on what is searched.
+- FSearch is a **launched client and nothing more**: LegeOS never reads, feeds or syncs its
+  database, and does not share roots with it. The "two indexes for now, point fsearch's
+  include list at `Files.Search1.Roots` later" step this section used to carry is superseded
+  by the shared incremental index planned separately
+  (`docs/planning/shared-incremental-file-index.md`), which has FSearch consume lege-filed's
+  one index rather than keeping a second.
 - Not planned: reading fsearch's database format, or replacing `Files.Search1`.
+
+*Built:* the panel, the `file-search` role with FSearch as its derived candidate, the last
+row and the "Search here…" menu verb. `Super+F` was deliberately not added — the panel opens
+by typing in the object's own search field, and a new global chord was not wanted this pass.
+FSearch has no option to scope a search to a folder, so "Search here…" with nothing typed
+opens it on its own index rather than pretending to narrow it.
 
 ### 4.3 Kitty as the default terminal
 
-- `ProviderRole::Terminal`, exclusive, default `kitty`; `Ctrl+Alt+T` (a new reserved chord,
-  colliding with nothing an application binds) launches the selected terminal; "Open terminal
-  here" in the Files object context menu launches it with `--directory <path>`.
+- `ProviderRole::Terminal`, exclusive, default `kitty`; "Open terminal here" in the Files
+  object context menu launches the selected terminal with `--directory <path>`, and where is
+  `Files.Actions1.TerminalDirectory`'s answer.
+- **`Ctrl+Alt+T` was dropped.** `Super+grave` (§4.6) is the one chord: it launches the
+  terminal when none is mapped and toggles it when one is, which is every reason a person
+  presses a terminal chord. A second chord that only ever launched a *new* window would be
+  two answers to one question, and one more key taken from every application.
 - Desktop entries with `Terminal=true` launch inside the selected terminal (appd launcher
   wraps `Exec` with the terminal's `-e`/`--` form declared per provider).
 - Ship `/etc/xdg/kitty/kitty.conf` from `legeos-shell` (kitty reads `XDG_CONFIG_DIRS`): the
@@ -233,7 +246,14 @@ common jobs. The interim list, in order:
    the declared `files.*` verbs so the menu, the toolbar and the cheat sheet can never
    disagree. Rows: Open, Open with…, Open terminal here, Copy path, Rename, Move to trash,
    Properties. Empty space: New folder, Paste, Select all, Sort by…, Show hidden.
-2. Multi-select (click, Ctrl+click, Shift+click, Ctrl+A) driving the bulk verbs.
+   *Built, less one row:* every verb above except **Open with…**, plus "Search here…" (§4.2)
+   on the empty-space menu. An application chooser needs a channel from the host into the
+   browse view for the handler list `Associations1.Handlers` answers with, and the two that
+   exist (`FileBrowserData`, `FieldScreen`) were in another lane while this was written. It is
+   the first thing to add back.
+2. Multi-select (click, Ctrl+click, Shift+click, Ctrl+A) driving the bulk verbs. *Already
+   built* — the browse view had all four before this pass, and the menu rows act on the
+   selection like the toolbar does.
 3. Keyboard verbs inside the surface: F2, Delete, Ctrl+C/X/V, Ctrl+Z, Backspace up, Enter open.
 4. Drag-and-drop between the Files object, folder tiles and the shortcuts pane, using the
    `wl_data_device` transport already in progress.
@@ -263,8 +283,13 @@ application. So the chord is `Super+grave`, on the same reasoning that put group
 "The terminal" is the most recently activated window whose canonical app id is the selected
 `terminal` provider's, which the shell tells the compositor with `set_terminal` on connect and
 on every change. With the shell dead the chord still toggles an existing terminal; only the
-launch needs the shell. `Ctrl+Alt+T` (§4.3) launches a *new* terminal window every time and
-is unchanged. Kitty is the default provider; the chord is provider-agnostic.
+launch needs the shell. Kitty is the default provider; the chord is provider-agnostic, and
+it is the only one: `Ctrl+Alt+T` was dropped (§4.3).
+
+*Built:* the shell reads the selected `terminal` provider from `Providers1`, sends
+`set_terminal` on connect and on every change (the empty string when nothing fills the role),
+and answers `terminal_requested` by launching the provider with no arguments through the
+ordinary launch chain. The chord itself, and the toggling, are the compositor's.
 
 ## 5. Order of work
 
