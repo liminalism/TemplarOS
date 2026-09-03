@@ -72,7 +72,10 @@ enum DataUpdate {
     /// chord toggles, and the `file-search` the search panel's last row hands the query to.
     /// `None` is "nobody", which is a fact worth relaying — the compositor stops looking for a
     /// terminal window it will never find.
-    Provider { role: &'static str, app_id: Option<String> },
+    Provider {
+        role: &'static str,
+        app_id: Option<String>,
+    },
     /// The persisted recent-apps list. Applied only while the in-memory list is still empty,
     /// so a launch that happened before the load landed is not overwritten by a stale read.
     RecentApps(crate::recents::RecentApps),
@@ -2044,6 +2047,7 @@ impl ShellApp {
     /// The whole point of this function is that it is the *only* one: keyboard and pointer both
     /// arrive here, and each verb goes to the same `lege-filed` interface the Files app uses, so
     /// the two surfaces cannot drift into different ideas of what "delete" means.
+    #[allow(clippy::too_many_lines)]
     fn perform_file_verb(&mut self, request: &FileRequest) {
         let now_ms = self.started.elapsed().as_millis() as u64;
         match request.verb {
@@ -2153,6 +2157,19 @@ impl ShellApp {
                     return;
                 };
                 self.spawn_properties(path);
+            }
+            FileVerb::OpenTerminal => {
+                let Some(path) = request.paths.first().cloned() else {
+                    return;
+                };
+                let Some(terminal) = self.terminal_provider.clone() else {
+                    self.field_screen.report(
+                        "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
+                        now_ms,
+                    );
+                    return;
+                };
+                self.spawn_open_terminal(terminal, path);
             }
             FileVerb::CopyPath => {
                 let Some(path) = request.paths.first() else {
@@ -2414,6 +2431,41 @@ impl ShellApp {
             };
             let _ = tx.send(DataUpdate::Notice(notice));
             let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// Start the selected terminal in the folder this file is in.
+    ///
+    /// *Which* folder is `Files.Actions1.TerminalDirectory`'s answer, not this shell's: a
+    /// directory opens in itself and a file opens in its parent, and the service owning that
+    /// rule is what keeps the Files app and Home from disagreeing about where a terminal lands.
+    /// `--directory` is the argument, which is kitty's spelling and the one the plan named; a
+    /// terminal that spells it differently will need its own form declared per provider.
+    fn spawn_open_terminal(&self, terminal: AppId, path: PathBuf) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let actions = lege_client::proxies::FilesActionsProxy::new(&connection).await?;
+                let directory = actions.terminal_directory(&path.to_string_lossy()).await?;
+                let launcher = LauncherProxy::new(&connection).await?;
+                launcher
+                    .launch(
+                        &terminal.to_string(),
+                        vec!["--directory".to_owned(), directory.clone()],
+                        "",
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>(directory)
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = tx.send(DataUpdate::Notice(format!(
+                    "Could not open a terminal here — {error:#}"
+                )));
+                let _ = proxy_wake.send_event(Wake);
+            }
         });
     }
 

@@ -55,6 +55,13 @@ pub enum MenuScope {
     /// rows, but only when there is actually something to bring back — a permanently visible
     /// "bring shelved tiles back" would be a row that does nothing almost every time it is read.
     Shelf,
+    /// The Files object: a row is under the pointer.
+    FileRow,
+    /// The Files object: bare ground, with no row under the pointer.
+    FilesGround,
+    /// The Files object: bare ground in a folder that can be listed — a paste and a new folder
+    /// both need somewhere to land, and a feed (Recent, Trash) is not somewhere.
+    FilesDirectory,
 }
 
 /// The declared action a copy-of-an-application row performs. One declaration for every copy:
@@ -113,6 +120,66 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("window.close", MenuScope::Window),
 ];
 
+/// Every row the Files object's secondary-click menu can offer, in display order.
+///
+/// A second table rather than a second menu widget: the rows, the arming, the keyboard cursor
+/// and the painting are the field menu's, and the only thing that differs is which declared
+/// actions are on offer and what has to be under the pointer for each. Naming the actions here
+/// is also what puts them in front of `xtask check-actions`, so a file verb cannot exist on the
+/// toolbar under one name and in this menu under another.
+///
+/// Trash is last on the row menu for the reason Close is last on the field's: it is the
+/// destructive one, and nothing above it can be reached by overshooting.
+pub const FILES_MENU: &[MenuItem] = &[
+    MenuItem::new("files.open", MenuScope::FileRow),
+    MenuItem::new("files.open-terminal", MenuScope::FileRow),
+    MenuItem::new("files.copy-path", MenuScope::FileRow),
+    MenuItem::new("files.rename", MenuScope::FileRow),
+    MenuItem::new("files.properties", MenuScope::FileRow),
+    MenuItem::new("files.trash", MenuScope::FileRow),
+    MenuItem::new("files.new-folder", MenuScope::FilesDirectory),
+    MenuItem::new("files.paste", MenuScope::FilesDirectory),
+    MenuItem::new("files.select-all", MenuScope::FilesGround),
+    MenuItem::new("files.sort", MenuScope::FilesGround),
+    MenuItem::new("files.show-hidden", MenuScope::FilesGround),
+];
+
+/// What the Files object's menu was opened over: one of its rows, or the ground between them.
+///
+/// Deliberately not a path. The menu returns an action id and the view already knows which row
+/// the press landed on; carrying the path through the menu as well would give two answers to
+/// "which file is this about", and they could differ.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FilesTarget {
+    /// Whether a row was under the pointer. `false` is the ground between rows, which is a
+    /// target in its own right rather than a miss.
+    pub row: bool,
+    /// Whether the location being shown is a real folder. A feed — Recent, Trash, Operations —
+    /// is somewhere to look, not somewhere to paste into.
+    pub directory: bool,
+}
+
+impl FilesTarget {
+    fn offers(self, scope: MenuScope) -> bool {
+        match scope {
+            MenuScope::FileRow => self.row,
+            MenuScope::FilesGround => !self.row,
+            MenuScope::FilesDirectory => !self.row && self.directory,
+            // The field's own scopes never appear in `FILES_MENU`; a row that named one would be
+            // a row about a tile on a menu about a file.
+            MenuScope::Field | MenuScope::Tile | MenuScope::Window | MenuScope::Shelf => false,
+        }
+    }
+
+    /// The rows this target offers, in [`FILES_MENU`] order.
+    pub fn rows(self) -> Vec<&'static MenuItem> {
+        FILES_MENU
+            .iter()
+            .filter(|item| self.offers(item.scope) && item.declaration().is_some())
+            .collect()
+    }
+}
+
 /// What the menu was opened over.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MenuTarget {
@@ -130,6 +197,9 @@ impl MenuTarget {
             MenuScope::Tile => self.tile.is_some(),
             MenuScope::Window => self.window.is_some(),
             MenuScope::Shelf => self.shelved,
+            // The Files object's scopes never appear in `MENU`: a file row is not a tile, and a
+            // menu over the field has nothing to say about one.
+            MenuScope::FileRow | MenuScope::FilesGround | MenuScope::FilesDirectory => false,
         }
     }
 
@@ -217,6 +287,25 @@ impl ContextMenu {
             target,
             rows,
             choices,
+            armed: None,
+            highlighted: None,
+        });
+    }
+
+    /// Open over an explicit row set, rather than over one of [`MENU`]'s targets.
+    ///
+    /// The Files object composes its own rows ([`FilesTarget::rows`]) because what is under the
+    /// pointer there is a file, not a tile. Everything after that — arming a destructive row,
+    /// the keyboard cursor, the painting, dismissal — is this widget's and is not duplicated.
+    pub fn open_rows_at(&mut self, at: (i32, i32), rows: Vec<&'static MenuItem>) {
+        if rows.is_empty() {
+            return;
+        }
+        self.open = Some(Open {
+            at,
+            target: MenuTarget::default(),
+            rows,
+            choices: Vec::new(),
             armed: None,
             highlighted: None,
         });
