@@ -30,17 +30,19 @@ pub enum RecoveryAction {
     /// "Go home": toggle the reveal that hides every client window behind the Home Surface
     /// (`WindowCommand::RevealHome`).
     RevealHome,
-    /// Move to the next window of this contiguous group, spatially
-    /// (`geometry::contiguous_window`).
-    GroupNext,
-    GroupPrevious,
+    /// Step to the next window to the right, spatially (`geometry::contiguous_window`). Stores
+    /// nothing: this is a way of *reaching* a neighbour, not a way of relating two windows —
+    /// that is what a window group is (`RecoveryAction::GroupWithPrevious`).
+    StepRight,
+    StepLeft,
     /// Park the activated window onto Home's shelf.
     ParkFocused,
 }
 
-/// How many spatial steps make one contiguous group. A first rule rather than a settled one —
-/// it lives here, at the call site, so changing it touches nothing in `lege-window`.
-const GROUP_HOPS: u8 = 2;
+/// How many spatial hops one step may take to find the next window along. A first rule rather
+/// than a settled one — it lives here, at the call site, so changing it touches nothing in
+/// `lege-window`.
+const STEP_HOPS: u8 = 2;
 
 /// Which [`RecoveryAction`], if any, `keysym` held with exactly `modifiers` performs while a
 /// "go home" reveal is (`home_revealed`) or is not in effect. Every recovery action has a
@@ -55,7 +57,7 @@ const GROUP_HOPS: u8 = 2;
 /// | Ctrl+Alt+Space         | show every window         |
 /// | Alt+Tab                | cycle switcher forward    |
 /// | Alt+Shift+Tab          | cycle switcher backward   |
-/// | Super+Left / Super+Right | previous/next in group  |
+/// | Super+Left / Super+Right | step left / step right    |
 /// | Ctrl+Alt+H             | go home (toggle reveal)   |
 /// | Ctrl+Alt+P             | park the active window    |
 /// | Super (press)          | reveal Home immediately   |
@@ -100,10 +102,10 @@ pub fn recovery_action(
             return Some(RecoveryAction::RevealHome);
         }
         if raw == keysyms::KEY_Left {
-            return Some(RecoveryAction::GroupPrevious);
+            return Some(RecoveryAction::StepLeft);
         }
         if raw == keysyms::KEY_Right {
-            return Some(RecoveryAction::GroupNext);
+            return Some(RecoveryAction::StepRight);
         }
     }
     if home_revealed
@@ -299,8 +301,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::space_sync::sync_after_change(self);
                 }
             }
-            RecoveryAction::GroupNext | RecoveryAction::GroupPrevious => {
-                let direction = if matches!(action, RecoveryAction::GroupNext) {
+            RecoveryAction::StepRight | RecoveryAction::StepLeft => {
+                let direction = if matches!(action, RecoveryAction::StepRight) {
                     lege_window::geometry::Direction::Right
                 } else {
                     lege_window::geometry::Direction::Left
@@ -326,7 +328,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     .map(|(id, _)| *id);
                 if let Some(current) = current
                     && let Some(next) = lege_window::geometry::contiguous_window(
-                        &windows, current, direction, GROUP_HOPS,
+                        &windows, current, direction, STEP_HOPS,
                     )
                 {
                     crate::input::activate_window(self, next);
@@ -758,8 +760,8 @@ mod tests {
             (RecoveryAction::CycleFocusForward, "window.cycle-forward"),
             (RecoveryAction::CycleFocusBackward, "window.cycle-backward"),
             (RecoveryAction::RevealHome, "home.reveal"),
-            (RecoveryAction::GroupNext, "window.group-next"),
-            (RecoveryAction::GroupPrevious, "window.group-previous"),
+            (RecoveryAction::StepRight, "window.step-right"),
+            (RecoveryAction::StepLeft, "window.step-left"),
             (RecoveryAction::ParkFocused, "window.park"),
         ];
         for (action, id) in expected {
@@ -798,14 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn super_arrows_step_through_a_contiguous_group_and_compose_with_the_bare_tap() {
+    fn super_arrows_step_to_the_next_window_along_and_compose_with_the_bare_tap() {
         assert_eq!(
             recovery_action(logo(), Keysym::new(keysyms::KEY_Right), false),
-            Some(RecoveryAction::GroupNext)
+            Some(RecoveryAction::StepRight)
         );
         assert_eq!(
             recovery_action(logo(), Keysym::new(keysyms::KEY_Left), false),
-            Some(RecoveryAction::GroupPrevious)
+            Some(RecoveryAction::StepLeft)
         );
         // Without the logo key these are ordinary arrows and must stay so.
         assert_eq!(

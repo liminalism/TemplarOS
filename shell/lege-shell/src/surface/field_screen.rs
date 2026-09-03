@@ -2178,7 +2178,7 @@ impl FieldScreen {
                     actions.push(FieldAction::Activate(next));
                 }
             }
-            "window.group-next" | "window.group-previous" => {
+            "window.step-right" | "window.step-left" => {
                 if let Some(from) = window
                     && let Some(next) = group_step(data.toplevels, from, chosen.action)
                 {
@@ -3282,24 +3282,24 @@ fn cycle_from(
     Some(order[next])
 }
 
-/// `window.group-next` / `window.group-previous` from the shell's side: the same spatial rule the
+/// `window.step-right` / `window.step-left` from the shell's side: the same spatial rule the
 /// compositor's chords use (`lege_window::geometry::contiguous_window`, two hops), run over the
 /// geometry the shell already receives on every toplevel. One implementation of the rule, two
 /// callers — the shell does not get its own idea of what a group is.
 fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Option<WindowId> {
-    /// Kept in step with `compositor/lege-comp/src/keybindings.rs`'s `GROUP_HOPS`.
-    const GROUP_HOPS: u8 = 2;
+    /// Kept in step with `compositor/lege-comp/src/keybindings.rs`'s `STEP_HOPS`.
+    const STEP_HOPS: u8 = 2;
     let windows: Vec<(WindowId, lege_window::Rect)> = toplevels
         .iter()
         .filter(|window| !window.shelved)
         .map(|window| (window.window_id, window.geometry))
         .collect();
-    let direction = if action == "window.group-next" {
+    let direction = if action == "window.step-right" {
         lege_window::geometry::Direction::Right
     } else {
         lege_window::geometry::Direction::Left
     };
-    lege_window::geometry::contiguous_window(&windows, from, direction, GROUP_HOPS)
+    lege_window::geometry::contiguous_window(&windows, from, direction, STEP_HOPS)
 }
 
 fn representation_of(doc: &FieldDocument, tile: &Tile) -> Representation {
@@ -5358,11 +5358,11 @@ mod tests {
         let mut side_by_side = toplevels.clone();
         side_by_side[1].geometry = lege_window::Rect::new(700, 0, 640, 480);
         assert_eq!(
-            group_step(&side_by_side, WindowId(1), "window.group-next"),
+            group_step(&side_by_side, WindowId(1), "window.step-right"),
             Some(WindowId(3))
         );
         assert_eq!(
-            group_step(&side_by_side, WindowId(3), "window.group-previous"),
+            group_step(&side_by_side, WindowId(3), "window.step-left"),
             Some(WindowId(1))
         );
     }

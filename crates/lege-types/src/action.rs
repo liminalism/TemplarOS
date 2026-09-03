@@ -340,9 +340,13 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Window,
     },
+    // The spatial step: the next window to the right or left of this one, by geometry
+    // (`lege_window::geometry::contiguous_window`). It stores nothing and means nothing — which
+    // is exactly why it is *not* called a group any more: a window group is an explicit, stored,
+    // visible thing (`window.group`), and one word cannot mean both.
     ActionDecl {
-        id: "window.group-next",
-        label: "Next in group",
+        id: "window.step-right",
+        label: "Step right",
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Right)],
@@ -351,8 +355,8 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Window,
     },
     ActionDecl {
-        id: "window.group-previous",
-        label: "Previous in group",
+        id: "window.step-left",
+        label: "Step left",
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Left)],

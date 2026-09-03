@@ -99,8 +99,8 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("window.escape-fullscreen", MenuScope::Window),
     MenuItem::new("window.cycle-forward", MenuScope::Window),
     MenuItem::new("window.cycle-backward", MenuScope::Window),
-    MenuItem::new("window.group-next", MenuScope::Window),
-    MenuItem::new("window.group-previous", MenuScope::Window),
+    MenuItem::new("window.step-right", MenuScope::Window),
+    MenuItem::new("window.step-left", MenuScope::Window),
     MenuItem::new("field.move", MenuScope::Tile),
     MenuItem::new("field.resize", MenuScope::Tile),
     MenuItem::new("field.stash", MenuScope::Tile),
@@ -521,8 +521,8 @@ mod tests {
             "window.escape-fullscreen",
             "window.cycle-forward",
             "window.cycle-backward",
-            "window.group-next",
-            "window.group-previous",
+            "window.step-right",
+            "window.step-left",
             "window.close",
         ] {
             assert!(
