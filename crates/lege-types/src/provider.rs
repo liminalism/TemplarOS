@@ -22,11 +22,14 @@ pub enum ProviderRole {
     InputMethod,
     PortalBackend,
     Greeter,
+    /// The terminal emulator the desktop opens: the drop-down chord's target, "Open terminal
+    /// here" in the Files object, and whatever else needs *a* terminal rather than one it named.
+    Terminal,
 }
 
 impl ProviderRole {
     /// Every role, in a stable order (used by `lege doctor` and the settings UI).
-    pub const ALL: [ProviderRole; 12] = [
+    pub const ALL: [ProviderRole; 13] = [
         Self::NetworkStatusUi,
         Self::NotificationServer,
         Self::FileChooser,
@@ -39,6 +42,7 @@ impl ProviderRole {
         Self::InputMethod,
         Self::PortalBackend,
         Self::Greeter,
+        Self::Terminal,
     ];
 
     /// Kebab-case name as used in manifests and on the CLI.
@@ -56,6 +60,7 @@ impl ProviderRole {
             Self::InputMethod => "input-method",
             Self::PortalBackend => "portal-backend",
             Self::Greeter => "greeter",
+            Self::Terminal => "terminal",
         }
     }
 }

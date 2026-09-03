@@ -138,6 +138,36 @@ fn ensure_sessiond_provider_declaration(store: &Store, providers: &Arc<RwLock<Pr
     providers.write().declare(app_id, capability);
 }
 
+/// Declare the roles installed applications fill by what they *are* rather than by claiming them
+/// (`lege_session_core::providers::derived_capabilities`).
+///
+/// Re-derived on every start rather than trusted from the database: a terminal that was
+/// uninstalled must stop being a candidate, and one installed since the last run must become one
+/// without the person doing anything. The selection is untouched — that is a person's choice and
+/// is stored — so this only ever changes what the choice is made *from*.
+fn ensure_derived_provider_declarations(
+    store: &Store,
+    catalog: &dyn AppCatalog,
+    providers: &Arc<RwLock<ProviderRegistry>>,
+) {
+    let mut declared = 0usize;
+    for manifest in catalog.manifests() {
+        for capability in lege_session_core::providers::derived_capabilities(&manifest) {
+            if let Err(error) = store.transaction(|tx| {
+                lege_session_core::providers::declare_within(tx, &manifest.id, &capability)
+            }) {
+                tracing::warn!(app = %manifest.id, %error, "failed to persist a derived provider declaration");
+                continue;
+            }
+            providers.write().declare(manifest.id.clone(), capability);
+            declared += 1;
+        }
+    }
+    if declared > 0 {
+        tracing::info!(count = declared, "derived provider declarations");
+    }
+}
+
 /// Everything the daemon needs, loaded and cross-linked once. Kept as one struct so `main`
 /// reads as a short sequence of named steps instead of two dozen `let` bindings.
 struct Services {
@@ -243,6 +273,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
         lege_session_core::providers::load(&store).context("loading provider registry")?,
     ));
     ensure_sessiond_provider_declaration(&store, &providers);
+    ensure_derived_provider_declarations(&store, catalog.as_ref(), &providers);
     let schema = Arc::new(RwLock::new(baseline_schema()));
     let settings_values = Arc::new(RwLock::new(
         lege_session_core::settings::load_values(&store).context("loading settings values")?,
