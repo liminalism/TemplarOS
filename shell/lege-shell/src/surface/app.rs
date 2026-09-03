@@ -556,20 +556,14 @@ impl ShellApp {
         let Some((scope, query, _)) = self.search_pending.take() else {
             return;
         };
-        // Everywhere means every pinned directory: the same places the Files object offers, so a
-        // federated search never looks somewhere the object itself does not go.
+        // Only a location asks the file service; the launcher on bare Home has its answer in
+        // hand already (`DataUpdate::Apps`), and a file search never runs for it.
         let roots: Vec<String> = match &scope {
             Scope::Location(location) => location
                 .directory()
                 .map(|path| vec![path.display().to_string()])
                 .unwrap_or_default(),
-            Scope::Everything => self
-                .browser_sources
-                .pinned
-                .iter()
-                .filter_map(|pinned| pinned.location.directory())
-                .map(|path| path.display().to_string())
-                .collect(),
+            Scope::Applications => Vec::new(),
         };
         if roots.is_empty() {
             return;
@@ -1057,7 +1051,7 @@ impl ShellApp {
         let scope = if self.field_screen.files_expanded {
             Scope::Location(self.field_screen.files.location().clone())
         } else {
-            Scope::Everything
+            Scope::Applications
         };
         let active_search = self
             .search_results

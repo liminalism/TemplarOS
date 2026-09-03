@@ -985,17 +985,14 @@ impl FieldScreen {
             self.search_focused = true;
         }
         // Scope is derived from where the surface is, never chosen. There is no mode to be in,
-        // so there is no mode to get stuck in: on bare Home the question is asked of everything,
-        // and inside the expanded Files object it is asked of that location — with a permanent
-        // row offering to widen it.
+        // so there is no mode to get stuck in: on bare Home the field is the application
+        // launcher, and inside the expanded Files object it searches that location.
         let scope = self.scope();
         let query = self.search.text().to_owned();
         let rows = crate::omnibox::federate(
             crate::omnibox::Sources {
                 apps: data.apps,
-                projects: data.projects,
                 files: data.file_search,
-                actions: data.actions,
             },
             &query,
             &scope,
@@ -1007,23 +1004,9 @@ impl FieldScreen {
             .search_focused
             .then(|| self.omnibox.handle_keys(ui, &query, rows.len()))
             .flatten();
-        // Tab widens a scoped search without reaching for the row. It is safe to claim here
-        // because this screen does not use toolkit focus traversal at all — `pixelkit_ui` has no
-        // Tab-walks-the-controls behaviour, and the field's own Tab is handled in `handle_keys`,
-        // which returns early while the search field has focus. Ctrl+Space does the same thing
-        // for anyone whose habits or input method make Tab awkward.
-        let modifiers = ui.input.modifiers();
-        let widen = self.search_focused
-            && matches!(scope, crate::omnibox::Scope::Location(_))
-            && ui.input.keys().iter().any(|key| {
-                *key == KeyInput::Tab || (modifiers.control && *key == KeyInput::Character(' '))
-            });
-
         let placeholder = match &scope {
-            crate::omnibox::Scope::Location(location) => {
-                format!("Search {} — Tab searches everything", location.label())
-            }
-            crate::omnibox::Scope::Everything => "Search everything".to_owned(),
+            crate::omnibox::Scope::Location(location) => format!("Search {}", location.label()),
+            crate::omnibox::Scope::Applications => "Open an application".to_owned(),
         };
         let previous_theme = ui.theme;
         ui.theme.background = design::SHELL;
@@ -1053,23 +1036,23 @@ impl FieldScreen {
             Self::draw_recents(ui, recents_row, data, actions);
         }
 
-        // Whatever is typed goes to the file service, once the typing has stopped. The debounce
-        // itself lives in the host, which has the clock; this only says what to ask.
+        // Inside a location, whatever is typed goes to the file service once the typing has
+        // stopped. The debounce itself lives in the host, which has the clock; this only says
+        // what to ask. The launcher on bare Home has its answer in hand and asks nothing.
         if query.trim() != self.asked_for.trim() {
             self.asked_for.clone_from(&query);
-            actions.push(FieldAction::RunSearch {
-                scope: scope.clone(),
-                query: query.clone(),
-            });
+            if matches!(scope, crate::omnibox::Scope::Location(_)) {
+                actions.push(FieldAction::RunSearch {
+                    scope: scope.clone(),
+                    query: query.clone(),
+                });
+            }
         }
 
         self.omnibox_rows = rows;
         self.omnibox_anchor = search_area;
         self.omnibox_files = crate::omnibox::file_state(data.file_search, &query);
         self.omnibox_committed = committed;
-        if widen {
-            self.widen(data.now_ms);
-        }
     }
 
     /// Recently launched applications, as a row of chips under the search field. The COSMIC
@@ -1189,16 +1172,10 @@ impl FieldScreen {
                 .omnibox_committed
                 .and_then(|index| rows.get(index))
                 .map(crate::surface::omnibox_screen::commit),
-            outcome => Some(outcome),
+            chose @ crate::surface::omnibox_screen::OmniboxOutcome::Chose(_) => Some(chose),
         };
-        match chosen {
-            Some(crate::surface::omnibox_screen::OmniboxOutcome::Widen) => {
-                self.widen(data.now_ms);
-            }
-            Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) => {
-                self.choose(hit, data, actions);
-            }
-            _ => {}
+        if let Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) = chosen {
+            self.choose(hit, data, actions);
         }
     }
 
@@ -1309,15 +1286,8 @@ impl FieldScreen {
         if self.files_expanded {
             crate::omnibox::Scope::Location(self.files.location().clone())
         } else {
-            crate::omnibox::Scope::Everything
+            crate::omnibox::Scope::Applications
         }
-    }
-
-    /// The escape from a scoped search: stop being inside the Files object and ask the desktop.
-    /// The query survives, because the question did not change — only who is being asked.
-    fn widen(&mut self, now_ms: u64) {
-        self.collapse_files(now_ms);
-        self.omnibox.highlighted = 0;
     }
 
     /// Act on one omnibox row.
@@ -1340,16 +1310,6 @@ impl FieldScreen {
                     .go_to(crate::files_surface::FilesLocation::Directory(path));
                 self.pending_expand = Some(data.now_ms);
             }
-            Hit::Project { id } => {
-                // A project is a container on the field: choosing one zooms into it, which is
-                // the same thing its tile does. Nothing is launched and nothing is asked of a
-                // service — the project is already here.
-                self.zoomed = Some(field_model::project_tile_id(&id));
-                self.focus = None;
-                self.keyboard_move = None;
-            }
-            Hit::Action { id } => actions.push(FieldAction::RunAction(id)),
-            Hit::Everything => self.widen(data.now_ms),
         }
     }
 
@@ -1407,8 +1367,8 @@ impl FieldScreen {
     fn draw_help_primer(ui: &mut Ui<'_>, area: Rect) {
         const ROWS: [(&str, &str); 7] = [
             ("Super", "Come back here from any window"),
-            ("Search", "Find files, applications, projects, and actions"),
-            ("Recents", "Applications you launched, under search"),
+            ("Apps", "Type an application's name to open it"),
+            ("Recents", "Applications you launched, under Apps"),
             ("Files", "Every file on this machine"),
             ("Session", "Lock, log out, or shut down"),
             ("Settings", "Volume, brightness, and the rest"),
@@ -3858,6 +3818,7 @@ mod tests {
     #[test]
     fn the_omnibox_asks_the_file_service_once_per_query_not_once_per_frame() {
         let mut h = Harness::new();
+        h.screen.files_expanded = true;
         h.screen.search_focused = true;
         h.screen.search.set_text("report");
         let first = h.frame();
@@ -3877,27 +3838,21 @@ mod tests {
         );
     }
 
-    /// Scope is derived, not chosen. Inside the expanded Files object Tab widens the search back
-    /// out to the whole desktop — and it is safe to claim, because this screen never uses Tab
-    /// for focus traversal while the search field has focus.
+    /// The field on bare Home is the application launcher: typing there never asks the file
+    /// service, so a browser's name cannot come back as a list of unrelated files.
     #[test]
-    fn tab_widens_a_scoped_search_back_to_the_whole_desktop() {
+    fn typing_on_bare_home_never_asks_the_file_service() {
         let mut h = Harness::new();
-        h.screen.files_expanded = true;
         h.screen.search_focused = true;
-        h.screen.search.set_text("report");
-        h.key(KeyInput::Tab);
-        h.now += EXPAND_MS + 1;
-        h.frame();
+        h.screen.search.set_text("firefox");
+        let actions = h.frame();
         assert!(
-            !h.screen.files_expanded,
-            "Tab did not leave the scoped search"
+            !actions
+                .iter()
+                .any(|action| matches!(action, FieldAction::RunSearch { .. })),
+            "{actions:?}"
         );
-        assert_eq!(
-            h.screen.search.text(),
-            "report",
-            "widening threw the question away"
-        );
+        assert_eq!(h.screen.scope(), crate::omnibox::Scope::Applications);
     }
 
     #[test]

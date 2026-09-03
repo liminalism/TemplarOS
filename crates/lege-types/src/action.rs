@@ -593,7 +593,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "launcher.search",
-        label: "Search",
+        label: "Apps",
         control: None,
         category: ActionCategory::System,
         chords: &[],

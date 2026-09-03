@@ -26,8 +26,6 @@ pub enum OmniboxOutcome {
     None,
     /// One row was committed to, by pointer or by Enter.
     Chose(Hit),
-    /// The escape row: widen this search to the whole desktop.
-    Widen,
 }
 
 /// The dropdown's own cursor. Kept by the caller so it survives a frame, and reset whenever the
@@ -152,13 +150,9 @@ pub fn draw(
     outcome
 }
 
-/// What choosing a row means. The escape row is the one that is not a result.
+/// What choosing a row means: every row is a result.
 pub fn commit(row: &Row) -> OmniboxOutcome {
-    if row.hit == Hit::Everything {
-        OmniboxOutcome::Widen
-    } else {
-        OmniboxOutcome::Chose(row.hit.clone())
-    }
+    OmniboxOutcome::Chose(row.hit.clone())
 }
 
 /// One row: a mark saying what kind of thing this is, the name, and the detail under it.
@@ -237,12 +231,9 @@ fn draw_row(
 
 fn kind_mark(hit: &Hit) -> &'static str {
     match hit {
-        Hit::Project { .. } => "PROJ",
         Hit::App { .. } => "APP",
         Hit::Directory { .. } => "DIR",
         Hit::File { .. } => "FILE",
-        Hit::Action { .. } => "DO",
-        Hit::Everything => "ALL",
     }
 }
 
@@ -265,7 +256,6 @@ mod tests {
     #[test]
     fn every_kind_of_hit_carries_its_own_mark() {
         let marks = [
-            Hit::Project { id: "p".into() },
             Hit::App {
                 id: "org.legeos.Files".parse().unwrap(),
             },
@@ -273,8 +263,6 @@ mod tests {
             Hit::File {
                 path: "/a/b".into(),
             },
-            Hit::Action { id: "field.undo" },
-            Hit::Everything,
         ]
         .map(|hit| kind_mark(&hit));
         let mut unique = marks.to_vec();
@@ -284,14 +272,9 @@ mod tests {
         assert!(marks.iter().all(|mark| !mark.is_empty()));
     }
 
-    /// The escape row is not a result: committing to it widens the search rather than opening
-    /// something.
+    /// Committing to a row chooses exactly that row.
     #[test]
-    fn committing_to_the_escape_row_widens_rather_than_opening() {
-        assert_eq!(
-            commit(&row("Search everything", Hit::Everything)),
-            OmniboxOutcome::Widen
-        );
+    fn committing_to_a_row_chooses_it() {
         assert_eq!(
             commit(&row("Files", Hit::Directory { path: "/a".into() })),
             OmniboxOutcome::Chose(Hit::Directory { path: "/a".into() })
