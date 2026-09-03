@@ -419,18 +419,32 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     );
     out.push_str(&report::render_activation(&activation));
 
-    if let Some((component, reason)) = activation.failure() {
-        let _ = writeln!(out, "\n{component} did not come back: {reason}");
+    let failures = activation.failures();
+    if !failures.is_empty() {
+        // Every failure, on its own line. The rest of the list was attempted anyway, so more than
+        // one of them can be broken, and a summary that named only the first would quietly hide
+        // the others behind a fix that does not apply to them.
+        out.push('\n');
+        for (component, reason) in &failures {
+            let _ = writeln!(out, "{component} did not come back: {reason}");
+        }
+        let names: Vec<&str> = failures.iter().map(|(component, _)| *component).collect();
+        let names = names.join(", ");
         if options.auto_rollback {
             let previous = rollback(repo_root, root, false)?;
             out.push_str(&previous);
             // A one-line-prefixed error swallowing a long multi-line report reads exactly like a
             // success dump unless it says so in the very first word: this is a failed deployment
             // start to finish, not a log of steps that merely happened to end early.
-            bail!("DEPLOY FAILED — package state changed, activation did not\n\n{out}");
+            bail!("DEPLOY FAILED — {names} did not activate; the set was rolled back\n\n{out}");
         }
-        let _ = writeln!(out, "roll back with: sudo lege dev rollback");
-        bail!("DEPLOY FAILED — package state changed, activation did not\n\n{out}");
+        let _ = writeln!(
+            out,
+            "\neverything else was activated; roll the whole set back with: sudo lege dev rollback"
+        );
+        bail!(
+            "DEPLOY FAILED — {names} did not activate; roll back with: sudo lege dev rollback\n\n{out}"
+        );
     }
 
     let final_convergence = converge::converge(&matrix, &observe(root, &matrix), Some(&set.id));
