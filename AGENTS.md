@@ -43,6 +43,14 @@ Durable project knowledge lives in `.akr/` as typed records, not in Markdown.
   from `.agent/scratch/` (working notes).
 
 **Never**
+- Never touch the person's live desktop session. That means no `systemctl --user`
+  start/stop/restart/kill of any `lege-*` unit, no `loginctl`, no `pkill`/`killall` by
+  a name that can match an installed `lege-*` binary (`pkill -f lege-sessiond` matches
+  `/usr/libexec/lege-sessiond` and once ended the person's session), no `lege dev
+  deploy` (dry runs excepted), and no development service started on the live user bus
+  while the installed one owns its name. Test with `cargo test`, the headless renders
+  (`lege-shell --render`, `lege-comp --check`) and `scripts/nested-session.sh`, which
+  refuses to start over a live session. Deploys and logouts are the person's to run.
 - Never edit `docs/generated/` — it is regenerated and CI checks it.
 - Never read `.akr/cache/` — it is a private cache.
 - Never delete a record. Move it to a terminal state instead.

@@ -85,6 +85,7 @@ start_comp() {
         echo "compositor already running"
         return 0
     fi
+    refuse_over_live_session || return 1
     [ -x "$bin/lege-comp" ] || { echo "missing $bin/lege-comp — build it first" >&2; return 1; }
     clear_stale_sockets
     : >"$(logfile comp)"
@@ -102,11 +103,29 @@ start_comp() {
     echo "  sockets ready: $socket, $shell_socket"
 }
 
+# The nested session shares the person's user bus. If the *installed* session daemon owns
+# org.legeos.Session, a nested one would fight it for the name and every launch it makes would
+# land in the wrong session — refuse, rather than disturb a desktop somebody is working in.
+refuse_over_live_session() {
+    if systemctl --user is-active --quiet lege-sessiond.service 2>/dev/null \
+        || systemctl --user is-active --quiet lege-comp.service 2>/dev/null; then
+        echo "the installed LegeOS session is running (lege-sessiond/lege-comp user units are active);" >&2
+        echo "a nested session would share its bus and disturb it. Not starting." >&2
+        return 1
+    fi
+    if ! alive sessiond && busctl --user status org.legeos.Session >/dev/null 2>&1; then
+        echo "org.legeos.Session already has an owner on the user bus that this script did not start;" >&2
+        echo "not starting a second session daemon against it." >&2
+        return 1
+    fi
+}
+
 start_sessiond() {
     if alive sessiond; then
         echo "sessiond already running"
         return 0
     fi
+    refuse_over_live_session || return 1
     [ -x "$bin/lege-sessiond" ] || { echo "missing $bin/lege-sessiond" >&2; return 1; }
     echo "starting sessiond (state $run/session.db)"
     # An app launched from here must reach the nested compositor, not the host's. sessiond passes
