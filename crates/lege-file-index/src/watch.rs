@@ -8,13 +8,17 @@
 //! current (C5 §4: nothing enters `Current` but a complete pass).
 //!
 //! Backend choice, measured on the reference laptop (kernel 6.17): `fs.inotify.max_user_watches`
-//! is 250,074 and `$HOME` holds 157,283 directories once the index's skip policy is applied, so
-//! one home root costs roughly 63% of the user's entire watch budget; `max_queued_events` is
-//! 16,384, which an ordinary `cargo build` can overrun. fanotify's answer to both — one mark per
-//! mount instead of one per directory — needs `CAP_SYS_ADMIN`, which an unprivileged per-user
-//! `lege-filed` does not have and should not acquire, and unprivileged fanotify is still one mark
-//! per inode. So: inotify, per directory, with exhaustion and overflow treated as ordinary
-//! operating conditions.
+//! is 250,074 and `$HOME` holds 189,094 directories once the index's skip policy is applied
+//! (measured 2026-09-04 from the index's own `RootPolicy`, via `cargo run -q -p xtask --
+//! index-bench dirs`; an earlier 157,283 recorded here on 2026-09-03 was simply stale — `$HOME`
+//! had grown by roughly 32,000 directories in the interim, not a measurement-methodology
+//! difference: `docs/measurements/index-baseline-2026-09-04.md` rules out both `find`-vs-policy and
+//! depth clamping as causes), so one home root costs roughly 76% of the user's entire watch
+//! budget; `max_queued_events` is 16,384, which an ordinary `cargo build` can overrun. fanotify's
+//! answer to both — one mark per mount instead of one per directory — needs `CAP_SYS_ADMIN`, which
+//! an unprivileged per-user `lege-filed` does not have and should not acquire, and unprivileged
+//! fanotify is still one mark per inode. So: inotify, per directory, with exhaustion and overflow
+//! treated as ordinary operating conditions.
 
 use std::{
     collections::HashMap,
