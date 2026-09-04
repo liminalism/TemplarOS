@@ -16,7 +16,17 @@ if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
     nested_root="$(mktemp -d /tmp/legeos-nested.XXXXXX)"
     nested_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
     nested_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+    status=0
+    # A failed run's logs are the only account of why it failed, and deleting them is how this
+    # harness spent a long time reporting "socket did not appear" with nothing to read. The root
+    # is removed on success and kept, with its path named, on failure.
+    keep=0
     cleanup_root() {
+        if [ "$keep" = 1 ]; then
+            echo "nested session: state kept for inspection: $nested_root" >&2
+            echo "               logs: $nested_root/logs/" >&2
+            return
+        fi
         case "$nested_root" in
             /tmp/legeos-nested.*) rm -rf -- "$nested_root" ;;
             *) echo "refusing to remove unexpected nested path: $nested_root" >&2 ;;
@@ -37,8 +47,11 @@ if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
         XDG_STATE_HOME="$nested_root/state" \
         XDG_CACHE_HOME="$nested_root/cache" \
         XDG_RUNTIME_DIR="$nested_root/runtime" \
-        bash "$root/tests/integration/nested-session.sh"
-    exit $?
+        bash "$root/tests/integration/nested-session.sh" || status=$?
+    # `|| status=$?` and not a bare call: `set -e` would take the failure out of this shell before
+    # the next line ran, which is how the root came to be deleted on exactly the runs that needed it.
+    [ "${status:-0}" -eq 0 ] || keep=1
+    exit "${status:-0}"
 fi
 : "${LEGE_NESTED_ROOT:?isolated wrapper did not provide LEGE_NESTED_ROOT}"
 
@@ -90,7 +103,10 @@ wait_for_name() {
 start_service compositor env -u WAYLAND_DISPLAY "$bin/lege-comp" \
     --backend winit --socket-name legeos-integration
 wait_for_path "$XDG_RUNTIME_DIR/legeos-integration"
-wait_for_path "$XDG_RUNTIME_DIR/legeos-integration-shell"
+# The trusted-shell socket is a *prefix* of the main socket's name, not a suffix — a trailing
+# `-shell` on `wayland-0` would land inside snapd's `wayland-[0-9]*` permission, which is the one
+# socket no confined application may open (compositor/lege-comp/src/shell_socket.rs).
+wait_for_path "$XDG_RUNTIME_DIR/legeos-shell-legeos-integration"
 
 start_service sessiond env WAYLAND_DISPLAY=legeos-integration "$bin/lege-sessiond" \
     --manifest-dir "$root/tests/fixtures/manifests" \
@@ -124,7 +140,7 @@ wait_for_name org.freedesktop.impl.portal.desktop.legeos
 
 # The graphical shell connects through the compositor's trusted socket and must survive long
 # enough to fetch its D-Bus-backed model and present frames. Its log is retained on failure.
-start_service shell env WAYLAND_DISPLAY=legeos-integration-shell "$bin/lege-shell" --surface
+start_service shell env WAYLAND_DISPLAY=legeos-shell-legeos-integration "$bin/lege-shell" --surface
 shell_pid="${pids[$((${#pids[@]} - 1))]}"
 sleep 3
 if ! kill -0 "$shell_pid" 2>/dev/null; then
