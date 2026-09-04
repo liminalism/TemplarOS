@@ -1,0 +1,11 @@
+{
+  "label": "before (be57fad, pre 6522e10)",
+  "seconds": 60,
+  "fixture_entries": 5000,
+  "watcher_thread_found": true,
+  "schedstat_pcount_delta": 121,
+  "voluntary_ctxt_switches_delta": 120,
+  "read_bytes_delta": 0,
+  "syscw_delta": 0,
+  "wchar_delta": 0
+}
