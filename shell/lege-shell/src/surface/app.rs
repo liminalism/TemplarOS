@@ -1655,8 +1655,9 @@ impl ShellApp {
         });
     }
 
-    /// Scan a directory (bounded: `lege_treemap::ScanLimits`), lay it out and rasterize it at
-    /// the tile's size, off the event loop. One scan in flight at a time.
+    /// Loads a directory's contents (the live index when a service answers; a bounded direct
+    /// scan otherwise), lays it out and rasterizes it at the tile's size, off the event loop. One
+    /// load in flight at a time.
     fn spawn_treemap(&mut self, path: PathBuf, width: u32, height: u32) {
         if self.treemap_pending.is_some() {
             return;
@@ -1664,14 +1665,19 @@ impl ShellApp {
         self.treemap_pending = Some(path.clone());
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
-        self.runtime.spawn_blocking(move || {
-            let (bitmap, composition) = rasterize_directory(&path, width, height);
-            let _ = tx.send(DataUpdate::Treemap {
-                path,
-                bitmap,
-                composition,
-            });
-            let _ = proxy.send_event(Wake);
+        self.runtime.spawn(async move {
+            let entries = load_treemap_entries(&path).await;
+            let rasterized =
+                tokio::task::spawn_blocking(move || rasterize_entries(&entries, width, height))
+                    .await;
+            if let Ok((bitmap, composition)) = rasterized {
+                let _ = tx.send(DataUpdate::Treemap {
+                    path,
+                    bitmap,
+                    composition,
+                });
+                let _ = proxy.send_event(Wake);
+            }
         });
     }
 
@@ -2828,15 +2834,36 @@ fn format_clock_fields(weekday: i32, day: i32, month: i32, hour: i32, minute: i3
 
 /// The cushion treemap of `root` at `width`×`height`, plus its composition band. An unreadable
 /// or empty directory yields a flat, dim bitmap and no band.
-fn rasterize_directory(
-    root: &std::path::Path,
+/// Loads one directory's contents for the treemap: the index-backed snapshot when
+/// `org.legeos.Files` answers, `lege_treemap::scan` (bounded, off the event loop) when it does
+/// not or the call fails. Keeps the shell's own thread from walking the disk on every file tray
+/// redraw — the load this exists to avoid is exactly what the fallback still does, deliberately,
+/// as the explicit path for "no service available".
+async fn load_treemap_entries(path: &std::path::Path) -> Vec<lege_treemap::RawEntry> {
+    if let Ok(connection) = crate::data::session().await
+        && let Ok(load) = lege_client::tree_source::load_snapshot_tree(&connection, path).await
+    {
+        return load.entries;
+    }
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        lege_treemap::scan(&path, lege_treemap::ScanLimits::default())
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Lays out and rasterizes an already-loaded directory's contents. An unreadable or empty
+/// directory yields a flat, dim bitmap and no band, same as it always has: `entries` is simply
+/// short (the root's own entry, or nothing at all).
+fn rasterize_entries(
+    entries: &[lege_treemap::RawEntry],
     width: u32,
     height: u32,
 ) -> (pixelkit_raster::Bitmap, Vec<(u32, f32)>) {
-    use lege_treemap::{ColorSettings, CushionConfig, LayoutConfig, ScanLimits};
+    use lege_treemap::{ColorSettings, CushionConfig, LayoutConfig};
     let (width, height) = (width.max(1), height.max(1));
-    let entries = lege_treemap::scan(root, ScanLimits::default());
-    let tree = lege_treemap::build_tree(&entries);
+    let tree = lege_treemap::build_tree(entries);
     let colours = ColorSettings::default();
     let layout = lege_treemap::compute_layout_in_rect(
         &tree,
