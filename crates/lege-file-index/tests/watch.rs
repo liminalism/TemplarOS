@@ -12,13 +12,16 @@ use lege_file_index::{
     coalesce::{CoalesceConfig, Coalescer, FakeClock},
     query::Query,
     reconcile::{self, Trigger},
-    watch::{FakeSource, RawKind, WatchBudget, WatchOwner},
+    watch::{FakeSource, RawEvent, RawKind, WatchBudget, WatchOwner},
 };
 
 /// A fixture tree and an index over it, already `current`.
 struct Fixture {
     _temp: tempfile::TempDir,
     tree: std::path::PathBuf,
+    /// The index's database file, so a test can read it back the way the delta fixture does:
+    /// every live row at once, which is the only way to notice a whole subtree going missing.
+    database: std::path::PathBuf,
     index: Index,
     #[allow(dead_code)] // documents the fixture's root; not read by this test today
     root: lege_file_index::RootId,
@@ -39,8 +42,8 @@ fn fixture_with(build: impl FnOnce(&std::path::Path)) -> Fixture {
     fs::create_dir_all(&tree).unwrap();
     build(&tree);
 
-    let index = Index::open(&temp.path().join("index.sqlite3"), IndexConfig::default())
-        .expect("opening the index");
+    let database = temp.path().join("index.sqlite3");
+    let index = Index::open(&database, IndexConfig::default()).expect("opening the index");
     let policy = RootPolicy::default_home();
     let root = index
         .add_root(&NativePath::from_path(&tree), policy.clone())
@@ -68,6 +71,7 @@ fn fixture_with(build: impl FnOnce(&std::path::Path)) -> Fixture {
     Fixture {
         _temp: temp,
         tree,
+        database,
         index,
         root,
         owner,
@@ -331,5 +335,182 @@ fn a_rename_over_an_existing_file_applies() {
             .meta,
         as_scanned(&fixture.tree, &destination),
         "the destination holds what the move put there"
+    );
+}
+
+/// Every path an index still holds, read straight out of the database the way the Btrfs delta
+/// fixture reads it: all of them at once, because counts agree while a whole subtree is missing
+/// and paths do not.
+fn live_paths(database: &std::path::Path) -> Vec<String> {
+    let connection =
+        rusqlite::Connection::open(database).expect("opening the index for comparison");
+    let mut statement = connection
+        .prepare(
+            "SELECT path_display FROM entries
+              WHERE deleted_generation IS NULL ORDER BY path_bytes",
+        )
+        .expect("preparing the comparison query");
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("reading rows");
+    rows.map(|row| row.expect("a row")).collect()
+}
+
+/// What a fresh crawl of `tree` holds.
+fn crawled_paths(tree: &std::path::Path) -> Vec<String> {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let database = temp.path().join("fresh.sqlite3");
+    let index = Index::open(&database, IndexConfig::default()).expect("opening a comparison index");
+    let root = index
+        .add_root(&NativePath::from_path(tree), RootPolicy::default_home())
+        .expect("adding the root")
+        .root;
+    index
+        .scan_root(root, lege_file_index::ScanOptions::default())
+        .expect("a fresh pass");
+    drop(index);
+    live_paths(&database)
+}
+
+fn a_branch_with_two_leaves(tree: &std::path::Path) {
+    fs::create_dir_all(tree.join("branch/leaf00")).unwrap();
+    fs::create_dir_all(tree.join("branch/leaf01")).unwrap();
+    fs::write(tree.join("branch/leaf00/f00.txt"), b"zero").unwrap();
+    fs::write(tree.join("branch/leaf01/f01.txt"), b"one").unwrap();
+    fs::write(tree.join("branch/top.txt"), b"top").unwrap();
+}
+
+fn moved(
+    watch: lege_file_index::watch::WatchId,
+    name: &str,
+    kind: RawKind,
+    cookie: u32,
+) -> RawEvent {
+    RawEvent {
+        watch,
+        name: Some(name.as_bytes().to_vec()),
+        kind,
+        cookie,
+        is_dir: true,
+    }
+}
+
+/// A directory rename with a second rename nested inside it, off the kernel's own event stream.
+///
+/// The watcher names each path as it stands when the event arrives, so the outer rename is
+/// reported first and the inner one under the outer's *new* name. That is already the order
+/// `Mutation::Move` needs — it sweeps a move's destination subtree before rewriting descendants —
+/// and this test is what proves the watcher does not need the re-addressing the delta plan does.
+#[test]
+fn a_rename_nested_inside_a_renamed_directory_keeps_its_children() {
+    let mut fixture = fixture_with(a_branch_with_two_leaves);
+    let root_watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree)
+        .expect("the root was armed by the first pass");
+    let branch_watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree.join("branch"))
+        .expect("the branch was armed by the first pass");
+
+    fs::rename(
+        fixture.tree.join("branch"),
+        fixture.tree.join("branch-renamed"),
+    )
+    .unwrap();
+    fs::rename(
+        fixture.tree.join("branch-renamed/leaf00"),
+        fixture.tree.join("branch-renamed/leaf00-moved"),
+    )
+    .unwrap();
+
+    // The kernel keeps a directory's watch across a rename, so the inner pair arrives on the same
+    // descriptor under a name the watcher has to have retargeted.
+    let source = fixture.owner.source_mut();
+    source.push(moved(root_watch, "branch", RawKind::MovedFrom, 1));
+    source.push(moved(root_watch, "branch-renamed", RawKind::MovedTo, 1));
+    source.push(moved(branch_watch, "leaf00", RawKind::MovedFrom, 2));
+    source.push(moved(branch_watch, "leaf00-moved", RawKind::MovedTo, 2));
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
+    assert_eq!(pumped.mutations.len(), 2, "two renames, two mutations");
+    assert!(pumped.repairs.is_empty(), "nothing was lost");
+    fixture
+        .index
+        .apply(lege_file_index::MutationBatch::new(
+            MutationSource::Watcher,
+            pumped.mutations,
+        ))
+        .expect("applying the batch");
+
+    assert_eq!(
+        live_paths(&fixture.database),
+        crawled_paths(&fixture.tree),
+        "the nested rename lost the subtree under it"
+    );
+}
+
+/// The same end state, renamed the other way round: the leaf first, then the branch it sits in.
+/// Both moves land in one batch, so the batch carries a move whose source is inside the next
+/// move's source — the shape the index re-paths for itself.
+#[test]
+fn a_nested_rename_before_the_directory_it_sits_in_keeps_its_children() {
+    let mut fixture = fixture_with(a_branch_with_two_leaves);
+    let root_watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree)
+        .expect("the root was armed by the first pass");
+    let branch_watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree.join("branch"))
+        .expect("the branch was armed by the first pass");
+
+    // Pumped between the two renames, because the watcher stats the destination as it sees it and
+    // `branch/leaf00-moved` stops existing the moment the branch is renamed.
+    fs::rename(
+        fixture.tree.join("branch/leaf00"),
+        fixture.tree.join("branch/leaf00-moved"),
+    )
+    .unwrap();
+    let source = fixture.owner.source_mut();
+    source.push(moved(branch_watch, "leaf00", RawKind::MovedFrom, 1));
+    source.push(moved(branch_watch, "leaf00-moved", RawKind::MovedTo, 1));
+    let mut mutations = fixture
+        .owner
+        .pump(Some(Duration::ZERO), &fixture.clock)
+        .mutations;
+
+    fs::rename(
+        fixture.tree.join("branch"),
+        fixture.tree.join("branch-renamed"),
+    )
+    .unwrap();
+    let source = fixture.owner.source_mut();
+    source.push(moved(root_watch, "branch", RawKind::MovedFrom, 2));
+    source.push(moved(root_watch, "branch-renamed", RawKind::MovedTo, 2));
+    mutations.extend(
+        fixture
+            .owner
+            .pump(Some(Duration::ZERO), &fixture.clock)
+            .mutations,
+    );
+
+    assert_eq!(mutations.len(), 2, "two renames, two mutations");
+    fixture
+        .index
+        .apply(lege_file_index::MutationBatch::new(
+            MutationSource::Watcher,
+            mutations,
+        ))
+        .expect("applying the batch");
+
+    assert_eq!(
+        live_paths(&fixture.database),
+        crawled_paths(&fixture.tree),
+        "the nested rename lost the subtree under it"
     );
 }

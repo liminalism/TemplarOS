@@ -451,8 +451,10 @@ struct Node {
 /// The net effect of a stream, in subvolume-relative paths, with every temporary name resolved.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DeltaPlan {
-    /// `(where the index has it, where it ended up)`, deepest source first — a child that left a
-    /// directory must move before the directory does, or its row is dragged along with it.
+    /// `(where the row is when this move runs, where it ended up)`, in application order:
+    /// shallowest source first, each source re-addressed through the moves before it. A directory
+    /// move carries its own subtree, so anything nested inside one addresses the row where that
+    /// move left it rather than where the parent snapshot had it.
     pub moves: Vec<(Rel, Rel)>,
     /// Paths whose rows must go, addressed where the index will have them *after* the moves.
     pub removes: Vec<Rel>,
@@ -631,18 +633,43 @@ impl Replay {
         // A directory move already carries its subtree (`Mutation::Move` rewrites every descendant
         // row), so a child whose move is exactly its parent's move is not a second mutation.
         let all = moves.clone();
-        moves.retain(|(from, to)| !implied_by_ancestor(&all, from, to));
-        // Deepest source first: a child leaving a directory must be re-pathed before the directory
-        // itself moves, or the directory's subtree rewrite takes the child with it.
-        moves.sort_by(|(a, _), (b, _)| depth(b).cmp(&depth(a)).then_with(|| a.cmp(b)));
+        let indexed = by_source(&all);
+        moves.retain(|(from, to)| !implied_by_ancestor(&indexed, from, to));
+        drop(indexed);
+        // Shallowest source first, and every source then re-addressed through the moves above it.
+        //
+        // Descendant re-pathing belongs to one layer, and that layer is the mutation: a
+        // `Mutation::Move` of a directory rewrites every descendant row, and sweeps its
+        // destination subtree first because `rename(2)` leaves the destination holding the
+        // source's children and nothing else. A plan that moved the deeper source first would
+        // therefore hand that sweep the rows it had just placed — a rename nested inside a renamed
+        // directory lands under the outer move's *new* path, and the outer move would delete it,
+        // subtree and all. So the ancestor goes first, and the nested move addresses the row where
+        // the ancestor left it. The old deepest-first order existed to keep a child that *left* a
+        // moved directory ahead of it; re-addressing covers that case too, and this way round it
+        // also covers the nested one, which nothing did.
+        moves.sort_by(|(a, _), (b, _)| depth(a).cmp(&depth(b)).then_with(|| a.cmp(b)));
         creates.sort_by_key(|path| (depth(path), path.clone()));
+        // Both re-addressings read the *baseline* sources, which is what the index still holds and
+        // what every recorded removal is spelled in.
+        let placed = by_source(&moves);
         let removes = self
             .removed
             .iter()
-            .map(|original| readdress(&moves, original))
+            .map(|original| readdress(&placed, original, Addressing::Whole))
             .collect();
+        let sequenced = moves
+            .iter()
+            .map(|(from, to)| {
+                (
+                    readdress(&placed, from, Addressing::UnderAncestors),
+                    to.clone(),
+                )
+            })
+            .collect();
+        drop(placed);
         DeltaPlan {
-            moves,
+            moves: sequenced,
             removes,
             creates,
             touches,
@@ -650,38 +677,72 @@ impl Replay {
     }
 }
 
-/// Whether `(from, to)` is exactly what some other move in `moves` already does to this path.
-fn implied_by_ancestor(moves: &[(Rel, Rel)], from: &[u8], to: &[u8]) -> bool {
-    moves.iter().any(|(ancestor_from, ancestor_to)| {
-        if ancestor_from.len() >= from.len() || !is_prefix_path(ancestor_from, from) {
-            return false;
-        }
-        let suffix = &from[ancestor_from.len()..];
-        let mut expected = ancestor_to.clone();
-        expected.extend_from_slice(suffix);
-        expected == to
+/// A plan's moves by source, so an ancestor is found by walking a path's own components rather
+/// than by scanning the list. Ten thousand renamed files then cost a hashed lookup per path
+/// component instead of a search per path, which is the difference between a delta whose cost
+/// tracks the change and one whose cost is the change squared.
+type BySource<'a> = std::collections::HashMap<&'a [u8], &'a Rel>;
+
+fn by_source(moves: &[(Rel, Rel)]) -> BySource<'_> {
+    let mut indexed = BySource::with_capacity(moves.len());
+    for (from, to) in moves {
+        // First wins, as the longest-prefix scan this replaces did among equal-length candidates.
+        indexed.entry(from.as_slice()).or_insert(to);
+    }
+    indexed
+}
+
+/// `path` and every directory above it, deepest first.
+fn ancestors(path: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::successors(Some(path), |path| {
+        path.iter()
+            .rposition(|byte| *byte == b'/')
+            .map(|at| &path[..at])
     })
 }
 
-/// Where a baseline path ends up once the accepted moves have been applied — the address a
-/// removal has to use, because the row will have been re-pathed by then.
-fn readdress(moves: &[(Rel, Rel)], original: &[u8]) -> Rel {
-    let mut best: Option<&(Rel, Rel)> = None;
-    for candidate in moves {
-        if is_prefix_path(&candidate.0, original)
-            && best.is_none_or(|current| candidate.0.len() > current.0.len())
-        {
-            best = Some(candidate);
+/// Whether the path being re-addressed may be moved by a move *of itself*.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Addressing {
+    /// A removal, or anything else that is not itself one of the moves: a move of this very path
+    /// re-addresses it.
+    Whole,
+    /// A move's own source: only the directories above it re-address it, never its own move.
+    UnderAncestors,
+}
+
+/// Where a baseline path ends up once the moves have been applied — the address anything later in
+/// the batch has to use, because the row will have been re-pathed by then.
+///
+/// The deepest move whose source is `path` or a directory above it decides it, and that move's
+/// destination is already the final one: the moves run shallowest source first, so a deeper
+/// ancestor moves last and everything above it has settled by the time it does. Which is why one
+/// lookup answers a chain of nested renames that no single move describes — `a -> a2` and
+/// `a/b -> a2/b2` put `a/b/f` at `a2/b2/f`, and the deeper of the two says so on its own.
+fn readdress(moves: &BySource<'_>, path: &[u8], addressing: Addressing) -> Rel {
+    let mut candidates = ancestors(path);
+    if addressing == Addressing::UnderAncestors {
+        candidates.next();
+    }
+    for ancestor in candidates {
+        if let Some(to) = moves.get(ancestor) {
+            let mut rebuilt = (*to).clone();
+            rebuilt.extend_from_slice(&path[ancestor.len()..]);
+            return rebuilt;
         }
     }
-    match best {
-        Some((from, to)) => {
-            let mut rebuilt = to.clone();
-            rebuilt.extend_from_slice(&original[from.len()..]);
-            rebuilt
-        }
-        None => original.to_vec(),
-    }
+    path.to_vec()
+}
+
+/// Whether `(from, to)` is exactly what a move of a directory above `from` already does to it.
+fn implied_by_ancestor(moves: &BySource<'_>, from: &[u8], to: &[u8]) -> bool {
+    ancestors(from).skip(1).any(|ancestor| {
+        moves.get(ancestor).is_some_and(|ancestor_to| {
+            let mut expected = (*ancestor_to).clone();
+            expected.extend_from_slice(&from[ancestor.len()..]);
+            expected == to
+        })
+    })
 }
 
 /// Order the moves so that every destination is free when its move is applied, putting back the
@@ -699,10 +760,11 @@ fn readdress(moves: &[(Rel, Rel)], original: &[u8]) -> Rel {
 /// the cycle's real destination, so it is stat'd there: the temporary name never exists on disk
 /// and looking for it would count the whole move as vanished.
 ///
-/// Two orderings are preserved. A child that left a directory still moves before the directory
-/// does, or the directory's subtree rewrite drags its row along; and a move nested inside another
-/// pending move's source is *not* held back by it, because that ancestor takes its whole subtree
-/// when it goes rather than vacating anything.
+/// The relative order [`Replay::finish`] chose is preserved wherever nothing is contested, and
+/// that order is what the nesting rules live in now: sources are already re-addressed through the
+/// moves ahead of them, so no move's source is under an earlier move's source. The one nesting
+/// rule kept here — a move whose source is still inside another pending move's source goes first —
+/// is a guard for a hand-built list rather than something a plan can hit.
 ///
 /// The scan that follows is quadratic per emitted move, so it is reached only after a linear test
 /// says some destination is another move's source at all. That test is what a mass rename hits —
@@ -711,14 +773,9 @@ fn readdress(moves: &[(Rel, Rel)], original: &[u8]) -> Rel {
 fn sequence_moves(moves: &[(Rel, Rel)]) -> Vec<(Rel, Rel, Rel)> {
     let sources: std::collections::HashSet<&[u8]> =
         moves.iter().map(|(from, _)| from.as_slice()).collect();
-    let contested = moves.iter().any(|(_, to)| {
-        std::iter::successors(Some(to.as_slice()), |path| {
-            path.iter()
-                .rposition(|byte| *byte == b'/')
-                .map(|at| &path[..at])
-        })
-        .any(|ancestor| sources.contains(ancestor))
-    });
+    let contested = moves
+        .iter()
+        .any(|(_, to)| ancestors(to).any(|ancestor| sources.contains(ancestor)));
     if !contested {
         return moves
             .iter()
@@ -755,7 +812,7 @@ fn sequence_moves(moves: &[(Rel, Rel)]) -> Vec<(Rel, Rel, Rel)> {
             ordered.push(pending.remove(index));
         } else {
             // A cycle: every remaining destination is held by another remaining source. Park the
-            // first one — the deepest, by the plan's own ordering — and let the rest go.
+            // first one — whichever the plan put first — and let the rest go.
             let (from, to, stat) = pending.remove(0);
             let mut park = from.clone();
             park.extend_from_slice(format!(".lege-move-{parked}").as_bytes());
@@ -1384,8 +1441,11 @@ mod tests {
         assert!(plan.moves.len() == 1 && plan.touches.is_empty(), "{plan:?}");
     }
 
+    /// A child that left a directory that also moved. The directory goes first and drags the
+    /// child's row to `c/x`; the child's own move then has to say `c/x`, not the `a/x` the parent
+    /// snapshot had. Addressing it at `a/x` would find nothing and leave the row under `c`.
     #[test]
-    fn a_child_leaving_a_moved_directory_is_re_pathed_before_the_directory_moves() {
+    fn a_child_leaving_a_moved_directory_is_addressed_where_that_move_left_it() {
         let plan = planned(
             &StreamBuilder::new()
                 .snapshot()
@@ -1396,10 +1456,9 @@ mod tests {
         assert_eq!(
             plan.moves,
             vec![
-                (b"a/x".to_vec(), b"b/x".to_vec()),
                 (b"a".to_vec(), b"c".to_vec()),
+                (b"c/x".to_vec(), b"b/x".to_vec()),
             ],
-            "the deeper source has to move first, or the directory rewrite drags it along"
         );
     }
 
@@ -1843,8 +1902,10 @@ mod tests {
         );
     }
 
-    /// The rule the sequencer must not trade away: a child that left a directory is re-pathed
-    /// before the directory itself moves, or the directory's subtree rewrite drags it along.
+    /// The guard the sequencer keeps for a list nobody re-addressed: a source still inside another
+    /// pending move's source is re-pathed before that move takes its subtree away. A plan cannot
+    /// hand this in — [`Replay::finish`] re-addresses sources — but the rule is what makes the
+    /// sequencer safe to call on any list of moves.
     #[test]
     fn sequencing_keeps_a_child_ahead_of_the_directory_it_left() {
         let sequenced = sequence_moves(&[
@@ -1890,19 +1951,23 @@ mod tests {
         );
     }
 
-    /// End to end over a real tree on whatever filesystem the test runs on: index it, swap two
-    /// directories on disk, decode a stream that says so, and require the result to equal a fresh
-    /// crawl. No Btrfs — the stream is written by the test encoder, and the metadata comes from
-    /// the tree the swap actually happened in.
-    #[test]
-    fn a_swapped_pair_of_directories_ends_where_a_fresh_scan_puts_them() {
+    /// Index the tree `build` writes, make the same change on disk with `change`, then apply the
+    /// delta the stream `commands` describes. The answer is the delta's live paths beside a fresh
+    /// crawl's, because equality with a crawl is the only statement about a delta worth making:
+    /// counts agree while whole subtrees are missing, and paths do not.
+    ///
+    /// The tree is `<temp>/home/dk`, so the stream speaks in `dk/...` exactly as a `@home` delta
+    /// does, and the metadata comes from the tree the change actually happened in.
+    fn delta_beside_a_fresh_scan(
+        build: impl FnOnce(&Path),
+        change: impl FnOnce(&Path),
+        commands: impl FnOnce(StreamBuilder) -> StreamBuilder,
+    ) -> (Vec<String>, Vec<String>) {
         let temp = tempfile::tempdir().expect("a temporary directory");
         let home = temp.path().join("home");
         let tree = home.join("dk");
-        std::fs::create_dir_all(tree.join("bulk")).unwrap();
-        std::fs::create_dir_all(tree.join("project/src")).unwrap();
-        std::fs::write(tree.join("bulk/b0.bin"), b"bulk contents").unwrap();
-        std::fs::write(tree.join("project/src/main.rs"), b"fn main() {}").unwrap();
+        std::fs::create_dir_all(&tree).expect("the tree root");
+        build(&tree);
 
         let open = |name: &str| {
             Index::open(&temp.path().join(name), IndexConfig::default()).expect("opening an index")
@@ -1916,20 +1981,10 @@ mod tests {
             .scan_root(root, ScanOptions::default())
             .expect("the first pass");
 
-        // The swap, exactly as a user's `mv` dance performs it.
-        std::fs::rename(tree.join("bulk"), tree.join("bulk-tmp")).unwrap();
-        std::fs::rename(tree.join("project"), tree.join("bulk")).unwrap();
-        std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
+        change(&tree);
 
-        let stream = decode(
-            &StreamBuilder::new()
-                .snapshot()
-                .rename(b"dk/bulk", b"dk/bulk-tmp")
-                .rename(b"dk/project", b"dk/bulk")
-                .rename(b"dk/bulk-tmp", b"dk/project")
-                .end(),
-        )
-        .expect("decoding");
+        let bytes = commands(StreamBuilder::new().snapshot()).end();
+        let stream = decode(&bytes).expect("decoding");
         let plan = plan(&stream).expect("planning");
         let (batch, report) = to_mutations(
             &plan,
@@ -1941,7 +1996,10 @@ mod tests {
             },
             &FsMetadata,
         );
-        assert_eq!(report.vanished, 0, "every planned path is on disk");
+        assert_eq!(
+            report.vanished, 0,
+            "every planned path is on disk: {report:?}"
+        );
         index.apply(batch).expect("applying");
 
         let fresh = open("fresh.sqlite3");
@@ -1952,28 +2010,293 @@ mod tests {
         fresh
             .scan_root(fresh_root, ScanOptions::default())
             .expect("a fresh pass");
+        (live_paths(&index, root), live_paths(&fresh, fresh_root))
+    }
 
-        let paths = |index: &Index, root: crate::RootId| -> Vec<String> {
-            index
-                .with_read(|connection| {
-                    let mut statement = connection.prepare(
-                        "SELECT path_display FROM entries
-                          WHERE root_id = ?1 AND deleted_generation IS NULL
-                          ORDER BY path_bytes",
-                    )?;
-                    let rows = statement.query_map([root.0], |row| row.get::<_, String>(0))?;
-                    let mut out = Vec::new();
-                    for row in rows {
-                        out.push(row?);
-                    }
-                    Ok(out)
-                })
-                .expect("reading paths")
-        };
+    /// Every path a root still holds, in one order, so two indexes can be compared as text.
+    fn live_paths(index: &Index, root: crate::RootId) -> Vec<String> {
+        index
+            .with_read(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT path_display FROM entries
+                      WHERE root_id = ?1 AND deleted_generation IS NULL
+                      ORDER BY path_bytes",
+                )?;
+                let rows = statement.query_map([root.0], |row| row.get::<_, String>(0))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            })
+            .expect("reading paths")
+    }
+
+    /// End to end over a real tree on whatever filesystem the test runs on: index it, swap two
+    /// directories on disk, decode a stream that says so, and require the result to equal a fresh
+    /// crawl. No Btrfs — the stream is written by the test encoder.
+    #[test]
+    fn a_swapped_pair_of_directories_ends_where_a_fresh_scan_puts_them() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                std::fs::create_dir_all(tree.join("bulk")).unwrap();
+                std::fs::create_dir_all(tree.join("project/src")).unwrap();
+                std::fs::write(tree.join("bulk/b0.bin"), b"bulk contents").unwrap();
+                std::fs::write(tree.join("project/src/main.rs"), b"fn main() {}").unwrap();
+            },
+            // The swap, exactly as a user's `mv` dance performs it.
+            |tree| {
+                std::fs::rename(tree.join("bulk"), tree.join("bulk-tmp")).unwrap();
+                std::fs::rename(tree.join("project"), tree.join("bulk")).unwrap();
+                std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
+            },
+            |stream| {
+                stream
+                    .rename(b"dk/bulk", b"dk/bulk-tmp")
+                    .rename(b"dk/project", b"dk/bulk")
+                    .rename(b"dk/bulk-tmp", b"dk/project")
+            },
+        );
         assert_eq!(
-            paths(&index, root),
-            paths(&fresh, fresh_root),
+            delta, fresh,
             "the delta and a fresh crawl disagree about where the swap put things"
+        );
+    }
+
+    /// The tree the nested-rename tests below all rename: two leaves under one branch, each with a
+    /// file, plus a file directly under the branch so a lost subtree is visible next to a kept one.
+    fn a_branch_with_two_leaves(tree: &Path) {
+        std::fs::create_dir_all(tree.join("branch/leaf00")).unwrap();
+        std::fs::create_dir_all(tree.join("branch/leaf01")).unwrap();
+        std::fs::write(tree.join("branch/leaf00/f00.txt"), b"zero").unwrap();
+        std::fs::write(tree.join("branch/leaf01/f01.txt"), b"one").unwrap();
+        std::fs::write(tree.join("branch/top.txt"), b"top").unwrap();
+    }
+
+    fn rename_the_branch_and_its_leaf(tree: &Path) {
+        std::fs::rename(tree.join("branch"), tree.join("branch-renamed")).unwrap();
+        std::fs::rename(
+            tree.join("branch-renamed/leaf00"),
+            tree.join("branch-renamed/leaf00-moved"),
+        )
+        .unwrap();
+    }
+
+    /// A directory rename with a second rename nested inside it, as the stream spells it when the
+    /// outer rename went first.
+    ///
+    /// The nested move's destination lies under the outer move's *new* path, so applying the
+    /// deeper source first is fatal: `Mutation::Move` sweeps its destination subtree before
+    /// rewriting descendants — `rename(2)` leaves the destination holding the source's children
+    /// and nothing else — and the rows the nested move had just placed there are what it sweeps.
+    #[test]
+    fn a_rename_nested_inside_a_renamed_directory_keeps_its_children() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            a_branch_with_two_leaves,
+            rename_the_branch_and_its_leaf,
+            |stream| {
+                stream.rename(b"dk/branch", b"dk/branch-renamed").rename(
+                    b"dk/branch-renamed/leaf00",
+                    b"dk/branch-renamed/leaf00-moved",
+                )
+            },
+        );
+        assert_eq!(
+            delta, fresh,
+            "the subtree under the nested rename is not where a crawl puts it"
+        );
+    }
+
+    /// The same end state, spelled the other way round: the stream renamed the leaf first and the
+    /// branch afterwards. The plan is the delta's *net* effect either way, so both orderings must
+    /// produce the same index.
+    #[test]
+    fn a_nested_rename_that_the_stream_spelled_first_keeps_its_children() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            a_branch_with_two_leaves,
+            |tree| {
+                std::fs::rename(tree.join("branch/leaf00"), tree.join("branch/leaf00-moved"))
+                    .unwrap();
+                std::fs::rename(tree.join("branch"), tree.join("branch-renamed")).unwrap();
+            },
+            |stream| {
+                stream
+                    .rename(b"dk/branch/leaf00", b"dk/branch/leaf00-moved")
+                    .rename(b"dk/branch", b"dk/branch-renamed")
+            },
+        );
+        assert_eq!(
+            delta, fresh,
+            "the subtree under the nested rename is not where a crawl puts it"
+        );
+    }
+
+    /// Three levels, each renamed. A fix that re-addresses one level of nesting and stops passes
+    /// the two-level test and loses the deepest subtree here.
+    #[test]
+    fn three_nested_renames_all_land_where_a_fresh_scan_puts_them() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                std::fs::create_dir_all(tree.join("a/b/c")).unwrap();
+                std::fs::write(tree.join("a/b/c/deep.txt"), b"deep").unwrap();
+                std::fs::write(tree.join("a/b/sib.txt"), b"sibling").unwrap();
+                std::fs::write(tree.join("a/keep.txt"), b"kept").unwrap();
+            },
+            |tree| {
+                std::fs::rename(tree.join("a/b/c"), tree.join("a/b/c2")).unwrap();
+                std::fs::rename(tree.join("a/b"), tree.join("a/b2")).unwrap();
+                std::fs::rename(tree.join("a"), tree.join("a2")).unwrap();
+            },
+            |stream| {
+                stream
+                    .rename(b"dk/a/b/c", b"dk/a/b/c2")
+                    .rename(b"dk/a/b", b"dk/a/b2")
+                    .rename(b"dk/a", b"dk/a2")
+            },
+        );
+        assert_eq!(
+            delta, fresh,
+            "a level of nesting was left addressed at a path the moves already vacated"
+        );
+    }
+
+    /// A nested rename with a creation and a deletion inside the moved subtree, in one batch. The
+    /// removal is addressed where the *moves* will have put the row, and the creation where the
+    /// delta left it, so both have to survive the re-addressing the moves need.
+    #[test]
+    fn a_create_and_a_delete_inside_a_nested_rename_land_with_it() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                a_branch_with_two_leaves(tree);
+                std::fs::write(tree.join("branch/leaf00/doomed.txt"), b"gone soon").unwrap();
+            },
+            |tree| {
+                rename_the_branch_and_its_leaf(tree);
+                std::fs::remove_file(tree.join("branch-renamed/leaf00-moved/doomed.txt")).unwrap();
+                std::fs::write(tree.join("branch-renamed/leaf00-moved/fresh.txt"), b"new").unwrap();
+            },
+            |stream| {
+                stream
+                    .rename(b"dk/branch", b"dk/branch-renamed")
+                    .rename(
+                        b"dk/branch-renamed/leaf00",
+                        b"dk/branch-renamed/leaf00-moved",
+                    )
+                    .unlink(b"dk/branch-renamed/leaf00-moved/doomed.txt")
+                    .mkfile(b"dk/branch-renamed/leaf00-moved/fresh.txt")
+            },
+        );
+        assert_eq!(
+            delta, fresh,
+            "a create or a delete inside the moved subtree was addressed at a stale path"
+        );
+    }
+
+    /// The cycle case, nested: two directories swap names *inside* a directory that is itself
+    /// being renamed. The enclosing move has to land first — its destination is where the swap
+    /// happens — and the swap still needs the temporary name the plan collapsed.
+    #[test]
+    fn a_swap_inside_a_renamed_directory_ends_where_a_fresh_scan_puts_it() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                std::fs::create_dir_all(tree.join("a/x")).unwrap();
+                std::fs::create_dir_all(tree.join("a/y")).unwrap();
+                std::fs::write(tree.join("a/x/one.txt"), b"one").unwrap();
+                std::fs::write(tree.join("a/y/two.txt"), b"two").unwrap();
+            },
+            |tree| {
+                std::fs::rename(tree.join("a/x"), tree.join("a/tmp")).unwrap();
+                std::fs::rename(tree.join("a/y"), tree.join("a/x")).unwrap();
+                std::fs::rename(tree.join("a/tmp"), tree.join("a/y")).unwrap();
+                std::fs::rename(tree.join("a"), tree.join("b")).unwrap();
+            },
+            |stream| {
+                stream
+                    .rename(b"dk/a/x", b"dk/a/tmp")
+                    .rename(b"dk/a/y", b"dk/a/x")
+                    .rename(b"dk/a/tmp", b"dk/a/y")
+                    .rename(b"dk/a", b"dk/b")
+            },
+        );
+        assert_eq!(
+            delta, fresh,
+            "the nested swap and the enclosing rename did not compose"
+        );
+    }
+
+    /// The whole edge-case scenario the Btrfs fixture runs, on ext4 and without root: a hard link,
+    /// a symlink, a directory rename carrying a rename inside it, a path deleted and rewritten
+    /// under a directory that then moves, and a rename cycle — all in one delta.
+    ///
+    /// The stream is written by the test encoder rather than by `btrfs send`, so this does not
+    /// prove the decoder reads a real stream. What it does prove is everything after the decoder,
+    /// which is where the nested rename was losing a subtree, and it can be run by anyone.
+    #[test]
+    fn the_whole_edge_case_scenario_ends_where_a_fresh_scan_puts_it() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                std::fs::create_dir_all(tree.join("project/src")).unwrap();
+                std::fs::create_dir_all(tree.join("bulk")).unwrap();
+                std::fs::create_dir_all(tree.join("branch000/leaf00")).unwrap();
+                std::fs::create_dir_all(tree.join("branch000/leaf01")).unwrap();
+                std::fs::write(tree.join("project/src/main.rs"), b"fn main() {}").unwrap();
+                std::fs::write(tree.join("bulk/b0.bin"), b"bulk contents").unwrap();
+                std::fs::write(tree.join("branch000/leaf00/f00.txt"), b"zero").unwrap();
+                std::fs::write(tree.join("branch000/leaf01/f01.txt"), b"one").unwrap();
+            },
+            |tree| {
+                std::fs::hard_link(tree.join("project/src/main.rs"), tree.join("alias.rs"))
+                    .unwrap();
+                std::os::unix::fs::symlink("project/src/main.rs", tree.join("link-to-main"))
+                    .unwrap();
+                std::fs::rename(
+                    tree.join("branch000/leaf00"),
+                    tree.join("branch000/leaf00-moved"),
+                )
+                .unwrap();
+                std::fs::rename(tree.join("branch000"), tree.join("branch-renamed")).unwrap();
+                std::fs::remove_file(tree.join("project/src/main.rs")).unwrap();
+                std::fs::write(tree.join("project/src/main.rs"), b"replaced").unwrap();
+                std::fs::rename(tree.join("bulk"), tree.join("bulk-tmp")).unwrap();
+                std::fs::rename(tree.join("project"), tree.join("bulk")).unwrap();
+                std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
+            },
+            |stream| {
+                stream
+                    .link(b"dk/alias.rs", b"dk/project/src/main.rs")
+                    .symlink(b"dk/link-to-main", b"project/src/main.rs")
+                    .rename(b"dk/branch000/leaf00", b"dk/branch000/leaf00-moved")
+                    .rename(b"dk/branch000", b"dk/branch-renamed")
+                    .unlink(b"dk/project/src/main.rs")
+                    .mkfile(b"dk/project/src/main.rs")
+                    .rename(b"dk/bulk", b"dk/bulk-tmp")
+                    .rename(b"dk/project", b"dk/bulk")
+                    .rename(b"dk/bulk-tmp", b"dk/project")
+            },
+        );
+        assert_eq!(delta, fresh, "the edge cases diverge");
+    }
+
+    /// The ordering the index needs, stated directly: a move nested inside another move's source
+    /// is emitted **after** it, addressed where that move will have put the row.
+    #[test]
+    fn a_nested_move_is_emitted_after_its_ancestor_and_addressed_through_it() {
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .rename(b"a/b/c", b"a/b/c2")
+                .rename(b"a/b", b"a/b2")
+                .rename(b"a", b"a2")
+                .end(),
+        );
+        assert_eq!(
+            plan.moves,
+            vec![
+                (b"a".to_vec(), b"a2".to_vec()),
+                (b"a2/b".to_vec(), b"a2/b2".to_vec()),
+                (b"a2/b2/c".to_vec(), b"a2/b2/c2".to_vec()),
+            ],
+            "each nested move must address the row where the moves before it left it"
         );
     }
 }
