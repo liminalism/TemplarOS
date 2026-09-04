@@ -173,6 +173,14 @@ pub struct ChangesBatch {
 pub trait ChangeSink: Send + Sync + std::fmt::Debug {
     fn generation_advanced(&self, generation: Generation, changes: &[Change]);
     fn root_state_changed(&self, status: &crate::RootStatus);
+
+    /// A query wanted metadata this root cannot vouch for.
+    ///
+    /// Advisory, and deliberately not a request the query waits on: a `sort:size` over an
+    /// `Unverified` root serves the rows it has, names the root in its answer, and asks the host
+    /// to queue a repair. Blocking the query on a walk of a home directory would be a worse answer
+    /// than a labelled one. The default does nothing, so a sink that cannot repair need not say so.
+    fn metadata_repair_requested(&self, _root: RootId) {}
 }
 
 /// Each touched root's path and policy, read once per batch so the live-write path can stamp the

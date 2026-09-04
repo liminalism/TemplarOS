@@ -111,6 +111,10 @@ fn wire_root_status(status: &index_core::RootStatus) -> Value {
         "volume": wire_volume(&status.volume),
         "state": status.state.as_str(),
         "reason": status.reason,
+        // The namespace axis and the metadata axis are separate answers. `current` has only ever
+        // meant "the set of paths was exhaustive"; this says whether the sizes and times next to
+        // them were re-read, which a `sort:size` consumer needs and a filename search does not.
+        "metadata": status.metadata.as_str(),
         "generation": status.generation.0,
         "complete": status.complete,
         "entry_count": status.entry_count,
@@ -163,6 +167,8 @@ fn wire_search_result(result: &index_core::SearchResult) -> Value {
         "truncated": result.truncated,
         "strategy": result.strategy,
         "roots": result.roots.iter().map(wire_root_status).collect::<Vec<_>>(),
+        "stale_metadata_roots": result.stale_metadata_roots.iter().map(|root| root.0)
+            .collect::<Vec<_>>(),
         "hits": result.hits.iter().map(wire_hit).collect::<Vec<_>>(),
     })
 }
@@ -465,6 +471,7 @@ mod tests {
                 volume: index_core::VolumeIdentity::default(),
                 state: index_core::RootState::Stale,
                 reason: Some("unwatched".to_owned()),
+                metadata: index_core::MetadataFreshness::Unverified,
                 generation: index_core::Generation(7),
                 complete: false,
                 entry_count: 0,

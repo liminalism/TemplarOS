@@ -17,7 +17,10 @@
 use crate::{
     ENTRY_COLUMNS, IndexError, Result, entry_row_from_row,
     generation::fold,
-    model::{Coverage, EntryKind, EntryRow, Generation, NativePath, RootId, RootStatus},
+    model::{
+        Coverage, EntryKind, EntryRow, Generation, MetadataFreshness, NativePath, RootId,
+        RootStatus,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -135,6 +138,14 @@ pub struct Query {
     /// D-Bus signature change.
     #[serde(default)]
     pub include_coverage: Vec<Coverage>,
+    /// Set by a caller whose answer depends on sizes, times or modes rather than on names —
+    /// `sort:size`, a drive visualiser, a "largest files" panel.
+    ///
+    /// It never changes which rows come back and it never blocks. It asks the index to name the
+    /// roots whose metadata was not re-read, in [`SearchResult::stale_metadata_roots`], and to
+    /// tell the host to queue a repair for them.
+    #[serde(default)]
+    pub require_metadata: bool,
 }
 
 impl Query {
@@ -220,6 +231,11 @@ pub struct SearchResult {
     pub strategy: String,
     /// The state of every root in scope, so nothing can render results without their freshness.
     pub roots: Vec<RootStatus>,
+    /// Roots that answered this query out of metadata nobody re-read. Empty unless the query set
+    /// [`Query::require_metadata`] — a filename search neither pays for the distinction nor is
+    /// told about it.
+    #[serde(default)]
+    pub stale_metadata_roots: Vec<RootId>,
     pub hits: Vec<Hit>,
 }
 
@@ -442,6 +458,7 @@ impl crate::Index {
         let needle = fold(query.text.trim());
         let generation = self.generation()?;
         let roots = self.scoped_roots(query)?;
+        let stale_metadata_roots = self.flag_stale_metadata(query, &roots);
         if needle.is_empty() {
             // A search box that has been cleared must not dump the filesystem.
             return Ok(SearchResult {
@@ -451,6 +468,7 @@ impl crate::Index {
                 truncated: false,
                 strategy: planner.name().to_owned(),
                 roots,
+                stale_metadata_roots,
                 hits: Vec::new(),
             });
         }
@@ -531,8 +549,28 @@ impl crate::Index {
             truncated,
             strategy: plan.strategy.to_owned(),
             roots,
+            stale_metadata_roots,
             hits,
         })
+    }
+
+    /// Names the roots that cannot vouch for the metadata this query depends on, and asks the host
+    /// to repair them. Never waits for the repair: the rows are served either way.
+    fn flag_stale_metadata(&self, query: &Query, roots: &[RootStatus]) -> Vec<RootId> {
+        if !query.require_metadata {
+            return Vec::new();
+        }
+        let stale: Vec<RootId> = roots
+            .iter()
+            .filter(|status| status.metadata == MetadataFreshness::Unverified)
+            .map(|status| status.root)
+            .collect();
+        if let Some(sink) = self.sink() {
+            for root in &stale {
+                sink.metadata_repair_requested(*root);
+            }
+        }
+        stale
     }
 
     /// Random access inside a pinned result set.

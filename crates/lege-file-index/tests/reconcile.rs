@@ -5,8 +5,8 @@
 use std::{fs, time::Duration};
 
 use lege_file_index::{
-    Index, IndexConfig, MutationSource, NativePath, RootId, RootPolicy, RootState, ScanBudget,
-    ScanOptions, ScanScope,
+    Index, IndexConfig, MetadataFreshness, MutationSource, NativePath, RootId, RootPolicy,
+    RootState, ScanBudget, ScanOptions, ScanScope,
     coalesce::{CoalesceConfig, Coalescer, FakeClock},
     query::Query,
     reconcile::{self, Trigger},
@@ -51,6 +51,104 @@ fn seeded(temp: &tempfile::TempDir) -> (Index, RootId, std::path::PathBuf, Watch
     .expect("the first pass");
     assert!(outcome.complete);
     (index, root, tree, owner)
+}
+
+/// The lie this labels: a `PolicyChanged` reconcile commits `complete = true` while
+/// `take_on_trust` skips every child `stat`, so the root has always read `current` over metadata
+/// nobody re-read — with no way to say so.
+///
+/// `RootState` is the namespace axis and does not move. `MetadataFreshness` is the other one, and
+/// `namespace = current, metadata = unverified` is now both representable and reachable.
+#[test]
+fn a_namespace_only_repair_is_current_over_metadata_it_did_not_verify() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+
+    let fresh = index.root_status(root).unwrap();
+    assert_eq!(fresh.state, RootState::Current);
+    assert_eq!(
+        fresh.metadata,
+        MetadataFreshness::Verified,
+        "a pass that stat'd everything vouches for what it stat'd"
+    );
+
+    // Rewrite a file in place. Its parent's timestamps do not move, so `take_on_trust` will take
+    // the whole directory's membership on trust — which is correct, and says nothing at all about
+    // the size of the file inside it.
+    let file = tree.join("notes/first.txt");
+    let before = fs::metadata(&file).unwrap().len();
+    fs::write(&file, b"a great deal more than one").unwrap();
+    let parent_mtime = fs::metadata(tree.join("notes")).unwrap();
+
+    let (outcome, report) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Root,
+        &Trigger::NamespaceOnly,
+        ScanOptions::reconcile(index.root_policy(root).unwrap()),
+    )
+    .expect("the namespace-only pass");
+
+    assert!(
+        outcome.complete,
+        "membership was exhaustively re-derived; that is what complete means"
+    );
+    assert!(report.dirs_proven_unchanged > 0, "the shortcut has to fire");
+    assert_eq!(outcome.metadata, MetadataFreshness::Unverified);
+
+    let status = index.root_status(root).unwrap();
+    assert_eq!(
+        status.state,
+        RootState::Current,
+        "the namespace axis is untouched by the metadata axis"
+    );
+    assert_eq!(status.metadata, MetadataFreshness::Unverified);
+
+    let row = index
+        .entry(root, &lege_file_index::NativePath::from_path(&file))
+        .unwrap()
+        .expect("the row is still there");
+    assert_eq!(
+        row.meta.size_bytes, before,
+        "the pass re-committed the size it already had, which is the point of the label"
+    );
+    let _ = parent_mtime;
+
+    // A query that depends on metadata is answered anyway, and told which roots it cannot trust.
+    let mut sized = Query::new("first");
+    sized.require_metadata = true;
+    let result = index.search(&sized).expect("a search");
+    assert_eq!(result.hits.len(), 1, "the query is served, never blocked");
+    assert_eq!(result.stale_metadata_roots, vec![root]);
+
+    // And an ordinary filename search neither pays for the distinction nor hears about it.
+    let plain = index.search(&Query::new("first")).expect("a search");
+    assert!(plain.stale_metadata_roots.is_empty());
+
+    // A full pass restores both axes.
+    let (outcome, _) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Root,
+        &Trigger::Requested,
+        ScanOptions::reconcile(index.root_policy(root).unwrap()),
+    )
+    .expect("the verifying pass");
+    assert_eq!(outcome.metadata, MetadataFreshness::Verified);
+    let status = index.root_status(root).unwrap();
+    assert_eq!(status.state, RootState::Current);
+    assert_eq!(status.metadata, MetadataFreshness::Verified);
+    assert_eq!(
+        index
+            .entry(root, &lege_file_index::NativePath::from_path(&file))
+            .unwrap()
+            .unwrap()
+            .meta
+            .size_bytes,
+        26
+    );
 }
 
 #[test]

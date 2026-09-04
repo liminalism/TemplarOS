@@ -40,8 +40,8 @@ pub use generation::{
 };
 pub use model::{
     BudgetKind, Coverage, CoverageMatch, CoverageRule, EntryId, EntryKind, EntryMeta, EntryRow,
-    Generation, NativePath, ObjectKey, RootId, RootPolicy, RootState, RootStatus, ScanScope,
-    StaleReason, VolumeIdentity, WatchStatus,
+    Generation, MetadataFreshness, NativePath, ObjectKey, RootId, RootPolicy, RootState,
+    RootStatus, ScanScope, StaleReason, VolumeIdentity, WatchStatus,
 };
 pub use mutation::{
     Applied, Change, ChangeOp, ChangeSink, ChangesBatch, Mutation, MutationBatch, MutationSource,
@@ -693,7 +693,7 @@ impl Drop for ScanClaim {
 pub(crate) const ROOT_COLUMNS: &str = "root_id, path_bytes, display, volume_dev_id, volume_uuid, \
      volume_mount, volume_label, policy_hash, state, state_reason, committed_generation, complete, \
      entry_count, last_scan_ms, last_reconcile_started_ms, last_reconcile_finished_ms, last_error, \
-     watch_json";
+     watch_json, metadata_freshness";
 
 pub(crate) const ENTRY_COLUMNS: &str = "entry_id, root_id, parent_id, name_bytes, name_display, \
      path_bytes, path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden, \
@@ -717,6 +717,7 @@ pub(crate) fn root_status_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<
         policy_hash: row.get(7)?,
         state: RootState::from_str_or_stale(&row.get::<_, String>(8)?),
         reason: row.get(9)?,
+        metadata: MetadataFreshness::from_str_or_unverified(&row.get::<_, String>(18)?),
         generation: Generation(row.get::<_, i64>(10)? as u64),
         complete: row.get::<_, i64>(11)? != 0,
         entry_count: row.get::<_, i64>(12)? as u64,
@@ -1074,7 +1075,8 @@ mod tests {
                 .execute_batch(
                     "ALTER TABLE entries DROP COLUMN coverage;
                      ALTER TABLE entries_staging DROP COLUMN coverage;
-                     DELETE FROM index_migrations WHERE name = '0002-coverage-tiers';",
+                     ALTER TABLE roots DROP COLUMN metadata_freshness;
+                     DELETE FROM index_migrations WHERE name <> '0001-index-core';",
                 )
                 .unwrap();
             schema::write_meta(&connection, "schema_version", "1").unwrap();
@@ -1091,6 +1093,12 @@ mod tests {
         let diagnostics = index.diagnostics().unwrap();
         assert_eq!(diagnostics.schema_version, schema::schema_version());
         assert_eq!(index.root_status(root).unwrap(), before, "a root changed");
+        assert_eq!(
+            before.metadata,
+            MetadataFreshness::Verified,
+            "a pass that predates the column stat'd everything; saying otherwise would queue a \
+             repair of every root on the machine to relabel what is already true"
+        );
         assert_eq!(
             index.search(&Query::new("report")).unwrap().hits.len(),
             searchable,

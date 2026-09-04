@@ -43,6 +43,15 @@ pub enum Trigger {
     Periodic,
     /// A client asked.
     Requested,
+    /// Membership only: re-derive what exists, and leave every entry's size, times and mode as
+    /// the index already has them.
+    ///
+    /// A separate variant rather than a field on [`Self::Requested`] deliberately. `Requested` is
+    /// constructed at five sites across three crates; turning it into a struct variant would
+    /// rewrite all of them to say nothing new. What this expresses is the pass a filename search
+    /// actually needs — the namespace axis repaired, the metadata axis left honestly
+    /// [`MetadataFreshness::Unverified`](crate::MetadataFreshness::Unverified).
+    NamespaceOnly,
 }
 
 impl Trigger {
@@ -50,6 +59,9 @@ impl Trigger {
     pub fn stale_reason(&self) -> StaleReason {
         match self {
             Self::Downtime | Self::Periodic | Self::Requested => StaleReason::Downtime,
+            // Upkeep, not a fault: the root reads `stale (reconcile)` while the pass runs, which
+            // is what it already reads for every other background repair.
+            Self::NamespaceOnly => StaleReason::Reconcile,
             Self::Overflow => StaleReason::WatcherOverflow,
             Self::Exhausted { armed, refused } => StaleReason::WatcherExhausted {
                 armed: *armed,
@@ -66,11 +78,12 @@ impl Trigger {
     /// A directory whose mtime and ctime are unchanged has not gained or lost an entry — that is a
     /// filesystem guarantee, and it lets a pass skip the `readdir`. It says nothing about whether
     /// a *file* under it was rewritten in place, because rewriting a file does not touch its
-    /// parent. So the only trigger that may skip child metadata is a policy change, where nothing
-    /// on disk changed at all and only the index's idea of what to keep did.
+    /// parent. So a pass that skips child metadata is repairing membership only, and says so on
+    /// the root's metadata axis: a policy change, where nothing on disk moved and only the index's
+    /// idea of what to keep did, and an explicit namespace-only repair.
     #[must_use]
     pub fn verify_child_metadata(&self) -> bool {
-        !matches!(self, Self::PolicyChanged)
+        !matches!(self, Self::PolicyChanged | Self::NamespaceOnly)
     }
 }
 
@@ -344,6 +357,10 @@ impl Walk<'_> {
                     Err(_) => return Ok(None),
                 }
             } else {
+                // The row's metadata is being re-committed without being re-read. That is the
+                // whole saving of a namespace-only pass, and it is also exactly the fact the
+                // index used to have no way to state.
+                session.note_unverified_metadata();
                 child.meta.clone()
             };
             session.observe(ScannedEntry {

@@ -14,8 +14,8 @@
 use crate::{
     IndexError, Result,
     model::{
-        BudgetKind, Coverage, EntryKind, EntryMeta, Generation, NativePath, RootId, RootPolicy,
-        RootState, RootStatus, ScanScope, StaleReason, now_ms,
+        BudgetKind, Coverage, EntryKind, EntryMeta, Generation, MetadataFreshness, NativePath,
+        RootId, RootPolicy, RootState, RootStatus, ScanScope, StaleReason, now_ms,
     },
     mutation::{Change, ChangeOp},
     schema,
@@ -122,8 +122,21 @@ pub struct ScanOutcome {
     /// next change onwards — which is why it counts against completeness exactly as a read
     /// failure does.
     pub unwatched_dirs: u64,
+    /// Whether this pass re-read every entry's metadata, or took some of it from the index. A
+    /// namespace-only repair is `Unverified` by construction and complete all the same.
+    pub metadata: MetadataFreshness,
     pub elapsed: Duration,
     pub state: RootState,
+}
+
+/// What [`ScanSession::commit`] worked out before it opened the transaction.
+#[derive(Clone, Copy, Debug)]
+struct Committing {
+    complete: bool,
+    metadata: MetadataFreshness,
+    retention: u64,
+    max_changes: u64,
+    oldest_cursor: Option<Generation>,
 }
 
 /// One entry the walker found.
@@ -150,6 +163,7 @@ pub struct ScanSession {
     unreadable_dirs: u64,
     unwatched_dirs: u64,
     watches_armed: u64,
+    unverified_children: u64,
     started: Instant,
     finished: bool,
 }
@@ -212,6 +226,16 @@ impl ScanSession {
     pub fn note_unwatched(&mut self, armed: u64) {
         self.unwatched_dirs += 1;
         self.watches_armed = armed;
+    }
+
+    /// Records an entry whose metadata came from the index rather than from the filesystem.
+    ///
+    /// This does **not** make the pass incomplete: the namespace is still exhaustive, which is all
+    /// [`RootState::Current`] has ever claimed. It moves the other axis, so a `sort:size` query
+    /// can tell that the sizes it is ordering by were not re-read while a filename query pays
+    /// nothing for the distinction.
+    pub fn note_unverified_metadata(&mut self) {
+        self.unverified_children += 1;
     }
 
     /// The tier a path is stored at under this pass's policy, or `None` when no row is written
@@ -344,6 +368,14 @@ impl ScanSession {
         // complete pass turned that subtree into deletions.
         let complete =
             self.limited.is_none() && self.unreadable_dirs == 0 && self.unwatched_dirs == 0;
+        // The other axis. A pass vouches for metadata only when it re-read all of it *and* saw its
+        // whole scope: rows it never reached keep whatever they had, which is by definition not
+        // something this pass verified.
+        let metadata = if complete && self.unverified_children == 0 {
+            MetadataFreshness::Verified
+        } else {
+            MetadataFreshness::Unverified
+        };
         let generation = self.generation;
         let root = self.root;
         let retention = self.index.config().tombstone_retention_generations;
@@ -354,7 +386,16 @@ impl ScanSession {
         let reason = self.options.reason.clone();
 
         let (entries, state) = self.index.with_write(|connection| {
-            self.commit_transaction(connection, complete, retention, max_changes, oldest_cursor)
+            self.commit_transaction(
+                connection,
+                Committing {
+                    complete,
+                    metadata,
+                    retention,
+                    max_changes,
+                    oldest_cursor,
+                },
+            )
         })?;
 
         let _ = reason;
@@ -366,6 +407,7 @@ impl ScanSession {
             permission_denied,
             unreadable_dirs: self.unreadable_dirs,
             unwatched_dirs: self.unwatched_dirs,
+            metadata,
             elapsed: self.started.elapsed(),
             state,
         };
@@ -420,11 +462,15 @@ impl ScanSession {
     fn commit_transaction(
         &self,
         connection: &mut Connection,
-        complete: bool,
-        retention: u64,
-        max_changes: u64,
-        oldest_cursor: Option<Generation>,
+        committing: Committing,
     ) -> Result<(u64, RootState)> {
+        let Committing {
+            complete,
+            metadata,
+            retention,
+            max_changes,
+            oldest_cursor,
+        } = committing;
         let root = self.root;
         let generation = self.generation;
         let scope = &self.options.scope;
@@ -485,6 +531,15 @@ impl ScanSession {
                 now_ms()
             ],
         )?;
+        // A subtree pass may only *downgrade* the root's metadata axis. It looked at part of the
+        // root, so its verifying half says nothing about the rest — and claiming otherwise here
+        // would be the same class of lie the namespace axis already refuses to tell.
+        if matches!(scope, ScanScope::Root) || metadata == MetadataFreshness::Unverified {
+            transaction.execute(
+                "UPDATE roots SET metadata_freshness = ?2 WHERE root_id = ?1",
+                rusqlite::params![root.0, metadata.as_str()],
+            )?;
+        }
         crate::set_state(&transaction, root, state, state_reason.as_deref())?;
 
         let head: u64 = schema::read_meta(&transaction, "committed_generation")?
@@ -617,6 +672,7 @@ impl crate::Index {
             unreadable_dirs: 0,
             unwatched_dirs: 0,
             watches_armed: 0,
+            unverified_children: 0,
             started: Instant::now(),
             finished: false,
         })

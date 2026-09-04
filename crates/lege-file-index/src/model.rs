@@ -294,6 +294,50 @@ impl RootState {
     }
 }
 
+/// Whether a root's *metadata* has been re-read, as opposed to whether its *membership* has.
+///
+/// [`RootState`] is the namespace axis and stays exactly what it was: `Current` means "this root's
+/// set of paths was exhaustive as of a complete pass". It has never meant anything about sizes and
+/// timestamps, and the index has been quietly relying on that: a `PolicyChanged` reconcile commits
+/// `complete = true` while `take_on_trust` skips every child `stat`, so the root reads `current`
+/// over metadata nobody verified, with no way to say so.
+///
+/// The two axes are orthogonal on purpose. A filename query should not pay for a per-child
+/// `symlink_metadata`; `sort:size` and a drive visualiser should, and they are the ones that need
+/// to know when it has not been paid.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetadataFreshness {
+    /// Every row the last complete pass committed had its metadata read from the filesystem.
+    #[default]
+    Verified,
+    /// At least one row's size, times or mode came from the index rather than from a `stat` — or
+    /// the pass did not cover the whole root. Never a reason to refuse an answer, only to label
+    /// one.
+    Unverified,
+}
+
+impl MetadataFreshness {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+        }
+    }
+
+    /// Anything this build does not recognise reads as `Unverified`: the honest answer to "I do
+    /// not know what that means" is "I cannot vouch for it".
+    #[must_use]
+    pub fn from_str_or_unverified(value: &str) -> Self {
+        if value == "verified" {
+            Self::Verified
+        } else {
+            Self::Unverified
+        }
+    }
+}
+
 /// Why a root stopped being trustworthy. Carried into `RootStatus::reason` as a stable string.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
@@ -416,6 +460,11 @@ pub struct RootStatus {
     pub volume: VolumeIdentity,
     pub state: RootState,
     pub reason: Option<String>,
+    /// The metadata axis, orthogonal to `state`. `state = current, metadata = unverified` is a
+    /// representable and reachable combination, and it is the honest description of what a
+    /// policy-change reconcile leaves behind.
+    #[serde(default)]
+    pub metadata: MetadataFreshness,
     pub generation: Generation,
     /// Whether the committed generation covered the whole root.
     pub complete: bool,

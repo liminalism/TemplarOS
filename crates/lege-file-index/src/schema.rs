@@ -152,6 +152,16 @@ pub const MIGRATIONS: &[Migration] = &[
         ALTER TABLE entries_staging ADD COLUMN coverage INTEGER NOT NULL DEFAULT 3;
         ",
     },
+    Migration {
+        name: "0003-metadata-freshness",
+        // `'verified'` is what the rows in an existing database actually are: every pass before
+        // this column existed either stat'd its children or was a policy-change reconcile, and the
+        // former is overwhelmingly the common case. Defaulting to `'unverified'` would put every
+        // root on the machine into a repair queue on first launch to relabel what is already true.
+        sql: r"
+        ALTER TABLE roots ADD COLUMN metadata_freshness TEXT NOT NULL DEFAULT 'verified';
+        ",
+    },
 ];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
