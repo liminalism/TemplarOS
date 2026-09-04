@@ -9,13 +9,17 @@ repository.workspace = true
 
 [dependencies]
 lege-types = { workspace = true }
+lege-file-index = { workspace = true }
+lege-treemap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 
 [lints]

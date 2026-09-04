@@ -11,5 +11,6 @@ pub mod files;
 pub mod proxies;
 pub mod sdk;
 pub mod status;
+pub mod tree_source;
 
 pub use lege_types::dbus as names;
