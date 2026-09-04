@@ -92,6 +92,29 @@ record legeos.work.adaptive-files-and-omnibox/1 : work {
     part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
+record legeos.work.adaptive-index-maintenance/1 : work {
+    title "Adaptive persistent index maintenance — coverage tiers, split freshness, a watcher that sleeps, and a measured backend choice"
+    state proposed
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-file-index/**",
+        path "docs/measurements/**",
+        path "interfaces/dbus/**",
+        path "scripts/**",
+        path "services/lege-filed/**",
+        path "services/lege-hostd/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Keep the shared file index persistent while making its maintenance adaptive: direct write-through when lege-filed performs the operation, kernel events while a consumer is observing, and filesystem metadata deltas to bridge dormant periods, with no recurring crawler in normal operation. Separate acquisition coverage (what the OS knows exists) from client visibility (what a search returns), so a drive visualiser can size target/ while filename search never returns build artefacts. Split namespace freshness from metadata freshness so a filename query stops paying for a per-child stat. Remove the 500ms idle wake and wire the Index1 change signals, which never fire in the current build. Choose the live event backend (inotify, unprivileged fanotify, privileged filesystem-wide fanotify) and the dormant-period bridge (Btrfs send delta vs recursive reconciliation) on measurements taken on the reference machine, not on assumption.
+        """
+    note """
+        Plan of record for this campaign: ~/.claude/plans/implement-a-plan-based-fizzy-journal.md, which extends docs/planning/shared-incremental-file-index.md rather than replacing it. Six lanes in three waves over one shared tree. Measured premise: $HOME holds 230,323 directories (189,089 after the current skip list) against a WatchBudget of 125,037, so recursive inotify cannot reach the intended steady state on the machine the design was written for. The development host is ext4 end-to-end and LegeOS is not yet installed, so all Btrfs work is validated against loopback images with @/@home/@snapshots subvolumes; agents have no sudo, so privileged steps are collected into scripts the user runs.
+        """
+    depends_on [ @legeos.work.file-index-core, @legeos.work.file-index-maintenance ]
+    part_of [ @legeos.work.shared-incremental-file-index ]
+}
+
 record legeos.work.application-integration-interim/1 : work {
     title "Interim application integration — the Terminal role and the Super+grave drop-down terminal, the Files context menu, the search panel with FSearch as the FileSearch provider, Kitty defaults"
     state superseded
@@ -172,6 +195,7 @@ record legeos.work.build-set-archive-verification/1 : work {
                 """
             method command
             command "cargo test -p lege repo"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check image-drop-in {
             statement """
@@ -185,6 +209,10 @@ record legeos.work.build-set-archive-verification/1 : work {
                 """
             method command
             command "cargo test -p lege-build && just deb-plan"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-version-authority-20260904
+            ]
         }
     }
     implements [ @legeos.decision.debian-packaging ]
@@ -315,6 +343,10 @@ record legeos.work.deployment-rollback-completion/1 : work {
                 """
             method command
             command "cargo test -p lege dev::"
+            verified_by [
+                @legeos.evidence.de01-deploy-dry-run-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
         }
         check identities-persist {
             statement """
@@ -322,6 +354,7 @@ record legeos.work.deployment-rollback-completion/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check retention-and-disk {
             statement """
@@ -329,6 +362,7 @@ record legeos.work.deployment-rollback-completion/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd storage"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
     }
     implements [
@@ -486,6 +520,7 @@ record legeos.work.developer-edition-daily-driver/1 : work {
                 """
             method command
             command "cargo test -p xdg-desktop-portal-lege"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check user-journey {
             statement """
@@ -527,6 +562,7 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- seeds closure"
+            verified_by [ @legeos.evidence.de01-package-closure-unavailable-20260904 ]
         }
         check generated-not-maintained {
             statement """
@@ -534,6 +570,7 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- seeds --check"
+            verified_by [ @legeos.evidence.de01-seeds-generated-20260904 ]
         }
         check image-consumes-closure {
             statement """
@@ -541,6 +578,7 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "just image summary"
+            verified_by [ @legeos.evidence.de01-image-summary-mkosi-absent-20260904 ]
         }
     }
     implements [
@@ -755,6 +793,7 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check index1-gates {
             statement """
@@ -762,6 +801,7 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check warm-start-and-compat {
             statement """
@@ -769,6 +809,7 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo test -p lege-filed search"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
     }
     part_of [
@@ -802,6 +843,7 @@ record legeos.work.file-index-maintenance/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index watch"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check honest-freshness {
             statement """
@@ -809,6 +851,7 @@ record legeos.work.file-index-maintenance/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index reconcile && cargo test -p lege-filed watcher"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
     }
     depends_on [ @legeos.work.file-index-core ]
@@ -1417,6 +1460,76 @@ record legeos.work.hands-on-run-4-fixes/1 : work {
         }
     }
     after [ @legeos.work.hands-on-run-3-fixes ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.hands-on-run-5-fixes/1 : work {
+    title "Act on the fifth hands-on run: folder windows instead of one full-screen file manager, Home not drawn under windows, a finer grid and icons where words repeated"
+    state active
+    scope [ path "shell/lege-shell/**" ]
+    intent """
+        Turn the fifth hands-on run's findings into Home Field behaviour, reusing the tile system rather than adding a second windowing system inside the shell. A folder tile becomes a window that lists its directory and can be moved, resized, grouped and reopened like any tile; typing a path opens one; the XDG Desktop folder opens as a small tray that a press expands; the Files object becomes a window over Home rather than Home becoming a file manager; the field paints flat ground over every window's rectangle so nothing of Home shows through a translucent client; the grid cell drops from 104 to 88 logical pixels; and the Files rail draws theme icons instead of repeating the word 'folder' under every folder name.
+        """
+    note """
+        The empty-space finding is only partly addressed: folder tiles now carry content instead of a dim path, but no whole-field layout policy was written, and a default Home is still mostly ground. That is a separate decision about what Home is for when it is empty.
+        """
+    acceptance {
+        check desktop-tray {
+            statement """
+                The XDG Desktop folder is placed at the folder kind's floor and a press is what grows it
+                """
+            method command
+            command "cargo test -p lege-shell --lib desktop_folder_opens"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+        check folder-windows {
+            statement """
+                A folder tile lists its directory, opens once per path, and is an ordinary placeable tile
+                """
+            method command
+            command "cargo test -p lege-shell --lib folder_window_opens"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                On the installed desktop: two folder windows open at once, a translucent kitty shows no trace of Home through it, the Desktop tray expands and collapses, and the Files rail shows icons rather than the word 'folder' twice
+                """
+            method manual
+        }
+        check no-home-under-windows {
+            statement """
+                Nothing of Home is drawn where an un-shelved window is, and Home in the gaps between windows is untouched
+                """
+            method command
+            command "cargo test -p lege-shell --lib a_windows_rectangle"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+        check preview-capture-stops {
+            statement """
+                Preview capture stops while a fullscreen or maximized window covers the field and resumes on reveal, park or un-maximize, with the cache kept
+                """
+            method command
+            command "cargo test -p lege-shell --lib a_window_covering"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+        check shell-gate {
+            statement """
+                The shell crate is green: rustfmt, clippy pedantic with warnings denied, and every test
+                """
+            method command
+            command "cargo test -p lege-shell && cargo clippy -p lege-shell --all-targets"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+        check typed-path-opens-a-window {
+            statement """
+                A typed absolute or ~-relative path is read as a path and offered as the first omnibox row
+                """
+            method command
+            command "cargo test -p lege-shell --lib a_typed_path"
+            verified_by [ @legeos.evidence.hands-on-5-gate-20260904 ]
+        }
+    }
+    derived_from [ @legeos.observation.hands-on-run-5-findings-20260904 ]
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
@@ -2508,6 +2621,10 @@ record legeos.work.reference-hardware-qualification/1 : work {
                 """
             method command
             command "cargo test -p lege doctor::hardware"
+            verified_by [
+                @legeos.evidence.de01-hardware-report-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
         }
         check manual-matrix-user-run {
             statement """
@@ -2521,6 +2638,7 @@ record legeos.work.reference-hardware-qualification/1 : work {
                 """
             method command
             command "cargo test -p lege-hwdetect probes"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
     }
     implements [
@@ -2567,6 +2685,7 @@ record legeos.work.reference-machine-provisioning/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd boot_entries"
+            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
         }
         check one-layout-declaration {
             statement """
@@ -2574,6 +2693,10 @@ record legeos.work.reference-machine-provisioning/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd layout && just image summary"
+            verified_by [
+                @legeos.evidence.de01-image-summary-mkosi-absent-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
         }
     }
     implements [
@@ -2682,6 +2805,81 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
     depends_on [ @legeos.work.home-panel-and-dock-layouts ]
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.self-hosting-legeos/1 : work {
+    title "Make LegeOS bootable on the reference laptop and able to build itself, so Lubuntu can be deleted"
+    state proposed
+    scope [
+        path "Cargo.toml",
+        path "distro/**",
+        path "docs/planning/self-hosting-legeos.md",
+        path "installer/**"
+    ]
+    intent """
+        Get from the Developer Edition 0.1 lanes to a LegeOS that boots on the reference laptop, joins WiFi through NetworkManager and nm-tray-2, and builds its own source tree — after which Lubuntu is deletable rather than load-bearing. Four stages: teach the provisioner to consume free space beside existing partitions and package nm-tray-2; provision into the 55.9 GiB free tail of nvme1n1 with its own ESP, leaving Lubuntu untouched and bootable; pin the five sibling path dependencies so an installation can rebuild the workspace, and prove `just check` green from inside; then retire Lubuntu against a checklist and give its 416 GiB to the root as a second btrfs device.
+        """
+    note """
+        Plan of record: docs/planning/self-hosting-legeos.md. Nothing in it has been executed — no target provisioned, no image built, no clean-root build.
+        """
+    acceptance {
+        check boots-with-secure-boot {
+            statement """
+                The target boots with Secure Boot on, with no MOK prompt, and /proc/cmdline carries legeos.deployment=<id> matching a directory on the ESP
+                """
+            method manual
+        }
+        check metapackages-built {
+            statement """
+                The eight metapackages are built and published beside the Rust packages as one coherent build set
+                """
+            method command
+            command "cargo run -p lege -- dev repo verify"
+        }
+        check nm-tray-2-packaged {
+            statement """
+                nm-tray-2 is pinned in distro/forks/manifest.toml, built as legeos-nm-tray, and named in the session layer with the network-control role
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging"
+        }
+        check provisioner-takes-free-space {
+            statement """
+                installer/provision.sh --free-space /dev/nvme1n1 plans an ESP and a root in the free tail and changes nothing without --apply
+                """
+            method command
+            command "installer/provision.sh --free-space /dev/nvme1n1 --user dk"
+        }
+        check reinstall-route-exists {
+            statement """
+                A LegeOS installation medium exists that does not depend on this disk, so deleting Lubuntu is reversible
+                """
+            method manual
+        }
+        check rollback-exercised {
+            statement """
+                A lege dev deploy has been deliberately rolled back on the target and the machine came back
+                """
+            method manual
+        }
+        check self-hosts {
+            statement """
+                just check and just deb both run green inside LegeOS from a checkout with no sibling repositories present
+                """
+            method manual
+        }
+        check wifi-works {
+            statement """
+                nmcli connects to WiFi from a TTY, and nm-tray-2 then connects from the desktop and reconnects after a suspend
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.work.reference-machine-provisioning ]
+    derived_from [
+        @legeos.observation.this-machines-partition-table-cannot-hold-legeos-as-it-stands
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.session-lock-client/1 : work {

@@ -625,6 +625,17 @@ record legeos.papercut.the-browsermodel-navigation-duplication-is-now/1 : paperc
     created_at 2026-09-01
 }
 
+record legeos.papercut.the-btrfs-delta-harness-writes-docs/1 : papercut {
+    title "The Btrfs delta harness writes…"
+    state verified
+    statement """
+        The Btrfs delta harness writes docs/measurements/btrfs-delta-measured.md from the cost-table test only, so the artifact carries 24 rows of timings but no record of whether the correctness gate (hard_links_symlinks_and_a_directory_rename_survive_a_round_trip) passed. After a privileged re-run the report looks complete and reassuring while the question that actually decides adoption is answerable only from the terminal scrollback, which is exactly the thing that does not survive. The report should carry a pass/fail verdict per correctness test, and ideally refuse to publish a cost table at all when a correctness test failed, since a benchmark of an incorrect implementation is worse than no benchmark.
+        """
+    observed_at git:74809b26b26938806d578bf60e76c9319e93ff5a
+    author "claude"
+    created_at 2026-09-04
+}
+
 record legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 : papercut {
     title "The conventional cargo xtask invocation is not installed in this…"
     state verified

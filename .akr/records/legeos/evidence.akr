@@ -48,6 +48,19 @@ record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.btrfs-delta-correctness-gate-passes/1 : evidence {
+    title "baseline + btrfs delta equals a fresh direct scan, field for field, on the fifth fixture run"
+    state verified
+    result pass
+    method command
+    observed_at git:8d74542b146fa8399817bd377094157b7bd1bb97
+    command "sudo scripts/btrfs-index-fixture.sh measure"
+    artifact "docs/measurements/btrfs-delta-measured.md"
+    summary """
+        Run by the user as root against the loopback Btrfs fixture on 2026-09-04. All five harness tests pass in 352 s. The gate is that an index carried forward only by decoded btrfs send --no-data streams equals an index built from nothing against the final tree, compared field for field on path, kind, size, alloc, mtime, ctime, mode, hidden, dev, inode and nlink; a third arm carried forward by today's reconcile is compared too, as a check on the harness itself. It holds across 24 scenario/tree-size rows (1,540 / 15,339 / 153,327 entries; nothing at all, 100 new files, an hour of desktop use, a 5,000-file build burst, a whole-directory rename, a mass delete, one 1 GiB file, truncate-chmod-rewrite-in-place). The edge-case round trip covering hard links, symlinks, a whole-directory rename, a rename cycle and a move onto an occupied path reports planned_paths 10, mutations 11, creates 3, removes 1, moves 5, touches 2 — exactly what the in-tree test encoder predicted before the fixture confirmed it. An interrupted delta is refused rather than half-applied at all 64 truncated prefixes of a 7,360-byte stream. This was the fifth run: four earlier ones failed, each on a real bug (@legeos.observation.a-send-stream-names-paths-relative-to-the-subvolume-not-the-index-root, @legeos.observation.a-directory-whose-contents-changed-kept-a-stale-modification-time).
+        """
+}
+
 record legeos.evidence.d2-archive-verify-20260903/1 : evidence {
     title "D2: archive verification catches mixed sets, missing components, tampered pool files and an unfinished publish"
     state verified
@@ -130,6 +143,93 @@ record legeos.evidence.daily-driver-matrix-20260903/1 : evidence {
     artifact "docs/planning/daily-driver-matrix.md"
     summary """
         Nine daily-driver journeys audited against HEAD: two automated (file chooser, default-handler resolution), three manual, three blocked (no media player until the seeds land it, no mount/eject verb on Volumes1, no secret-service provider), one deferred. No hardware evidence is claimed and no end-to-end browser run has happened.
+        """
+}
+
+record legeos.evidence.de01-deploy-dry-run-20260904/1 : evidence {
+    title "The deploy dry run names the snapshot and every set and deployment identity"
+    state verified
+    result pass
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "cargo run -q -p lege -- dev deploy --dry-run"
+    artifact ".agent/scratch/de01/D5-deploy-dry-run.txt"
+    summary """
+        The dry run named the build set, the thirteen packages it would publish, and said plainly why no root snapshot would be taken on this machine: "no root snapshot: root is not btrfs, so the userspace this installs over cannot be put back wholesale". Against a btrfs fixture root the same path prints the btrfs snapshot command and the status section resolves all six identities — installed set, running set, rollback set, root snapshot, booted deployment and known-good deployment. Nothing was published, installed or restarted.
+        """
+}
+
+record legeos.evidence.de01-hardware-report-20260904/1 : evidence {
+    title "The hardware report distinguishes passed, failed, skipped and not-executed on the development host"
+    state verified
+    result pass
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "cargo run -q -p lege -- doctor --hardware"
+    artifact ".agent/scratch/de01/D4-doctor-hardware.json"
+    summary """
+        One report with four distinct outcomes on this development host: 39 checks, 20 passed, 1 failed, 7 skipped, 11 not executed. The failure is real and is the host's: nvidia-module-signer, because this machine runs a DKMS-built module signed by a locally enrolled key with no linux-modules-nvidia package installed. Every one of the eleven manual matrix cases is reported not executed with its steps, never as passed or skipped.
+        """
+}
+
+record legeos.evidence.de01-image-summary-mkosi-absent-20260904/1 : evidence {
+    title "The image summary composes but cannot validate: mkosi is not installed on this host"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "just image summary"
+    summary """
+        The compose step ran and wrote the generated package drop-ins, then mkosi itself was absent: "mkosi: command not found", exit 127. mkosi was deliberately not installed on this host, so no image configuration was validated and no image was built.
+        """
+}
+
+record legeos.evidence.de01-integrated-gate-20260904/1 : evidence {
+    title "The integrated gate is green at the merge of all eight campaign lanes"
+    state verified
+    result pass
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "just check"
+    artifact ".agent/scratch/de01/gate-check-4.log"
+    summary """
+        The whole gate passed on the integrated tree of all eight Developer Edition 0.1 lanes: rustfmt, clippy pedantic with warnings denied, 59 test targets green across the workspace including lege-file-index, lege-filed, lege, lege-hostd, lege-boot-health, lege-hwdetect, xtask and the portal, the MSRV check, and every xtask gate (tree-check, deps-check, check-interfaces, check-interface-signatures, check-proxies, check-packaging, check-assets, check-actions).
+        """
+}
+
+record legeos.evidence.de01-package-closure-unavailable-20260904/1 : evidence {
+    title "The closure command reports honestly that no Ubuntu 26.04 index exists on this host"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "cargo run -q -p xtask -- seeds closure"
+    summary """
+        The closure command ran and reported resolution "unavailable": this development host is Ubuntu 25.10 and carries no Ubuntu archive index at all (apt answers only from /var/lib/dpkg/status and the local LegeOS devrepo), so no package name could be resolved against Ubuntu 26.04. The declaration side is complete — 94 direct packages, fourteen exclusive provider roles all filled and none duplicated — but transitive closure, installed size, recommends and the missing list are empty because nothing was asked, not because nothing is missing.
+        """
+}
+
+record legeos.evidence.de01-seeds-generated-20260904/1 : evidence {
+    title "Every generated package artifact matches the one declaration"
+    state verified
+    result pass
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "cargo run -q -p xtask -- seeds --check"
+    summary """
+        "seeds: every generated file matches distro/seeds/selection.toml" — the fourteen seed files, both mkosi package drop-ins, the Flatpak ref list and all eight metapackage control files are byte-identical to what the declaration renders, and check-packaging carries the same drift check inside the gate.
+        """
+}
+
+record legeos.evidence.de01-version-authority-20260904/1 : evidence {
+    title "The build set and the generated changelog head carry the same version"
+    state verified
+    result pass
+    method command
+    observed_at git:9bee0dd35e5e499f688d3044c60ac13d20bac3a9
+    command "just deb-plan"
+    summary """
+        The plan printed one id for all thirteen packages, 0.1.0~dev1788448994+g9bee0dd, and the generated changelog head line derived from it: "legeos (0.1.0~dev1788448994+g9bee0dd) resolute; urgency=medium". The derivation itself is covered by a unit test in lege-build inside the green gate.
         """
 }
 
@@ -241,6 +341,19 @@ record legeos.evidence.desktop-systemd-units-20260823/1 : evidence {
         """
 }
 
+record legeos.evidence.fanotify-against-inotify-20260904/1 : evidence {
+    title "fanotify measured against inotify — the numbers behind keeping inotify"
+    state verified
+    result pass
+    method command
+    observed_at git:55de10d137980fb264a997f3f38c0f1349629944
+    command "cargo run --release -p lege-fanotify --example fanotify-lab -- probe|arm --dirs 100000|events --files 20000|burst --files 20000|stall --files 40000"
+    artifact "docs/measurements/fanotify-2026-09-04.md"
+    summary """
+        Full fanotify-against-inotify comparison on the reference laptop: capability matrix, arm cost and memory over 100,000 directories, throughput and event fidelity on two workloads, kernel-queue overflow, rename reconstruction, event merging, and the Btrfs EXDEV answer. 13 unit tests pass; the workspace gate is green apart from a pre-existing too_many_lines warning in another lane's cli/lege/src/doctor/checks.rs.
+        """
+}
+
 record legeos.evidence.file-copy-path-20260824/1 : evidence {
     title "Copy Path action tests pass"
     state verified
@@ -297,6 +410,19 @@ record legeos.evidence.file-index-core.warm-start-compat/1 : evidence {
     command "cargo test -p lege-filed search"
     summary """
         11 passed: search.rs now delegates to lege_file_index while keeping Entry/Hit/Rank/SavedQuery and every Search1-facing signature; the two rewritten cap tests (a_depth_budget_yields_incomplete, an_entry_budget_yields_incomplete) assert complete=false and RootState::Stale rather than a silent truncation. Warm-start is now the watcher's classify_roots (main.rs): a root with a committed generation is served immediately, never rescanned synchronously — covered by main.rs's own rewritten test (a_root_with_a_committed_generation_is_served_and_an_empty_one_is_scheduled_to_scan, not part of this exact command but in the same crate/build). Full `cargo test -p lege-filed` is 108 passed/1 ignored (also verified).
+        """
+}
+
+record legeos.evidence.file-index-health-doctor-check/1 : evidence {
+    title "lege doctor FileIndexHealth check compiles and passes clippy pedantic"
+    state verified
+    result pass
+    method command
+    observed_at git:6c6a79b617b1e387f5ae64da9bbee54a021e30a5
+    command "cargo clippy -p lege --all-targets -- -D warnings"
+    artifact "cli/lege/src/doctor/checks.rs"
+    summary """
+        FileIndexHealth check added to lege doctor: reports index size/generation/per-root state/watcher backend-limits/armed-refused/last-event/last-reconcile/why-stale, satisfying POR acceptance gate 10.
         """
 }
 
@@ -535,6 +661,19 @@ record legeos.evidence.hands-on-4-launcher-20260903/1 : evidence {
     command "cargo test -p lege-sessiond && cargo test -p lege-shell && cargo clippy -p lege-shell -p lege-sessiond -p lege-types --all-targets -- -D warnings && cargo run -q -p xtask -- check-actions"
     summary """
         sessiond 61 tests and shell 276 tests pass, clippy clean, check-actions clean: application_dirs_from always includes the snap exports and honours XDG precedence; bare Home offers applications only and never asks the file service; visual baseline 0x33ce_e9e2_8bc5_df05 reviewed (placeholder 'Open an application').
+        """
+}
+
+record legeos.evidence.hands-on-5-gate-20260904/1 : evidence {
+    title "just check green on the fifth hands-on run's shell changes"
+    state verified
+    result pass
+    method command
+    observed_at git:024c38e68614b4f9333a011242af1cac8d97c919
+    command "just check"
+    artifact ".agent/scratch/hands-on-5/just-check.txt"
+    summary """
+        Exit 0. rustfmt, clippy pedantic with warnings denied, the workspace tests (303 in lege-shell's lib, 5 of them new), MSRV, and all eight xtask gates: tree-check 41 directories, deps-check on the three toolkit-free crates, check-interfaces 33 interfaces, check-interface-signatures 180 shipped members unchanged, check-proxies, check-packaging 13 packages and 14 seeds and 8 metapackages, check-assets, check-actions. The five new tests are the folder window, the Desktop tray, the window occlusion, the preview-capture gate and the typed-path row.
         """
 }
 
@@ -1023,6 +1162,21 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.idle-index-wakeups-eliminated-20260904/1 : evidence {
+    title "The idle index watcher went from 121 wakeups per minute to none, measured against a binary built from the pre-fix commit"
+    state verified
+    scope [ path "services/lege-filed/src/watcher.rs", path "tools/xtask/src/index_bench.rs" ]
+    result pass
+    method command
+    observed_at git:be57fadad93f5918c55ebe3c216807fa9e7ff73c
+    command "cargo run -q -p xtask -- index-bench idle-compare"
+    artifact "docs/measurements/index-baseline-2026-09-04.md"
+    summary """
+        Over a 60 second settled idle window with one armed fixture root, the pre-fix binary (built from a git worktree at the parent of commit 6522e10, so this is a true before/after rather than a recollection) recorded 121 timeslices and 120 voluntary context switches; after the fix both are 0. read_bytes, syscw and wchar were already 0 on this workload in both builds, so the gain is wakeups and the roots-table write per tick, not read I/O. Measured from /proc/<tid>/schedstat and /proc/<pid>/status for the lege-index-watcher thread. The harness had to be an xtask subcommand rather than a benches/ target, because watch::guard panics on any real watch root when the executable path contains a deps component, which is true of every cargo bench and integration-test binary; this was verified directly rather than assumed. Four defects in the harness itself were found and fixed during the run: a wrong schedstat field index, per-task versus per-process voluntary_ctxt_switches, a pid-matching bug against a leaked process, and the sandbox-specific discovery that File::set_modified raises no inotify event here while touch(1) does.
+        """
+    derived_from [ @legeos.work.adaptive-index-maintenance ]
+}
+
 record legeos.evidence.image-summary-mkosi-absent-20260903/1 : evidence {
     title "mkosi absent: the image summary could not validate the repart change"
     state verified
@@ -1033,6 +1187,19 @@ record legeos.evidence.image-summary-mkosi-absent-20260903/1 : evidence {
     artifact "distro/image/mkosi.repart/10-root.conf"
     summary """
         mkosi is not installed on this host (command not found, exit 127), so the repart change adding /@deployments could not be validated by the image tool. Only the mkosi step was run, not `just image summary`, because that recipe's first line regenerates D1's mkosi.conf.d/50-seeds.conf while D1 is editing the seeds.
+        """
+}
+
+record legeos.evidence.index-bench-harness/1 : evidence {
+    title "index-bench harness produces the baseline measurement suite"
+    state verified
+    result pass
+    method command
+    observed_at git:6c6a79b617b1e387f5ae64da9bbee54a021e30a5
+    command "cargo run -q -p xtask -- index-bench workloads --entries 100000 --mutate 10000 --search-queries 200"
+    artifact "docs/measurements/workloads-100k.json"
+    summary """
+        index-bench harness (tools/xtask/src/index_bench.rs) runs dirs/workloads/idle/idle-compare against real fixtures and a real lege-filed; produced the 2026-09-04 baseline.
         """
 }
 
@@ -1407,6 +1574,45 @@ record legeos.evidence.portal-model-tests-20260903/1 : evidence {
     command "cargo test -p xdg-desktop-portal-lege"
     summary """
         23 portal tests pass with no display: the 20 that existed plus three model-level ones covering the full directory listing, the request's filters, and the LegeOS default handler being recognised in the frontend's own spelling of a choice.
+        """
+}
+
+record legeos.evidence.progressive-snapshots.opaque-aggregate/1 : evidence {
+    title "Opaque directory aggregate: correct, cached, staleness-tracked"
+    state verified
+    result pass
+    method command
+    observed_at git:857efe4b21008ace84a6a89b85b9cd3020bae665
+    command "cargo test -p lege-file-index --lib an_opaque_directory_reports_a_recursive_aggregate_excluding_nested_ignored_names"
+    artifact "crates/lege-file-index/src/aggregate.rs"
+    summary """
+        An Opaque directory's cached recursive aggregate excludes a nested Trash name at any depth (1234 vs 9999+1234 bytes), a live watcher mutation under it marks the aggregate stale without recomputing, and the next real reconcile pass over the directory refreshes it and clears stale. entry_aggregates is schema.rs migration 0005, keyed on entry_id ON DELETE CASCADE.
+        """
+}
+
+record legeos.evidence.progressive-snapshots.summary-vs-materialized/1 : evidence {
+    title "Summary snapshot is 1247x smaller and 17.9x faster than materialized on a build-directory fixture"
+    state verified
+    result pass
+    method command
+    observed_at git:857efe4b21008ace84a6a89b85b9cd3020bae665
+    command "cargo test -p lege-file-index --release -- --ignored --nocapture progressive_snapshot_benchmark"
+    artifact "docs/measurements/progressive-snapshots-2026-09-04.md"
+    summary """
+        SnapshotRequest gained detail: SnapshotDetail{Materialized,Summary}, subtree: Option<NativePath>, and include_coverage: Vec<Coverage>, all additive #[serde(default)] JSON fields on the frozen OpenSnapshot signature (184 members unchanged per check-interface-signatures). On a 5000-file src/ + 20000-file target/-shaped Opaque fixture, Summary mode measured 580 bytes / 0.314ms vs Materialized's 723252 bytes / 5.625ms -- 1247x smaller, 17.9x faster. A smaller 500+500 fixture (permanent test, runs under just check) measured 123.7x. Any field mask reaching outside the original 8 fields (COVERAGE, AGGREGATE) stamps a new FORMAT_EXTENDED=2; SnapshotReader rejects an unrecognised format outright.
+        """
+}
+
+record legeos.evidence.progressive-snapshots.treemap-adapter/1 : evidence {
+    title "Treemap TreeSource adapter matches a direct scan; shell no longer always walks the disk"
+    state verified
+    result pass
+    method command
+    observed_at git:857efe4b21008ace84a6a89b85b9cd3020bae665
+    command "cargo test -p lege-client --lib tree_source"
+    artifact "crates/lege-client/src/tree_source.rs"
+    summary """
+        crates/lege-client/src/tree_source.rs introduces the POR §4.3 TreeSource trait, DirectScanSource (the pre-existing lege_treemap::scan, unchanged, kept as the explicit fallback), and an index-snapshot path (load_snapshot_tree) that rebases OpenSnapshot to the requested subtree in Materialized detail. A hermetic in-process test (no D-Bus, no lege-filed) proves the adapter produces the same RawEntry rows, sorted, as a direct scan of the same fixture. shell/lege-shell/src/surface/app.rs's spawn_treemap now tries the snapshot path first (async, via crate::data::session()) and falls back to DirectScanSource via spawn_blocking only when no service answers -- the walk at app.rs:2838 (lege_treemap::scan on every file tray redraw) is now the explicit fallback, not the only path. lege-treemap itself gained no new dependencies (deps-check still reports 0 transitive deps); the adapter lives in lege-client.
         """
 }
 

@@ -53,6 +53,16 @@ record legeos.question.home-field-default-density/2 : question {
     supersedes [ @legeos.question.home-field-default-density/1 ]
 }
 
+record legeos.question.no-route-for-a-privileged-fd-to-reach-the-per-user-daemon/1 : question {
+    title "Nothing on the system bus can hand a file descriptor to a session service, which blocks both candidate index backends"
+    state open
+    scope [ path "interfaces/dbus/**", path "services/lege-hostd/**" ]
+    question """
+        Two independent lanes reached the same wall. A privileged fanotify group opened with FAN_MARK_FILESYSTEM, and a root-owned 0600 btrfs send stream, are both file descriptors that lege-hostd can obtain and lege-filed cannot. But no org.legeos.Host.* interface has a type="h" argument anywhere in interfaces/dbus/, and no zvariant Fd or OwnedFd appears under services/lege-hostd/src/. The only fd-passing precedent in the repository is Files.Index1.OpenSnapshot, which is a per-user session service handing an fd to its own clients, not a privileged system-bus service handing one across the privilege boundary. So: should lege-hostd gain a general, auditable way to pass a restricted fd to a session service, and if so what limits its use — which caller identities may ask, what the fd is allowed to be, and how the receiving daemon proves it did not widen its own privilege by accepting one? Until this is answered, both FAN_MARK_FILESYSTEM and the btrfs delta stream are blocked on transport rather than on merit, and ADR-0003 forbids the obvious shortcut of giving CAP_SYS_ADMIN to the per-user lege-filed.
+        """
+    blocks [ @legeos.work.adaptive-index-maintenance ]
+}
+
 record legeos.question.no-way-to-report-a-document-becoming-dirty/1 : question {
     title "An application has no way to report a document becoming dirty outside a pressure event"
     state open

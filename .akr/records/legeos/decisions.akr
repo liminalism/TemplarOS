@@ -88,6 +88,31 @@ record legeos.decision.boot-deploy-secure-boot/1 : decision {
     ]
 }
 
+record legeos.decision.btrfs-delta-is-an-opt-in-catch-up-backend-not-the-default/1 : decision {
+    title "The Btrfs metadata delta is adopted as an opt-in catch-up backend for @home, and is not the default until it has run on a real LegeOS install"
+    state proposed
+    scope [
+        path "crates/lege-file-index/src/btrfs_delta.rs",
+        path "interfaces/dbus/org.legeos.Host.IndexCheckpoint1.xml",
+        path "services/lege-hostd/src/index_checkpoint.rs"
+    ]
+    topic index-catch-up-backend
+    decision """
+        btrfs send --no-data between two read-only @home checkpoints is adopted as an opt-in catch-up source for the file index, and is not enabled by default. org.legeos.Host.IndexCheckpoint1 stays in the tree, guarded by polkit org.legeos.host.index-checkpoint, documented as unadopted; the decoder and its 25 unit tests stay in lege-file-index; the correctness harness stays runnable from one script (scripts/btrfs-index-fixture.sh). Nothing constructs the backend in lege-filed. Three things must land before it becomes the default, and each is small: (1) the stream transport, decided as a new additive DeltaOpen member returning type="h" — hostd opens the stream, unlinks it, and returns the descriptor, which is the pattern Index1.OpenSnapshot already uses on the session bus, rather than chowning a root-owned inventory of every path under @home into the filesystem; (2) a number for the disk cost of holding a checkpoint, since a retained read-only snapshot pins every extent it references and "your disk does not free space while the index is dormant" is user-visible; (3) a stream-size cap above which the backend gives up and asks for a reconcile, because the stream is proportional to extent count and a write-heavy dormant window costs tens of MiB. Revisit when LegeOS installs on Btrfs on the reference machine.
+        """
+    context """
+        The lane's architectural question was whether btrfs send is proportional to the change or to the tree, and it is proportional to the change: flat within 4 ms across a hundredfold tree for a fixed change, with a byte-identical stream, and about 24 microseconds per changed path (@legeos.observation.delta-catch-up-cost-tracks-the-change-and-beats-a-crawl-except-on-bulk-creation/4). Against it, a no-op reconcile of a 153,327-entry tree costs 3.24 s and scales with the tree; a real $HOME is several times that. The correctness gate — baseline plus delta equals a fresh direct scan, field for field — passes (@legeos.evidence.btrfs-delta-correctness-gate-passes). What holds the default back is not the measurements but their provenance: everything was measured on a loopback image on an ext4 host, up to 153k entries, never on a real Btrfs root, a real @home, or across a reboot. btrfs send requires CAP_SYS_ADMIN on kernel 6.17 even for the subvolume's owner (@legeos.observation.btrfs-send-needs-privilege-but-snapshotting-does-not), so the hostd round trip and the transport question are unavoidable. A correction to an earlier claim of this campaign's: ADR-0003 does not forbid fd-passing. It is 20 lines settling what hostd owns — updates, deployments, drivers, storage reserve, hardware profile — and says nothing about file descriptors in either direction. The narrower true facts are that no org.legeos.Host.* method takes or returns type="h" today, so this is new surface on the system bus and deserves a deliberate decision, and that Index1.OpenSnapshot already returns type="h" on the session bus, so the pattern is established and only the bus is new. No ADR amendment is required.
+        """
+    consequences """
+        The index keeps recursive reconciliation as its only catch-up path for now, with the measured cost that implies. The unadopted hostd surface carries a maintenance cost: one interface XML frozen in interfaces/baseline.json, one polkit action, one AppArmor entry, and a decoder that must keep compiling. That is accepted deliberately in exchange for not repeating the lane. The campaign's fixes to shared index code — hard-link write mirroring, a move onto an occupied path, and directory metadata refresh (@legeos.observation.a-directory-whose-contents-changed-kept-a-stale-modification-time) — are independent of this decision and ship on the watcher's path regardless.
+        """
+    supported_by [
+        @legeos.evidence.btrfs-delta-correctness-gate-passes,
+        @legeos.observation.btrfs-send-needs-privilege-but-snapshotting-does-not,
+        @legeos.observation.delta-catch-up-cost-tracks-the-change-and-beats-a-crawl-except-on-bulk-creation
+    ]
+}
+
 record legeos.decision.build-set-id-is-the-version-authority/1 : decision {
     title "The BuildSetId is the one version authority; debian/changelog is generated from it"
     state active
@@ -283,6 +308,32 @@ record legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1 
         @legeos.work.home-field
     ]
     implements [ @legeos.constraint.services-not-indicators ]
+}
+
+record legeos.decision.inotify-remains-the-index-event-backend/1 : decision {
+    title "inotify stays the index's event backend; fanotify ships behind EventSource as a measured, unadopted alternative"
+    state proposed
+    scope [
+        path "crates/lege-fanotify/**",
+        path "crates/lege-file-index/src/watch.rs",
+        path "services/lege-filed/**"
+    ]
+    topic index-event-backend
+    decision """
+        InotifySource remains the default and only wired event backend for the file index. crates/lege-fanotify ships a FanotifySource behind lege_file_index::watch::EventSource so the comparison can be re-run, but nothing in lege-filed constructs it and no service links it. The privileged FAN_MARK_FILESYSTEM route through lege-hostd is not built: no org.legeos.Host.* fd-passing surface is added, and lege-filed acquires no capability.
+        """
+    context """
+        Recursive inotify cannot cover the reference machine — 189,089 directories after the index's skip policy against a 125,037 WatchBudget — so fanotify's FAN_MARK_FILESYSTEM, one mark per filesystem, was the obvious candidate. Two variants were measured against InotifySource on arm time, kernel and userspace memory, throughput, event fidelity, rename correctness, merging and queue overflow (@legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify), and the Btrfs question was answered from the kernel source with the neighbouring branch reproduced on this host (@legeos.observation.fanotify-cannot-span-btrfs-subvolumes). The unprivileged variant is one mark per directory for 6.4% more headroom, 2.5x the arm time and about twice the memory; the privileged variant returns EXDEV on every subvolume in distro/deploy/layout.toml, and a single group cannot even hold inode marks on two subvolumes.
+        """
+    consequences """
+        The watch-count problem is not solved by changing backend. It is solved by watching fewer directories (coverage tiers) and by treating a dormant, unwatched root as an honest state rather than a failure, which is where the effort belongs. The open question about routing a privileged fd to the per-user daemon stays open for the Btrfs-delta backend but is moot for fanotify: a passed fd carries the events without the privilege to interpret them — open_by_handle_at is EPERM for lege-filed, so the receiving daemon still needs a per-directory handle-to-path map — and it would hand a per-user daemon a view of every file on the filesystem that polkit cannot narrow after the fact. If the kernel ever grants FAN_MARK_FILESYSTEM on a Btrfs subvolume, or LegeOS abandons subvolumes, revisit from docs/measurements/fanotify-2026-09-04.md rather than from scratch.
+        """
+    depends_on [ @legeos.observation.home-tree-exceeds-the-inotify-watch-budget ]
+    supported_by [
+        @legeos.evidence.fanotify-against-inotify-20260904,
+        @legeos.observation.fanotify-cannot-span-btrfs-subvolumes,
+        @legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify
+    ]
 }
 
 record legeos.decision.mkosi-images/1 : decision {
