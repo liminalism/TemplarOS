@@ -27,10 +27,17 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(|tree| {
+        fs::create_dir_all(tree.join("notes")).unwrap();
+        fs::write(tree.join("notes/first.txt"), b"one").unwrap();
+    })
+}
+
+fn fixture_with(build: impl FnOnce(&std::path::Path)) -> Fixture {
     let temp = tempfile::tempdir().expect("a temporary directory");
     let tree = temp.path().join("tree");
-    fs::create_dir_all(tree.join("notes")).unwrap();
-    fs::write(tree.join("notes/first.txt"), b"one").unwrap();
+    fs::create_dir_all(&tree).unwrap();
+    build(&tree);
 
     let index = Index::open(&temp.path().join("index.sqlite3"), IndexConfig::default())
         .expect("opening the index");
@@ -203,5 +210,78 @@ fn a_pass_that_ran_out_of_watches_reports_an_incomplete_walk() {
     assert!(
         owner.status(0).watches_refused >= 3,
         "every directory past the budget is a refusal the host has to account for"
+    );
+}
+
+/// The row a fresh crawl of the same tree would hold for `path`.
+fn as_scanned(tree: &std::path::Path, path: &std::path::Path) -> lege_file_index::EntryMeta {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let index = Index::open(&temp.path().join("fresh.sqlite3"), IndexConfig::default())
+        .expect("opening a comparison index");
+    let root = index
+        .add_root(&NativePath::from_path(tree), RootPolicy::default_home())
+        .expect("adding the root")
+        .root;
+    index
+        .scan_root(root, lege_file_index::ScanOptions::default())
+        .expect("a fresh pass");
+    index
+        .entry(root, &NativePath::from_path(path))
+        .expect("reading the row")
+        .expect("the path is on disk")
+        .meta
+}
+
+/// A `MOVED_FROM`/`MOVED_TO` pair over a file that already exists — `mv a b` with `b` there.
+///
+/// The destination row cannot be tombstoned in place: `entries_path` is unique on (root, path),
+/// so before the move learned to take the row over this batch died on the constraint.
+#[test]
+fn a_rename_over_an_existing_file_applies() {
+    let mut fixture = fixture_with(|tree| {
+        fs::write(tree.join("a"), b"the source").unwrap();
+        fs::write(tree.join("b"), b"the doomed destination").unwrap();
+    });
+
+    fs::rename(fixture.tree.join("a"), fixture.tree.join("b")).unwrap();
+    let watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree)
+        .expect("the root was armed by the first pass");
+    fixture
+        .owner
+        .source_mut()
+        .push_named(watch, "a", RawKind::MovedFrom, false);
+    fixture
+        .owner
+        .source_mut()
+        .push_named(watch, "b", RawKind::MovedTo, false);
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
+    let batch = lege_file_index::MutationBatch::new(MutationSource::Watcher, pumped.mutations);
+    fixture.index.apply(batch).expect("applying the batch");
+
+    assert!(
+        fixture
+            .index
+            .entry(
+                fixture.root,
+                &NativePath::from_path(&fixture.tree.join("a"))
+            )
+            .expect("reading the row")
+            .is_none(),
+        "the source path is gone"
+    );
+    let destination = fixture.tree.join("b");
+    assert_eq!(
+        fixture
+            .index
+            .entry(fixture.root, &NativePath::from_path(&destination))
+            .expect("reading the row")
+            .expect("the row is there")
+            .meta,
+        as_scanned(&fixture.tree, &destination),
+        "the destination holds what the move put there"
     );
 }

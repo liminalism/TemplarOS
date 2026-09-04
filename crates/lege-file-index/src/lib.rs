@@ -1101,6 +1101,40 @@ mod tests {
             .unwrap();
         assert_eq!(stated(&index), recount(&index), "after a revival");
 
+        // A move onto an occupied path is a loss of one: the destination's row becomes the moved
+        // entry and the source's row stays behind as a tombstone. A move onto a path held only by
+        // a tombstone costs nothing, because that row was not live to begin with.
+        std::fs::rename(home.join("fresh.txt"), home.join("report.pdf")).unwrap();
+        index
+            .apply(MutationBatch::new(
+                MutationSource::Watcher,
+                vec![Mutation::Move {
+                    root,
+                    from: path(&home.join("fresh.txt")),
+                    to: path(&home.join("report.pdf")),
+                    meta: meta(&home.join("report.pdf")),
+                }],
+            ))
+            .unwrap();
+        assert_eq!(stated(&index), recount(&index), "after an overwriting move");
+        std::fs::rename(home.join("report.pdf"), home.join("fresh.txt")).unwrap();
+        index
+            .apply(MutationBatch::new(
+                MutationSource::Watcher,
+                vec![Mutation::Move {
+                    root,
+                    from: path(&home.join("report.pdf")),
+                    to: path(&home.join("fresh.txt")),
+                    meta: meta(&home.join("fresh.txt")),
+                }],
+            ))
+            .unwrap();
+        assert_eq!(
+            stated(&index),
+            recount(&index),
+            "after a move onto a tombstone"
+        );
+
         // A batch past `max_batch` commits in chunks, so the arithmetic has to hold per chunk.
         let index = Index::open(
             &dir.path().join("chunked.sqlite3"),

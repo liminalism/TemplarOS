@@ -686,46 +686,8 @@ fn rename(
     let (entry_id, stored) = source.expect("checked above");
     let generation_id = generation.0 as i64;
 
-    // Anything already sitting at the destination is gone: the move overwrote it.
-    let mut live_delta = 0i64;
-    if let Some((victim, _)) = live_row(transaction, root, to)? {
-        transaction.execute(
-            "UPDATE entries SET deleted_generation = ?1 WHERE entry_id = ?2",
-            rusqlite::params![generation_id, victim.0],
-        )?;
-        live_delta -= 1;
-    }
-
-    let name = to.file_name().unwrap_or_else(|| to.clone());
-    transaction.execute(
-        "UPDATE entries
-            SET path_bytes = ?1, path_display = ?2, name_bytes = ?3, name_display = ?4,
-                name_fold = ?5, kind = ?6, size_bytes = ?7, alloc_bytes = ?8, mtime_ns = ?9,
-                ctime_ns = ?10, mode = ?11, hidden = ?12, dev = ?13, inode = ?14, nlink = ?15,
-                coverage = ?16,
-                written_generation = ?17, last_seen_generation = ?17, deleted_generation = NULL
-          WHERE entry_id = ?18",
-        rusqlite::params![
-            to.as_bytes(),
-            to.display(),
-            name.as_bytes(),
-            name.display(),
-            fold(&name.display()),
-            meta.kind.as_i64(),
-            meta.size_bytes as i64,
-            meta.alloc_bytes as i64,
-            meta.mtime_ns,
-            meta.ctime_ns,
-            i64::from(meta.mode),
-            i64::from(meta.hidden),
-            meta.object_key.map(|key| key.dev as i64),
-            meta.object_key.map(|key| key.ino as i64),
-            i64::from(meta.nlink),
-            coverage.as_i64(),
-            generation_id,
-            entry_id.0,
-        ],
-    )?;
+    let (entry_id, mut live_delta) =
+        place_at(transaction, generation, root, entry_id, to, meta, coverage)?;
 
     // A directory move takes its subtree's paths with it, so a folder drag costs one rewrite
     // rather than a full re-enumeration of everything under it — unless the destination tier
@@ -736,8 +698,28 @@ fn rename(
     let descendants = if !is_directory {
         0
     } else if coverage.materialises_children() {
-        // Paths are rewritten in place: the same rows, somewhere else. The count does not move.
-        rename_descendants(transaction, root, from, to, generation_id)?
+        // Whatever the destination subtree still holds is gone with the directory the move
+        // replaced: `rename(2)` leaves the destination holding the source's children and nothing
+        // else. Sweeping first is also what keeps the rewrite below from colliding with a live
+        // row, and what makes the result equal to a fresh scan rather than a union of two trees.
+        // Guarded on `from`: a move *up* into one of its own ancestors would otherwise sweep the
+        // very rows the rewrite below is about to re-path. `rename(2)` cannot produce that, but a
+        // caller can hand us one, and losing a subtree to it is not a survivable answer.
+        if !from.starts_with(to) {
+            let (low, high) = to.subtree_bounds();
+            let swept = transaction.execute(
+                "UPDATE entries SET deleted_generation = ?1
+                  WHERE root_id = ?2 AND deleted_generation IS NULL
+                    AND path_bytes >= ?3 AND path_bytes < ?4",
+                rusqlite::params![generation_id, root.0, low, high],
+            )?;
+            live_delta -= swept as i64;
+        }
+        // Paths are rewritten in place: the same rows, somewhere else. The count does not move,
+        // except where a rewritten path lands on a tombstone that has to give way.
+        let (moved, collided) = rename_descendants(transaction, root, from, to, generation_id)?;
+        live_delta -= collided;
+        moved
     } else {
         let (low, high) = from.subtree_bounds();
         let swept = transaction.execute(
@@ -769,6 +751,100 @@ fn rename(
     })
 }
 
+/// Put the row `source` holds at `to`, and say what that cost the root's live-row count.
+///
+/// Anything already sitting at the destination is gone: the move overwrote it. It cannot be
+/// tombstoned *and* left where it is, because `entries_path` is unique on (root, path) — one row
+/// per path is the oldest rule in this schema. So when the destination is occupied, *its* row is
+/// the row the moved entry now lives in, exactly as `write_entry`'s `ON CONFLICT DO UPDATE` reuses
+/// the tombstone of a file that is recreated over it, and the source row stays where it stood as a
+/// tombstone. [`occupant`] looks past `deleted_generation` on purpose: a tombstone holds its path
+/// just as firmly as a live row.
+///
+/// The free destination is the ordinary case and keeps the row's identity: one `UPDATE`, no
+/// insert, no second lookup.
+fn place_at(
+    transaction: &Transaction<'_>,
+    generation: Generation,
+    root: RootId,
+    source: EntryId,
+    to: &NativePath,
+    meta: &EntryMeta,
+    coverage: Coverage,
+) -> Result<(EntryId, i64)> {
+    let generation_id = generation.0 as i64;
+    if let Some((victim, victim_was_live)) = occupant(transaction, root, to, source)? {
+        tombstone(transaction, generation_id, source)?;
+        write_entry(transaction, generation, root, to, meta, coverage)?;
+        return Ok((victim, -i64::from(victim_was_live)));
+    }
+    let name = to.file_name().unwrap_or_else(|| to.clone());
+    transaction.execute(
+        "UPDATE entries
+            SET path_bytes = ?1, path_display = ?2, name_bytes = ?3, name_display = ?4,
+                name_fold = ?5, kind = ?6, size_bytes = ?7, alloc_bytes = ?8, mtime_ns = ?9,
+                ctime_ns = ?10, mode = ?11, hidden = ?12, dev = ?13, inode = ?14, nlink = ?15,
+                coverage = ?16,
+                written_generation = ?17, last_seen_generation = ?17, deleted_generation = NULL
+          WHERE entry_id = ?18",
+        rusqlite::params![
+            to.as_bytes(),
+            to.display(),
+            name.as_bytes(),
+            name.display(),
+            fold(&name.display()),
+            meta.kind.as_i64(),
+            meta.size_bytes as i64,
+            meta.alloc_bytes as i64,
+            meta.mtime_ns,
+            meta.ctime_ns,
+            i64::from(meta.mode),
+            i64::from(meta.hidden),
+            meta.object_key.map(|key| key.dev as i64),
+            meta.object_key.map(|key| key.ino as i64),
+            i64::from(meta.nlink),
+            coverage.as_i64(),
+            generation_id,
+            source.0,
+        ],
+    )?;
+    Ok((source, 0))
+}
+
+/// The row that already holds `path` — tombstoned or not — other than `keeper`.
+///
+/// Deliberately not `live_row`: `entries_path` is unique on (root, path) whatever
+/// `deleted_generation` says, so a tombstone occupies its path just as firmly as a live row does.
+/// The `bool` is whether that row was still live, which is exactly what the move costs the root's
+/// live-row count.
+fn occupant(
+    transaction: &Transaction<'_>,
+    root: RootId,
+    path: &NativePath,
+    keeper: EntryId,
+) -> Result<Option<(EntryId, bool)>> {
+    transaction
+        .query_row(
+            "SELECT entry_id, deleted_generation IS NULL FROM entries
+              WHERE root_id = ?1 AND path_bytes = ?2 AND entry_id <> ?3",
+            rusqlite::params![root.0, path.as_bytes(), keeper.0],
+            |row| Ok((EntryId(row.get(0)?), row.get::<_, i64>(1)? != 0)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(IndexError::Sqlite(other)),
+        })
+}
+
+fn tombstone(transaction: &Transaction<'_>, generation_id: i64, entry: EntryId) -> Result<()> {
+    transaction.execute(
+        "UPDATE entries SET deleted_generation = ?1 WHERE entry_id = ?2",
+        rusqlite::params![generation_id, entry.0],
+    )?;
+    Ok(())
+}
+
 /// The body of [`rename`]'s directory-subtree rewrite, pulled out only so that function stays
 /// short: every live descendant of `from` is rewritten to sit under `to` instead, in one prepared
 /// statement per row rather than a full re-enumeration of the moved subtree.
@@ -778,7 +854,7 @@ fn rename_descendants(
     from: &NativePath,
     to: &NativePath,
     generation_id: i64,
-) -> Result<u64> {
+) -> Result<(u64, i64)> {
     let (low, high) = from.subtree_bounds();
     let rows: Vec<(i64, Vec<u8>)> = {
         let mut statement = transaction.prepare(
@@ -802,19 +878,58 @@ fn rename_descendants(
           WHERE entry_id = ?4",
     )?;
     let mut descendants = 0u64;
+    let mut collided = 0i64;
     for (id, old) in rows {
         let mut rebuilt = to.as_bytes().to_vec();
         rebuilt.extend_from_slice(&old[prefix_len..]);
         let rebuilt = NativePath::from_bytes(rebuilt);
-        statement.execute(rusqlite::params![
-            rebuilt.as_bytes(),
-            rebuilt.display(),
-            generation_id,
-            id
-        ])?;
+        // The destination path may still be held by a tombstone — a file deleted there before the
+        // directory it lived in was replaced. One row per path, so the row that is already there
+        // is the row this descendant moves into, and the descendant's own row stays behind as a
+        // tombstone. The caller has already swept anything *live* under the destination, so a
+        // collision here costs the live count nothing; the count is threaded out regardless
+        // rather than assumed, because a caller that skips the sweep would make it wrong.
+        if let Some((victim, victim_was_live)) = occupant(transaction, root, &rebuilt, EntryId(id))?
+        {
+            take_over(transaction, generation_id, victim, EntryId(id))?;
+            tombstone(transaction, generation_id, EntryId(id))?;
+            collided += i64::from(victim_was_live);
+        } else {
+            statement.execute(rusqlite::params![
+                rebuilt.as_bytes(),
+                rebuilt.display(),
+                generation_id,
+                id
+            ])?;
+        }
         descendants += 1;
     }
-    Ok(descendants)
+    Ok((descendants, collided))
+}
+
+/// `victim` — a row that already holds a path a move is claiming — becomes `source`.
+///
+/// Everything but the identity and the address is copied across: the two rows describe the same
+/// name in the same directory, so `name_*` and `path_*` already agree, and `parent_id` follows the
+/// path rather than the row. The alternative would be deleting one of them, and this schema
+/// deletes rows in exactly one place: [`crate::generation`]'s tombstone collector.
+fn take_over(
+    transaction: &Transaction<'_>,
+    generation_id: i64,
+    victim: EntryId,
+    source: EntryId,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE entries
+            SET (kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden, dev, inode,
+                 nlink, mime, coverage)
+              = (SELECT kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden, dev,
+                        inode, nlink, mime, coverage FROM entries WHERE entry_id = ?2),
+                written_generation = ?3, last_seen_generation = ?3, deleted_generation = NULL
+          WHERE entry_id = ?1",
+        rusqlite::params![victim.0, source.0, generation_id],
+    )?;
+    Ok(())
 }
 
 fn live_row(
@@ -998,4 +1113,444 @@ fn change_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
         mtime_ns: row.get(9)?,
         at_ms: row.get(10)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Index, IndexConfig, ScanOptions, model::RootPolicy};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+        time::{Duration, Instant},
+    };
+
+    /// The columns a fresh crawl and an incrementally-maintained index have to agree on, keyed by
+    /// path. The same comparison the Btrfs delta fixture makes, without needing Btrfs.
+    type Fingerprint = BTreeMap<Vec<u8>, (i64, i64, i64, i64, i64, Option<i64>, i64)>;
+
+    fn open(database: &Path) -> Index {
+        Index::open(database, IndexConfig::default()).expect("opening an index")
+    }
+
+    fn scanned(database: &Path, tree: &Path) -> (Index, RootId) {
+        let index = open(database);
+        let root = index
+            .add_root(&NativePath::from_path(tree), RootPolicy::default_home())
+            .expect("adding the root")
+            .root;
+        index
+            .scan_root(root, ScanOptions::default())
+            .expect("the first pass");
+        (index, root)
+    }
+
+    fn fingerprint(index: &Index, root: RootId) -> Fingerprint {
+        index
+            .with_read(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT path_bytes, kind, size_bytes, mtime_ns, ctime_ns, mode, inode, nlink
+                       FROM entries
+                      WHERE root_id = ?1 AND deleted_generation IS NULL
+                      ORDER BY path_bytes",
+                )?;
+                let rows = statement.query_map([root.0], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        (
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ),
+                    ))
+                })?;
+                let mut out = Fingerprint::new();
+                for row in rows {
+                    let (path, facts) = row?;
+                    out.insert(path, facts);
+                }
+                Ok(out)
+            })
+            .expect("reading the rows back")
+    }
+
+    /// The only assertion that matters for an incremental writer: what it holds is what a crawl
+    /// of the same tree, right now, would have written.
+    ///
+    /// The root's own row is left out. Creating or deleting a child restamps its parent
+    /// directory's mtime, and no producer of incremental mutations claims otherwise: nothing here
+    /// tells the index that the root directory itself was touched, so comparing it would be
+    /// measuring the fixture rather than the writer. Every row *under* the root is compared.
+    fn agrees_with_a_fresh_scan(index: &Index, root: RootId, tree: &Path, scratch: &Path) {
+        let (fresh_index, fresh_root) = scanned(&scratch.join("fresh.sqlite3"), tree);
+        let mut fresh = fingerprint(&fresh_index, fresh_root);
+        let mut held = fingerprint(index, root);
+        fresh.remove(native(tree).as_bytes());
+        held.remove(native(tree).as_bytes());
+        let show = |path: &[u8]| String::from_utf8_lossy(path).into_owned();
+        let mut problems = Vec::new();
+        for (path, facts) in &fresh {
+            match held.get(path) {
+                None => problems.push(format!("missing: {}", show(path))),
+                Some(other) if other != facts => problems.push(format!(
+                    "differs at {}:\n  held:  {other:?}\n  fresh: {facts:?}",
+                    show(path)
+                )),
+                Some(_) => {}
+            }
+        }
+        for path in held.keys() {
+            if !fresh.contains_key(path) {
+                problems.push(format!("held but gone from disk: {}", show(path)));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    fn meta_of(path: &Path) -> EntryMeta {
+        EntryMeta::from_symlink_metadata(
+            path,
+            &std::fs::symlink_metadata(path).expect("stat of a fixture path"),
+        )
+    }
+
+    fn native(path: &Path) -> NativePath {
+        NativePath::from_path(path)
+    }
+
+    fn apply(index: &Index, mutations: Vec<Mutation>) -> Applied {
+        index
+            .apply(MutationBatch::new(MutationSource::Watcher, mutations))
+            .expect("applying a batch")
+    }
+
+    /// `entry_count` is arithmetic on the hot path, so every new way the count can move has to be
+    /// checked against the `COUNT(*)` it replaced.
+    fn count_agrees(index: &Index, root: RootId) {
+        let counted = index.entry_count(root).expect("counting");
+        let stated = index.root_status(root).expect("status").entry_count;
+        assert_eq!(stated, counted, "the maintained entry_count drifted");
+    }
+
+    struct Fixture {
+        temp: tempfile::TempDir,
+        tree: PathBuf,
+        index: Index,
+        root: RootId,
+    }
+
+    fn fixture(build: impl FnOnce(&Path)) -> Fixture {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(&tree).expect("the tree");
+        build(&tree);
+        let (index, root) = scanned(&temp.path().join("index.sqlite3"), &tree);
+        Fixture {
+            temp,
+            tree,
+            index,
+            root,
+        }
+    }
+
+    impl Fixture {
+        fn settled(&self) {
+            agrees_with_a_fresh_scan(&self.index, self.root, &self.tree, self.temp.path());
+            count_agrees(&self.index, self.root);
+        }
+    }
+
+    /// `rename(2)` overwrites its destination. The index has one row per path — `entries_path` is
+    /// unique — so the row already there cannot be tombstoned *and* left in place; the moved entry
+    /// has to take it over. Before this, the batch died on the UNIQUE constraint.
+    #[test]
+    fn a_move_onto_an_occupied_path_takes_the_row_over() {
+        let fixture = fixture(|tree| {
+            std::fs::write(tree.join("a.txt"), b"aaaaaaaa").unwrap();
+            std::fs::write(tree.join("b.txt"), b"b").unwrap();
+        });
+        std::fs::rename(fixture.tree.join("a.txt"), fixture.tree.join("b.txt")).unwrap();
+        let to = fixture.tree.join("b.txt");
+
+        let applied = apply(
+            &fixture.index,
+            vec![Mutation::Move {
+                root: fixture.root,
+                from: native(&fixture.tree.join("a.txt")),
+                to: native(&to),
+                meta: meta_of(&to),
+            }],
+        );
+        assert_eq!(applied.changes.len(), 1);
+        assert_eq!(applied.changes[0].op, ChangeOp::Moved);
+        fixture.settled();
+    }
+
+    /// The same thing one layer down: the destination path is held by a *tombstone* rather than a
+    /// live row, which `live_row` cannot see but the unique index still enforces.
+    #[test]
+    fn a_move_onto_a_tombstoned_path_takes_the_row_over() {
+        let fixture = fixture(|tree| {
+            std::fs::write(tree.join("a.txt"), b"aaaaaaaa").unwrap();
+            std::fs::write(tree.join("b.txt"), b"b").unwrap();
+        });
+        std::fs::remove_file(fixture.tree.join("b.txt")).unwrap();
+        apply(
+            &fixture.index,
+            vec![Mutation::Remove {
+                root: fixture.root,
+                path: native(&fixture.tree.join("b.txt")),
+            }],
+        );
+        std::fs::rename(fixture.tree.join("a.txt"), fixture.tree.join("b.txt")).unwrap();
+        let to = fixture.tree.join("b.txt");
+        apply(
+            &fixture.index,
+            vec![Mutation::Move {
+                root: fixture.root,
+                from: native(&fixture.tree.join("a.txt")),
+                to: native(&to),
+                meta: meta_of(&to),
+            }],
+        );
+        fixture.settled();
+    }
+
+    /// A directory rename whose destination still has rows underneath it — live ones the index
+    /// never heard were deleted, and tombstoned ones each rewritten descendant path lands on.
+    /// `rename(2)` leaves the destination holding the source's children and nothing else, so the
+    /// index has to converge on exactly that.
+    #[test]
+    fn a_directory_rename_replaces_whatever_the_destination_subtree_held() {
+        let fixture = fixture(|tree| {
+            std::fs::create_dir_all(tree.join("branch/leaf")).unwrap();
+            std::fs::write(tree.join("branch/leaf/kept.txt"), b"kept").unwrap();
+            std::fs::write(tree.join("branch/shared.txt"), b"source").unwrap();
+            std::fs::create_dir_all(tree.join("destination")).unwrap();
+            std::fs::write(tree.join("destination/shared.txt"), b"doomed").unwrap();
+            std::fs::write(tree.join("destination/stale.txt"), b"doomed too").unwrap();
+        });
+
+        // `destination/stale.txt` is deleted behind the index's back: its row stays live, which is
+        // exactly the stale state a watcher gap leaves. `destination/shared.txt` is deleted with
+        // the index watching, so its path is held by a tombstone that the rewrite of
+        // `branch/shared.txt` has to land on.
+        std::fs::remove_file(fixture.tree.join("destination/shared.txt")).unwrap();
+        apply(
+            &fixture.index,
+            vec![Mutation::Remove {
+                root: fixture.root,
+                path: native(&fixture.tree.join("destination/shared.txt")),
+            }],
+        );
+        std::fs::remove_file(fixture.tree.join("destination/stale.txt")).unwrap();
+        std::fs::remove_dir(fixture.tree.join("destination")).unwrap();
+        std::fs::rename(
+            fixture.tree.join("branch"),
+            fixture.tree.join("destination"),
+        )
+        .unwrap();
+
+        let to = fixture.tree.join("destination");
+        let applied = apply(
+            &fixture.index,
+            vec![Mutation::Move {
+                root: fixture.root,
+                from: native(&fixture.tree.join("branch")),
+                to: native(&to),
+                meta: meta_of(&to),
+            }],
+        );
+        assert_eq!(
+            applied.moved_descendants, 3,
+            "leaf/, leaf/kept.txt and shared.txt travelled with the directory"
+        );
+        fixture.settled();
+    }
+
+    /// A create and a move in one batch, addressing the same path from both ends.
+    ///
+    /// First the create the move then overwrites — the shape a `touch b; mv a b` burst arrives in.
+    /// Then the create that lands on the tombstone the move just left behind at its source.
+    #[test]
+    fn a_create_and_a_move_over_the_same_path_settle_in_one_batch() {
+        let fixture = fixture(|tree| {
+            std::fs::write(tree.join("source"), b"source").unwrap();
+        });
+        std::fs::write(fixture.tree.join("target"), b"placed first").unwrap();
+        let created = meta_of(&fixture.tree.join("target"));
+        std::fs::rename(fixture.tree.join("source"), fixture.tree.join("target")).unwrap();
+        let target = fixture.tree.join("target");
+        apply(
+            &fixture.index,
+            vec![
+                Mutation::Upsert {
+                    root: fixture.root,
+                    path: native(&target),
+                    meta: created,
+                },
+                Mutation::Move {
+                    root: fixture.root,
+                    from: native(&fixture.tree.join("source")),
+                    to: native(&target),
+                    meta: meta_of(&target),
+                },
+            ],
+        );
+        fixture.settled();
+
+        // And the other way round: the move vacates `target`, and a create fills it again in the
+        // same batch — onto the tombstone the move left there.
+        std::fs::rename(fixture.tree.join("target"), fixture.tree.join("moved-on")).unwrap();
+        std::fs::write(fixture.tree.join("target"), b"filled again").unwrap();
+        let moved_on = fixture.tree.join("moved-on");
+        apply(
+            &fixture.index,
+            vec![
+                Mutation::Move {
+                    root: fixture.root,
+                    from: native(&target),
+                    to: native(&moved_on),
+                    meta: meta_of(&moved_on),
+                },
+                Mutation::Upsert {
+                    root: fixture.root,
+                    path: native(&target),
+                    meta: meta_of(&target),
+                },
+            ],
+        );
+        fixture.settled();
+    }
+
+    /// A batch bigger than `max_batch` commits in chunks, so nothing above may depend on two
+    /// mutations sharing a transaction.
+    #[test]
+    fn a_move_onto_an_occupied_path_survives_a_chunk_boundary() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("a"), b"aaaa").unwrap();
+        std::fs::write(tree.join("b"), b"b").unwrap();
+        std::fs::write(tree.join("c"), b"cc").unwrap();
+        let index = Index::open(
+            &temp.path().join("index.sqlite3"),
+            IndexConfig {
+                max_batch: 1,
+                ..IndexConfig::default()
+            },
+        )
+        .expect("opening the index");
+        let root = index
+            .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+            .expect("adding the root")
+            .root;
+        index.scan_root(root, ScanOptions::default()).unwrap();
+
+        std::fs::rename(tree.join("a"), tree.join("b")).unwrap();
+        std::fs::rename(tree.join("c"), tree.join("a")).unwrap();
+        apply(
+            &index,
+            vec![
+                Mutation::Move {
+                    root,
+                    from: native(&tree.join("a")),
+                    to: native(&tree.join("b")),
+                    meta: meta_of(&tree.join("b")),
+                },
+                Mutation::Move {
+                    root,
+                    from: native(&tree.join("c")),
+                    to: native(&tree.join("a")),
+                    meta: meta_of(&tree.join("a")),
+                },
+            ],
+        );
+        agrees_with_a_fresh_scan(&index, root, &tree, temp.path());
+        count_agrees(&index, root);
+    }
+
+    /// The hard-link mirror costs an indexed probe, and it must be charged to hard links only.
+    ///
+    /// The measurement it protects: a warm single-mutation batch was taken to 0.3 ms at 153,326
+    /// entries by making the batch cost the batch and not the tree. A per-mutation sibling lookup
+    /// on the ordinary `nlink == 1` path would put a constant back on every watcher event, and a
+    /// lookup that scanned instead of probing would put the tree back. So this asserts both: an
+    /// absolute ceiling, and that the cost does not grow with the tree.
+    ///
+    /// Best-of-N rather than a mean, because a mean on a shared CI machine measures the machine.
+    /// The rows are written straight through `apply`, so the whole test needs no filesystem tree.
+    #[test]
+    fn a_single_link_batch_costs_the_batch_and_not_the_tree() {
+        fn best_single_mutation_batch(entries: usize) -> Duration {
+            let temp = tempfile::tempdir().expect("a temporary directory");
+            let tree = temp.path().join("tree");
+            std::fs::create_dir_all(&tree).expect("the tree");
+            let index = open(&temp.path().join("index.sqlite3"));
+            let root = index
+                .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+                .expect("adding the root")
+                .root;
+            let synthetic = |n: usize| EntryMeta {
+                kind: EntryKind::Regular,
+                size_bytes: n as u64,
+                alloc_bytes: 4096,
+                mtime_ns: n as i64,
+                ctime_ns: n as i64,
+                mode: 0o100_644,
+                hidden: false,
+                object_key: Some(ObjectKey {
+                    dev: 1,
+                    ino: n as u64,
+                }),
+                nlink: 1,
+                mime: None,
+            };
+            let bulk = (0..entries)
+                .map(|n| Mutation::Upsert {
+                    root,
+                    path: native(&tree.join(format!("file{n:07}"))),
+                    meta: synthetic(n),
+                })
+                .collect();
+            apply(&index, bulk);
+
+            let mut best = Duration::MAX;
+            for round in 0..12 {
+                let path = tree.join("hot.txt");
+                let mutation = Mutation::Upsert {
+                    root,
+                    path: native(&path),
+                    meta: synthetic(entries + round),
+                };
+                let started = Instant::now();
+                apply(&index, vec![mutation]);
+                // The first few rounds pay for a cold page cache, not for the tree.
+                if round >= 4 {
+                    best = best.min(started.elapsed());
+                }
+            }
+            best
+        }
+
+        let small = best_single_mutation_batch(5_000);
+        let large = best_single_mutation_batch(20_000);
+        println!(
+            "single-mutation batch: {:.3} ms at 5,000 entries, {:.3} ms at 20,000",
+            small.as_secs_f64() * 1000.0,
+            large.as_secs_f64() * 1000.0,
+        );
+        assert!(
+            large < Duration::from_millis(20),
+            "a warm single-mutation batch took {large:?}; the batch is paying for the tree again"
+        );
+        assert!(
+            large < small * 4 + Duration::from_millis(2),
+            "the batch cost grew with the tree: {small:?} at 5,000 entries, {large:?} at 20,000"
+        );
+    }
 }
