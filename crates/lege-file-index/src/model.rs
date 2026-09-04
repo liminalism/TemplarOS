@@ -831,6 +831,32 @@ impl RootPolicy {
         !self.should_index(path, kind)
     }
 
+    /// The shallowest ancestor whose own tier does not materialise its children — the boundary
+    /// that stopped a walk from ever reaching `path`. `None` when every ancestor materialises, which
+    /// means `path` itself is directly `Ignored` (or nothing stopped it at all).
+    ///
+    /// What lets a live mutation under an unmaterialised subtree find the one row that could still
+    /// say something about it: the `Opaque` directory's cached aggregate. A `Trash`-shaped
+    /// ancestor never reaches here in practice — it is never armed, so it never generates an event
+    /// — but the search does not assume that; it just returns whichever ancestor actually stopped
+    /// materialisation, and the caller decides whether that tier has an aggregate to invalidate.
+    #[must_use]
+    pub fn unmaterialised_boundary(
+        &self,
+        base: Option<&NativePath>,
+        path: &NativePath,
+    ) -> Option<NativePath> {
+        let ancestors = match base {
+            Some(base) => ancestors_between(base, path),
+            None => ancestors_of(path),
+        };
+        ancestors.into_iter().find(|ancestor| {
+            !self
+                .coverage_of(ancestor, EntryKind::Directory)
+                .materialises_children()
+        })
+    }
+
     #[must_use]
     pub fn should_index(&self, path: &NativePath, kind: EntryKind) -> bool {
         self.stored_coverage(path, kind).is_some()
@@ -1085,6 +1111,33 @@ mod tests {
             ),
             None,
             "the original policy is unchanged"
+        );
+    }
+
+    /// The boundary a mutation under an `Opaque` subtree resolves to: the `Opaque` directory
+    /// itself, not the file inside it that triggered the event.
+    #[test]
+    fn the_unmaterialised_boundary_is_the_opaque_directory_not_the_file_inside_it() {
+        let policy = RootPolicy::default_home();
+        let path = |bytes: &[u8]| NativePath::from_bytes(bytes.to_vec());
+
+        let boundary = policy
+            .unmaterialised_boundary(None, &path(b"/home/u/proj/target/debug/thing.o"))
+            .expect("target/ stops materialisation");
+        assert_eq!(boundary, path(b"/home/u/proj/target"));
+
+        assert_eq!(
+            policy.unmaterialised_boundary(None, &path(b"/home/u/proj/src/main.rs")),
+            None,
+            "every ancestor of a Detailed file materialises"
+        );
+
+        // Bounded by `base`: a root registered *inside* `target/` treats it as ordinary, so there
+        // is no boundary below the root itself.
+        let inside = path(b"/home/u/proj/target");
+        assert_eq!(
+            policy.unmaterialised_boundary(Some(&inside), &path(b"/home/u/proj/target/thing.o")),
+            None
         );
     }
 

@@ -74,6 +74,13 @@ fn walk(
     // materialised until a consumer asks for the subtree by name. `Ignored` never got a row at
     // all. Either way, descending would write rows the policy says do not exist.
     if !coverage.is_some_and(Coverage::materialises_children) {
+        // An `Opaque` directory still gets its size: a raw walk that sums bytes without writing
+        // any of the rows the policy just refused to store. This is the one place that cost is
+        // paid — an ordinary pass that visits the directory anyway — never on a live event.
+        if coverage == Some(Coverage::Opaque) {
+            let totals = crate::aggregate::sum_subtree(path, &session.options().policy);
+            session.stage_aggregate(native, totals);
+        }
         return Ok(());
     }
     // A root is not allowed to wander onto another filesystem unless the user said so: the whole

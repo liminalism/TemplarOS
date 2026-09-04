@@ -11,17 +11,42 @@
 
 use crate::{
     ENTRY_COLUMNS, Result, entry_row_from_row,
-    model::{EntryKind, Generation, NativePath, RootId, RootState, RootStatus},
+    model::{Coverage, EntryKind, Generation, NativePath, RootId, RootState, RootStatus},
     query::FieldMask,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
 pub const MAGIC: &[u8; 8] = b"LEGEIDX1";
+/// A payload shaped exactly as it always was: only the eight original fields
+/// (`FieldMask::ALL`, 255) may appear. `SnapshotReader` refuses anything with a wider mask under
+/// this number rather than risk a byte-shape it does not know.
 pub const FORMAT: u32 = 1;
+/// A payload that may also carry [`FieldMask::COVERAGE`] and [`FieldMask::AGGREGATE`] — extra,
+/// fixed-size blocks per entry that an old reader has no way to know to skip. Stamped whenever the
+/// effective mask reaches outside `FieldMask::ALL`, so an old build fails loudly on `format !=
+/// FORMAT` instead of silently misreading the rest of the frame as some other entry's fields.
+pub const FORMAT_EXTENDED: u32 = 2;
 pub const HEADER_LEN: u32 = 64;
 /// Bit 0: the payload is little-endian. Always set in v1; a big-endian writer would clear it.
 pub const FLAG_LITTLE_ENDIAN: u32 = 1;
+
+/// Whether a snapshot's entries section holds every requested row, or one row per directory
+/// carrying a cached total.
+///
+/// `Summary` is what a drive visualiser's first frame wants: a build directory the size of a
+/// small database contributes one row with a number
+/// ([`FieldMask::AGGREGATE`], `aggregate::AggregateRow`), not the row for every object file in
+/// it. Regular files are omitted entirely — the whole point is to never receive the leaf rows —
+/// so a summary snapshot forces [`FieldMask::COVERAGE`] and [`FieldMask::AGGREGATE`] onto the
+/// effective mask regardless of what `fields` asked for.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotDetail {
+    #[default]
+    Materialized,
+    Summary,
+}
 
 /// What to put in a snapshot.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -35,6 +60,22 @@ pub struct SnapshotRequest {
     /// marked as such by the root's state in the manifest.
     #[serde(default)]
     pub include_offline: bool,
+    /// `Summary` for a directory-only picture carrying cached aggregates; `Materialized` (the
+    /// default, and what an absent field means) for the leaf-by-leaf picture this format has
+    /// always produced.
+    #[serde(default)]
+    pub detail: SnapshotDetail,
+    /// Rebase the entries section to one subtree instead of the whole of every selected root. The
+    /// roots section still names every selected root for context; only the entries section is
+    /// bounded, to the subtree path itself plus everything under it.
+    #[serde(default)]
+    pub subtree: Option<NativePath>,
+    /// Same spelling as `Query::include_coverage`, deliberately not its default: a bulk consumer
+    /// picks a snapshot over `Search` precisely to see every tier, so an absent field here means
+    /// "every tier", where an absent field on `Query` means "just `Detailed`". A caller that wants
+    /// only what a filename search would see asks for `[Coverage::Detailed]` explicitly.
+    #[serde(default)]
+    pub include_coverage: Vec<Coverage>,
 }
 
 /// What a reader needs before it parses a byte.
@@ -79,15 +120,33 @@ impl crate::Index {
             .filter(|status| request.include_offline || status.state != RootState::Offline)
             .collect();
 
+        // A summary is directories carrying cached totals, not leaf rows — meaningless without
+        // knowing which tier each directory is at and what its aggregate says, so both are forced
+        // on regardless of what the caller asked for.
+        let mask = if request.detail == SnapshotDetail::Summary {
+            request
+                .fields
+                .with(FieldMask::COVERAGE)
+                .with(FieldMask::AGGREGATE)
+        } else {
+            request.fields
+        };
+        // Any bit outside the original eight changes the payload's per-entry byte shape, so it
+        // has to stamp the format an old reader would refuse rather than misparse.
+        let format = if mask.0 & !FieldMask::ALL.0 == 0 {
+            FORMAT
+        } else {
+            FORMAT_EXTENDED
+        };
+
         let mut payload = Vec::new();
         write_roots_section(&mut payload, &selected);
-        let mask = request.fields;
-        let entry_count = self.write_entries_section(&mut payload, &selected, mask)?;
+        let entry_count = self.write_entries_section(&mut payload, &selected, request, mask)?;
 
         let payload_crc = crc32c(&payload);
         let mut header = Vec::with_capacity(HEADER_LEN as usize);
         header.extend_from_slice(MAGIC);
-        header.extend_from_slice(&FORMAT.to_le_bytes());
+        header.extend_from_slice(&format.to_le_bytes());
         header.extend_from_slice(&FLAG_LITTLE_ENDIAN.to_le_bytes());
         header.extend_from_slice(&HEADER_LEN.to_le_bytes());
         header.extend_from_slice(&mask.0.to_le_bytes());
@@ -106,7 +165,7 @@ impl crate::Index {
         sink.flush()?;
 
         Ok(SnapshotManifest {
-            format: FORMAT,
+            format,
             generation,
             field_mask: mask.0,
             entry_count,
@@ -130,60 +189,29 @@ impl crate::Index {
     /// The body of [`Self::write_snapshot`]'s entry loop, pulled out only so that method stays
     /// short: one read transaction per selected root, streaming each live row's masked fields
     /// into `payload`. Returns how many entries were written.
+    ///
+    /// `request.detail == Summary` narrows the query to directory rows only; `request.subtree`
+    /// bounds it to one subtree; `request.include_coverage` bounds it to specific tiers — each is
+    /// an independent, optional `WHERE` clause, composed rather than duplicated per combination.
     fn write_entries_section(
         &self,
         payload: &mut Vec<u8>,
         selected: &[RootStatus],
+        request: &SnapshotRequest,
         mask: FieldMask,
     ) -> Result<u64> {
+        let want_aggregate = mask.contains(FieldMask::AGGREGATE);
         let mut entry_count = 0u64;
         for status in selected {
             self.with_read(|connection| {
-                let mut statement = connection.prepare(&format!(
-                    "SELECT {ENTRY_COLUMNS} FROM entries
-                      WHERE root_id = ?1 AND deleted_generation IS NULL
-                      ORDER BY entry_id"
-                ))?;
-                let rows = statement.query_map([status.root.0], entry_row_from_row)?;
-                for row in rows {
-                    let row = row?;
-                    payload.extend_from_slice(&(row.entry_id.0 as u64).to_le_bytes());
-                    payload.extend_from_slice(&(row.root.0 as u64).to_le_bytes());
-                    if mask.contains(FieldMask::PARENT) {
-                        payload.extend_from_slice(
-                            &(row.parent.map_or(0, |id| id.0) as u64).to_le_bytes(),
-                        );
-                    }
-                    if mask.contains(FieldMask::NAME) {
-                        write_bytes(payload, row.name.as_bytes());
-                    }
-                    if mask.contains(FieldMask::PATH) {
-                        write_bytes(payload, row.path.as_bytes());
-                    }
-                    if mask.contains(FieldMask::KIND) {
-                        payload.push(kind_code(row.meta.kind));
-                        payload.push(u8::from(row.meta.hidden));
-                        payload.extend_from_slice(&[0u8; 2]);
-                    }
-                    if mask.contains(FieldMask::SIZE) {
-                        payload.extend_from_slice(&row.meta.size_bytes.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.alloc_bytes.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::TIMES) {
-                        payload.extend_from_slice(&row.meta.mtime_ns.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.ctime_ns.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::MODE) {
-                        payload.extend_from_slice(&row.meta.mode.to_le_bytes());
-                        payload.extend_from_slice(&row.meta.nlink.to_le_bytes());
-                    }
-                    if mask.contains(FieldMask::OBJECT_KEY) {
-                        let key = row
-                            .meta
-                            .object_key
-                            .unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
-                        payload.extend_from_slice(&key.dev.to_le_bytes());
-                        payload.extend_from_slice(&key.ino.to_le_bytes());
+                let (sql, params) = entries_query(status.root.0, request, want_aggregate);
+                let mut statement = connection.prepare(&sql)?;
+                let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+                while let Some(sql_row) = rows.next()? {
+                    let row = entry_row_from_row(sql_row)?;
+                    write_entry_fields(payload, mask, &row);
+                    if want_aggregate {
+                        write_aggregate_field(payload, sql_row)?;
                     }
                     entry_count += 1;
                 }
@@ -193,6 +221,146 @@ impl crate::Index {
         Ok(entry_count)
     }
 }
+
+/// Builds `write_entries_section`'s query for one root: `request.detail == Summary` narrows it to
+/// directory rows only; `request.subtree` bounds it to one subtree; `request.include_coverage`
+/// bounds it to specific tiers — each an independent, optional `WHERE` clause, composed rather
+/// than duplicated per combination. The aggregate join is a derived table renaming
+/// `entry_id`/`root_id` so they do not collide with the identically-named, unqualified columns
+/// `ENTRY_COLUMNS` selects from `entries` — SQLite refuses an ambiguous bare name across a join.
+fn entries_query(
+    root: i64,
+    request: &SnapshotRequest,
+    want_aggregate: bool,
+) -> (String, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut clauses = vec![
+        "root_id = ?1".to_owned(),
+        "deleted_generation IS NULL".to_owned(),
+    ];
+    let mut params: Vec<Value> = vec![Value::Integer(root)];
+    if request.detail == SnapshotDetail::Summary {
+        clauses.push(format!("kind = {}", EntryKind::Directory.as_i64()));
+    }
+    if !request.include_coverage.is_empty() {
+        let codes: Vec<String> = request
+            .include_coverage
+            .iter()
+            .map(|coverage| coverage.as_i64().to_string())
+            .collect();
+        clauses.push(format!("coverage IN ({})", codes.join(",")));
+    }
+    if let Some(subtree) = &request.subtree {
+        let (low, high) = subtree.subtree_bounds();
+        let base = params.len();
+        clauses.push(format!(
+            "(path_bytes = ?{} OR (path_bytes >= ?{} AND path_bytes < ?{}))",
+            base + 1,
+            base + 2,
+            base + 3
+        ));
+        params.push(Value::Blob(subtree.as_bytes().to_vec()));
+        params.push(Value::Blob(low));
+        params.push(Value::Blob(high));
+    }
+    let select = if want_aggregate {
+        format!(
+            "SELECT {ENTRY_COLUMNS}, agg.recursive_bytes, agg.recursive_alloc_bytes, \
+             agg.entry_count, agg.readable, agg.stale
+               FROM entries
+               LEFT JOIN (SELECT entry_id AS agg_entry_id, recursive_bytes, \
+                 recursive_alloc_bytes, entry_count, readable, stale
+                   FROM entry_aggregates) AS agg
+                 ON agg.agg_entry_id = entries.entry_id"
+        )
+    } else {
+        format!("SELECT {ENTRY_COLUMNS} FROM entries")
+    };
+    (
+        format!("{select} WHERE {} ORDER BY entry_id", clauses.join(" AND ")),
+        params,
+    )
+}
+
+/// Every field but `AGGREGATE`, which needs the raw SQL row for the joined columns
+/// (`write_aggregate_field`) rather than anything `EntryRow` carries.
+fn write_entry_fields(payload: &mut Vec<u8>, mask: FieldMask, row: &crate::model::EntryRow) {
+    payload.extend_from_slice(&(row.entry_id.0 as u64).to_le_bytes());
+    payload.extend_from_slice(&(row.root.0 as u64).to_le_bytes());
+    if mask.contains(FieldMask::PARENT) {
+        payload.extend_from_slice(&(row.parent.map_or(0, |id| id.0) as u64).to_le_bytes());
+    }
+    if mask.contains(FieldMask::NAME) {
+        write_bytes(payload, row.name.as_bytes());
+    }
+    if mask.contains(FieldMask::PATH) {
+        write_bytes(payload, row.path.as_bytes());
+    }
+    if mask.contains(FieldMask::KIND) {
+        payload.push(kind_code(row.meta.kind));
+        payload.push(u8::from(row.meta.hidden));
+        payload.extend_from_slice(&[0u8; 2]);
+    }
+    if mask.contains(FieldMask::SIZE) {
+        payload.extend_from_slice(&row.meta.size_bytes.to_le_bytes());
+        payload.extend_from_slice(&row.meta.alloc_bytes.to_le_bytes());
+    }
+    if mask.contains(FieldMask::TIMES) {
+        payload.extend_from_slice(&row.meta.mtime_ns.to_le_bytes());
+        payload.extend_from_slice(&row.meta.ctime_ns.to_le_bytes());
+    }
+    if mask.contains(FieldMask::MODE) {
+        payload.extend_from_slice(&row.meta.mode.to_le_bytes());
+        payload.extend_from_slice(&row.meta.nlink.to_le_bytes());
+    }
+    if mask.contains(FieldMask::OBJECT_KEY) {
+        let key = row
+            .meta
+            .object_key
+            .unwrap_or(crate::ObjectKey { dev: 0, ino: 0 });
+        payload.extend_from_slice(&key.dev.to_le_bytes());
+        payload.extend_from_slice(&key.ino.to_le_bytes());
+    }
+    if mask.contains(FieldMask::COVERAGE) {
+        payload.push(row.coverage.as_i64() as u8);
+        payload.extend_from_slice(&[0u8; 3]);
+    }
+}
+
+/// The joined columns start right after `ENTRY_COLUMNS`'s 22 fields (indices 0..=21); all five
+/// read `NULL` together when nothing joined — a `Detailed` or `Inventory` row, or an `Opaque` one
+/// never walked yet.
+fn write_aggregate_field(payload: &mut Vec<u8>, sql_row: &rusqlite::Row<'_>) -> Result<()> {
+    let recursive_bytes: Option<i64> = sql_row.get(22)?;
+    let Some(bytes) = recursive_bytes else {
+        payload.extend_from_slice(&[0u8; 32]);
+        return Ok(());
+    };
+    let alloc: i64 = sql_row.get(23)?;
+    let count: i64 = sql_row.get(24)?;
+    let readable: i64 = sql_row.get(25)?;
+    let stale: i64 = sql_row.get(26)?;
+    payload.extend_from_slice(&(bytes as u64).to_le_bytes());
+    payload.extend_from_slice(&(alloc as u64).to_le_bytes());
+    payload.extend_from_slice(&(count as u64).to_le_bytes());
+    let mut flags = AGGREGATE_FLAG_PRESENT;
+    if readable != 0 {
+        flags |= AGGREGATE_FLAG_READABLE;
+    }
+    if stale != 0 {
+        flags |= AGGREGATE_FLAG_STALE;
+    }
+    payload.push(flags);
+    payload.extend_from_slice(&[0u8; 7]);
+    Ok(())
+}
+
+/// [`FieldMask::AGGREGATE`]'s flags byte: an aggregate was actually cached for this row.
+pub const AGGREGATE_FLAG_PRESENT: u8 = 0b0001;
+/// The last computation saw every descendant — no permission wall, no read error.
+pub const AGGREGATE_FLAG_READABLE: u8 = 0b0010;
+/// A live mutation touched the subtree since the cached totals were computed.
+pub const AGGREGATE_FLAG_STALE: u8 = 0b0100;
 
 /// The body of [`crate::Index::write_snapshot`]'s roots header, pulled out only so that method
 /// stays short.
@@ -230,6 +398,39 @@ fn kind_code(kind: EntryKind) -> u8 {
     kind.as_i64() as u8
 }
 
+/// One decoded entry from [`SnapshotReader::entries`]. A field the mask did not request is
+/// `None` (or, for [`Self::hidden`], `false`) rather than a guess at what it would have been.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotEntry {
+    pub entry_id: i64,
+    pub root: RootId,
+    pub parent: Option<i64>,
+    pub name: Option<NativePath>,
+    pub path: Option<NativePath>,
+    pub kind: Option<EntryKind>,
+    pub hidden: bool,
+    pub size_bytes: Option<u64>,
+    pub alloc_bytes: Option<u64>,
+    pub mtime_ns: Option<i64>,
+    pub ctime_ns: Option<i64>,
+    pub mode: Option<u32>,
+    pub nlink: Option<u32>,
+    pub coverage: Option<Coverage>,
+    /// Only ever `Some` for an `Opaque` directory the writer had a cached total for — see
+    /// `aggregate::AggregateRow`, the row this is decoded from.
+    pub aggregate: Option<SnapshotAggregate>,
+}
+
+/// The [`FieldMask::AGGREGATE`] block, decoded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotAggregate {
+    pub recursive_bytes: u64,
+    pub recursive_alloc_bytes: u64,
+    pub entry_count: u64,
+    pub readable: bool,
+    pub stale: bool,
+}
+
 /// Reads a frame back. Exists so the format has one authoritative parser, and so a test can prove
 /// that what went in comes out byte for byte.
 #[derive(Debug)]
@@ -253,7 +454,7 @@ impl<'a> SnapshotReader<'a> {
             return Err("not a LEGEIDX1 frame".into());
         }
         let format = u32::from_le_bytes(frame[8..12].try_into().unwrap());
-        if format != FORMAT {
+        if format != FORMAT && format != FORMAT_EXTENDED {
             return Err(format!("unknown snapshot format {format}"));
         }
         let header_crc = u32::from_le_bytes(frame[60..64].try_into().unwrap());
@@ -311,7 +512,150 @@ impl<'a> SnapshotReader<'a> {
 
     /// Every entry's native path, in the order they were written. The one field a bulk consumer
     /// always needs, and the one whose losslessness the whole design turns on.
+    ///
+    /// Refuses when the mask did not request [`FieldMask::PATH`] at all — an empty result would
+    /// otherwise look identical to "every path was empty", which is not the same fact.
     pub fn entry_paths(&self) -> std::result::Result<Vec<NativePath>, String> {
+        if !self.field_mask.contains(FieldMask::PATH) {
+            return Err("this snapshot's field mask did not request PATH".into());
+        }
+        Ok(self
+            .entries()?
+            .into_iter()
+            .filter_map(|entry| entry.path)
+            .collect())
+    }
+
+    /// Every entry, decoded according to whichever fields the mask carried — the general-purpose
+    /// reader every other accessor on this type could be written in terms of. A field the mask did
+    /// not request comes back `None`: the caller asked not to pay for it, so it is not invented.
+    pub fn entries(&self) -> std::result::Result<Vec<SnapshotEntry>, String> {
+        let mut cursor = self.entries_offset()?;
+        let mut entries = Vec::with_capacity(self.entry_count as usize);
+        for _ in 0..self.entry_count {
+            let entry_id = i64::from_le_bytes(self.bytes_at(cursor, 8)?.try_into().unwrap());
+            cursor += 8;
+            let root = RootId(i64::from_le_bytes(
+                self.bytes_at(cursor, 8)?.try_into().unwrap(),
+            ));
+            cursor += 8;
+            let mut entry = SnapshotEntry {
+                entry_id,
+                root,
+                parent: None,
+                name: None,
+                path: None,
+                kind: None,
+                hidden: false,
+                size_bytes: None,
+                alloc_bytes: None,
+                mtime_ns: None,
+                ctime_ns: None,
+                mode: None,
+                nlink: None,
+                coverage: None,
+                aggregate: None,
+            };
+            cursor = self.decode_entry_fields(cursor, &mut entry)?;
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    /// The body of [`Self::entries`]'s per-entry loop, pulled out only so that method stays
+    /// short: every masked field after `entry_id`/`root_id`, in wire order. Returns the cursor
+    /// just past this entry.
+    fn decode_entry_fields(
+        &self,
+        mut cursor: usize,
+        entry: &mut SnapshotEntry,
+    ) -> std::result::Result<usize, String> {
+        let mask = self.field_mask;
+        if mask.contains(FieldMask::PARENT) {
+            let raw = u64::from_le_bytes(self.bytes_at(cursor, 8)?.try_into().unwrap());
+            cursor += 8;
+            entry.parent = (raw != 0).then_some(raw as i64);
+        }
+        if mask.contains(FieldMask::NAME) {
+            let (name, next) = self.read_bytes_field(cursor)?;
+            entry.name = Some(NativePath::from_bytes(name));
+            cursor = next;
+        }
+        if mask.contains(FieldMask::PATH) {
+            let (path, next) = self.read_bytes_field(cursor)?;
+            entry.path = Some(NativePath::from_bytes(path));
+            cursor = next;
+        }
+        if mask.contains(FieldMask::KIND) {
+            let bytes = self.bytes_at(cursor, 4)?;
+            entry.kind = Some(EntryKind::from_i64(i64::from(bytes[0])));
+            entry.hidden = bytes[1] != 0;
+            cursor += 4;
+        }
+        if mask.contains(FieldMask::SIZE) {
+            entry.size_bytes = Some(u64::from_le_bytes(
+                self.bytes_at(cursor, 8)?.try_into().unwrap(),
+            ));
+            entry.alloc_bytes = Some(u64::from_le_bytes(
+                self.bytes_at(cursor + 8, 8)?.try_into().unwrap(),
+            ));
+            cursor += 16;
+        }
+        if mask.contains(FieldMask::TIMES) {
+            entry.mtime_ns = Some(i64::from_le_bytes(
+                self.bytes_at(cursor, 8)?.try_into().unwrap(),
+            ));
+            entry.ctime_ns = Some(i64::from_le_bytes(
+                self.bytes_at(cursor + 8, 8)?.try_into().unwrap(),
+            ));
+            cursor += 16;
+        }
+        if mask.contains(FieldMask::MODE) {
+            entry.mode = Some(u32::from_le_bytes(
+                self.bytes_at(cursor, 4)?.try_into().unwrap(),
+            ));
+            entry.nlink = Some(u32::from_le_bytes(
+                self.bytes_at(cursor + 4, 4)?.try_into().unwrap(),
+            ));
+            cursor += 8;
+        }
+        if mask.contains(FieldMask::OBJECT_KEY) {
+            cursor += 16;
+        }
+        if mask.contains(FieldMask::COVERAGE) {
+            entry.coverage = Some(Coverage::from_i64(i64::from(self.bytes_at(cursor, 1)?[0])));
+            cursor += 4;
+        }
+        if mask.contains(FieldMask::AGGREGATE) {
+            entry.aggregate = self.decode_aggregate(cursor)?;
+            cursor += 32;
+        }
+        Ok(cursor)
+    }
+
+    /// [`FieldMask::AGGREGATE`]'s 32-byte block, or `None` when the `has_aggregate` flag says
+    /// nothing was cached for this row.
+    fn decode_aggregate(
+        &self,
+        cursor: usize,
+    ) -> std::result::Result<Option<SnapshotAggregate>, String> {
+        let flags = self.bytes_at(cursor + 24, 1)?[0];
+        if flags & AGGREGATE_FLAG_PRESENT == 0 {
+            return Ok(None);
+        }
+        Ok(Some(SnapshotAggregate {
+            recursive_bytes: u64::from_le_bytes(self.bytes_at(cursor, 8)?.try_into().unwrap()),
+            recursive_alloc_bytes: u64::from_le_bytes(
+                self.bytes_at(cursor + 8, 8)?.try_into().unwrap(),
+            ),
+            entry_count: u64::from_le_bytes(self.bytes_at(cursor + 16, 8)?.try_into().unwrap()),
+            readable: flags & AGGREGATE_FLAG_READABLE != 0,
+            stale: flags & AGGREGATE_FLAG_STALE != 0,
+        }))
+    }
+
+    /// Where the entries section starts: right after the roots section this reader also parses.
+    fn entries_offset(&self) -> std::result::Result<usize, String> {
         let mut cursor = 4usize;
         for _ in 0..self.root_count {
             cursor += 8 + 4 + 8;
@@ -324,45 +668,23 @@ impl<'a> SnapshotReader<'a> {
             ) as usize;
             cursor += 4 + length;
         }
+        Ok(cursor)
+    }
 
-        let mask = self.field_mask;
-        let mut paths = Vec::with_capacity(self.entry_count as usize);
-        for _ in 0..self.entry_count {
-            cursor += 16; // entry_id, root_id
-            if mask.contains(FieldMask::PARENT) {
-                cursor += 8;
-            }
-            if mask.contains(FieldMask::NAME) {
-                cursor += 4 + self.length_at(cursor)?;
-            }
-            if mask.contains(FieldMask::PATH) {
-                let length = self.length_at(cursor)?;
-                cursor += 4;
-                paths.push(NativePath::from_bytes(
-                    self.payload
-                        .get(cursor..cursor + length)
-                        .ok_or("truncated entry path")?
-                        .to_vec(),
-                ));
-                cursor += length;
-            }
-            if mask.contains(FieldMask::KIND) {
-                cursor += 4;
-            }
-            if mask.contains(FieldMask::SIZE) {
-                cursor += 16;
-            }
-            if mask.contains(FieldMask::TIMES) {
-                cursor += 16;
-            }
-            if mask.contains(FieldMask::MODE) {
-                cursor += 8;
-            }
-            if mask.contains(FieldMask::OBJECT_KEY) {
-                cursor += 16;
-            }
-        }
-        Ok(paths)
+    fn bytes_at(&self, cursor: usize, len: usize) -> std::result::Result<&[u8], String> {
+        self.payload
+            .get(cursor..cursor + len)
+            .ok_or("truncated entry")
+            .map_err(str::to_owned)
+    }
+
+    /// A length-prefixed byte field: `(length, bytes)`, returning the bytes and the cursor just
+    /// past them.
+    fn read_bytes_field(&self, cursor: usize) -> std::result::Result<(Vec<u8>, usize), String> {
+        let length = self.length_at(cursor)?;
+        let start = cursor + 4;
+        let bytes = self.bytes_at(start, length)?.to_vec();
+        Ok((bytes, start + length))
     }
 
     fn length_at(&self, cursor: usize) -> std::result::Result<usize, String> {

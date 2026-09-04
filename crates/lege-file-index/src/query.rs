@@ -44,10 +44,24 @@ impl FieldMask {
     pub const OBJECT_KEY: Self = Self(64);
     pub const PARENT: Self = Self(128);
     pub const ALL: Self = Self(255);
+    /// The recursive totals a `snapshot::SnapshotDetail::Summary` entry carries for an `Opaque`
+    /// directory (`aggregate::AggregateRow`). Not part of [`Self::ALL`]: it changes the payload's
+    /// byte shape, so a payload that carries it stamps a newer snapshot format
+    /// (`snapshot::FORMAT_EXTENDED`) rather than silently growing the one an old reader expects.
+    pub const AGGREGATE: Self = Self(256);
+    /// The row's [`crate::model::Coverage`] tier. Same format-bump rule as [`Self::AGGREGATE`],
+    /// and for the same reason a summary snapshot always carries it: a caller cannot tell whether
+    /// a directory's aggregate is meaningful without knowing it is `Opaque`.
+    pub const COVERAGE: Self = Self(512);
 
     #[must_use]
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    #[must_use]
+    pub fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 }
 

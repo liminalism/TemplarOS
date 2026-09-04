@@ -204,6 +204,17 @@ impl Tiers {
         };
         policy.stored_coverage_within(base, path, kind)
     }
+
+    /// Where a mutation that resolved to `None` above actually landed: the `Opaque` ancestor whose
+    /// cached aggregate no longer accounts for it, or `None` when nothing at this root has such an
+    /// aggregate to invalidate (an unknown root, or a boundary that is `Ignored` rather than
+    /// `Opaque` — the trash, which is never armed and so never reaches here in practice).
+    fn opaque_boundary(&self, root: RootId, path: &NativePath) -> Option<NativePath> {
+        let (_, base, policy) = self.0.iter().find(|(id, _, _)| *id == root)?;
+        let boundary = policy.unmaterialised_boundary(Some(base), path)?;
+        (policy.coverage_of(&boundary, EntryKind::Directory) == Coverage::Opaque)
+            .then_some(boundary)
+    }
 }
 
 impl crate::Index {
@@ -236,12 +247,18 @@ impl crate::Index {
 
         let max_changes = self.config().max_changes;
         let tiers = self.tiers_for(&batch);
-        let (applied, invalidations) = self.with_write(|connection| {
+        let (applied, invalidations, stale_aggregates) = self.with_write(|connection| {
             self.apply_transaction(connection, &batch, &tiers, max_changes)
         })?;
 
         for (root, reason) in invalidations {
             self.mark_stale(root, &reason)?;
+        }
+        // A separate write, deliberately outside the transaction above: staleness is not part of
+        // the generation lineage, and a batch that only touched an `Opaque` subtree rolled that
+        // transaction back (nothing to publish) while still needing this recorded.
+        for (root, boundary) in stale_aggregates {
+            self.mark_aggregate_stale(root, &boundary)?;
         }
         if !applied.changes.is_empty()
             && let Some(sink) = self.sink()
@@ -283,13 +300,14 @@ impl crate::Index {
         batch: &MutationBatch,
         tiers: &Tiers,
         max_changes: u64,
-    ) -> Result<(Applied, Vec<(RootId, StaleReason)>)> {
+    ) -> Result<AppliedTransaction> {
         let transaction = connection.transaction()?;
         let generation = crate::next_generation(&transaction)?;
         let mut changes = Vec::new();
         let mut skipped = 0usize;
         let mut moved_descendants = 0u64;
         let mut invalidations = Vec::new();
+        let mut stale_aggregates: Vec<(RootId, NativePath)> = Vec::new();
         // Per root: how many live rows this transaction added or removed. Tier-agnostic, because
         // `entry_count` counts the rows the index holds and not the rows a search can see — a
         // drive visualiser asking "how many entries does this root have" wants the `Opaque` and
@@ -300,6 +318,17 @@ impl crate::Index {
             let mut live_delta = 0i64;
             match apply_one(&transaction, generation, tiers, mutation)? {
                 Applying::Skipped => skipped += 1,
+                Applying::SkippedUnmaterialised { root, boundary } => {
+                    skipped += 1;
+                    if !stale_aggregates
+                        .iter()
+                        .any(|(existing_root, existing_path)| {
+                            *existing_root == root && *existing_path == boundary
+                        })
+                    {
+                        stale_aggregates.push((root, boundary));
+                    }
+                }
                 Applying::Changed {
                     change,
                     descendants,
@@ -320,7 +349,10 @@ impl crate::Index {
 
         if changes.is_empty() {
             // Nothing moved: roll the transaction back so the generation counter does not
-            // advance for a batch that changed nothing.
+            // advance for a batch that changed nothing. `stale_aggregates` is returned anyway —
+            // a batch that only touched an unmaterialised `Opaque` subtree is exactly this case,
+            // and the caller marks those aggregates stale as a separate write, outside the
+            // generation lineage this rollback protects.
             transaction.rollback()?;
             let generation = self.generation()?;
             return Ok((
@@ -331,6 +363,7 @@ impl crate::Index {
                     moved_descendants,
                 },
                 invalidations,
+                stale_aggregates,
             ));
         }
 
@@ -369,6 +402,7 @@ impl crate::Index {
                 moved_descendants,
             },
             invalidations,
+            stale_aggregates,
         ))
     }
 
@@ -414,6 +448,14 @@ impl crate::Index {
     }
 }
 
+/// What one transaction pass produced: the batch's own result, roots invalidated outright, and
+/// `Opaque` aggregates a mutation landed under without materialising.
+type AppliedTransaction = (
+    Applied,
+    Vec<(RootId, StaleReason)>,
+    Vec<(RootId, NativePath)>,
+);
+
 enum RenameOutcome {
     Skipped,
     Applied {
@@ -426,6 +468,13 @@ enum RenameOutcome {
 /// What one mutation did.
 enum Applying {
     Skipped,
+    /// Skipped for a specific, actionable reason: the path lives under an `Opaque` directory's
+    /// unmaterialised subtree, so that directory's cached aggregate no longer accounts for
+    /// whatever just changed.
+    SkippedUnmaterialised {
+        root: RootId,
+        boundary: NativePath,
+    },
     Changed {
         change: Change,
         descendants: u64,
@@ -458,7 +507,13 @@ fn apply_one(
             // lives inside an unexpanded `Opaque` build directory. The change is real; the index
             // simply does not hold it.
             let Some(coverage) = tiers.coverage_of(*root, path, meta.kind) else {
-                return Ok(Applying::Skipped);
+                return Ok(match tiers.opaque_boundary(*root, path) {
+                    Some(boundary) => Applying::SkippedUnmaterialised {
+                        root: *root,
+                        boundary,
+                    },
+                    None => Applying::Skipped,
+                });
             };
             Ok(
                 upsert(transaction, generation, *root, path, meta, coverage)?

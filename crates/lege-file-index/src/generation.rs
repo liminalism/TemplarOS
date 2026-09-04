@@ -13,6 +13,7 @@
 
 use crate::{
     IndexError, Result,
+    aggregate::SubtreeTotals,
     model::{
         BudgetKind, Coverage, EntryKind, EntryMeta, Generation, MetadataFreshness, NativePath,
         RootId, RootPolicy, RootState, RootStatus, ScanScope, StaleReason, now_ms,
@@ -164,6 +165,9 @@ pub struct ScanSession {
     unwatched_dirs: u64,
     watches_armed: u64,
     unverified_children: u64,
+    /// Recursive totals found under an `Opaque` directory by a raw filesystem walk
+    /// (`aggregate::sum_subtree`), waiting for `entries` to hold a row to attach them to.
+    pending_aggregates: Vec<(NativePath, SubtreeTotals)>,
     started: Instant,
     finished: bool,
 }
@@ -236,6 +240,13 @@ impl ScanSession {
     /// nothing for the distinction.
     pub fn note_unverified_metadata(&mut self) {
         self.unverified_children += 1;
+    }
+
+    /// Records the recursive totals a raw filesystem walk found under an `Opaque` directory this
+    /// pass just observed. Written into `entry_aggregates` at commit time, once the row it
+    /// attaches to actually has an `entry_id`.
+    pub fn stage_aggregate(&mut self, path: NativePath, totals: SubtreeTotals) {
+        self.pending_aggregates.push((path, totals));
     }
 
     /// The tier a path is stored at under this pass's policy, or `None` when no row is written
@@ -479,6 +490,7 @@ impl ScanSession {
         let generation_id = generation.0 as i64;
 
         merge_staging_into_entries(&transaction, root, generation_id)?;
+        crate::aggregate::write_pending(&transaction, root, generation, &self.pending_aggregates)?;
 
         // Collection: only for a complete pass, only inside the scope it covered.
         let collected = if complete {
@@ -673,6 +685,7 @@ impl crate::Index {
             unwatched_dirs: 0,
             watches_armed: 0,
             unverified_children: 0,
+            pending_aggregates: Vec::new(),
             started: Instant::now(),
             finished: false,
         })

@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod aggregate;
 pub mod btrfs_delta;
 pub mod coalesce;
 pub mod error;
@@ -34,6 +35,7 @@ pub mod schema;
 pub mod snapshot;
 pub mod watch;
 
+pub use aggregate::{AggregateRow, SubtreeTotals};
 pub use error::{IndexError, Result};
 pub use generation::{
     CancelToken, ScanBudget, ScanOptions, ScanOutcome, ScanSession, ScannedEntry,
@@ -1237,6 +1239,80 @@ mod tests {
         );
     }
 
+    /// Job 1's whole point: an `Opaque` directory is not just known, it is *sized* — without a
+    /// single row for anything inside it — and the trash nested inside it does not count.
+    #[test]
+    fn an_opaque_directory_reports_a_recursive_aggregate_excluding_nested_ignored_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("target/debug")).unwrap();
+        std::fs::write(home.join("target/debug/thing.o"), vec![0u8; 1234]).unwrap();
+        std::fs::create_dir_all(home.join("target/Trash")).unwrap();
+        std::fs::write(home.join("target/Trash/deleted.o"), vec![0u8; 9999]).unwrap();
+
+        let index = index_at(dir.path());
+        let (root, outcome) = scan(&index, &home);
+        assert!(outcome.complete);
+
+        let target = NativePath::from_path(&home.join("target"));
+        let aggregate = index
+            .opaque_aggregate(root, &target)
+            .unwrap()
+            .expect("an Opaque directory has a cached aggregate after an ordinary pass");
+        assert_eq!(
+            aggregate.recursive_bytes, 1234,
+            "the trashed bytes nested inside the Opaque subtree do not count"
+        );
+        assert_eq!(aggregate.entry_count, 2, "debug/ and debug/thing.o only");
+        assert!(aggregate.readable);
+        assert!(!aggregate.stale);
+
+        // A Detailed directory has no aggregate: the cache exists only for the tier it was built
+        // to answer for.
+        assert_eq!(
+            index
+                .opaque_aggregate(root, &NativePath::from_path(&home))
+                .unwrap(),
+            None
+        );
+
+        // A live mutation directly inside the Opaque directory marks the aggregate stale without
+        // recomputing it — nothing here changed the cached numbers.
+        std::fs::write(home.join("target/debug/new.o"), vec![0u8; 1]).unwrap();
+        index
+            .apply(MutationBatch::new(
+                MutationSource::Watcher,
+                vec![Mutation::Upsert {
+                    root,
+                    path: NativePath::from_path(&home.join("target/debug/new.o")),
+                    meta: EntryMeta {
+                        kind: EntryKind::Regular,
+                        size_bytes: 1,
+                        ..EntryMeta::default()
+                    },
+                }],
+            ))
+            .unwrap();
+        let after_event = index.opaque_aggregate(root, &target).unwrap().unwrap();
+        assert!(after_event.stale, "the event marked it stale");
+        assert_eq!(
+            after_event.recursive_bytes, 1234,
+            "staleness never triggers an eager recompute"
+        );
+
+        // The next ordinary pass over the directory refreshes it and clears the flag.
+        let outcome = index
+            .reconcile_root(root, ScanOptions::reconcile(RootPolicy::default_home()))
+            .unwrap();
+        assert!(outcome.complete);
+        let refreshed = index.opaque_aggregate(root, &target).unwrap().unwrap();
+        assert!(!refreshed.stale);
+        assert_eq!(
+            refreshed.recursive_bytes, 1235,
+            "the new object file is now counted"
+        );
+    }
+
     /// The upgrade gate: a database written before migration 0002 opens under this build with
     /// every row `Detailed` — which is exactly what survived the old skip list — and nothing about
     /// any root changes. A forced rescan of a home directory is not an acceptable upgrade cost.
@@ -1439,6 +1515,171 @@ mod tests {
                 .unwrap()
                 .complete
         );
+    }
+
+    /// Job 2's whole point: a first frame built from directory aggregates instead of leaf rows.
+    /// The fixture mirrors a real home — a source tree with many ordinary files, plus a
+    /// build-directory-shaped `Opaque` subtree with real files on disk under it — so the size
+    /// drop has to come from omitting the leaf rows, not from `Opaque` already being small (it
+    /// contributes exactly one row either way).
+    #[test]
+    fn a_summary_snapshot_is_dramatically_smaller_than_a_materialized_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("src")).unwrap();
+        for n in 0..500 {
+            std::fs::write(home.join(format!("src/module-{n}.rs")), vec![0u8; 200]).unwrap();
+        }
+        std::fs::create_dir_all(home.join("target/debug/deps")).unwrap();
+        for n in 0..500 {
+            std::fs::write(
+                home.join(format!("target/debug/deps/obj-{n}.o")),
+                vec![0u8; 2000],
+            )
+            .unwrap();
+        }
+
+        let index = index_at(dir.path());
+        let (root, outcome) = scan(&index, &home);
+        assert!(outcome.complete);
+
+        let mut materialized = Vec::new();
+        let full_manifest = index
+            .write_snapshot(&mut materialized, &snapshot::SnapshotRequest::default())
+            .unwrap();
+        assert_eq!(
+            full_manifest.format,
+            snapshot::FORMAT,
+            "unchanged by default"
+        );
+
+        let mut summary = Vec::new();
+        let summary_manifest = index
+            .write_snapshot(
+                &mut summary,
+                &snapshot::SnapshotRequest {
+                    detail: snapshot::SnapshotDetail::Summary,
+                    include_coverage: vec![
+                        Coverage::Opaque,
+                        Coverage::Inventory,
+                        Coverage::Detailed,
+                    ],
+                    ..snapshot::SnapshotRequest::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            summary_manifest.format,
+            snapshot::FORMAT_EXTENDED,
+            "a summary payload carries fields an old reader does not know"
+        );
+
+        assert!(
+            materialized.len() > 500 * 4,
+            "the fixture should actually hold hundreds of leaf rows: {}",
+            materialized.len()
+        );
+        let ratio = materialized.len() as f64 / summary.len() as f64;
+        eprintln!(
+            "materialized={} bytes, summary={} bytes, ratio={ratio:.1}x",
+            materialized.len(),
+            summary.len()
+        );
+        assert!(
+            summary.len() * 4 < materialized.len(),
+            "summary ({} bytes) should be dramatically smaller than materialized ({} bytes)",
+            summary.len(),
+            materialized.len()
+        );
+
+        // The Opaque directory's own row carries its cached aggregate.
+        let reader = snapshot::SnapshotReader::new(&summary).unwrap();
+        let entries = reader.entries().unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == Some(EntryKind::Directory)),
+            "a summary snapshot holds directories only"
+        );
+        let target = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| path.display().ends_with("/target"))
+            })
+            .expect("the Opaque directory itself is a row");
+        assert_eq!(target.coverage, Some(Coverage::Opaque));
+        let aggregate = target
+            .aggregate
+            .expect("the visualiser's first frame needs a number");
+        assert_eq!(aggregate.recursive_bytes, 500 * 2000);
+        assert!(aggregate.readable);
+        assert!(!aggregate.stale);
+        let _ = root;
+    }
+
+    /// `subtree` narrows the entries section without touching which roots are named in the
+    /// manifest — a treemap drilling into one folder gets just that folder's rows.
+    #[test]
+    fn a_subtree_snapshot_request_rebases_to_just_that_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("a")).unwrap();
+        std::fs::create_dir_all(home.join("b")).unwrap();
+        std::fs::write(home.join("a/one.txt"), b"1").unwrap();
+        std::fs::write(home.join("b/two.txt"), b"2").unwrap();
+
+        let index = index_at(dir.path());
+        let (_, outcome) = scan(&index, &home);
+        assert!(outcome.complete);
+
+        let mut frame = Vec::new();
+        index
+            .write_snapshot(
+                &mut frame,
+                &snapshot::SnapshotRequest {
+                    subtree: Some(NativePath::from_path(&home.join("a"))),
+                    ..snapshot::SnapshotRequest::default()
+                },
+            )
+            .unwrap();
+        let reader = snapshot::SnapshotReader::new(&frame).unwrap();
+        let paths = reader.entry_paths().unwrap();
+        assert!(
+            paths.iter().all(|path| path.display().contains("/home/a")),
+            "every entry is inside the requested subtree: {paths:?}"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.display().ends_with("/a/one.txt")),
+            "the subtree's own contents are present"
+        );
+        assert!(
+            !paths.iter().any(|path| path.display().contains("/b/")),
+            "the sibling subtree is excluded"
+        );
+    }
+
+    /// `SnapshotReader` is the one authoritative parser: an unrecognised format has to fail
+    /// loudly rather than let a reader guess at a byte shape it does not know.
+    #[test]
+    fn a_snapshot_reader_rejects_a_format_it_does_not_understand() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let index = index_at(dir.path());
+        scan(&index, &home);
+
+        let mut frame = Vec::new();
+        index
+            .write_snapshot(&mut frame, &snapshot::SnapshotRequest::default())
+            .unwrap();
+        frame[8..12].copy_from_slice(&99u32.to_le_bytes());
+        let error = snapshot::SnapshotReader::new(&frame).unwrap_err();
+        assert!(error.contains("unknown snapshot format"), "{error}");
     }
 
     /// A path is bytes. If it survives indexing, searching and the bulk snapshot unchanged, an
@@ -2007,6 +2248,62 @@ mod tests {
                 hits = result.hits.len();
             }
             println!("{label:>16}: {best:?} ({hits} hits on the first page)");
+        }
+    }
+
+    /// `cargo test -p lege-file-index --release -- --ignored --nocapture progressive_snapshot_benchmark`
+    ///
+    /// A build-directory-shaped fixture: a source tree of ordinary files (`Detailed`) alongside a
+    /// `target/`-shaped `Opaque` subtree with real files on disk under it, at a scale closer to a
+    /// real project than the crate's other snapshot tests use. Reports bytes and build time,
+    /// summary vs materialized (`docs/measurements/`).
+    #[test]
+    #[ignore = "benchmark: release mode, prints numbers rather than asserting them"]
+    fn progressive_snapshot_benchmark() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("src")).unwrap();
+        for n in 0..5_000 {
+            std::fs::write(home.join(format!("src/module-{n}.rs")), vec![0u8; 400]).unwrap();
+        }
+        std::fs::create_dir_all(home.join("target/debug/deps")).unwrap();
+        for n in 0..20_000 {
+            std::fs::write(
+                home.join(format!("target/debug/deps/obj-{n}.o")),
+                vec![0u8; 3_000],
+            )
+            .unwrap();
+        }
+
+        let index = index_at(dir.path());
+        let (_, outcome) = scan(&index, &home);
+        assert!(outcome.complete);
+
+        for (label, request) in [
+            ("materialized", snapshot::SnapshotRequest::default()),
+            (
+                "summary",
+                snapshot::SnapshotRequest {
+                    detail: snapshot::SnapshotDetail::Summary,
+                    include_coverage: vec![
+                        Coverage::Opaque,
+                        Coverage::Inventory,
+                        Coverage::Detailed,
+                    ],
+                    ..snapshot::SnapshotRequest::default()
+                },
+            ),
+        ] {
+            let mut frame = Vec::new();
+            let started = std::time::Instant::now();
+            let manifest = index.write_snapshot(&mut frame, &request).unwrap();
+            let elapsed = started.elapsed();
+            println!(
+                "{label:>12}: {:>10} entries, {:>10} bytes, format {}, built in {elapsed:?}",
+                manifest.entry_count,
+                frame.len(),
+                manifest.format,
+            );
         }
     }
 }

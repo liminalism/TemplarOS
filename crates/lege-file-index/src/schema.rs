@@ -175,6 +175,33 @@ pub const MIGRATIONS: &[Migration] = &[
             WHERE deleted_generation IS NOT NULL;
         ",
     },
+    Migration {
+        name: "0005-entry-aggregates",
+        // One row per `Opaque` directory: the recursive totals a raw filesystem walk found under
+        // it, without writing a single `entries` row for what it walked — that is the whole point
+        // of `Opaque`. Keyed on `entry_id` with `ON DELETE CASCADE` so a pruned tombstone (the
+        // directory itself finally swept out of `entries`) takes its aggregate with it; a
+        // `coverage` change away from `Opaque` (an expansion via `materialise_subtree`) leaves the
+        // row behind rather than deleting it, which is harmless because every reader joins back
+        // through `entries.coverage = Opaque` and simply will not see it any more.
+        //
+        // Nothing here forces a rescan: the table starts empty, and an `Opaque` row gets its first
+        // aggregate the next time an ordinary pass actually visits it.
+        sql: r"
+        CREATE TABLE entry_aggregates (
+            entry_id               INTEGER PRIMARY KEY REFERENCES entries (entry_id) ON DELETE CASCADE,
+            root_id                INTEGER NOT NULL,
+            recursive_bytes        INTEGER NOT NULL,
+            recursive_alloc_bytes  INTEGER NOT NULL,
+            entry_count            INTEGER NOT NULL,
+            readable               INTEGER NOT NULL,
+            computed_generation    INTEGER NOT NULL,
+            computed_ms            INTEGER NOT NULL,
+            stale                  INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX entry_aggregates_root ON entry_aggregates (root_id);
+        ",
+    },
 ];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
