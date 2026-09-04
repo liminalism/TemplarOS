@@ -22,6 +22,7 @@ members = [
     "crates/lege-client",
     "crates/lege-hwdetect",
     "crates/lege-file-index",
+    "crates/lege-fanotify",
     "services/lege-sessiond",
     "services/lege-resourced",
     "services/lege-filed",
@@ -64,6 +65,7 @@ lege-state = { path = "crates/lege-state" }
 lege-client = { path = "crates/lege-client" }
 lege-hwdetect = { path = "crates/lege-hwdetect" }
 lege-file-index = { path = "crates/lege-file-index" }
+lege-fanotify = { path = "crates/lege-fanotify" }
 lege-comp-integration = { path = "compositor/lege-comp-integration" }
 lege-resourced = { path = "services/lege-resourced" }
 lege-filed = { path = "services/lege-filed" }

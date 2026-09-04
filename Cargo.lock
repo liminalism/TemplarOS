@@ -1650,6 +1650,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lege-fanotify"
+version = "0.1.0"
+dependencies = [
+ "inotify",
+ "lege-file-index",
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "lege-field"
 version = "0.1.0"
 dependencies = [

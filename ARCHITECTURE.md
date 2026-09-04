@@ -52,6 +52,8 @@
 | `lege-window` | lege-comp | geometry invariant (`repair_window ⇒ is_recoverable`, proptest), window records, drag, layers — **no async deps** |
 | `lege-field` | shell, sessiond | the Home Field model: tiles on a bounded grid, ops with exact inverses (undo = apply the inverse), stable local reflow, representation ladder, drag/throw state machine, text form — **no async deps, no toolkit** |
 | `lege-treemap` | shell | cushion treemaps for tray and drawer interiors (file-tree arena, byte-proportional squarified layout, category palette, CPU rasterizer; lifted from Silvaview-rs) — **no dependencies at all** |
+| `lege-file-index` | filed, shell, cli | the shared file index: generations, lossless byte paths, budgeted scans, FTS5 trigram search, cursors, sealed snapshots, and the `EventSource` watcher seam |
+| `lege-fanotify` | nothing (measured, unadopted) | fanotify bindings and a `FanotifySource` behind `lege-file-index`'s `EventSource`. The one crate that does not `forbid(unsafe_code)`; `src/sys.rs` holds the exception and `crates/lege-fanotify/README.md` states why. `InotifySource` remains the default — see `docs/measurements/fanotify-2026-09-04.md` |
 | `lege-comp-integration` | lege-comp | `IdentityCache` over D-Bus, governor notifier, shell broadcaster |
 | `lege-comp` (bin) | itself | the Smithay compositor: DRM/KMS + winit backends, protocols, render loop (ADR-0012, GPL-3.0) |
 | `lege-client` | shell, apps, portal, cli, comp | proxies + app SDK (checkpoint protocol) |
