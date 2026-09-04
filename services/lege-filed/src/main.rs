@@ -12,7 +12,7 @@ use lege_filed::{
         ActionsApi, BrowseApi, FileService, OperationsApi, PreviewsApi, RecentsApi, SearchApi,
         TrashApi, VolumesApi,
     },
-    index_host::IndexApi,
+    index_host::{Index1Signals, IndexApi},
     lastdir::LastDirectoryStore,
     recents::Recents,
     search::Index,
@@ -209,6 +209,24 @@ async fn main() -> Result<()> {
         .await
         .context("claiming org.legeos.Files")?;
     service.attach(connection.clone());
+
+    // Make the change signals real. `Index1Signals` has existed since F1 and was wired into
+    // nothing, so `GenerationAdvanced` and `RootStateChanged` fired nowhere: every "notify the
+    // consumer" step downstream was a no-op. It must be wired *before* the watcher starts, or the
+    // watcher's first committed generation goes unannounced — and it must carry this runtime's
+    // handle, because `ChangeSink` is synchronous and the watcher calls it from a plain thread
+    // where `tokio::spawn` would panic.
+    let emitter = connection
+        .object_server()
+        .interface::<_, IndexApi>(names::ROOT_PATH)
+        .await
+        .context("looking up the hosted Index1 object")?
+        .signal_emitter()
+        .clone();
+    core.set_change_sink(Arc::new(Index1Signals::new(
+        emitter,
+        tokio::runtime::Handle::current(),
+    )));
 
     // Arming watches, walking a never-scanned root and repairing a stale one all happen after the
     // bus name is claimed and all run on the watcher's own thread: no client ever waits on a scan,

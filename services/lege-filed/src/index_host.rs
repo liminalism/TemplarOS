@@ -330,18 +330,25 @@ impl IndexApi {
 }
 
 /// A [`index_core::ChangeSink`] that re-emits generation and root-state changes as `Index1`
-/// signals. Constructed once the object is hosted (it needs the live [`SignalEmitter`]); nothing
-/// wires this into `Index::set_change_sink` yet in this build — that is the maintenance lane's
-/// watcher startup path (`main.rs`), which owns the moment a live connection exists to emit on.
+/// signals. Constructed once the object is hosted, because it needs the live [`SignalEmitter`];
+/// `main.rs` wires it into `Index::set_change_sink` immediately after the connection is built and
+/// before the watcher starts, so no generation the watcher commits goes unannounced.
+///
+/// The runtime handle is not a convenience. [`index_core::ChangeSink`] is a *synchronous* trait
+/// and its only caller is the watcher's plain `std::thread` loop, where a bare `tokio::spawn`
+/// panics — and that panic would unwind out of the index's commit path and kill the watcher
+/// thread, leaving a daemon that answers queries and has silently stopped watching. Capturing the
+/// handle at wiring time, on the runtime thread, is what makes the call legal from anywhere.
 #[derive(Debug, Clone)]
 pub struct Index1Signals {
     emitter: SignalEmitter<'static>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl Index1Signals {
     #[must_use]
-    pub fn new(emitter: SignalEmitter<'static>) -> Self {
-        Self { emitter }
+    pub fn new(emitter: SignalEmitter<'static>, runtime: tokio::runtime::Handle) -> Self {
+        Self { emitter, runtime }
     }
 }
 
@@ -353,7 +360,7 @@ impl index_core::ChangeSink for Index1Signals {
     ) {
         let emitter = self.emitter.clone();
         let count = changes.len() as u32;
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             if let Err(error) = IndexApi::generation_advanced(&emitter, generation.0, count).await {
                 tracing::warn!(%error, "could not emit GenerationAdvanced");
             }
@@ -365,12 +372,83 @@ impl index_core::ChangeSink for Index1Signals {
         let root_id = status.root.0;
         let state = status.state.as_str();
         let reason = status.reason.clone().unwrap_or_default();
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             if let Err(error) =
                 IndexApi::root_state_changed(&emitter, root_id, state, &reason).await
             {
                 tracing::warn!(%error, "could not emit RootStateChanged");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use index_core::ChangeSink as _;
+
+    /// A connection with nobody on the other end, which is all a signal emitter needs.
+    ///
+    /// `Channel::pair` is an in-process socket, so this costs no bus, no filesystem and no
+    /// authentication handshake.
+    async fn hosted_emitter() -> (zbus::Connection, SignalEmitter<'static>) {
+        let (ours, theirs) = zbus::connection::socket::Channel::pair();
+        // The far end is kept alive for the length of the test: a peer that has hung up turns
+        // every emission into an error, which is not the thing being tested here.
+        std::mem::forget(theirs);
+        let connection =
+            zbus::connection::Builder::authenticated_socket(ours, zbus::Guid::generate())
+                .expect("a p2p builder")
+                .p2p()
+                .build()
+                .await
+                .expect("an in-process connection");
+        let emitter = SignalEmitter::new(&connection, "/org/legeos/Files")
+            .expect("a signal emitter")
+            .into_owned();
+        (connection, emitter)
+    }
+
+    /// The hazard that made wiring these signals up dangerous.
+    ///
+    /// [`index_core::ChangeSink`] is a synchronous trait and its only production caller is the
+    /// watcher's plain `std::thread` loop. A bare `tokio::spawn` panics outside a runtime context,
+    /// and that panic would unwind out of the index's commit path and take the watcher thread with
+    /// it — leaving a daemon that still answers queries and has silently stopped watching, which
+    /// is the worst failure this subsystem has. Capturing the runtime handle at wiring time is
+    /// what makes the call legal from a thread the runtime has never heard of.
+    ///
+    /// Revert `Index1Signals` to `tokio::spawn` and this test fails.
+    #[tokio::test]
+    async fn the_change_sink_may_be_called_from_a_thread_the_runtime_never_heard_of() {
+        let (_connection, emitter) = hosted_emitter().await;
+        let signals = Index1Signals::new(emitter, tokio::runtime::Handle::current());
+
+        let from_a_plain_thread = std::thread::spawn(move || {
+            signals.generation_advanced(index_core::Generation(7), &[]);
+            signals.root_state_changed(&index_core::RootStatus {
+                root: index_core::RootId(1),
+                path: index_core::NativePath::from_path(std::path::Path::new("/tmp/tree")),
+                display: "/tmp/tree".to_owned(),
+                volume: index_core::VolumeIdentity::default(),
+                state: index_core::RootState::Stale,
+                reason: Some("unwatched".to_owned()),
+                generation: index_core::Generation(7),
+                complete: false,
+                entry_count: 0,
+                policy_hash: String::new(),
+                last_scan_ms: None,
+                last_reconcile_started_ms: None,
+                last_reconcile_finished_ms: None,
+                last_error: None,
+                watch: None,
+            });
+        })
+        .join();
+
+        assert!(
+            from_a_plain_thread.is_ok(),
+            "the watcher thread must be able to announce a generation without panicking"
+        );
     }
 }
