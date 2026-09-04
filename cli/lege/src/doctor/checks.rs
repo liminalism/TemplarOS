@@ -37,6 +37,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Box::new(AppManifestsValid),
         Box::new(MimeHandlersInstalled),
         Box::new(AutostartProvidersResolved),
+        Box::new(FileIndexHealth),
     ]
 }
 
@@ -1429,6 +1430,217 @@ fn xdg_config_home() -> Option<std::path::PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
         })
+}
+
+fn xdg_cache_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+}
+
+/// `$XDG_CACHE_HOME/legeos/file-index-v1.sqlite3` — mirrors
+/// `services/lege-filed/src/main.rs`'s `default_index_db_path`, which is private to that binary.
+fn index_db_path() -> Option<std::path::PathBuf> {
+    xdg_cache_home().map(|cache| cache.join("legeos").join("file-index-v1.sqlite3"))
+}
+
+/// The shared file index: size, generation, per-root state, watcher backend/limits, watches
+/// armed/refused, last event, last reconciliation, and why a root is stale — plan of record
+/// `docs/planning/shared-incremental-file-index.md` acceptance gate 10, unmet before this check
+/// existed. Runtime only, and never creates the index or the state store it needs to open it: both
+/// must already exist (`Path::exists` first) or the check `Skip`s rather than paying for a scan a
+/// diagnostic tool has no business starting.
+///
+/// A root reporting `Stale` because the watch budget ran out is not this check's failure to
+/// report honestly — `RootStatus::reason` says so, and that reason is carried into `detail`
+/// verbatim rather than treated as an error. Only a genuine problem (the index would not open, a
+/// root recorded a `last_error`) turns the outcome into `Fail`.
+struct FileIndexHealth;
+impl Check for FileIndexHealth {
+    fn id(&self) -> &'static str {
+        "file-index"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn run(&self, context: &Context) -> Finding {
+        if context.root != Path::new("/") {
+            return finding(self, Outcome::Skipped, "file index (runtime only)", "");
+        }
+        let Some(db_path) = index_db_path() else {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no $HOME/$XDG_CACHE_HOME to locate the index cache",
+                "",
+            );
+        };
+        if !db_path.exists() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no file index yet (lege-filed has never indexed)",
+                db_path.display().to_string(),
+            );
+        }
+        let state_path = lege_state::default_path();
+        if !state_path.exists() {
+            return finding(
+                self,
+                Outcome::Skipped,
+                "no session state store yet (no session has run)",
+                state_path.display().to_string(),
+            );
+        }
+        let store = match lege_state::Store::open(&state_path) {
+            Ok(store) => store,
+            Err(error) => {
+                return finding(
+                    self,
+                    Outcome::Fail,
+                    "could not open the state store",
+                    error.to_string(),
+                );
+            }
+        };
+        let config = lege_file_index::IndexConfig::default();
+        let index = match lege_filed::search::Index::with_index_db(store, &db_path, config) {
+            Ok(index) => index,
+            Err(error) => {
+                return finding(
+                    self,
+                    Outcome::Fail,
+                    "could not open the file index",
+                    error.to_string(),
+                );
+            }
+        };
+        let core = index.core();
+        let diagnostics = match core.diagnostics() {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                return finding(
+                    self,
+                    Outcome::Fail,
+                    "could not read index diagnostics",
+                    error.to_string(),
+                );
+            }
+        };
+        let roots = match core.roots() {
+            Ok(roots) => roots,
+            Err(error) => {
+                return finding(
+                    self,
+                    Outcome::Fail,
+                    "could not read index roots",
+                    error.to_string(),
+                );
+            }
+        };
+
+        let mut lines = vec![format!(
+            "index: schema v{} generation {} — {} bytes on disk, fts={}, {} cursor(s) open, \
+             change log {}..{}",
+            diagnostics.schema_version,
+            diagnostics.generation,
+            diagnostics.db_bytes,
+            diagnostics.fts_available,
+            diagnostics.cursor_count,
+            diagnostics.change_seq_floor,
+            diagnostics.change_seq_head,
+        )];
+        let mut any_error = false;
+        for root in &roots {
+            let (line, root_had_error) = describe_index_root(root);
+            any_error |= root_had_error;
+            lines.push(line);
+        }
+        let outcome = if any_error {
+            Outcome::Fail
+        } else {
+            Outcome::Pass
+        };
+        finding(
+            self,
+            outcome,
+            format!(
+                "{} indexed root(s), schema v{}, generation {}",
+                roots.len(),
+                diagnostics.schema_version,
+                diagnostics.generation,
+            ),
+            lines.join("; "),
+        )
+    }
+}
+
+/// One `RootStatus` as a `lege doctor` detail line: state, entry count, why it is stale (if it
+/// is), the watcher's own backend/limits/armed/refused/last-event report, and the last
+/// reconciliation. Returns the line and whether it carries a genuine error (a watcher error or a
+/// recorded `last_error`) — `Stale` alone, with a `reason`, is not an error: it is the honest
+/// report this check exists to produce.
+fn describe_index_root(root: &lege_file_index::RootStatus) -> (String, bool) {
+    use std::fmt::Write as _;
+    let mut any_error = false;
+    let mut line = format!(
+        "root {} [{}] {} — {} entries, generation {}, complete={}",
+        root.root.0,
+        root.state.as_str(),
+        root.display,
+        root.entry_count,
+        root.generation,
+        root.complete,
+    );
+    if let Some(reason) = &root.reason {
+        let _ = write!(line, " — stale: {reason}");
+    }
+    match &root.watch {
+        Some(watch) => {
+            let _ = write!(
+                line,
+                " — watcher {} armed={} refused={} limit={} queue_limit={} overflow_count={} \
+                 last_event_ms={}",
+                watch.backend,
+                watch.watches_armed,
+                watch.watches_refused,
+                watch
+                    .watch_limit
+                    .map_or_else(|| "?".to_owned(), |v| v.to_string()),
+                watch
+                    .queue_limit
+                    .map_or_else(|| "?".to_owned(), |v| v.to_string()),
+                watch.overflow_count,
+                watch
+                    .last_event_ms
+                    .map_or_else(|| "never".to_owned(), |v| v.to_string()),
+            );
+            if let Some(error) = &watch.last_error {
+                any_error = true;
+                let _ = write!(line, " — watcher error: {error}");
+            }
+        }
+        None => line.push_str(" — no watcher status recorded yet"),
+    }
+    match (
+        root.last_reconcile_started_ms,
+        root.last_reconcile_finished_ms,
+    ) {
+        (Some(started), Some(finished)) if finished >= started => {
+            let _ = write!(line, " — last reconcile took {}ms", finished - started);
+        }
+        (Some(started), _) => {
+            let _ = write!(line, " — reconcile in progress since {started}ms");
+        }
+        (None, _) => line.push_str(" — never reconciled"),
+    }
+    if let Some(error) = &root.last_error {
+        any_error = true;
+        let _ = write!(line, " — last error: {error}");
+    }
+    (line, any_error)
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ lege-client = { workspace = true }
 lege-hwdetect = { workspace = true }
 lege-appd = { workspace = true }
 lege-associationd = { workspace = true }
+lege-file-index = { workspace = true }
 lege-filed = { workspace = true }
 lege-resourced = { workspace = true }
 lege-session-core = { workspace = true }
