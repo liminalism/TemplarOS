@@ -770,11 +770,14 @@ pub(crate) fn refresh_fts(
         return Ok(());
     }
     let generation = generation.0 as i64;
+    // `UNION ALL` of two single-column tests rather than one `OR`: an `OR` across two columns
+    // cannot use either index, so this was a full scan of the root on every commit.
     transaction.execute(
         "DELETE FROM entries_fts
-          WHERE rowid IN (SELECT entry_id FROM entries
-                           WHERE root_id = ?1 AND (written_generation = ?2
-                                                   OR deleted_generation = ?2))",
+          WHERE rowid IN (
+                SELECT entry_id FROM entries WHERE root_id = ?1 AND written_generation = ?2
+                UNION ALL
+                SELECT entry_id FROM entries WHERE root_id = ?1 AND deleted_generation = ?2)",
         rusqlite::params![root.0, generation],
     )?;
     transaction.execute(

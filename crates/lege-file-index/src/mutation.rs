@@ -290,23 +290,31 @@ impl crate::Index {
         let mut skipped = 0usize;
         let mut moved_descendants = 0u64;
         let mut invalidations = Vec::new();
-        let mut touched_roots: Vec<RootId> = Vec::new();
+        // Per root: how many live rows this transaction added or removed. Tier-agnostic, because
+        // `entry_count` counts the rows the index holds and not the rows a search can see — a
+        // drive visualiser asking "how many entries does this root have" wants the `Opaque` and
+        // `Inventory` ones included.
+        let mut touched_roots: Vec<(RootId, i64)> = Vec::new();
 
         for mutation in &batch.mutations {
+            let mut live_delta = 0i64;
             match apply_one(&transaction, generation, tiers, mutation)? {
                 Applying::Skipped => skipped += 1,
                 Applying::Changed {
                     change,
                     descendants,
+                    live_delta: delta,
                 } => {
                     moved_descendants += descendants;
+                    live_delta = delta;
                     changes.push(change);
                 }
                 Applying::Invalidated(root, reason) => invalidations.push((root, reason)),
             }
             let root = mutation.root();
-            if !touched_roots.contains(&root) {
-                touched_roots.push(root);
+            match touched_roots.iter_mut().find(|(id, _)| *id == root) {
+                Some((_, total)) => *total += live_delta,
+                None => touched_roots.push((root, live_delta)),
             }
         }
 
@@ -330,15 +338,20 @@ impl crate::Index {
             change.seq = append_change(&transaction, change)?;
         }
         prune_changes(&transaction, max_changes)?;
-        for root in &touched_roots {
+        for (root, live_delta) in &touched_roots {
             refresh_fts(&transaction, *root, generation)?;
+            // Adjusted, not recounted. The `COUNT(*)` this replaces ran over every live row of the
+            // root on every batch commit — ~8 ms at 15,338 entries and ~51 ms at 153,326, almost
+            // all CPU, which extrapolates to ~330 ms per coalesced watcher batch on a
+            // million-entry home. `MAX(0, ...)` is a floor, not a correction: a scan commit still
+            // recounts exactly, so any drift is bounded by the next full pass rather than
+            // permanent.
             transaction.execute(
                 "UPDATE roots
                     SET committed_generation = ?2,
-                        entry_count = (SELECT COUNT(*) FROM entries
-                                        WHERE root_id = ?1 AND deleted_generation IS NULL)
+                        entry_count = MAX(0, entry_count + ?3)
                   WHERE root_id = ?1",
-                rusqlite::params![root.0, generation.0 as i64],
+                rusqlite::params![root.0, generation.0 as i64, live_delta],
             )?;
         }
         schema::write_meta(
@@ -403,7 +416,11 @@ impl crate::Index {
 
 enum RenameOutcome {
     Skipped,
-    Applied { change: Change, descendants: u64 },
+    Applied {
+        change: Change,
+        descendants: u64,
+        live_delta: i64,
+    },
 }
 
 /// What one mutation did.
@@ -412,6 +429,11 @@ enum Applying {
     Changed {
         change: Change,
         descendants: u64,
+        /// How the root's live-row count moved. Maintained here rather than recounted, because
+        /// the recount was `COUNT(*)` over every live row of the root on **every** batch commit —
+        /// measured at ~0.33 us/entry, so ~330 ms per coalesced watcher batch on a million-entry
+        /// home directory, for a number the transaction already knows.
+        live_delta: i64,
     },
     /// Not a row change at all: a subtree the caller can no longer vouch for.
     Invalidated(RootId, StaleReason),
@@ -425,9 +447,10 @@ fn apply_one(
     tiers: &Tiers,
     mutation: &Mutation,
 ) -> Result<Applying> {
-    let changed = |change: Change| Applying::Changed {
+    let changed = |(change, live_delta): (Change, i64)| Applying::Changed {
         change,
         descendants: 0,
+        live_delta,
     };
     match mutation {
         Mutation::Upsert { root, path, meta } | Mutation::Touch { root, path, meta } => {
@@ -464,9 +487,11 @@ fn apply_one(
                     RenameOutcome::Applied {
                         change,
                         descendants,
+                        live_delta,
                     } => Applying::Changed {
                         change,
                         descendants,
+                        live_delta,
                     },
                 },
             )
@@ -494,31 +519,40 @@ fn upsert(
     path: &NativePath,
     meta: &EntryMeta,
     coverage: Coverage,
-) -> Result<Option<Change>> {
+) -> Result<Option<(Change, i64)>> {
     let existing = live_row(transaction, root, path)?;
     if let Some((_, stored)) = &existing
         && stored.matches(meta)
     {
+        // The echo of an operation the file service already applied. No row moves, so the count
+        // must not move either — this is the case that silently drifts if the delta is assumed
+        // from the mutation's *kind* rather than from what the write actually did.
         return Ok(None);
     }
     let entry_id = write_entry(transaction, generation, root, path, meta, coverage)?;
-    Ok(Some(Change {
-        seq: 0,
-        generation,
-        root,
-        op: if existing.is_some() {
-            ChangeOp::Metadata
-        } else {
-            ChangeOp::Added
+    // `write_entry` upserts and clears `deleted_generation`, so a path with no live row gains one
+    // whether it was absent or a tombstone. A revived row is a gain of exactly one, not two.
+    let live_delta = i64::from(existing.is_none());
+    Ok(Some((
+        Change {
+            seq: 0,
+            generation,
+            root,
+            op: if existing.is_some() {
+                ChangeOp::Metadata
+            } else {
+                ChangeOp::Added
+            },
+            entry_id: Some(entry_id),
+            path: path.clone(),
+            old_path: None,
+            kind: meta.kind,
+            size_bytes: meta.size_bytes,
+            mtime_ns: meta.mtime_ns,
+            at_ms: now_ms(),
         },
-        entry_id: Some(entry_id),
-        path: path.clone(),
-        old_path: None,
-        kind: meta.kind,
-        size_bytes: meta.size_bytes,
-        mtime_ns: meta.mtime_ns,
-        at_ms: now_ms(),
-    }))
+        live_delta,
+    )))
 }
 
 fn remove(
@@ -526,7 +560,7 @@ fn remove(
     generation: Generation,
     root: RootId,
     path: &NativePath,
-) -> Result<Option<Change>> {
+) -> Result<Option<(Change, i64)>> {
     let Some((entry_id, meta)) = live_row(transaction, root, path)? else {
         return Ok(None);
     };
@@ -535,28 +569,36 @@ fn remove(
         "UPDATE entries SET deleted_generation = ?1 WHERE entry_id = ?2",
         rusqlite::params![generation_id, entry_id.0],
     )?;
+    // A directory takes its subtree with it. The `deleted_generation IS NULL` predicate is what
+    // makes the affected-row count the *live* rows lost, so a subtree that already held
+    // tombstones is not counted twice.
+    let mut live_delta = -1i64;
     if meta.kind == EntryKind::Directory {
         let (low, high) = path.subtree_bounds();
-        transaction.execute(
+        let swept = transaction.execute(
             "UPDATE entries SET deleted_generation = ?1
               WHERE root_id = ?2 AND deleted_generation IS NULL
                 AND path_bytes >= ?3 AND path_bytes < ?4",
             rusqlite::params![generation_id, root.0, low, high],
         )?;
+        live_delta -= swept as i64;
     }
-    Ok(Some(Change {
-        seq: 0,
-        generation,
-        root,
-        op: ChangeOp::Removed,
-        entry_id: Some(entry_id),
-        path: path.clone(),
-        old_path: None,
-        kind: meta.kind,
-        size_bytes: meta.size_bytes,
-        mtime_ns: meta.mtime_ns,
-        at_ms: now_ms(),
-    }))
+    Ok(Some((
+        Change {
+            seq: 0,
+            generation,
+            root,
+            op: ChangeOp::Removed,
+            entry_id: Some(entry_id),
+            path: path.clone(),
+            old_path: None,
+            kind: meta.kind,
+            size_bytes: meta.size_bytes,
+            mtime_ns: meta.mtime_ns,
+            at_ms: now_ms(),
+        },
+        live_delta,
+    )))
 }
 
 fn rename(
@@ -578,9 +620,10 @@ fn rename(
             return Ok(RenameOutcome::Skipped);
         }
         return match upsert(transaction, generation, root, to, meta, coverage)? {
-            Some(change) => Ok(RenameOutcome::Applied {
+            Some((change, live_delta)) => Ok(RenameOutcome::Applied {
                 change,
                 descendants: 0,
+                live_delta,
             }),
             None => Ok(RenameOutcome::Skipped),
         };
@@ -589,11 +632,13 @@ fn rename(
     let generation_id = generation.0 as i64;
 
     // Anything already sitting at the destination is gone: the move overwrote it.
+    let mut live_delta = 0i64;
     if let Some((victim, _)) = live_row(transaction, root, to)? {
         transaction.execute(
             "UPDATE entries SET deleted_generation = ?1 WHERE entry_id = ?2",
             rusqlite::params![generation_id, victim.0],
         )?;
+        live_delta -= 1;
     }
 
     let name = to.file_name().unwrap_or_else(|| to.clone());
@@ -636,19 +681,22 @@ fn rename(
     let descendants = if !is_directory {
         0
     } else if coverage.materialises_children() {
+        // Paths are rewritten in place: the same rows, somewhere else. The count does not move.
         rename_descendants(transaction, root, from, to, generation_id)?
     } else {
         let (low, high) = from.subtree_bounds();
-        transaction.execute(
+        let swept = transaction.execute(
             "UPDATE entries SET deleted_generation = ?1
               WHERE root_id = ?2 AND deleted_generation IS NULL
                 AND path_bytes >= ?3 AND path_bytes < ?4",
             rusqlite::params![generation_id, root.0, low, high],
         )?;
+        live_delta -= swept as i64;
         0
     };
 
     Ok(RenameOutcome::Applied {
+        live_delta,
         change: Change {
             seq: 0,
             generation,

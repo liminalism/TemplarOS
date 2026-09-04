@@ -318,7 +318,17 @@ fn copy_database(from: &Path, to: &Path) {
 /// A full recursive pass — the thing the delta is competing with.
 fn full_reconcile(index: &Index, root: RootId, tree: &Path, trigger: &Trigger) -> u64 {
     let policy = index.root_policy(root).expect("the root's policy");
-    let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 0 });
+    // The budget has to cover the tree. A refused watch now makes the pass incomplete — an
+    // unwatched subtree that reports `current` is the lie `ScanSession::commit` exists to refuse —
+    // and an incomplete pass collects nothing, which would leave deleted files in the very index
+    // this function exists to be the reference for. `FakeSource` arms in memory, so the walk is
+    // still what is being measured.
+    let mut owner = WatchOwner::new(
+        FakeSource::new(),
+        WatchBudget {
+            max_watches: u64::MAX,
+        },
+    );
     owner.track_root(root, tree, policy.clone());
     let (outcome, _) = reconcile::reconcile(
         index,

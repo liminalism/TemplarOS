@@ -957,6 +957,186 @@ mod tests {
         );
     }
 
+    /// `entry_count` is maintained by arithmetic on the hot path, so it has to agree with the
+    /// `COUNT(*)` it replaced after a batch that exercises every way the count can move.
+    ///
+    /// The measurement that forced this: the recount ran over every live row of the root on
+    /// **every** batch commit — ~8 ms at 15,338 entries and ~51 ms at 153,326, almost entirely
+    /// CPU, extrapolating to ~330 ms per coalesced watcher batch on a million-entry home.
+    ///
+    /// Two things the name should settle. `entry_count` counts rows the index **holds**, at every
+    /// coverage tier — an `Opaque` build directory and an expanded `Inventory` subtree are both in
+    /// it, because a consumer asking "how many entries does this root have" is not asking what a
+    /// search can see. And it stays exact for an **incomplete** generation, because it counts rows
+    /// held rather than files on disk: a pass that saw half the tree holds what it wrote.
+    #[test]
+    // One test per way the count can move would be one fixture per way, and the interesting
+    // failures are the interactions between them inside a single transaction.
+    #[allow(clippy::too_many_lines)]
+    fn entry_count_tracks_every_tier_and_stays_exact_across_an_incomplete_generation() {
+        use crate::mutation::{Mutation, MutationBatch, MutationSource};
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("target/debug")).unwrap();
+        std::fs::write(home.join("target/debug/thing.o"), b"o").unwrap();
+        tree(&home);
+        let index = index_at(dir.path());
+        let native = NativePath::from_path(&home);
+        let root = index
+            .add_root(&native, RootPolicy::default_home())
+            .unwrap()
+            .root;
+
+        let recount = |index: &Index| {
+            index
+                .with_read(|connection| {
+                    let count: i64 = connection.query_row(
+                        "SELECT COUNT(*) FROM entries
+                          WHERE root_id = ?1 AND deleted_generation IS NULL",
+                        [root.0],
+                        |row| row.get(0),
+                    )?;
+                    Ok(count as u64)
+                })
+                .unwrap()
+        };
+        let stated = |index: &Index| index.root_status(root).unwrap().entry_count;
+
+        // An incomplete pass: it holds what it wrote, and says so exactly.
+        let partial = index
+            .scan_root(
+                root,
+                ScanOptions {
+                    budget: ScanBudget::unlimited().with_max_entries(4),
+                    ..ScanOptions::default()
+                },
+            )
+            .unwrap();
+        assert!(!partial.complete);
+        assert_eq!(stated(&index), recount(&index));
+
+        index.scan_root(root, ScanOptions::default()).unwrap();
+        assert_eq!(stated(&index), recount(&index));
+        // The `Opaque` build directory is one of the rows being counted.
+        let opaque = index
+            .entry(root, &NativePath::from_path(&home.join("target")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(opaque.coverage, Coverage::Opaque);
+
+        let meta = |path: &Path| {
+            EntryMeta::from_symlink_metadata(path, &std::fs::symlink_metadata(path).unwrap())
+        };
+        let path = |path: &Path| NativePath::from_path(path);
+
+        // One batch with every shape at once: a creation, a deletion of a directory that has
+        // children, a rename, a duplicate echo of a creation, and a removal of something that was
+        // never there.
+        std::fs::write(home.join("fresh.txt"), b"new").unwrap();
+        let fresh = meta(&home.join("fresh.txt"));
+        let renamed = meta(&home.join("notes/report_final"));
+        let rewritten = meta(&home.join("report.pdf"));
+        let applied = index
+            .apply(MutationBatch::new(
+                MutationSource::Operation,
+                vec![
+                    Mutation::Upsert {
+                        root,
+                        path: path(&home.join("fresh.txt")),
+                        meta: fresh.clone(),
+                    },
+                    Mutation::Remove {
+                        root,
+                        path: path(&home.join("notes/2026")),
+                    },
+                    Mutation::Move {
+                        root,
+                        from: path(&home.join("notes/report_final")),
+                        to: path(&home.join("notes/renamed.txt")),
+                        meta: renamed,
+                    },
+                    // The echo: `lege-filed` applied this itself a moment ago.
+                    Mutation::Upsert {
+                        root,
+                        path: path(&home.join("fresh.txt")),
+                        meta: fresh,
+                    },
+                    // A file rewritten in place — the commonest watcher event there is. The row
+                    // already exists and its metadata differs, so it is applied and the count must
+                    // not move. Assuming a delta from the mutation's kind gets this wrong.
+                    Mutation::Upsert {
+                        root,
+                        path: path(&home.join("report.pdf")),
+                        meta: EntryMeta {
+                            size_bytes: 4096,
+                            mtime_ns: 1,
+                            ..rewritten
+                        },
+                    },
+                    Mutation::Remove {
+                        root,
+                        path: path(&home.join("never-existed")),
+                    },
+                ],
+            ))
+            .unwrap();
+        assert_eq!(applied.skipped, 2, "the echo and the absent removal");
+        assert_eq!(stated(&index), recount(&index), "after the mixed batch");
+
+        // Reviving a tombstoned path is a gain of one, not two: the row is still there, carrying
+        // a `deleted_generation` that the upsert clears.
+        let buried = home.join("notes/2026/annual-report.md");
+        index
+            .apply(MutationBatch::new(
+                MutationSource::Watcher,
+                vec![Mutation::Upsert {
+                    root,
+                    path: path(&buried),
+                    meta: meta(&buried),
+                }],
+            ))
+            .unwrap();
+        assert_eq!(stated(&index), recount(&index), "after a revival");
+
+        // A batch past `max_batch` commits in chunks, so the arithmetic has to hold per chunk.
+        let index = Index::open(
+            &dir.path().join("chunked.sqlite3"),
+            IndexConfig {
+                max_batch: 3,
+                ..IndexConfig::default()
+            },
+        )
+        .unwrap();
+        let root = index
+            .add_root(&native, RootPolicy::default_home())
+            .unwrap()
+            .root;
+        index.scan_root(root, ScanOptions::default()).unwrap();
+        let mut many = Vec::new();
+        for n in 0..8 {
+            let file = home.join(format!("bulk-{n}.txt"));
+            std::fs::write(&file, b"x").unwrap();
+            many.push(Mutation::Upsert {
+                root,
+                path: path(&file),
+                meta: meta(&file),
+            });
+        }
+        index
+            .apply(MutationBatch::new(MutationSource::Watcher, many))
+            .unwrap();
+        assert_eq!(stated(&index), recount(&index), "across chunk boundaries");
+
+        // And an expanded `Inventory` subtree is counted too.
+        let before = stated(&index);
+        index
+            .materialise_subtree(root, &NativePath::from_path(&home.join("target")))
+            .unwrap();
+        assert!(stated(&index) > before, "the expansion added rows");
+        assert_eq!(stated(&index), recount(&index), "after an expansion");
+    }
+
     /// The whole point of coverage tiers: `target/foo.o` is in the index, and a search for
     /// `foo.o` returns nothing.
     ///

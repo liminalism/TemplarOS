@@ -162,6 +162,19 @@ pub const MIGRATIONS: &[Migration] = &[
         ALTER TABLE roots ADD COLUMN metadata_freshness TEXT NOT NULL DEFAULT 'verified';
         ",
     },
+    Migration {
+        name: "0004-generation-lookup",
+        // `refresh_fts` selects a generation's rows out of `entries`, and no index covered
+        // `written_generation`, so every batch commit scanned the whole root: measured at 28.5 ms
+        // of a 28.7 ms one-mutation batch over 153,327 entries. The tombstone half is a partial
+        // index because `deleted_generation` is NULL for very nearly every row — the index holds
+        // only what is actually tombstoned, so the write cost on the hot insert path is nil.
+        sql: r"
+        CREATE INDEX entries_written ON entries (root_id, written_generation);
+        CREATE INDEX entries_tombstoned ON entries (root_id, deleted_generation)
+            WHERE deleted_generation IS NOT NULL;
+        ",
+    },
 ];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
