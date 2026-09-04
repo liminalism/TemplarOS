@@ -241,6 +241,16 @@
       "signals": {},
       "properties": {}
     },
+    "org.legeos.Host.IndexCheckpoint1": {
+      "methods": {
+        "Create": "(s)->(s)",
+        "Delta": "(s)->(s)",
+        "Discard": "(s)->()",
+        "List": "()->(s)"
+      },
+      "signals": {},
+      "properties": {}
+    },
     "org.legeos.Host.Session1": {
       "methods": {
         "ReportCompositorActive": "()->()",

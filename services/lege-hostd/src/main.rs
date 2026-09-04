@@ -15,6 +15,7 @@ mod cmd;
 mod deploy;
 mod drivers;
 mod hardware;
+mod index_checkpoint;
 mod journal;
 mod polkit;
 mod session_report;
@@ -221,11 +222,40 @@ async fn main() -> Result<()> {
         .at(names::ROOT_PATH, api::DeploymentsApi(state.clone()))
         .await
         .context("serving Deployments1")?;
+    // `SessionApi` consumes the last `Arc`, so the checkpoint surface takes its handle first.
+    let checkpoint_state = state.clone();
+    let index_checkpoints = Arc::new(index_checkpoint::IndexCheckpoints::new(
+        Arc::new(snapshot::BtrfsSnapshotter {
+            commands: Arc::new(cmd::RealCommandRunner::default()),
+        }),
+        Arc::new(cmd::RealCommandRunner::default()),
+        Arc::new(clock::SystemClock),
+        // `installer/provision.sh` mounts @snapshots at /.snapshots; a checkpoint has to live on
+        // the same btrfs filesystem as the subvolume it snapshots, so this is not a state-dir path.
+        cli.root.join(".snapshots/index"),
+        cli.root.join("var/lib/legeos/hostd/index-deltas"),
+        // @home specifically: btrfs snapshots stop at a nested subvolume, so a snapshot of @ would
+        // hold an empty home/ and the delta would read as "the whole home directory is gone".
+        cli.root.join("home"),
+    ));
     connection
         .object_server()
         .at(names::ROOT_PATH, api::SessionApi(state))
         .await
         .context("serving Session1")?;
+    // Unadopted (docs/measurements/): read-only @home checkpoints and the metadata delta between
+    // two of them. Served so the idea can be measured on a real filesystem; nothing calls it.
+    connection
+        .object_server()
+        .at(
+            names::ROOT_PATH,
+            api::IndexCheckpointApi {
+                state: checkpoint_state,
+                checkpoints: index_checkpoints,
+            },
+        )
+        .await
+        .context("serving IndexCheckpoint1")?;
 
     tracing::info!(name = names::BUS_NAME, "lege-hostd ready");
     pending::<()>().await;

@@ -1,0 +1,45 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Host. Path: /org/legeos/Host.
+
+     Read-only @home checkpoints and the btrfs metadata delta between two of them, so the file
+     index can learn what changed while it was not watching without re-walking the tree. Snapshot
+     creation reuses the same Snapshotter the deployment path drives; the delta is
+     `btrfs send --no-data -p <from> <to>`, which reads no file data.
+
+     This lives in lege-hostd and not in the per-user lege-filed because BTRFS_IOC_SEND requires
+     CAP_SYS_ADMIN, and a per-user daemon does not get capabilities (ADR-0001, ADR-0003).
+
+     UNADOPTED. Nothing calls this by default; it exists to be measured (docs/measurements/).
+     Handing a written stream to the per-user daemon is an open question — see the DeltaStream
+     doc in services/lege-hostd/src/index_checkpoint.rs.
+
+     Every argument is JSON on purpose (interfaces/README.md): a filter or a field can be added
+     later without a signature change, which is what the frozen-signature rule requires.
+
+     polkit: org.legeos.host.index-checkpoint on Create/Delta/Discard. List is an unauthenticated
+     read, like Storage1's Usage. -->
+<node>
+  <interface name="org.legeos.Host.IndexCheckpoint1">
+    <!-- CheckpointRequest JSON in ({"subvolume": "/home"}; empty means the configured default),
+         Checkpoint JSON out (id, path, subvolume, uuid, ctransid, created_ms). -->
+    <method name="Create">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="checkpoint_json" type="s" direction="out"/>
+    </method>
+    <!-- Every retained checkpoint, as JSON (Vec<Checkpoint>), oldest id first. -->
+    <method name="List">
+      <arg name="checkpoints_json" type="s" direction="out"/>
+    </method>
+    <!-- DeltaRequest JSON in ({"from": id, "to": id, "with-data": false}), DeltaStream JSON out
+         (from, to, path, bytes, duration_ms). -->
+    <method name="Delta">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="delta_json" type="s" direction="out"/>
+    </method>
+    <!-- Drop a checkpoint once its delta has been applied. -->
+    <method name="Discard">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

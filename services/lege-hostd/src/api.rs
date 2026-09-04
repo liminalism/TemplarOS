@@ -281,3 +281,70 @@ mod tests {
         );
     }
 }
+
+/// Read-only `@home` checkpoints and the btrfs metadata delta between two of them
+/// (`crate::index_checkpoint`). Unadopted: nothing in the running system calls it, and it is
+/// served so the idea can be measured against a real filesystem rather than argued about.
+///
+/// It carries its own `IndexCheckpoints` alongside the shared state because the store is a
+/// spike's configuration, not part of the daemon's settled shape; authorization still goes
+/// through the one `HostdState` every other interface uses.
+#[derive(Debug)]
+pub struct IndexCheckpointApi {
+    pub state: Arc<HostdState>,
+    pub checkpoints: Arc<crate::index_checkpoint::IndexCheckpoints>,
+}
+
+#[zbus::interface(name = "org.legeos.Host.IndexCheckpoint1")]
+impl IndexCheckpointApi {
+    /// Take a read-only checkpoint. `request_json` is a `CheckpointRequest`; an empty string is
+    /// the default request.
+    async fn create(
+        &self,
+        request_json: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        require_authorized(&*self.state.polkit, &header, "index-checkpoint").await?;
+        let request = parse_request(request_json)?;
+        to_json(&self.checkpoints.create(&request).map_err(failed)?)
+    }
+
+    /// Every retained checkpoint, as JSON. An unauthenticated read: it names snapshot ids and
+    /// their subvolume, which `btrfs subvolume list` would tell any local user anyway.
+    async fn list(&self) -> zbus::fdo::Result<String> {
+        to_json(&self.checkpoints.list().map_err(failed)?)
+    }
+
+    /// `btrfs send --no-data -p <from> <to>` into a root-owned file; returns where it landed.
+    async fn delta(
+        &self,
+        request_json: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        require_authorized(&*self.state.polkit, &header, "index-checkpoint").await?;
+        let request = parse_request(request_json)?;
+        let checkpoints = self.checkpoints.clone();
+        // `btrfs send` walks two metadata trees and can take a while on a large subvolume; a D-Bus
+        // method must not hold the executor while it does.
+        let stream = tokio::task::spawn_blocking(move || checkpoints.delta(&request))
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
+            .map_err(failed)?;
+        to_json(&stream)
+    }
+
+    /// Drop a checkpoint, once the delta taken against it has been applied.
+    async fn discard(&self, id: &str, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
+        require_authorized(&*self.state.polkit, &header, "index-checkpoint").await?;
+        self.checkpoints.discard(id).map_err(failed)
+    }
+}
+
+/// An empty argument is the default request, so a caller that wants the defaults does not have to
+/// know the JSON shape.
+fn parse_request<T: Default + serde::de::DeserializeOwned>(text: &str) -> zbus::fdo::Result<T> {
+    if text.trim().is_empty() {
+        return Ok(T::default());
+    }
+    serde_json::from_str(text).map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))
+}

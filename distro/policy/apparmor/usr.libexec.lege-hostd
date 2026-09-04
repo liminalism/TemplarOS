@@ -19,6 +19,12 @@ include <tunables/global>
   /run/legeos/ rw,
   /run/legeos/** rw,
 
+  # File-index checkpoints: read-only @home snapshots under @snapshots (installer/provision.sh
+  # mounts it at /.snapshots) and the send streams taken between them. Root-only by mode; a
+  # metadata delta names every path under the user's home.
+  /.snapshots/ rw,
+  /.snapshots/** rw,
+
   # Declarative config this daemon owns (gpu-mode, version-lock.toml) — nothing else writes here.
   /etc/legeos/hardware/ rw,
   /etc/legeos/hardware/** rwk,
