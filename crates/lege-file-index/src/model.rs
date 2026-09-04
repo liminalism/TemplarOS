@@ -428,18 +428,160 @@ pub struct RootStatus {
     pub watch: Option<WatchStatus>,
 }
 
-/// What a root includes. One predicate, so the scanner and the watcher cannot disagree about
-/// which files exist.
+/// How much of a subtree the index holds, and how much of it search is allowed to see.
+///
+/// One index serves two consumers with opposite needs. A filename search wants `target/` not to
+/// exist; a drive visualiser needs to know it is 46 GB. The policy this replaces answered only the
+/// first question, by dropping those directories entirely — so the OS did not know a 46 GB
+/// `target/` was there, and the visualiser had to walk the disk itself. A tier answers both: the
+/// directory is known and sized, and nothing inside it is searchable.
+///
+/// The order is the strength order, and it is load-bearing: a child is stored at the *minimum* of
+/// its own tier and its ancestors', so a file with an ordinary name under an `Opaque` build
+/// directory does not become searchable by being ordinary.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Coverage {
+    /// Not in the index at all, and not descended into. The trash: rows for it are noise in every
+    /// consumer, not just in search.
+    Ignored,
+    /// The entry is stored; its contents are not materialised. What a build or cache directory
+    /// gets — known, sized, and holding no rows for a search to leak until the subtree is
+    /// explicitly expanded.
+    Opaque,
+    /// Stored and descended into, and never searchable. What an expanded `Opaque` subtree becomes:
+    /// a drive visualiser can account for every file in it, a filename search still cannot see one.
+    Inventory,
+    /// Stored, descended into, and searchable. Everything the user actually keeps.
+    #[default]
+    Detailed,
+}
+
+impl Coverage {
+    #[must_use]
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Self::Ignored => 0,
+            Self::Opaque => 1,
+            Self::Inventory => 2,
+            Self::Detailed => 3,
+        }
+    }
+
+    /// Anything this build does not recognise reads as `Detailed`, which is what every row written
+    /// before the column existed is: a database from a future build is rebuilt, never
+    /// misinterpreted, but a single unexpected value must not silently hide a file from search.
+    #[must_use]
+    pub fn from_i64(value: i64) -> Self {
+        match value {
+            0 => Self::Ignored,
+            1 => Self::Opaque,
+            2 => Self::Inventory,
+            _ => Self::Detailed,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ignored => "ignored",
+            Self::Opaque => "opaque",
+            Self::Inventory => "inventory",
+            Self::Detailed => "detailed",
+        }
+    }
+
+    /// Whether a directory at this tier has its contents materialised. `Opaque` is the tier that
+    /// stops a walk.
+    #[must_use]
+    pub fn materialises_children(self) -> bool {
+        matches!(self, Self::Inventory | Self::Detailed)
+    }
+
+    /// Whether rows at this tier reach a search. The one predicate `refresh_fts` and the `LIKE`
+    /// fallback both answer to, because they are independent leaks.
+    #[must_use]
+    pub fn is_searchable(self) -> bool {
+        matches!(self, Self::Detailed)
+    }
+}
+
+/// What a [`CoverageRule`] matches.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "match")]
+pub enum CoverageMatch {
+    /// This exact file or directory name, at any depth.
+    Name { name: String },
+    /// The trash in both of its shapes: `Trash`, and `.Trash-$uid` whose suffix differs on every
+    /// machine and so cannot be written as a literal name.
+    Trash,
+    /// This path and everything beneath it. How a subtree is materialised on demand without
+    /// rewriting the root's stored policy.
+    Subtree { path: NativePath },
+}
+
+impl CoverageMatch {
+    #[must_use]
+    fn matches(&self, path: &NativePath, name: &[u8]) -> bool {
+        match self {
+            Self::Name { name: wanted } => wanted.as_bytes() == name,
+            Self::Trash => is_trash_name(name),
+            Self::Subtree { path: prefix } => path.starts_with(prefix),
+        }
+    }
+}
+
+/// One classification rule. Rules are ordered and the first match wins, so a `Subtree` rule placed
+/// ahead of the name rules is how "expand this one build directory" is expressed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoverageRule {
+    pub matcher: CoverageMatch,
+    pub coverage: Coverage,
+}
+
+impl CoverageRule {
+    #[must_use]
+    pub fn name(name: &str, coverage: Coverage) -> Self {
+        Self {
+            matcher: CoverageMatch::Name {
+                name: name.to_owned(),
+            },
+            coverage,
+        }
+    }
+
+    #[must_use]
+    pub fn subtree(path: &NativePath, coverage: Coverage) -> Self {
+        Self {
+            matcher: CoverageMatch::Subtree { path: path.clone() },
+            coverage,
+        }
+    }
+}
+
+/// What a root includes, and at what tier. One predicate, so the scanner and the watcher cannot
+/// disagree about which files exist.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RootPolicy {
     /// Follow into other filesystems. Off for `/` and for a home root; on only where a user
     /// explicitly indexed a mounted volume.
     pub cross_mount: bool,
-    /// Directory names never descended into.
+    /// Directory names never descended into. The pre-tier policy, kept because it is what every
+    /// root registered before coverage rules existed has stored in its `policy_json`: a policy
+    /// with no rules falls back to it and behaves exactly as it did.
     pub skip_names: Vec<String>,
     /// Skip `Trash` and `.Trash-*`, whose uid suffix cannot be written as a literal skip name.
+    /// Part of the same fallback.
     pub skip_trash: bool,
     pub include_hidden: bool,
+    /// Ordered classification rules; the first match wins. Empty means "use the fallback above".
+    #[serde(default)]
+    pub coverage_rules: Vec<CoverageRule>,
+    /// What an entry no rule matched is stored at.
+    #[serde(default)]
+    pub default_coverage: Coverage,
 }
 
 impl Default for RootPolicy {
@@ -449,65 +591,228 @@ impl Default for RootPolicy {
 }
 
 impl RootPolicy {
-    /// The policy the file service has always had: caches, version-control internals, build
-    /// output and the trash are noise in every search a person actually wants.
+    /// Directory names that hold generated output rather than anything a person wrote: caches,
+    /// version-control internals, build trees, virtualenvs.
+    pub const BUILD_AND_CACHE_NAMES: &'static [&'static str] = &[
+        ".git",
+        ".hg",
+        ".svn",
+        ".cache",
+        "node_modules",
+        "target",
+        "__pycache__",
+        ".venv",
+    ];
+
+    /// The policy a home root gets.
+    ///
+    /// Caches, version-control internals and build output are noise in every search a person
+    /// actually wants — but they are not noise to a drive visualiser, and this index serves both.
+    /// So they are `Opaque` rather than dropped: the directory is known and its own row is stored,
+    /// nothing inside it is materialised or searchable, and a consumer that wants the contents
+    /// asks for the subtree to be expanded. The trash stays `Ignored`; nobody wants those rows.
+    ///
+    /// `add_root` is insert-if-absent, so changing this does not reach a root that already exists.
+    /// Only an explicit `set_root_policy` does, and that already marks the root
+    /// `Stale{PolicyChanged}` and re-derives coverage on the repair pass.
     #[must_use]
     pub fn default_home() -> Self {
+        let mut coverage_rules = vec![CoverageRule {
+            matcher: CoverageMatch::Trash,
+            coverage: Coverage::Ignored,
+        }];
+        coverage_rules.extend(
+            Self::BUILD_AND_CACHE_NAMES
+                .iter()
+                .map(|name| CoverageRule::name(name, Coverage::Opaque)),
+        );
         Self {
             cross_mount: false,
-            skip_names: [
-                ".git",
-                ".hg",
-                ".svn",
-                ".cache",
-                "node_modules",
-                "target",
-                "__pycache__",
-                ".venv",
-            ]
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect(),
+            // Kept empty: the rules above say the same thing with more resolution, and a
+            // non-empty list here would only shadow them for a reader.
+            skip_names: Vec::new(),
             skip_trash: true,
             include_hidden: true,
+            coverage_rules,
+            default_coverage: Coverage::Detailed,
         }
+    }
+
+    /// The pre-tier policy, for a caller that genuinely wants build output to not exist — and the
+    /// shape every root registered before coverage rules existed still has stored.
+    #[must_use]
+    pub fn legacy_home() -> Self {
+        Self {
+            cross_mount: false,
+            skip_names: Self::BUILD_AND_CACHE_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            skip_trash: true,
+            include_hidden: true,
+            coverage_rules: Vec::new(),
+            default_coverage: Coverage::Detailed,
+        }
+    }
+
+    /// The same policy with `subtree` and everything under it materialised at `coverage`,
+    /// overriding whatever the name rules would have said. The rule goes in front, so it wins.
+    #[must_use]
+    pub fn materialising(&self, subtree: &NativePath, coverage: Coverage) -> Self {
+        let mut policy = self.clone();
+        policy
+            .coverage_rules
+            .insert(0, CoverageRule::subtree(subtree, coverage));
+        policy
     }
 
     /// A stable digest of the policy. A change to it invalidates a root: the rows were produced
     /// under different rules and cannot be compared with rows produced under these.
+    ///
+    /// The tier fields are appended only when they are set, so a policy that predates them hashes
+    /// to exactly the byte string it always did and no existing root is invalidated by an upgrade.
     #[must_use]
     pub fn hash(&self) -> String {
         let mut names = self.skip_names.clone();
         names.sort();
-        let canonical = format!(
+        let mut canonical = format!(
             "cross_mount={};skip_trash={};include_hidden={};skip={}",
             self.cross_mount,
             self.skip_trash,
             self.include_hidden,
             names.join(",")
         );
+        if !self.coverage_rules.is_empty() || self.default_coverage != Coverage::Detailed {
+            canonical.push_str(";default=");
+            canonical.push_str(self.default_coverage.as_str());
+            for rule in &self.coverage_rules {
+                canonical.push_str(";rule=");
+                match &rule.matcher {
+                    CoverageMatch::Name { name } => canonical.push_str(name),
+                    CoverageMatch::Trash => canonical.push_str("<trash>"),
+                    CoverageMatch::Subtree { path } => canonical.push_str(&path.display()),
+                }
+                canonical.push('=');
+                canonical.push_str(rule.coverage.as_str());
+            }
+        }
         format!("{:016x}", fnv1a64(canonical.as_bytes()))
     }
 
-    /// Whether this path is excluded. The scanner and the watcher both call exactly this.
+    /// The tier one path's own name earns, ignoring what its ancestors earned.
     #[must_use]
-    pub fn is_skipped(&self, path: &NativePath, _kind: EntryKind) -> bool {
-        let Some(name) = path.file_name() else {
-            return false;
-        };
-        let bytes = name.into_bytes();
-        if self.skip_trash && is_trash_name(&bytes) {
-            return true;
+    pub fn coverage_of(&self, path: &NativePath, _kind: EntryKind) -> Coverage {
+        let name = path
+            .file_name()
+            .map(NativePath::into_bytes)
+            .unwrap_or_default();
+        for rule in &self.coverage_rules {
+            if rule.matcher.matches(path, &name) {
+                return rule.coverage;
+            }
         }
-        self.skip_names
+        // No rule matched, so fall back to the pre-tier policy. This is what makes an upgrade
+        // silent: a root whose stored `policy_json` has no rules classifies exactly as it did.
+        if self.skip_trash && is_trash_name(&name) {
+            return Coverage::Ignored;
+        }
+        if self
+            .skip_names
             .iter()
-            .any(|skip| skip.as_bytes() == bytes.as_slice())
+            .any(|skip| skip.as_bytes() == name.as_slice())
+        {
+            return Coverage::Ignored;
+        }
+        self.default_coverage
+    }
+
+    /// The tier a row is actually stored at, or `None` when no row is written at all.
+    ///
+    /// A path is capped by its ancestors: nothing is stored under an `Ignored` or `Opaque`
+    /// directory, and an entry under an `Inventory` one is `Inventory` however ordinary its own
+    /// name is. `base` bounds the walk — components above it are never classified, so a root
+    /// registered *inside* a build directory is still indexed normally.
+    #[must_use]
+    pub fn stored_coverage_within(
+        &self,
+        base: &NativePath,
+        path: &NativePath,
+        kind: EntryKind,
+    ) -> Option<Coverage> {
+        let mut inherited = Coverage::Detailed;
+        for ancestor in ancestors_between(base, path) {
+            inherited = inherited.min(self.coverage_of(&ancestor, EntryKind::Directory));
+            if !inherited.materialises_children() {
+                return None;
+            }
+        }
+        match inherited.min(self.coverage_of(path, kind)) {
+            Coverage::Ignored => None,
+            coverage => Some(coverage),
+        }
+    }
+
+    /// [`Self::stored_coverage_within`] with no base, classifying **every** component of the
+    /// path. What a live watcher event and a filesystem delta get, where only the path is in hand.
+    ///
+    /// The difference matters in exactly one place: a root registered inside a directory the rules
+    /// would classify — `~/code/target` as its own root — is `Opaque` to this and indexed normally
+    /// by the base-bounded form the scanner uses. That is the right way round; the scanner knows
+    /// what the user registered and a bare path does not.
+    #[must_use]
+    pub fn stored_coverage(&self, path: &NativePath, kind: EntryKind) -> Option<Coverage> {
+        let mut inherited = Coverage::Detailed;
+        for ancestor in ancestors_of(path) {
+            inherited = inherited.min(self.coverage_of(&ancestor, EntryKind::Directory));
+            if !inherited.materialises_children() {
+                return None;
+            }
+        }
+        match inherited.min(self.coverage_of(path, kind)) {
+            Coverage::Ignored => None,
+            coverage => Some(coverage),
+        }
+    }
+
+    /// Whether this path is excluded — now "no row is written for it", which is `Ignored` or an
+    /// unmaterialised descendant of an `Opaque` directory. The scanner and the watcher both call
+    /// exactly this.
+    #[must_use]
+    pub fn is_skipped(&self, path: &NativePath, kind: EntryKind) -> bool {
+        !self.should_index(path, kind)
     }
 
     #[must_use]
     pub fn should_index(&self, path: &NativePath, kind: EntryKind) -> bool {
-        !self.is_skipped(path, kind)
+        self.stored_coverage(path, kind).is_some()
     }
+}
+
+/// Every strict ancestor of `path`, shallowest first. Works for a relative path too: a delta
+/// stream names paths relative to a subvolume and still has to be classified component by
+/// component.
+fn ancestors_of(path: &NativePath) -> Vec<NativePath> {
+    let mut chain = Vec::new();
+    let mut current = path.clone();
+    while let Some(parent) = current.parent() {
+        // `/`'s parent is `/`; without this the walk never terminates.
+        if parent.as_bytes() == current.as_bytes() {
+            break;
+        }
+        chain.push(parent.clone());
+        current = parent;
+    }
+    chain.reverse();
+    chain
+}
+
+/// The same, bounded below by `base`. `base` itself is never classified: a registered root is
+/// indexed because the user said so, whatever the directory happens to be called.
+fn ancestors_between(base: &NativePath, path: &NativePath) -> Vec<NativePath> {
+    ancestors_of(path)
+        .into_iter()
+        .filter(|ancestor| ancestor.starts_with(base) && !base.starts_with(ancestor))
+        .collect()
 }
 
 /// The two shapes the trash specification allows: a home `Trash` with no leading dot, and a
@@ -595,6 +900,10 @@ pub struct EntryRow {
     pub name: NativePath,
     pub display: String,
     pub meta: EntryMeta,
+    /// The tier this row is stored at. `Detailed` for every row written before the column
+    /// existed, which is what the old skip list kept.
+    #[serde(default)]
+    pub coverage: Coverage,
     pub written_generation: Generation,
     pub last_seen_generation: Generation,
     pub deleted_generation: Option<Generation>,
@@ -665,20 +974,88 @@ mod tests {
     }
 
     #[test]
-    fn the_trash_is_skipped_in_both_of_its_shapes() {
+    fn the_trash_is_ignored_in_both_of_its_shapes() {
         let policy = RootPolicy::default_home();
-        for name in ["/home/u/Trash", "/media/x/.Trash-1000", "/home/u/.git"] {
-            assert!(
-                policy.is_skipped(
-                    &NativePath::from_bytes(name.as_bytes().to_vec()),
-                    EntryKind::Directory
-                ),
-                "{name} was not skipped"
+        for name in ["/home/u/Trash", "/media/x/.Trash-1000"] {
+            let path = NativePath::from_bytes(name.as_bytes().to_vec());
+            assert_eq!(
+                policy.stored_coverage(&path, EntryKind::Directory),
+                None,
+                "{name} still has a row"
             );
         }
         assert!(!policy.is_skipped(
             &NativePath::from_bytes(b"/home/u/notes".to_vec()),
             EntryKind::Directory
         ));
+    }
+
+    /// The tier split, in the one case it exists for: build output is *known* and not searchable,
+    /// where the policy it replaces made it not exist at all.
+    #[test]
+    fn build_output_is_opaque_rather_than_absent() {
+        let policy = RootPolicy::default_home();
+        let path = |bytes: &[u8]| NativePath::from_bytes(bytes.to_vec());
+
+        assert_eq!(
+            policy.stored_coverage(&path(b"/home/u/proj/target"), EntryKind::Directory),
+            Some(Coverage::Opaque),
+            "the OS has to know a 46 GB target/ is there"
+        );
+        assert_eq!(
+            policy.stored_coverage(
+                &path(b"/home/u/proj/target/debug/thing.o"),
+                EntryKind::Regular
+            ),
+            None,
+            "and hold no rows for what is inside it"
+        );
+        assert_eq!(
+            policy.stored_coverage(&path(b"/home/u/proj/src/main.rs"), EntryKind::Regular),
+            Some(Coverage::Detailed)
+        );
+        assert_eq!(
+            policy.stored_coverage(&path(b"/home/u/targeted/file"), EntryKind::Regular),
+            Some(Coverage::Detailed),
+            "the rule is a whole component, not a prefix"
+        );
+
+        // Expanding one subtree materialises it as inventory without touching the stored policy.
+        let expanded = policy.materialising(&path(b"/home/u/proj/target"), Coverage::Inventory);
+        assert_eq!(
+            expanded.stored_coverage(
+                &path(b"/home/u/proj/target/debug/thing.o"),
+                EntryKind::Regular
+            ),
+            Some(Coverage::Inventory)
+        );
+        assert_eq!(
+            policy.stored_coverage(
+                &path(b"/home/u/proj/target/debug/thing.o"),
+                EntryKind::Regular
+            ),
+            None,
+            "the original policy is unchanged"
+        );
+    }
+
+    /// A root registered before coverage rules existed has none in its stored `policy_json`, and
+    /// must keep classifying exactly as it did — including hashing to the same digest, or the next
+    /// `set_root_policy` would invalidate every root on the machine for nothing.
+    #[test]
+    fn a_policy_without_rules_falls_back_to_the_skip_list_it_shipped_with() {
+        let legacy = RootPolicy::legacy_home();
+        let rehydrated: RootPolicy =
+            serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(rehydrated, legacy);
+
+        let target = NativePath::from_bytes(b"/home/u/proj/target".to_vec());
+        assert_eq!(legacy.stored_coverage(&target, EntryKind::Directory), None);
+        assert_eq!(
+            legacy.hash(),
+            "e639ff8fd14417d8",
+            "the pre-tier digest is frozen: a changed hash invalidates every existing root"
+        );
+        assert_ne!(legacy.hash(), RootPolicy::default_home().hash());
     }
 }

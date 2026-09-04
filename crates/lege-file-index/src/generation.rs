@@ -14,8 +14,8 @@
 use crate::{
     IndexError, Result,
     model::{
-        BudgetKind, EntryKind, EntryMeta, Generation, NativePath, RootId, RootPolicy, RootState,
-        RootStatus, ScanScope, StaleReason, now_ms,
+        BudgetKind, Coverage, EntryKind, EntryMeta, Generation, NativePath, RootId, RootPolicy,
+        RootState, RootStatus, ScanScope, StaleReason, now_ms,
     },
     mutation::{Change, ChangeOp},
     schema,
@@ -89,6 +89,10 @@ pub struct ScanOptions {
     /// Stamped on the root while it is `building`, so a background repair reads as
     /// `building (reconcile)` rather than as an unexplained rebuild.
     pub reason: Option<StaleReason>,
+    /// The path coverage rules are evaluated relative to. `None` means the root's own path, which
+    /// [`crate::Index::begin_scan`] fills in — so a root registered *inside* a directory the rules
+    /// would classify (`~/code/target`, say) is still indexed as the user asked.
+    pub base: Option<NativePath>,
 }
 
 impl ScanOptions {
@@ -138,7 +142,7 @@ pub struct ScanSession {
     generation: Generation,
     options: ScanOptions,
     claim: Option<crate::ScanClaim>,
-    buffered: Vec<ScannedEntry>,
+    buffered: Vec<(ScannedEntry, Coverage)>,
     staged: u64,
     limited: Option<BudgetKind>,
     stopped: bool,
@@ -210,6 +214,17 @@ impl ScanSession {
         self.watches_armed = armed;
     }
 
+    /// The tier a path is stored at under this pass's policy, or `None` when no row is written
+    /// for it. The one answer the walker asks before descending and `observe` stamps on the row,
+    /// so the two cannot drift.
+    #[must_use]
+    pub fn coverage_for(&self, path: &NativePath, kind: EntryKind) -> Option<Coverage> {
+        match &self.options.base {
+            Some(base) => self.options.policy.stored_coverage_within(base, path, kind),
+            None => self.options.policy.stored_coverage(path, kind),
+        }
+    }
+
     /// Adds one entry to the open generation.
     pub fn observe(&mut self, entry: ScannedEntry) -> Result<()> {
         if self.stopped {
@@ -231,7 +246,13 @@ impl ScanSession {
             self.set_limited(BudgetKind::Duration);
             return Ok(());
         }
-        self.buffered.push(entry);
+        // Coverage is stamped here and nowhere else on the scan path, so the walker, the
+        // reconciler and `arm_tree`'s visitor cannot disagree about what tier a row is at — and a
+        // path no row is written for is dropped before it can spend any of the budget.
+        let Some(coverage) = self.coverage_for(&entry.path, entry.meta.kind) else {
+            return Ok(());
+        };
+        self.buffered.push((entry, coverage));
         if self.buffered.len() >= self.index.config().scan_flush_rows {
             self.flush()?;
         }
@@ -252,12 +273,12 @@ impl ScanSession {
                     "INSERT INTO entries_staging
                        (generation, root_id, name_bytes, name_display, name_fold, path_bytes,
                         path_display, parent_bytes, kind, size_bytes, alloc_bytes, mtime_ns,
-                        ctime_ns, mode, hidden, dev, inode, nlink, mime)
+                        ctime_ns, mode, hidden, dev, inode, nlink, mime, coverage)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                             ?16, ?17, ?18, ?19)
+                             ?16, ?17, ?18, ?19, ?20)
                      ON CONFLICT (root_id, path_bytes) DO NOTHING",
                 )?;
-                for entry in &rows {
+                for (entry, coverage) in &rows {
                     let name = entry.path.file_name().unwrap_or_else(|| entry.path.clone());
                     statement.execute(rusqlite::params![
                         generation,
@@ -279,6 +300,7 @@ impl ScanSession {
                         entry.meta.object_key.map(|key| key.ino as i64),
                         i64::from(entry.meta.nlink),
                         entry.meta.mime,
+                        coverage.as_i64(),
                     ])?;
                 }
             }
@@ -553,8 +575,11 @@ impl Drop for ScanSession {
 impl crate::Index {
     /// Opens a generation over `root`. The root moves to `building`; its committed generation
     /// keeps serving every reader until [`ScanSession::commit`].
-    pub fn begin_scan(&self, root: RootId, options: ScanOptions) -> Result<ScanSession> {
+    pub fn begin_scan(&self, root: RootId, mut options: ScanOptions) -> Result<ScanSession> {
         let claim = self.claim_scan(root)?;
+        if options.base.is_none() {
+            options.base = Some(self.root_status(root)?.path);
+        }
         let generation = self.with_write(|connection| {
             let transaction = connection.transaction()?;
             let generation = crate::next_generation(&transaction)?;
@@ -615,6 +640,56 @@ impl crate::Index {
         self.scan_root(root, options)
     }
 
+    /// Walks one subtree instead of the whole root, and collects only inside it.
+    ///
+    /// The walk starts at `start` rather than at the root's path, which `scan_root` does not do
+    /// even when handed a `ScanScope::Subtree` — there the scope bounds collection only.
+    pub fn scan_subtree(
+        &self,
+        root: RootId,
+        start: &NativePath,
+        mut options: ScanOptions,
+    ) -> Result<ScanOutcome> {
+        let status = self.root_status(root)?;
+        if !start.starts_with(&status.path) {
+            return Err(IndexError::Unsupported {
+                detail: format!(
+                    "{} is not inside root {}",
+                    start.display(),
+                    status.path.display()
+                ),
+            });
+        }
+        options.scope = ScanScope::Subtree(start.clone());
+        let mut session = self.begin_scan(root, options)?;
+        crate::scan::walk_into(&mut session, start)?;
+        session.commit()
+    }
+
+    /// Materialise an `Opaque` subtree on demand.
+    ///
+    /// The rows under a build directory are not written by an ordinary pass — that is what
+    /// `Opaque` means. A consumer that wants them (a drive visualiser drilling into `target/`)
+    /// asks for this: the same `reconcile`/`ScanScope::Subtree` machinery, run once with one extra
+    /// rule in front of the policy, storing the descendants at [`Coverage::Inventory`] — present
+    /// and sized, still invisible to a filename search. The root's stored policy is untouched, so
+    /// nothing about this expansion outlives the rows it wrote, and the next full pass drops back
+    /// to `Opaque` unless the caller asks again.
+    pub fn materialise_subtree(&self, root: RootId, subtree: &NativePath) -> Result<ScanOutcome> {
+        let policy = self
+            .root_policy(root)?
+            .materialising(subtree, Coverage::Inventory);
+        self.scan_subtree(
+            root,
+            subtree,
+            ScanOptions {
+                policy,
+                reason: Some(StaleReason::Reconcile),
+                ..ScanOptions::default()
+            },
+        )
+    }
+
     /// The status of a root without a scan — what a warm start serves.
     pub fn warm_status(&self, root: RootId) -> Result<RootStatus> {
         self.root_status(root)
@@ -623,6 +698,13 @@ impl crate::Index {
 
 /// Rewrites the accelerator's rows for everything this generation wrote, and drops the rows of
 /// everything it collected.
+///
+/// The `coverage` predicate on the insert is the first of the two places a non-`Detailed` row can
+/// leak into a search, and it is the cheap one to get right: this function is called from
+/// `ScanSession::commit_transaction` **and** from `mutation::apply_transaction`, so one condition
+/// covers the scanner, the reconciler and every live watcher mutation. The delete above it is
+/// unconditional on purpose — a row demoted out of `Detailed` by a policy change has to leave the
+/// accelerator, and it leaves by not being re-inserted.
 pub(crate) fn refresh_fts(
     transaction: &Transaction<'_>,
     root: RootId,
@@ -640,9 +722,13 @@ pub(crate) fn refresh_fts(
         rusqlite::params![root.0, generation],
     )?;
     transaction.execute(
-        "INSERT INTO entries_fts (rowid, name_display, path_display)
-         SELECT entry_id, name_display, path_display FROM entries
-          WHERE root_id = ?1 AND written_generation = ?2 AND deleted_generation IS NULL",
+        &format!(
+            "INSERT INTO entries_fts (rowid, name_display, path_display)
+             SELECT entry_id, name_display, path_display FROM entries
+              WHERE root_id = ?1 AND written_generation = ?2 AND deleted_generation IS NULL
+                AND coverage = {searchable}",
+            searchable = Coverage::Detailed.as_i64()
+        ),
         rusqlite::params![root.0, generation],
     )?;
     Ok(())
@@ -670,11 +756,11 @@ fn merge_staging_into_entries(
         "INSERT INTO entries
            (root_id, parent_id, name_bytes, name_display, name_fold, path_bytes,
             path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden,
-            dev, inode, nlink, mime, written_generation, last_seen_generation,
+            dev, inode, nlink, mime, coverage, written_generation, last_seen_generation,
             deleted_generation)
          SELECT root_id, NULL, name_bytes, name_display, name_fold, path_bytes,
                 path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode,
-                hidden, dev, inode, nlink, mime, ?1, ?1, NULL
+                hidden, dev, inode, nlink, mime, coverage, ?1, ?1, NULL
            FROM entries_staging WHERE generation = ?1 AND root_id = ?2
          ON CONFLICT (root_id, path_bytes) DO UPDATE SET
             name_bytes = excluded.name_bytes,
@@ -691,6 +777,7 @@ fn merge_staging_into_entries(
             inode = excluded.inode,
             nlink = excluded.nlink,
             mime = excluded.mime,
+            coverage = excluded.coverage,
             written_generation = ?1,
             last_seen_generation = ?1,
             deleted_generation = NULL",

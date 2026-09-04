@@ -23,9 +23,10 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    name: "0001-index-core",
-    sql: r"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "0001-index-core",
+        sql: r"
         CREATE TABLE index_meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -139,7 +140,19 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
         );
         CREATE INDEX changes_generation ON changes (generation);
         ",
-}];
+    },
+    Migration {
+        name: "0002-coverage-tiers",
+        // `DEFAULT 3` is `Coverage::Detailed`, which is exactly what survived the old
+        // all-or-nothing `is_skipped`: every historical row is a row the skip list kept, and a row
+        // the skip list kept was searchable. So the backfill is free, no rescan is forced, and
+        // `entries_fts` needs no repair — the accelerator already holds precisely these rows.
+        sql: r"
+        ALTER TABLE entries ADD COLUMN coverage INTEGER NOT NULL DEFAULT 3;
+        ALTER TABLE entries_staging ADD COLUMN coverage INTEGER NOT NULL DEFAULT 3;
+        ",
+    },
+];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
 /// be missing (a SQLite without FTS5), and the index must still work when it is — slower, through

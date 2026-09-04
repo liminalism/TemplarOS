@@ -13,8 +13,8 @@ use crate::{
     IndexError, Result,
     generation::{fold, refresh_fts},
     model::{
-        EntryId, EntryKind, EntryMeta, Generation, NativePath, ObjectKey, RootId, StaleReason,
-        now_ms,
+        Coverage, EntryId, EntryKind, EntryMeta, Generation, NativePath, ObjectKey, RootId,
+        RootPolicy, StaleReason, now_ms,
     },
     schema,
 };
@@ -175,6 +175,29 @@ pub trait ChangeSink: Send + Sync + std::fmt::Debug {
     fn root_state_changed(&self, status: &crate::RootStatus);
 }
 
+/// Each touched root's path and policy, read once per batch so the live-write path can stamp the
+/// same coverage tier the scanner would have.
+///
+/// Without this, a watcher event under a build directory would land as a `Detailed` row — the
+/// column's own default — and everything the scan path carefully kept out of search would walk
+/// back in through `cargo build`.
+#[derive(Debug, Default)]
+struct Tiers(Vec<(RootId, NativePath, RootPolicy)>);
+
+impl Tiers {
+    /// The tier a row at `path` is stored at, or `None` when no row is written for it.
+    ///
+    /// A root this batch could not read a policy for classifies as `Detailed`: dropping a
+    /// mutation because a lookup failed would lose a real change, which is worse than storing one
+    /// row at too generous a tier.
+    fn coverage_of(&self, root: RootId, path: &NativePath, kind: EntryKind) -> Option<Coverage> {
+        let Some((_, base, policy)) = self.0.iter().find(|(id, _, _)| *id == root) else {
+            return Some(Coverage::Detailed);
+        };
+        policy.stored_coverage_within(base, path, kind)
+    }
+}
+
 impl crate::Index {
     /// Applies a batch: one transaction, one generation, one notification.
     ///
@@ -204,8 +227,10 @@ impl crate::Index {
         }
 
         let max_changes = self.config().max_changes;
-        let (applied, invalidations) =
-            self.with_write(|connection| self.apply_transaction(connection, &batch, max_changes))?;
+        let tiers = self.tiers_for(&batch);
+        let (applied, invalidations) = self.with_write(|connection| {
+            self.apply_transaction(connection, &batch, &tiers, max_changes)
+        })?;
 
         for (root, reason) in invalidations {
             self.mark_stale(root, &reason)?;
@@ -218,6 +243,28 @@ impl crate::Index {
         Ok(applied)
     }
 
+    /// Each root the batch touches, with its path and policy, read **outside** the write lock:
+    /// `root_policy` takes a reader, and a batch touches a handful of roots however many
+    /// mutations it holds.
+    fn tiers_for(&self, batch: &MutationBatch) -> Tiers {
+        let mut tiers = Tiers::default();
+        for mutation in &batch.mutations {
+            let root = mutation.root();
+            if tiers.0.iter().any(|(id, _, _)| *id == root) {
+                continue;
+            }
+            if let (Ok(status), Ok(policy)) = (self.root_status(root), self.root_policy(root)) {
+                tiers.0.push((root, status.path, policy));
+            } else {
+                tracing::debug!(
+                    root = root.0,
+                    "no policy for a mutated root; its rows keep the default tier"
+                );
+            }
+        }
+        tiers
+    }
+
     /// The body of [`Self::apply`]'s one transaction, pulled out only so the method above stays
     /// short: apply every mutation in `batch`, log the changes, and move every touched root's
     /// generation forward. An empty result rolls the transaction back rather than advancing the
@@ -226,6 +273,7 @@ impl crate::Index {
         &self,
         connection: &mut Connection,
         batch: &MutationBatch,
+        tiers: &Tiers,
         max_changes: u64,
     ) -> Result<(Applied, Vec<(RootId, StaleReason)>)> {
         let transaction = connection.transaction()?;
@@ -237,47 +285,16 @@ impl crate::Index {
         let mut touched_roots: Vec<RootId> = Vec::new();
 
         for mutation in &batch.mutations {
-            match mutation {
-                Mutation::Upsert { root, path, meta } | Mutation::Touch { root, path, meta } => {
-                    match upsert(&transaction, generation, *root, path, meta)? {
-                        Some(change) => changes.push(change),
-                        None => skipped += 1,
-                    }
-                }
-                Mutation::Remove { root, path } => {
-                    match remove(&transaction, generation, *root, path)? {
-                        Some(change) => changes.push(change),
-                        None => skipped += 1,
-                    }
-                }
-                Mutation::Move {
-                    root,
-                    from,
-                    to,
-                    meta,
-                } => match rename(&transaction, generation, *root, from, to, meta)? {
-                    RenameOutcome::Skipped => skipped += 1,
-                    RenameOutcome::Applied {
-                        change,
-                        descendants,
-                    } => {
-                        moved_descendants += descendants;
-                        changes.push(change);
-                    }
-                },
-                Mutation::Invalidate {
-                    root,
-                    subtree,
-                    reason,
+            match apply_one(&transaction, generation, tiers, mutation)? {
+                Applying::Skipped => skipped += 1,
+                Applying::Changed {
+                    change,
+                    descendants,
                 } => {
-                    tracing::debug!(
-                        root = root.0,
-                        subtree = %subtree.display(),
-                        reason = %reason.as_string(),
-                        "invalidating a subtree"
-                    );
-                    invalidations.push((*root, reason.clone()));
+                    moved_descendants += descendants;
+                    changes.push(change);
                 }
+                Applying::Invalidated(root, reason) => invalidations.push((root, reason)),
             }
             let root = mutation.root();
             if !touched_roots.contains(&root) {
@@ -381,12 +398,94 @@ enum RenameOutcome {
     Applied { change: Change, descendants: u64 },
 }
 
+/// What one mutation did.
+enum Applying {
+    Skipped,
+    Changed {
+        change: Change,
+        descendants: u64,
+    },
+    /// Not a row change at all: a subtree the caller can no longer vouch for.
+    Invalidated(RootId, StaleReason),
+}
+
+/// One mutation, tier included. Split out of `apply_transaction` so the transaction body stays
+/// about the transaction.
+fn apply_one(
+    transaction: &Transaction<'_>,
+    generation: Generation,
+    tiers: &Tiers,
+    mutation: &Mutation,
+) -> Result<Applying> {
+    let changed = |change: Change| Applying::Changed {
+        change,
+        descendants: 0,
+    };
+    match mutation {
+        Mutation::Upsert { root, path, meta } | Mutation::Touch { root, path, meta } => {
+            // No row is written for this path under the root's policy — it is the trash, or it
+            // lives inside an unexpanded `Opaque` build directory. The change is real; the index
+            // simply does not hold it.
+            let Some(coverage) = tiers.coverage_of(*root, path, meta.kind) else {
+                return Ok(Applying::Skipped);
+            };
+            Ok(
+                upsert(transaction, generation, *root, path, meta, coverage)?
+                    .map_or(Applying::Skipped, changed),
+            )
+        }
+        Mutation::Remove { root, path } => {
+            Ok(remove(transaction, generation, *root, path)?.map_or(Applying::Skipped, changed))
+        }
+        Mutation::Move {
+            root,
+            from,
+            to,
+            meta,
+        } => {
+            // Moved somewhere the index holds no rows — dragged into `target/`, or into the
+            // trash. That is a deletion as far as the index is concerned, and treating it as one
+            // is what stops the row surviving at its old tier under a new path.
+            let Some(coverage) = tiers.coverage_of(*root, to, meta.kind) else {
+                return Ok(remove(transaction, generation, *root, from)?
+                    .map_or(Applying::Skipped, changed));
+            };
+            Ok(
+                match rename(transaction, generation, *root, from, to, meta, coverage)? {
+                    RenameOutcome::Skipped => Applying::Skipped,
+                    RenameOutcome::Applied {
+                        change,
+                        descendants,
+                    } => Applying::Changed {
+                        change,
+                        descendants,
+                    },
+                },
+            )
+        }
+        Mutation::Invalidate {
+            root,
+            subtree,
+            reason,
+        } => {
+            tracing::debug!(
+                root = root.0,
+                subtree = %subtree.display(),
+                reason = %reason.as_string(),
+                "invalidating a subtree"
+            );
+            Ok(Applying::Invalidated(*root, reason.clone()))
+        }
+    }
+}
+
 fn upsert(
     transaction: &Transaction<'_>,
     generation: Generation,
     root: RootId,
     path: &NativePath,
     meta: &EntryMeta,
+    coverage: Coverage,
 ) -> Result<Option<Change>> {
     let existing = live_row(transaction, root, path)?;
     if let Some((_, stored)) = &existing
@@ -394,7 +493,7 @@ fn upsert(
     {
         return Ok(None);
     }
-    let entry_id = write_entry(transaction, generation, root, path, meta)?;
+    let entry_id = write_entry(transaction, generation, root, path, meta, coverage)?;
     Ok(Some(Change {
         seq: 0,
         generation,
@@ -459,6 +558,7 @@ fn rename(
     from: &NativePath,
     to: &NativePath,
     meta: &EntryMeta,
+    coverage: Coverage,
 ) -> Result<RenameOutcome> {
     let source = live_row(transaction, root, from)?;
     if source.is_none() {
@@ -469,7 +569,7 @@ fn rename(
         {
             return Ok(RenameOutcome::Skipped);
         }
-        return match upsert(transaction, generation, root, to, meta)? {
+        return match upsert(transaction, generation, root, to, meta, coverage)? {
             Some(change) => Ok(RenameOutcome::Applied {
                 change,
                 descendants: 0,
@@ -494,8 +594,9 @@ fn rename(
             SET path_bytes = ?1, path_display = ?2, name_bytes = ?3, name_display = ?4,
                 name_fold = ?5, kind = ?6, size_bytes = ?7, alloc_bytes = ?8, mtime_ns = ?9,
                 ctime_ns = ?10, mode = ?11, hidden = ?12, dev = ?13, inode = ?14, nlink = ?15,
-                written_generation = ?16, last_seen_generation = ?16, deleted_generation = NULL
-          WHERE entry_id = ?17",
+                coverage = ?16,
+                written_generation = ?17, last_seen_generation = ?17, deleted_generation = NULL
+          WHERE entry_id = ?18",
         rusqlite::params![
             to.as_bytes(),
             to.display(),
@@ -512,16 +613,30 @@ fn rename(
             meta.object_key.map(|key| key.dev as i64),
             meta.object_key.map(|key| key.ino as i64),
             i64::from(meta.nlink),
+            coverage.as_i64(),
             generation_id,
             entry_id.0,
         ],
     )?;
 
     // A directory move takes its subtree's paths with it, so a folder drag costs one rewrite
-    // rather than a full re-enumeration of everything under it.
-    let descendants = if stored.kind == EntryKind::Directory || meta.kind == EntryKind::Directory {
+    // rather than a full re-enumeration of everything under it — unless the destination tier
+    // holds no descendants at all (a directory renamed to `target`), in which case the subtree
+    // stops existing as far as the index is concerned and rewriting its paths would leave every
+    // row under it searchable at its old tier.
+    let is_directory = stored.kind == EntryKind::Directory || meta.kind == EntryKind::Directory;
+    let descendants = if !is_directory {
+        0
+    } else if coverage.materialises_children() {
         rename_descendants(transaction, root, from, to, generation_id)?
     } else {
+        let (low, high) = from.subtree_bounds();
+        transaction.execute(
+            "UPDATE entries SET deleted_generation = ?1
+              WHERE root_id = ?2 AND deleted_generation IS NULL
+                AND path_bytes >= ?3 AND path_bytes < ?4",
+            rusqlite::params![generation_id, root.0, low, high],
+        )?;
         0
     };
 
@@ -642,6 +757,7 @@ fn write_entry(
     root: RootId,
     path: &NativePath,
     meta: &EntryMeta,
+    coverage: Coverage,
 ) -> Result<EntryId> {
     let name = path.file_name().unwrap_or_else(|| path.clone());
     let parent_id: Option<i64> = match path.parent() {
@@ -658,9 +774,9 @@ fn write_entry(
         "INSERT INTO entries
            (root_id, parent_id, name_bytes, name_display, name_fold, path_bytes, path_display,
             kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden, dev, inode, nlink,
-            mime, written_generation, last_seen_generation, deleted_generation)
+            mime, coverage, written_generation, last_seen_generation, deleted_generation)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?19, NULL)
+                 ?19, ?20, ?20, NULL)
          ON CONFLICT (root_id, path_bytes) DO UPDATE SET
             parent_id = excluded.parent_id,
             name_bytes = excluded.name_bytes,
@@ -677,6 +793,7 @@ fn write_entry(
             inode = excluded.inode,
             nlink = excluded.nlink,
             mime = excluded.mime,
+            coverage = excluded.coverage,
             written_generation = excluded.written_generation,
             last_seen_generation = excluded.last_seen_generation,
             deleted_generation = NULL",
@@ -699,6 +816,7 @@ fn write_entry(
             meta.object_key.map(|key| key.ino as i64),
             i64::from(meta.nlink),
             meta.mime,
+            coverage.as_i64(),
             generation.0 as i64,
         ],
     )?;

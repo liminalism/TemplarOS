@@ -9,11 +9,12 @@
 use crate::{
     Result,
     generation::{ScanSession, ScannedEntry, is_permission_denied},
-    model::{BudgetKind, EntryKind, EntryMeta, NativePath},
+    model::{BudgetKind, Coverage, EntryKind, EntryMeta, NativePath},
 };
 use std::path::Path;
 
-/// Walks `root` into an open generation.
+/// Walks `root` into an open generation. `root` is where the walk starts, not necessarily the
+/// registered root: a subtree pass starts inside one.
 pub fn walk_into(session: &mut ScanSession, root: &NativePath) -> Result<()> {
     let start = root.to_path();
     let root_device = std::fs::symlink_metadata(&start).ok().map(|metadata| {
@@ -59,6 +60,7 @@ fn walk(
 
     let meta = EntryMeta::from_symlink_metadata(path, &metadata);
     let is_directory = meta.kind == EntryKind::Directory;
+    let coverage = session.coverage_for(&native, meta.kind);
     session.observe(ScannedEntry {
         path: native.clone(),
         parent: parent.cloned(),
@@ -66,6 +68,12 @@ fn walk(
     })?;
 
     if !is_directory || session.stopped() {
+        return Ok(());
+    }
+    // `Opaque` is where the walk stops: the directory is known and sized, and nothing inside it is
+    // materialised until a consumer asks for the subtree by name. `Ignored` never got a row at
+    // all. Either way, descending would write rows the policy says do not exist.
+    if !coverage.is_some_and(Coverage::materialises_children) {
         return Ok(());
     }
     // A root is not allowed to wander onto another filesystem unless the user said so: the whole
@@ -101,14 +109,6 @@ fn walk(
     for child in children {
         if session.stopped() {
             break;
-        }
-        let child_native = NativePath::from_path(&child);
-        if session
-            .options()
-            .policy
-            .is_skipped(&child_native, EntryKind::Other)
-        {
-            continue;
         }
         walk(session, &child, Some(&native), depth + 1, root_device)?;
     }

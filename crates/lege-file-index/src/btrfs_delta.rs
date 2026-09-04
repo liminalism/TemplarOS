@@ -1301,6 +1301,9 @@ mod tests {
         assert_eq!(plan.touches, vec![b"notes.md".to_vec()]);
     }
 
+    /// Coverage tiers changed what "the same paths a scan would" means: a build directory is
+    /// `Opaque`, so the directory itself is stored — known and sized — while nothing inside it
+    /// is. The delta follows the scanner, which is the point of asking the policy at all.
     #[test]
     fn the_root_policy_excludes_the_same_paths_a_scan_would() {
         let plan = planned(
@@ -1311,15 +1314,29 @@ mod tests {
                 .mkdir(b"project/node_modules")
                 .end(),
         );
-        let meta = FakeMeta::with(&[b"project/src/main.rs"]);
+        let meta = FakeMeta::with(&[b"project/src/main.rs", b"project/node_modules"]);
         let (batch, report) = to_mutations(&plan, &target(), &meta);
-        assert_eq!(batch.mutations.len(), 1);
-        assert_eq!(report.excluded, 2);
-        assert!(matches!(
-            &batch.mutations[0],
-            Mutation::Upsert { path, .. }
-                if path.as_bytes() == b"/home/dk/project/src/main.rs"
-        ));
+        assert_eq!(
+            report.excluded, 1,
+            "only the file inside the build directory has no row"
+        );
+        let paths: Vec<&[u8]> = batch
+            .mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                Mutation::Upsert { path, .. } => Some(path.as_bytes()),
+                _ => None,
+            })
+            .collect();
+        let mut paths = paths;
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec![
+                &b"/home/dk/project/node_modules"[..],
+                &b"/home/dk/project/src/main.rs"[..]
+            ]
+        );
     }
 
     #[test]
@@ -1376,7 +1393,9 @@ mod tests {
         let target = target();
         assert!(included(&target, b"src/main.rs"));
         assert!(!included(&target, b"a/.git/config"));
-        assert!(!included(&target, b"node_modules"));
+        // An `Opaque` directory is itself stored; only what is inside it is not.
+        assert!(included(&target, b"node_modules"));
+        assert!(!included(&target, b"node_modules/left-pad/index.js"));
         assert!(included(&target, b"targeted/file"));
     }
 

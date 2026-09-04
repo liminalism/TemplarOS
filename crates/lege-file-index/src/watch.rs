@@ -520,16 +520,19 @@ impl<S: EventSource> WatchOwner<S> {
             };
             let meta = EntryMeta::from_symlink_metadata(&path, &metadata);
             let native = NativePath::from_path(&path);
-            if !policy.should_index(&native, meta.kind) {
+            let Some(coverage) = policy.stored_coverage(&native, meta.kind) else {
                 continue;
-            }
+            };
             visit(ScannedEntry {
                 path: native,
                 parent: Some(NativePath::from_path(dir)),
                 meta: meta.clone(),
             })?;
             outcome.entries += 1;
-            if meta.kind == EntryKind::Directory {
+            // An `Opaque` build directory is armed and stored; nothing inside it is walked or
+            // watched. That is what stops a `cargo build` from spending the watch budget on rows
+            // no consumer asked for.
+            if meta.kind == EntryKind::Directory && coverage.materialises_children() {
                 subdirectories.push(path);
             }
         }

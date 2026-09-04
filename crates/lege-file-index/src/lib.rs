@@ -39,8 +39,9 @@ pub use generation::{
     CancelToken, ScanBudget, ScanOptions, ScanOutcome, ScanSession, ScannedEntry,
 };
 pub use model::{
-    BudgetKind, EntryId, EntryKind, EntryMeta, EntryRow, Generation, NativePath, ObjectKey, RootId,
-    RootPolicy, RootState, RootStatus, ScanScope, StaleReason, VolumeIdentity, WatchStatus,
+    BudgetKind, Coverage, CoverageMatch, CoverageRule, EntryId, EntryKind, EntryMeta, EntryRow,
+    Generation, NativePath, ObjectKey, RootId, RootPolicy, RootState, RootStatus, ScanScope,
+    StaleReason, VolumeIdentity, WatchStatus,
 };
 pub use mutation::{
     Applied, Change, ChangeOp, ChangeSink, ChangesBatch, Mutation, MutationBatch, MutationSource,
@@ -696,7 +697,8 @@ pub(crate) const ROOT_COLUMNS: &str = "root_id, path_bytes, display, volume_dev_
 
 pub(crate) const ENTRY_COLUMNS: &str = "entry_id, root_id, parent_id, name_bytes, name_display, \
      path_bytes, path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden, \
-     dev, inode, nlink, mime, written_generation, last_seen_generation, deleted_generation";
+     dev, inode, nlink, mime, written_generation, last_seen_generation, deleted_generation, \
+     coverage";
 
 pub(crate) fn root_status_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RootStatus> {
     let watch_json: Option<String> = row.get(17)?;
@@ -759,6 +761,7 @@ pub(crate) fn entry_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<En
         deleted_generation: row
             .get::<_, Option<i64>>(20)?
             .map(|value| Generation(value as u64)),
+        coverage: Coverage::from_i64(row.get(21)?),
     })
 }
 
@@ -951,6 +954,156 @@ mod tests {
             index.root_status(root).unwrap().reason.as_deref(),
             Some("budget:depth")
         );
+    }
+
+    /// The whole point of coverage tiers: `target/foo.o` is in the index, and a search for
+    /// `foo.o` returns nothing.
+    ///
+    /// Asserted through **both** query paths, because they are independent leaks. The FTS branch
+    /// (needle >= 3 characters) is filtered by what `refresh_fts` chose to insert; the `LIKE`
+    /// fallback (1-2 characters) queries `entries` directly and would return the row regardless of
+    /// what the accelerator holds. Closing one and calling it done is how the leak survives.
+    #[test]
+    fn build_output_is_indexed_and_not_searchable_on_either_query_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("target/debug")).unwrap();
+        std::fs::create_dir_all(home.join("notes")).unwrap();
+        std::fs::write(home.join("target/debug/foo.o"), b"object code").unwrap();
+        std::fs::write(home.join("notes/foo.md"), b"prose").unwrap();
+
+        let index = index_at(dir.path());
+        let (root, outcome) = scan(&index, &home);
+        assert!(outcome.complete);
+
+        // The directory is known — that is what a drive visualiser needs and what the old
+        // all-or-nothing skip list refused to give it.
+        let target = index
+            .entry(root, &NativePath::from_path(&home.join("target")))
+            .unwrap()
+            .expect("the build directory itself has a row");
+        assert_eq!(target.coverage, Coverage::Opaque);
+        assert!(
+            index
+                .entry(
+                    root,
+                    &NativePath::from_path(&home.join("target/debug/foo.o"))
+                )
+                .unwrap()
+                .is_none(),
+            "an unexpanded Opaque subtree materialises no descendants"
+        );
+
+        for needle in ["foo.o", "fo", "o."] {
+            let result = index.search(&Query::new(needle)).unwrap();
+            assert!(
+                result
+                    .hits
+                    .iter()
+                    .all(|hit| !hit.row.path.display().contains("/target/")),
+                "`{needle}` reached into the build directory via the {} plan",
+                result.strategy
+            );
+        }
+        assert_eq!(
+            index.search(&Query::new("foo.o")).unwrap().strategy,
+            "fts5-trigram",
+            "the >= 3 character needle has to exercise the accelerator, not the fallback"
+        );
+        assert_eq!(
+            index.search(&Query::new("fo")).unwrap().strategy,
+            "like-scan",
+            "the 2 character needle has to exercise the fallback, not the accelerator"
+        );
+        assert_eq!(
+            index.search(&Query::new("foo")).unwrap().hits.len(),
+            1,
+            "and the file a person actually wrote is still found"
+        );
+
+        // Expanding the subtree materialises it as inventory: accounted for, still not searchable.
+        let expanded = index
+            .materialise_subtree(root, &NativePath::from_path(&home.join("target")))
+            .unwrap();
+        assert!(expanded.complete);
+        let object = index
+            .entry(
+                root,
+                &NativePath::from_path(&home.join("target/debug/foo.o")),
+            )
+            .unwrap()
+            .expect("the expanded subtree holds its rows");
+        assert_eq!(object.coverage, Coverage::Inventory);
+        assert_eq!(object.meta.size_bytes, 11);
+        for needle in ["foo.o", "fo"] {
+            assert!(
+                index
+                    .search(&Query::new(needle))
+                    .unwrap()
+                    .hits
+                    .iter()
+                    .all(|hit| !hit.row.path.display().contains("/target/")),
+                "`{needle}` found an inventory row after expansion"
+            );
+        }
+        let inventory = index
+            .search(&Query::new("foo.o").including_every_tier())
+            .unwrap();
+        assert_eq!(
+            inventory.hits.len(),
+            1,
+            "a consumer that asks for every tier does get the object file"
+        );
+    }
+
+    /// The upgrade gate: a database written before migration 0002 opens under this build with
+    /// every row `Detailed` — which is exactly what survived the old skip list — and nothing about
+    /// any root changes. A forced rescan of a home directory is not an acceptable upgrade cost.
+    #[test]
+    fn a_database_from_before_coverage_tiers_opens_without_a_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let database = dir.path().join("file-index-v1.sqlite3");
+
+        // Build the pre-0002 shape by hand: the 0001 migration, and nothing else.
+        {
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            schema::migrate(&connection).unwrap();
+            connection
+                .execute_batch(
+                    "ALTER TABLE entries DROP COLUMN coverage;
+                     ALTER TABLE entries_staging DROP COLUMN coverage;
+                     DELETE FROM index_migrations WHERE name = '0002-coverage-tiers';",
+                )
+                .unwrap();
+            schema::write_meta(&connection, "schema_version", "1").unwrap();
+        }
+        let index = Index::open(&database, IndexConfig::default()).unwrap();
+        let (root, _) = scan(&index, &home);
+        let before = index.root_status(root).unwrap();
+        let searchable = index.search(&Query::new("report")).unwrap().hits.len();
+        assert!(searchable > 0);
+        drop(index);
+
+        // Now open it again the way an upgraded daemon would.
+        let index = Index::open(&database, IndexConfig::default()).unwrap();
+        let diagnostics = index.diagnostics().unwrap();
+        assert_eq!(diagnostics.schema_version, schema::schema_version());
+        assert_eq!(index.root_status(root).unwrap(), before, "a root changed");
+        assert_eq!(
+            index.search(&Query::new("report")).unwrap().hits.len(),
+            searchable,
+            "the accelerator needed repair after all"
+        );
+        for row in index.children(root, &NativePath::from_path(&home)).unwrap() {
+            assert_eq!(
+                row.coverage,
+                Coverage::Detailed,
+                "{} was backfilled at the wrong tier",
+                row.path.display()
+            );
+        }
     }
 
     /// The completeness defect this closes, and the reason it is not hypothetical.

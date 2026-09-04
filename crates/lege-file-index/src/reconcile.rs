@@ -17,8 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    EntryKind, EntryMeta, Index, IndexError, NativePath, RootId, RootPolicy, RootState,
-    ScanOptions, ScanOutcome, ScanScope, ScannedEntry, StaleReason,
+    Coverage, EntryKind, EntryMeta, Index, IndexError, NativePath, RootId, RootState, ScanOptions,
+    ScanOutcome, ScanScope, ScannedEntry, StaleReason,
     watch::{EventSource, WatchOwner},
 };
 
@@ -115,7 +115,6 @@ pub fn reconcile<S: EventSource>(
         index.mark_stale(root, &trigger.stale_reason())?;
     }
 
-    let policy = index.root_policy(root)?;
     let start = match &scope {
         ScanScope::Root => status.path.to_path(),
         ScanScope::Subtree(path) => path.to_path(),
@@ -131,7 +130,6 @@ pub fn reconcile<S: EventSource>(
         let mut walk = Walk {
             index,
             root,
-            policy: &policy,
             trigger,
             report: &mut report,
         };
@@ -158,7 +156,6 @@ pub fn reconcile<S: EventSource>(
 struct Walk<'a> {
     index: &'a Index,
     root: RootId,
-    policy: &'a RootPolicy,
     trigger: &'a Trigger,
     report: &'a mut ReconcileReport,
 }
@@ -199,6 +196,14 @@ impl Walk<'_> {
         Ok(())
     }
 
+    /// Whether a directory's contents are materialised at all. An `Opaque` build directory is
+    /// stored, watched and sized; walking into it would write rows the policy says do not exist.
+    fn descends_into(session: &crate::ScanSession, dir: &NativePath) -> bool {
+        session
+            .coverage_for(dir, EntryKind::Directory)
+            .is_some_and(Coverage::materialises_children)
+    }
+
     /// Watch, then read, then observe — and return the subdirectories to descend into.
     fn visit_directory<S: EventSource>(
         &mut self,
@@ -226,6 +231,18 @@ impl Walk<'_> {
             }
             Err(error) => return Err(IndexError::Io(error)),
         };
+
+        if !Self::descends_into(session, &native) {
+            // Stored, and the walk ends here. The directory's own row is still observed, so a
+            // consumer knows it exists; its contents wait for an explicit expansion.
+            session.observe(ScannedEntry {
+                path: native,
+                parent: dir.parent().map(NativePath::from_path),
+                meta: on_disk,
+            })?;
+            self.report.entries_observed += 1;
+            return Ok(Vec::new());
+        }
 
         if let Some(children) = self.take_on_trust(session, &native, &on_disk)? {
             self.report.dirs_proven_unchanged += 1;
@@ -261,7 +278,7 @@ impl Walk<'_> {
             };
             let meta = EntryMeta::from_symlink_metadata(&path, &metadata);
             let child = NativePath::from_path(&path);
-            if !self.policy.should_index(&child, meta.kind) {
+            if session.coverage_for(&child, meta.kind).is_none() {
                 continue;
             }
             if meta.kind == EntryKind::Directory {
@@ -311,6 +328,10 @@ impl Walk<'_> {
         let mut subdirectories = Vec::new();
         for child in self.index.children(self.root, dir)? {
             let path = child.path.to_path();
+            // Coverage is re-derived from the policy for every child even here, where the stat is
+            // skipped: a policy change is the one thing a pass like this exists to apply, and the
+            // stored tier is precisely what it changed. `observe` does the deriving, so a child
+            // the new policy writes no row for simply stops being observed and is collected.
             if child.meta.kind == EntryKind::Directory {
                 subdirectories.push(path);
                 continue;

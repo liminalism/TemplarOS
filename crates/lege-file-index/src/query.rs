@@ -17,7 +17,7 @@
 use crate::{
     ENTRY_COLUMNS, IndexError, Result, entry_row_from_row,
     generation::fold,
-    model::{EntryKind, EntryRow, Generation, NativePath, RootId, RootStatus},
+    model::{Coverage, EntryKind, EntryRow, Generation, NativePath, RootId, RootStatus},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -127,6 +127,14 @@ pub struct Query {
     pub fields: FieldMask,
     #[serde(default)]
     pub page_size: u32,
+    /// Which coverage tiers a result may contain. Empty — the default, and what an absent JSON
+    /// field means — is `[Detailed]`: a filename search sees what a person wrote and not the
+    /// contents of a build directory. A drive visualiser asks for `[Opaque, Inventory, Detailed]`.
+    ///
+    /// Additive on purpose. `Index1.Search` takes a JSON string precisely so a new filter costs no
+    /// D-Bus signature change.
+    #[serde(default)]
+    pub include_coverage: Vec<Coverage>,
 }
 
 impl Query {
@@ -148,6 +156,25 @@ impl Query {
     #[must_use]
     pub fn with_page_size(mut self, size: u32) -> Self {
         self.page_size = size;
+        self
+    }
+
+    /// Which tiers this query may return. Empty means the default rather than "nothing": a
+    /// deserialised `"include_coverage": []` and an absent field have to mean the same thing, or
+    /// a client that sends one gets an empty result set with no error to explain it.
+    #[must_use]
+    pub fn coverage_filter(&self) -> Vec<Coverage> {
+        if self.include_coverage.is_empty() {
+            vec![Coverage::Detailed]
+        } else {
+            self.include_coverage.clone()
+        }
+    }
+
+    /// Every tier, for a consumer that accounts for a whole drive.
+    #[must_use]
+    pub fn including_every_tier(mut self) -> Self {
+        self.include_coverage = vec![Coverage::Opaque, Coverage::Inventory, Coverage::Detailed];
         self
     }
 
@@ -343,10 +370,26 @@ impl QueryPlanner for Fts5TrigramPlanner {
         if !query.include_hidden {
             filters.push_str(" AND hidden = 0");
         }
+        // The second of the two leaks, and the one the FTS predicate does not cover: the `LIKE`
+        // fallback below queries `entries` directly, so it would return an `Inventory` row that
+        // the accelerator has never held. `filters` is shared by both branches, so the tier
+        // predicate belongs here rather than next to either query.
+        let wanted = query.coverage_filter();
+        let tiers = wanted
+            .iter()
+            .map(|coverage| coverage.as_i64().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = write!(filters, " AND coverage IN ({tiers})");
+        // The accelerator holds `Detailed` rows and only those, which is what keeps it from
+        // carrying a build tree's worth of trigrams. So a query that wants a wider set cannot be
+        // answered from it at all: it goes down the bounded scan, honestly reported as such,
+        // rather than quietly returning the searchable subset of what was asked for.
+        let searchable_only = wanted == [Coverage::Detailed];
 
         // The trigram tokenizer cannot index a term shorter than three characters, so a one- or
         // two-character substring is honestly a scan — bounded, and reported as truncated.
-        let trigram_capable = fts_available && needle.chars().count() >= 3;
+        let trigram_capable = fts_available && searchable_only && needle.chars().count() >= 3;
         let sql = if trigram_capable {
             binds.push(rusqlite::types::Value::Text(format!(
                 "\"{}\"",
