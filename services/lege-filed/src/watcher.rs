@@ -308,6 +308,10 @@ impl<S: EventSource> WatchLoop<S> {
 
     fn run(&mut self, stop: &AtomicBool) {
         while !stop.load(Ordering::Relaxed) && !self.dead {
+            // Before the wait is computed, not after: a lease that arrived while the thread was
+            // parked queues an arm, and an arm queued after `next_wake` has already answered
+            // `None` would sit in the queue until some unrelated filesystem event turned up.
+            self.drain_commands();
             let wait = self.next_wake();
             self.step(wait);
         }
@@ -912,6 +916,32 @@ mod tests {
         loop_.step(Some(Duration::ZERO));
         assert!(loop_.owner.watches_armed() > 0, "the tree is armed again");
         assert_eq!(loop_.observer_state(), ObserverState::Active);
+    }
+
+    /// The ordering that makes a lease usable: work a command queues has to be visible to the
+    /// decision about how long to wait, or the loop parks with an arm still in the queue.
+    #[test]
+    fn a_lease_is_drained_before_the_wait_is_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, _root, clock) = loop_fixture(dir.path());
+        let (commands, inbox) = std::sync::mpsc::channel();
+        loop_.attach_commands(inbox);
+        commands.send(Command::Lease(":1.1".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        commands.send(Command::Release(":1.1".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        clock.advance(60_000);
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(loop_.observer_state(), ObserverState::Dormant);
+        assert_eq!(loop_.next_wake(), None, "parked with nothing owed");
+
+        commands.send(Command::Lease(":1.2".to_owned())).unwrap();
+        loop_.drain_commands();
+        assert_eq!(
+            loop_.next_wake(),
+            Some(Duration::ZERO),
+            "the arm the lease queued must be visible to the wait, not after it"
+        );
     }
 
     /// Direct mutation is the one thing that must not depend on observation: `OperationSink`
