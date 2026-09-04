@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod btrfs_delta;
 pub mod coalesce;
 pub mod error;
 pub mod generation;
