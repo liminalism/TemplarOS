@@ -446,6 +446,17 @@ record legeos.papercut.lege-dev-deploy-restarts-lege-hostd-service-and/1 : paper
     created_at 2026-09-01
 }
 
+record legeos.papercut.lege-dev-repo-verify-reports-a-blunt-verify/1 : papercut {
+    title "`lege dev repo verify` reports a blunt \"verify: FAILED\" when the real…"
+    state verified
+    statement """
+        `lege dev repo verify` reports a blunt "verify: FAILED" when the real problem is that /var/lib/legeos/devrepo/gnupg is drwx------ root:root and the command runs as the user, so gpg cannot read the keyring at all ("unsafe ownership on homedir", "Permission denied", then "Can't check signature: No public key"). The archive itself verified fine — both sets reported "ok (13 pinned package(s))" — so the only thing that failed was a check that cannot succeed for this user by construction. It should say it cannot read the archive's keyring as this user, rather than reporting the signature as unverified, which reads like tampering.
+        """
+    observed_at git:d9ab0344cdb3af1778b584c03b0ccf8707452bb8
+    author "claude"
+    created_at 2026-09-04
+}
+
 record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : papercut {
     title "`lege doctor` exited 1 on every developer install and made…"
     state verified
@@ -578,6 +589,17 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     about "systemd-analyze"
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.tests-integration-nested-session-sh-deleted-its/1 : papercut {
+    title "tests/integration/nested-session.sh deleted its own temp root on every…"
+    state verified
+    statement """
+        tests/integration/nested-session.sh deleted its own temp root on every exit, including failures, so "socket did not appear" arrived with no compositor log to read and cost a reproduce-by-hand round trip. Worse, the `exit $?` meant to carry the status could never run: the script is `set -e`, so a failing `dbus-run-session` left the shell before that line. Fixed both (keep on failure, `|| status=$?`) — but the pattern is worth checking for elsewhere: a bare command whose exit status is read on the following line is a no-op under `set -e`.
+        """
+    observed_at git:d9ab0344cdb3af1778b584c03b0ccf8707452bb8
+    author "claude"
+    created_at 2026-09-04
 }
 
 record legeos.papercut.the-acceptance-command-just-image-summary/1 : papercut {

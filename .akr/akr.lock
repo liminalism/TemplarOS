@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:3c6fbb550cd80c16e099e84188864e174ae9d62dbb091203898476973fae95c0"
+    source_graph "sha256:6419e3ee89051b36ac429ccc8c372cd60b3141028ed410176d2d5e8dbb60a1f0"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:e5df603ceac2252bb68a0d60b8c662d4200102eaf0319419648705e8f197b079"
-    records 182
+    hash "sha256:5d0b882949bf270d1a03e06b782df3e79e805af82820b0184d5e4edf84a9fbe9"
+    records 186
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,13 +39,13 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:f577dd737cf59cc7815c827f81d74be59161a3aac9893e917ed3c755b121ae48"
-    records 32
+    hash "sha256:140717afc9fcc37d910e6e490c2c0ba13e41dbf9e5a58494e26c31d4c61c9a29"
+    records 33
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:25230663156a2bf2c289796cc4ab42119d0b0c54feaaeaf1cc12ee73bbb5dadd"
-    records 93
+    hash "sha256:303977bfda97c4473fed2eff2d0a199c8a7a6b9cd8425c77b5c37785ba1e692c"
+    records 95
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -2166,6 +2166,11 @@ seal @legeos.decision.toolchain-licence-namespace/3 {
     hash "sha256:716930a57026db5c3efdba7eb452b2e024e07e51dd15fdf0c8af7838db53635c"
 }
 
+seal @legeos.evidence.acceptance-sweep-20260904/1 {
+    state verified
+    hash "sha256:f117ae422ff65ed3234996ed1091555d990bfa0be6e0bc379000291d6ecc5ecc"
+}
+
 seal @legeos.evidence.accessibility-docs-honest-20260831/1 {
     state verified
     hash "sha256:04de2772a0afe4e11ae6036089e62902f009c9e59027a7e154f98da0d1d6f3e4"
@@ -2219,6 +2224,11 @@ seal @legeos.evidence.d5-dev-status-and-activation-20260903/1 {
 seal @legeos.evidence.d5-hostd-transaction-and-retention-20260903/1 {
     state verified
     hash "sha256:3c37c26d646511dcd6e445e193297e6d486374a6460108562030430319008521"
+}
+
+seal @legeos.evidence.daily-driver-capability-matrix-20260904/1 {
+    state verified
+    hash "sha256:1a01c189bd55d3e814a230597f5b2e16cd96a238985369310a61f9a797568858"
 }
 
 seal @legeos.evidence.daily-driver-matrix-20260903/1 {
@@ -2781,6 +2791,16 @@ seal @legeos.evidence.m1-workspace-builds-and-tests/1 {
     hash "sha256:d8c27e260fd5cf2dee914a607b684188e136a7036f7a6a5d3e54536084ab87cf"
 }
 
+seal @legeos.evidence.nested-session-journey-20260904/1 {
+    state verified
+    hash "sha256:325e87f41ef6768d76ce6699909b6d7f0b52a92e5da334050c5746b133238ef6"
+}
+
+seal @legeos.evidence.nm-tray-2-packaged-20260904/1 {
+    state verified
+    hash "sha256:9f317511b4aff785b097af0b45a3180820b9e0ab0a08bfa5e05613e67e5e64a2"
+}
+
 seal @legeos.evidence.nm-tray2-popup-build-20260824/1 {
     state verified
     hash "sha256:edb1c7f3ef86b9cef9e4417caf137dbb30065d975e15fd284f78e61f613a6d63"
@@ -3246,6 +3266,11 @@ seal @legeos.observation.trash-undo-reported-a-restore-it-did-not-perform/1 {
     hash "sha256:4d484664dba6c6cf0debbfa3d5ac175efa0c069796d4be310575c696423ac1bc"
 }
 
+seal @legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrations/1 {
+    state verified
+    hash "sha256:eb4beb246f93e6d1460b5c15d89a1ffc670d2b0277f692a1a975facadf34be22"
+}
+
 seal @legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1 {
     state verified
     hash "sha256:64939d6d4365c07e1389a56ac02227e3a266b4a77c502f6f301930e48647fa60"
@@ -3446,6 +3471,11 @@ seal @legeos.papercut.lege-dev-deploy-restarts-lege-hostd-service-and/1 {
     hash "sha256:516b297bbe6b2d694116c9e3167ee1e96493404f726d2770bf546c358fd8e209"
 }
 
+seal @legeos.papercut.lege-dev-repo-verify-reports-a-blunt-verify/1 {
+    state verified
+    hash "sha256:4531aa6097d35d192a1970137080d4d9aebeea9855bc4bb460f79378dfb56f54"
+}
+
 seal @legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 {
     state verified
     hash "sha256:04a931ae9bb712328b8d6cd66259d98a8a7e46ba57dea5b21275f11d696c9ad9"
@@ -3504,6 +3534,11 @@ seal @legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 {
 seal @legeos.papercut.systemd-analyze-user-verify-accepted-the/1 {
     state verified
     hash "sha256:10411fb806725b3b7ba0eac647e47ed8e1fbdf5be60550476c0e5e0f3d257ac0"
+}
+
+seal @legeos.papercut.tests-integration-nested-session-sh-deleted-its/1 {
+    state verified
+    hash "sha256:ddc5125beb8c8dcda21a5902d72fc7265c8a4633c4eaca03319fd1c1acae98ee"
 }
 
 seal @legeos.papercut.the-acceptance-command-just-image-summary/1 {

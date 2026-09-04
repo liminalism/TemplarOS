@@ -569,6 +569,22 @@ record legeos.observation.trash-undo-reported-a-restore-it-did-not-perform/1 : o
     ]
 }
 
+record legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrations/1 : observation {
+    title "lege-sessiond and lege-filed raced the first migration of the shared state database, so on a first login whichever started second did not start at all"
+    state verified
+    scope [ path "crates/lege-state/src/lib.rs", path "tests/integration/nested-session.sh" ]
+    statement """
+        Found by running the desktop-validation acceptance check `nested-session-journey` (tests/integration/nested-session.sh), which had never been run and did not pass. Two defects, one of them in production code. (1) The harness waited for the trusted-shell socket under the name `<socket>-shell` while the compositor creates it as `legeos-shell-<socket>` (compositor/lege-comp/src/shell_socket.rs:31). The prefix is deliberate — a trailing `-shell` on `wayland-0` falls inside snapd's `wayland-[0-9]*` permission, the one socket no confined application may open — and scripts/nested-session.sh carries that reasoning in a comment, but the integration harness was not updated when the naming changed on 2026-09-03. It could not have passed since. (2) The real one: `lege_state::migrate` checked whether a migration was applied with an unlocked read, then applied it inside a deferred `BEGIN`. Two processes opening a fresh database both read the migration table as empty and both ran the migration; the loser reached `CREATE TABLE instances` after the winner had committed one and died with `table instances already exists`. This is not a harness artefact: `$XDG_STATE_HOME/legeos/session.db` is one store per user by design and both `lege-sessiond` and `lege-filed` open it (services/lege-filed/src/main.rs defaults to the same path), systemd starts them together, and the window is exactly a first login on a machine with no database yet — so the failure is invisible in development and lands on the first user of a fresh install. Reproduced deterministically with four threads opening one fresh store: three of four failed, on `0002-session-domains` as well as `0001-initial`, one of them with `database is locked` rather than a duplicate table. Fixed with `BEGIN IMMEDIATE` and the applied-check repeated inside the transaction, which makes check-and-apply atomic; a deferred transaction that tries to upgrade to a write after another writer has committed returns SQLITE_BUSY immediately and does not honour a busy timeout, so the timeout alone would not have been enough. A `busy_timeout` of 5 s was added as well, because two daemons sharing one WAL database had none and would meet SQLITE_BUSY on ordinary concurrent writes too. Regression test: `a_fresh_store_survives_several_daemons_opening_it_at_once`.
+        """
+    observed_at git:8d74542b146fa8399817bd377094157b7bd1bb97
+    method instrumented
+    watches [
+        "crates/lege-state/src/lib.rs",
+        "tests/integration/nested-session.sh",
+        "services/lege-filed/src/main.rs"
+    ]
+}
+
 record legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1 : observation {
     title "Unprivileged fanotify is one mark per directory, arms 2.5x slower than inotify and costs about twice the memory, for 6.4% more headroom"
     state verified
