@@ -8,7 +8,7 @@
 
 use crate::{
     Result,
-    generation::{ScanSession, ScannedEntry},
+    generation::{ScanSession, ScannedEntry, is_permission_denied},
     model::{BudgetKind, EntryKind, EntryMeta, NativePath},
 };
 use std::path::Path;
@@ -45,8 +45,14 @@ fn walk(
     let native = NativePath::from_path(path);
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
+        // Gone between the `read_dir` that named it and the `stat` that would describe it. That
+        // is a deletion, not a blind spot: the row is simply not re-observed and collection
+        // tombstones it. Counting it as unreadable would make every pass over a live tree
+        // incomplete, which is how a completeness test stops meaning anything. At the top it is
+        // the opposite — a root whose own path has vanished proves nothing about its contents.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && depth > 0 => return Ok(()),
         Err(error) => {
-            session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied);
+            session.note_unreadable(is_permission_denied(&error));
             return Ok(());
         }
     };
@@ -74,8 +80,9 @@ fn walk(
 
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && depth > 0 => return Ok(()),
         Err(error) => {
-            session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied);
+            session.note_unreadable(is_permission_denied(&error));
             return Ok(());
         }
     };
@@ -85,7 +92,7 @@ fn walk(
         match entry {
             Ok(entry) => children.push(entry.path()),
             Err(error) => {
-                session.note_unreadable(error.kind() == std::io::ErrorKind::PermissionDenied);
+                session.note_unreadable(is_permission_denied(&error));
             }
         }
     }

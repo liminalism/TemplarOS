@@ -140,14 +140,10 @@ fn watch_create_appears_within_bound() {
 /// against a watch budget of 125,037. An arm pass over a home root therefore *cannot* finish, and
 /// the only question is whether the index says so.
 ///
-/// It does not — not here, at the crate's own commit. `ScanSession::commit`
-/// (`generation.rs:292`) computes completeness from the entry budget, permission denials and
-/// cancellation only, so the `unreadable_dirs` that a refused watch produces
-/// (`reconcile.rs:200`, `note_unreadable(session, false)`) never reach it and the root commits
-/// `Current` over a subtree nothing is watching. This test pins the facts that are true today,
-/// including that one, so the gap is visible rather than assumed closed; the watcher host repairs
-/// it above this layer (`lege-filed`'s `WatchLoop::repair`), and closing it at source means
-/// folding `unreadable_dirs` into that completeness test.
+/// It does now. `ScanSession::commit` counts a directory it could not arm exactly as it counts
+/// one it could not read, so the pass is incomplete, collection is suppressed, and the root
+/// carries `watcher-exhausted` with the armed and refused counts rather than committing `current`
+/// over a subtree nothing is watching.
 #[test]
 fn a_pass_that_ran_out_of_watches_reports_an_incomplete_walk() {
     let temp = tempfile::tempdir().expect("a temporary directory");
@@ -169,7 +165,7 @@ fn a_pass_that_ran_out_of_watches_reports_an_incomplete_walk() {
     // the rest — exactly what the kernel does at `max_user_watches`.
     let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 2 });
     owner.track_root(root, &tree, policy.clone());
-    let (_outcome, report) = reconcile::reconcile(
+    let (outcome, report) = reconcile::reconcile(
         &index,
         &mut owner,
         root,
@@ -182,6 +178,22 @@ fn a_pass_that_ran_out_of_watches_reports_an_incomplete_walk() {
     assert!(
         !report.complete,
         "a walk that could not watch every directory is not a complete walk"
+    );
+    assert!(
+        !outcome.complete,
+        "and the generation it commits must say so too, or collection will run"
+    );
+    assert_eq!(outcome.unwatched_dirs, report.dirs_unwatched);
+    let status = index.root_status(root).unwrap();
+    assert_ne!(
+        status.state,
+        RootState::Current,
+        "an unwatched subtree may not be reported as up to date"
+    );
+    assert_eq!(
+        status.reason.as_deref(),
+        Some("watcher-exhausted:armed=2,refused=3"),
+        "the reason has to send a reader to the watch budget, not to a directory's mode"
     );
     assert_eq!(
         owner.watches_armed(),

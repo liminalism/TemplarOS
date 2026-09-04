@@ -6,9 +6,10 @@
 //! a crash, a cancel, a budget — and the previous generation is still the one every reader sees.
 //!
 //! The other half of the design is the refusal to guess. Garbage collection runs **only** when the
-//! pass was complete, and **only** inside the scope it covered. A budget trip, an unreadable
-//! directory or a cancellation makes the commit incomplete, which suppresses collection entirely
-//! and lands the root in a state that says so. An unread subtree must never become a deletion.
+//! pass was complete, and **only** inside the scope it covered. A budget trip, a permission wall,
+//! an unreadable directory, a directory nothing could be armed on, or a cancellation makes the
+//! commit incomplete, which suppresses collection entirely and lands the root in a state that says
+//! so. An unread subtree must never become a deletion, and neither must an unwatched one.
 
 use crate::{
     IndexError, Result,
@@ -111,7 +112,12 @@ pub struct ScanOutcome {
     pub complete: bool,
     pub limited: Option<BudgetKind>,
     pub permission_denied: u64,
+    /// Directories the pass could not read at all, permission denials included.
     pub unreadable_dirs: u64,
+    /// Directories the pass read but could not arm a watch on. Legible, and unobserved from the
+    /// next change onwards — which is why it counts against completeness exactly as a read
+    /// failure does.
+    pub unwatched_dirs: u64,
     pub elapsed: Duration,
     pub state: RootState,
 }
@@ -138,6 +144,8 @@ pub struct ScanSession {
     stopped: bool,
     permission_denied: u64,
     unreadable_dirs: u64,
+    unwatched_dirs: u64,
+    watches_armed: u64,
     started: Instant,
     finished: bool,
 }
@@ -188,6 +196,18 @@ impl ScanSession {
         if denied {
             self.permission_denied += 1;
         }
+    }
+
+    /// Records a directory the pass read but could not arm a watch on.
+    ///
+    /// This is the other half of "I cannot see part of this tree", and until this existed it was
+    /// counted and then ignored: an unwatched subtree committed `current`, and the next complete
+    /// pass tombstoned everything it had not re-observed. `armed` is the watcher's own count at
+    /// the moment of the refusal, so the reason a person reads names the watch budget rather than
+    /// an unexplained failure.
+    pub fn note_unwatched(&mut self, armed: u64) {
+        self.unwatched_dirs += 1;
+        self.watches_armed = armed;
     }
 
     /// Adds one entry to the open generation.
@@ -289,9 +309,19 @@ impl ScanSession {
         self.flush()?;
         self.finished = true;
 
-        let complete = self.limited.is_none()
-            && self.permission_denied == 0
-            && !self.options.cancel.is_cancelled();
+        // A cancellation is a duration budget by another name; recording it as one keeps the
+        // reason a person reads from depending on whether `observe` happened to be called again
+        // after the token was set.
+        if self.options.cancel.is_cancelled() {
+            self.set_limited(BudgetKind::Duration);
+        }
+        // Completeness is "this pass saw its whole scope". Every way of not seeing it counts:
+        // a budget, a permission wall, a directory that would not open, and a directory nothing
+        // is watching. `unreadable_dirs` was counted and reported here from the start and never
+        // consulted, so a pass that could not read a subtree committed `current` and the next
+        // complete pass turned that subtree into deletions.
+        let complete =
+            self.limited.is_none() && self.unreadable_dirs == 0 && self.unwatched_dirs == 0;
         let generation = self.generation;
         let root = self.root;
         let retention = self.index.config().tombstone_retention_generations;
@@ -313,6 +343,7 @@ impl ScanSession {
             limited,
             permission_denied,
             unreadable_dirs: self.unreadable_dirs,
+            unwatched_dirs: self.unwatched_dirs,
             elapsed: self.started.elapsed(),
             state,
         };
@@ -323,6 +354,42 @@ impl ScanSession {
         }
         self.claim.take();
         Ok(outcome)
+    }
+
+    /// What the root becomes, and why.
+    ///
+    /// The order is the order a person would want to be told in. A budget is the operator's own
+    /// doing; a refused watch sends the reader to `fs.inotify.max_user_watches`; a permission wall
+    /// sends them to a directory's mode; anything left is an i/o fault. Collapsing all four into
+    /// `permission-denied`, which is what this did while `unreadable_dirs` went unconsulted, sends
+    /// every reader to the wrong place.
+    fn committed_state(&self, complete: bool) -> (RootState, Option<String>) {
+        if complete {
+            return (RootState::Current, None);
+        }
+        if let Some(kind) = self.limited {
+            let reason = StaleReason::BudgetExhausted { budget: kind };
+            return (RootState::Stale, Some(reason.as_string()));
+        }
+        if self.unwatched_dirs > 0 {
+            let reason = StaleReason::WatcherExhausted {
+                armed: self.watches_armed,
+                refused: self.unwatched_dirs,
+            };
+            return (RootState::Stale, Some(reason.as_string()));
+        }
+        if self.unreadable_dirs > self.permission_denied {
+            let reason = StaleReason::Unreadable {
+                directories: self.unreadable_dirs - self.permission_denied,
+            };
+            return (RootState::Stale, Some(reason.as_string()));
+        }
+        // Every gap was a permission wall and nothing else stopped the pass: the one shape of
+        // incompleteness with its own state, because re-running the scan will not fix it.
+        (
+            RootState::PermissionLimited,
+            Some(StaleReason::PermissionDenied.as_string()),
+        )
     }
 
     /// The body of [`Self::commit`]'s one transaction, pulled out only so the method above stays
@@ -339,8 +406,6 @@ impl ScanSession {
         let root = self.root;
         let generation = self.generation;
         let scope = &self.options.scope;
-        let permission_denied = self.permission_denied;
-        let limited = self.limited;
 
         let transaction = connection.transaction()?;
         let generation_id = generation.0 as i64;
@@ -382,20 +447,7 @@ impl ScanSession {
             |row| row.get(0),
         )?;
 
-        let state = if complete {
-            RootState::Current
-        } else if permission_denied > 0 && limited.is_none() {
-            RootState::PermissionLimited
-        } else {
-            RootState::Stale
-        };
-        let state_reason = if complete {
-            None
-        } else if let Some(kind) = limited {
-            Some(StaleReason::BudgetExhausted { budget: kind }.as_string())
-        } else {
-            Some(StaleReason::PermissionDenied.as_string())
-        };
+        let (state, state_reason) = self.committed_state(complete);
 
         transaction.execute(
             "UPDATE roots
@@ -538,6 +590,8 @@ impl crate::Index {
             stopped: false,
             permission_denied: 0,
             unreadable_dirs: 0,
+            unwatched_dirs: 0,
+            watches_armed: 0,
             started: Instant::now(),
             finished: false,
         })

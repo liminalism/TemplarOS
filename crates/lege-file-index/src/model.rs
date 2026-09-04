@@ -316,6 +316,13 @@ pub enum StaleReason {
         budget: BudgetKind,
     },
     PermissionDenied,
+    /// A directory could not be read, and not because of permissions — an i/o error, or a tree
+    /// that changed under the walk. Deliberately distinct from [`Self::PermissionDenied`], which
+    /// a user can act on, and from [`Self::WatcherExhausted`], which is a budget rather than a
+    /// failure to see.
+    Unreadable {
+        directories: u64,
+    },
     /// The daemon was not running, so the gap cannot be reconstructed from events.
     Downtime,
     /// The daemon was running but had disarmed its watches: no consumer wanted them, so the tree
@@ -344,6 +351,7 @@ impl StaleReason {
             Self::PolicyChanged => "policy-changed".to_owned(),
             Self::BudgetExhausted { budget } => format!("budget:{}", budget.as_str()),
             Self::PermissionDenied => "permission-denied".to_owned(),
+            Self::Unreadable { directories } => format!("unreadable:directories={directories}"),
             Self::Downtime => "downtime".to_owned(),
             Self::Unwatched => "unwatched".to_owned(),
             Self::Inconsistent { detail } => format!("inconsistent:{detail}"),

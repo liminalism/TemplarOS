@@ -83,6 +83,9 @@ pub struct ReconcileReport {
     pub dirs_proven_unchanged: u64,
     pub entries_observed: u64,
     pub permission_denied: u64,
+    /// Directories the pass read but could not arm a watch on. Everything below one of these is
+    /// legible and unobserved, which is a different fault from a directory that would not open.
+    pub dirs_unwatched: u64,
     pub complete: bool,
 }
 
@@ -172,6 +175,16 @@ impl Walk<'_> {
         session.note_unreadable(denied);
     }
 
+    /// The same thing for a directory that could be read but not watched. Kept apart from
+    /// [`Self::note_unreadable`] so the committed root says `watcher-exhausted` — which sends a
+    /// reader to the watch budget — rather than `permission-denied`, which sends them to a
+    /// directory's mode for a fault that has nothing to do with it.
+    fn note_unwatched(&mut self, session: &mut crate::ScanSession, armed: u64) {
+        self.report.complete = false;
+        self.report.dirs_unwatched += 1;
+        session.note_unwatched(armed);
+    }
+
     fn run<S: EventSource>(
         &mut self,
         owner: &mut WatchOwner<S>,
@@ -200,7 +213,8 @@ impl Walk<'_> {
             // Unwatched from here down. The rows are still refreshed, but the pass cannot claim
             // to be complete, because nothing will tell us about the next change here: an
             // unwatched subtree that reports `current` is the exact lie C5 §4 forbids.
-            self.note_unreadable(session, false);
+            let armed = owner.watches_armed();
+            self.note_unwatched(session, armed);
         }
 
         let on_disk = match dir.symlink_metadata() {

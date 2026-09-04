@@ -953,6 +953,97 @@ mod tests {
         );
     }
 
+    /// The completeness defect this closes, and the reason it is not hypothetical.
+    ///
+    /// `ScanSession` counted `unreadable_dirs` from the first commit and never consulted it, so a
+    /// pass that could not read — or could not watch — a directory still committed `current`, and
+    /// `collect_tombstones`, which runs only for a complete pass, turned every row it had not
+    /// re-observed into a deletion. On the reference laptop that is the ordinary case rather than
+    /// an edge: 189,089 home directories against a 125,037 watch budget refuses watches on every
+    /// pass.
+    ///
+    /// Both halves matter. The pass must not reach `current`, and the rows under the part it could
+    /// not see must still be there afterwards.
+    #[test]
+    fn a_pass_that_could_not_see_a_directory_neither_reaches_current_nor_collects() {
+        for (blind, expected_state, expected_reason) in [
+            (
+                Blindness::Unreadable,
+                RootState::Stale,
+                "unreadable:directories=1",
+            ),
+            (
+                Blindness::Unwatched,
+                RootState::Stale,
+                "watcher-exhausted:armed=4,refused=1",
+            ),
+            (
+                Blindness::PermissionDenied,
+                RootState::PermissionLimited,
+                "permission-denied",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            tree(&home);
+            let index = index_at(dir.path());
+            let (root, first) = scan(&index, &home);
+            assert!(first.complete);
+            let before = index.entry_count(root).unwrap();
+            assert!(before >= 4, "the fixture tree is worth collecting");
+
+            // A pass that observes only the root and then admits it could not see the rest. This
+            // is exactly the shape of an arm-refused walk: rows were never re-observed, and the
+            // only thing standing between them and a tombstone is the completeness test.
+            let mut session = index.begin_scan(root, ScanOptions::default()).unwrap();
+            session
+                .observe(ScannedEntry {
+                    path: NativePath::from_path(&home),
+                    parent: None,
+                    meta: EntryMeta {
+                        kind: EntryKind::Directory,
+                        ..EntryMeta::default()
+                    },
+                })
+                .unwrap();
+            match blind {
+                Blindness::Unreadable => session.note_unreadable(false),
+                Blindness::PermissionDenied => session.note_unreadable(true),
+                Blindness::Unwatched => session.note_unwatched(4),
+            }
+            let outcome = session.commit().unwrap();
+
+            assert!(
+                !outcome.complete,
+                "{blind:?}: a pass that could not see part of its scope claimed completeness"
+            );
+            let status = index.root_status(root).unwrap();
+            assert_eq!(status.state, expected_state, "{blind:?}");
+            assert_ne!(
+                status.state,
+                RootState::Current,
+                "{blind:?}: an unseen subtree committed `current`"
+            );
+            assert_eq!(status.reason.as_deref(), Some(expected_reason), "{blind:?}");
+            assert_eq!(
+                index.entry_count(root).unwrap(),
+                before,
+                "{blind:?}: rows the pass never looked at were collected as deletions"
+            );
+            assert!(
+                !index.search(&Query::new("report")).unwrap().hits.is_empty(),
+                "{blind:?}: the previous generation stopped answering"
+            );
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Blindness {
+        Unreadable,
+        PermissionDenied,
+        Unwatched,
+    }
+
     /// Kill a rebuild at its worst moment and the previous generation must still be there. This is
     /// the whole reason a scan writes to staging instead of deleting first.
     #[test]
