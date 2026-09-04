@@ -85,6 +85,11 @@ pub fn open(path: &Path) -> Result<Connection> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    // One store per user, opened by more than one daemon: lege-sessiond and lege-filed are
+    // separate crash units (ADR-0001, ADR-0002) over the same file, and systemd starts them at
+    // once. Without a busy timeout the loser of any write overlap gets SQLITE_BUSY immediately
+    // and fails to start, which on a first login is the whole session.
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
     refuse_if_too_new(&connection, &path.display().to_string())?;
     migrate(&connection)?;
     Ok(connection)
@@ -180,7 +185,21 @@ pub fn migrate(connection: &Connection) -> Result<usize> {
             continue;
         }
         tracing::info!(migration = name, "applying");
-        connection.execute_batch("BEGIN;")?;
+        // IMMEDIATE, and the check repeated inside it: the read above holds no lock, so two
+        // daemons opening a fresh database both saw this migration as unapplied and both went on
+        // to run it. The loser reached `CREATE TABLE instances` after the winner had committed
+        // one and died with "table instances already exists" — a first login where whichever of
+        // lege-sessiond and lege-filed started second did not start at all.
+        connection.execute_batch("BEGIN IMMEDIATE;")?;
+        let applied_meanwhile: bool = connection.query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0).map(|count| count > 0),
+        )?;
+        if applied_meanwhile {
+            connection.execute_batch("ROLLBACK;")?;
+            continue;
+        }
         if let Err(error) = connection.execute_batch(migration.sql) {
             let _ = connection.execute_batch("ROLLBACK;");
             return Err(error).with_context(|| format!("migration {name}"));
@@ -275,6 +294,45 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two daemons open one store at once, which is what a first login does.
+    ///
+    /// `lege-sessiond` and `lege-filed` are separate units over the same `session.db`, started
+    /// together. Before `BEGIN IMMEDIATE`, both read the migration table as empty and both ran
+    /// `0001-initial`; the loser died on `CREATE TABLE instances`, so whichever started second
+    /// did not start at all. Only the first login was affected, which is the worst one to lose.
+    #[test]
+    fn a_fresh_store_survives_several_daemons_opening_it_at_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "lege-state-race-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("legeos").join("session.db");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let openers: Vec<_> = (0..4)
+            .map(|_| {
+                let (path, barrier) = (path.clone(), std::sync::Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    open(&path).map(|_| ())
+                })
+            })
+            .collect();
+        let failures: Vec<String> = openers
+            .into_iter()
+            .filter_map(|opener| opener.join().expect("opener panicked").err())
+            .map(|error| format!("{error:#}"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            failures.is_empty(),
+            "opening one fresh store from four threads failed: {failures:?}"
+        );
+    }
 
     #[test]
     fn migrations_apply_once_and_are_idempotent() {
