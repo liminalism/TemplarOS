@@ -1,0 +1,29 @@
+Source: legeos-nm-tray
+Section: net
+Priority: optional
+Maintainer: LegeOS contributors <dev@legeos.org>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               qt6-base-dev,
+               qt6-tools-dev,
+               qt6-tools-dev-tools,
+               qt6-l10n-tools
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/LegeApp/nm-tray-alt
+
+Package: legeos-nm-tray
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, network-manager
+Provides: nm-tray
+Conflicts: nm-tray
+Replaces: nm-tray
+Description: network control for the LegeOS Home Field
+ A Qt6 NetworkManager front end, forked from palinek/nm-tray so that it can be
+ driven without a system tray: LegeOS has no taskbar to host an applet, so the
+ Home Field's network control launches this with --popup and an already-running
+ instance takes the request over the session bus instead of duplicating itself.
+ .
+ The package installs nm-tray.desktop, which is the name the shell resolves when
+ no application declares org.legeos.NetworkTray
+ (shell/lege-shell/src/surface/app.rs).

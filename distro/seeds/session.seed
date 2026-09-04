@@ -7,6 +7,7 @@ legeos-filed
 legeos-hostd
 legeos-boot-health
 legeos-shell
+legeos-nm-tray
 legeos-comp
 legeos-portal
 legeos-cli

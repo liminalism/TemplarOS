@@ -273,6 +273,11 @@ reason = "the Home Field and every decorative surface; restartable in half a sec
 role = "shell"
 
 [[layer.package]]
+name = "legeos-nm-tray"
+reason = "the network control the Home information row launches; LegeOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)"
+role = "network-control"
+
+[[layer.package]]
 name = "legeos-comp"
 reason = "the compositor; nothing else provides a Wayland session (COMPOSITOR.md)"
 role = "compositor"

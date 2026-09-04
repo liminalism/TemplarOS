@@ -22,3 +22,12 @@ branch = "legeos"
 pin = ""
 purpose = "Indicators as views (network/bluetooth/audio) until lege-shell has its own"
 package = "cosmic-applets"
+
+[nm-tray-2]
+upstream = "https://github.com/palinek/nm-tray"
+fork = "https://github.com/LegeApp/nm-tray-alt"
+branch = "dbus‑fix‑web"
+pin = "0965344f1ddb79f874aa57e555b871e1b37ad696"
+purpose = "the network control the Home information row launches; LegeOS has no system tray to host an applet"
+package = "legeos-nm-tray"
+note = "Two deviations from the ADR-0005 shape, both the fork's to fix. (1) There is no `legeos` branch: the LegeOS work lives on the branch named above, whose two hyphens are U+2011 NON-BREAKING HYPHEN and cannot be typed. (2) The pin does NOT carry --popup, the session-bus forwarding slot or the X-LegeOS-* desktop keys: those exist only in a working tree at ../not-rust-projects/nm-tray-2 and have never been committed. scripts/build-fork-deb.sh refuses to package a binary without --popup rather than shipping one the shell cannot drive."

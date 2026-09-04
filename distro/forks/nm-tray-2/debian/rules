@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+# The autostart entry belongs in /etc/xdg/autostart, not $prefix/etc; and nothing
+# LegeOS ships may land under /usr/local (ARCHITECTURE.md).
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DNM_TRAY_XDG_AUTOSTART_DIR=/etc/xdg/autostart
