@@ -346,9 +346,18 @@ cmd_measure() {
   step "write the report to $REPO_ROOT/docs/measurements/"
   confirm || { say "aborted."; exit 0; }
 
-  local json binary
+  # sudo resets PATH to its secure_path, which does not include ~/.cargo/bin, so `cargo` must be
+  # resolved through the owner's own login shell rather than assumed to be on this PATH.
+  local cargo json binary
+  cargo=${LEGE_CARGO:-$(sudo -u "$OWNER" bash -lc 'command -v cargo' 2>/dev/null)}
+  if [[ -z $cargo || ! -x $cargo ]]; then
+    echo "error: could not find cargo as $OWNER." >&2
+    echo "       set LEGE_CARGO=/path/to/cargo, or check that $OWNER's shell puts it on PATH." >&2
+    exit 1
+  fi
+  step "cargo: $cargo"
   json=$(sudo -u "$OWNER" env -C "$REPO_ROOT" \
-    cargo test -p lege-file-index --test btrfs_delta_fixture --no-run --message-format=json)
+    "$cargo" test -p lege-file-index --test btrfs_delta_fixture --no-run --message-format=json)
   binary=$(printf '%s' "$json" | python3 -c '
 import json, sys
 for line in sys.stdin:
