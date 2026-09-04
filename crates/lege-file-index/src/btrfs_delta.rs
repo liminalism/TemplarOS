@@ -703,7 +703,29 @@ fn readdress(moves: &[(Rel, Rel)], original: &[u8]) -> Rel {
 /// does, or the directory's subtree rewrite drags its row along; and a move nested inside another
 /// pending move's source is *not* held back by it, because that ancestor takes its whole subtree
 /// when it goes rather than vacating anything.
+///
+/// The scan that follows is quadratic per emitted move, so it is reached only after a linear test
+/// says some destination is another move's source at all. That test is what a mass rename hits —
+/// ten thousand files renamed into names nothing else is vacating are already in a workable order,
+/// and pay one hashed lookup per path component rather than a search.
 fn sequence_moves(moves: &[(Rel, Rel)]) -> Vec<(Rel, Rel, Rel)> {
+    let sources: std::collections::HashSet<&[u8]> =
+        moves.iter().map(|(from, _)| from.as_slice()).collect();
+    let contested = moves.iter().any(|(_, to)| {
+        std::iter::successors(Some(to.as_slice()), |path| {
+            path.iter()
+                .rposition(|byte| *byte == b'/')
+                .map(|at| &path[..at])
+        })
+        .any(|ancestor| sources.contains(ancestor))
+    });
+    if !contested {
+        return moves
+            .iter()
+            .map(|(from, to)| (from.clone(), to.clone(), to.clone()))
+            .collect();
+    }
+
     let mut pending: Vec<(Rel, Rel, Rel)> = moves
         .iter()
         .map(|(from, to)| (from.clone(), to.clone(), to.clone()))
