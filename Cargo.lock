@@ -1680,6 +1680,7 @@ dependencies = [
  "anyhow",
  "bpg-decode",
  "clap",
+ "futures-util",
  "image",
  "lege-build",
  "lege-file-index",

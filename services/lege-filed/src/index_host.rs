@@ -7,7 +7,10 @@
 //! bytes as base64 (`path_b64`/`bytes_b64`) beside a lossy `display` string — the wire never
 //! collapses a path to text-only the way `Search1`'s compatibility JSON does.
 
-use crate::dbus::{FileService, failed, json};
+use crate::{
+    dbus::{FileService, failed, json},
+    observer,
+};
 use lege_file_index::{
     self as index_core,
     query::base64,
@@ -212,7 +215,8 @@ pub struct IndexApi(pub FileService);
 impl IndexApi {
     /// Every root's status plus the core's own diagnostics, so nothing renders results without
     /// knowing how fresh — or how healthy — the index behind them is.
-    async fn roots(&self) -> Result<String> {
+    async fn roots(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> Result<String> {
+        note_consumer(&header);
         let core = self.0.index.core();
         let roots = core.roots()?;
         let diagnostics = core.diagnostics()?;
@@ -225,7 +229,12 @@ impl IndexApi {
 
     /// One JSON argument (`Query`, `query.rs`) so filters/sort/field-mask can grow without a
     /// signature change.
-    async fn search(&self, query_json: &str) -> Result<(String, u64, String)> {
+    async fn search(
+        &self,
+        query_json: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> Result<(String, u64, String)> {
+        note_consumer(&header);
         let query: index_core::Query =
             serde_json::from_str(query_json).map_err(|error| Index1Error::Fdo(failed(error)))?;
         let result = self.0.index.core().search(&query)?;
@@ -236,7 +245,14 @@ impl IndexApi {
     }
 
     /// Random access inside a pinned result set. `SnapshotRequired` when the cursor aged out.
-    async fn fetch_page(&self, cursor: &str, offset: u32, count: u32) -> Result<String> {
+    async fn fetch_page(
+        &self,
+        cursor: &str,
+        offset: u32,
+        count: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> Result<String> {
+        note_consumer(&header);
         let page = self.0.index.core().fetch_page(cursor, offset, count)?;
         json(&wire_page(&page)).map_err(Index1Error::Fdo)
     }
@@ -267,7 +283,13 @@ impl IndexApi {
 
     /// A bounded page of the change log after `seq`. `SnapshotRequired` below the retained floor:
     /// the service never invents continuity it cannot prove.
-    async fn changes_since(&self, seq: u64, limit: u32) -> Result<String> {
+    async fn changes_since(
+        &self,
+        seq: u64,
+        limit: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> Result<String> {
+        note_consumer(&header);
         let batch = self.0.index.core().changes_since(seq, limit)?;
         json(&wire_changes_batch(&batch)).map_err(Index1Error::Fdo)
     }
@@ -327,6 +349,16 @@ impl IndexApi {
         state: &str,
         reason: &str,
     ) -> zbus::Result<()>;
+}
+
+/// Register the caller as a consumer of the index.
+///
+/// `#[zbus(header)]` is stripped by the `interface` macro before the method signature is computed
+/// (`zbus_macros::iface::add_method` filters header arguments out of both the dispatch tuple and
+/// the introspection XML), so learning who is asking costs no wire change on a frozen interface —
+/// verified against the vendored zbus 5.19.0, not assumed.
+fn note_consumer(header: &zbus::message::Header<'_>) {
+    observer::note_consumer(header.sender().map(zbus::names::UniqueName::as_str));
 }
 
 /// A [`index_core::ChangeSink`] that re-emits generation and root-state changes as `Index1`

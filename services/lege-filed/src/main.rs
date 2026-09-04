@@ -14,6 +14,7 @@ use lege_filed::{
     },
     index_host::{Index1Signals, IndexApi},
     lastdir::LastDirectoryStore,
+    observer,
     recents::Recents,
     search::Index,
     storage,
@@ -233,12 +234,42 @@ async fn main() -> Result<()> {
     // and a root that already has a committed generation is served from it immediately (the
     // warm-start policy) rather than rescanned synchronously.
     let watcher_plan = classify_roots(&core)?;
-    let _watcher_handle =
+    let watcher_handle =
         lege_filed::watcher::spawn(core, watcher_plan).context("starting the index watcher")?;
+    observer::register(watcher_handle.control());
+    tokio::spawn(watch_for_departing_consumers(connection.clone()));
 
     tracing::info!(name = names::BUS_NAME, "lege-filed ready");
     pending::<()>().await;
     Ok(())
+}
+
+/// A client that held the index open has gone.
+///
+/// The lease TTL would catch this eventually; `NameOwnerChanged` catches it at once, which is the
+/// difference between "the tree stays armed for five minutes after the last window closed" and
+/// "it stays armed for the grace window". Failing to subscribe is not fatal — it costs latency,
+/// not correctness — so this logs and returns rather than taking the daemon down with it.
+async fn watch_for_departing_consumers(connection: zbus::Connection) {
+    use futures_util::StreamExt as _;
+
+    let proxy = match zbus::fdo::DBusProxy::new(&connection).await {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            tracing::warn!(%error, "no NameOwnerChanged: consumer leases will expire on their TTL");
+            return;
+        }
+    };
+    let Ok(mut changes) = proxy.receive_name_owner_changed().await else {
+        tracing::warn!("no NameOwnerChanged: consumer leases will expire on their TTL");
+        return;
+    };
+    while let Some(signal) = changes.next().await {
+        let Ok(args) = signal.args() else { continue };
+        if args.new_owner().is_none() {
+            observer::forget_consumer(args.name());
+        }
+    }
 }
 
 /// What the watcher must serve immediately, scan for the first time, or repair in the
