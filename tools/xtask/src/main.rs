@@ -2,6 +2,7 @@
 
 mod archive;
 mod build_set;
+mod index_bench;
 mod seeds;
 mod signatures;
 
@@ -86,6 +87,9 @@ enum Command {
         #[arg(long, default_value = "package")]
         field: String,
     },
+    /// Measure the shared file index's runtime cost: directory counts, watch limits, timed
+    /// workloads and idle-cost sampling (`docs/measurements/`). See `index_bench` module docs.
+    IndexBench(index_bench::IndexBenchArgs),
 }
 
 /// The one thing `seeds` does that is not rendering.
@@ -460,6 +464,7 @@ fn main() -> Result<()> {
             (None, false) => seeds::generate(&root),
         },
         Command::Components { field } => components(&root, &field),
+        Command::IndexBench(args) => index_bench::run(&root, &args),
     }
 }
 

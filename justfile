@@ -46,6 +46,14 @@ check-interfaces:
 doctor *ARGS:
     cargo run -q -p lege -- doctor {{ARGS}}
 
+# Measure the shared file index's runtime cost (docs/measurements/): dir count/watch limits,
+# then the timed-workload suite against a generated fixture. Idle-cost sampling and the
+# opt-in 2,000,000-entry case are not part of this default recipe — see
+# `cargo run -q -p xtask -- index-bench --help`.
+index-bench:
+    cargo run -q -p xtask -- index-bench dirs
+    cargo run -q -p xtask -- index-bench workloads
+
 # Stage-1 packages via cargo-deb (target/debian/)
 preview-codecs:
     ./scripts/build-preview-codecs.sh
