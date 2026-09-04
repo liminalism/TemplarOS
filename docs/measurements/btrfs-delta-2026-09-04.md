@@ -53,17 +53,32 @@ Cost is wall clock, on-CPU nanoseconds from `/proc/thread-self/schedstat`, and `
 `recursive_reconciliation_costs_the_tree_and_not_the_change`, three tree sizes, one fixed
 100-file change:
 
-| tree files | indexed entries | initial acquisition | reconcile, nothing changed | reconcile, 100 files changed | CPU | read |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1,000 | 1,539 | 1,110 ms | 173 ms | 127 ms | 56 ms | 0 B |
-| 10,000 | 15,338 | 2,609 ms | 2,179 ms | 4,197 ms | 647 ms | 0 B |
-| 100,000 | 153,326 | 32,838 ms | **39,594 ms** | **33,440 ms** | 7,458 ms | 0 B |
+> **Corrected 2026-09-04 13:25.** The figures first published here were taken while four other
+> lanes were compiling on this machine and were about ten times too high. The table below is a
+> re-run on a quiet machine, release build, after every lane had stopped. The conclusion is
+> unchanged; the absolute numbers are not. Removing the accelerator index added later the same day
+> leaves the 153k reconcile at 2,027 / 3,420 ms, so the correction is the quieter machine rather
+> than that work.
 
-The headline is the last row and it is unambiguous: **a reconcile that finds nothing at all
-changed costs 39.6 seconds on a 153,326-entry tree, and a reconcile that finds a hundred changed
-files costs the same 33 seconds.** Crawl cost tracks the tree and is completely insensitive to the
-change. That is exactly the defect this lane exists to attack, and it is now a number rather than
-an argument.
+| tree files | indexed entries | initial acquisition | reconcile, nothing changed | reconcile, 100 files changed |
+|---:|---:|---:|---:|---:|
+| 1,000 | 1,540 | 16 ms | 21 ms | 26 ms |
+| 10,000 | 15,339 | 157 ms | 281 ms | 254 ms |
+| 100,000 | 153,327 | 1,867 ms | **3,240 ms** | **3,375 ms** |
+
+Superseded first run, kept so the error is visible rather than quietly deleted: 1,110 / 173 / 127,
+2,609 / 2,179 / 4,197, and 32,838 / 39,594 / 33,440 ms for the three rows.
+
+The headline is the last row and it survives the correction: **a reconcile that finds nothing at
+all changed costs 3.24 seconds on a 153,327-entry tree, and one that finds a hundred changed files
+costs 3.38 seconds — slightly more, for a hundred times the result.** Crawl cost tracks the tree
+and is essentially insensitive to the change. That is exactly the defect this lane exists to
+attack, and it is a number rather than an argument.
+
+For scale against the index side, measured the same day: a warm 100-mutation batch against that
+same 153,327-entry index costs 4.1 ms. A crawl is therefore roughly **790x** the cost of applying
+the change directly, and the gap widens with the tree because one side scales with it and the
+other does not.
 
 `read_bytes` is 0 because the tree was written moments earlier and is entirely in page cache.
 These are therefore *best-case* crawl figures; a genuine post-downtime crawl reads cold metadata
@@ -205,13 +220,19 @@ remaining unknown is one privileged script run away.
 
 What is already decided by the numbers above:
 
-1. The problem is real and large. A no-op crawl of a 153k-entry tree costs 39.6 seconds and scales
-   with the tree. On a real home it is minutes, paid every time the index resumes.
-2. The index side of a delta is ~250x cheaper for a 1,000-path change and is batch-proportional.
-   Nothing about `Index::apply` disqualifies the approach.
-3. `apply`'s per-batch `SELECT COUNT(*)` over the whole root is a tree-proportional constant
-   (~0.33 µs/entry) that should be made incremental regardless of this lane's outcome — the
-   watcher path pays it on every batch.
+1. The problem is real, though smaller than this document first claimed. A no-op crawl of a
+   153k-entry tree costs 3.24 seconds (corrected; see the note above the table) and scales with
+   the tree. Extrapolating to a two-million-entry home gives roughly 40 seconds of pure metadata
+   work to discover that nothing happened, paid every time the index resumes — bad, but tens of
+   seconds rather than the minutes the original figures implied.
+2. The index side of a delta is batch-proportional and is now flat in tree size: a warm
+   100-mutation batch costs 4.1 ms against that same 153k index, roughly 790x cheaper than the
+   crawl. Nothing about `Index::apply` disqualifies the approach.
+3. `apply`'s per-batch `SELECT COUNT(*)` over the whole root **has since been fixed** — it is
+   maintained by delta now. Investigating it also exposed the larger term, `refresh_fts` running
+   uncovered by any index, whose repair took a warm single-mutation batch at 153k entries from
+   41.9 ms to 0.3 ms. Both were on the watcher's hot path, so this stands as a result of the
+   campaign whatever happens to the delta backend.
 
 What decides adoption, and what to measure when the fixture exists:
 
