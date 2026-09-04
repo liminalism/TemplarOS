@@ -684,6 +684,67 @@ fn readdress(moves: &[(Rel, Rel)], original: &[u8]) -> Rel {
     }
 }
 
+/// Order the moves so that every destination is free when its move is applied, putting back the
+/// temporary name the stream used and this plan collapsed.
+///
+/// [`DeltaPlan::moves`] is the delta's *net* effect: a directory swap that the send stream
+/// performed as `bulk -> o257-9-0`, `project -> bulk`, `o257-9-0 -> project` comes back as the two
+/// moves `bulk -> project` and `project -> bulk`, and neither can go first. The index holds one
+/// row per path — `entries_path` is unique on (root, path) and a move onto an occupied path takes
+/// that row over — so applying either one first destroys the row the other one still needs. The
+/// only way through is the one `btrfs send` itself takes: park one side under a name nothing else
+/// holds, and finish the cycle from there.
+///
+/// The third path in each triple is where the metadata comes from. A parked step's row ends up at
+/// the cycle's real destination, so it is stat'd there: the temporary name never exists on disk
+/// and looking for it would count the whole move as vanished.
+///
+/// Two orderings are preserved. A child that left a directory still moves before the directory
+/// does, or the directory's subtree rewrite drags its row along; and a move nested inside another
+/// pending move's source is *not* held back by it, because that ancestor takes its whole subtree
+/// when it goes rather than vacating anything.
+fn sequence_moves(moves: &[(Rel, Rel)]) -> Vec<(Rel, Rel, Rel)> {
+    let mut pending: Vec<(Rel, Rel, Rel)> = moves
+        .iter()
+        .map(|(from, to)| (from.clone(), to.clone(), to.clone()))
+        .collect();
+    let mut ordered = Vec::with_capacity(pending.len());
+    let mut parked = 0usize;
+    while !pending.is_empty() {
+        let ready = (0..pending.len()).find(|&index| {
+            let (from, to, _) = &pending[index];
+            pending.iter().enumerate().all(|(other, (rival, _, _))| {
+                if other == index {
+                    return true;
+                }
+                // A child of mine is still waiting: it has to be re-pathed out of my subtree
+                // before I take that subtree with me.
+                if is_prefix_path(from, rival) && rival.len() > from.len() {
+                    return false;
+                }
+                // My destination is still held by something that has not moved out of it — unless
+                // that something is a directory *above* me too, in which case it carries us both
+                // and the rule above already puts me first.
+                !(is_prefix_path(rival, to)
+                    && !(is_prefix_path(rival, from) && rival.len() < from.len()))
+            })
+        });
+        if let Some(index) = ready {
+            ordered.push(pending.remove(index));
+        } else {
+            // A cycle: every remaining destination is held by another remaining source. Park the
+            // first one — the deepest, by the plan's own ordering — and let the rest go.
+            let (from, to, stat) = pending.remove(0);
+            let mut park = from.clone();
+            park.extend_from_slice(format!(".lege-move-{parked}").as_bytes());
+            parked += 1;
+            ordered.push((from, park.clone(), stat.clone()));
+            pending.push((park, to, stat));
+        }
+    }
+    ordered
+}
+
 /// Component-boundary prefix test, so `a/bc` is not under `a/b`.
 fn is_prefix_path(prefix: &[u8], path: &[u8]) -> bool {
     if prefix.is_empty() {
@@ -864,10 +925,16 @@ pub fn to_mutations(
     };
     let mut mutations = Vec::new();
 
-    for (from, to) in &plan.moves {
-        match (resolve(target, from), resolve(target, to)) {
+    // Sequenced, not replayed in plan order: the plan's moves are the delta's net effect, and a
+    // rename cycle in there has no order that works without the temporary name the stream used.
+    for (from, to, stat) in sequence_moves(&plan.moves) {
+        match (resolve(target, &from), resolve(target, &to)) {
             (Resolved::Indexed(from), Resolved::Indexed(to)) => {
-                let Some(entry) = meta.lookup(&to) else {
+                let Resolved::Indexed(stat) = resolve(target, &stat) else {
+                    report.excluded += 1;
+                    continue;
+                };
+                let Some(entry) = meta.lookup(&stat) else {
                     report.vanished += 1;
                     continue;
                 };
@@ -1719,5 +1786,172 @@ mod tests {
             &batch.mutations[0],
             Mutation::Upsert { meta, .. } if meta.kind == EntryKind::Regular
         ));
+    }
+    use crate::{Index, IndexConfig, ScanOptions};
+
+    /// The plan's moves are *net*, so a swap the stream performed through a temporary name comes
+    /// back as two moves that each need the other's source vacated first. Applying either one
+    /// first overwrites the row the other is about to move, and the index has no way to hold two
+    /// rows at one path. So the temporary has to be put back before the batch is built.
+    #[test]
+    fn a_directory_swap_is_sequenced_through_a_temporary_name() {
+        let sequenced = sequence_moves(&[
+            (b"bulk".to_vec(), b"project".to_vec()),
+            (b"project".to_vec(), b"bulk".to_vec()),
+        ]);
+        let shown: Vec<String> = sequenced
+            .iter()
+            .map(|(from, to, stat)| {
+                format!(
+                    "{} -> {} (stat {})",
+                    String::from_utf8_lossy(from),
+                    String::from_utf8_lossy(to),
+                    String::from_utf8_lossy(stat),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                "bulk -> bulk.lege-move-0 (stat project)",
+                "project -> bulk (stat bulk)",
+                "bulk.lege-move-0 -> project (stat project)",
+            ],
+            "the cycle has to be broken by parking one side, exactly as btrfs send does"
+        );
+    }
+
+    /// The rule the sequencer must not trade away: a child that left a directory is re-pathed
+    /// before the directory itself moves, or the directory's subtree rewrite drags it along.
+    #[test]
+    fn sequencing_keeps_a_child_ahead_of_the_directory_it_left() {
+        let sequenced = sequence_moves(&[
+            (b"a/x".to_vec(), b"b/x".to_vec()),
+            (b"a".to_vec(), b"c".to_vec()),
+        ]);
+        assert_eq!(
+            sequenced,
+            vec![
+                (b"a/x".to_vec(), b"b/x".to_vec(), b"b/x".to_vec()),
+                (b"a".to_vec(), b"c".to_vec(), b"c".to_vec()),
+            ]
+        );
+    }
+
+    /// A swap *inside* a directory that is itself moving: the inner cycle is broken first and the
+    /// enclosing directory still goes last, so its subtree rewrite carries a settled subtree.
+    #[test]
+    fn a_swap_inside_a_moving_directory_still_moves_the_directory_last() {
+        let sequenced = sequence_moves(&[
+            (b"a/x".to_vec(), b"a/y".to_vec()),
+            (b"a/y".to_vec(), b"a/x".to_vec()),
+            (b"a".to_vec(), b"b".to_vec()),
+        ]);
+        let order: Vec<String> = sequenced
+            .iter()
+            .map(|(from, to, _)| {
+                format!(
+                    "{} -> {}",
+                    String::from_utf8_lossy(from),
+                    String::from_utf8_lossy(to)
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "a/x -> a/x.lege-move-0",
+                "a/y -> a/x",
+                "a/x.lege-move-0 -> a/y",
+                "a -> b",
+            ]
+        );
+    }
+
+    /// End to end over a real tree on whatever filesystem the test runs on: index it, swap two
+    /// directories on disk, decode a stream that says so, and require the result to equal a fresh
+    /// crawl. No Btrfs — the stream is written by the test encoder, and the metadata comes from
+    /// the tree the swap actually happened in.
+    #[test]
+    fn a_swapped_pair_of_directories_ends_where_a_fresh_scan_puts_them() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let home = temp.path().join("home");
+        let tree = home.join("dk");
+        std::fs::create_dir_all(tree.join("bulk")).unwrap();
+        std::fs::create_dir_all(tree.join("project/src")).unwrap();
+        std::fs::write(tree.join("bulk/b0.bin"), b"bulk contents").unwrap();
+        std::fs::write(tree.join("project/src/main.rs"), b"fn main() {}").unwrap();
+
+        let open = |name: &str| {
+            Index::open(&temp.path().join(name), IndexConfig::default()).expect("opening an index")
+        };
+        let index = open("index.sqlite3");
+        let root = index
+            .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+            .expect("adding the root")
+            .root;
+        index
+            .scan_root(root, ScanOptions::default())
+            .expect("the first pass");
+
+        // The swap, exactly as a user's `mv` dance performs it.
+        std::fs::rename(tree.join("bulk"), tree.join("bulk-tmp")).unwrap();
+        std::fs::rename(tree.join("project"), tree.join("bulk")).unwrap();
+        std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
+
+        let stream = decode(
+            &StreamBuilder::new()
+                .snapshot()
+                .rename(b"dk/bulk", b"dk/bulk-tmp")
+                .rename(b"dk/project", b"dk/bulk")
+                .rename(b"dk/bulk-tmp", b"dk/project")
+                .end(),
+        )
+        .expect("decoding");
+        let plan = plan(&stream).expect("planning");
+        let (batch, report) = to_mutations(
+            &plan,
+            &DeltaTarget {
+                root,
+                subvolume_path: NativePath::from_path(&home),
+                root_path: NativePath::from_path(&tree),
+                policy: index.root_policy(root).expect("the policy"),
+            },
+            &FsMetadata,
+        );
+        assert_eq!(report.vanished, 0, "every planned path is on disk");
+        index.apply(batch).expect("applying");
+
+        let fresh = open("fresh.sqlite3");
+        let fresh_root = fresh
+            .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+            .expect("adding the root")
+            .root;
+        fresh
+            .scan_root(fresh_root, ScanOptions::default())
+            .expect("a fresh pass");
+
+        let paths = |index: &Index, root: crate::RootId| -> Vec<String> {
+            index
+                .with_read(|connection| {
+                    let mut statement = connection.prepare(
+                        "SELECT path_display FROM entries
+                          WHERE root_id = ?1 AND deleted_generation IS NULL
+                          ORDER BY path_bytes",
+                    )?;
+                    let rows = statement.query_map([root.0], |row| row.get::<_, String>(0))?;
+                    let mut out = Vec::new();
+                    for row in rows {
+                        out.push(row?);
+                    }
+                    Ok(out)
+                })
+                .expect("reading paths")
+        };
+        assert_eq!(
+            paths(&index, root),
+            paths(&fresh, fresh_root),
+            "the delta and a fresh crawl disagree about where the swap put things"
+        );
     }
 }
