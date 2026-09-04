@@ -232,6 +232,54 @@ fn as_scanned(tree: &std::path::Path, path: &std::path::Path) -> lege_file_index
         .meta
 }
 
+/// inotify reports the name that was opened, and a hard link has more than one name.
+///
+/// The Btrfs delta gate found this, but nothing about it is Btrfs: a rewrite through `two` leaves
+/// `one` carrying the old size and mode, because the event names `two` and nothing else. The fix
+/// belongs in `Index::apply`, so this asserts the watcher inherits it.
+#[test]
+fn a_write_through_one_name_of_a_hard_link_updates_the_other() {
+    let mut fixture = fixture_with(|tree| {
+        fs::write(tree.join("one"), b"the original contents").unwrap();
+        fs::hard_link(tree.join("one"), tree.join("two")).unwrap();
+    });
+
+    fs::write(fixture.tree.join("two"), b"short").unwrap();
+    fs::set_permissions(
+        fixture.tree.join("two"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    let watch = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree)
+        .expect("the root was armed by the first pass");
+    fixture
+        .owner
+        .source_mut()
+        .push_named(watch, "two", RawKind::Written, false);
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
+    let batch = lege_file_index::MutationBatch::new(MutationSource::Watcher, pumped.mutations);
+    fixture.index.apply(batch).expect("applying the batch");
+
+    for name in ["one", "two"] {
+        let path = fixture.tree.join(name);
+        let held = fixture
+            .index
+            .entry(fixture.root, &NativePath::from_path(&path))
+            .expect("reading the row")
+            .expect("the row is there")
+            .meta;
+        assert_eq!(
+            held,
+            as_scanned(&fixture.tree, &path),
+            "{name} disagrees with a fresh scan of the same file"
+        );
+    }
+}
+
 /// A `MOVED_FROM`/`MOVED_TO` pair over a file that already exists — `mv a b` with `b` there.
 ///
 /// The destination row cannot be tombstoned in place: `entries_path` is unique on (root, path),

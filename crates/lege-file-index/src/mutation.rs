@@ -331,12 +331,14 @@ impl crate::Index {
                 }
                 Applying::Changed {
                     change,
+                    siblings,
                     descendants,
                     live_delta: delta,
                 } => {
                     moved_descendants += descendants;
                     live_delta = delta;
                     changes.push(change);
+                    changes.extend(siblings);
                 }
                 Applying::Invalidated(root, reason) => invalidations.push((root, reason)),
             }
@@ -460,6 +462,7 @@ enum RenameOutcome {
     Skipped,
     Applied {
         change: Change,
+        siblings: Vec<Change>,
         descendants: u64,
         live_delta: i64,
     },
@@ -477,6 +480,10 @@ enum Applying {
     },
     Changed {
         change: Change,
+        /// The same inode's *other* indexed names, whose rows this mutation also brought up to
+        /// date. Empty for the single-link case, which is very nearly every case, and a `Vec::new`
+        /// allocates nothing.
+        siblings: Vec<Change>,
         descendants: u64,
         /// How the root's live-row count moved. Maintained here rather than recounted, because
         /// the recount was `COUNT(*)` over every live row of the root on **every** batch commit —
@@ -498,6 +505,7 @@ fn apply_one(
 ) -> Result<Applying> {
     let changed = |(change, live_delta): (Change, i64)| Applying::Changed {
         change,
+        siblings: Vec::new(),
         descendants: 0,
         live_delta,
     };
@@ -515,10 +523,17 @@ fn apply_one(
                     None => Applying::Skipped,
                 });
             };
-            Ok(
+            let Some((change, live_delta)) =
                 upsert(transaction, generation, *root, path, meta, coverage)?
-                    .map_or(Applying::Skipped, changed),
-            )
+            else {
+                return Ok(Applying::Skipped);
+            };
+            Ok(Applying::Changed {
+                siblings: mirror_hard_links(transaction, generation, *root, path, meta)?,
+                change,
+                descendants: 0,
+                live_delta,
+            })
         }
         Mutation::Remove { root, path } => {
             Ok(remove(transaction, generation, *root, path)?.map_or(Applying::Skipped, changed))
@@ -541,10 +556,12 @@ fn apply_one(
                     RenameOutcome::Skipped => Applying::Skipped,
                     RenameOutcome::Applied {
                         change,
+                        siblings,
                         descendants,
                         live_delta,
                     } => Applying::Changed {
                         change,
+                        siblings,
                         descendants,
                         live_delta,
                     },
@@ -677,6 +694,7 @@ fn rename(
         return match upsert(transaction, generation, root, to, meta, coverage)? {
             Some((change, live_delta)) => Ok(RenameOutcome::Applied {
                 change,
+                siblings: mirror_hard_links(transaction, generation, root, to, meta)?,
                 descendants: 0,
                 live_delta,
             }),
@@ -747,6 +765,7 @@ fn rename(
             mtime_ns: meta.mtime_ns,
             at_ms: now_ms(),
         },
+        siblings: mirror_hard_links(transaction, generation, root, to, meta)?,
         descendants,
     })
 }
@@ -930,6 +949,97 @@ fn take_over(
         rusqlite::params![victim.0, source.0, generation_id],
     )?;
     Ok(())
+}
+
+/// The same inode's *other* indexed names, brought up to date with the write that just landed.
+///
+/// One inode, several paths: writing through `main.rs` changes the file behind `main-alias.rs`
+/// too, but the event that reports it — inotify's, a send stream's, or a file service's own hook —
+/// names only the path that was written. Left alone, every other name of that inode keeps a stale
+/// size, mode and mtime until the next full scan, which is how a hard-linked pair ends up
+/// disagreeing with a fresh crawl. `entries_object` makes the sibling lookup one indexed probe,
+/// and `nlink > 1` gates it so the single-link path — very nearly every path — never pays for it.
+///
+/// The siblings' rows are genuinely distinct entries that happen to share an inode, so only the
+/// object's own attributes travel: never the name, the path, or the coverage tier.
+fn mirror_hard_links(
+    transaction: &Transaction<'_>,
+    generation: Generation,
+    root: RootId,
+    path: &NativePath,
+    meta: &EntryMeta,
+) -> Result<Vec<Change>> {
+    if meta.nlink <= 1 {
+        return Ok(Vec::new());
+    }
+    let Some(key) = meta.object_key else {
+        return Ok(Vec::new());
+    };
+    let stale: Vec<(i64, Vec<u8>)> = {
+        let mut statement = transaction.prepare(
+            "SELECT entry_id, path_bytes FROM entries
+              WHERE root_id = ?1 AND dev = ?2 AND inode = ?3 AND deleted_generation IS NULL
+                AND path_bytes <> ?4
+                AND (size_bytes <> ?5 OR alloc_bytes <> ?6 OR mtime_ns <> ?7 OR ctime_ns <> ?8
+                     OR mode <> ?9 OR nlink <> ?10)",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                root.0,
+                key.dev as i64,
+                key.ino as i64,
+                path.as_bytes(),
+                meta.size_bytes as i64,
+                meta.alloc_bytes as i64,
+                meta.mtime_ns,
+                meta.ctime_ns,
+                i64::from(meta.mode),
+                i64::from(meta.nlink),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut stale = Vec::new();
+        for row in rows {
+            stale.push(row?);
+        }
+        stale
+    };
+    if stale.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = transaction.prepare(
+        "UPDATE entries
+            SET size_bytes = ?1, alloc_bytes = ?2, mtime_ns = ?3, ctime_ns = ?4, mode = ?5,
+                nlink = ?6, written_generation = ?7, last_seen_generation = ?7
+          WHERE entry_id = ?8",
+    )?;
+    let mut changes = Vec::with_capacity(stale.len());
+    for (entry_id, sibling) in stale {
+        statement.execute(rusqlite::params![
+            meta.size_bytes as i64,
+            meta.alloc_bytes as i64,
+            meta.mtime_ns,
+            meta.ctime_ns,
+            i64::from(meta.mode),
+            i64::from(meta.nlink),
+            generation.0 as i64,
+            entry_id,
+        ])?;
+        changes.push(Change {
+            seq: 0,
+            generation,
+            root,
+            op: ChangeOp::Metadata,
+            entry_id: Some(EntryId(entry_id)),
+            path: NativePath::from_bytes(sibling),
+            old_path: None,
+            kind: meta.kind,
+            size_bytes: meta.size_bytes,
+            mtime_ns: meta.mtime_ns,
+            at_ms: now_ms(),
+        });
+    }
+    Ok(changes)
 }
 
 fn live_row(
@@ -1262,6 +1372,77 @@ mod tests {
             agrees_with_a_fresh_scan(&self.index, self.root, &self.tree, self.temp.path());
             count_agrees(&self.index, self.root);
         }
+    }
+
+    /// One inode with two indexed names. The write goes through one of them; the *other* name's
+    /// row has to learn about it too, or it keeps the old size and mode until the next full scan.
+    ///
+    /// This is not a Btrfs problem. inotify reports the name that was opened, a send stream names
+    /// the path it wrote, and `lege-filed`'s own hook names the path the operation took — every
+    /// producer names one path per write, and every one of them leaves the other names stale.
+    #[test]
+    fn a_hard_links_other_names_do_not_keep_stale_metadata() {
+        let fixture = fixture(|tree| {
+            std::fs::create_dir_all(tree.join("src")).unwrap();
+            std::fs::write(tree.join("src/main.rs"), b"fn main() {}").unwrap();
+            std::fs::hard_link(tree.join("src/main.rs"), tree.join("src/main-alias.rs")).unwrap();
+        });
+
+        // Truncated, chmod'd and rewritten through one name only — the scenario the delta gate
+        // runs, minus the delta.
+        let written = fixture.tree.join("src/main.rs");
+        std::fs::write(&written, b"rewritten").unwrap();
+        std::fs::set_permissions(
+            &written,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
+
+        let applied = apply(
+            &fixture.index,
+            vec![Mutation::Upsert {
+                root: fixture.root,
+                path: native(&written),
+                meta: meta_of(&written),
+            }],
+        );
+        assert_eq!(
+            applied.changes.len(),
+            2,
+            "both names of the inode changed, so a consumer holding a projection hears about both"
+        );
+        fixture.settled();
+    }
+
+    /// Two names, and the second one is written before the first one's row is written back. The
+    /// mirror must not resurrect the older metadata over the newer.
+    #[test]
+    fn mirroring_a_hard_link_does_not_undo_a_later_write_in_the_same_batch() {
+        let fixture = fixture(|tree| {
+            std::fs::write(tree.join("one"), b"first").unwrap();
+            std::fs::hard_link(tree.join("one"), tree.join("two")).unwrap();
+        });
+        let one = fixture.tree.join("one");
+        let two = fixture.tree.join("two");
+        std::fs::write(&one, b"rewritten through one").unwrap();
+        let after = meta_of(&one);
+
+        apply(
+            &fixture.index,
+            vec![
+                Mutation::Upsert {
+                    root: fixture.root,
+                    path: native(&one),
+                    meta: after.clone(),
+                },
+                Mutation::Upsert {
+                    root: fixture.root,
+                    path: native(&two),
+                    meta: after,
+                },
+            ],
+        );
+        fixture.settled();
     }
 
     /// `rename(2)` overwrites its destination. The index has one row per path — `entries_path` is
