@@ -102,7 +102,9 @@ fn watch_create_appears_within_bound() {
         .push_named(notes, "third.txt", RawKind::Created, false);
 
     let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
-    assert_eq!(pumped.mutations.len(), 2);
+    // Two files, and one refresh of the directory they appeared in: a directory's mtime moves
+    // when a name appears in it, and nothing else in the batch says so.
+    assert_eq!(pumped.mutations.len(), 3);
     assert!(
         pumped.repairs.is_empty(),
         "nothing was lost, so nothing to repair"
@@ -126,7 +128,8 @@ fn watch_create_appears_within_bound() {
     let batch = coalescer.take(MutationSource::Watcher).expect("a batch");
     let applied = fixture.index.apply(batch).expect("applying the batch");
 
-    assert_eq!(applied.changes.len(), 2);
+    // The two files, and the directory they landed in.
+    assert_eq!(applied.changes.len(), 3);
     assert_eq!(
         applied.generation.0,
         before + 1,
@@ -338,26 +341,16 @@ fn a_rename_over_an_existing_file_applies() {
     );
 }
 
-/// Every path an index still holds, read straight out of the database the way the Btrfs delta
-/// fixture reads it: all of them at once, because counts agree while a whole subtree is missing
-/// and paths do not.
-fn live_paths(database: &std::path::Path) -> Vec<String> {
-    let connection =
-        rusqlite::Connection::open(database).expect("opening the index for comparison");
-    let mut statement = connection
-        .prepare(
-            "SELECT path_display FROM entries
-              WHERE deleted_generation IS NULL ORDER BY path_bytes",
-        )
-        .expect("preparing the comparison query");
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .expect("reading rows");
-    rows.map(|row| row.expect("a row")).collect()
-}
+/// The row-by-row comparison the Btrfs delta harness uses, included rather than restated. A
+/// watcher batch that leaves a row in the right place with the wrong metadata is the same failure
+/// as a delta that does, and comparing paths is blind to both.
+#[path = "support/entry_facts.rs"]
+mod entry_facts;
+
+use entry_facts::{Fingerprint, describe_difference, fingerprint};
 
 /// What a fresh crawl of `tree` holds.
-fn crawled_paths(tree: &std::path::Path) -> Vec<String> {
+fn crawled(tree: &std::path::Path) -> Fingerprint {
     let temp = tempfile::tempdir().expect("a temporary directory");
     let database = temp.path().join("fresh.sqlite3");
     let index = Index::open(&database, IndexConfig::default()).expect("opening a comparison index");
@@ -369,7 +362,18 @@ fn crawled_paths(tree: &std::path::Path) -> Vec<String> {
         .scan_root(root, lege_file_index::ScanOptions::default())
         .expect("a fresh pass");
     drop(index);
-    live_paths(&database)
+    fingerprint(&database)
+}
+
+/// Fail with the field-level difference rather than with two large maps.
+#[track_caller]
+fn assert_matches_a_crawl(database: &std::path::Path, tree: &std::path::Path, what: &str) {
+    let difference = describe_difference(&fingerprint(database), &crawled(tree));
+    assert!(
+        difference.is_none(),
+        "{what}:\n{}",
+        difference.unwrap_or_default()
+    );
 }
 
 fn a_branch_with_two_leaves(tree: &std::path::Path) {
@@ -435,7 +439,11 @@ fn a_rename_nested_inside_a_renamed_directory_keeps_its_children() {
     source.push(moved(branch_watch, "leaf00-moved", RawKind::MovedTo, 2));
 
     let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
-    assert_eq!(pumped.mutations.len(), 2, "two renames, two mutations");
+    assert_eq!(
+        pumped.mutations.len(),
+        4,
+        "two renames, and a refresh of each directory a name changed in"
+    );
     assert!(pumped.repairs.is_empty(), "nothing was lost");
     fixture
         .index
@@ -445,10 +453,86 @@ fn a_rename_nested_inside_a_renamed_directory_keeps_its_children() {
         ))
         .expect("applying the batch");
 
+    assert_matches_a_crawl(
+        &fixture.database,
+        &fixture.tree,
+        "the nested rename did not leave the index where a crawl puts it",
+    );
+}
+
+/// A file appearing in a directory changes that directory's mtime, and the kernel reports the
+/// child. Nothing in a batch of child events says the directory itself moved on, so a watcher that
+/// only writes the child leaves the folder's row holding a timestamp from before the file existed
+/// — the same failure the Btrfs delta had, in the other consumer, and equally invisible to a
+/// comparison of paths.
+#[test]
+fn a_directory_that_gained_an_entry_is_re_read_and_only_once() {
+    let mut fixture = fixture();
+    let notes = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree.join("notes"))
+        .expect("the notes directory was armed by the first pass");
+
+    for name in ["second.txt", "third.txt", "fourth.txt"] {
+        fs::write(fixture.tree.join("notes").join(name), b"x").unwrap();
+        fixture
+            .owner
+            .source_mut()
+            .push_named(notes, name, RawKind::Created, false);
+    }
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
     assert_eq!(
-        live_paths(&fixture.database),
-        crawled_paths(&fixture.tree),
-        "the nested rename lost the subtree under it"
+        pumped.mutations.len(),
+        4,
+        "three files and one refresh of the directory — a directory is re-read once a pump, not \
+         once an event, or unpacking an archive would pay a stat per file twice over"
+    );
+    fixture
+        .index
+        .apply(lege_file_index::MutationBatch::new(
+            MutationSource::Watcher,
+            pumped.mutations,
+        ))
+        .expect("applying the batch");
+
+    assert_matches_a_crawl(
+        &fixture.database,
+        &fixture.tree,
+        "the directory the files appeared in kept the timestamps it had before they did",
+    );
+}
+
+/// A deletion empties a directory the same way a creation fills it, and the row has to say so.
+#[test]
+fn a_directory_that_lost_an_entry_is_re_read() {
+    let mut fixture = fixture();
+    let notes = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree.join("notes"))
+        .expect("the notes directory was armed by the first pass");
+
+    fs::remove_file(fixture.tree.join("notes/first.txt")).unwrap();
+    fixture
+        .owner
+        .source_mut()
+        .push_named(notes, "first.txt", RawKind::Deleted, false);
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
+    fixture
+        .index
+        .apply(lege_file_index::MutationBatch::new(
+            MutationSource::Watcher,
+            pumped.mutations,
+        ))
+        .expect("applying the batch");
+
+    assert_matches_a_crawl(
+        &fixture.database,
+        &fixture.tree,
+        "the directory the file was deleted from kept its old timestamps",
     );
 }
 
@@ -499,7 +583,12 @@ fn a_nested_rename_before_the_directory_it_sits_in_keeps_its_children() {
             .mutations,
     );
 
-    assert_eq!(mutations.len(), 2, "two renames, two mutations");
+    assert_eq!(
+        mutations.len(),
+        4,
+        "two renames, and a refresh of each directory a name changed in — one per pump, since \
+         each rename was pumped on its own"
+    );
     fixture
         .index
         .apply(lege_file_index::MutationBatch::new(
@@ -508,9 +597,9 @@ fn a_nested_rename_before_the_directory_it_sits_in_keeps_its_children() {
         ))
         .expect("applying the batch");
 
-    assert_eq!(
-        live_paths(&fixture.database),
-        crawled_paths(&fixture.tree),
-        "the nested rename lost the subtree under it"
+    assert_matches_a_crawl(
+        &fixture.database,
+        &fixture.tree,
+        "the nested rename did not leave the index where a crawl puts it",
     );
 }

@@ -21,7 +21,7 @@
 //! treated as ordinary operating conditions.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -255,6 +255,9 @@ struct WatchedRoot {
 struct PendingMove {
     root: RootId,
     from: PathBuf,
+    /// The directory the entry left. Its mtime moved when the entry did, and by the time the
+    /// other half of the rename arrives the event that carried it is gone.
+    watch: WatchId,
     is_dir: bool,
     at_ms: i64,
 }
@@ -269,6 +272,9 @@ pub struct WatchOwner<S: EventSource> {
     /// Reverse map, so a directory is never watched twice.
     by_path: HashMap<PathBuf, WatchId>,
     pending_moves: HashMap<u32, PendingMove>,
+    /// The directories this pump saw gain or lose an entry, so each is re-read once at the end of
+    /// it however many of its children moved.
+    membership_changed: HashSet<WatchId>,
     /// How long an unpaired rename half is held before it is read as a move across the watched
     /// boundary. One coalescing window is enough: the two halves are delivered together.
     move_pairing_ms: i64,
@@ -293,6 +299,7 @@ impl<S: EventSource> WatchOwner<S> {
             dirs: HashMap::new(),
             by_path: HashMap::new(),
             pending_moves: HashMap::new(),
+            membership_changed: HashSet::new(),
             move_pairing_ms: 250,
             inline_subtree_limit: 1000,
             armed: 0,
@@ -573,7 +580,43 @@ impl<S: EventSource> WatchOwner<S> {
             self.normalize(event, now, &mut pumped);
         }
         self.expire_pending_moves(now, &mut pumped);
+        self.refresh_changed_directories(&mut pumped);
         pumped
+    }
+
+    /// Re-read every directory that gained or lost an entry in this pump.
+    ///
+    /// A directory's mtime moves when a name appears in it, vanishes from it or changes, and
+    /// nothing else in a batch says so: the kernel reports the *child*, and `Mutation::Move`
+    /// re-paths a dragged subtree out of the index without going back to the filesystem. Left
+    /// alone, the directory's row keeps the timestamps it had before its contents changed — a row
+    /// in the right place and wrong, which is what a fresh crawl disagrees with and what a file
+    /// manager shows as a folder that has not been modified since last week.
+    ///
+    /// Once per directory per pump, not once per event: ten thousand files unpacked into one
+    /// directory cost one extra stat. The path is read from the watch table rather than
+    /// remembered from the event, so a directory renamed earlier in the same batch is refreshed
+    /// where that rename left it, and one deleted in it is not refreshed at all.
+    fn refresh_changed_directories(&mut self, pumped: &mut Pumped) {
+        if self.membership_changed.is_empty() {
+            return;
+        }
+        let mut refreshed: Vec<(RootId, PathBuf)> = self
+            .membership_changed
+            .drain()
+            .filter_map(|id| self.dirs.get(&id))
+            .map(|watched| (watched.root, watched.path.clone()))
+            .collect();
+        // The set is unordered and a batch has to be reproducible.
+        refreshed.sort();
+        for (root, path) in refreshed {
+            let Some(meta) = stat(&path) else { continue };
+            pumped.mutations.push(Mutation::Touch {
+                root,
+                path: NativePath::from_path(&path),
+                meta,
+            });
+        }
     }
 
     #[allow(clippy::too_many_lines)] // one dispatch over every raw kernel event kind, kept together
@@ -650,8 +693,11 @@ impl<S: EventSource> WatchOwner<S> {
                 if !policy.should_index(&native, meta.kind) {
                     return;
                 }
-                if event.kind == RawKind::Created && meta.kind == EntryKind::Directory {
-                    self.absorb_new_directory(watched.root, &path, &policy, pumped);
+                if event.kind == RawKind::Created {
+                    self.membership_changed.insert(event.watch);
+                    if meta.kind == EntryKind::Directory {
+                        self.absorb_new_directory(watched.root, &path, &policy, pumped);
+                    }
                 }
                 let mutation = if event.kind == RawKind::Attributes {
                     Mutation::Touch {
@@ -669,6 +715,7 @@ impl<S: EventSource> WatchOwner<S> {
                 pumped.mutations.push(mutation);
             }
             RawKind::Deleted => {
+                self.membership_changed.insert(event.watch);
                 if let Some(id) = self.by_path.get(&path).copied() {
                     self.drop_watch(id);
                 }
@@ -683,13 +730,16 @@ impl<S: EventSource> WatchOwner<S> {
                     PendingMove {
                         root: watched.root,
                         from: path,
+                        watch: event.watch,
                         is_dir: event.is_dir,
                         at_ms: now,
                     },
                 );
             }
             RawKind::MovedTo => {
+                self.membership_changed.insert(event.watch);
                 if let Some(pending) = self.pending_moves.remove(&event.cookie) {
+                    self.membership_changed.insert(pending.watch);
                     self.complete_move(&pending, &path, pumped);
                 } else {
                     // The other half never arrived, or arrived from outside every watched root:
@@ -799,7 +849,14 @@ impl<S: EventSource> WatchOwner<S> {
             let Ok(relative) = old.strip_prefix(from) else {
                 continue;
             };
-            let new = to.join(relative);
+            // `Path::join("")` appends a separator, so the renamed directory's *own* watch would
+            // come back as `to/` — equal to `to` for every `Path` comparison, which is why this
+            // went unnoticed, and a different byte string the moment the path is indexed.
+            let new = if relative.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(relative)
+            };
             self.by_path.remove(&old);
             self.by_path.insert(new.clone(), id);
             if let Some(dir) = self.dirs.get_mut(&id) {
@@ -830,6 +887,7 @@ impl<S: EventSource> WatchOwner<S> {
             let Some(pending) = self.pending_moves.remove(&cookie) else {
                 continue;
             };
+            self.membership_changed.insert(pending.watch);
             if let Some(id) = self.by_path.get(&pending.from).copied() {
                 self.drop_watch(id);
             }
@@ -1328,10 +1386,11 @@ mod tests {
             "the pairing window is the deadline"
         );
 
-        // Past the window, the pump resolves it into the removal it turned out to be.
+        // Past the window, the pump resolves it into the removal it turned out to be, and the
+        // directory the entry left is re-read along with it.
         clock.advance(250);
         let pumped = owner.pump(None, &clock);
-        assert_eq!(pumped.mutations.len(), 1);
+        assert_eq!(pumped.mutations.len(), 2);
         assert_eq!(owner.next_move_deadline(250), None);
     }
 }
