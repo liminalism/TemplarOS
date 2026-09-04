@@ -90,7 +90,7 @@ fn watch_create_appears_within_bound() {
         .source_mut()
         .push_named(notes, "third.txt", RawKind::Created, false);
 
-    let pumped = fixture.owner.pump(Duration::ZERO, &fixture.clock);
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
     assert_eq!(pumped.mutations.len(), 2);
     assert!(
         pumped.repairs.is_empty(),
@@ -132,4 +132,64 @@ fn watch_create_appears_within_bound() {
             "{name}.txt should be searchable one batch after it was created"
         );
     }
+}
+
+/// The budget is not an edge case on this machine, it is the normal outcome.
+///
+/// Measured on the reference laptop: `$HOME` holds 189,089 directories after the skip policy
+/// against a watch budget of 125,037. An arm pass over a home root therefore *cannot* finish, and
+/// the only question is whether the index says so.
+///
+/// It does not — not here, at the crate's own commit. `ScanSession::commit`
+/// (`generation.rs:292`) computes completeness from the entry budget, permission denials and
+/// cancellation only, so the `unreadable_dirs` that a refused watch produces
+/// (`reconcile.rs:200`, `note_unreadable(session, false)`) never reach it and the root commits
+/// `Current` over a subtree nothing is watching. This test pins the facts that are true today,
+/// including that one, so the gap is visible rather than assumed closed; the watcher host repairs
+/// it above this layer (`lege-filed`'s `WatchLoop::repair`), and closing it at source means
+/// folding `unreadable_dirs` into that completeness test.
+#[test]
+fn a_pass_that_ran_out_of_watches_reports_an_incomplete_walk() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let tree = temp.path().join("tree");
+    for name in ["one", "two", "three", "four"] {
+        fs::create_dir_all(tree.join(name)).unwrap();
+        fs::write(tree.join(name).join("file.txt"), b"x").unwrap();
+    }
+
+    let index = Index::open(&temp.path().join("index.sqlite3"), IndexConfig::default())
+        .expect("opening the index");
+    let policy = RootPolicy::default_home();
+    let root = index
+        .add_root(&NativePath::from_path(&tree), policy.clone())
+        .expect("adding the root")
+        .root;
+
+    // Two watches for five directories: the walk arms the root and one child, and is refused for
+    // the rest — exactly what the kernel does at `max_user_watches`.
+    let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 2 });
+    owner.track_root(root, &tree, policy.clone());
+    let (_outcome, report) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Root,
+        &Trigger::Requested,
+        lege_file_index::ScanOptions::reconcile(policy),
+    )
+    .expect("the pass itself succeeds; it is the claim it makes that matters");
+
+    assert!(
+        !report.complete,
+        "a walk that could not watch every directory is not a complete walk"
+    );
+    assert_eq!(
+        owner.watches_armed(),
+        2,
+        "the budget was spent, not exceeded"
+    );
+    assert!(
+        owner.status(0).watches_refused >= 3,
+        "every directory past the budget is a refusal the host has to account for"
+    );
 }

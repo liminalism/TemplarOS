@@ -318,6 +318,11 @@ pub enum StaleReason {
     PermissionDenied,
     /// The daemon was not running, so the gap cannot be reconstructed from events.
     Downtime,
+    /// The daemon was running but had disarmed its watches: no consumer wanted them, so the tree
+    /// was not being observed. Deliberately *not* `Downtime` — a report that says "the daemon was
+    /// down" when it was up and chose not to look is a report that sends the reader to the wrong
+    /// place (`lege doctor`).
+    Unwatched,
     Inconsistent {
         detail: String,
     },
@@ -340,6 +345,7 @@ impl StaleReason {
             Self::BudgetExhausted { budget } => format!("budget:{}", budget.as_str()),
             Self::PermissionDenied => "permission-denied".to_owned(),
             Self::Downtime => "downtime".to_owned(),
+            Self::Unwatched => "unwatched".to_owned(),
             Self::Inconsistent { detail } => format!("inconsistent:{detail}"),
             Self::Reconcile => "reconcile".to_owned(),
         }

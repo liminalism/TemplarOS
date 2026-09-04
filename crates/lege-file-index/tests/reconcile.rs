@@ -66,7 +66,7 @@ fn reconcile_overflow_marks_stale_then_reconciles() {
     fs::write(tree.join("notes/unseen.txt"), b"three").unwrap();
     owner.source_mut().push_overflow();
 
-    let pumped = owner.pump(Duration::ZERO, &clock);
+    let pumped = owner.pump(Some(Duration::ZERO), &clock);
     assert_eq!(pumped.repairs.len(), 1, "an overflow schedules a repair");
     assert!(pumped.repairs[0].mark_root_stale);
     assert_eq!(pumped.repairs[0].scope, ScanScope::Root);

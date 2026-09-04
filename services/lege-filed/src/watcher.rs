@@ -24,13 +24,16 @@ use std::{
 
 use lege_file_index::{
     Index, Mutation, MutationBatch, MutationSource, NativePath, RootId, RootStatus, ScanOptions,
-    ScanScope, StaleReason,
+    ScanScope, StaleReason, WatchStatus,
     coalesce::{CoalesceConfig, Coalescer, SystemClock},
     reconcile::{self, Trigger},
-    watch::{EventSource, InotifySource, RepairRequest, WatchBudget, WatchOwner},
+    watch::{EventSource, InotifySource, RepairRequest, SourceWaker, WatchBudget, WatchOwner},
 };
 
-use crate::execute::IndexSink;
+use crate::{
+    execute::IndexSink,
+    observer::{Command, Observer, ObserverConfig, ObserverState, Transition, WatcherControl},
+};
 
 /// Which roots the watcher must arm, scan and repair. Built from the daemon's startup plan.
 #[derive(Clone, Debug, Default)]
@@ -49,17 +52,33 @@ pub struct WatcherRoots {
 #[derive(Debug)]
 pub struct WatcherHandle {
     stop: Arc<AtomicBool>,
+    waker: Option<SourceWaker>,
+    commands: std::sync::mpsc::Sender<Command>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl WatcherHandle {
     /// Stop the loop and wait for it. Used by tests and by an orderly shutdown; a crash needs no
     /// cleanup, because an aborted generation is invisible by construction.
+    ///
+    /// The poke is not optional. The loop now blocks with no timeout when it has nothing to do,
+    /// so a flag nobody wakes it to read is a flag it reads after the next filesystem event —
+    /// which on an idle machine is never. (There is no `SIGTERM` handler in `lege-filed` today,
+    /// so in production this runs from `Drop` or not at all.)
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(waker) = &self.waker {
+            waker.wake();
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+
+    /// The non-blocking handle a D-Bus method uses to report a consumer.
+    #[must_use]
+    pub fn control(&self) -> WatcherControl {
+        WatcherControl::new(self.commands.clone(), self.waker.clone())
     }
 }
 
@@ -86,16 +105,21 @@ pub fn spawn_with_source<S: EventSource + 'static>(
 ) -> WatcherHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
+    let waker = source.waker();
+    let (commands, inbox) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("lege-index-watcher".to_owned())
         .spawn(move || {
             let mut loop_ = WatchLoop::new(index, source);
+            loop_.attach_commands(inbox);
             loop_.start(&roots);
             loop_.run(&thread_stop);
         })
         .expect("spawning the watcher thread");
     WatcherHandle {
         stop,
+        waker,
+        commands,
         thread: Some(thread),
     }
 }
@@ -108,6 +132,15 @@ pub struct WatchLoop<S: EventSource> {
     coalescer: Coalescer,
     clock: Arc<dyn lege_file_index::coalesce::Clock>,
     repairs: Vec<(RootId, ScanScope, Trigger)>,
+    observer: Observer,
+    commands: Option<std::sync::mpsc::Receiver<Command>>,
+    /// The last status actually written. `WatchStatus` is `Eq`, so "publish on change" is a
+    /// comparison rather than a heartbeat — and a heartbeat is precisely what this lane exists to
+    /// remove.
+    published: Option<WatchStatus>,
+    /// The source is gone. Not a lost event: a lost stream. Latched, because polling a dead
+    /// source returns instantly and an unbounded wait that returns instantly is a spin.
+    dead: bool,
 }
 
 impl<S: EventSource> WatchLoop<S> {
@@ -128,7 +161,27 @@ impl<S: EventSource> WatchLoop<S> {
             coalescer: Coalescer::new(CoalesceConfig::default()),
             clock,
             repairs: Vec::new(),
+            observer: Observer::new(ObserverConfig::default()),
+            commands: None,
+            published: None,
+            dead: false,
         }
+    }
+
+    /// Where consumer leases arrive from the D-Bus tasks.
+    pub fn attach_commands(&mut self, commands: std::sync::mpsc::Receiver<Command>) {
+        self.commands = Some(commands);
+    }
+
+    /// Whether the loop has stopped for good.
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    #[must_use]
+    pub fn observer_state(&self) -> ObserverState {
+        self.observer.state()
     }
 
     /// Arm what exists, queue what must be rebuilt, and tell the truth about downtime.
@@ -174,8 +227,17 @@ impl<S: EventSource> WatchLoop<S> {
     }
 
     /// One turn of the loop: wait for events, coalesce, commit, then do a slice of repair work.
-    pub fn step(&mut self, timeout: Duration) {
+    ///
+    /// `timeout` of `None` is the whole point of this lane — see [`WatchLoop::next_wake`] for the
+    /// three (four, with the lifecycle) reasons the loop is not allowed to use it.
+    pub fn step(&mut self, timeout: Option<Duration>) {
+        self.drain_commands();
+
         let pumped = self.owner.pump(timeout, self.clock.as_ref());
+        if let Some(detail) = pumped.failed {
+            self.source_died(&detail);
+            return;
+        }
         for mutation in pumped.mutations {
             self.coalescer.push(self.clock.as_ref(), mutation);
         }
@@ -198,17 +260,115 @@ impl<S: EventSource> WatchLoop<S> {
         if let Some((root, scope, trigger)) = self.repairs.pop() {
             self.repair(root, scope, &trigger);
         }
+        if self.repairs.is_empty() {
+            // Armed as far as the budget allowed, which is all `Active` has ever claimed. What
+            // the budget refused is already on each root as `Stale{watcher-exhausted}`.
+            self.observer.armed();
+        }
+        if self.observer.tick(self.clock.now_ms()) == Some(Transition::Disarm) {
+            self.go_dormant();
+        }
         self.publish_status();
     }
 
-    fn run(&mut self, stop: &AtomicBool) {
-        while !stop.load(Ordering::Relaxed) {
-            let wait = self
-                .coalescer
-                .wait_ms(self.clock.as_ref())
-                .map_or(500, |ms| ms.clamp(1, 500));
-            self.step(Duration::from_millis(wait as u64));
+    /// How long the loop may block, or `None` for "as long as it takes".
+    ///
+    /// One place, so that every future deadline has to declare itself here rather than by
+    /// reintroducing a timer. The reasons, all of which are things the loop must do *on its own*
+    /// with no event to prompt it:
+    ///
+    /// 1. a coalescing window that has to close;
+    /// 2. an unpaired rename half that has to expire — `expire_pending_moves` only runs at the end
+    ///    of a pump, and a lone `MOVED_FROM` produces no mutation, so without this a file moved
+    ///    out of the watched world would stay in the index until some unrelated event arrived;
+    /// 3. a queued repair, because `step` pops exactly one per turn and the startup repairs are
+    ///    queued before the first wait;
+    /// 4. the observation lifecycle's own lease and grace deadlines.
+    ///
+    /// `None` when all four are empty — and only then.
+    #[must_use]
+    pub fn next_wake(&self) -> Option<Duration> {
+        if !self.repairs.is_empty() {
+            return Some(Duration::ZERO);
         }
+        let now = self.clock.now_ms();
+        let coalescing = self
+            .coalescer
+            .wait_ms(self.clock.as_ref())
+            .map(|ms| Duration::from_millis(u64::try_from(ms.max(0)).unwrap_or(0)));
+        [
+            coalescing,
+            self.owner.next_move_deadline(now),
+            self.observer.next_deadline(now),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn run(&mut self, stop: &AtomicBool) {
+        while !stop.load(Ordering::Relaxed) && !self.dead {
+            let wait = self.next_wake();
+            self.step(wait);
+        }
+    }
+
+    /// The event stream ended. Every root this owner was responsible for is now unproven, and
+    /// nothing will ever prove it again from this loop.
+    fn source_died(&mut self, detail: &str) {
+        self.dead = true;
+        tracing::error!(
+            detail,
+            "the watcher's event source failed; watching has stopped"
+        );
+        let reason = StaleReason::WatcherFailed {
+            detail: detail.to_owned(),
+        };
+        for root in self.owner.tracked_roots() {
+            let _ = self.index.mark_stale(root, &reason);
+        }
+        self.publish_status();
+    }
+
+    fn drain_commands(&mut self) {
+        let Some(commands) = self.commands.take() else {
+            return;
+        };
+        let now = self.clock.now_ms();
+        let mut arm = false;
+        while let Ok(command) = commands.try_recv() {
+            match command {
+                Command::Lease(client) => {
+                    arm |= self.observer.lease(&client, now) == Some(Transition::Arm);
+                }
+                Command::Release(client) => self.observer.release(&client, now),
+            }
+        }
+        self.commands = Some(commands);
+        if arm {
+            self.queue_arm();
+        }
+    }
+
+    /// Wake the tree up. Queued rather than run here for the same reason `start` queues: the walk
+    /// costs seconds and the loop still has to answer events while it happens.
+    fn queue_arm(&mut self) {
+        for root in self.owner.tracked_roots() {
+            self.repairs
+                .push((root, ScanScope::Root, Trigger::Downtime));
+        }
+    }
+
+    /// Stop looking — and say so. Disarming mid-session opens exactly the gap that daemon
+    /// downtime opens, so it gets its own reason rather than borrowing `Downtime`, which would
+    /// send a `lege doctor` reader looking for a crash that never happened.
+    fn go_dormant(&mut self) {
+        self.owner.disarm_all();
+        self.repairs.clear();
+        for root in self.owner.tracked_roots() {
+            let _ = self.index.mark_stale(root, &StaleReason::Unwatched);
+        }
+        tracing::info!("no consumer wants the index observed; watches disarmed");
     }
 
     fn queue_repair(&mut self, request: &RepairRequest) {
@@ -223,6 +383,10 @@ impl<S: EventSource> WatchLoop<S> {
             },
             StaleReason::MountDisappeared => Trigger::MountReturned,
             StaleReason::PolicyChanged => Trigger::PolicyChanged,
+            // Not watching and not running are the same epistemic hole, so they take the same
+            // repair. (The remaining catch-all is a pre-existing wart: an unlisted reason is
+            // reported as an ambiguous rename, which it usually is not.)
+            StaleReason::Downtime | StaleReason::Unwatched => Trigger::Downtime,
             _ => Trigger::RenameAmbiguous,
         };
         self.repairs
@@ -237,25 +401,81 @@ impl<S: EventSource> WatchLoop<S> {
         };
         let mut options = ScanOptions::reconcile(policy);
         options.scope = scope.clone();
+        let refused_before = self.owner.status(0).watches_refused;
         match reconcile::reconcile(&self.index, &mut self.owner, root, scope, trigger, options) {
-            Ok((outcome, report)) => tracing::info!(
-                root = root.0,
-                generation = %outcome.generation,
-                entries = outcome.entries,
-                complete = outcome.complete,
-                proven_unchanged = report.dirs_proven_unchanged,
-                state = outcome.state.as_str(),
-                "reconciled"
-            ),
+            Ok((outcome, report)) => {
+                tracing::info!(
+                    root = root.0,
+                    generation = %outcome.generation,
+                    entries = outcome.entries,
+                    complete = outcome.complete,
+                    proven_unchanged = report.dirs_proven_unchanged,
+                    state = outcome.state.as_str(),
+                    "reconciled"
+                );
+                self.account_for_refused_watches(root, outcome.state, refused_before);
+            }
             Err(error) => tracing::warn!(root = root.0, %error, "reconciliation failed"),
         }
     }
 
-    fn publish_status(&self) {
+    /// A pass that ran out of watches did not see the whole tree, whatever it committed.
+    ///
+    /// `ScanSession::commit` (`generation.rs:292`) derives completeness from the entry budget,
+    /// permission denials and cancellation. A refused watch produces neither: `reconcile`'s
+    /// `note_unreadable(session, false)` only bumps `unreadable_dirs`, which that test does not
+    /// read — so a root whose arm pass hit the budget commits `Current` over subtrees nothing is
+    /// watching. On this machine that is not a corner: 189,089 home directories against a 125,037
+    /// budget means it is the outcome of *every* home pass.
+    ///
+    /// The honest report is the point of the whole crate, so the host makes it here rather than
+    /// waiting for the core to be corrected. Fixing it at source means folding `unreadable_dirs`
+    /// into that completeness test, which changes tombstone collection for every caller and so
+    /// belongs with whoever owns `generation.rs`.
+    fn account_for_refused_watches(
+        &mut self,
+        root: RootId,
+        state: lege_file_index::RootState,
+        refused_before: u64,
+    ) {
+        if state != lege_file_index::RootState::Current {
+            return;
+        }
+        let refused = self
+            .owner
+            .status(0)
+            .watches_refused
+            .saturating_sub(refused_before);
+        if refused == 0 {
+            return;
+        }
+        let reason = StaleReason::WatcherExhausted {
+            armed: self.owner.watches_armed(),
+            refused,
+        };
+        tracing::warn!(
+            root = root.0,
+            refused,
+            "the watch budget ran out during a pass; the root is not current"
+        );
+        let _ = self.index.mark_stale(root, &reason);
+    }
+
+    /// Write the watcher's self-report — but only when it says something new.
+    ///
+    /// This used to run every turn, which was harmless while the loop ticked twice a second and
+    /// is the difference between "no writes at all" and "a `roots` UPDATE per wakeup" now that it
+    /// does not. There is deliberately no heartbeat to replace the lost ticks: a heartbeat is a
+    /// wakeup, and the wakeup is the thing being removed.
+    fn publish_status(&mut self) {
         let status = self.owner.status(self.coalescer.len() as u64);
+        if self.published.as_ref() == Some(&status) {
+            return;
+        }
         for root in self.index.roots().unwrap_or_default() {
             let _ = self.index.set_watch_status(root.root, &status);
         }
+        self.published = Some(status);
     }
 
     /// Test access to the loop's parts.
@@ -485,6 +705,265 @@ mod tests {
             after_operation,
             "an echo must not advance a generation"
         );
+    }
+
+    /// A fixture root, tracked and armed, with a clock the test owns.
+    fn loop_fixture(
+        dir: &std::path::Path,
+    ) -> (
+        WatchLoop<lege_file_index::watch::FakeSource>,
+        RootId,
+        Arc<lege_file_index::coalesce::FakeClock>,
+    ) {
+        let tree = dir.join("tree");
+        fs::create_dir_all(tree.join("notes")).unwrap();
+        let index = Index::open(&dir.join("index.sqlite3"), IndexConfig::default()).unwrap();
+        let root = index
+            .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+            .unwrap()
+            .root;
+        let clock = Arc::new(lege_file_index::coalesce::FakeClock::new(0));
+        let mut loop_ = WatchLoop::with_clock(
+            index,
+            lege_file_index::watch::FakeSource::new(),
+            clock.clone(),
+        );
+        let status = loop_.index().root_status(root).unwrap();
+        loop_.start(&WatcherRoots {
+            scan: vec![status],
+            ..WatcherRoots::default()
+        });
+        // Drain the startup repair, so the loop is genuinely idle.
+        while !loop_.repairs.is_empty() {
+            loop_.step(Some(Duration::ZERO));
+        }
+        (loop_, root, clock)
+    }
+
+    /// The correctness core of the zero-idle change: `None` means "nothing at all is owed", and
+    /// every reason the loop might have to act on its own without an event has to appear here.
+    #[test]
+    fn the_wait_is_unbounded_only_when_nothing_is_owed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, clock) = loop_fixture(dir.path());
+        assert_eq!(
+            loop_.next_wake(),
+            None,
+            "a settled loop with nothing pending must block indefinitely"
+        );
+
+        // 1. A queued repair. `step` pops one per turn, so a repair nobody wakes for never runs.
+        loop_
+            .repairs
+            .push((root, ScanScope::Root, Trigger::Requested));
+        assert_eq!(loop_.next_wake(), Some(Duration::ZERO));
+        loop_.repairs.clear();
+        assert_eq!(loop_.next_wake(), None);
+
+        // 2. A coalescing window that has to close.
+        loop_.coalescer.push(
+            clock.as_ref(),
+            Mutation::Remove {
+                root,
+                path: NativePath::from_path(&dir.path().join("tree/notes/x")),
+            },
+        );
+        assert_eq!(loop_.next_wake(), Some(Duration::from_millis(250)));
+        let _ = loop_.coalescer.take(MutationSource::Watcher);
+        assert_eq!(loop_.next_wake(), None);
+
+        // 3. An unpaired rename half. It contributes no mutation, so nothing else would notice.
+        let tree = dir.path().join("tree");
+        let watch = loop_
+            .owner
+            .source_mut()
+            .watch_for(&tree)
+            .expect("the root directory was armed");
+        loop_.owner.source_mut().push_named(
+            watch,
+            "vanished.txt",
+            lege_file_index::watch::RawKind::MovedFrom,
+            false,
+        );
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(
+            loop_.next_wake(),
+            Some(Duration::from_millis(250)),
+            "an unpaired rename must not be able to strand the loop in a blocking wait"
+        );
+        clock.advance(250);
+        loop_.step(Some(Duration::ZERO));
+        assert!(loop_.next_wake().is_some(), "the removal is now coalescing");
+        clock.advance(250);
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(
+            loop_.next_wake(),
+            None,
+            "and then there is nothing left to do"
+        );
+    }
+
+    /// The regression the unbounded wait would otherwise introduce.
+    ///
+    /// A failing source returns from `poll` instantly, so before this the loop would have spun at
+    /// 100% CPU with no backoff — strictly worse than the 500 ms-bounded loop it replaced. The
+    /// answer is not a backoff but an exit: a source that has lost its reader can never produce
+    /// another event, and every root it was responsible for is now unproven.
+    #[test]
+    fn a_dead_source_stops_the_loop_and_marks_every_root_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, _clock) = loop_fixture(dir.path());
+        loop_.owner.source_mut().fail_with = Some("the reader thread stopped".to_owned());
+
+        loop_.step(Some(Duration::ZERO));
+
+        assert!(
+            loop_.is_dead(),
+            "a lost stream ends the loop rather than spinning it"
+        );
+        let status = loop_.index().root_status(root).unwrap();
+        assert_eq!(status.state, lege_file_index::RootState::Stale);
+        assert!(
+            status
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("watcher-failed:")),
+            "the reason has to name the failure, not a generic staleness: {:?}",
+            status.reason
+        );
+    }
+
+    /// `publish_status` used to write the `roots` table on every turn, which was invisible at two
+    /// ticks a second and is a write per wakeup once the ticks are gone. It publishes on change
+    /// now — proved by writing something else into the row and watching it survive a turn.
+    #[test]
+    fn the_watch_status_is_published_on_change_rather_than_on_a_timer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, _clock) = loop_fixture(dir.path());
+        loop_.step(Some(Duration::ZERO));
+
+        let sentinel = WatchStatus {
+            backend: "written-by-somebody-else".to_owned(),
+            ..WatchStatus::default()
+        };
+        loop_.index().set_watch_status(root, &sentinel).unwrap();
+
+        loop_.step(Some(Duration::ZERO));
+
+        let status = loop_.index().root_status(root).unwrap();
+        assert_eq!(
+            status.watch.as_ref().map(|watch| watch.backend.as_str()),
+            Some("written-by-somebody-else"),
+            "an unchanged status must not be rewritten every turn"
+        );
+    }
+
+    /// The observation lifecycle, driven end to end through the real loop on a fake clock: a
+    /// consumer arrives and leaves, the grace window runs out, and the daemon stops looking —
+    /// saying so, because a root nobody is watching is exactly as unproven as one the daemon was
+    /// not running for.
+    #[test]
+    fn the_last_consumer_leaving_disarms_the_watches_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, clock) = loop_fixture(dir.path());
+        let (commands, inbox) = std::sync::mpsc::channel();
+        loop_.attach_commands(inbox);
+        assert!(
+            loop_.owner.watches_armed() > 0,
+            "the startup pass armed the tree"
+        );
+
+        commands.send(Command::Lease(":1.42".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(loop_.observer_state(), ObserverState::Active);
+
+        commands.send(Command::Release(":1.42".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(loop_.observer_state(), ObserverState::Grace);
+        assert!(
+            loop_.owner.watches_armed() > 0,
+            "grace exists so a window that reopens costs no second walk"
+        );
+        assert_eq!(
+            loop_.next_wake(),
+            Some(Duration::from_millis(60_000)),
+            "the grace window is a deadline the loop owns"
+        );
+
+        clock.advance(60_000);
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(loop_.observer_state(), ObserverState::Dormant);
+        assert_eq!(loop_.owner.watches_armed(), 0);
+        assert_eq!(
+            loop_.next_wake(),
+            None,
+            "a dormant watcher is the state that costs nothing"
+        );
+        let status = loop_.index().root_status(root).unwrap();
+        assert_eq!(status.state, lege_file_index::RootState::Stale);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("unwatched"),
+            "not `downtime`: the daemon was up and chose not to look"
+        );
+
+        // And a consumer coming back queues the walk rather than running it on the caller.
+        commands.send(Command::Lease(":1.7".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        assert!(loop_.owner.watches_armed() > 0, "the tree is armed again");
+        assert_eq!(loop_.observer_state(), ObserverState::Active);
+    }
+
+    /// Direct mutation is the one thing that must not depend on observation: `OperationSink`
+    /// holds an `Index` and nothing else, so a copy through `lege-filed` is indexed even with
+    /// every watch disarmed.
+    #[test]
+    fn a_dormant_watcher_still_records_the_daemons_own_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, clock) = loop_fixture(dir.path());
+        let (commands, inbox) = std::sync::mpsc::channel();
+        loop_.attach_commands(inbox);
+        commands.send(Command::Lease(":1.1".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        commands.send(Command::Release(":1.1".to_owned())).unwrap();
+        loop_.step(Some(Duration::ZERO));
+        clock.advance(60_000);
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(loop_.observer_state(), ObserverState::Dormant);
+
+        let created = dir.path().join("tree/notes/written-while-dormant.txt");
+        fs::write(&created, b"still indexed").unwrap();
+        let sink = OperationSink::new(loop_.index().clone());
+        sink.created(&created);
+
+        assert!(
+            loop_
+                .index()
+                .entry(root, &NativePath::from_path(&created))
+                .unwrap()
+                .is_some(),
+            "an operation the daemon performed itself is known however hard it is looking"
+        );
+    }
+
+    /// A blocking wait that shutdown cannot interrupt is a daemon that never exits. There is no
+    /// `SIGTERM` handler in `lege-filed` today, so this runs from `Drop` — but it has to work.
+    #[test]
+    fn stop_interrupts_an_unbounded_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::open(&dir.path().join("index.sqlite3"), IndexConfig::default()).unwrap();
+        let mut handle = spawn(index, WatcherRoots::default()).expect("a watcher");
+        // Let the loop reach its blocking wait: with no roots there is nothing at all to do.
+        std::thread::sleep(Duration::from_millis(100));
+
+        let (done, stopped) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            handle.stop();
+            let _ = done.send(());
+        });
+        stopped
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stop() must wake a thread parked in poll(None)");
     }
 
     /// The fixture rule, mechanized.

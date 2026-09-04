@@ -163,6 +163,35 @@ impl Default for WatchBudget {
     }
 }
 
+/// Interrupts a blocking [`EventSource::poll`] from another thread.
+///
+/// The whole point of an unbounded `poll(None)` is that an idle watcher costs nothing — no timer,
+/// no timeslice, no wakeup. That is only safe if something other than a filesystem event can end
+/// the wait, because shutdown and a consumer arriving are both reasons to act that the kernel
+/// will never send. This is that something: a cheap, cloneable, `Send + Sync` poke.
+#[derive(Clone)]
+pub struct SourceWaker(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+impl SourceWaker {
+    /// Build a waker from whatever the backend uses to interrupt itself.
+    #[must_use]
+    pub fn new(wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self(wake)
+    }
+
+    /// End an in-flight `poll(None)`. Best effort: a source that has already stopped is not an
+    /// error, because the loop is about to notice that for itself.
+    pub fn wake(&self) {
+        (self.0)();
+    }
+}
+
+impl std::fmt::Debug for SourceWaker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SourceWaker")
+    }
+}
+
 /// Where raw events come from. The kernel in production, a script in tests.
 pub trait EventSource: Send {
     fn backend(&self) -> &'static str;
@@ -170,8 +199,16 @@ pub trait EventSource: Send {
     /// Arm a watch on one directory.
     fn add_watch(&mut self, dir: &Path) -> std::io::Result<WatchId>;
     fn remove_watch(&mut self, watch: WatchId);
-    /// Collect whatever has arrived, waiting at most `timeout`.
-    fn poll(&mut self, timeout: Duration) -> std::io::Result<Vec<RawEvent>>;
+    /// Collect whatever has arrived. `Some(timeout)` bounds the wait; `None` blocks until an
+    /// event or a [`SourceWaker`] arrives, which is what lets an idle watcher cost nothing.
+    fn poll(&mut self, timeout: Option<Duration>) -> std::io::Result<Vec<RawEvent>>;
+    /// A handle another thread can use to end a `poll(None)`.
+    ///
+    /// `None` is the honest answer for a source that never truly blocks — a scripted one, say —
+    /// and the caller must then never pass `None` as a timeout it expects to be interrupted.
+    fn waker(&self) -> Option<SourceWaker> {
+        None
+    }
 }
 
 /// A repair the index owes itself, discovered by the watcher.
@@ -192,6 +229,9 @@ pub struct Pumped {
     pub repairs: Vec<RepairRequest>,
     /// Roots whose filesystem went away underneath us.
     pub offline: Vec<RootId>,
+    /// The source itself failed. Not a lost event but a lost *stream*: nothing will ever arrive
+    /// again, and a loop that keeps polling a dead source spins instead of waiting.
+    pub failed: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -291,6 +331,50 @@ impl<S: EventSource> WatchOwner<S> {
     #[must_use]
     pub fn watches_armed(&self) -> u64 {
         self.armed
+    }
+
+    /// Every root this owner is responsible for, armed or not.
+    #[must_use]
+    pub fn tracked_roots(&self) -> Vec<RootId> {
+        self.roots.iter().map(|root| root.id).collect()
+    }
+
+    /// A handle that ends an in-flight blocking [`WatchOwner::pump`].
+    #[must_use]
+    pub fn waker(&self) -> Option<SourceWaker> {
+        self.source.waker()
+    }
+
+    /// How long before an unpaired rename half must be resolved, or `None` when none is waiting.
+    ///
+    /// This is not decoration. `expire_pending_moves` only ever runs at the end of a `pump`, and a
+    /// lone `MovedFrom` produces no mutation at all — so nothing else in the loop knows the
+    /// watcher owes itself a decision. Block without consulting this and a file moved out of the
+    /// watched world stays in the index until some unrelated event happens to arrive.
+    #[must_use]
+    pub fn next_move_deadline(&self, now_ms: i64) -> Option<Duration> {
+        let window = self.move_pairing_ms;
+        self.pending_moves
+            .values()
+            .map(|pending| (pending.at_ms.saturating_add(window)).saturating_sub(now_ms))
+            .min()
+            .map(|remaining| Duration::from_millis(u64::try_from(remaining).unwrap_or(0)))
+    }
+
+    /// Drop every watch while keeping every root tracked.
+    ///
+    /// The disarm half of the observer lifecycle: the index still knows what it is responsible
+    /// for, it simply stops being told about it — which the caller must then say out loud
+    /// (`StaleReason::Unwatched`), because an unwatched root is exactly as unproven as one the
+    /// daemon was not running for.
+    pub fn disarm_all(&mut self) {
+        for (id, dir) in std::mem::take(&mut self.dirs) {
+            self.by_path.remove(&dir.path);
+            self.source.remove_watch(id);
+        }
+        self.by_path.clear();
+        self.pending_moves.clear();
+        self.armed = 0;
     }
 
     /// The watcher's own report, for `Index::set_watch_status`.
@@ -453,12 +537,23 @@ impl<S: EventSource> WatchOwner<S> {
     }
 
     /// Collect events and turn them into mutations and repairs.
-    pub fn pump(&mut self, timeout: Duration, clock: &dyn crate::coalesce::Clock) -> Pumped {
+    ///
+    /// `timeout` of `None` blocks until something arrives or [`WatchOwner::waker`] is poked. The
+    /// caller may only pass `None` when it has nothing of its own to do at a deadline — an
+    /// unpaired rename waiting to expire is exactly such a deadline (see
+    /// [`WatchOwner::next_move_deadline`]).
+    pub fn pump(
+        &mut self,
+        timeout: Option<Duration>,
+        clock: &dyn crate::coalesce::Clock,
+    ) -> Pumped {
         let mut pumped = Pumped::default();
         let events = match self.source.poll(timeout) {
             Ok(events) => events,
             Err(error) => {
-                self.last_error = Some(error.to_string());
+                let detail = error.to_string();
+                self.last_error = Some(detail.clone());
+                pumped.failed = Some(detail);
                 return pumped;
             }
         };
@@ -789,18 +884,42 @@ fn bytes_to_path(bytes: &[u8]) -> PathBuf {
 /// The production event source.
 ///
 /// The kernel fd is drained by a dedicated thread doing a blocking read; the owner thread takes
-/// events from a channel, which is what gives `poll` a timeout without a `poll(2)` call and keeps
-/// the crate free of `unsafe`.
+/// messages from a channel, which is what gives `poll` a timeout — and an interruptible unbounded
+/// wait — without a `poll(2)` call, and keeps the crate free of `unsafe`.
+///
+/// Accepted debt: that reader thread is detached and is never reaped. Ending it means closing the
+/// inotify fd from another thread while it sits inside `read(2)`, and a descriptor closed under a
+/// blocking reader can be reused by an unrelated `open` before the reader notices — the classic
+/// fd-reuse race, and a far worse bug than a thread that outlives its owner. The thread exits on
+/// its own the moment the kernel returns an error, and the process is short of the whole point of
+/// this daemon by then anyway.
 #[derive(Debug)]
 pub struct InotifySource {
     watches: inotify::Watches,
-    events: std::sync::mpsc::Receiver<KernelEvent>,
+    events: std::sync::mpsc::Receiver<SourceMessage>,
+    /// A retained sender, so that [`SourceWaker`] can end a blocking `recv`. It also means the
+    /// channel never disconnects on its own, which is why the reader announces its own exit
+    /// rather than leaving `recv` to infer it.
+    wake: std::sync::mpsc::Sender<SourceMessage>,
     descriptors: HashMap<WatchId, inotify::WatchDescriptor>,
     /// The kernel names watches by descriptor; everything above this module names them by
     /// `WatchId`, so that the fake source can exist at all.
     ids: HashMap<inotify::WatchDescriptor, WatchId>,
     next_id: u64,
     limits: WatchLimits,
+    /// Latched: a source that has lost its reader can never produce another event, and must not
+    /// be polled into a spin.
+    reader_stopped: bool,
+}
+
+/// What travels the reader thread's channel.
+#[derive(Debug)]
+enum SourceMessage {
+    Event(Box<KernelEvent>),
+    /// Somebody wants an unbounded `poll` to return. Carries no meaning of its own.
+    Wake,
+    /// The reader thread is gone. Sent from a drop guard, so a panic announces itself too.
+    ReaderStopped,
 }
 
 /// One event as it left the reader thread, still named by the kernel's descriptor.
@@ -813,6 +932,15 @@ struct KernelEvent {
     is_dir: bool,
 }
 
+/// Announces the reader thread's exit however it happens, including by unwind.
+struct ReaderExit(std::sync::mpsc::Sender<SourceMessage>);
+
+impl Drop for ReaderExit {
+    fn drop(&mut self) {
+        let _ = self.0.send(SourceMessage::ReaderStopped);
+    }
+}
+
 impl InotifySource {
     /// Open one inotify instance. One per process: `fs.inotify.max_user_instances` is 128 on the
     /// reference host and every other application wants some too.
@@ -820,9 +948,11 @@ impl InotifySource {
         let inotify = inotify::Inotify::init()?;
         let watches = inotify.watches();
         let (sender, events) = std::sync::mpsc::channel();
+        let wake = sender.clone();
         std::thread::Builder::new()
             .name("lege-index-inotify".to_owned())
             .spawn(move || {
+                let _exit = ReaderExit(sender.clone());
                 let mut inotify = inotify;
                 let mut buffer = [0u8; 16 * 1024];
                 loop {
@@ -830,7 +960,10 @@ impl InotifySource {
                         break;
                     };
                     for event in batch {
-                        if sender.send(convert(&event)).is_err() {
+                        if sender
+                            .send(SourceMessage::Event(Box::new(convert(&event))))
+                            .is_err()
+                        {
                             return;
                         }
                     }
@@ -839,11 +972,25 @@ impl InotifySource {
         Ok(Self {
             watches,
             events,
+            wake,
             descriptors: HashMap::new(),
             ids: HashMap::new(),
             next_id: 1,
             limits: WatchLimits::read(),
+            reader_stopped: false,
         })
+    }
+
+    /// Fold one channel message into this poll's results. Returns false once the stream is over.
+    fn absorb(message: SourceMessage, kernel: &mut Vec<KernelEvent>) -> bool {
+        match message {
+            SourceMessage::Event(event) => {
+                kernel.push(*event);
+                true
+            }
+            SourceMessage::Wake => true,
+            SourceMessage::ReaderStopped => false,
+        }
     }
 }
 
@@ -931,17 +1078,37 @@ impl EventSource for InotifySource {
         }
     }
 
-    fn poll(&mut self, timeout: Duration) -> std::io::Result<Vec<RawEvent>> {
-        let mut kernel = Vec::new();
-        match self.events.recv_timeout(timeout) {
-            Ok(event) => kernel.push(event),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(std::io::Error::other("the inotify reader thread stopped"));
-            }
+    fn waker(&self) -> Option<SourceWaker> {
+        let wake = self.wake.clone();
+        Some(SourceWaker::new(std::sync::Arc::new(move || {
+            let _ = wake.send(SourceMessage::Wake);
+        })))
+    }
+
+    fn poll(&mut self, timeout: Option<Duration>) -> std::io::Result<Vec<RawEvent>> {
+        if self.reader_stopped {
+            return Err(std::io::Error::other("the inotify reader thread stopped"));
         }
-        while let Ok(event) = self.events.try_recv() {
-            kernel.push(event);
+        let mut kernel = Vec::new();
+        let mut alive = match timeout {
+            Some(timeout) => match self.events.recv_timeout(timeout) {
+                Ok(message) => Self::absorb(message, &mut kernel),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+            },
+            // Unbounded: the thread parks until the kernel, or a `SourceWaker`, has something to
+            // say. This is the zero-idle-cost path.
+            None => match self.events.recv() {
+                Ok(message) => Self::absorb(message, &mut kernel),
+                Err(std::sync::mpsc::RecvError) => false,
+            },
+        };
+        while let Ok(message) = self.events.try_recv() {
+            alive &= Self::absorb(message, &mut kernel);
+        }
+        if !alive {
+            self.reader_stopped = true;
+            return Err(std::io::Error::other("the inotify reader thread stopped"));
         }
         Ok(kernel
             .into_iter()
@@ -976,6 +1143,9 @@ pub struct FakeSource {
     /// Fail every `add_watch` past this many, the way the kernel does at `max_user_watches`.
     pub watch_ceiling: Option<u64>,
     pub limits: WatchLimits,
+    /// Make the next `poll` fail, the way a source whose reader thread died does. The one failure
+    /// a test cannot stage by any other means, and the one that used to turn the loop into a spin.
+    pub fail_with: Option<String>,
 }
 
 impl FakeSource {
@@ -1048,7 +1218,113 @@ impl EventSource for FakeSource {
         self.watches.remove(&watch);
     }
 
-    fn poll(&mut self, _timeout: Duration) -> std::io::Result<Vec<RawEvent>> {
+    /// Never blocks, whatever the timeout says — including `None`. A scripted source has nothing
+    /// to wait for, and a test that could hang on one would be worse than useless. It therefore
+    /// offers no [`EventSource::waker`] either: there is never a wait to interrupt.
+    fn poll(&mut self, _timeout: Option<Duration>) -> std::io::Result<Vec<RawEvent>> {
+        if let Some(error) = self.fail_with.take() {
+            return Err(std::io::Error::other(error));
+        }
         Ok(self.queued.drain(..).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unbounded wait is only safe because something other than the kernel can end it.
+    ///
+    /// This is the one test that has to use the real backend: `FakeSource` never blocks, so it
+    /// cannot demonstrate that a blocking `poll(None)` is interruptible. Opening an inotify
+    /// instance arms nothing and touches no path, so the fixture guard has nothing to object to.
+    /// The wait is observed from another thread with a bounded `recv_timeout`, so a waker that
+    /// does not work fails the test rather than hanging the suite.
+    #[test]
+    fn a_waker_ends_an_unbounded_poll() {
+        let mut source = InotifySource::open().expect("an inotify instance");
+        let waker = source
+            .waker()
+            .expect("the production source must be interruptible");
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let polling = std::thread::spawn(move || {
+            let result = source.poll(None);
+            let _ = done.send(result.map(|events| events.len()));
+        });
+
+        assert!(
+            matches!(
+                finished.recv_timeout(Duration::from_millis(200)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "poll(None) must actually block when nothing has happened"
+        );
+
+        waker.wake();
+        let woken = finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a wake must end the wait");
+        assert_eq!(
+            woken.expect("a wake is not a failure"),
+            0,
+            "a wake carries no event of its own"
+        );
+        polling.join().expect("the polling thread");
+    }
+
+    /// A source whose reader is gone reports it once and keeps reporting it, rather than
+    /// returning nothing instantly forever — which, under an unbounded wait, is a spin.
+    #[test]
+    fn a_scripted_failure_is_latched_into_the_pump() {
+        let mut source = FakeSource::new();
+        source.fail_with = Some("the reader thread stopped".to_owned());
+        let mut owner = WatchOwner::new(source, WatchBudget { max_watches: 8 });
+        let clock = crate::coalesce::FakeClock::new(0);
+
+        let pumped = owner.pump(None, &clock);
+        assert_eq!(
+            pumped.failed.as_deref(),
+            Some("the reader thread stopped"),
+            "a dead source is a lost stream, not a quiet one"
+        );
+    }
+
+    /// An unpaired rename half is a deadline nothing else in the loop knows about: it produces no
+    /// mutation, so the coalescer stays empty and would happily let the caller block forever.
+    #[test]
+    fn a_half_seen_rename_is_a_deadline() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let root = RootId(1);
+        let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 8 });
+        owner.track_root(root, &tree, RootPolicy::default_home());
+        assert!(owner.arm_directory(root, &tree));
+        let watch = owner.source_mut().watch_for(&tree).expect("an armed watch");
+
+        let clock = crate::coalesce::FakeClock::new(0);
+        assert_eq!(owner.next_move_deadline(0), None, "nothing is pending");
+
+        owner
+            .source_mut()
+            .push_named(watch, "gone.txt", RawKind::MovedFrom, false);
+        let pumped = owner.pump(None, &clock);
+        assert!(
+            pumped.mutations.is_empty(),
+            "a lone MOVED_FROM says nothing yet — which is exactly why it needs a deadline"
+        );
+        assert_eq!(
+            owner.next_move_deadline(0),
+            Some(Duration::from_millis(250)),
+            "the pairing window is the deadline"
+        );
+
+        // Past the window, the pump resolves it into the removal it turned out to be.
+        clock.advance(250);
+        let pumped = owner.pump(None, &clock);
+        assert_eq!(pumped.mutations.len(), 1);
+        assert_eq!(owner.next_move_deadline(250), None);
     }
 }

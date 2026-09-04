@@ -19,6 +19,7 @@ pub mod execute;
 pub mod index_host;
 pub mod journal;
 pub mod lastdir;
+pub mod observer;
 pub mod operations;
 pub mod preview;
 pub mod recents;
