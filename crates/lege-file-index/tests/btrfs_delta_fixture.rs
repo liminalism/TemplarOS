@@ -1,10 +1,16 @@
 //! The measurement that decides whether a Btrfs metadata delta can replace a recursive
 //! reconciliation for the period the index was not watching.
 //!
-//! Every test here is `#[ignore]`d and does nothing unless `LEGE_BTRFS_FIXTURE` names a mounted
-//! Btrfs fixture, because this host is ext4 end-to-end. `scripts/btrfs-index-fixture.sh` builds
-//! that fixture out of a loopback image; it is the one privileged step, and it is the user's to
-//! run.
+//! The tests that need a real `btrfs send` are `#[ignore]`d and do nothing unless
+//! `LEGE_BTRFS_FIXTURE` names a mounted Btrfs fixture, because this host is ext4 end-to-end.
+//! `scripts/btrfs-index-fixture.sh` builds that fixture out of a loopback image; it is the one
+//! privileged step, and it is the user's to run.
+//!
+//! One test here does *not* need Btrfs and always runs: a hand-written [`btrfs_delta::DeltaPlan`]
+//! applied to a real tree in a temporary directory. A plan is just paths, so everything after the
+//! decoder — placing a subvolume-relative path in the live tree, stat-ing it, and landing the row
+//! at the right address — can be proved on any filesystem. That is the half that was wrong the
+//! first time the privileged harness ran, and it should not take a root shell to catch it again.
 //!
 //! Two questions, in this order.
 //!
@@ -562,15 +568,17 @@ fn run_step(
                 "a delta must carry a parent; this stream is a full send"
             );
             let plan = btrfs_delta::plan(&stream).expect("planning the delta");
+            // The two roots are different and that is the point: `btrfs send` spells every path
+            // from the root of the subvolume it snapshotted (`@home`), while the index covers
+            // `@home/bench`. This is the production shape — `@home` mounts at `/home` and the
+            // index root is `/home/<user>` — so the harness must not flatten it.
             let target = DeltaTarget {
                 root,
+                subvolume_path: NativePath::from_path(&fixture.home),
                 root_path: NativePath::from_path(tree),
                 policy: index.root_policy(root).expect("policy"),
             };
-            let metadata = FsMetadata {
-                base: tree.to_path_buf(),
-            };
-            let (batch, mut report) = btrfs_delta::to_mutations(&plan, &target, &metadata);
+            let (batch, mut report) = btrfs_delta::to_mutations(&plan, &target, &FsMetadata);
             report.stream_bytes = stream.bytes;
             report.commands = stream.commands.len();
             let mutations = batch.mutations.len();
@@ -811,11 +819,13 @@ fn hard_links_symlinks_and_a_directory_rename_survive_a_round_trip() {
         let plan = btrfs_delta::plan(&stream).expect("planning");
         let target = DeltaTarget {
             root,
+            // `@home`, not `@home/edges`: the stream names `edges/...`, and anything the other
+            // trees in this subvolume contribute belongs to no root of this index.
+            subvolume_path: NativePath::from_path(&fixture.home),
             root_path: NativePath::from_path(&tree),
             policy: index.root_policy(root).expect("policy"),
         };
-        let (batch, report) =
-            btrfs_delta::to_mutations(&plan, &target, &FsMetadata { base: tree.clone() });
+        let (batch, report) = btrfs_delta::to_mutations(&plan, &target, &FsMetadata);
         eprintln!("edge-case delta: {report:?}");
         index.apply(batch).expect("applying");
     });
@@ -834,6 +844,129 @@ fn hard_links_symlinks_and_a_directory_rename_survive_a_round_trip() {
     let _ = Fixture::discard(&child);
     let _ = Fixture::discard(&parent);
     let _ = fs::remove_dir_all(&tree);
+}
+
+/// `baseline + delta == fresh scan`, on ext4, with the indexed root a strict subdirectory of the
+/// subvolume the plan speaks in — the production shape (`@home` mounts at `/home`, the root is
+/// `/home/<user>`) and the one the first privileged run got wrong.
+///
+/// No `btrfs send` and no Btrfs: a [`btrfs_delta::DeltaPlan`] is nothing but subvolume-relative
+/// paths, so it can be written down. What is under test is everything downstream of the decoder —
+/// the join, the containment test, the policy filter, the `lstat`, and the rows `Index::apply`
+/// ends up with.
+#[test]
+fn a_plan_applies_to_the_right_paths_when_the_root_is_a_subdirectory_of_the_subvolume() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    // `subvolume` stands in for `@home`: it holds this user's root and a sibling's.
+    let subvolume = temp.path().join("subvolume");
+    let tree = subvolume.join("dk");
+    let sibling = subvolume.join("other");
+    fs::create_dir_all(&sibling).expect("the sibling home");
+    fs::create_dir_all(tree.join("docs")).expect("docs");
+    fs::create_dir_all(tree.join("photos")).expect("photos");
+    fs::create_dir_all(tree.join("project/target")).expect("an excluded build directory");
+    fs::write(tree.join("notes.md"), b"notes").expect("notes");
+    fs::write(tree.join("gone.txt"), b"gone").expect("gone");
+    fs::write(tree.join("docs/one.txt"), b"one").expect("one");
+    fs::write(tree.join("docs/two.txt"), b"two").expect("two");
+    fs::write(tree.join("photos/a.jpg"), b"jpg").expect("a.jpg");
+    fs::write(tree.join("project/target/x.o"), b"obj").expect("an object file");
+    fs::write(sibling.join("theirs.txt"), b"theirs").expect("the sibling's file");
+
+    let delta_db = temp.path().join("delta.sqlite3");
+    let fresh_db = temp.path().join("fresh.sqlite3");
+    with_index(&delta_db, |index| {
+        let root = add_root(index, &tree);
+        full_reconcile(index, root, &tree, &Trigger::Requested);
+    });
+
+    // What happened while the index was not watching.
+    fs::create_dir_all(tree.join("inbox")).expect("inbox");
+    fs::write(tree.join("inbox/new.txt"), b"new").expect("a new file");
+    fs::remove_file(tree.join("gone.txt")).expect("removing a file");
+    fs::rename(tree.join("notes.md"), tree.join("notes-2.md")).expect("renaming a file");
+    fs::rename(tree.join("docs"), tree.join("papers")).expect("renaming a directory");
+    fs::write(tree.join("photos/a.jpg"), b"rewritten").expect("rewriting in place");
+    fs::create_dir_all(tree.join("node_modules")).expect("node_modules");
+    fs::write(tree.join("node_modules/x.js"), b"js").expect("a dependency file");
+    // The sibling home changed too. A delta of the whole subvolume names it, and this root must
+    // not acquire a single row for it.
+    fs::write(sibling.join("secret.txt"), b"secret").expect("the sibling's new file");
+
+    // Exactly what `plan()` would produce for that, spelled the way the stream spells it:
+    // relative to the subvolume, not to the indexed root.
+    let plan = btrfs_delta::DeltaPlan {
+        moves: vec![
+            (b"dk/notes.md".to_vec(), b"dk/notes-2.md".to_vec()),
+            (b"dk/docs".to_vec(), b"dk/papers".to_vec()),
+        ],
+        removes: vec![b"dk/gone.txt".to_vec()],
+        creates: vec![
+            b"dk/inbox".to_vec(),
+            b"dk/node_modules".to_vec(),
+            b"dk/inbox/new.txt".to_vec(),
+            b"dk/node_modules/x.js".to_vec(),
+            b"other/secret.txt".to_vec(),
+        ],
+        // The root's own row: adding, removing and renaming its children moved its mtime, ctime
+        // and link count, and a scan would see all three.
+        touches: vec![b"dk".to_vec(), b"dk/photos/a.jpg".to_vec()],
+    };
+
+    let target = DeltaTarget {
+        root: with_index(&delta_db, |index| index.roots().expect("roots")[0].root),
+        subvolume_path: NativePath::from_path(&subvolume),
+        root_path: NativePath::from_path(&tree),
+        policy: RootPolicy::default_home(),
+    };
+    let (batch, report) = btrfs_delta::to_mutations(&plan, &target, &FsMetadata);
+    assert_eq!(
+        report.vanished, 0,
+        "every path was looked for where it really is: {report:?}"
+    );
+    assert_eq!(
+        report.outside_root, 1,
+        "the sibling's file is not this root's business: {report:?}"
+    );
+    assert_eq!(
+        report.excluded, 1,
+        "the file inside node_modules gets no row, the directory itself does: {report:?}"
+    );
+    for mutation in &batch.mutations {
+        let path = match mutation {
+            lege_file_index::Mutation::Upsert { path, .. }
+            | lege_file_index::Mutation::Touch { path, .. }
+            | lege_file_index::Mutation::Remove { path, .. } => path.clone(),
+            lege_file_index::Mutation::Move { to, .. } => to.clone(),
+            other @ lege_file_index::Mutation::Invalidate { .. } => {
+                panic!("unexpected mutation {other:?}")
+            }
+        };
+        assert!(
+            path.starts_with(&NativePath::from_path(&tree)),
+            "{} is not under the indexed root",
+            path.display()
+        );
+    }
+    with_index(&delta_db, |index| {
+        index.apply(batch).expect("applying the delta");
+    });
+
+    with_index(&fresh_db, |index| {
+        let root = add_root(index, &tree);
+        full_reconcile(index, root, &tree, &Trigger::Requested);
+    });
+    let (delta_fp, fresh_fp) = (fingerprint(&delta_db), fingerprint(&fresh_db));
+    assert!(
+        !delta_fp.is_empty(),
+        "the delta index is empty, which no comparison would catch"
+    );
+    let difference = describe_difference(&delta_fp, &fresh_fp);
+    assert!(
+        difference.is_none(),
+        "baseline + delta != fresh scan:\n{}",
+        difference.unwrap_or_default()
+    );
 }
 
 // --- reporting ---------------------------------------------------------------------------------

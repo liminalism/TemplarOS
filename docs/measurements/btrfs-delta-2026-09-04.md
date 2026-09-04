@@ -33,6 +33,29 @@ Split in two, honestly:
   interface, and the correctness harness itself. `cargo test -p lege-file-index --test
   btrfs_delta_fixture -- --ignored` is the last blocking step.
 
+### First run: the gate failed, and it was right to
+
+The fixture was built and `measure` was run as root. The correctness gate **failed**, and the
+failure was a real bug rather than a harness artifact: every path in a send stream is spelled from
+the root of the *snapshotted subvolume*, and the decoder was joining those paths onto the *index
+root* instead. The fixture snapshots `@home` and indexes `@home/bench`, so `bench/inbox/new000.txt`
+became `@home/bench/bench/inbox/new000.txt` — a path that exists nowhere. Every such path was
+counted as `vanished` and dropped, so the delta applied almost nothing while reporting success.
+`100 new files` differed from a fresh scan in 102 rows; the edge-case round trip differed in 933,
+with `DeltaReport { planned_paths: 9, mutations: 1, removes: 1, vanished: 8, .. }`. Only the
+`nothing at all` scenario passed, because an empty delta is the correct answer there.
+
+This is a production bug, not a fixture shape: `@home` mounts at `/home`, so the index root
+`/home/<user>` is always a subdirectory of the subvolume the stream speaks in, and a delta of
+`@home` also names other users' paths that must never be applied to this root. `DeltaTarget` now
+carries `subvolume_path` alongside `root_path`, resolves every stream path against the former, and
+applies only what lands inside the latter — a component-bounded containment test, so `/home/dkx` is
+not mistaken for something under `/home/dk`. Paths outside the root are counted in
+`DeltaReport::outside_root` rather than folded into `vanished`: conflating "not ours" with "ours
+and gone" is what let this look like it worked. Unit tests now cover the nested shape, the sibling
+home, the `dkx`/`dk` boundary and moves across the root boundary, and the harness passes both roots.
+**The fixture run has not been repeated since the fix.**
+
 ## Method
 
 Three arms per scenario, so the comparison cannot flatter itself:
@@ -180,8 +203,9 @@ back to a reconcile". A full send (no `-p`) is refused as a delta too: applying 
 The end-to-end gate — `baseline + delta` against a fresh scan, over create, delete, rename, chmod,
 truncate, rewrite-in-place, a 1 GiB file, hard link, symlink, whole-directory rename, a mass delete
 and an interrupted delta — is written
-(`crates/lege-file-index/tests/btrfs_delta_fixture.rs`) and runs against the fixture. **It has not
-been run.**
+(`crates/lege-file-index/tests/btrfs_delta_fixture.rs`) and runs against the fixture. **It has been
+run once, it failed, and the bug it found is fixed — see "First run" above. It has not been re-run
+since.**
 
 ## The hostd surface
 

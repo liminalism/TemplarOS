@@ -12,7 +12,7 @@
 //! **This is an unadopted backend behind a flag.** It is here to be measured
 //! (`docs/measurements/`), not to be switched on. Nothing calls it by default.
 //!
-//! Three decisions shape everything below.
+//! Four decisions shape everything below.
 //!
 //! **The stream is a change oracle, not a metadata source.** A send stream carries `chmod`,
 //! `utimes` and `truncate`, but reconstructing an [`EntryMeta`] from them would mean reimplementing
@@ -34,11 +34,19 @@
 //! that never existed. [`decode`] refuses any stream that does not end in `BTRFS_SEND_C_END`, and
 //! verifies every command's CRC32C, so the caller's only options are "apply all of it" or "fall
 //! back to a reconcile" — never "apply the first two thirds".
+//!
+//! **A stream's paths are relative to the subvolume, not to the indexed root.** `btrfs send`
+//! spells every path from the root of the subvolume it snapshotted, and the subvolume is normally
+//! *larger* than what any one index root covers: `@home` mounts at `/home`, so a delta of it names
+//! `dk/notes.md` and also `other-user/secret`. So [`DeltaTarget`] carries both paths. Every stream
+//! path is resolved against [`DeltaTarget::subvolume_path`] to get an absolute one, and is applied
+//! only if that absolute path lies within [`DeltaTarget::root_path`] — a component-bounded test,
+//! so `/home/dkx` is not mistaken for something under `/home/dk`. Paths outside the root are
+//! counted in [`DeltaReport::outside_root`] rather than folded into `vanished`: one means "another
+//! root's business", the other means "ours, and gone", and treating them alike is how a delta that
+//! silently applies nothing looks like a delta that had nothing to do.
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{EntryMeta, Mutation, MutationBatch, MutationSource, NativePath, RootId, RootPolicy};
 
@@ -743,31 +751,43 @@ pub fn plan(stream: &SendStream) -> Result<DeltaPlan, DeltaError> {
 /// filesystem, and the measurement harness needs to compare stat-in-the-live-tree against
 /// stat-in-the-snapshot (they differ — a snapshot has its own `st_dev`, so metadata taken from one
 /// would not compare equal to a scan of the live tree).
+///
+/// It is handed the **absolute** path, already resolved against
+/// [`DeltaTarget::subvolume_path`], and that is deliberate: the path an implementation stats and
+/// the path the resulting mutation carries are then the same bytes by construction, so no
+/// implementation can join a stream-relative path onto a root of its own choosing.
 pub trait MetaLookup: std::fmt::Debug {
-    /// The metadata of a subvolume-relative path, or `None` if it is no longer there.
-    fn lookup(&self, relative: &[u8]) -> Option<EntryMeta>;
+    /// The metadata of an absolute path in the live tree, or `None` if it is no longer there.
+    fn lookup(&self, path: &NativePath) -> Option<EntryMeta>;
 }
 
-/// `lstat` under a base directory. Point it at the live root, not the snapshot: `st_dev` differs
-/// between a btrfs subvolume and its snapshot, and the index stores `(dev, ino)`.
-#[derive(Clone, Debug)]
-pub struct FsMetadata {
-    pub base: PathBuf,
-}
+/// `lstat`, exactly as a scan would. It holds no root of its own — [`DeltaTarget`] resolved the
+/// path, and must have resolved it against the *live* subvolume rather than the snapshot: `st_dev`
+/// differs between a btrfs subvolume and its snapshot, and the index stores `(dev, ino)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FsMetadata;
 
 impl MetaLookup for FsMetadata {
-    fn lookup(&self, relative: &[u8]) -> Option<EntryMeta> {
-        let path = join_relative(&self.base, relative);
+    fn lookup(&self, path: &NativePath) -> Option<EntryMeta> {
+        let path = path.to_path();
         let metadata = std::fs::symlink_metadata(&path).ok()?;
         Some(EntryMeta::from_symlink_metadata(&path, &metadata))
     }
 }
 
 /// What a delta is being applied to.
+///
+/// The two paths are not the same thing and are routinely different. `root_path` must be
+/// `subvolume_path` or a directory under it; a target that breaks that describes no path at all
+/// and every planned path lands in [`DeltaReport::outside_root`].
 #[derive(Clone, Debug)]
 pub struct DeltaTarget {
     pub root: RootId,
-    /// The root's path in the live tree — the prefix every emitted mutation carries.
+    /// Where the sent subvolume is mounted in the **live** tree — never the read-only snapshot,
+    /// whose `st_dev` is its own. Every path in the stream is relative to this.
+    pub subvolume_path: NativePath,
+    /// The indexed root's path in the live tree — the prefix every emitted mutation carries, and
+    /// the bound outside which a stream path is another root's business.
     pub root_path: NativePath,
     /// The same policy the scanner and the watcher use, so a delta cannot introduce a path a scan
     /// would have skipped.
@@ -789,6 +809,11 @@ pub struct DeltaReport {
     /// Paths dropped because [`RootPolicy`] excludes them — a delta must index exactly what a scan
     /// would, no more.
     pub excluded: usize,
+    /// Paths the stream named that lie outside the indexed root. A subvolume is larger than one
+    /// root: a delta of `@home` names every user's home, and only one of them is this root's.
+    /// Kept apart from `vanished` on purpose — this is "not ours", that is "ours and gone", and a
+    /// target whose two roots were confused shows up here as the whole delta.
+    pub outside_root: usize,
     /// Paths that were gone by the time their metadata was read. A delta describes a snapshot; the
     /// live tree has moved on. These are dropped, and the count is the honest measure of the race.
     pub vanished: usize,
@@ -796,17 +821,43 @@ pub struct DeltaReport {
     pub unknown_commands: usize,
 }
 
+/// What a stream-relative path turned out to be.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Resolved {
+    /// Under the indexed root, and the policy would have indexed it: this is a row.
+    Indexed(NativePath),
+    /// Under the indexed root, but the policy excludes it — a scan would have written no row.
+    Excluded,
+    /// Not under the indexed root at all. Some other root's business, or nobody's.
+    Outside,
+}
+
 /// Turn a plan into the batch the index applies.
 ///
-/// Filtering happens here rather than in the replay because a move can straddle the policy
-/// boundary: a file dragged out of `node_modules/` is a *creation* as far as the index is
-/// concerned, and one dragged into it is a *deletion*.
+/// Two filters, and they are not the same one. A path is first *placed*: resolved against the
+/// subvolume root the stream speaks in, and kept only if it lands inside this root. What survives
+/// is then asked of the policy — which happens here rather than in the replay because a move can
+/// straddle the policy boundary: a file dragged out of `node_modules/` is a *creation* as far as
+/// the index is concerned, and one dragged into it is a *deletion*. The same is true of the root
+/// boundary, and for the same reason.
+///
+/// One thing this cannot do on its own: a *directory* that arrives from outside the indexed
+/// region — dragged out of `node_modules/`, or in from another root's tree — is a single
+/// `Upsert`, because the stream names the directory and not the children that came with it. The
+/// rows underneath it have to come from a targeted scan of that path; a delta has no walker.
 #[must_use]
 pub fn to_mutations(
     plan: &DeltaPlan,
     target: &DeltaTarget,
     meta: &dyn MetaLookup,
 ) -> (MutationBatch, DeltaReport) {
+    debug_assert!(
+        target.root_path.starts_with(&target.subvolume_path),
+        "the indexed root {} is not inside the sent subvolume {}: no stream path can resolve \
+         into it",
+        target.root_path.display(),
+        target.subvolume_path.display(),
+    );
     let mut report = DeltaReport {
         planned_paths: plan.len(),
         ..DeltaReport::default()
@@ -814,50 +865,62 @@ pub fn to_mutations(
     let mut mutations = Vec::new();
 
     for (from, to) in &plan.moves {
-        let (included_from, included_to) = (included(target, from), included(target, to));
-        match (included_from, included_to) {
-            (false, false) => report.excluded += 1,
-            (true, false) => {
-                report.removes += 1;
-                mutations.push(Mutation::Remove {
-                    root: target.root,
-                    path: absolute(target, from),
-                });
-            }
-            (false, true) => push_upsert(&mut mutations, &mut report, target, meta, to, false),
-            (true, true) => {
-                let Some(entry) = meta.lookup(to) else {
+        match (resolve(target, from), resolve(target, to)) {
+            (Resolved::Indexed(from), Resolved::Indexed(to)) => {
+                let Some(entry) = meta.lookup(&to) else {
                     report.vanished += 1;
                     continue;
                 };
                 report.moves += 1;
                 mutations.push(Mutation::Move {
                     root: target.root,
-                    from: absolute(target, from),
-                    to: absolute(target, to),
+                    from,
+                    to,
                     meta: entry,
                 });
             }
+            // It was ours and now it is not: the row goes, addressed where the index has it.
+            (Resolved::Indexed(from), _) => {
+                report.removes += 1;
+                mutations.push(Mutation::Remove {
+                    root: target.root,
+                    path: from,
+                });
+            }
+            // It was not ours and now it is: as new as anything the delta created.
+            (_, Resolved::Indexed(to)) => {
+                push_upsert(&mut mutations, &mut report, target, meta, to, false);
+            }
+            // Neither end is a row of ours. Which counter says why, and "not this root's tree at
+            // all" wins only when that is true of both ends.
+            (Resolved::Outside, Resolved::Outside) => report.outside_root += 1,
+            _ => report.excluded += 1,
         }
     }
 
     for path in &plan.removes {
-        if included(target, path) {
-            report.removes += 1;
-            mutations.push(Mutation::Remove {
-                root: target.root,
-                path: absolute(target, path),
-            });
-        } else {
-            report.excluded += 1;
+        match resolve(target, path) {
+            Resolved::Indexed(path) => {
+                report.removes += 1;
+                mutations.push(Mutation::Remove {
+                    root: target.root,
+                    path,
+                });
+            }
+            Resolved::Excluded => report.excluded += 1,
+            Resolved::Outside => report.outside_root += 1,
         }
     }
 
     for path in &plan.creates {
-        push_upsert(&mut mutations, &mut report, target, meta, path, false);
+        if let Some(path) = counted(target, &mut report, path) {
+            push_upsert(&mut mutations, &mut report, target, meta, path, false);
+        }
     }
     for path in &plan.touches {
-        push_upsert(&mut mutations, &mut report, target, meta, path, true);
+        if let Some(path) = counted(target, &mut report, path) {
+            push_upsert(&mut mutations, &mut report, target, meta, path, true);
+        }
     }
 
     report.mutations = mutations.len();
@@ -867,19 +930,30 @@ pub fn to_mutations(
     )
 }
 
+/// Resolve one path, counting the reason it is not a row of ours.
+fn counted(target: &DeltaTarget, report: &mut DeltaReport, relative: &[u8]) -> Option<NativePath> {
+    match resolve(target, relative) {
+        Resolved::Indexed(path) => Some(path),
+        Resolved::Excluded => {
+            report.excluded += 1;
+            None
+        }
+        Resolved::Outside => {
+            report.outside_root += 1;
+            None
+        }
+    }
+}
+
 fn push_upsert(
     mutations: &mut Vec<Mutation>,
     report: &mut DeltaReport,
     target: &DeltaTarget,
     meta: &dyn MetaLookup,
-    path: &[u8],
+    path: NativePath,
     metadata_only: bool,
 ) {
-    if !included(target, path) {
-        report.excluded += 1;
-        return;
-    }
-    let Some(entry) = meta.lookup(path) else {
+    let Some(entry) = meta.lookup(&path) else {
         report.vanished += 1;
         return;
     };
@@ -887,46 +961,48 @@ fn push_upsert(
         report.touches += 1;
         mutations.push(Mutation::Touch {
             root: target.root,
-            path: absolute(target, path),
+            path,
             meta: entry,
         });
     } else {
         report.creates += 1;
         mutations.push(Mutation::Upsert {
             root: target.root,
-            path: absolute(target, path),
+            path,
             meta: entry,
         });
     }
 }
 
-/// Whether the root's policy would have indexed this path — asked of every component, because
-/// `RootPolicy::is_skipped` answers about one name and a delta names paths, not walks.
-fn included(target: &DeltaTarget, relative: &[u8]) -> bool {
-    let mut prefix: Vec<u8> = Vec::with_capacity(relative.len());
-    for component in relative.split(|byte| *byte == b'/') {
-        if component.is_empty() {
-            continue;
-        }
-        if !prefix.is_empty() {
-            prefix.push(b'/');
-        }
-        prefix.extend_from_slice(component);
-        let path = NativePath::from_bytes(prefix.clone());
-        if target.policy.is_skipped(&path, crate::EntryKind::Directory) {
-            return false;
-        }
+/// Place a stream-relative path in the live tree, and say whether it is a row of this root's.
+///
+/// The containment test is [`NativePath::starts_with`], which is component-bounded: `/home/dkx`
+/// is not under `/home/dk`. The root itself resolves as `Indexed` — a delta that touched the root
+/// directory changes the root's own row, exactly as a scan would record it.
+fn resolve(target: &DeltaTarget, relative: &[u8]) -> Resolved {
+    let path = target.subvolume_path.join(relative);
+    if !path.starts_with(&target.root_path) {
+        return Resolved::Outside;
     }
-    true
+    if included(target, &path) {
+        Resolved::Indexed(path)
+    } else {
+        Resolved::Excluded
+    }
 }
 
-fn absolute(target: &DeltaTarget, relative: &[u8]) -> NativePath {
-    target.root_path.join(relative)
-}
-
-fn join_relative(base: &Path, relative: &[u8]) -> PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    base.join(std::ffi::OsStr::from_bytes(relative))
+/// Whether the root's policy would have indexed this absolute path.
+///
+/// The base-bounded form, which is what the scanner uses and what [`crate::Index::apply`] will
+/// re-check the emitted mutation against: components *above* the root are never classified, so a
+/// root the user registered inside a build directory is indexed normally. Asking with the
+/// subvolume-relative path instead would silently never match a subtree rule, which is written in
+/// absolute paths.
+fn included(target: &DeltaTarget, path: &NativePath) -> bool {
+    target
+        .policy
+        .stored_coverage_within(&target.root_path, path, crate::EntryKind::Directory)
+        .is_some()
 }
 
 #[cfg(test)]
@@ -1043,7 +1119,9 @@ mod tests {
         plan(&decode(bytes).expect("decodes")).expect("plans")
     }
 
-    /// Metadata for whatever the test says exists, so the replay can be checked without a disk.
+    /// Metadata for whatever the test says exists, keyed by the **absolute** path — which is what
+    /// the lookup is handed, so a test that names the wrong one finds nothing rather than quietly
+    /// agreeing with a wrong join.
     #[derive(Debug, Default)]
     struct FakeMeta {
         present: std::collections::HashSet<Vec<u8>>,
@@ -1058,17 +1136,53 @@ mod tests {
     }
 
     impl MetaLookup for FakeMeta {
-        fn lookup(&self, relative: &[u8]) -> Option<EntryMeta> {
-            self.present.contains(relative).then(EntryMeta::default)
+        fn lookup(&self, path: &NativePath) -> Option<EntryMeta> {
+            self.present
+                .contains(path.as_bytes())
+                .then(EntryMeta::default)
         }
     }
 
+    /// The production shape: `@home` is the subvolume and mounts at `/home`, so the stream speaks
+    /// in `dk/...` and the indexed root is one directory down. Every `to_mutations` test uses it,
+    /// because a target whose two roots are the same is exactly the blind spot that let a delta
+    /// join stream paths onto the wrong directory and count the results as vanished.
     fn target() -> DeltaTarget {
         DeltaTarget {
             root: crate::RootId(1),
+            subvolume_path: NativePath::from_bytes(b"/home".to_vec()),
             root_path: NativePath::from_bytes(b"/home/dk".to_vec()),
             policy: RootPolicy::default_home(),
         }
+    }
+
+    /// The degenerate shape, where the indexed root *is* the subvolume root.
+    fn flat_target() -> DeltaTarget {
+        DeltaTarget {
+            root: crate::RootId(1),
+            subvolume_path: NativePath::from_bytes(b"/srv/data".to_vec()),
+            root_path: NativePath::from_bytes(b"/srv/data".to_vec()),
+            policy: RootPolicy::default_home(),
+        }
+    }
+
+    fn paths_of(batch: &MutationBatch) -> Vec<String> {
+        let mut paths: Vec<String> = batch
+            .mutations
+            .iter()
+            .map(|mutation| match mutation {
+                Mutation::Upsert { path, .. } | Mutation::Touch { path, .. } => {
+                    format!("upsert {}", path.display())
+                }
+                Mutation::Remove { path, .. } => format!("remove {}", path.display()),
+                Mutation::Move { from, to, .. } => {
+                    format!("move {} -> {}", from.display(), to.display())
+                }
+                other @ Mutation::Invalidate { .. } => format!("{other:?}"),
+            })
+            .collect();
+        paths.sort();
+        paths
     }
 
     #[test]
@@ -1309,12 +1423,15 @@ mod tests {
         let plan = planned(
             &StreamBuilder::new()
                 .snapshot()
-                .mkfile(b"project/target/debug/thing.o")
-                .mkfile(b"project/src/main.rs")
-                .mkdir(b"project/node_modules")
+                .mkfile(b"dk/project/target/debug/thing.o")
+                .mkfile(b"dk/project/src/main.rs")
+                .mkdir(b"dk/project/node_modules")
                 .end(),
         );
-        let meta = FakeMeta::with(&[b"project/src/main.rs", b"project/node_modules"]);
+        let meta = FakeMeta::with(&[
+            b"/home/dk/project/src/main.rs",
+            b"/home/dk/project/node_modules",
+        ]);
         let (batch, report) = to_mutations(&plan, &target(), &meta);
         assert_eq!(
             report.excluded, 1,
@@ -1344,11 +1461,11 @@ mod tests {
         let plan = planned(
             &StreamBuilder::new()
                 .snapshot()
-                .rename(b"target/thing", b"src/thing")
-                .rename(b"src/other", b"target/other")
+                .rename(b"dk/target/thing", b"dk/src/thing")
+                .rename(b"dk/src/other", b"dk/target/other")
                 .end(),
         );
-        let meta = FakeMeta::with(&[b"src/thing"]);
+        let meta = FakeMeta::with(&[b"/home/dk/src/thing"]);
         let (batch, report) = to_mutations(&plan, &target(), &meta);
         assert_eq!(
             report.creates, 1,
@@ -1360,7 +1477,7 @@ mod tests {
 
     #[test]
     fn a_path_that_vanished_before_its_metadata_was_read_is_counted_not_invented() {
-        let plan = planned(&StreamBuilder::new().snapshot().mkfile(b"ghost").end());
+        let plan = planned(&StreamBuilder::new().snapshot().mkfile(b"dk/ghost").end());
         let (batch, report) = to_mutations(&plan, &target(), &FakeMeta::default());
         assert!(batch.mutations.is_empty());
         assert_eq!(report.vanished, 1);
@@ -1371,10 +1488,10 @@ mod tests {
         let plan = planned(
             &StreamBuilder::new()
                 .snapshot()
-                .rename(b"Photos", b"Pictures")
+                .rename(b"dk/Photos", b"dk/Pictures")
                 .end(),
         );
-        let meta = FakeMeta::with(&[b"Pictures"]);
+        let meta = FakeMeta::with(&[b"/home/dk/Pictures"]);
         let (batch, report) = to_mutations(&plan, &target(), &meta);
         assert_eq!(report.moves, 1);
         assert_eq!(batch.mutations.len(), 1);
@@ -1391,12 +1508,19 @@ mod tests {
     #[test]
     fn the_policy_test_looks_at_every_component_not_only_the_leaf() {
         let target = target();
-        assert!(included(&target, b"src/main.rs"));
-        assert!(!included(&target, b"a/.git/config"));
+        let path = |bytes: &[u8]| NativePath::from_bytes(bytes.to_vec());
+        assert!(included(&target, &path(b"/home/dk/src/main.rs")));
+        assert!(!included(&target, &path(b"/home/dk/a/.git/config")));
         // An `Opaque` directory is itself stored; only what is inside it is not.
-        assert!(included(&target, b"node_modules"));
-        assert!(!included(&target, b"node_modules/left-pad/index.js"));
-        assert!(included(&target, b"targeted/file"));
+        assert!(included(&target, &path(b"/home/dk/node_modules")));
+        assert!(!included(
+            &target,
+            &path(b"/home/dk/node_modules/left-pad/index.js")
+        ));
+        assert!(included(&target, &path(b"/home/dk/targeted/file")));
+        // Components *above* the root are the user's choice of root, not a rule to apply: a home
+        // called `.git` would still be indexed.
+        assert!(included(&target, &path(b"/home/dk/file")));
     }
 
     #[test]
@@ -1440,7 +1564,7 @@ mod tests {
     struct AlwaysRegular;
 
     impl MetaLookup for AlwaysRegular {
-        fn lookup(&self, _relative: &[u8]) -> Option<EntryMeta> {
+        fn lookup(&self, _path: &NativePath) -> Option<EntryMeta> {
             Some(EntryMeta {
                 kind: EntryKind::Regular,
                 ..EntryMeta::default()
@@ -1449,10 +1573,147 @@ mod tests {
     }
 
     #[test]
+    fn stream_paths_resolve_against_the_subvolume_and_not_the_indexed_root() {
+        // The shape every real deployment has: `@home` is the subvolume, `/home/dk` is the root.
+        // Joining `dk/inbox/new.txt` onto the *root* would produce `/home/dk/dk/inbox/new.txt`,
+        // which exists nowhere — so every path would read as vanished and the delta would apply
+        // almost nothing while reporting success.
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .mkfile(b"dk/inbox/new.txt")
+                .unlink(b"dk/gone.txt")
+                .rename(b"dk/a.txt", b"dk/b.txt")
+                .rename(b"dk/docs", b"dk/papers")
+                .end(),
+        );
+        let meta = FakeMeta::with(&[
+            b"/home/dk/inbox/new.txt",
+            b"/home/dk/b.txt",
+            b"/home/dk/papers",
+        ]);
+        let (batch, report) = to_mutations(&plan, &target(), &meta);
+        assert_eq!(
+            paths_of(&batch),
+            vec![
+                "move /home/dk/a.txt -> /home/dk/b.txt".to_owned(),
+                "move /home/dk/docs -> /home/dk/papers".to_owned(),
+                "remove /home/dk/gone.txt".to_owned(),
+                "upsert /home/dk/inbox/new.txt".to_owned(),
+            ]
+        );
+        assert_eq!(
+            report.vanished, 0,
+            "every path was found where it really is"
+        );
+        assert_eq!(report.outside_root, 0);
+        assert_eq!(report.planned_paths, 4);
+    }
+
+    #[test]
+    fn a_path_belonging_to_another_home_is_skipped_and_counted_not_applied() {
+        // A delta of `@home` names every user's home. Applying one of those to this root would
+        // write another user's tree into this user's index — and counting it as `vanished` would
+        // hide that the delta was pointed at the wrong subtree.
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .mkfile(b"other/x")
+                .mkfile(b"dk/mine")
+                .unlink(b"other/old")
+                .end(),
+        );
+        // Both really exist: this is a placement decision, not a stat failing.
+        let meta = FakeMeta::with(&[b"/home/other/x", b"/home/dk/mine", b"/home/other/old"]);
+        let (batch, report) = to_mutations(&plan, &target(), &meta);
+        assert_eq!(paths_of(&batch), vec!["upsert /home/dk/mine".to_owned()]);
+        assert_eq!(
+            report.outside_root, 2,
+            "one create and one remove, not ours"
+        );
+        assert_eq!(report.vanished, 0, "they were not gone, they were not ours");
+        assert_eq!(
+            report.excluded, 0,
+            "the policy had nothing to say about them"
+        );
+    }
+
+    #[test]
+    fn the_root_boundary_is_component_bounded_so_a_sibling_home_is_not_swallowed() {
+        // `/home/dkx` shares a byte prefix with `/home/dk` and shares nothing else.
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .mkfile(b"dkx/file")
+                .mkfile(b"dk/file")
+                .end(),
+        );
+        let meta = FakeMeta::with(&[b"/home/dkx/file", b"/home/dk/file"]);
+        let (batch, report) = to_mutations(&plan, &target(), &meta);
+        assert_eq!(paths_of(&batch), vec!["upsert /home/dk/file".to_owned()]);
+        assert_eq!(report.outside_root, 1);
+        assert_eq!(
+            resolve(&target(), b"dkx"),
+            Resolved::Outside,
+            "a longer name is not a child"
+        );
+        assert_eq!(
+            resolve(&target(), b"dk"),
+            Resolved::Indexed(NativePath::from_bytes(b"/home/dk".to_vec())),
+            "the root itself is a row of ours: a delta that touched it changes its own entry"
+        );
+    }
+
+    #[test]
+    fn a_move_across_the_root_boundary_is_a_creation_or_a_deletion() {
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .rename(b"other/in", b"dk/in")
+                .rename(b"dk/out", b"other/out")
+                .rename(b"other/a", b"other/b")
+                .end(),
+        );
+        let meta = FakeMeta::with(&[b"/home/dk/in", b"/home/other/out", b"/home/other/b"]);
+        let (batch, report) = to_mutations(&plan, &target(), &meta);
+        assert_eq!(
+            paths_of(&batch),
+            vec![
+                "remove /home/dk/out".to_owned(),
+                "upsert /home/dk/in".to_owned(),
+            ]
+        );
+        assert_eq!(report.outside_root, 1, "the move that never touched us");
+        assert_eq!(report.creates, 1);
+        assert_eq!(report.removes, 1);
+    }
+
+    #[test]
+    fn a_root_that_is_the_whole_subvolume_still_resolves() {
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .mkfile(b"notes.md")
+                .unlink(b"stale")
+                .end(),
+        );
+        let meta = FakeMeta::with(&[b"/srv/data/notes.md"]);
+        let (batch, report) = to_mutations(&plan, &flat_target(), &meta);
+        assert_eq!(
+            paths_of(&batch),
+            vec![
+                "remove /srv/data/stale".to_owned(),
+                "upsert /srv/data/notes.md".to_owned(),
+            ]
+        );
+        assert_eq!(report.outside_root, 0);
+    }
+
+    #[test]
     fn entry_kind_is_not_guessed_from_the_stream() {
         // The stream says `mkdir`, but the index's kind comes from the stat, so a directory that
         // has since been replaced by a file cannot be recorded as a directory.
-        let plan = planned(&StreamBuilder::new().snapshot().mkdir(b"d").end());
+        let plan = planned(&StreamBuilder::new().snapshot().mkdir(b"dk/d").end());
         let (batch, _) = to_mutations(&plan, &target(), &AlwaysRegular);
         assert!(matches!(
             &batch.mutations[0],

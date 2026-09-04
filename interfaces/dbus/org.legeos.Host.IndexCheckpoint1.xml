@@ -31,8 +31,14 @@
     <method name="List">
       <arg name="checkpoints_json" type="s" direction="out"/>
     </method>
-    <!-- DeltaRequest JSON in ({"from": id, "to": id, "with-data": false}), DeltaStream JSON out
-         (from, to, path, bytes, duration_ms). -->
+    <!-- DeltaRequest JSON in ({"from": id, "to": id, "with-data": false, "subvolume": "/home"};
+         an empty subvolume means the configured default), DeltaStream JSON out
+         (from, to, subvolume, path, bytes, duration_ms).
+
+         `subvolume` is what the stream's paths are relative to, and it is not the consumer's
+         index root: a delta of @home names dk/notes.md, and @home is mounted at /home, so the
+         absolute path is /home/dk/notes.md. A consumer that joins onto its own root instead
+         addresses nothing that exists. -->
     <method name="Delta">
       <arg name="request_json" type="s" direction="in"/>
       <arg name="delta_json" type="s" direction="out"/>

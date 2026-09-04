@@ -17,6 +17,14 @@
 //!
 //! `@snapshots` (declared in `distro/deploy/layout.toml`, mounted at `/.snapshots` by
 //! `installer/provision.sh`) is consumed by nothing today. This is what it is for.
+//!
+//! One thing a consumer cannot work out for itself, so this module has to say it: every path in
+//! the stream is relative to the **root of the snapshotted subvolume**, not to whatever directory
+//! the consumer happens to index. A delta of `@home` names `dk/notes.md` and `other/secret`, and
+//! `@home` mounts at `/home` — so the index root `/home/dk` is a *subdirectory* of the namespace
+//! the stream speaks in. [`DeltaStream::subvolume`] carries the mount point that makes those paths
+//! absolute; joining them onto the index root instead produces `/home/dk/dk/notes.md`, which
+//! exists nowhere, and a delta that quietly applies nothing.
 
 use crate::{
     clock::{self, Clock},
@@ -52,6 +60,10 @@ pub struct Checkpoint {
 pub struct DeltaStream {
     pub from: String,
     pub to: String,
+    /// Where the live subvolume these paths are relative to is mounted — `/home` for `@home`.
+    /// `lege_file_index::btrfs_delta::DeltaTarget::subvolume_path` wants exactly this, and it is
+    /// not the same thing as the index root.
+    pub subvolume: String,
     /// Where the stream was written. Mode 0600, root-owned.
     ///
     /// Handing this to the per-user `lege-filed` is the unsolved half of adoption: no
@@ -83,6 +95,11 @@ pub struct CheckpointRequest {
 pub struct DeltaRequest {
     pub from: String,
     pub to: String,
+    /// The live subvolume both checkpoints were taken from. Empty means the configured default
+    /// (`@home`), which is what [`IndexCheckpoints::create`] snapshots when a request names none.
+    /// It is echoed into [`DeltaStream::subvolume`] because the stream's paths mean nothing
+    /// without it, and a checkpoint on disk does not record which subvolume it came from.
+    pub subvolume: String,
     /// Include file data. Off by default and the only reason this method is cheap: the index needs
     /// the namespace and the metadata, never the contents.
     pub with_data: bool,
@@ -201,6 +218,12 @@ impl IndexCheckpoints {
     pub fn delta(&self, request: &DeltaRequest) -> Result<DeltaStream> {
         let from = self.checkpoint_path(&request.from)?;
         let to = self.checkpoint_path(&request.to)?;
+        let subvolume = if request.subvolume.is_empty() {
+            self.default_subvolume.clone()
+        } else {
+            PathBuf::from(&request.subvolume)
+        };
+        validate_subvolume(&subvolume)?;
         if from == to {
             bail!("a delta from a checkpoint to itself is empty by definition");
         }
@@ -244,6 +267,7 @@ impl IndexCheckpoints {
         Ok(DeltaStream {
             from: request.from.clone(),
             to: request.to.clone(),
+            subvolume: subvolume.to_string_lossy().into_owned(),
             path: stream_path,
             bytes,
             duration_ms,
@@ -403,6 +427,7 @@ mod tests {
                 from: first.id.clone(),
                 to: "index-home-second".to_owned(),
                 with_data: false,
+                ..DeltaRequest::default()
             })
             .unwrap();
         assert!(delta.path.ends_with(".stream"));
@@ -418,6 +443,53 @@ mod tests {
         assert!(
             send.args
                 .contains(&second_path.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn a_delta_says_which_subvolume_its_paths_are_relative_to() {
+        // Without this a consumer has to guess, and the obvious guess — its own index root — is
+        // wrong whenever the index covers a subdirectory of the subvolume, which is the normal
+        // case: `@home` mounts at `/home` and the root is `/home/<user>`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        let (checkpoints, _) = store(dir.path());
+        let first = checkpoints.create(&CheckpointRequest::default()).unwrap();
+        std::fs::create_dir_all(dir.path().join("snapshots/index/index-home-second")).unwrap();
+
+        let delta = checkpoints
+            .delta(&DeltaRequest {
+                from: first.id.clone(),
+                to: "index-home-second".to_owned(),
+                ..DeltaRequest::default()
+            })
+            .unwrap();
+        assert_eq!(delta.subvolume, first.subvolume);
+        assert_eq!(
+            delta.subvolume,
+            dir.path().join("home").to_string_lossy(),
+            "the default subvolume, not the store and not an index root"
+        );
+
+        let named = checkpoints
+            .delta(&DeltaRequest {
+                from: first.id.clone(),
+                to: "index-home-second".to_owned(),
+                subvolume: "/srv/data".to_owned(),
+                ..DeltaRequest::default()
+            })
+            .unwrap();
+        assert_eq!(named.subvolume, "/srv/data");
+
+        let refused = checkpoints.delta(&DeltaRequest {
+            from: first.id,
+            to: "index-home-second".to_owned(),
+            subvolume: "relative/home".to_owned(),
+            ..DeltaRequest::default()
+        });
+        assert!(
+            refused.is_err(),
+            "a relative subvolume is not a mount point"
         );
     }
 
@@ -461,6 +533,7 @@ mod tests {
                 from: first.id.clone(),
                 to: first.id,
                 with_data: false,
+                ..DeltaRequest::default()
             })
             .expect_err("must be refused");
         assert!(error.to_string().contains("itself"), "{error}");
