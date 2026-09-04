@@ -460,7 +460,10 @@ pub struct DeltaPlan {
     pub removes: Vec<Rel>,
     /// Paths the delta created, shallowest first so a parent row exists before its children.
     pub creates: Vec<Rel>,
-    /// Paths that stayed put but changed.
+    /// Paths whose *entry* changed, addressed where the moves leave them. Most stayed put; the
+    /// rest are the paths a directory move above them carries along, which the index re-paths
+    /// without re-reading — so the change the stream reported about them needs a mutation of its
+    /// own even though their move does not.
     pub touches: Vec<Rel>,
 }
 
@@ -632,10 +635,26 @@ impl Replay {
         }
         // A directory move already carries its subtree (`Mutation::Move` rewrites every descendant
         // row), so a child whose move is exactly its parent's move is not a second mutation.
+        //
+        // It is still a refresh, though, and that is not the same statement. `Mutation::Move`
+        // re-paths descendant rows out of the index without going back to the filesystem — right
+        // for a rename, which changes nothing about the entries it drags — but a node is only in
+        // this map because the stream named it, and the stream names a path when something about
+        // it changed. A directory whose entries appeared or vanished has a new mtime; the ancestor
+        // that carries it does not know that. So the move goes and a touch at the settled path
+        // takes its place: one stat for a path the delta already had to talk about, and none for
+        // the descendants nobody mentioned.
         let all = moves.clone();
         let indexed = by_source(&all);
-        moves.retain(|(from, to)| !implied_by_ancestor(&indexed, from, to));
+        moves.retain(|(from, to)| {
+            let carried = implied_by_ancestor(&indexed, from, to);
+            if carried {
+                touches.push(to.clone());
+            }
+            !carried
+        });
         drop(indexed);
+        touches.sort();
         // Shallowest source first, and every source then re-addressed through the moves above it.
         //
         // Descendant re-pathing belongs to one layer, and that layer is the mutation: a
@@ -1151,9 +1170,20 @@ fn included(target: &DeltaTarget, path: &NativePath) -> bool {
         .is_some()
 }
 
+/// The row-by-row comparison the privileged Btrfs harness uses, included here rather than
+/// restated. A local reproduction that compares less than the harness does is not a reproduction:
+/// a directory left in the right place with stale timestamps passed every test in this module
+/// while failing the harness.
+#[cfg(test)]
+#[path = "../tests/support/entry_facts.rs"]
+mod entry_facts;
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        entry_facts::{Fingerprint, describe_difference, fingerprint_of},
+        *,
+    };
     use crate::model::EntryKind;
 
     /// A minimal encoder, for tests only.
@@ -1437,8 +1467,20 @@ mod tests {
                 .end(),
         );
         assert_eq!(plan.moves, vec![(b"docs".to_vec(), b"papers".to_vec())]);
-        // The child was mentioned, but its move is exactly its parent's move.
-        assert!(plan.moves.len() == 1 && plan.touches.is_empty(), "{plan:?}");
+        // The child's *move* is exactly its parent's, so it is not a second move — the one
+        // `Mutation::Move` re-paths the whole subtree. What the stream said about the child was
+        // not where it sits but that it changed, and that survives as a refresh at the path the
+        // parent's move leaves it at.
+        assert_eq!(plan.touches, vec![b"papers/one".to_vec()]);
+        // The children the stream never mentioned cost nothing at all, which is the property this
+        // test is named for: a renamed directory of ten thousand files is one mutation.
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .rename(b"docs", b"papers")
+                .end(),
+        );
+        assert_eq!(plan.len(), 1, "{plan:?}");
     }
 
     /// A child that left a directory that also moved. The directory goes first and drags the
@@ -1952,9 +1994,22 @@ mod tests {
     }
 
     /// Index the tree `build` writes, make the same change on disk with `change`, then apply the
-    /// delta the stream `commands` describes. The answer is the delta's live paths beside a fresh
-    /// crawl's, because equality with a crawl is the only statement about a delta worth making:
-    /// counts agree while whole subtrees are missing, and paths do not.
+    /// delta the stream `commands` describes, and require the result to equal a fresh crawl of the
+    /// same tree — row for row, field for field.
+    ///
+    /// The comparison is [`entry_facts::describe_difference`], the same one the privileged Btrfs
+    /// harness runs, and that matters more than it sounds. Comparing paths proves only that the
+    /// rows are in the right places; it says nothing about what is *in* them, and a delta that
+    /// re-paths a directory without re-reading it leaves a row that is in the right place and
+    /// wrong. That divergence is invisible to a path comparison and fatal to the backend's one
+    /// claim, so this compares kind, size, allocation, mtime, ctime, mode, hidden, device, inode
+    /// and link count, exactly as the harness does.
+    ///
+    /// Which puts a requirement on `commands`: it must spell the stream a real `btrfs send` would
+    /// write, not the shortest one that names the paths. A rename changes the mtime of the
+    /// directory it happened in, and `btrfs send` says so with a `BTRFS_SEND_C_UTIMES` for that
+    /// directory. A test stream that leaves those out is describing a change the kernel never
+    /// makes, and it would fail here — correctly.
     ///
     /// The tree is `<temp>/home/dk`, so the stream speaks in `dk/...` exactly as a `@home` delta
     /// does, and the metadata comes from the tree the change actually happened in.
@@ -1962,7 +2017,7 @@ mod tests {
         build: impl FnOnce(&Path),
         change: impl FnOnce(&Path),
         commands: impl FnOnce(StreamBuilder) -> StreamBuilder,
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> (Fingerprint, Fingerprint) {
         let temp = tempfile::tempdir().expect("a temporary directory");
         let home = temp.path().join("home");
         let tree = home.join("dk");
@@ -2010,26 +2065,29 @@ mod tests {
         fresh
             .scan_root(fresh_root, ScanOptions::default())
             .expect("a fresh pass");
-        (live_paths(&index, root), live_paths(&fresh, fresh_root))
+        (facts(&index), facts(&fresh))
     }
 
-    /// Every path a root still holds, in one order, so two indexes can be compared as text.
-    fn live_paths(index: &Index, root: crate::RootId) -> Vec<String> {
+    /// Every live row of an index, as the fields the harness compares.
+    ///
+    /// Nothing touches the tree between the delta's `lstat`s and the fresh crawl's, so every
+    /// field must agree exactly. A timestamp that differs by milliseconds is not a race: it is a
+    /// row the delta copied forward instead of re-reading.
+    fn facts(index: &Index) -> Fingerprint {
         index
-            .with_read(|connection| {
-                let mut statement = connection.prepare(
-                    "SELECT path_display FROM entries
-                      WHERE root_id = ?1 AND deleted_generation IS NULL
-                      ORDER BY path_bytes",
-                )?;
-                let rows = statement.query_map([root.0], |row| row.get::<_, String>(0))?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
-                Ok(out)
-            })
-            .expect("reading paths")
+            .with_read(|connection| Ok(fingerprint_of(connection)))
+            .expect("reading the rows")
+    }
+
+    /// Fail with the field-level difference rather than with two large maps.
+    #[track_caller]
+    fn assert_same_index(delta: &Fingerprint, fresh: &Fingerprint, what: &str) {
+        let difference = describe_difference(delta, fresh);
+        assert!(
+            difference.is_none(),
+            "{what}:\n{}",
+            difference.unwrap_or_default()
+        );
     }
 
     /// End to end over a real tree on whatever filesystem the test runs on: index it, swap two
@@ -2051,15 +2109,19 @@ mod tests {
                 std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
             },
             |stream| {
+                // The three renames all happened *in* `dk`, so its own mtime moved and the
+                // stream says so. Leaving that out would describe a change no kernel makes.
                 stream
                     .rename(b"dk/bulk", b"dk/bulk-tmp")
                     .rename(b"dk/project", b"dk/bulk")
                     .rename(b"dk/bulk-tmp", b"dk/project")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "the delta and a fresh crawl disagree about where the swap put things"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "the delta and a fresh crawl disagree about where the swap put things",
         );
     }
 
@@ -2095,15 +2157,20 @@ mod tests {
             a_branch_with_two_leaves,
             rename_the_branch_and_its_leaf,
             |stream| {
-                stream.rename(b"dk/branch", b"dk/branch-renamed").rename(
-                    b"dk/branch-renamed/leaf00",
-                    b"dk/branch-renamed/leaf00-moved",
-                )
+                stream
+                    .rename(b"dk/branch", b"dk/branch-renamed")
+                    .rename(
+                        b"dk/branch-renamed/leaf00",
+                        b"dk/branch-renamed/leaf00-moved",
+                    )
+                    .utimes(b"dk/branch-renamed")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "the subtree under the nested rename is not where a crawl puts it"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "the subtree under the nested rename is not where a crawl puts it",
         );
     }
 
@@ -2123,11 +2190,14 @@ mod tests {
                 stream
                     .rename(b"dk/branch/leaf00", b"dk/branch/leaf00-moved")
                     .rename(b"dk/branch", b"dk/branch-renamed")
+                    .utimes(b"dk/branch-renamed")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "the subtree under the nested rename is not where a crawl puts it"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "the subtree under the nested rename is not where a crawl puts it",
         );
     }
 
@@ -2152,11 +2222,15 @@ mod tests {
                     .rename(b"dk/a/b/c", b"dk/a/b/c2")
                     .rename(b"dk/a/b", b"dk/a/b2")
                     .rename(b"dk/a", b"dk/a2")
+                    .utimes(b"dk/a2/b2")
+                    .utimes(b"dk/a2")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "a level of nesting was left addressed at a path the moves already vacated"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "a level of nesting was left addressed at a path the moves already vacated",
         );
     }
 
@@ -2184,11 +2258,15 @@ mod tests {
                     )
                     .unlink(b"dk/branch-renamed/leaf00-moved/doomed.txt")
                     .mkfile(b"dk/branch-renamed/leaf00-moved/fresh.txt")
+                    .utimes(b"dk/branch-renamed/leaf00-moved")
+                    .utimes(b"dk/branch-renamed")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "a create or a delete inside the moved subtree was addressed at a stale path"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "a create or a delete inside the moved subtree was addressed at a stale path",
         );
     }
 
@@ -2216,12 +2294,66 @@ mod tests {
                     .rename(b"dk/a/y", b"dk/a/x")
                     .rename(b"dk/a/tmp", b"dk/a/y")
                     .rename(b"dk/a", b"dk/b")
+                    .utimes(b"dk/b")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(
-            delta, fresh,
-            "the nested swap and the enclosing rename did not compose"
+        assert_same_index(
+            &delta,
+            &fresh,
+            "the nested swap and the enclosing rename did not compose",
         );
+    }
+
+    /// A directory whose *contents* changed while the directory itself was being carried along by
+    /// a rename above it.
+    ///
+    /// Its net move is exactly what its parent's move already does, so the plan drops it as a
+    /// move — correctly, because `Mutation::Move` re-paths a whole subtree in one mutation and a
+    /// second move would be a duplicate. But the row still has to be re-read: a directory's mtime
+    /// moves when an entry appears in it, the stream said so with a `utimes`, and the ancestor's
+    /// move rewrites descendants' paths without going back to the filesystem. Dropping the move
+    /// and dropping the refresh are two different things, and only the first is right.
+    #[test]
+    fn a_directory_that_changed_inside_a_renamed_parent_is_re_read_not_only_re_pathed() {
+        let (delta, fresh) = delta_beside_a_fresh_scan(
+            |tree| {
+                std::fs::create_dir_all(tree.join("a/keep")).unwrap();
+                std::fs::write(tree.join("a/keep/old.txt"), b"old").unwrap();
+            },
+            |tree| {
+                std::fs::write(tree.join("a/keep/new.txt"), b"new").unwrap();
+                std::fs::rename(tree.join("a"), tree.join("b")).unwrap();
+            },
+            |stream| {
+                stream
+                    .mkfile(b"dk/a/keep/new.txt")
+                    .utimes(b"dk/a/keep")
+                    .rename(b"dk/a", b"dk/b")
+                    .utimes(b"dk")
+            },
+        );
+        assert_same_index(
+            &delta,
+            &fresh,
+            "a directory dragged by its parent's rename kept the timestamps it had before its \
+             own contents changed",
+        );
+    }
+
+    /// The same shape, as a plan rather than as rows: the drag is one move, and the directory that
+    /// changed is a refresh addressed where the drag left it.
+    #[test]
+    fn a_change_inside_a_dragged_directory_becomes_a_touch_at_its_new_path() {
+        let plan = planned(
+            &StreamBuilder::new()
+                .snapshot()
+                .utimes(b"a/keep")
+                .rename(b"a", b"b")
+                .end(),
+        );
+        assert_eq!(plan.moves, vec![(b"a".to_vec(), b"b".to_vec())]);
+        assert_eq!(plan.touches, vec![b"b/keep".to_vec()]);
     }
 
     /// The whole edge-case scenario the Btrfs fixture runs, on ext4 and without root: a hard link,
@@ -2262,19 +2394,27 @@ mod tests {
                 std::fs::rename(tree.join("bulk-tmp"), tree.join("project")).unwrap();
             },
             |stream| {
+                // Three directories held an entry that appeared, vanished or changed name, so
+                // three carry a `utimes` — `dk/project/src` among them, and that one is the whole
+                // point: it is dragged to `dk/bulk/src` by the enclosing swap, so its move is
+                // exactly its parent's and the plan used to drop it, leaving a row in the right
+                // place with the timestamps it had before its file was replaced.
                 stream
                     .link(b"dk/alias.rs", b"dk/project/src/main.rs")
                     .symlink(b"dk/link-to-main", b"project/src/main.rs")
                     .rename(b"dk/branch000/leaf00", b"dk/branch000/leaf00-moved")
                     .rename(b"dk/branch000", b"dk/branch-renamed")
+                    .utimes(b"dk/branch-renamed")
                     .unlink(b"dk/project/src/main.rs")
                     .mkfile(b"dk/project/src/main.rs")
+                    .utimes(b"dk/project/src")
                     .rename(b"dk/bulk", b"dk/bulk-tmp")
                     .rename(b"dk/project", b"dk/bulk")
                     .rename(b"dk/bulk-tmp", b"dk/project")
+                    .utimes(b"dk")
             },
         );
-        assert_eq!(delta, fresh, "the edge cases diverge");
+        assert_same_index(&delta, &fresh, "the edge cases diverge");
     }
 
     /// The ordering the index needs, stated directly: a move nested inside another move's source

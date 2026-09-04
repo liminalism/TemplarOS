@@ -29,7 +29,6 @@
 //! root outside it, which is exactly the protection that makes this runnable as an ordinary test.
 
 use std::{
-    collections::BTreeMap,
     fmt::Write as _,
     fs,
     io::Write as _,
@@ -214,89 +213,12 @@ fn human_bytes(bytes: u64) -> String {
 
 // --- the index under test -------------------------------------------------------------------
 
-/// Every field the index stores that a scan can prove, keyed by path. This is the comparison the
-/// lane lives or dies by: a delta that got any of these wrong would be silently corrupting rows.
-type Fingerprint = BTreeMap<Vec<u8>, EntryFacts>;
+/// The row-by-row comparison, shared verbatim with the crate's own no-Btrfs end-to-end tests so
+/// that a metadata-only divergence fails in `cargo test` rather than only under `sudo` here.
+#[path = "support/entry_facts.rs"]
+mod entry_facts;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct EntryFacts {
-    kind: i64,
-    size_bytes: i64,
-    alloc_bytes: i64,
-    mtime_ns: i64,
-    ctime_ns: i64,
-    mode: i64,
-    hidden: i64,
-    dev: Option<i64>,
-    inode: Option<i64>,
-    nlink: i64,
-}
-
-fn fingerprint(database: &Path) -> Fingerprint {
-    let connection =
-        rusqlite::Connection::open(database).expect("opening the index for comparison");
-    let mut statement = connection
-        .prepare(
-            "SELECT path_bytes, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode, hidden,
-                    dev, inode, nlink
-               FROM entries WHERE deleted_generation IS NULL ORDER BY path_bytes",
-        )
-        .expect("preparing the comparison query");
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                EntryFacts {
-                    kind: row.get(1)?,
-                    size_bytes: row.get(2)?,
-                    alloc_bytes: row.get(3)?,
-                    mtime_ns: row.get(4)?,
-                    ctime_ns: row.get(5)?,
-                    mode: row.get(6)?,
-                    hidden: row.get(7)?,
-                    dev: row.get(8)?,
-                    inode: row.get(9)?,
-                    nlink: row.get(10)?,
-                },
-            ))
-        })
-        .expect("reading rows");
-    rows.map(|row| row.expect("a row")).collect()
-}
-
-/// What differs between two indexes, as text a person can act on.
-fn describe_difference(delta: &Fingerprint, fresh: &Fingerprint) -> Option<String> {
-    let mut problems = Vec::new();
-    for (path, facts) in fresh {
-        match delta.get(path) {
-            None => problems.push(format!("missing from the delta index: {}", show(path))),
-            Some(other) if other != facts => problems.push(format!(
-                "differs at {}:\n    delta: {other:?}\n    fresh: {facts:?}",
-                show(path)
-            )),
-            Some(_) => {}
-        }
-    }
-    for path in delta.keys() {
-        if !fresh.contains_key(path) {
-            problems.push(format!("only in the delta index: {}", show(path)));
-        }
-    }
-    if problems.is_empty() {
-        return None;
-    }
-    let total = problems.len();
-    problems.truncate(20);
-    Some(format!(
-        "{total} difference(s); first {}:\n  {}",
-        problems.len(),
-        problems.join("\n  ")
-    ))
-}
-
-fn show(path: &[u8]) -> String {
-    String::from_utf8_lossy(path).into_owned()
-}
+use entry_facts::{describe_difference, fingerprint};
 
 /// Open an index, run `body`, and close it — the close matters, because the harness copies the
 /// SQLite file between arms and WAL only folds back in on the last connection closing.
