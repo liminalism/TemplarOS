@@ -1469,75 +1469,13 @@ impl Check for FileIndexHealth {
         if context.root != Path::new("/") {
             return finding(self, Outcome::Skipped, "file index (runtime only)", "");
         }
-        let Some(db_path) = index_db_path() else {
-            return finding(
-                self,
-                Outcome::Skipped,
-                "no $HOME/$XDG_CACHE_HOME to locate the index cache",
-                "",
-            );
-        };
-        if !db_path.exists() {
-            return finding(
-                self,
-                Outcome::Skipped,
-                "no file index yet (lege-filed has never indexed)",
-                db_path.display().to_string(),
-            );
-        }
-        let state_path = lege_state::default_path();
-        if !state_path.exists() {
-            return finding(
-                self,
-                Outcome::Skipped,
-                "no session state store yet (no session has run)",
-                state_path.display().to_string(),
-            );
-        }
-        let store = match lege_state::Store::open(&state_path) {
-            Ok(store) => store,
-            Err(error) => {
-                return finding(
-                    self,
-                    Outcome::Fail,
-                    "could not open the state store",
-                    error.to_string(),
-                );
+        let (diagnostics, roots) = match open_index_for_diagnostics() {
+            FileIndexProbe::Ready(diagnostics, roots) => (diagnostics, roots),
+            FileIndexProbe::Skipped(summary, detail) => {
+                return finding(self, Outcome::Skipped, summary, detail);
             }
-        };
-        let config = lege_file_index::IndexConfig::default();
-        let index = match lege_filed::search::Index::with_index_db(store, &db_path, config) {
-            Ok(index) => index,
-            Err(error) => {
-                return finding(
-                    self,
-                    Outcome::Fail,
-                    "could not open the file index",
-                    error.to_string(),
-                );
-            }
-        };
-        let core = index.core();
-        let diagnostics = match core.diagnostics() {
-            Ok(diagnostics) => diagnostics,
-            Err(error) => {
-                return finding(
-                    self,
-                    Outcome::Fail,
-                    "could not read index diagnostics",
-                    error.to_string(),
-                );
-            }
-        };
-        let roots = match core.roots() {
-            Ok(roots) => roots,
-            Err(error) => {
-                return finding(
-                    self,
-                    Outcome::Fail,
-                    "could not read index roots",
-                    error.to_string(),
-                );
+            FileIndexProbe::Failed(summary, detail) => {
+                return finding(self, Outcome::Fail, summary, detail);
             }
         };
 
@@ -1575,6 +1513,72 @@ impl Check for FileIndexHealth {
             lines.join("; "),
         )
     }
+}
+
+/// What trying to open the file index for diagnostics found.
+enum FileIndexProbe {
+    Ready(
+        lege_file_index::Diagnostics,
+        Vec<lege_file_index::RootStatus>,
+    ),
+    /// Nothing to report yet — never a check failure.
+    Skipped(&'static str, String),
+    /// A genuine problem: the database exists but would not open or answer.
+    Failed(&'static str, String),
+}
+
+/// Opens the durable index database the same way `lege-filed` does
+/// (`$XDG_CACHE_HOME/legeos/file-index-v1.sqlite3`) and reads its diagnostics and root list.
+/// Never creates the index or the state store it needs to open it — both must already exist, or
+/// this returns `Skipped` rather than paying for a scan a diagnostic tool has no business
+/// starting.
+fn open_index_for_diagnostics() -> FileIndexProbe {
+    let Some(db_path) = index_db_path() else {
+        return FileIndexProbe::Skipped(
+            "no $HOME/$XDG_CACHE_HOME to locate the index cache",
+            String::new(),
+        );
+    };
+    if !db_path.exists() {
+        return FileIndexProbe::Skipped(
+            "no file index yet (lege-filed has never indexed)",
+            db_path.display().to_string(),
+        );
+    }
+    let state_path = lege_state::default_path();
+    if !state_path.exists() {
+        return FileIndexProbe::Skipped(
+            "no session state store yet (no session has run)",
+            state_path.display().to_string(),
+        );
+    }
+    let store = match lege_state::Store::open(&state_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return FileIndexProbe::Failed("could not open the state store", error.to_string());
+        }
+    };
+    let config = lege_file_index::IndexConfig::default();
+    let index = match lege_filed::search::Index::with_index_db(store, &db_path, config) {
+        Ok(index) => index,
+        Err(error) => {
+            return FileIndexProbe::Failed("could not open the file index", error.to_string());
+        }
+    };
+    let core = index.core();
+    let diagnostics = match core.diagnostics() {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            return FileIndexProbe::Failed("could not read index diagnostics", error.to_string());
+        }
+    };
+    let roots = match core.roots() {
+        Ok(roots) => roots,
+        Err(error) => {
+            return FileIndexProbe::Failed("could not read index roots", error.to_string());
+        }
+    };
+    FileIndexProbe::Ready(diagnostics, roots)
 }
 
 /// One `RootStatus` as a `lege doctor` detail line: state, entry count, why it is stale (if it
@@ -2318,6 +2322,46 @@ mod tests {
             AutostartProvidersResolved.run(&context).outcome,
             Outcome::Skipped
         );
+    }
+
+    #[test]
+    fn file_index_health_is_runtime_only() {
+        let context = Context {
+            root: std::path::PathBuf::from("/some/image/root"),
+            hardware: false,
+        };
+        assert_eq!(FileIndexHealth.run(&context).outcome, Outcome::Skipped);
+    }
+
+    #[test]
+    fn describe_index_root_reports_a_stale_reason_without_calling_it_an_error() {
+        let fixture = tempfile::tempdir().unwrap();
+        let db_path = fixture.path().join("index.sqlite3");
+        let core = lege_file_index::Index::open(&db_path, lege_file_index::IndexConfig::default())
+            .unwrap();
+        let root = core
+            .add_root(
+                &lege_file_index::NativePath::from_path(fixture.path()),
+                lege_file_index::RootPolicy::default_home(),
+            )
+            .unwrap();
+        // A root only leaves `Empty` for `Stale` by way of a scan — `can_transition_to` refuses
+        // the direct jump, the same way the real watcher can never claim `Stale` about a root it
+        // never scanned.
+        core.scan_root(root.root, lege_file_index::ScanOptions::default())
+            .unwrap();
+        core.mark_stale(
+            root.root,
+            &lege_file_index::StaleReason::WatcherExhausted {
+                armed: 10,
+                refused: 5,
+            },
+        )
+        .unwrap();
+        let status = core.root_status(root.root).unwrap();
+        let (line, has_error) = describe_index_root(&status);
+        assert!(!has_error, "a budget-driven Stale state is not an error");
+        assert!(line.contains("watcher-exhausted"), "{line}");
     }
 
     #[test]
