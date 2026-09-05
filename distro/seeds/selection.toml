@@ -677,7 +677,10 @@ extra_depends = [
   "nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
   "xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
 ]
-conflicts = ["legeos-nvidia-proprietary", "nvidia-dkms-@NVIDIA_BRANCH@", "nvidia-dkms-@NVIDIA_BRANCH@-open"]
+# Not `Conflicts: nvidia-dkms-*`: Ubuntu's LRM modules package *Provides* nvidia-dkms-<branch>, so
+# that conflict forbade the very package it was meant to protect. `dkms` itself is what ADR-0004
+# excludes - no locally built module, no MOK - and nothing in the closure needs it.
+conflicts = ["legeos-nvidia-proprietary", "dkms"]
 description = "NVIDIA open kernel modules + userspace (Turing and newer), one driver authority"
 description_body = "The open-module flavour, version-locked to the kernel legeos-kernel selects."
 
@@ -692,7 +695,7 @@ extra_depends = [
   "nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
   "xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
 ]
-conflicts = ["legeos-nvidia-open", "nvidia-dkms-@NVIDIA_BRANCH@", "nvidia-dkms-@NVIDIA_BRANCH@-open"]
+conflicts = ["legeos-nvidia-open", "dkms"]
 description = "NVIDIA proprietary kernel modules + userspace (pre-Turing), one driver authority"
 description_body = "The proprietary flavour, version-locked to the kernel legeos-kernel selects."
 

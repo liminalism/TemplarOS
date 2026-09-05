@@ -6,7 +6,6 @@ Depends: linux-modules-nvidia-@NVIDIA_BRANCH@-generic (= @NVIDIA_LRM_VERSION@),
  libnvidia-gl-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@),
  nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@),
  xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@), ${misc:Depends}
-Conflicts: legeos-nvidia-open, nvidia-dkms-@NVIDIA_BRANCH@,
- nvidia-dkms-@NVIDIA_BRANCH@-open
+Conflicts: legeos-nvidia-open, dkms
 Description: NVIDIA proprietary kernel modules + userspace (pre-Turing), one driver authority
  The proprietary flavour, version-locked to the kernel legeos-kernel selects.
