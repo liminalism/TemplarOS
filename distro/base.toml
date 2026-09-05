@@ -21,11 +21,19 @@ snapshot_serial = "20260905T011226Z"
 flavour = "linux-generic"          # 7.0 GA at release; "linux-generic-hwe-26.04" once HWE ships
 metapackage = "legeos-kernel"      # version-locks kernel + LRM (linux-modules-nvidia-*) + firmware
 mainline_candidate = "7.2"         # tracked only through hostd transactions
+# @KERNEL_MIN@ in the metapackage templates: the linux-generic version the closure resolved to.
+min_version = "7.0.0-31.31"
 
 [nvidia]
 source = "ubuntu-lrm"              # Canonical-signed prebuilt modules, never DKMS or the .run installer
 flavours = ["open", "proprietary"] # mutually exclusive on disk; one selected from detected hardware
 metapackages = { open = "legeos-nvidia-open", proprietary = "legeos-nvidia-proprietary" }
+# @NVIDIA_BRANCH@ / @NVIDIA_LRM_VERSION@ / @NVIDIA_USERSPACE_VERSION@ in the metapackage templates,
+# from the resolved closure (distro/seeds/closures/). The LRM version is the kernel's; the two move
+# together, which is the point of legeos-kernel. Refresh them when the snapshot pin moves.
+branch = "580"
+lrm_version = "7.0.0-31.31"
+userspace_version = "580.173.02-0ubuntu0.26.04.1"
 
 [image]
 tool = "mkosi"

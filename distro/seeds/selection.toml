@@ -655,10 +655,11 @@ description_body = "The proprietary flavour, version-locked to the kernel legeos
 package = "legeos-archive-keyring"
 directory = "legeos-archive-keyring"
 architecture = "all"
-description = "LegeOS archive signing key, sources and pinning"
+description = "LegeOS archive pinning"
 description_body = """
-Installs /usr/share/keyrings/legeos-archive-keyring.gpg, /etc/apt/sources.list.d/legeos.sources and
-/etc/apt/preferences.d/legeos-nvidia (third-party driver repositories pinned to -1)."""
+Installs /etc/apt/preferences.d/legeos-nvidia (third-party driver repositories pinned to -1) and
+legeos-priority. The archive key and the source stanza are written by the provisioner from the
+archive it installs from; until archive.legeos.org exists there is no public key to ship."""
 
 [[metapackage]]
 package = "legeos-dev-rust"
