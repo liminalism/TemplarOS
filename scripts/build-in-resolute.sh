@@ -35,12 +35,12 @@ command -v mmdebstrap >/dev/null || die "mmdebstrap is not installed"
 mkdir -p "$work" || die "cannot create $work (mount the build volume: ISO-PLAN.md P0.2)"
 
 chroot_dir="$work/buildroot"
-target_dir="$work/target-resolute"
-cargo_home="$work/cargo-home"
-rustup_home="$work/rustup-home"
-out_dir="$work/debs"
-mkdir -p "$target_dir" "$cargo_home" "$rustup_home" "$out_dir"
-[ "$keep_target" = 1 ] || rm -rf "${target_dir:?}"/* 
+# Everything the build writes lives under the chroot, which mmdebstrap made owned by the
+# namespace's root: the helper maps only the subordinate uid range, so a directory made here by
+# the calling user is nobody's in there and cannot be written. Results are readable from outside.
+build_dir="$chroot_dir/build"
+target_dir="$build_dir/target"
+out_dir="$build_dir/debs"
 
 # Everything the workspace links, as -dev packages. debian/control's Build-Depends names only
 # sqlite; the rest are what the built packages' own Depends resolve to, as -dev.
@@ -67,6 +67,8 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive
 export CARGO_HOME=/build/cargo-home RUSTUP_HOME=/build/rustup-home
 export PATH=/build/cargo-home/bin:\$PATH
+# The tree belongs to an unmapped uid from in here; git must still answer for the build-set id.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 apt-get -qq update
 apt-get -qq install -y --no-install-recommends $(echo $dev_packages | tr '\n' ' ')
 cd "$root"
@@ -84,18 +86,22 @@ chmod 755 "$inner"
 echo "build-in-resolute: entering $chroot_dir (tree at $root, target on $target_dir)"
 mmdebstrap --unshare-helper /bin/sh -c '
     set -eu
-    chroot_dir="$1"; projects="$2"; root="$3"; target_dir="$4"; work="$5"
-    mkdir -p "$chroot_dir$projects" "$chroot_dir/build"
+    chroot_dir="$1"; projects="$2"; root="$3"; target_dir="$4"; inner="$5"; keep_target="$6"
+    mkdir -p "$chroot_dir$projects" "$chroot_dir/build/cargo-home" "$chroot_dir/build/rustup-home" \
+        "$chroot_dir/build/debs" "$target_dir"
+    [ "$keep_target" = 1 ] || find "$target_dir" -mindepth 1 -delete
+    cp "$inner" "$chroot_dir/build/build-inner.sh"
     mount --bind "$projects" "$chroot_dir$projects"
     mount --bind "$target_dir" "$chroot_dir$root/target"
-    mount --bind "$work" "$chroot_dir/build"
     mount -t proc proc "$chroot_dir/proc"
-    mount --bind /sys "$chroot_dir/sys"
-    mount --bind /dev "$chroot_dir/dev"
+    # sysfs and the host devices are conveniences a build does not need; a user namespace may
+    # refuse them, and mmdebstrap left a usable /dev in the chroot already.
+    mount --rbind /sys "$chroot_dir/sys" 2>/dev/null || true
+    mount --rbind /dev "$chroot_dir/dev" 2>/dev/null || true
     mount -t devpts devpts "$chroot_dir/dev/pts" 2>/dev/null || true
     cp /etc/resolv.conf "$chroot_dir/etc/resolv.conf"
     exec chroot "$chroot_dir" /build/build-inner.sh
-' -- "$chroot_dir" "$projects" "$root" "$target_dir" "$work"
+' -- "$chroot_dir" "$projects" "$root" "$target_dir" "$inner" "$keep_target"
 
 echo "build-in-resolute: packages in $out_dir"
 ls "$out_dir"/*.deb | sed 's,.*/,  ,'
