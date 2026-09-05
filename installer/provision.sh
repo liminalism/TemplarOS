@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Provision a LegeOS Developer Edition target from an Ubuntu 26.04 base.
 #
-# This is a *provisioner*, not an installer: one machine shape, no dual boot, no OEM flow, no
-# arbitrary layouts, no live ISO. It reads distro/deploy/layout.toml (contract C3) so the partition
-# table, the subvolumes and the deployment identity are declared once and not restated here.
+# This is a *provisioner*, not an installer: one machine shape, no OEM flow, no arbitrary layouts,
+# no graphical pages. It reads distro/deploy/layout.toml (contract C3) so the partition table, the
+# subvolumes and the deployment identity are declared once and not restated here. Four ways to
+# name the target, one layout: a disk image, a whole disk (zapped), the free tail of a disk that
+# keeps every partition it has (`--free-space`, the reference laptop's case), or two existing
+# partitions (`--esp --root`).
 #
 # It plans by default. Nothing is written until --apply, and then only to the target you name.
 # Read `installer/README.md` before running it against anything you care about, and
@@ -12,6 +15,21 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
+# legeos-cli ships this script as /usr/libexec/legeos/provision with its data under
+# /usr/share/legeos, so the live medium can run it with no checkout. A checkout wins when present.
+if [ -f "$repo/distro/deploy/layout.toml" ]; then
+    data_layout="$repo/distro/deploy/layout.toml"
+    data_grub_stub="$repo/distro/deploy/grub.d/09_legeos"
+    data_os_release="$repo/distro/branding/os-release"
+    data_flatpak_refs="$repo/distro/seeds/flatpak-refs.list"
+else
+    # The live medium is itself a LegeOS: legeos-hostd ships the GRUB stub and the identity is
+    # the running system's own, so only the layout needs a home of its own (legeos-cli).
+    data_layout=/usr/share/legeos/layout.toml
+    data_grub_stub=/etc/grub.d/09_legeos
+    data_os_release=/usr/lib/os-release
+    data_flatpak_refs=/usr/share/legeos/flatpak-refs.list
+fi
 
 # --- C1: package selection (D1 owns these names; they are variables so a rename is one edit) -----
 LEGEOS_KEYRING="${LEGEOS_KEYRING:-legeos-archive-keyring}"
@@ -23,7 +41,13 @@ LEGEOS_DEV_RUST="${LEGEOS_DEV_RUST:-legeos-dev-rust}"
 LEGEOS_DEV_CUDA="${LEGEOS_DEV_CUDA:-legeos-dev-cuda}"
 
 # --- C2: the local LegeOS archive (D2 owns this shape) -------------------------------------------
-DEVREPO_ROOT="${DEVREPO_ROOT:-/var/lib/legeos/devrepo}"
+# Where the set is read from: the live medium carries one at /legeos/devrepo; a development host
+# has its own. Where it ends up is always the target's /var/lib/legeos/devrepo, so the installed
+# system's `lege dev` finds the set it was installed from and reports itself converged.
+if [ -z "${DEVREPO_ROOT:-}" ]; then
+    if [ -d /legeos/devrepo ]; then DEVREPO_ROOT=/legeos/devrepo; else DEVREPO_ROOT=/var/lib/legeos/devrepo; fi
+fi
+TARGET_DEVREPO=/var/lib/legeos/devrepo
 DEVREPO_MARKER="${DEVREPO_MARKER:-current}"   # current | previous. `staged` is never installable.
 
 # --- Ubuntu base ---------------------------------------------------------------------------------
@@ -31,9 +55,11 @@ UBUNTU_SUITE="${UBUNTU_SUITE:-resolute}"
 UBUNTU_MIRROR="${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
 UBUNTU_COMPONENTS="${UBUNTU_COMPONENTS:-main universe restricted}"
 
-layout="$repo/distro/deploy/layout.toml"
+layout="$data_layout"
 target=""
-target_kind=""          # image | device
+target_kind=""          # image | device | free-space | partitions
+esp_arg=""
+root_arg=""
 username=""
 apply=0
 i_mean_it=0
@@ -45,11 +71,19 @@ note() { printf '  %s\n' "$*"; }
 usage() {
     cat <<'USAGE'
 usage: provision.sh --image PATH [--apply] [options]
+       provision.sh --free-space /dev/sdX [--apply] [options]
+       provision.sh --esp /dev/sdXn --root /dev/sdXm [--apply] [options]
        provision.sh --device /dev/sdX --i-mean-it --apply [options]
 
   --image PATH        provision a disk image file (created if absent). The safe target.
-  --device /dev/sdX   provision a real block device. Requires --i-mean-it as well.
+  --free-space DISK   create the ESP and the root in the unallocated tail of DISK and touch no
+                      existing partition. The disk keeps whatever else it boots.
+  --esp PART --root PART
+                      format these two existing partitions; the partition table is not touched.
+  --device /dev/sdX   provision a whole block device. Requires --i-mean-it as well.
   --i-mean-it         acknowledge that --device destroys everything on that disk.
+  --archive DIR       the LegeOS archive to install from (default: /legeos/devrepo on the live
+                      medium, /var/lib/legeos/devrepo otherwise). Copied to the target.
   --apply             actually do it. Without this, the run prints the plan and changes nothing.
   --user NAME         the account to create. No password is baked in; see --password-stdin.
   --password-stdin    read the new user's password from stdin. Otherwise the account is created
@@ -65,6 +99,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --image) target="${2:?--image needs a path}"; target_kind=image; shift 2 ;;
         --device) target="${2:?--device needs a path}"; target_kind=device; shift 2 ;;
+        --free-space) target="${2:?--free-space needs a disk}"; target_kind=free-space; shift 2 ;;
+        --esp) esp_arg="${2:?--esp needs a partition}"; shift 2 ;;
+        --root) root_arg="${2:?--root needs a partition}"; shift 2 ;;
+        --archive) DEVREPO_ROOT="${2:?--archive needs a directory}"; shift 2 ;;
         --i-mean-it) i_mean_it=1; shift ;;
         --apply) apply=1; shift ;;
         --user) username="${2:?--user needs a name}"; shift 2 ;;
@@ -116,25 +154,53 @@ cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
 # --- Refusals ------------------------------------------------------------------------------------
 # Everything below this line is destructive. These are the conditions under which it must not run,
 # stated once, before any of it.
-[ -n "$target" ] || { usage >&2; die "no target: pass --image PATH (or --device with --i-mean-it)"; }
-
-case "$target" in
-    /dev/*) [ "$target_kind" = device ] || die "$target looks like a device; pass it with --device --i-mean-it, not --image" ;;
-esac
-if [ -b "$target" ] && [ "$target_kind" != device ]; then
-    die "$target is a block device; pass it with --device --i-mean-it, not --image"
+if [ -n "$esp_arg" ] || [ -n "$root_arg" ]; then
+    [ -n "$esp_arg" ] && [ -n "$root_arg" ] || die "--esp and --root go together"
+    [ -z "$target" ] || die "--esp/--root name the target; do not also pass --image, --device or --free-space"
+    target="$esp_arg+$root_arg"; target_kind=partitions
 fi
-if [ "$target_kind" = device ]; then
-    [ "$i_mean_it" = 1 ] || die "--device destroys every partition on $target. Add --i-mean-it if that is what you want."
-    root_source="$(findmnt -no SOURCE / 2>/dev/null || true)"
-    root_disk="$(lsblk -no PKNAME "$root_source" 2>/dev/null | head -1 || true)"
-    case "$target" in
-        *"${root_disk:-__none__}"*) die "$target is the disk this system booted from. Refusing." ;;
-    esac
-    if [ "${LEGEOS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; then
-        die "provisioning a real disk also needs LEGEOS_PROVISION_ALLOW_DEVICE=1 in the environment.
+[ -n "$target" ] || { usage >&2; die "no target: pass --image PATH, --free-space DISK, --esp/--root, or --device with --i-mean-it"; }
+
+case "$target_kind" in
+    image)
+        case "$target" in
+            /dev/*) die "$target looks like a device; pass it with --device, --free-space or --esp/--root, not --image" ;;
+        esac
+        [ -b "$target" ] && die "$target is a block device; pass it with --device, --free-space or --esp/--root, not --image"
+        ;;
+    device)
+        [ "$i_mean_it" = 1 ] || die "--device destroys every partition on $target. Add --i-mean-it if that is what you want."
+        root_source="$(findmnt -no SOURCE / 2>/dev/null || true)"
+        root_disk="$(lsblk -no PKNAME "$root_source" 2>/dev/null | head -1 || true)"
+        case "$target" in
+            *"${root_disk:-__none__}"*) die "$target is the disk this system booted from. Refusing." ;;
+        esac
+        ;;
+    free-space)
+        # Not destructive to what exists, but it still writes a partition table; a regular file
+        # (a fixture, or an image with partitions on it already) is the way to rehearse it.
+        [ -e "$target" ] || die "$target does not exist"
+        if [ -b "$target" ]; then
+            [ -n "$(lsblk -no PKNAME "$target" 2>/dev/null)" ] && die "$target is a partition; --free-space takes the whole disk it is on"
+        fi
+        ;;
+    partitions)
+        for part in "$esp_arg" "$root_arg"; do
+            [ -b "$part" ] || die "$part is not a block device"
+            [ -n "$(lsblk -no PKNAME "$part" 2>/dev/null)" ] || die "$part is a whole disk, not a partition. --esp/--root format partitions; --device takes a disk."
+            findmnt -S "$part" >/dev/null 2>&1 && die "$part is mounted. Refusing to format a filesystem that is in use."
+        done
+        [ "$esp_arg" != "$root_arg" ] || die "--esp and --root name the same partition"
+        ;;
+esac
+real_disk=0
+case "$target_kind" in
+    device) real_disk=1 ;;
+    free-space|partitions) [ -b "${esp_arg:-$target}" ] && real_disk=1 ;;
+esac
+if [ "$real_disk" = 1 ] && [ "${LEGEOS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; then
+    die "writing to a real disk also needs LEGEOS_PROVISION_ALLOW_DEVICE=1 in the environment.
      That second switch exists so a copied-and-pasted command line cannot reach a disk on its own."
-    fi
 fi
 if [ "$apply" = 1 ] && [ "$(id -u)" != 0 ]; then
     die "--apply needs root (loop devices, mkfs, mount, chroot). Run it in a disposable VM or with sudo, never on a machine you are using."
@@ -160,25 +226,77 @@ printf '  mode        %s\n' "$([ "$apply" = 1 ] && echo APPLY || echo 'dry run �
 printf '  deployment  %s\n' "$deployment_id"
 printf '  cmdline     %s\n' "$cmdline"
 
-step "Partition $target: GPT, ESP ($ESP_FORMAT, up to $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, label $ROOT_LABEL)"
-if [ "$target_kind" = image ] && [ ! -e "$target" ]; then
-    run truncate -s "${LEGEOS_IMAGE_SIZE:-32G}" "$target"
-fi
-run sgdisk --zap-all "$target"
-run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:LEGEOS_ESP "$target"
-run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:legeos-root "$target"
-if [ "$target_kind" = image ]; then
+# The partition node for number $2 on disk $1: nvme0n1p3, mmcblk0p3, but sda3.
+part_node() {
+    case "$1" in *[0-9]) printf '%sp%s' "$1" "$2" ;; *) printf '%s%s' "$1" "$2" ;; esac
+}
+attach_loop() { # a regular file gets a loop device; the plan shows the placeholder
     if [ "$apply" = 1 ]; then
         loop="$(losetup --find --partscan --show "$target")"
     else
-        note "the image is attached with losetup --partscan; its partitions are \${loop}p1/p2"
+        note "the file is attached with losetup --partscan; its partitions are \${loop}p<n>"
         run losetup --find --partscan --show "$target"
         loop='${loop}'
     fi
-    esp_part="${loop}p1"; root_part="${loop}p2"
-else
-    esp_part="${target}1"; root_part="${target}2"
-fi
+}
+
+loop=""
+case "$target_kind" in
+image|device)
+    step "Partition $target: GPT, ESP ($ESP_FORMAT, up to $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, label $ROOT_LABEL)"
+    if [ "$target_kind" = image ] && [ ! -e "$target" ]; then
+        run truncate -s "${LEGEOS_IMAGE_SIZE:-32G}" "$target"
+    fi
+    run sgdisk --zap-all "$target"
+    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:LEGEOS_ESP "$target"
+    run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:legeos-root "$target"
+    if [ "$target_kind" = image ]; then
+        attach_loop
+        esp_part="${loop}p1"; root_part="${loop}p2"
+    else
+        esp_part="$(part_node "$target" 1)"; root_part="$(part_node "$target" 2)"
+    fi
+    ;;
+free-space)
+    step "Partition the free tail of $target: ESP ($ESP_FORMAT, $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, the rest, label $ROOT_LABEL); every existing partition stays"
+    table="$(sgdisk -p "$target" 2>/dev/null || true)"
+    [ -n "$table" ] || die "cannot read the partition table of $target (run as root, or is it not GPT?)"
+    sector="$(printf '%s\n' "$table" | sed -n 's/^Sector size (logical\/physical): \([0-9]*\)\/.*/\1/p')"
+    last_usable="$(sgdisk -E "$target")"
+    free_first="$(sgdisk -F "$target")"
+    # sgdisk -F is the first sector of the *largest* free block. It is the tail only if no
+    # partition starts at or after it; anything else means the space is a hole, not a tail.
+    existing="$(printf '%s\n' "$table" | awk '$1 ~ /^[0-9]+$/ { print $1, $2, $3, $6, $7, $8 }')"
+    printf '%s\n' "$existing" | awk -v first="$free_first" '$2 >= first { exit 1 }' \
+        || die "the largest free block of $target is a hole between partitions, not the tail; --free-space only extends the end of the disk"
+    free_bytes=$(( (last_usable - free_first + 1) * ${sector:-512} ))
+    need_bytes=$(( $(numfmt --from=iec "$ESP_SIZE_MAX") + $(numfmt --from=iec "$(layout_value root size_min)") ))
+    [ "$free_bytes" -ge "$need_bytes" ] \
+        || die "$target has $(numfmt --to=iec "$free_bytes") free at its tail; the layout needs at least $(numfmt --to=iec "$need_bytes") (ESP $ESP_SIZE_MAX + root $(layout_value root size_min))"
+    highest="$(printf '%s\n' "$existing" | awk 'BEGIN { n = 0 } $1 > n { n = $1 } END { print n }')"
+    n_esp=$((highest + 1)); n_root=$((highest + 2))
+    note "free tail: sectors $free_first..$last_usable ($(numfmt --to=iec "$free_bytes")); new partitions $n_esp (ESP) and $n_root (root)"
+    note "kept untouched:"
+    printf '%s\n' "$existing" | while read -r num start end _ _ _; do
+        [ -n "$num" ] && note "  partition $num (sectors $start..$end)"
+    done
+    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:LEGEOS_ESP" "$target"
+    run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:legeos-root" "$target"
+    if [ -b "$target" ]; then
+        run partprobe "$target"
+        esp_part="$(part_node "$target" "$n_esp")"; root_part="$(part_node "$target" "$n_root")"
+    else
+        attach_loop
+        esp_part="${loop}p${n_esp}"; root_part="${loop}p${n_root}"
+    fi
+    ;;
+partitions)
+    step "Use the existing partitions $esp_arg (ESP) and $root_arg (root); the partition table is not touched"
+    esp_part="$esp_arg"; root_part="$root_arg"
+    run sgdisk --typecode="$(lsblk -no PARTN "$esp_arg" 2>/dev/null || echo N):ef00" "/dev/$(lsblk -no PKNAME "$esp_arg" 2>/dev/null || echo DISK)"
+    run sgdisk --typecode="$(lsblk -no PARTN "$root_arg" 2>/dev/null || echo N):8304" "/dev/$(lsblk -no PKNAME "$root_arg" 2>/dev/null || echo DISK)"
+    ;;
+esac
 
 step "Make filesystems"
 run mkfs.vfat -F32 -n "$ESP_LABEL" "$esp_part"
@@ -208,6 +326,13 @@ done
 run mkdir -p "$mnt$ESP_MOUNT"
 run mount "$esp_part" "$mnt$ESP_MOUNT"
 
+step "Lend the target the host's /dev, /proc, /sys and DNS for the chroot steps"
+for dir in dev dev/pts proc sys sys/firmware/efi/efivars; do
+    run mkdir -p "$mnt/$dir"
+    run mount --bind "/$dir" "$mnt/$dir"
+done
+run install -D -m 0644 /etc/resolv.conf "$mnt/etc/resolv.conf"
+
 step "Debootstrap Ubuntu $UBUNTU_SUITE ($UBUNTU_COMPONENTS) from $UBUNTU_MIRROR"
 if command -v mmdebstrap >/dev/null 2>&1; then
     run mmdebstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
@@ -216,16 +341,20 @@ else
     run debootstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
 fi
 
-step "Sources: Canonical archive plus the local LegeOS archive ($DEVREPO_ROOT, marker $DEVREPO_MARKER)"
-note "the LegeOS archive is signed; the target trusts it through $LEGEOS_KEYRING and nothing else"
-run lege dev repo verify --set "$DEVREPO_MARKER"
-run install -D -m 0644 "$DEVREPO_ROOT/keyring/legeos-archive-keyring.gpg" \
+step "Sources: Canonical archive plus the LegeOS archive ($DEVREPO_ROOT, marker $DEVREPO_MARKER)"
+note "the LegeOS archive is signed; the target trusts it through its key and nothing else"
+run lege dev --repo "$DEVREPO_ROOT" repo verify --set "$DEVREPO_MARKER"
+note "the whole archive is copied to $TARGET_DEVREPO on the target: the set it installs from is"
+note "the set its own \`lege dev status\` will report, and \`lege dev rollback\` has something to go to"
+run mkdir -p "$mnt$(dirname "$TARGET_DEVREPO")"
+run cp -a "$DEVREPO_ROOT" "$mnt$TARGET_DEVREPO"
+run install -D -m 0644 "$DEVREPO_ROOT/legeos-dev.gpg" \
     "$mnt/usr/share/keyrings/legeos-archive-keyring.gpg"
-note "writing $mnt/etc/apt/sources.list.d/ubuntu.sources and legeos.sources"
+note "writing $mnt/etc/apt/sources.list.d/legeos.sources"
 if [ "$apply" = 1 ]; then
     cat > "$mnt/etc/apt/sources.list.d/legeos.sources" <<EOF
 Types: deb
-URIs: file://$DEVREPO_ROOT/sets/$DEVREPO_MARKER
+URIs: file://$TARGET_DEVREPO/sets/$DEVREPO_MARKER
 Suites: ./
 Signed-By: /usr/share/keyrings/legeos-archive-keyring.gpg
 EOF
@@ -247,7 +376,7 @@ if [ "$apply" = 1 ]; then
 fi
 
 step "OS identity"
-run install -D -m 0644 "$repo/distro/branding/os-release" "$mnt/usr/lib/os-release"
+run install -D -m 0644 "$data_os_release" "$mnt/usr/lib/os-release"
 
 step "Account: ${username:-<--user was not given>}"
 [ -n "$username" ] || note "no --user given; the plan stops short of creating an account"
@@ -281,7 +410,7 @@ in_target systemctl disable getty@tty1.service
 in_target systemctl enable greetd.service
 
 step "Flatpak applications (ADR-0011): the browser is a Flatpak, so apt installs nothing for it"
-flatpak_refs="$repo/distro/seeds/flatpak-refs.list"
+flatpak_refs="$data_flatpak_refs"
 if [ ! -f "$flatpak_refs" ]; then
     note "no $flatpak_refs — run 'cargo xtask seeds' to generate it. Nothing is seeded."
 else
@@ -296,15 +425,35 @@ fi
 
 step "Boot path: Canonical-signed shim -> Canonical-signed GRUB -> Ubuntu-signed kernel (ADR-0004)"
 in_target apt-get install -y shim-signed grub-efi-amd64-signed
+note "--no-nvram: the firmware entry is registered below, on the host side, and appended rather"
+note "than put first. The firmware menu is how the first boots happen; making LegeOS the default"
+note "is a person's decision after installer/CHECKLIST.md passes (efibootmgr -o)."
 in_target grub-install --target=x86_64-efi --efi-directory="$ESP_MOUNT" \
-    --bootloader-id=LegeOS --uefi-secure-boot
+    --bootloader-id=LegeOS --uefi-secure-boot --no-nvram
+if [ "$target_kind" = image ] || [ -n "$loop" ]; then
+    note "no firmware entry for a file: the QEMU harness boots it through OVMF's menu (EFI/LegeOS/shimx64.efi)"
+else
+    esp_disk="/dev/$(lsblk -no PKNAME "$esp_part" 2>/dev/null || echo DISK)"
+    esp_partn="$(lsblk -no PARTN "$esp_part" 2>/dev/null || echo N)"
+    run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label LegeOS \
+        --loader '\EFI\LegeOS\shimx64.efi'
+    if [ "$apply" = 1 ]; then
+        entry="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} LegeOS.*/\1/p' | tail -1)"
+        order="$(efibootmgr | sed -n 's/^BootOrder: //p')"
+        [ -n "$entry" ] || die "efibootmgr created no LegeOS entry"
+        case ",$order," in *",$entry,"*) ;; *) efibootmgr --bootorder "${order:+$order,}$entry" >/dev/null ;; esac
+        note "firmware entry Boot$entry appended to the boot order: $order,$entry"
+    else
+        note "then: efibootmgr --bootorder <current order>,<the new LegeOS entry> — appended, not first"
+    fi
+fi
 note "GRUB_DEFAULT=$GRUB_DEFAULT_MODE is what lets hostd select a deployment by name"
 if [ "$apply" = 1 ]; then
     sed -i "s/^GRUB_DEFAULT=.*/GRUB_DEFAULT=$GRUB_DEFAULT_MODE/" "$mnt/etc/default/grub"
     grep -q "^GRUB_DEFAULT=$GRUB_DEFAULT_MODE" "$mnt/etc/default/grub" \
         || printf 'GRUB_DEFAULT=%s\n' "$GRUB_DEFAULT_MODE" >> "$mnt/etc/default/grub"
 fi
-run install -D -m 0755 "$repo/distro/deploy/grub.d/09_legeos" "$mnt$GRUB_STUB"
+run install -D -m 0755 "$data_grub_stub" "$mnt$GRUB_STUB"
 
 step "Seed deployment $deployment_id"
 note "kernel and initramfs are copied into the ESP directory hostd owns, so Ubuntu's initramfs"
@@ -339,7 +488,7 @@ note "Secure Boot, module-trust and rollback checks that only a person at the ma
 if [ "$apply" = 1 ]; then
     step "Unmount"
     run umount -R "$mnt"
-    if [ "$target_kind" = image ]; then
+    if [ -n "$loop" ]; then
         run losetup -d "$loop"
     fi
     printf '\nprovisioned %s as deployment %s\n' "$target" "$deployment_id"

@@ -55,4 +55,10 @@ assets = [
     # cargo-deb resolves asset paths relative to this crate's directory.
     ["../../distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
     ["../../distro/seeds/flatpak-refs.list", "usr/share/legeos/flatpak-refs.list", "644"],
+    # The provisioner travels with the CLI so the live medium can install without a checkout.
+    ["../../installer/provision.sh", "usr/libexec/legeos/provision", "755"],
+    ["../../installer/legeos-install", "usr/bin/legeos-install", "755"],
+    ["../../distro/deploy/layout.toml", "usr/share/legeos/layout.toml", "644"],
+    ["../../installer/README.md", "usr/share/doc/legeos-cli/provision.md", "644"],
+    ["../../installer/CHECKLIST.md", "usr/share/doc/legeos-cli/CHECKLIST.md", "644"],
 ]

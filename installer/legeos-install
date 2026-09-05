@@ -1,0 +1,5 @@
+#!/bin/sh
+# `legeos-install` — the provisioner, as installed by legeos-cli. Same script, same flags:
+# it plans by default and writes nothing without --apply. See installer/README.md in the source
+# tree, or /usr/share/doc/legeos-cli/provision.md on an installed system.
+exec /usr/libexec/legeos/provision "$@"

@@ -59,8 +59,12 @@ grep -q "GRUB_DEFAULT=saved" "$plan" || fail "the plan does not set GRUB_DEFAULT
 grep -q "09_legeos" "$plan" || fail "the plan does not install the /etc/grub.d stub"
 grep -q "shim-signed grub-efi-amd64-signed" "$plan" \
     || fail "the plan does not install the Canonical-signed shim and GRUB (ADR-0004)"
-grep -q "lege dev repo verify" "$plan" \
+grep -q "repo verify" "$plan" \
     || fail "the plan installs from the local archive without verifying the set"
+grep -q "cp -a .*devrepo /.*var/lib/legeos/devrepo" "$plan" \
+    || fail "the plan does not hand the archive over to the target"
+grep -q "grub-install .*--no-nvram" "$plan" \
+    || fail "grub-install would write this host's firmware variables from inside the chroot"
 for package in legeos-archive-keyring legeos-desktop legeos-kernel; do
     grep -q "$package" "$plan" || fail "the plan never installs $package"
 done
@@ -72,6 +76,43 @@ grep -q 'passwd --lock root' "$plan" || fail "the plan does not lock the root ac
 grep -qiE 'RootPassword|Autologin|password=' "$plan" \
     && fail "the plan mentions a baked-in credential"
 echo "provision-qemu: plan matches the layout declaration and bakes in no credentials"
+
+# --- 1b. Free space on a disk shaped like the reference laptop ------------------------------------
+# A 16 MiB reserved partition, a large NTFS-typed one, a 100 MiB ESP, then unallocated space: the
+# plan must create exactly two partitions after them and name every one it keeps.
+
+if command -v sgdisk >/dev/null 2>&1; then
+    fixture="$work/laptop.img"
+    truncate -s 20G "$fixture"
+    sgdisk --zap-all "$fixture" >/dev/null
+    sgdisk --new=1:0:+16M --typecode=1:0c01 --new=2:0:+6G --typecode=2:0700 \
+        --new=3:0:+100M --typecode=3:ef00 "$fixture" >/dev/null
+    before="$(sgdisk -p "$fixture")"
+    free_plan="$work/free-plan.txt"
+    "$provision" --free-space "$fixture" --user provisiontest > "$free_plan" 2>&1 \
+        || fail "the free-space dry run exited non-zero:\n$(cat "$free_plan")"
+    [ "$before" = "$(sgdisk -p "$fixture")" ] || fail "the free-space dry run changed the partition table"
+    grep -q 'sgdisk --new=4:0:+1G --typecode=4:ef00' "$free_plan" || fail "the ESP is not partition 4"
+    grep -q 'sgdisk --new=5:0:0 --typecode=5:8304' "$free_plan" || fail "the root is not partition 5"
+    grep -q 'sgdisk --zap-all' "$free_plan" && fail "the free-space plan zaps the disk"
+    for kept in 1 2 3; do
+        grep -q "partition $kept (sectors" "$free_plan" || fail "the plan does not name kept partition $kept"
+    done
+    grep -q 'mkfs.btrfs -f -L legeos-root .*p5' "$free_plan" || fail "the root filesystem is not made on partition 5"
+    grep -q '\$ efibootmgr' "$free_plan" && fail "a file target must not touch the firmware"
+    # A hole between partitions is not a tail: fill the tail and leave a gap in the middle.
+    holed="$work/holed.img"
+    truncate -s 20G "$holed"
+    sgdisk --zap-all "$holed" >/dev/null
+    sgdisk --new=1:0:+1G --typecode=1:ef00 --new=2:12G:0 --typecode=2:8300 "$holed" >/dev/null
+    if "$provision" --free-space "$holed" --user t >"$work/holed.txt" 2>&1; then
+        fail "free space in the middle of a disk was accepted as a tail"
+    fi
+    grep -q 'not the tail' "$work/holed.txt" || fail "the hole was refused for the wrong reason"
+    echo "provision-qemu: the free-space plan adds two partitions and keeps three"
+else
+    not_executed "sgdisk is not installed; the free-space plan was not checked"
+fi
 
 # --- 2. The refusals ------------------------------------------------------------------------------
 
@@ -86,6 +127,8 @@ refuses "a device path passed as --image" --image /dev/null --user t
 refuses "--device without --i-mean-it" --device /dev/null --user t
 refuses "--device --i-mean-it without the environment switch" --device /dev/null --i-mean-it --user t
 refuses "no target at all" --user t
+refuses "--esp without --root" --esp /dev/null --user t
+refuses "--free-space on a missing disk" --free-space "$work/does-not-exist" --user t
 echo "provision-qemu: destructive targets are refused as designed"
 
 # `--apply` as a non-root user must refuse rather than start and fail halfway.
