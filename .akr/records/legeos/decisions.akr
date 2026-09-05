@@ -336,6 +336,26 @@ record legeos.decision.inotify-remains-the-index-event-backend/1 : decision {
     ]
 }
 
+record legeos.decision.live-iso-runs-the-provisioner/1 : decision {
+    title "The installation medium is a LegeOS live ISO that runs the provisioner; mkosi stays the VM image"
+    state proposed
+    scope [ path "distro/iso/**", path "distro/seeds/**", path "installer/**" ]
+    topic installation-medium
+    decision """
+        Developer Edition 0.1 installs from a UEFI-only live ISO built by distro/iso/build.sh: mmdebstrap from the seeds plus one build set, casper, Canonical's signed shim and removable-media GRUB copied out of the rootfs, xorriso. The live session is the LegeOS session; installing is running `legeos-install` (installer/provision.sh, shipped by legeos-cli) with --free-space or --esp/--root from a terminal, reading the plan, and adding --apply. The medium carries the build set at /legeos/devrepo, so installing needs no LegeOS network archive. mkosi remains the dev/VM disk image (ADR-0006) and is not the medium; live-build and ubuntu-image are not used because each would be a second package list.
+        """
+    context """
+        The reference laptop has no disk to zap, a 100 MiB ESP and a 55.9 GiB free tail; a provisioner that runs from a working Linux userspace needs a medium that is not Lubuntu before Lubuntu can go. The seeds, the layout declaration and the provisioner already existed; only a way to boot them did not.
+        """
+    consequences """
+        One package list drives the image, the metapackages and the medium. The live-only autologin and passwordless sudo exist only in distro/iso/live/customize.sh and are never packaged. A graphical installer remains a product decision for a release with users who did not build it. The Secure-Boot chain of the medium is proven by tests/integration/iso-qemu.sh under OVMF before any USB stick reaches the laptop.
+        """
+    depends_on [ @legeos.decision.boot-deploy-secure-boot, @legeos.decision.mkosi-images ]
+    derived_from [
+        @legeos.observation.this-machines-partition-table-cannot-hold-legeos-as-it-stands
+    ]
+}
+
 record legeos.decision.mkosi-images/1 : decision {
     title "D7/ADR-0006 — mkosi builds the dev/CI/VM disk image (ESP + btrfs subvolumes); the installer ISO is a later stage"
     state active
@@ -512,6 +532,26 @@ record legeos.decision.the-home-field-is-a-launcher-not-a-search/1 : decision {
     contradicts [ @legeos.work.adaptive-files-and-omnibox ]
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     acknowledged true
+}
+
+record legeos.decision.three-package-tiers/1 : decision {
+    title "Every package on a LegeOS medium is native, rebuilt or inherited, and a rebuild needs a stated reason"
+    state proposed
+    scope [ path "distro/**", path "tools/xtask/src/seeds.rs" ]
+    topic package-tiers
+    decision """
+        LegeOS is a source-integrated Ubuntu derivative with three package tiers. Native: built by this repository (the workspace packages, the metapackages, the pinned forks). Rebuilt: Ubuntu source plus a LegeOS patch queue, versioned with a +legeos<n> suffix, entered only with a recorded one-line answer to "what changes because LegeOS builds this?" — the tier is empty today on purpose. Inherited: Ubuntu 26.04 binaries as they are, which is everything else, including the kernel, the NVIDIA LRM and CUDA for this edition so Secure Boot works with Canonical's chain and no LegeOS key. The closure report tags every direct package with its tier and asks apt only about inherited names; the medium carries a TIERS.manifest naming the tier of every installed package.
+        """
+    context """
+        Outside advice compared a pure binary derivative with a full source rebuild and recommended the middle: own composition first, a cheap rebuild pipeline second, rebuilds only where a patch, trim or optimisation is measured. The first closure against resolute found three names that needed changing and sixteen native names that had been making the simulation empty.
+        """
+    consequences """
+        No Ubuntu Desktop underneath: composition is the seeds. The rebuild pipeline (source import, build in a clean chroot, publish) is built after LegeOS self-hosts, not before, and its first exercise is a zero-patch rebuild to prove the shape. Moving a package to Rebuilt is a ledger event, not a build detail.
+        """
+    depends_on [
+        @legeos.constraint.first-release-scope,
+        @legeos.decision.base-ubuntu-2604-kernel-70
+    ]
 }
 
 record legeos.decision.toolchain-licence-namespace/1 : decision {

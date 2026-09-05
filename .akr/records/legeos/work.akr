@@ -1533,6 +1533,32 @@ record legeos.work.hands-on-run-5-fixes/1 : work {
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.work.home-developer-setup-preview/1 : work {
+    title "Proposal: an optional, previewed Home setup for development"
+    state proposed
+    intent """
+        For later consideration, offer an explicit setup action that previews a small developer working set built from existing Home objects: chosen project folder windows, project tiles and pinned editor/terminal providers. Let the person choose paths and remove suggested items before applying. Apply as one undoable layout operation, preserve existing geometry, and retain useful drop space. Never scan repositories automatically, infer projects from proximity, repack on activity, or turn Home into persistent application chrome. This is an extrapolation from the unresolved default-empty-field finding, not an accepted replacement layout.
+        """
+    note """
+        No implementation in the 2026-09-05 review. Decide whether this belongs in first-run, Settings, or the Home menu before implementing; avoid adding a second application inventory.
+        """
+    acceptance {
+        check explicit-preview {
+            statement """
+                A person reviews and edits the suggested objects and paths before a single apply; cancel changes nothing and Undo restores the previous field.
+                """
+            method manual
+        }
+        check stable-existing-work {
+            statement """
+                Applying the suggestion leaves existing tile geometry unchanged; overflow is explicit and no filesystem objects are moved or deleted.
+                """
+            method command
+        }
+    }
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.home-field/1 : work {
     title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
     state active
@@ -2157,6 +2183,58 @@ record legeos.work.home-presentation-subtraction/1 : work {
     }
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.home-project-development-status/1 : work {
+    title "Proposal: opt-in development status inside project tiles"
+    state proposed
+    intent """
+        For later consideration, give explicitly selected project tiles a compact development status view: last requested build/test result and observed source revision, with freshness and unavailable states. At larger representations, provide an explicit route to the corresponding log. Keep collection and process execution behind a typed service; the shell only renders and forwards. Do not run repository commands or hooks on discovery, continuously crawl projects, create permanent status chrome, or resize/reorder tiles on status changes. Settle service ownership, trust/consent, bounded output storage and refresh budget before implementation.
+        """
+    note """
+        Extrapolated from Home as working memory and the user's day-to-day development objective; not authorization to add background build or git polling.
+        """
+    acceptance {
+        check honest-status {
+            statement """
+                The tile identifies the command/result revision and age, and distinguishes stale, running, failed, unavailable and never-run states.
+                """
+            method manual
+        }
+        check opt-in-and-bounded {
+            statement """
+                Opening Home performs no repository command; service fixtures enforce bounded output, no automatic repository hooks, and unchanged tile geometry when status updates.
+                """
+            method command
+        }
+    }
+    implements [ @legeos.constraint.services-not-indicators ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.home-review-usability-20260905/1 : work {
+    title "Home review: reachable context menus and current-directory terminals"
+    state proposed
+    intent """
+        Repair existing Home interaction routes: bound long context menus with pointer and keyboard access to every row; expose existing Copy/Cut file verbs in the row menu; allow Open terminal here on directory ground without a selected item. Preserve manifest actions, service ownership, saved geometry and application-only Home launcher.
+        """
+    acceptance {
+        check lint {
+            statement """
+                Changed shell code passes strict clippy.
+                """
+            method command
+            command "cargo clippy -p lege-shell --all-targets -- -D warnings"
+        }
+        check regressions {
+            statement """
+                Small-screen menu navigation keeps visible hit targets inside the menu and reaches the last row; directory terminal requests work without selection and row requests preserve their target; shell regressions pass.
+                """
+            method command
+            command "cargo test -p lege-shell"
+        }
+    }
+    part_of [ @legeos.work.home-surface-usability-next ]
 }
 
 record legeos.work.home-shelf-and-representation-ladder/1 : work {
@@ -2812,15 +2890,17 @@ record legeos.work.self-hosting-legeos/1 : work {
     state proposed
     scope [
         path "Cargo.toml",
+        path "ISO-PLAN.md",
         path "distro/**",
-        path "docs/planning/self-hosting-legeos.md",
-        path "installer/**"
+        path "installer/**",
+        path "tests/integration/iso-qemu.sh",
+        path "tests/integration/provision-qemu.sh"
     ]
     intent """
-        Get from the Developer Edition 0.1 lanes to a LegeOS that boots on the reference laptop, joins WiFi through NetworkManager and nm-tray-2, and builds its own source tree — after which Lubuntu is deletable rather than load-bearing. Four stages: teach the provisioner to consume free space beside existing partitions and package nm-tray-2; provision into the 55.9 GiB free tail of nvme1n1 with its own ESP, leaving Lubuntu untouched and bootable; pin the five sibling path dependencies so an installation can rebuild the workspace, and prove `just check` green from inside; then retire Lubuntu against a checklist and give its 416 GiB to the root as a second btrfs device.
+        Get from the Developer Edition 0.1 lanes to a LegeOS that boots on the reference laptop, joins WiFi through NetworkManager and nm-tray-2, and builds its own source tree — after which Lubuntu is deletable rather than load-bearing. Route (ISO-PLAN.md): resolve the closure and complete the package set (metapackages in the build set); teach the provisioner to consume the free tail beside existing partitions and ship it in legeos-cli; build a live ISO from the seeds that carries the set and runs the provisioner; prove its Secure-Boot chain under OVMF; install into the 55.9 GiB tail of nvme1n1 with a second ESP, leaving Lubuntu bootable; pin the sibling path dependencies so the installation can rebuild the workspace and its own ISO; then retire Lubuntu against the checklist.
         """
     note """
-        Plan of record: docs/planning/self-hosting-legeos.md. Nothing in it has been executed — no target provisioned, no image built, no clean-root build.
+        Plan of record: ISO-PLAN.md (supersedes docs/planning/self-hosting-legeos.md as the order of work). Done in the tree as of 2026-09-05: closure resolved, metapackages built into the set, provisioner --free-space/--esp --root/--archive, ISO build script and Secure-Boot QEMU test. Not yet run anywhere: an ISO build (needs a published set with metapackages and the btrfs build volume), the OVMF boot, the laptop. Blocked on the user: pushing pixelkit (no remote), bpg-rs and Lege-ecosystem (unpushed commits) before the sibling deps can be pinned; the nm-tray-2 commits.
         """
     acceptance {
         check boots-with-secure-boot {
@@ -2829,30 +2909,54 @@ record legeos.work.self-hosting-legeos/1 : work {
                 """
             method manual
         }
+        check closure-resolved {
+            statement """
+                cargo xtask seeds closure resolves every inherited name against Ubuntu 26.04 at the pinned snapshot with zero missing
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds closure"
+            verified_by [ @legeos.evidence.de01-package-closure-resolved-20260905 ]
+        }
+        check iso-boots-secure-boot-vm {
+            statement """
+                The ISO boots under OVMF with Secure Boot enforcing through shim, GRUB and the Ubuntu kernel into the live userspace
+                """
+            method command
+            command "tests/integration/iso-qemu.sh"
+        }
+        check iso-builds {
+            statement """
+                just iso produces legeos-<set>.iso with its sha256 and TIERS.manifest from a published set
+                """
+            method command
+            command "just iso"
+        }
         check metapackages-built {
             statement """
                 The eight metapackages are built and published beside the Rust packages as one coherent build set
                 """
             method command
             command "cargo run -p lege -- dev repo verify"
+            verified_by [ @legeos.evidence.metapackages-build-with-dpkg-deb-20260905 ]
         }
         check nm-tray-2-packaged {
             statement """
-                nm-tray-2 is pinned in distro/forks/manifest.toml, built as legeos-nm-tray, and named in the session layer with the network-control role
+                nm-tray-2 is pinned in distro/forks/manifest.toml at a commit that carries --popup, built as legeos-nm-tray, and named in the session layer with the network-control role
                 """
             method command
-            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging"
+            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging && scripts/build-fork-deb.sh nm-tray-2"
         }
         check provisioner-takes-free-space {
             statement """
-                installer/provision.sh --free-space /dev/nvme1n1 plans an ESP and a root in the free tail and changes nothing without --apply
+                provision.sh --free-space plans an ESP and a root in a disk's free tail, names every partition it keeps, and changes nothing without --apply
                 """
             method command
-            command "installer/provision.sh --free-space /dev/nvme1n1 --user dk"
+            command "tests/integration/provision-qemu.sh"
+            verified_by [ @legeos.evidence.provisioner-free-space-plan-20260905 ]
         }
         check reinstall-route-exists {
             statement """
-                A LegeOS installation medium exists that does not depend on this disk, so deleting Lubuntu is reversible
+                A LegeOS installation medium exists on a USB stick that does not depend on this disk, so deleting Lubuntu is reversible
                 """
             method manual
         }
@@ -2864,7 +2968,7 @@ record legeos.work.self-hosting-legeos/1 : work {
         }
         check self-hosts {
             statement """
-                just check and just deb both run green inside LegeOS from a checkout with no sibling repositories present
+                just check, just deb and just iso all run green inside LegeOS from a checkout with no sibling repositories present
                 """
             method manual
         }
@@ -2875,7 +2979,11 @@ record legeos.work.self-hosting-legeos/1 : work {
             method manual
         }
     }
-    depends_on [ @legeos.work.reference-machine-provisioning ]
+    depends_on [
+        @legeos.decision.live-iso-runs-the-provisioner,
+        @legeos.decision.three-package-tiers,
+        @legeos.work.reference-machine-provisioning
+    ]
     derived_from [
         @legeos.observation.this-machines-partition-table-cannot-hold-legeos-as-it-stands
     ]

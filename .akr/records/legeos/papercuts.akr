@@ -164,6 +164,17 @@ record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
     created_at 2026-09-02
 }
 
+record legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 : papercut {
+    title "Building the metapackages with dpkg-deb from a staging tree under…"
+    state verified
+    statement """
+        Building the metapackages with dpkg-deb from a staging tree under target/ failed with "control directory has bad permissions 777": the checkout is on NTFS, where every directory reports 0777 and chmod is a no-op. Staging moved to the system temp dir; anything else that hands dpkg a directory tree from this checkout will hit the same wall.
+        """
+    observed_at git:a6f8574a54f58a077e0acafc000133da96c09c5b
+    author "claude"
+    created_at 2026-09-05
+}
+
 record legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 : papercut {
     title "Bumping interfaces/wayland/lege-shell-v1.xml to version 2: `cargo xtask…"
     state verified
@@ -195,6 +206,17 @@ record legeos.papercut.cargo-run-q-p-xtask-check-packaging-fails-on-a/1 : paperc
     observed_at git:392bd0d8a20b8ad0b43311cfde9ad58543c942a6
     author "claude"
     created_at 2026-09-02
+}
+
+record legeos.papercut.cargo-xtask-check-packaging-reports-three/1 : papercut {
+    title "`cargo xtask check-packaging` reports three mismatches on a fresh…"
+    state verified
+    statement """
+        `cargo xtask check-packaging` reports three mismatches on a fresh checkout because legeos-filed's preview-codec assets (target/preview-codecs/…) do not exist until `just preview-codecs` has run, so the packaging gate cannot be read as clean without first running a 1.97 helper build; a "not built yet" verdict would be more honest than "asset source does not exist".
+        """
+    observed_at git:a6f8574a54f58a077e0acafc000133da96c09c5b
+    author "claude"
+    created_at 2026-09-05
 }
 
 record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercut {
@@ -242,6 +264,18 @@ record legeos.papercut.correcting-my-earlier-papercut-allow/1 : papercut {
     created_at 2026-09-01
 }
 
+record legeos.papercut.creating-the-home-review-work-record-failed/1 : papercut {
+    title "Creating the Home review work record failed because I supplied…"
+    state verified
+    statement """
+        Creating the Home review work record failed because I supplied objective instead of work.intent; the schema error clearly listed valid slots and the retry succeeded.
+        """
+    observed_at git:062736748adbd9edecfc3a35d0e8a85f68d334eb
+    about "akr"
+    author "codex"
+    created_at 2026-09-05
+}
+
 record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : papercut {
     title "distro/metapackages/README.md promised a distro/metapackages/build.sh…"
     state verified
@@ -273,6 +307,18 @@ record legeos.papercut.first-user-run-of-the-deploy-path-failed-at/1 : papercut 
     observed_at git:223c1761dba27a030f4a14e64f61a38eebe42b73
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.home-audit-initially-scoped-crates-lege-shell/1 : papercut {
+    title "Home audit initially scoped crates/lege-shell rather than…"
+    state verified
+    statement """
+        Home audit initially scoped crates/lege-shell rather than shell/lege-shell; context accepted the nonexistent path without warning. Large context bundles also truncate normative prose at requested budget; retrieved the governing decisions individually.
+        """
+    observed_at git:c99bffbd798f5142a4ed5e6d493be38a3d00e618
+    about "akr"
+    author "codex"
+    created_at 2026-09-05
 }
 
 record legeos.papercut.in-a-shared-working-tree-cargo-test-p-lege-and/1 : papercut {

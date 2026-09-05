@@ -220,6 +220,19 @@ record legeos.evidence.de01-integrated-gate-20260904/1 : evidence {
         """
 }
 
+record legeos.evidence.de01-package-closure-resolved-20260905/1 : evidence {
+    title "The package closure resolves against Ubuntu 26.04 for the first time"
+    state verified
+    result pass
+    method command
+    observed_at git:6432516860ba4a3ebbb7bf3afc395b872322d3ea
+    command "APT_CONFIG=<private resolute index>/apt.conf cargo run -q -p xtask -- seeds closure --out distro/seeds/closures/resolute-20260905T011226Z.json"
+    artifact "distro/seeds/closures/resolute-20260905T011226Z.json"
+    summary """
+        First closure against Ubuntu 26.04 resolute: resolved, 75 inherited + 16 native direct packages, 0 missing, 1301 transitive, 6.73 GiB with recommends, 415 recommends-only. Three names fixed first: mesa-va-drivers (gone), xdg-desktop-portal-cosmic (never packaged), cargo-deb (not in Ubuntu); rustup replaces rustc/cargo. Snapshot pinned in distro/base.toml.
+        """
+}
+
 record legeos.evidence.de01-package-closure-unavailable-20260904/1 : evidence {
     title "The closure command reports honestly that no Ubuntu 26.04 index exists on this host"
     state verified
@@ -1515,6 +1528,18 @@ record legeos.evidence.m1-workspace-builds-and-tests/1 : evidence {
         """
 }
 
+record legeos.evidence.metapackages-build-with-dpkg-deb-20260905/1 : evidence {
+    title "The eight metapackages build into the set with dpkg-deb"
+    state verified
+    result pass
+    method command
+    observed_at git:a6f8574a54f58a077e0acafc000133da96c09c5b
+    command "cargo test -q -p xtask build_set"
+    summary """
+        All eight distro/metapackages/*/control.in render with the base.toml kernel/NVIDIA values (580, 7.0.0-31.31, 580.173.02-0ubuntu0.26.04.1) and build with dpkg-deb at the set's version; `cargo xtask build-set --dry-run` lists them after the thirteen cargo-deb packages. Publishing a complete set still needs `just deb` and `sudo lege dev repo publish` on the host.
+        """
+}
+
 record legeos.evidence.nested-session-journey-20260904/1 : evidence {
     title "The nested-session journey passes end to end for the first time"
     state verified
@@ -1673,6 +1698,18 @@ record legeos.evidence.provision-qemu-not-executed-20260903/1 : evidence {
     artifact "tests/integration/provision-qemu.sh"
     summary """
         The provisioner's plan matched the layout declaration, wrote nothing, bakes in no credentials, and refused every destructive target and an unprivileged --apply. The QEMU boot did NOT run: qemu-system-x86_64 is present but there is no image to boot (mkosi is absent on this host), so the script printed NOT EXECUTED. No target was ever provisioned.
+        """
+}
+
+record legeos.evidence.provisioner-free-space-plan-20260905/1 : evidence {
+    title "The provisioner plans two new partitions in a disk's free tail and keeps the rest"
+    state verified
+    result pass
+    method command
+    observed_at git:a6f8574a54f58a077e0acafc000133da96c09c5b
+    command "tests/integration/provision-qemu.sh"
+    summary """
+        On a fixture disk shaped like the laptop (16 MiB reserved, 6 GiB NTFS-typed, 100 MiB ESP, free tail) `provision.sh --free-space` plans partitions 4 (ESP, 1G) and 5 (root, rest), names the three it keeps, changes nothing, and refuses a free block that is a hole rather than the tail; the destructive-target refusals and the root-only --apply still hold.
         """
 }
 
