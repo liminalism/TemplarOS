@@ -1186,6 +1186,57 @@ record legeos.evidence.home-panels-no-exclusive-zone-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.home-review-actions-20260905/1 : evidence {
+    title "Home review: actions"
+    state verified
+    result pass
+    method command
+    observed_at git:75f32ba4305e50067c2bf71c45630cf72e819042
+    command "cargo run -q -p xtask -- check-actions"
+    artifact ".agent/scratch/home-review/actions.log"
+    summary """
+        57 actions named by surfaces are declared; all 12 CLI verbs resolve. The same three pre-existing pointer-route exemptions remain for terminal.toggle and the two group cycle actions.
+        """
+}
+
+record legeos.evidence.home-review-lint-20260905/1 : evidence {
+    title "Home review: lint"
+    state verified
+    result pass
+    method command
+    observed_at git:75f32ba4305e50067c2bf71c45630cf72e819042
+    command "cargo clippy -p lege-shell --all-targets -- -D warnings"
+    artifact ".agent/scratch/home-review/clippy.log"
+    summary """
+        Strict clippy passed for all lege-shell targets. cargo fmt --all -- --check and git diff --check also passed.
+        """
+}
+
+record legeos.evidence.home-review-tests-20260905/1 : evidence {
+    title "Home review: tests"
+    state verified
+    result pass
+    method command
+    observed_at git:75f32ba4305e50067c2bf71c45630cf72e819042
+    command "cargo test -p lege-shell"
+    artifact ".agent/scratch/home-review/tests.log"
+    summary """
+        307 library tests and 11 CLI tests passed; includes menu overflow keyboard and pointer access, current-directory terminal targeting, and Help scrolling. The resting Home visual hash remains 0x5da6_419a_f863_3548.
+        """
+}
+
+record legeos.evidence.home-review-visual-20260905/1 : evidence {
+    title "Home review: visual"
+    state verified
+    result pass
+    method observation
+    observed_at git:75f32ba4305e50067c2bf71c45630cf72e819042
+    artifact ".agent/scratch/home-review/help.png"
+    summary """
+        Inspected deterministic renders: default Home at 1280x832, Help at 1280x832 and 640x480, and overflowing context menu at 640x480. Help keeps readable text and a fixed close control, with category content clipped to a scrolling viewport. Menu arrows and visible rows stay inside the output. No live desktop was touched; actual seat and mixed-scale behaviour are not established by these fixtures.
+        """
+}
+
 record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
     title "Launcher widget: manifest fields, icon resolution, app search, widget, and live search bar — workspace gates green"
     state verified

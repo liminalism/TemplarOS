@@ -2214,9 +2214,12 @@ record legeos.work.home-project-development-status/1 : work {
 
 record legeos.work.home-review-usability-20260905/1 : work {
     title "Home review: reachable context menus and current-directory terminals"
-    state proposed
+    state completed
     intent """
-        Repair existing Home interaction routes: bound long context menus with pointer and keyboard access to every row; expose existing Copy/Cut file verbs in the row menu; allow Open terminal here on directory ground without a selected item. Preserve manifest actions, service ownership, saved geometry and application-only Home launcher.
+        Repair existing Home interaction routes: keep long context menus within the output with pointer paging, wheel and keyboard access to every row; expose existing Copy/Cut file verbs; allow Open terminal here on directory ground independently of selection. Keep Help text readable with scrolling and a fixed close route. Folder windows report failed reads rather than remaining in reading state, reset scrolling on upward navigation, and reserve space for truncation notices. Preserve manifest actions, service ownership, saved geometry and the application-only Home launcher.
+        """
+    note """
+        Continued at the user's request in branch home-review-20260905 in ../LegeOS-home-review from 94c2954, carrying the four shell source files already modified by this review; the folder error-state change in app.rs was added only in the isolated worktree. Earlier partial edits remain in the active tree; subsequent edits and validation are isolated. Extrapolated ideas remain proposals under @legeos.work.home-developer-setup-preview and @legeos.work.home-project-development-status. The full folder interaction parity gap is recorded in the audit rather than treated as a new default layout decision.
         """
     acceptance {
         check lint {
@@ -2225,6 +2228,7 @@ record legeos.work.home-review-usability-20260905/1 : work {
                 """
             method command
             command "cargo clippy -p lege-shell --all-targets -- -D warnings"
+            verified_by [ @legeos.evidence.home-review-lint-20260905 ]
         }
         check regressions {
             statement """
@@ -2232,6 +2236,7 @@ record legeos.work.home-review-usability-20260905/1 : work {
                 """
             method command
             command "cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.home-review-tests-20260905 ]
         }
     }
     part_of [ @legeos.work.home-surface-usability-next ]
