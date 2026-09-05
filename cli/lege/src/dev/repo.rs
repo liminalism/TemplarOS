@@ -701,6 +701,18 @@ impl Repo {
             },
         }
 
+        // The signing key's home is 0700 root. Read as another user, `gpg --verify` fails for
+        // want of a trust database, which looked like tampering; say what it is instead. The
+        // archive can still be judged on its index and pool above, and the provisioner runs this
+        // as root anyway.
+        if fs::read_dir(self.gnupg()).is_err() {
+            problems.push(format!(
+                "the signing key directory {} is not readable by this user, so the signatures \
+                 were not checked; run as root to verify them",
+                self.gnupg().display()
+            ));
+            return problems;
+        }
         let homedir = self.gnupg().display().to_string();
         for (name, args) in [
             ("InRelease", vec!["--verify", "InRelease"]),
