@@ -349,7 +349,13 @@ fn render_metapackage_control(
         for (from, to) in substitutions {
             line = line.replace(from, to);
         }
-        if line.trim() == "Depends:" {
+        // `${misc:Depends}` may have been the whole of a folded continuation line, or the whole
+        // field: dropping it must not leave a blank continuation or a trailing comma behind.
+        if line.trim() == "Depends:" || line.trim().is_empty() {
+            while out.ends_with(",\n") || out.ends_with(", \n") {
+                out.truncate(out.trim_end().trim_end_matches(',').len());
+                out.push('\n');
+            }
             continue;
         }
         out.push_str(&line);
@@ -504,6 +510,12 @@ mod tests {
         assert!(control.starts_with("Package: legeos-kernel\nVersion: 0.1.0~dev1\n"));
         assert!(control.contains("Depends: linux-generic (>= 7.0)\n"));
         assert!(!control.contains("misc:Depends") && !control.contains('#'));
+        let folded = "Package: p\nDepends: a, b,\n ${misc:Depends}\nDescription: d\n";
+        let control = render_metapackage_control(folded, "1", &[]).unwrap();
+        assert!(
+            control.contains("Depends: a, b\nDescription: d\n"),
+            "{control}"
+        );
         assert!(
             render_metapackage_control(template, "1", &[]).is_err(),
             "unsubstituted @…@"

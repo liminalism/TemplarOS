@@ -274,6 +274,7 @@ role = "shell"
 name = "legeos-nm-tray"
 reason = "the network control the Home information row launches; LegeOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)"
 role = "network-control"
+recommends = true   # the fork pin cannot be built yet (distro/forks/manifest.toml note); a set must still install
 
 [[layer.package]]
 name = "legeos-comp"
@@ -667,9 +668,14 @@ lege-hostd's transactional path with automatic rollback."""
 package = "legeos-nvidia-open"
 directory = "legeos-nvidia-open"
 architecture = "amd64"
+# Not nvidia-driver-*: Ubuntu's driver metapackage Depends on nvidia-dkms-*, the very thing this
+# package Conflicts with. The LRM route is the modules package plus the no-dkms userspace set.
 extra_depends = [
   "linux-modules-nvidia-@NVIDIA_BRANCH@-open-generic (= @NVIDIA_LRM_VERSION@)",
-  "nvidia-driver-@NVIDIA_BRANCH@-open (= @NVIDIA_USERSPACE_VERSION@)",
+  "nvidia-headless-no-dkms-@NVIDIA_BRANCH@-open (= @NVIDIA_USERSPACE_VERSION@)",
+  "libnvidia-gl-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
 ]
 conflicts = ["legeos-nvidia-proprietary", "nvidia-dkms-@NVIDIA_BRANCH@", "nvidia-dkms-@NVIDIA_BRANCH@-open"]
 description = "NVIDIA open kernel modules + userspace (Turing and newer), one driver authority"
@@ -681,7 +687,10 @@ directory = "legeos-nvidia-proprietary"
 architecture = "amd64"
 extra_depends = [
   "linux-modules-nvidia-@NVIDIA_BRANCH@-generic (= @NVIDIA_LRM_VERSION@)",
-  "nvidia-driver-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "nvidia-headless-no-dkms-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "libnvidia-gl-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
+  "xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
 ]
 conflicts = ["legeos-nvidia-open", "nvidia-dkms-@NVIDIA_BRANCH@", "nvidia-dkms-@NVIDIA_BRANCH@-open"]
 description = "NVIDIA proprietary kernel modules + userspace (pre-Turing), one driver authority"

@@ -2,7 +2,10 @@
 Package: legeos-nvidia-proprietary
 Architecture: amd64
 Depends: linux-modules-nvidia-@NVIDIA_BRANCH@-generic (= @NVIDIA_LRM_VERSION@),
- nvidia-driver-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@), ${misc:Depends}
+ nvidia-headless-no-dkms-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@),
+ libnvidia-gl-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@),
+ nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@),
+ xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@), ${misc:Depends}
 Conflicts: legeos-nvidia-open, nvidia-dkms-@NVIDIA_BRANCH@,
  nvidia-dkms-@NVIDIA_BRANCH@-open
 Description: NVIDIA proprietary kernel modules + userspace (pre-Turing), one driver authority

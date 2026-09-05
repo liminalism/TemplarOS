@@ -98,6 +98,11 @@ pub struct Package {
     /// Flatpak entries only: the remote the ref is installed from.
     #[serde(default)]
     pub remote: Option<String>,
+    /// Rendered as `Recommends:` rather than `Depends:` on the metapackages: the package is part
+    /// of the selection, but a set without it must still install. Only for a package that is
+    /// not yet buildable (`reason` says why); not a way to make a dependency optional for good.
+    #[serde(default)]
+    pub recommends: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -387,19 +392,24 @@ fn render_packages_conf(selection: &Selection, stage: Stage) -> String {
 /// metapackage needs it and forgetting it is a lintian error nobody sees until packaging time.
 fn render_control(selection: &Selection, meta: &Metapackage) -> String {
     let mut depends: Vec<String> = Vec::new();
+    let mut recommends: Vec<String> = Vec::new();
     for id in &meta.layers {
         if let Some(layer) = selection.layer(id) {
-            depends.extend(
-                layer
-                    .packages
-                    .iter()
-                    .filter(|package| package.kind == PackageKind::Deb)
-                    .map(|package| package.name.clone()),
-            );
+            for package in &layer.packages {
+                if package.kind != PackageKind::Deb {
+                    continue;
+                }
+                if package.recommends {
+                    recommends.push(package.name.clone());
+                } else {
+                    depends.push(package.name.clone());
+                }
+            }
         }
     }
     depends.extend(meta.extra_depends.iter().cloned());
     depends.push("${misc:Depends}".to_owned());
+    recommends.extend(meta.recommends.iter().cloned());
 
     let mut conflicts = meta.conflicts.clone();
     if meta.policy_conflicts {
@@ -412,8 +422,8 @@ fn render_control(selection: &Selection, meta: &Metapackage) -> String {
         meta.architecture,
         fold("Depends", &depends)
     );
-    if !meta.recommends.is_empty() {
-        out.push_str(&fold("Recommends", &meta.recommends));
+    if !recommends.is_empty() {
+        out.push_str(&fold("Recommends", &recommends));
     }
     if !conflicts.is_empty() {
         out.push_str(&fold("Conflicts", &conflicts));
@@ -1001,6 +1011,7 @@ description_body = "The session and its daemons."
             kind: PackageKind::Deb,
             arch: None,
             remote: None,
+            recommends: false,
         });
         selection.layers[1].packages.push(Package {
             name: "kitty".to_owned(),
@@ -1009,6 +1020,7 @@ description_body = "The session and its daemons."
             kind: PackageKind::Deb,
             arch: None,
             remote: None,
+            recommends: false,
         });
         let problems = selection.problems();
         assert_eq!(problems.len(), 1, "{problems:?}");

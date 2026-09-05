@@ -2,8 +2,9 @@
 Package: legeos-session-full
 Architecture: all
 Depends: legeos-session, legeos-sessiond, legeos-resourced, legeos-filed, legeos-hostd,
- legeos-boot-health, legeos-shell, legeos-nm-tray, legeos-comp, legeos-portal, legeos-cli,
- legeos-greeter, greetd, xdg-desktop-portal, xdg-desktop-portal-gtk, xwayland, polkitd,
- dbus-broker, ${misc:Depends}
+ legeos-boot-health, legeos-shell, legeos-comp, legeos-portal, legeos-cli, legeos-greeter,
+ greetd, xdg-desktop-portal, xdg-desktop-portal-gtk, xwayland, polkitd, dbus-broker,
+ ${misc:Depends}
+Recommends: legeos-nm-tray
 Description: LegeOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)
  The session and its daemons, without the default applications or the hardware stack.
