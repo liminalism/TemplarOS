@@ -2,7 +2,6 @@
 # graphics — Mesa and Vulkan userspace
 mesa-vulkan-drivers
 libgl1-mesa-dri
-mesa-va-drivers
 vulkan-tools
 libvulkan1
 libva2

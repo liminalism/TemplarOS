@@ -14,7 +14,6 @@ legeos-cli
 legeos-greeter
 greetd
 xdg-desktop-portal
-xdg-desktop-portal-cosmic
 xdg-desktop-portal-gtk
 xwayland
 polkitd

@@ -735,6 +735,30 @@ fn resolution_state(
     )
 }
 
+/// Tiers: a name this repository builds (the workspace packages, the metapackages, the pinned
+/// forks) is `native` and can never be in an Ubuntu index; everything else is `inherited` and
+/// must be. Tags every direct entry and returns `(inherited, native)` names, so only the inherited
+/// ones are asked of apt and one native name does not turn the simulation into "nothing resolves".
+fn tag_tiers(root: &Path, direct: &mut [serde_json::Value]) -> Result<(Vec<String>, Vec<String>)> {
+    let control_text =
+        std::fs::read_to_string(root.join("debian/control")).context("reading debian/control")?;
+    let native_set =
+        crate::built_package_names(root, &crate::parse_control_packages(&control_text))?;
+    let (mut inherited, mut native) = (Vec::new(), Vec::new());
+    for entry in direct.iter_mut() {
+        let name = entry["name"].as_str().unwrap_or_default().to_owned();
+        let is_native = native_set.contains(&name);
+        entry["tier"] = if is_native { "native" } else { "inherited" }.into();
+        if is_native {
+            &mut native
+        } else {
+            &mut inherited
+        }
+        .push(name);
+    }
+    Ok((inherited, native))
+}
+
 pub fn closure(root: &Path, out: Option<&Path>) -> Result<()> {
     let selection = Selection::read(root)?;
     let (declared, snapshot_url, snapshot_serial) = base_facts(root)?;
@@ -766,10 +790,7 @@ pub fn closure(root: &Path, out: Option<&Path>) -> Result<()> {
             }
         }
     }
-    let names: Vec<String> = direct
-        .iter()
-        .filter_map(|entry| entry["name"].as_str().map(ToOwned::to_owned))
-        .collect();
+    let (names, native) = tag_tiers(root, &mut direct)?;
 
     let resolved = resolution != Resolution::Unavailable;
     let with = resolved.then(|| simulate(&names, true)).flatten();
@@ -819,6 +840,7 @@ pub fn closure(root: &Path, out: Option<&Path>) -> Result<()> {
             },
         },
         "missing": missing,
+        "native": native,
         "roles": roles,
         "flatpak": flatpak,
     });
@@ -827,9 +849,11 @@ pub fn closure(root: &Path, out: Option<&Path>) -> Result<()> {
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("writing {}", path.display()))?;
             println!(
-                "seeds closure: {} ({} direct package(s)) -> {}",
+                "seeds closure: {} ({} inherited + {} native direct package(s), {} missing) -> {}",
                 resolution.as_str(),
                 names.len(),
+                native.len(),
+                missing.len(),
                 path.display()
             );
         }

@@ -14,8 +14,8 @@ components = ["main", "universe", "restricted"]   # restricted: NVIDIA LRM/users
 security_mirror = "http://security.ubuntu.com/ubuntu"
 # The snapshot the package closure is expected to resolve against. Empty means unpinned, and
 # `cargo xtask seeds closure` says so rather than presenting an unpinned resolution as reproducible.
-snapshot_url = ""                  # e.g. "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z"
-snapshot_serial = ""               # the archive serial, when it is known
+snapshot_url = "https://snapshot.ubuntu.com/ubuntu/20260905T011226Z"  # resolute-updates Release date of the first resolved closure
+snapshot_serial = "20260905T011226Z"
 
 [kernel]
 flavour = "linux-generic"          # 7.0 GA at release; "linux-generic-hwe-26.04" once HWE ships
