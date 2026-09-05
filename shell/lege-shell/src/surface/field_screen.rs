@@ -200,7 +200,7 @@ pub struct FieldData<'a> {
     pub browser: &'a FileBrowserData<'a>,
     /// Each open folder window's directory listing, keyed by the directory it lists. One entry per
     /// window, unlike `browser.listing`, which is the single Files object's one location.
-    pub folder_listings: &'a HashMap<PathBuf, DirectoryListing>,
+    pub folder_listings: &'a HashMap<PathBuf, Result<DirectoryListing, String>>,
     /// The notifications widget's structured rows (`widgets::notifications`).
     pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
     pub connected: bool,
@@ -302,6 +302,7 @@ pub struct FieldScreen {
     asked_for: String,
     /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
     pub help_open: bool,
+    help_scroll: pixelkit_ui::ScrollState,
     /// The field's pixel rectangle from the last frame, for tests and hit-testing.
     pub bounds: Rect,
     /// The last pointer drop, for the experiment's retry measure.
@@ -365,6 +366,7 @@ impl Default for FieldScreen {
             omnibox_committed: None,
             asked_for: String::new(),
             help_open: false,
+            help_scroll: pixelkit_ui::ScrollState::default(),
             bounds: Rect::new(0, 0, 0, 0),
             last_drop: None,
             notice: None,
@@ -1484,7 +1486,6 @@ impl FieldScreen {
             return false;
         }
         self.menu.close();
-        let _ = ui.input.take_keys();
         self.draw_help_overlay(ui, area);
         true
     }
@@ -1585,65 +1586,104 @@ impl FieldScreen {
             return;
         }
 
-        let (primer, rest) = content.split_top(ui.px(168).min(content.h / 3));
-        Self::draw_help_primer(ui, primer);
+        // Keep text at a readable size. The old grid divided the available height by
+        // every action, reducing busy categories to overlapping single-pixel rows.
+        let columns = if content.w >= ui.px(880) {
+            3
+        } else if content.w >= ui.px(600) {
+            2
+        } else {
+            1
+        };
+        let categories = lege_types::action::ActionCategory::ALL;
         let gap = ui.px(12);
-        let content = Rect::new(rest.x, rest.y + gap, rest.w, (rest.h - gap).max(0));
+        let row_height = ui.px(28);
+        let mut heights = vec![ui.px(224)];
+        for group in categories.chunks(columns) {
+            let count = group
+                .iter()
+                .map(|category| lege_types::action::in_category(*category).count())
+                .max()
+                .unwrap_or(0);
+            heights.push(ui.px(44) + count as i32 * row_height + gap);
+        }
+        let total: i32 = heights.iter().sum();
+        for key in ui.input.take_keys() {
+            let delta = match key {
+                KeyInput::Down => row_height,
+                KeyInput::Up => -row_height,
+                KeyInput::PageDown => content.h,
+                KeyInput::PageUp => -content.h,
+                KeyInput::Home => -total,
+                KeyInput::End => total,
+                _ => 0,
+            };
+            self.help_scroll.scroll_by(delta, content.h, total);
+        }
+        ui.scroll_list(
+            &mut self.help_scroll,
+            content,
+            &heights,
+            |ui, index, row| {
+                if index == 0 {
+                    Self::draw_help_primer(ui, Rect::new(row.x, row.y, row.w, row.h - gap));
+                    return;
+                }
+                let cell_w = (row.w - gap * (columns as i32 - 1)).max(1) / columns as i32;
+                for (col, category) in categories
+                    .chunks(columns)
+                    .nth(index - 1)
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    let cell = Rect::new(
+                        row.x + col as i32 * (cell_w + gap),
+                        row.y,
+                        cell_w,
+                        row.h - gap,
+                    );
+                    Self::draw_help_category(ui, cell, *category);
+                }
+            },
+        );
+    }
 
-        let columns = if content.w >= ui.px(880) { 3 } else { 2 };
-        let category_count = lege_types::action::ActionCategory::ALL.len();
-        let rows = category_count.div_ceil(columns);
-        let cell_w = (content.w - gap * (columns as i32 - 1)).max(1) / columns as i32;
-        let cell_h = (content.h - gap * (rows as i32 - 1)).max(1) / rows as i32;
-
-        for (index, category) in lege_types::action::ActionCategory::ALL
-            .into_iter()
-            .enumerate()
-        {
-            let col = index % columns;
-            let row_index = index / columns;
-            let cell = Rect::new(
-                content.x + col as i32 * (cell_w + gap),
-                content.y + row_index as i32 * (cell_h + gap),
-                cell_w,
-                cell_h,
-            );
-            design::shell(ui, cell, design::RECESSED, design::EDGE, Elevation::Rest);
-            let inner = cell.inset(ui.px(10));
-            let declarations: Vec<_> = lege_types::action::in_category(category).collect();
-            let heading_h = ui.px(24);
+    fn draw_help_category(
+        ui: &mut Ui<'_>,
+        cell: Rect,
+        category: lege_types::action::ActionCategory,
+    ) {
+        design::shell(ui, cell, design::RECESSED, design::EDGE, Elevation::Rest);
+        let inner = cell.inset(ui.px(10));
+        let (heading, body) = inner.split_top(ui.px(24));
+        ui.label_styled(
+            heading,
+            category.title(),
+            TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
+            design::TEXT_FAINT,
+            Align::Left,
+        );
+        for (index, declaration) in lege_types::action::in_category(category).enumerate() {
+            let row = Rect::new(body.x, body.y + index as i32 * ui.px(28), body.w, ui.px(28));
+            let (accelerator, label) = row.split_right(ui.px(116).min(row.w / 2));
             ui.label_styled(
-                inner.split_top(heading_h).0,
-                category.title(),
-                TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
-                design::TEXT_FAINT,
+                label,
+                declaration.label,
+                design::state_style(ui),
+                design::TEXT,
                 Align::Left,
             );
-            let body = Rect::new(inner.x, inner.y + heading_h, inner.w, inner.h - heading_h);
-            let row_h = (body.h / declarations.len().max(1) as i32)
-                .min(ui.px(28))
-                .max(1);
-            for (action_index, declaration) in declarations.into_iter().enumerate() {
-                let row = Rect::new(body.x, body.y + action_index as i32 * row_h, body.w, row_h);
-                let (accelerator, label) = row.split_right(ui.px(116).min(row.w / 2));
-                ui.label_styled(
-                    label,
-                    declaration.label,
-                    design::state_style(ui),
-                    design::TEXT,
-                    Align::Left,
-                );
-                let route = declaration
-                    .primary_chord()
-                    .map_or_else(|| "On screen".to_owned(), |chord| chord.to_string());
-                ui.label_styled(
-                    accelerator,
-                    &route,
-                    TextStyle::tracked(ui.theme.body.face, 10.0, 0.08),
-                    design::TEXT_FAINT,
-                    Align::Right,
-                );
-            }
+            let route = declaration
+                .primary_chord()
+                .map_or_else(|| "On screen".to_owned(), |chord| chord.to_string());
+            ui.label_styled(
+                accelerator,
+                &route,
+                TextStyle::tracked(ui.theme.body.face, 10.0, 0.08),
+                design::TEXT_FAINT,
+                Align::Right,
+            );
         }
     }
 
@@ -3220,6 +3260,7 @@ impl FieldScreen {
             Align::Left,
         );
         if ui.input.take_click(crumb) {
+            self.folder_scroll.remove(&id);
             match here.parent() {
                 Some(parent) if parent.starts_with(anchor) => {
                     self.folder_at.insert(id, parent.to_path_buf());
@@ -3232,6 +3273,56 @@ impl FieldScreen {
             }
         }
         body
+    }
+
+    fn folder_listing<'a>(
+        ui: &mut Ui<'_>,
+        list: Rect,
+        row_height: i32,
+        result: Option<&'a Result<DirectoryListing, String>>,
+    ) -> Option<&'a DirectoryListing> {
+        let Some(listing) = result else {
+            ui.label_styled(
+                list,
+                "reading…",
+                design::state_style(ui),
+                design::TEXT_FAINT,
+                Align::Left,
+            );
+            return None;
+        };
+        let listing = match listing {
+            Ok(listing) => listing,
+            Err(error) => {
+                let (heading, detail) = list.split_top(row_height);
+                ui.label_styled(
+                    heading,
+                    "Could not read folder",
+                    design::state_style(ui),
+                    design::DANGER,
+                    Align::Left,
+                );
+                ui.label_styled(
+                    detail.split_top((row_height * 2).min(detail.h)).0,
+                    error,
+                    design::state_style(ui),
+                    design::TEXT_DIM,
+                    Align::Left,
+                );
+                return None;
+            }
+        };
+        if listing.entries.is_empty() {
+            ui.label_styled(
+                list,
+                "empty",
+                design::state_style(ui),
+                design::TEXT_FAINT,
+                Align::Left,
+            );
+            return None;
+        }
+        Some(listing)
     }
 
     /// A folder window's body: what is actually in the directory, listed.
@@ -3269,26 +3360,17 @@ impl FieldScreen {
         Self::paint_folder_toggle(ui, toggle, id, data, actions);
         let list = self.paint_folder_crumb(ui, crumb_area, id, anchor, &here, body);
         actions.push(FieldAction::BrowseFolder(here.clone()));
-        let Some(listing) = data.folder_listings.get(&here) else {
-            ui.label_styled(
-                list,
-                "reading…",
-                design::state_style(ui),
-                design::TEXT_FAINT,
-                Align::Left,
-            );
+        let Some(listing) =
+            Self::folder_listing(ui, list, row_height, data.folder_listings.get(&here))
+        else {
             return;
         };
-        if listing.entries.is_empty() {
-            ui.label_styled(
-                list,
-                "empty",
-                design::state_style(ui),
-                design::TEXT_FAINT,
-                Align::Left,
-            );
-            return;
-        }
+        let (list, footer) = if listing.truncated {
+            let (list, footer) = list.split_bottom(row_height);
+            (list, Some(footer))
+        } else {
+            (list, None)
+        };
         let heights = vec![row_height; listing.entries.len()];
         let scroll = self.folder_scroll.entry(id).or_default();
         let mut chosen = None;
@@ -3332,10 +3414,9 @@ impl FieldScreen {
                 actions.push(FieldAction::OpenFile(entry.path.clone()));
             }
         }
-        if listing.truncated {
+        if let Some(foot) = footer {
             // Saying so beats a list that silently stops: the cap is the service's, and the way
             // past it is the standalone manager.
-            let (_, foot) = list.split_bottom(row_height);
             ui.label_styled(
                 foot,
                 &format!("first {} shown", listing.limit),
@@ -4777,6 +4858,23 @@ mod tests {
         h.input.mouse(MouseButton::Left, false);
         h.frame();
         assert!(h.screen.marquee.is_none());
+    }
+
+    #[test]
+    fn help_scrolls_by_keyboard_and_wheel_without_losing_its_close_route() {
+        let mut h = Harness::new();
+        h.key(KeyInput::Function(1));
+        assert_eq!(h.screen.help_scroll.offset(), 0);
+        h.key(KeyInput::End);
+        assert!(h.screen.help_scroll.offset() > 0);
+        h.key(KeyInput::Home);
+        assert_eq!(h.screen.help_scroll.offset(), 0);
+        h.input.cursor_moved(300.0, 300.0);
+        h.input.scrolled(0.0, 300.0);
+        h.frame();
+        assert!(h.screen.help_scroll.offset() > 0);
+        h.key(KeyInput::Escape);
+        assert!(!h.screen.help_open);
     }
 
     #[test]

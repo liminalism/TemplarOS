@@ -145,10 +145,13 @@ pub const MENU: &[MenuItem] = &[
 pub const FILES_MENU: &[MenuItem] = &[
     MenuItem::new("files.open", MenuScope::FileRow),
     MenuItem::new("files.open-terminal", MenuScope::FileRow),
+    MenuItem::new("files.copy", MenuScope::FileRow),
+    MenuItem::new("files.cut", MenuScope::FileRow),
     MenuItem::new("files.copy-path", MenuScope::FileRow),
     MenuItem::new("files.rename", MenuScope::FileRow),
     MenuItem::new("files.properties", MenuScope::FileRow),
     MenuItem::new("files.trash", MenuScope::FileRow),
+    MenuItem::new("files.open-terminal", MenuScope::FilesDirectory),
     MenuItem::new("files.new-folder", MenuScope::FilesDirectory),
     MenuItem::new("files.paste", MenuScope::FilesDirectory),
     MenuItem::new("files.select-all", MenuScope::FilesGround),
@@ -274,6 +277,8 @@ struct Open {
     armed: Option<&'static str>,
     /// Keyboard cursor, so the menu itself is not pointer-only either.
     highlighted: Option<usize>,
+    /// First visible row when the menu exceeds the output height.
+    first: usize,
 }
 
 /// The field's context menu: closed, or open over one target.
@@ -318,6 +323,7 @@ impl ContextMenu {
             choices,
             armed: None,
             highlighted: None,
+            first: 0,
         });
     }
 
@@ -337,6 +343,7 @@ impl ContextMenu {
             choices: Vec::new(),
             armed: None,
             highlighted: None,
+            first: 0,
         });
     }
 
@@ -363,14 +370,38 @@ impl ContextMenu {
     pub fn row(&self, ui: &Ui<'_>, area: Rect, index: usize) -> Option<Rect> {
         let rect = self.rect(ui, area)?;
         let open = self.open.as_ref()?;
-        (index < open.rows.len() + open.choices.len()).then(|| Self::row_rect(rect, ui, index))
+        let (body, capacity, _) = Self::viewport(rect, ui, open.rows.len() + open.choices.len());
+        (index >= open.first
+            && index < open.first + capacity
+            && index < open.rows.len() + open.choices.len())
+        .then(|| Self::row_rect(body, ui, index - open.first))
     }
 
-    fn row_rect(rect: Rect, ui: &Ui<'_>, index: usize) -> Rect {
+    /// Overflow reserves two pointer controls; rows never extend beyond the viewport.
+    fn viewport(rect: Rect, ui: &Ui<'_>, count: usize) -> (Rect, usize, bool) {
+        let inner = rect.inset(ui.px(PADDING));
+        let height = ui.px(ROW_HEIGHT).max(1);
+        let overflow = count as i32 * height > inner.h;
+        let control = if overflow {
+            ui.px(20).min(inner.h.max(0) / 3)
+        } else {
+            0
+        };
+        let body = Rect::new(
+            inner.x,
+            inner.y + control,
+            inner.w,
+            (inner.h - control * 2).max(0),
+        );
+        let capacity = (body.h / height).max(0) as usize;
+        (body, capacity, overflow)
+    }
+
+    fn row_rect(body: Rect, ui: &Ui<'_>, index: usize) -> Rect {
         Rect::new(
-            rect.x + ui.px(PADDING),
-            rect.y + ui.px(PADDING) + ui.px(ROW_HEIGHT) * index as i32,
-            rect.w - ui.px(PADDING) * 2,
+            body.x,
+            body.y + ui.px(ROW_HEIGHT) * index as i32,
+            body.w,
             ui.px(ROW_HEIGHT),
         )
     }
@@ -388,6 +419,10 @@ impl ContextMenu {
         let open = self.open.as_mut()?;
         let count = open.rows.len() + open.choices.len();
 
+        let (body, capacity, overflow) = Self::viewport(rect, ui, count);
+        let last_first = count.saturating_sub(capacity);
+        open.first = open.first.min(last_first);
+        let mut navigated = false;
         let mut committed = false;
         for key in keys {
             match key {
@@ -396,9 +431,11 @@ impl ContextMenu {
                     return None;
                 }
                 KeyInput::Down => {
+                    navigated = true;
                     open.highlighted = Some(open.highlighted.map_or(0, |at| (at + 1) % count));
                 }
                 KeyInput::Up => {
+                    navigated = true;
                     open.highlighted = Some(
                         open.highlighted
                             .map_or(count - 1, |at| (at + count - 1) % count),
@@ -409,12 +446,23 @@ impl ContextMenu {
             }
         }
 
+        if navigated && let Some(index) = open.highlighted {
+            if index < open.first {
+                open.first = index;
+            }
+            if index >= open.first + capacity {
+                open.first = (index + 1).saturating_sub(capacity).min(last_first);
+            }
+        }
+        if overflow && Self::scroll_menu(open, ui, rect, body, capacity) {
+            return None;
+        }
         let mut picked = None;
         if committed && let Some(index) = open.highlighted {
             picked = Some(index);
         }
-        for index in 0..count {
-            let row = Self::row_rect(rect, ui, index);
+        for index in open.first..(open.first + capacity).min(count) {
+            let row = Self::row_rect(body, ui, index - open.first);
             if ui.input.take_click(row) {
                 picked = Some(index);
             }
@@ -453,24 +501,114 @@ impl ContextMenu {
         None
     }
 
-    /// Draw the menu over everything else. Purely visual — [`update`](Self::update) already took
-    /// the input this frame.
-    pub fn paint(&self, ui: &mut Ui<'_>, area: Rect) {
-        let (Some(rect), Some(open)) = (self.rect(ui, area), self.open.as_ref()) else {
-            return;
-        };
+    fn scroll_menu(
+        open: &mut Open,
+        ui: &mut Ui<'_>,
+        rect: Rect,
+        body: Rect,
+        capacity: usize,
+    ) -> bool {
+        let last_first = (open.rows.len() + open.choices.len()).saturating_sub(capacity);
+        let inner = rect.inset(ui.px(PADDING));
+        let up = Rect::new(inner.x, inner.y, inner.w, body.y - inner.y);
+        let down = Rect::new(
+            inner.x,
+            body.bottom(),
+            inner.w,
+            inner.bottom() - body.bottom(),
+        );
+        let (_, dy) = ui.input.take_scroll(rect);
+        let previous = ui.input.take_click(up);
+        let next = ui.input.take_click(down);
+        if previous || next || dy != 0.0 {
+            let step = if previous || next {
+                capacity.max(1)
+            } else {
+                (dy.abs() / ui.px(ROW_HEIGHT).max(1) as f32).ceil() as usize
+            };
+            open.first = if previous || dy < 0.0 {
+                open.first.saturating_sub(step)
+            } else {
+                open.first.saturating_add(step).min(last_first)
+            };
+            open.highlighted = None;
+            open.armed = None;
+            return true;
+        }
+        false
+    }
+
+    fn paint_scroll_controls(ui: &mut Ui<'_>, rect: Rect, body: Rect, previous: bool, next: bool) {
+        let inner = rect.inset(ui.px(PADDING));
+        for (control, label, enabled) in [
+            (
+                Rect::new(inner.x, inner.y, inner.w, body.y - inner.y),
+                "↑  More",
+                previous,
+            ),
+            (
+                Rect::new(
+                    inner.x,
+                    body.bottom(),
+                    inner.w,
+                    inner.bottom() - body.bottom(),
+                ),
+                "↓  More",
+                next,
+            ),
+        ] {
+            if enabled && ui.input.hovering(control) {
+                ui.painter.fill_rect(control, design::ACCENT_SOFT);
+            }
+            ui.label_styled(
+                control,
+                label,
+                design::state_style(ui),
+                if enabled {
+                    design::TEXT
+                } else {
+                    design::TEXT_FAINT
+                },
+                Align::Centre,
+            );
+        }
+    }
+
+    fn paint_shell(ui: &mut Ui<'_>, rect: Rect) {
         ui.painter
             .shadow_rect(rect, ui.px(3), ui.px(6), design::TEXT, 70);
         ui.painter
             .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::SHELL);
         ui.painter
             .stroke_rect(rect, ui.scale.hairline(), design::EDGE_STRONG);
+    }
 
+    /// Draw the menu over everything else. Purely visual — [`update`](Self::update) already took
+    /// the input this frame.
+    pub fn paint(&self, ui: &mut Ui<'_>, area: Rect) {
+        let (Some(rect), Some(open)) = (self.rect(ui, area), self.open.as_ref()) else {
+            return;
+        };
+        Self::paint_shell(ui, rect);
+
+        let count = open.rows.len() + open.choices.len();
+        let (body, capacity, overflow) = Self::viewport(rect, ui, count);
+        if overflow {
+            Self::paint_scroll_controls(
+                ui,
+                rect,
+                body,
+                open.first > 0,
+                open.first + capacity < count,
+            );
+        }
         for (index, item) in open.rows.iter().enumerate() {
             let Some(declaration) = item.declaration() else {
                 continue;
             };
-            let row = Self::row_rect(rect, ui, index);
+            let Some(row) = self.row(ui, area, index) else {
+                continue;
+            };
             let armed = open.armed == Some(item.action);
             let hovered = ui.input.hovering(row) || open.highlighted == Some(index);
             let destructive = declaration.confirm;
@@ -526,7 +664,9 @@ impl ContextMenu {
         // a name and a provenance, not a verb.
         for (offset, choice) in open.choices.iter().enumerate() {
             let index = open.rows.len() + offset;
-            let row = Self::row_rect(rect, ui, index);
+            let Some(row) = self.row(ui, area, index) else {
+                continue;
+            };
             if ui.input.hovering(row) || open.highlighted == Some(index) {
                 ui.painter
                     .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), design::ACCENT_SOFT);
@@ -558,6 +698,93 @@ impl ContextMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_ui<T>(input: &mut pixelkit_shell::Input, f: impl FnOnce(&mut Ui<'_>) -> T) -> T {
+        let mut buffer = pixelkit_raster::WindowBuffer::new(400, 240);
+        let mut text = pixelkit_text::TextCache::new(crate::surface::fonts::set());
+        let mut kernel = pixelkit_raster::RasterKernel::new();
+        let mut ui = Ui::new(
+            pixelkit_raster::Painter::new(&mut buffer),
+            &mut text,
+            input,
+            design::theme(),
+            pixelkit_shell::Scale::ONE,
+            &mut kernel,
+        );
+        f(&mut ui)
+    }
+
+    #[test]
+    fn overflowing_menu_reaches_last_action_without_offscreen_hit_targets() {
+        let mut menu = ContextMenu::default();
+        menu.open_at(
+            (390, 230),
+            MenuTarget {
+                window: Some(WindowId(3)),
+                tile: Some(TileId(7)),
+                ..MenuTarget::default()
+            },
+        );
+        let mut input = pixelkit_shell::Input::new();
+        let area = Rect::new(0, 0, 400, 240);
+        let count = menu.open.as_ref().unwrap().rows.len();
+        with_ui(&mut input, |ui| {
+            assert!(menu.row(ui, area, count - 1).is_none());
+            let rect = menu.rect(ui, area).unwrap();
+            for index in 0..count {
+                if let Some(row) = menu.row(ui, area, index) {
+                    assert!(row.y >= rect.y && row.bottom() <= rect.bottom());
+                }
+            }
+        });
+        // Up wraps to Close and scrolls it into view. Confirmation remains two presses.
+        input.key(KeyInput::Up);
+        with_ui(&mut input, |ui| {
+            assert!(menu.update(ui, area).is_none());
+        });
+        let row = with_ui(&mut input, |ui| menu.row(ui, area, count - 1).unwrap());
+        assert!(row.bottom() <= area.bottom());
+        input.cursor_moved((row.x + 5) as f32, (row.y + 5) as f32);
+        input.mouse(pixelkit_shell::MouseButton::Left, true);
+        with_ui(&mut input, |ui| {
+            assert!(menu.update(ui, area).is_none());
+        });
+        input.end_frame();
+        input.mouse(pixelkit_shell::MouseButton::Left, false);
+        input.mouse(pixelkit_shell::MouseButton::Left, true);
+        let chosen = with_ui(&mut input, |ui| menu.update(ui, area).unwrap());
+        assert_eq!(chosen.action, "window.close");
+        assert_eq!(chosen.target.window, Some(WindowId(3)));
+    }
+
+    #[test]
+    fn overflowing_menu_can_page_by_pointer_and_wheel() {
+        let mut menu = ContextMenu::default();
+        menu.open_at((0, 0), MenuTarget::default());
+        let mut input = pixelkit_shell::Input::new();
+        let area = Rect::new(0, 0, 400, 240);
+        let count = menu.open.as_ref().unwrap().rows.len();
+        let rect = with_ui(&mut input, |ui| menu.rect(ui, area).unwrap());
+        input.cursor_moved((rect.x + 20) as f32, (rect.bottom() - 10) as f32);
+        for _ in 0..count {
+            input.mouse(pixelkit_shell::MouseButton::Left, true);
+            with_ui(&mut input, |ui| {
+                assert!(menu.update(ui, area).is_none());
+            });
+            input.end_frame();
+            input.mouse(pixelkit_shell::MouseButton::Left, false);
+        }
+        with_ui(&mut input, |ui| {
+            assert!(menu.row(ui, area, count - 1).is_some());
+        });
+        input.scrolled(0.0, -10000.0);
+        with_ui(&mut input, |ui| {
+            assert!(menu.update(ui, area).is_none());
+        });
+        with_ui(&mut input, |ui| {
+            assert!(menu.row(ui, area, 0).is_some());
+        });
+    }
 
     /// A copy-of-an-application row is offered under the declared ones, carries which copy it
     /// stands for, and performs the one declared action for all of them. An application with a
@@ -601,7 +828,7 @@ mod tests {
             menu.row(
                 &Ui::new(
                     pixelkit_raster::Painter::new(&mut pixelkit_raster::WindowBuffer::new(
-                        400, 400
+                        400, 1200
                     )),
                     &mut pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                     &mut pixelkit_shell::Input::new(),
@@ -609,7 +836,7 @@ mod tests {
                     pixelkit_shell::Scale::ONE,
                     &mut pixelkit_raster::RasterKernel::new(),
                 ),
-                Rect::new(0, 0, 400, 400),
+                Rect::new(0, 0, 400, 1200),
                 declared + 1,
             )
             .is_some(),

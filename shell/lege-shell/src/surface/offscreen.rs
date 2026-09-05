@@ -206,7 +206,14 @@ mod tests {
         // 1280x832 -> a 12x8 grid: roomy enough that every object class — drawers, widgets,
         // the system shelf, a project, a window group, a bound folder and a shortcut pane —
         // actually places, so the baseline reviews all of their material roles at once.
-        let (width, height) = (1280_u32, 832_u32);
+        let size = std::env::var("LEGE_BASELINE_SIZE").ok();
+        let (width, height) = size.as_deref().map_or((1280_u32, 832_u32), |size| {
+            let (width, height) = size.split_once('x').expect("WIDTHxHEIGHT");
+            (
+                width.parse().expect("width"),
+                height.parse().expect("height"),
+            )
+        });
         let (cols, rows) =
             field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
         let mut field = lege_field::FieldDocument::new("visual-baseline", cols, rows);
@@ -439,6 +446,10 @@ mod tests {
                     "/home/fixture".into(),
                 ));
         }
+        // Review Help without opening a desktop session; the resting-field hash stays intact.
+        if std::env::var("LEGE_BASELINE_HELP").is_ok() {
+            screen.help_open = true;
+        }
         for _ in 0..2 {
             let mut ui = Ui::new(
                 Painter::new(&mut buffer),
@@ -449,6 +460,20 @@ mod tests {
                 &mut kernel,
             );
             screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
+            if std::env::var("LEGE_BASELINE_MENU").is_ok() {
+                let mut menu = crate::surface::context_menu::ContextMenu::default();
+                menu.open_at(
+                    (width as i32 - 30, 100),
+                    crate::surface::context_menu::MenuTarget {
+                        tile: Some(lege_field::TileId(7)),
+                        window: Some(lege_window::WindowId(1)),
+                        shelved: true,
+                        in_window_group: true,
+                        ..crate::surface::context_menu::MenuTarget::default()
+                    },
+                );
+                menu.paint(&mut ui, Rect::new(0, 0, width as i32, height as i32));
+            }
             input.end_frame();
         }
 
@@ -457,6 +482,9 @@ mod tests {
         }
         if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok()
             || std::env::var("LEGE_BASELINE_FILES").is_ok()
+            || std::env::var("LEGE_BASELINE_HELP").is_ok()
+            || std::env::var("LEGE_BASELINE_MENU").is_ok()
+            || size.is_some()
         {
             return;
         }

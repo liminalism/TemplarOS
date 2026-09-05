@@ -209,6 +209,7 @@ pub struct FilesBrowseView {
     /// (`crate::surface::context_menu`) with the Files object's own row table, so a verb cannot
     /// mean one thing on the toolbar and another in the menu.
     menu: crate::surface::context_menu::ContextMenu,
+    menu_on_ground: bool,
 }
 
 /// Renaming one item: which one, what the person has typed, and why it is refused so far.
@@ -414,6 +415,7 @@ impl FilesBrowseView {
                 directory: state.directory().is_some(),
             };
             if let Some(at) = ui.input.cursor() {
+                self.menu_on_ground = true;
                 self.menu.open_rows_at(at, target.rows());
             }
         }
@@ -536,6 +538,15 @@ impl FilesBrowseView {
         entries: &[BrowseEntry],
     ) -> Option<FileBrowserAction> {
         match action {
+            "files.open-terminal" if self.menu_on_ground => {
+                Some(FileBrowserAction::File(FileRequest {
+                    verb: FileVerb::OpenTerminal,
+                    paths: vec![directory?.to_path_buf()],
+                    directory: directory.map(Path::to_path_buf),
+                    new_name: None,
+                    query: None,
+                }))
+            }
             "files.open" => {
                 let entry = entries.get(state.focus)?;
                 let entry = entry.clone();
@@ -1340,6 +1351,7 @@ impl FilesBrowseView {
                 row: true,
                 directory: state.directory().is_some(),
             };
+            self.menu_on_ground = false;
             self.menu.open_rows_at(at, target.rows());
         }
         if truncated {
@@ -1548,6 +1560,8 @@ mod tests {
             vec![
                 "files.open",
                 "files.open-terminal",
+                "files.copy",
+                "files.cut",
                 "files.copy-path",
                 "files.rename",
                 "files.properties",
@@ -1557,6 +1571,7 @@ mod tests {
         assert_eq!(
             menu_rows(false, true),
             vec![
+                "files.open-terminal",
                 "files.new-folder",
                 "files.paste",
                 "files.select-all",
@@ -1623,6 +1638,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_on_directory_ground_ignores_selection_and_empty_folders_work() {
+        let mut harness = Harness::new();
+        harness.frame();
+        let directory = PathBuf::from("/home/test/Downloads");
+        let entries = harness.listing.entries.clone();
+        for selected in [vec![], vec!["/home/test/Downloads/paper.pdf"]] {
+            harness.select(&selected);
+            harness.screen.menu_on_ground = true;
+            let result = harness.screen.run_menu_action(
+                "files.open-terminal",
+                &mut harness.state,
+                Some(&directory),
+                &entries,
+            );
+            let Some(FileBrowserAction::File(request)) = result else {
+                panic!("missing terminal request");
+            };
+            assert_eq!(request.verb, FileVerb::OpenTerminal);
+            assert_eq!(request.paths, vec![directory.clone()]);
+        }
+        harness.screen.menu_on_ground = false;
+        let Some(FileBrowserAction::File(request)) = harness.screen.run_menu_action(
+            "files.open-terminal",
+            &mut harness.state,
+            Some(&directory),
+            &entries,
+        ) else {
+            panic!("missing row terminal request");
+        };
+        assert_eq!(
+            request.paths,
+            vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
+        );
+        harness.screen.menu_on_ground = true;
+        assert!(
+            harness
+                .screen
+                .run_menu_action("files.open-terminal", &mut harness.state, None, &entries)
+                .is_none()
+        );
+    }
+
     /// The three rows that are moves of the view rather than requests to a service reach the
     /// same state the toolbar's own controls do.
     #[test]
@@ -1684,8 +1742,11 @@ mod tests {
             "the menu is about the row it was opened over"
         );
 
-        // Row 5 of six, at the pointer: 5px of padding, then 28px rows.
-        let trashed = verb_of(harness.click(534.0, 327.0));
+        let index = menu_rows(true, true)
+            .iter()
+            .position(|id| *id == "files.trash")
+            .unwrap();
+        let trashed = verb_of(harness.click(534.0, 168.0 + 5.0 + 28.0 * index as f32 + 14.0));
         assert_eq!(
             trashed,
             Some((
@@ -1702,8 +1763,11 @@ mod tests {
         let mut harness = Harness::new();
         harness.frame();
         assert_eq!(harness.context_click(400.0, 400.0), None);
-        // Row 0 is New folder.
-        let asked = verb_of(harness.click(534.0, 419.0));
+        let index = menu_rows(false, true)
+            .iter()
+            .position(|id| *id == "files.new-folder")
+            .unwrap();
+        let asked = verb_of(harness.click(534.0, 400.0 + 5.0 + 28.0 * index as f32 + 14.0));
         assert_eq!(asked.map(|(verb, _)| verb), Some(FileVerb::NewFolder));
     }
 
