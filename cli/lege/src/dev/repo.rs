@@ -707,8 +707,9 @@ impl Repo {
         // as root anyway.
         if fs::read_dir(self.gnupg()).is_err() {
             problems.push(format!(
-                "the signing key directory {} is not readable by this user, so the signatures \
-                 were not checked; run as root to verify them",
+                "the signing key directory {} is missing or not readable by this user, so the \
+                 signatures were not checked; as root, or after the next publish makes a key, \
+                 they can be",
                 self.gnupg().display()
             ));
             return problems;

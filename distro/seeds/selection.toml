@@ -475,6 +475,42 @@ name = "pkg-config"
 reason = "how the -sys crates find the libraries build-essential can link"
 
 # ---------------------------------------------------------------------------------------------
+# live — the installation medium only (distro/iso/build.sh). Not in the image, not in any
+# metapackage: an installed LegeOS carries none of this. The live session's own autologin and
+# passwordless sudo are written by the ISO build, labelled LIVE MEDIUM ONLY, and never packaged.
+# ---------------------------------------------------------------------------------------------
+[[layer]]
+id = "live"
+title = "live medium: boot from the ISO and run the provisioner"
+kind = "optional"
+image = false
+stage = "seeds"
+
+[[layer.package]]
+name = "casper"
+reason = "Ubuntu's live-boot initramfs hooks: finds the medium, mounts the squashfs, makes it writable"
+
+[[layer.package]]
+name = "mmdebstrap"
+reason = "the provisioner bootstraps the target's Ubuntu base with it (debootstrap is its fallback)"
+
+[[layer.package]]
+name = "gdisk"
+reason = "sgdisk: the provisioner reads and extends GPT tables with it"
+
+[[layer.package]]
+name = "efibootmgr"
+reason = "registers the LegeOS firmware entry for the new ESP, appended to the boot order"
+
+[[layer.package]]
+name = "shim-signed"
+reason = "the live medium's own boot chain is built from the Canonical-signed shim in the rootfs"
+
+[[layer.package]]
+name = "grub-efi-amd64-signed"
+reason = "the Canonical-signed removable-media GRUB (gcdx64.efi.signed) that boots the ISO"
+
+# ---------------------------------------------------------------------------------------------
 # dev-cuda — CUDA development, kept strictly apart from dev-rust so one can be absent.
 # Not in the image: the dev/VM image has no NVIDIA GPU. Selected on the reference laptop through
 # legeos-dev-cuda. D4 owns the exact pinned list and sends it by message (C4 -> C1).

@@ -75,6 +75,12 @@ vendor:
 forks-fetch:
     distro/forks/fetch.sh
 
+# The installation medium: a live ISO carrying the archive's current set (distro/iso/build.sh).
+# Needs a non-NTFS build volume (ISO-PLAN.md P0.2) and a published set (`just deb`, then
+# `sudo lege dev repo publish`).
+iso *args:
+    ./distro/iso/build.sh {{args}}
+
 # Compose mkosi package list from seeds, render os-release, validate (build needs mkosi + network)
 image action="summary":
     ./distro/image/compose.sh

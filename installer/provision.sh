@@ -45,7 +45,10 @@ LEGEOS_DEV_CUDA="${LEGEOS_DEV_CUDA:-legeos-dev-cuda}"
 # has its own. Where it ends up is always the target's /var/lib/legeos/devrepo, so the installed
 # system's `lege dev` finds the set it was installed from and reports itself converged.
 if [ -z "${DEVREPO_ROOT:-}" ]; then
-    if [ -d /legeos/devrepo ]; then DEVREPO_ROOT=/legeos/devrepo; else DEVREPO_ROOT=/var/lib/legeos/devrepo; fi
+    DEVREPO_ROOT=/var/lib/legeos/devrepo
+    for medium in /cdrom/legeos/devrepo /legeos/devrepo; do   # casper mounts the ISO at /cdrom
+        [ -d "$medium" ] && { DEVREPO_ROOT="$medium"; break; }
+    done
 fi
 TARGET_DEVREPO=/var/lib/legeos/devrepo
 DEVREPO_MARKER="${DEVREPO_MARKER:-current}"   # current | previous. `staged` is never installable.
@@ -283,7 +286,7 @@ free-space)
     run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:LEGEOS_ESP" "$target"
     run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:legeos-root" "$target"
     if [ -b "$target" ]; then
-        run partprobe "$target"
+        run partx --update "$target"
         esp_part="$(part_node "$target" "$n_esp")"; root_part="$(part_node "$target" "$n_root")"
     else
         attach_loop
