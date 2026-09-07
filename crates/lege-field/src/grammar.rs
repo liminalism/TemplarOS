@@ -1,5 +1,6 @@
-//! The restrained semantic grammar of drops (`docs/homefield.md` "A restrained semantic
-//! grammar"): the source's kind and what it is dropped on determine one named operation, or
+//! The restrained semantic grammar of drops
+//! (`@legeos.decision.home-field-stable-bounded-semantic-grammar`): the source's kind and what it
+//! is dropped on determine one named operation, or
 //! plain placement. Small enough to learn, and announced in text before release — when no
 //! operation is named, only placement changes.
 //!
@@ -100,6 +101,15 @@ pub enum Operation {
     GroupIntoNewProject {
         with: TileId,
     },
+    /// Two application tiles become an app group: a container of favourites on Home, with no
+    /// project and no directory behind it.
+    GroupIntoAppGroup {
+        with: TileId,
+    },
+    /// An application tile dropped on an app group joins it.
+    AddToAppGroup {
+        group: TileId,
+    },
     /// Put this window in that one's window group (`lege_shell_toplevel_v1.join_group`), making
     /// one of the two when there is none yet. `with` is either another session tile or a group
     /// tile; either way the compositor decides what the group becomes, and the Home tile follows
@@ -136,6 +146,8 @@ impl Operation {
             Self::ScopeWidget { .. } => Some("SCOPE TO PROJECT"),
             Self::AddToProject { .. } => Some("ADD TO PROJECT"),
             Self::GroupIntoNewProject { .. } => Some("NEW PROJECT FROM THESE TWO"),
+            Self::GroupIntoAppGroup { .. } => Some("NEW APP GROUP"),
+            Self::AddToAppGroup { .. } => Some("ADD TO GROUP"),
             Self::JoinWindowGroup { .. } => Some("GROUP THESE WINDOWS"),
             Self::LeaveWindowGroup => Some("TAKE OUT OF GROUP"),
             // Named in full, and named differently from each other, because these are the two
@@ -206,7 +218,9 @@ pub fn operation_for(
                 return None;
             }
             Some(match source {
-                TileKind::Project { .. } | TileKind::WindowGroup { .. } => return None,
+                TileKind::Project { .. }
+                | TileKind::WindowGroup { .. }
+                | TileKind::AppGroup { .. } => return None,
                 TileKind::App { .. } => Operation::PinTool { project: *id },
                 TileKind::ParkedSession { .. } => Operation::ParkSession { project: *id },
                 TileKind::Widget { .. } => Operation::ScopeWidget { project: *id },
@@ -232,6 +246,15 @@ pub fn operation_for(
                 // lighter of the two things and the one that was actually meant.
                 (TileKind::ParkedSession { .. }, TileKind::ParkedSession { .. }) => {
                     Some(Operation::JoinWindowGroup { with: *id })
+                }
+                // Two applications put together are favourites kept together — an app group,
+                // not a project: a project is a place work lives, with a directory behind it,
+                // and nobody dropping one shortcut on another asked for a directory.
+                (TileKind::App { .. }, TileKind::App { .. }) => {
+                    Some(Operation::GroupIntoAppGroup { with: *id })
+                }
+                (TileKind::App { .. }, TileKind::AppGroup { .. }) => {
+                    Some(Operation::AddToAppGroup { group: *id })
                 }
                 (TileKind::File { .. }, TileKind::App { .. }) if *accepts_open => {
                     Some(Operation::OpenWith { app: *id })
@@ -260,14 +283,16 @@ pub fn operation_for(
                 (
                     TileKind::Folder { .. }
                     | TileKind::Project { .. }
-                    | TileKind::WindowGroup { .. },
+                    | TileKind::WindowGroup { .. }
+                    | TileKind::AppGroup { .. },
                     _,
                 )
                 | (
                     _,
                     TileKind::Folder { .. }
                     | TileKind::Project { .. }
-                    | TileKind::WindowGroup { .. },
+                    | TileKind::WindowGroup { .. }
+                    | TileKind::AppGroup { .. },
                 ) => None,
                 _ => Some(Operation::GroupIntoNewProject { with: *id }),
             }
@@ -373,13 +398,78 @@ mod tests {
     }
 
     #[test]
-    fn two_loose_tiles_group_into_a_new_project_but_never_a_tile_with_itself() {
+    fn two_applications_make_an_app_group_and_a_third_joins_it() {
         let app = TileKind::App {
             app_id: "org.legeos.Files".parse().unwrap(),
         };
         let other = Target::Tile {
             id: TileId(2),
             kind: app.clone(),
+            accepts_open: false,
+        };
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &app,
+                &other,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            Some(Operation::GroupIntoAppGroup { with: TileId(2) })
+        );
+        let group = Target::Tile {
+            id: TileId(3),
+            kind: TileKind::AppGroup {
+                group_id: "g".into(),
+            },
+            accepts_open: false,
+        };
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &app,
+                &group,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            Some(Operation::AddToAppGroup { group: TileId(3) })
+        );
+        // A group never groups into a tile, and nothing but an application joins one.
+        assert_eq!(
+            operation_for(
+                TileId(3),
+                &TileKind::AppGroup {
+                    group_id: "g".into(),
+                },
+                &other,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            None
+        );
+        assert_eq!(
+            operation_for(
+                TileId(1),
+                &file(),
+                &group,
+                DropOrigin::LOOSE,
+                DropModifiers::default()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn two_loose_tiles_group_into_a_new_project_but_never_a_tile_with_itself() {
+        let app = TileKind::Widget {
+            widget: "calendar".into(),
+            scope: None,
+        };
+        let other = Target::Tile {
+            id: TileId(2),
+            kind: TileKind::System {
+                probe: "drives".into(),
+            },
             accepts_open: false,
         };
         assert_eq!(

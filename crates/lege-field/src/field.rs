@@ -101,7 +101,7 @@ pub struct Container {
 }
 
 /// A non-destructive collection of references. Adding a file to a tray adds a path here; the
-/// file itself never moves (`docs/homefield.md` "Keep file operations non-destructive").
+/// file itself never moves (`@legeos.decision.home-field-stable-bounded-semantic-grammar`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tray {
     pub id: TrayId,

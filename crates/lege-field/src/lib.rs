@@ -1,4 +1,4 @@
-//! The Home Field model (`docs/homefield.md`): a bounded grid of rectangular tiles — projects,
+//! The Home Field model (`@legeos.decision.home-field-stable-bounded-semantic-grammar`): a bounded grid of rectangular tiles — projects,
 //! applications and parked sessions, file trays, widgets, system tiles — that is the desktop
 //! surface of LegeOS. No wallpaper, no icons, no taskbar: the field is a materialised model of
 //! current work, and windows collapse into it and expand back out of it.
@@ -25,7 +25,7 @@
 //! it without either dragging the other's world in, and every invariant is property-tested here
 //! (`tests/field.rs`) rather than discovered in a running session.
 //!
-//! Two layout systems, deliberately ([`docs/homefield.md`] "How the supplied treemap work fits"):
+//! Two layout systems, deliberately (`@legeos.decision.home-field-stable-bounded-semantic-grammar`):
 //! the field's own grid optimises *stability* — nothing moves unless the user moved it — while a
 //! tray's interior may use a byte-proportional treemap. This crate is only the former.
 
@@ -50,7 +50,7 @@ pub use field::{
 };
 pub use grammar::{DropModifiers, DropOrigin, Operation, Target, operation_for};
 pub use migrate::{DOCUMENT_MIGRATIONS, DocumentMigration, LoadError, load_document};
-pub use ops::{FieldError, FieldOp, apply, reshape};
+pub use ops::{FieldError, FieldOp, apply, folder_tile, place_folder_op, reshape};
 pub use panel::{Arrangement, Edge, Orientation, Panel, PanelId, arrangement_layout, panel_id_for};
 pub use reflow::{LayoutCost, Reflow};
 pub use selection::Selection;

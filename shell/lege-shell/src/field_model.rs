@@ -180,14 +180,7 @@ pub fn session_identifier(toplevel: &ShellToplevel, foreign: Option<&str>) -> St
 /// Stable tile ids: a hash of what the tile stands for, so the same app or window gets the same
 /// tile across refreshes and restarts, and focus or a drag never lands on a renumbered tile.
 pub fn tile_id_for(key: &str) -> TileId {
-    // FNV-1a, 64-bit. Collisions are astronomically unlikely for a few hundred keys; `merge`
-    // still checks for one and skips the second tile rather than corrupting the first.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in key.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    TileId(hash.max(1))
+    TileId::for_key(key)
 }
 
 /// One window as the field sees it: which tile is its, and whether that window is parked.
@@ -292,47 +285,9 @@ pub fn folder_tile_id(path: &Path) -> TileId {
 /// every one of those is something the field already does for tiles. There is no second windowing
 /// system inside the shell.
 pub fn open_folder_ops(doc: &FieldDocument, path: &Path) -> Vec<FieldOp> {
-    let id = folder_tile_id(path);
-    if doc.tile(id).is_some() {
-        return Vec::new();
-    }
-    let kind = TileKind::Folder {
-        path: path.to_path_buf(),
-    };
-    let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-    let title = path.file_name().map_or_else(
-        || path.to_string_lossy().into_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let landing = Landing {
-        container: None,
-        cell: first_free_cell(doc, spans.preferred),
-    };
-    vec![FieldOp::Place {
-        tile: Tile {
-            id,
-            kind,
-            title,
-            spans,
-            accent: None,
-        },
-        landing,
-    }]
-}
-
-/// The first cell, reading the field the way a page is read, where a `span`-sized tile fits with
-/// nothing under it. `Cell::new(0, 0)` when the field is full: the place op then displaces
-/// whatever is there, which is what the reflow is for and is better than refusing to open.
-fn first_free_cell(doc: &FieldDocument, span: Span) -> Cell {
-    for row in 0..doc.rows {
-        for col in 0..doc.cols {
-            let candidate = Placement::new(Cell::new(col, row), span);
-            if candidate.fits(doc.cols, doc.rows) && doc.is_free(None, candidate, None) {
-                return candidate.cell;
-            }
-        }
-    }
-    Cell::new(0, 0)
+    lege_field::place_folder_op(doc, folder_tile_id(path), path)
+        .into_iter()
+        .collect()
 }
 
 /// The XDG Desktop directory as one placeable Home folder object — the visible destination for
@@ -941,21 +896,24 @@ pub fn app_tile_id(app_id: &AppId) -> TileId {
 /// put it there, and for no other reason — everything else is what search is for.
 ///
 /// Add-only and idempotent: pinning something already pinned asks for nothing.
-pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
-    let mut applied = Vec::new();
-    let id = app_tile_id(app_id);
-    if doc.tile(id).is_some() {
-        return applied;
-    }
-    let tile = Tile {
-        id,
+pub fn app_tile(app_id: &AppId) -> Tile {
+    Tile {
+        id: app_tile_id(app_id),
         kind: TileKind::App {
             app_id: app_id.clone(),
         },
         title: short_name(app_id),
         spans: SpanRange::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
         accent: None,
-    };
+    }
+}
+
+pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let tile = app_tile(app_id);
+    if doc.tile(tile.id).is_some() {
+        return applied;
+    }
     // The top-left corner of the working area, where the reflow will find it the nearest free
     // cell: a pinned tile is small, and hunting for one that landed in a far corner is worse
     // than having it appear near where the eye already is.
@@ -1105,7 +1063,7 @@ pub fn group_tile_id(group_id: u64) -> TileId {
 
 /// The title a group's tile carries: the name the group was given, or how many windows it holds
 /// until somebody names it. Never empty — a tile with no title is a tile that says nothing.
-fn group_title(name: &str, members: usize) -> String {
+pub(crate) fn group_title(name: &str, members: usize) -> String {
     if name.trim().is_empty() {
         match members {
             1 => "1 window".to_owned(),

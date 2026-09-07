@@ -6,7 +6,7 @@
 //! What this draws is decided elsewhere — `lege_field` owns where tiles are and what a drop
 //! means; `crate::field_model` owns which tiles exist. This module owns only pixels and the
 //! translation of pointer/keyboard gestures into `FieldAction`s. The visual grammar is
-//! `docs/homefield.md`'s: flat, calm tile shells; type expressed inside the rectangle, never by
+//! `@legeos.decision.home-field-stable-bounded-semantic-grammar`: flat, calm tile shells; type expressed inside the rectangle, never by
 //! its silhouette; a raised shadow only while a tile is lifted; one activity border for a live
 //! window; the pending operation spelled out in text before release.
 
@@ -205,8 +205,6 @@ pub struct FieldData<'a> {
     pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
     pub connected: bool,
     pub home_revealed: bool,
-    /// Whether the nm-tray2 application manifest is installed and launchable.
-    pub network_control_available: bool,
     /// Every installed application (`AppIdentity1.ListApplications`): one of the omnibox's
     /// sources. Empty is ambiguous on its own, hence `apps_available`.
     pub apps: &'a [crate::app_search::AppEntry],
@@ -231,7 +229,6 @@ pub struct FieldData<'a> {
     /// reach its service reports that rather than showing a zero.
     pub widgets: &'a HashMap<String, WidgetSnapshot>,
     /// Preformatted local date/time supplied by the shell host.
-    pub clock_label: &'a str,
     /// Preserve state marks but suppress the lifted tile's expansion/projection motion.
     pub reduced_motion: bool,
     /// Monotonic milliseconds, for the drag's velocity.
@@ -257,6 +254,15 @@ struct Notice {
 pub struct FieldScreen {
     pub drag: Drag,
     pub drag_cfg: DragConfig,
+    /// After Escape, the held pointer must be released before another gesture can start.
+    pointer_cancelled: bool,
+    /// The tile a drag out of the search results would create — an application, or a folder for
+    /// a typed path. Held here and nowhere else until the drop: nothing is placed until release,
+    /// so a cancelled drag has nothing to undo.
+    pending: Option<Tile>,
+    /// The result row pressed and not yet released. A row's click is delivered on release, not on
+    /// the press `pixelkit_shell::Input` registers it at, so that a press can become a drag.
+    result_press: Option<usize>,
     pub focus: Option<TileId>,
     /// Tiles affected by the next bulk operation. Focus remains a separate keyboard cursor.
     pub selection: Selection<TileId>,
@@ -285,7 +291,7 @@ pub struct FieldScreen {
     pub files: crate::files_surface::FilesSurfaceState,
     /// A project zoomed to fill the field: its interior grid is what is drawn and edited, with
     /// a breadcrumb back. The document is untouched by zoom — it is a view, never a hidden
-    /// desktop (`docs/homefield.md`, "Do not recreate virtual desktops under another name").
+    /// desktop (`@legeos.decision.home-field-stable-bounded-semantic-grammar`).
     pub zoomed: Option<TileId>,
     pub files_view: FilesBrowseView,
     pub search: TextFieldState,
@@ -344,6 +350,9 @@ impl Default for FieldScreen {
         Self {
             drag: Drag::Idle,
             drag_cfg: DragConfig::default(),
+            pointer_cancelled: false,
+            pending: None,
+            result_press: None,
             focus: None,
             selection: Selection::default(),
             marquee: None,
@@ -724,7 +733,12 @@ impl FieldScreen {
             // gesture as clicking off any other window and is why it is dimmed rather than hidden.
             if window != rest {
                 ui.painter.blend_rect(rest, design::GROUND, 150);
-                if ui.input.take_click(rest) {
+                if ui
+                    .input
+                    .cursor()
+                    .is_some_and(|(x, y)| !window.contains(x, y))
+                    && ui.input.take_click(rest)
+                {
                     self.collapse_files(data.now_ms);
                 }
                 design::shell(
@@ -1017,6 +1031,28 @@ impl FieldScreen {
             }
         }
 
+        let pending = self.pending.clone();
+        if let (Some(tile), Some((x, y))) = (pending, self.drag.tile_position())
+            && self.drag.is_lifted()
+        {
+            let cell = from_pixel(lege_field::cell_rect(
+                cols,
+                rows,
+                to_pixel(self.bounds),
+                Cell::new(0, 0),
+                tile.spans.preferred,
+                ui.px(GAP),
+            ));
+            let raised = Rect::new(x as i32, y as i32, cell.w, cell.h);
+            let visual = TileVisual {
+                hovered: false,
+                focused: false,
+                selected: false,
+                lifted: true,
+                displaced: None,
+            };
+            self.paint_tile(ui, raised, &tile, visual, data, actions);
+        }
         if let (Some(id), Some((x, y))) = (lifted, self.drag.tile_position())
             && let (Some(tile), Some(rect)) = (doc.tile(id), self.tile_rect(doc, id, ui))
         {
@@ -1152,7 +1188,7 @@ impl FieldScreen {
         ui.theme = previous_theme;
 
         if status_width > 0 {
-            Self::draw_information_row(ui, status, data, actions);
+            Self::draw_information_row(ui, status, data);
         }
 
         if recents_visible {
@@ -1687,54 +1723,11 @@ impl FieldScreen {
         }
     }
 
-    fn draw_information_row(
-        ui: &mut Ui<'_>,
-        status: Rect,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
+    /// The live/parked summary. Network and the clock live on the bottom bar now
+    /// (`crate::surface::bar_screen`), which is visible on Home too, so the row says only what
+    /// the field itself does not show.
+    fn draw_information_row(ui: &mut Ui<'_>, status: Rect, data: &FieldData<'_>) {
         design::shell(ui, status, design::RECESSED, design::EDGE, Elevation::Rest);
-        let network_width = ui.px(106).min(status.w / 3);
-        let clock_width = ui.px(150).min(status.w / 2);
-        let (network, after_network) = status.split_left(network_width);
-        let (clock, activity) = after_network.split_right(clock_width);
-
-        if data.network_control_available && ui.input.hovering(network) {
-            ui.painter.fill_rect(network.inset(1), design::ACCENT_SOFT);
-        }
-        // The label comes from the action manifest, not from a string here, so the row and the
-        // cheat sheet cannot end up calling the same capability two different things.
-        let network_action = lege_types::action::action("network.open-control");
-        let network_label = network_action.map_or("Network", |declaration| declaration.label);
-        let network_label = if data.network_control_available {
-            network_label.to_owned()
-        } else {
-            format!("{network_label} —")
-        };
-        ui.label_styled(
-            network.inset(ui.px(8)),
-            &network_label,
-            design::state_style(ui),
-            if data.network_control_available {
-                design::ACCENT
-            } else {
-                design::TEXT_DIM
-            },
-            Align::Centre,
-        );
-        if data.network_control_available && ui.input.take_click(network) {
-            actions.push(FieldAction::RunAction("network.open-control"));
-        }
-        ui.painter.fill_rect(
-            Rect::new(
-                network.right(),
-                status.y + ui.px(9),
-                1,
-                status.h - ui.px(18),
-            ),
-            design::EDGE,
-        );
-
         // The counts are a fallback, not a readout. When every live window already has a tile of
         // its own on the field, saying "3 LIVE" beside three visible tiles is a number that
         // repeats what the eye can already see — so it is only drawn when the field is *not*
@@ -1756,24 +1749,13 @@ impl FieldScreen {
             let parked = data.toplevels.len().saturating_sub(live);
             let summary = format!("{live} live · {parked} parked");
             ui.label_styled(
-                activity.inset(ui.px(8)),
+                status.inset(ui.px(8)),
                 &summary,
                 design::state_style(ui),
                 design::TEXT_DIM,
                 Align::Centre,
             );
         }
-        ui.painter.fill_rect(
-            Rect::new(clock.x, status.y + ui.px(9), 1, status.h - ui.px(18)),
-            design::EDGE,
-        );
-        ui.label_styled(
-            clock.inset(ui.px(8)),
-            data.clock_label,
-            design::state_style(ui),
-            design::TEXT,
-            Align::Centre,
-        );
     }
 
     /// The Files object over the whole field: one breadcrumb band and the object's own body.
@@ -1875,14 +1857,20 @@ impl FieldScreen {
                     self.navigate_selection(&rects, direction, modifiers.shift);
                 }
                 KeyInput::Tab => {
-                    self.focus = self.focus.map_or_else(
-                        || first_in(&rects),
-                        |from| {
-                            neighbour_in(&rects, from, Direction::Right)
-                                .or_else(|| neighbour_in(&rects, from, Direction::Down))
-                                .or(Some(from))
-                        },
-                    );
+                    // Tab visits every object in reading order, wrapping in either direction.
+                    let index = self
+                        .focus
+                        .and_then(|id| rects.iter().position(|(tile, _)| *tile == id));
+                    if !rects.is_empty() {
+                        let next = match (index, modifiers.shift) {
+                            (Some(index), true) => (index + rects.len() - 1) % rects.len(),
+                            (Some(index), false) => (index + 1) % rects.len(),
+                            (None, true) => rects.len() - 1,
+                            (None, false) => 0,
+                        };
+                        self.focus = Some(rects[next].0);
+                        self.selection.replace(rects[next].0);
+                    }
                 }
                 KeyInput::Backspace => {
                     // Inside a project: move the focused tile back out onto the field, next to
@@ -1891,13 +1879,14 @@ impl FieldScreen {
                         && let Some(id) = self.focus
                         && let Some(home) = doc.location(project)
                     {
-                        actions.push(FieldAction::Apply(FieldOp::Move {
+                        actions.push(FieldAction::Apply(Self::move_out_op(
+                            doc,
                             id,
-                            landing: Landing {
+                            Landing {
                                 container: None,
                                 cell: home.placement.cell,
                             },
-                        }));
+                        )));
                     }
                 }
                 KeyInput::Enter => {
@@ -2078,11 +2067,28 @@ impl FieldScreen {
     ) {
         let whole = ui.painter.bounds();
         let held = ui.input.pressing(whole);
+        if ui.input.keys().contains(&KeyInput::Escape)
+            && (self.drag != Drag::Idle || self.resize.is_some() || self.marquee.is_some())
+        {
+            self.drag = Drag::Idle;
+            self.resize = None;
+            self.marquee = None;
+            self.pending = None;
+            self.result_press = None;
+            self.pointer_cancelled = held;
+            return;
+        }
+        if self.pointer_cancelled {
+            self.pointer_cancelled = held;
+            return;
+        }
         // The dropdown is painted after the tiles but claims its clicks before them: a press
         // inside it is the list's, not whatever tile happens to be underneath.
         if let Some(area) = self.omnibox_area(ui)
-            && ui.input.cursor().is_some_and(|(x, y)| area.contains(x, y))
+            && let Some((x, y)) = ui.input.cursor()
+            && area.contains(x, y)
         {
+            self.press_on_result(ui, doc, data, actions, area, held, x, y);
             return;
         }
         let Some((cx, cy)) = ui.input.cursor() else {
@@ -2189,9 +2195,157 @@ impl FieldScreen {
             }
             (Drag::Idle, false) => {}
             (_, true) => {
-                self.drag.sample(sample, &self.drag_cfg);
+                if self.drag.sample(sample, &self.drag_cfg) == lege_field::drag::DragEvent::Lifted
+                    && self.search_focused
+                {
+                    // A lift with the results open is a drag out of them: the list gives way so
+                    // the field it is being carried to is visible.
+                    self.search_focused = false;
+                    self.search.set_text("");
+                    self.result_press = None;
+                }
             }
             (_, false) => self.finish_drag(ui, doc, data, actions),
+        }
+    }
+
+    /// A press on a result row, which may become a drag onto the field or stay a click. The
+    /// press claims the click (`pixelkit_shell::Input` registers one at the press) and arms a drag
+    /// with the tile the row stands for; a release still inside the list is the click, delivered
+    /// then. The lift itself happens in the ordinary drag arm once the pointer has left the list —
+    /// which is the gesture. A press and release within one frame reaches `draw_omnibox` unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn press_on_result(
+        &mut self,
+        ui: &mut Ui<'_>,
+        doc: &FieldDocument,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+        area: Rect,
+        held: bool,
+        x: i32,
+        y: i32,
+    ) {
+        if !held {
+            if let Some(index) = self.result_press.take() {
+                self.drag = Drag::Idle;
+                self.pending = None;
+                if let Some(row) = self.omnibox_rows.get(index) {
+                    let hit = row.hit.clone();
+                    self.choose(hit, actions);
+                }
+            }
+            return;
+        }
+        if self.result_press.is_some() || self.drag != Drag::Idle {
+            return;
+        }
+        let Some(index) = crate::surface::omnibox_screen::row_at(
+            ui,
+            self.omnibox_anchor,
+            self.bounds,
+            &self.omnibox_rows,
+            self.omnibox_files,
+            x,
+            y,
+        ) else {
+            return;
+        };
+        let _ = ui.input.take_click(area);
+        self.result_press = Some(index);
+        let Some((tile, exists)) = self
+            .omnibox_rows
+            .get(index)
+            .and_then(|row| Self::pending_tile(doc, &row.hit))
+        else {
+            return;
+        };
+        // Grabbed by its middle: `landing_cell` adds half a cell to the tile's corner, so
+        // the cell under the pointer is the one it lands on.
+        let (cols, rows) = self.grid_dims(doc);
+        let cell = from_pixel(lege_field::cell_rect(
+            cols,
+            rows,
+            to_pixel(self.bounds),
+            Cell::new(0, 0),
+            Span::new(1, 1),
+            ui.px(GAP),
+        ));
+        let id = tile.id;
+        self.pending = (!exists).then_some(tile);
+        self.drag.press(
+            id,
+            GrabOffset {
+                dx: (cell.w / 2) as f32,
+                dy: (cell.h / 2) as f32,
+            },
+            DragSample {
+                x: x as f32,
+                y: y as f32,
+                t_ms: data.now_ms,
+            },
+        );
+    }
+
+    /// The tile a result row stands for, and whether the field already has it — in which case the
+    /// drag moves the tile that is there rather than making a second one.
+    fn pending_tile(doc: &FieldDocument, hit: &crate::omnibox::Hit) -> Option<(Tile, bool)> {
+        use crate::omnibox::Hit;
+        let tile = match hit {
+            Hit::App { id } => field_model::app_tile(id),
+            Hit::Directory { path } => {
+                lege_field::folder_tile(field_model::folder_tile_id(path), path, doc.cols, doc.rows)
+            }
+            // A loose file is never a Home tile (the placeable-objects decision).
+            Hit::File { .. } => return None,
+        };
+        let exists = doc.tile(tile.id).is_some();
+        Some((tile, exists))
+    }
+
+    /// What kind of thing `id` is: the pending tile's kind when the drag is carrying one that is
+    /// not in the document yet, the document's answer otherwise.
+    fn source_kind<'a>(&'a self, doc: &'a FieldDocument, id: TileId) -> Option<&'a TileKind> {
+        match &self.pending {
+            Some(tile) if tile.id == id => Some(&tile.kind),
+            _ => doc.kind_of(id),
+        }
+    }
+
+    /// A drop of a tile that is not in the document yet places it rather than moving it. `Move`
+    /// becomes `Place` at the same landing (a container landing included); grouping it with the
+    /// tile it was dropped on places it first and groups in the same batch, so the field never
+    /// shows the interim state.
+    fn as_new_tile(&self, op: FieldOp) -> FieldOp {
+        let Some(tile) = &self.pending else {
+            return op;
+        };
+        match op {
+            FieldOp::Move { id, landing } if id == tile.id => FieldOp::Place {
+                tile: tile.clone(),
+                landing,
+            },
+            FieldOp::CreateProject {
+                project,
+                landing,
+                absorb,
+            } if absorb.contains(&tile.id) => FieldOp::Batch {
+                ops: vec![
+                    FieldOp::Place {
+                        tile: tile.clone(),
+                        landing: Landing {
+                            container: None,
+                            cell: Cell::new(0, 0),
+                        },
+                    },
+                    FieldOp::CreateProject {
+                        project,
+                        landing,
+                        absorb,
+                    },
+                ],
+            },
+            other => other,
         }
     }
 
@@ -2540,6 +2694,18 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
+        self.release_drag(ui, doc, data, actions);
+        // Placed, or let go: either way the drag is no longer carrying it.
+        self.pending = None;
+    }
+
+    fn release_drag(
+        &mut self,
+        ui: &mut Ui<'_>,
+        doc: &FieldDocument,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
         let bounds = self.bounds;
         let pixel_bounds = (
             bounds.x as f32,
@@ -2552,7 +2718,9 @@ impl FieldScreen {
             Some(Release::Click { tile }) => {
                 // A click on the band selects. The click itself is left for the band's own
                 // controls (a session's "park" button) to claim when the tile is painted.
-                self.focus = Some(tile);
+                if self.pending.is_none() {
+                    self.focus = Some(tile);
+                }
             }
             Some(Release::Drop {
                 tile,
@@ -2672,16 +2840,62 @@ impl FieldScreen {
         lege_field::DropOrigin { in_window_group }
     }
 
+    /// Move `id` to `landing`, dissolving the app group it leaves when it was that group's last
+    /// member: a group of favourites with nothing in it is a box with nothing to say. A project is
+    /// never dissolved this way — it has a directory behind it and is emptied on purpose.
+    fn move_out_op(doc: &FieldDocument, id: TileId, landing: Landing) -> FieldOp {
+        let op = FieldOp::Move { id, landing };
+        let Some(from) = doc.location(id).and_then(|located| located.container) else {
+            return op;
+        };
+        if Some(from) == landing.container {
+            return op;
+        }
+        let group = doc
+            .tile(from)
+            .is_some_and(|tile| matches!(tile.kind, TileKind::AppGroup { .. }));
+        if group && doc.count_in(Some(from)) == 1 {
+            FieldOp::Batch {
+                ops: vec![op, FieldOp::Remove { id: from }],
+            }
+        } else {
+            op
+        }
+    }
+
     fn op_for(doc: &FieldDocument, source: TileId, operation: &Operation) -> Option<FieldOp> {
         Some(match operation {
-            Operation::Relocate { container, to } => FieldOp::Move {
-                id: source,
-                landing: Landing {
+            Operation::Relocate { container, to } => Self::move_out_op(
+                doc,
+                source,
+                Landing {
                     container: *container,
                     cell: *to,
                 },
-            },
+            ),
             Operation::Stash => FieldOp::Stash { id: source },
+            Operation::GroupIntoAppGroup { with } => {
+                let target_cell = doc.location(*with)?.placement.cell;
+                let serial = doc.next_tile_id().0;
+                let kind = TileKind::AppGroup {
+                    group_id: format!("group-{serial}"),
+                };
+                let group = Tile {
+                    id: field_model::tile_id_for(&format!("app-group:{serial}")),
+                    spans: SpanRange::for_kind(&kind, doc.cols, doc.rows),
+                    kind,
+                    title: "Apps".to_owned(),
+                    accent: None,
+                };
+                FieldOp::CreateProject {
+                    project: group,
+                    landing: Landing {
+                        container: None,
+                        cell: target_cell,
+                    },
+                    absorb: vec![*with, source],
+                }
+            }
             Operation::GroupIntoNewProject { with } => {
                 let target_cell = doc.location(*with)?.placement.cell;
                 let project_id = format!("field-{}", doc.next_tile_id().0);
@@ -2710,7 +2924,8 @@ impl FieldScreen {
             Operation::PinTool { project }
             | Operation::ParkSession { project }
             | Operation::ScopeWidget { project }
-            | Operation::AddToProject { project } => FieldOp::Move {
+            | Operation::AddToProject { project }
+            | Operation::AddToAppGroup { group: project } => FieldOp::Move {
                 id: source,
                 landing: Landing {
                     container: Some(*project),
@@ -2903,7 +3118,7 @@ impl FieldScreen {
         ui: &Ui<'_>,
         _data: &FieldData<'_>,
     ) -> Option<FieldOp> {
-        let kind = doc.kind_of(tile)?;
+        let kind = self.source_kind(doc, tile)?;
         let cell = self.landing_cell(doc, tile, tile_at, ui)?;
         let target = Self::target_at(doc, self.zoomed, tile, cell);
         // The modifier the pointer is holding right now: the only place the grammar consults
@@ -2918,13 +3133,14 @@ impl FieldScreen {
             Self::drop_origin(doc, tile),
             modifiers,
         )?;
-        Self::op_for(doc, tile, &operation).or(Some(FieldOp::Move {
+        let op = Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
             id: tile,
             landing: Landing {
                 container: self.zoomed,
                 cell,
             },
-        }))
+        });
+        Some(self.as_new_tile(op))
     }
 
     /// The ghost for the current lift (pointer or keyboard): a dry run of the drop.
@@ -2945,7 +3161,7 @@ impl FieldScreen {
         } else {
             return None;
         };
-        let kind = doc.kind_of(tile)?;
+        let kind = self.source_kind(doc, tile)?;
         let target = Self::target_at(doc, self.zoomed, tile, cell);
         // The modifier the pointer is holding right now: the only place the grammar consults
         // one, and the difference between copying a file into a folder and moving it there.
@@ -2966,17 +3182,20 @@ impl FieldScreen {
                 .map(|rect| Rect::new(rect.x, rect.y, rect.w, ui.px(26).min(rect.h))),
             _ => None,
         };
-        let op = Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
-            id: tile,
-            landing: Landing {
-                container: self.zoomed,
-                cell,
-            },
-        });
+        let op = self.as_new_tile(
+            Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
+                id: tile,
+                landing: Landing {
+                    container: self.zoomed,
+                    cell,
+                },
+            }),
+        );
         let (next, _) = apply(doc, &op).ok()?;
-        let placement = match &op {
-            FieldOp::CreateProject { project, .. } => next.location(project.id)?.placement,
-            _ => next.location(tile)?.placement,
+        let created = Self::created_container(&op);
+        let placement = match created {
+            Some(container) => next.location(container)?.placement,
+            None => next.location(tile)?.placement,
         };
         let moved = doc
             .located
@@ -2991,13 +3210,21 @@ impl FieldScreen {
         Some(Ghost {
             placement,
             moved,
-            label: if matches!(op, FieldOp::CreateProject { .. }) {
-                Some(op.label())
-            } else {
-                label
+            label: match created_op(&op) {
+                Some(create) => Some(create.label()),
+                None => label,
             },
             label_at,
         })
+    }
+
+    /// The container a drop creates, when it creates one — at the top of the op or at the end of
+    /// the batch a pending tile's placement is folded into.
+    fn created_container(op: &FieldOp) -> Option<TileId> {
+        match created_op(op)? {
+            FieldOp::CreateProject { project, .. } => Some(project.id),
+            _ => None,
+        }
     }
 
     fn primary_action(
@@ -3021,32 +3248,26 @@ impl FieldScreen {
             }
             TileKind::Widget { widget, .. } => {
                 if widget == field_model::FILES_WIDGET {
-                    self.pending_expand = Some(data.now_ms);
+                    actions.push(FieldAction::Launch(
+                        "org.legeos.Files".parse().expect("built-in app id"),
+                    ));
                 }
             }
             // A group's body opens it, exactly as a project's does — Full is the zoom, and the
             // ladder's other four rungs are what the tile shows in place. Its *title* is the
             // other half and does something else entirely (raise the whole group); `paint_tile`
             // claims that click before the body ever sees it.
-            TileKind::Project { .. } | TileKind::WindowGroup { .. } => {
+            TileKind::Project { .. } | TileKind::WindowGroup { .. } | TileKind::AppGroup { .. } => {
                 self.zoomed = Some(tile.id);
                 self.focus = None;
                 self.keyboard_move = None;
             }
-            // A folder tile is a window: its body is the listing and its rows are the clicks
-            // that matter, so the body's leftover ground is the expand/collapse control. A tray
-            // too small to list anything grows to a size that can; a window already at that size
-            // shrinks back to a tray. Both go through the field's own resize, so both undo.
-            TileKind::Folder { .. } => {
-                if let Some(op) = folder_toggle_op(data.field, tile.id) {
-                    actions.push(FieldAction::Apply(op));
-                }
-            }
+            TileKind::Folder { path } => actions.push(FieldAction::OpenInFiles(path.clone())),
             TileKind::Tray { .. } | TileKind::File { .. } | TileKind::System { .. } => {}
         }
     }
 
-    /// A window group's body, one rung at a time (`docs/homefield.md`'s representation ladder,
+    /// A window group's body, one rung at a time (`@legeos.decision.home-field-stable-bounded-semantic-grammar`,
     /// and §3's WG4 list).
     ///
     /// Micro is a count badge — at one cell the only thing worth saying is how many. Small adds
@@ -3408,8 +3629,7 @@ impl FieldScreen {
         if let Some(index) = chosen {
             let entry = &listing.entries[index];
             if entry.is_dir() {
-                self.folder_at.insert(id, entry.path.clone());
-                self.folder_scroll.remove(&id);
+                actions.push(FieldAction::OpenInFiles(entry.path.clone()));
             } else {
                 actions.push(FieldAction::OpenFile(entry.path.clone()));
             }
@@ -3464,9 +3684,10 @@ impl FieldScreen {
             TileKind::System { .. } => (design::SYSTEM_SHELL, design::EDGE_STRONG),
             TileKind::Folder { .. } => (design::FOLDER_SHELL, design::FOLDER_EDGE),
             TileKind::Tray { .. } => (design::TRAY_SHELL, design::TRAY_EDGE),
-            TileKind::App { .. } | TileKind::Widget { .. } | TileKind::File { .. } => {
-                (design::SHELL, design::EDGE)
-            }
+            TileKind::App { .. }
+            | TileKind::AppGroup { .. }
+            | TileKind::Widget { .. }
+            | TileKind::File { .. } => (design::SHELL, design::EDGE),
         };
         let elevation = if visual.lifted {
             Elevation::Lifted
@@ -3518,9 +3739,10 @@ impl FieldScreen {
         };
         let display_title = tile.title.clone();
         let title_style = match &tile.kind {
-            TileKind::Project { .. } | TileKind::WindowGroup { .. } | TileKind::System { .. } => {
-                design::system_label_style(ui)
-            }
+            TileKind::Project { .. }
+            | TileKind::WindowGroup { .. }
+            | TileKind::AppGroup { .. }
+            | TileKind::System { .. } => design::system_label_style(ui),
             TileKind::Widget { widget, .. } if widget == field_model::FILES_WIDGET => {
                 design::system_label_style(ui)
             }
@@ -3685,24 +3907,58 @@ impl FieldScreen {
                     size,
                     size,
                 );
-                if let Some(bitmap) = data.icons.get(&app_id.to_string()) {
-                    ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
-                } else {
-                    ui.painter.fill_rounded_rect_aa(
-                        ui.kernel,
-                        icon,
-                        ui.px(design::TILE_RADIUS) as f32,
-                        ui.theme.accent_soft,
-                        255,
+                paint_app_icon(ui, icon, app_id, &tile.title, data.icons);
+            }
+            TileKind::AppGroup { .. } => {
+                // The favourites it holds as a grid of icons, each one a launch, laid out in
+                // reading order of the interior rather than at their interior cells — four apps
+                // in a 2×2 tile want four large icons, not four dots in a 4×4 grid. A click on an
+                // icon is claimed here, before the body's own click below, so an icon launches
+                // and the ground between them opens the group.
+                let inner = content.inset(ui.px(8));
+                let children: Vec<(AppId, String)> = data
+                    .field
+                    .placements_in(Some(tile.id))
+                    .into_iter()
+                    .filter_map(|(child, _)| data.field.tile(child))
+                    .filter_map(|child| match &child.kind {
+                        TileKind::App { app_id } => Some((app_id.clone(), child.title.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                if children.is_empty() {
+                    ui.label_styled(
+                        inner,
+                        "empty — drop apps here",
+                        design::state_style(ui),
+                        design::TEXT_DIM,
+                        Align::Left,
                     );
-                    let initial = tile
-                        .title
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string();
-                    ui.label(icon, &initial, ui.theme.accent, Align::Centre);
+                }
+                let count = children.len().max(1) as i32;
+                let per_row = f64::from(count).sqrt().ceil().max(1.0) as i32;
+                let lines = (count + per_row - 1) / per_row;
+                let cell = (inner.w / per_row).min(inner.h / lines).max(8);
+                for (index, (app_id, title)) in children.iter().enumerate() {
+                    let index = index as i32;
+                    let slot = Rect::new(
+                        inner.x + (index % per_row) * cell,
+                        inner.y + (index / per_row) * cell,
+                        cell,
+                        cell,
+                    );
+                    let icon = slot.inset((cell / 8).max(2));
+                    if ui.input.hovering(slot) && !visual.lifted {
+                        ui.painter.fill_rounded_rect(
+                            slot,
+                            ui.px(design::CHIP_RADIUS),
+                            design::ACCENT_SOFT,
+                        );
+                    }
+                    paint_app_icon(ui, icon, app_id, title, data.icons);
+                    if !visual.lifted && ui.input.take_click(slot) {
+                        actions.push(FieldAction::Launch(app_id.clone()));
+                    }
                 }
             }
             TileKind::ParkedSession { app_id, identifier } => {
@@ -3791,6 +4047,12 @@ impl FieldScreen {
                         representation_of(data.field, tile),
                         files,
                     ) {
+                        // A folder is a Files window of its own, so the window switcher lists
+                        // it; the views only the shell has (Recent, Trash, Drives…) still open
+                        // in place.
+                        crate::surface::files_screen::FilesAction::Open(
+                            crate::files_surface::FilesLocation::Directory(path),
+                        ) => actions.push(FieldAction::OpenInFiles(path)),
                         crate::surface::files_screen::FilesAction::Open(location) => {
                             self.files.go_to(location);
                             self.pending_expand = Some(data.now_ms);
@@ -4358,6 +4620,47 @@ fn neighbour_in(rects: &[(TileId, Rect)], from: TileId, direction: Direction) ->
     best.map(|(_, id)| id)
 }
 
+/// One application's icon, or its initial on an accent plate when no icon resolved.
+fn paint_app_icon(
+    ui: &mut Ui<'_>,
+    icon: Rect,
+    app_id: &AppId,
+    title: &str,
+    icons: &HashMap<String, Bitmap>,
+) {
+    if let Some(bitmap) = icons.get(&app_id.to_string()) {
+        ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
+    } else {
+        ui.painter.fill_rounded_rect_aa(
+            ui.kernel,
+            icon,
+            ui.px(design::TILE_RADIUS) as f32,
+            ui.theme.accent_soft,
+            255,
+        );
+        let initial = title
+            .chars()
+            .next()
+            .unwrap_or('?')
+            .to_uppercase()
+            .to_string();
+        ui.label(icon, &initial, ui.theme.accent, Align::Centre);
+    }
+}
+
+/// The `CreateProject` an op performs, if any: at the top, or last in the batch a pending tile's
+/// placement is folded into.
+fn created_op(op: &FieldOp) -> Option<&FieldOp> {
+    match op {
+        FieldOp::CreateProject { .. } => Some(op),
+        FieldOp::Batch { ops } => match ops.last() {
+            Some(create @ FieldOp::CreateProject { .. }) => Some(create),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn to_pixel(rect: Rect) -> PixelRect {
     PixelRect::new(rect.x, rect.y, rect.w, rect.h)
 }
@@ -4511,7 +4814,6 @@ mod tests {
                 folder_listings: &HashMap::new(),
                 connected: true,
                 home_revealed: false,
-                network_control_available: true,
                 apps: &self.apps,
                 apps_available: true,
                 widgets: &widgets,
@@ -4520,7 +4822,6 @@ mod tests {
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
                 recents: &recents,
-                clock_label: "SUN 24 AUG 18:43",
                 reduced_motion: false,
                 now_ms: self.now,
             };
@@ -5528,9 +5829,19 @@ mod tests {
         let files = field_model::files_tile_id();
         let rect = h.rect_of(files);
 
-        h.click(rect.x + rect.w / 2, rect.bottom() - 10);
-        // The tile it grows out of is only known once the field has been laid out, so the
-        // expansion starts on the frame after the press rather than during it.
+        // The object's own ground starts the Files application — a window the switcher lists —
+        // rather than growing the shell into a file manager.
+        let launched = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
+        assert!(
+            launched
+                .iter()
+                .any(|a| matches!(a, FieldAction::Launch(id) if id.as_str() == "org.legeos.Files")),
+            "{launched:?}"
+        );
+        assert!(!h.screen.files_expanded);
+        // The shell-only views (Recent, Trash, Drives) still expand in place; the widget queues
+        // that for the frame after the press, once the tile it grows out of is laid out.
+        h.screen.pending_expand = Some(h.now);
         h.frame();
         assert!(h.screen.files_expanded);
         let expansion = h.screen.expansion.expect("it grew out of something");
@@ -5554,6 +5865,69 @@ mod tests {
         h.frame();
         assert!(!h.screen.files_expanded);
         assert!(h.screen.expansion.is_none());
+    }
+
+    #[test]
+    fn escape_cancels_a_pointer_resize_until_release() {
+        let mut h = Harness::new();
+        let id = field_model::files_tile_id();
+        let rect = h.rect_of(id);
+        h.input
+            .cursor_moved((rect.right() - 2) as f32, (rect.bottom() - 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert!(h.screen.resize.is_some());
+        let actions = h.key(KeyInput::Escape);
+        assert!(!actions.iter().any(|a| matches!(a, FieldAction::Apply(_))));
+        assert!(h.screen.resize.is_none());
+        h.frame();
+        assert!(
+            h.screen.resize.is_none(),
+            "held button restarted the gesture"
+        );
+        h.input.mouse(MouseButton::Left, false);
+        assert!(!h.frame().iter().any(|a| matches!(a, FieldAction::Apply(_))));
+        assert!(!h.screen.pointer_cancelled);
+    }
+
+    #[test]
+    fn clicks_inside_files_do_not_dismiss_the_window() {
+        let mut h = Harness::new();
+        h.frame();
+        h.screen.files_expanded = true;
+        h.screen.expansion = None;
+        h.click(W / 2, H / 2);
+        assert!(h.screen.files_expanded);
+        assert!(
+            h.screen.expansion.is_none(),
+            "an inside click began collapse"
+        );
+        h.click(h.screen.bounds.x + 1, h.screen.bounds.y + 1);
+        assert!(h.screen.expansion.is_some_and(|e| e.collapsing));
+    }
+
+    #[test]
+    fn tab_visits_every_object_and_shift_tab_reverses_with_selection() {
+        let mut h = Harness::new();
+        h.frame();
+        let mut visited = Vec::new();
+        for _ in 0..100 {
+            h.key(KeyInput::Tab);
+            let id = h.screen.focus.expect("a tile receives focus");
+            assert_eq!(h.screen.selection.to_vec(), vec![id]);
+            if visited.first() == Some(&id) {
+                break;
+            }
+            assert!(!visited.contains(&id), "Tab got stuck before wrapping");
+            visited.push(id);
+        }
+        assert!(visited.len() > 2);
+        h.input.modifiers_changed(Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        });
+        h.key(KeyInput::Tab);
+        assert_eq!(h.screen.focus, visited.last().copied());
     }
 
     /// Move and resize are two gestures and they must never share a pixel — at any rung, on any
@@ -5657,21 +6031,6 @@ mod tests {
             ..fixed
         };
         assert!(FieldScreen::resizable(&growable));
-    }
-
-    #[test]
-    fn clicking_the_home_information_rows_network_widget_opens_nm_tray() {
-        let mut h = Harness::new();
-        h.frame();
-        // At 1200 logical pixels the right-hand information row begins around x=834; its first
-        // 106 pixels are the NETWORK control. Click its centre, independent of text glyph bounds.
-        h.input.cursor_moved(875.0, 32.0);
-        h.input.mouse(MouseButton::Left, true);
-        h.input.mouse(MouseButton::Left, false);
-        assert_eq!(
-            h.frame(),
-            vec![FieldAction::RunAction("network.open-control")]
-        );
     }
 
     // ---- typed drag and drop ------------------------------------------------------------
@@ -6267,18 +6626,8 @@ mod tests {
     }
 
     #[test]
-    fn dropping_one_loose_tile_on_another_offers_a_new_project() {
+    fn dropping_one_application_on_another_makes_an_app_group_not_a_project() {
         let mut h = Harness::new();
-        // The project the drop creates wants a quadrant, and this test is about the grammar of
-        // the drop rather than about how much of a small field Home's own furniture claims.
-        h.doc = apply(
-            &h.doc,
-            &FieldOp::Stash {
-                id: field_model::files_tile_id(),
-            },
-        )
-        .expect("stash applies")
-        .0;
         let files = tile_id_for("app:org.legeos.Files");
         let editor = tile_id_for("app:org.example.Editor");
         let from = h.rect_of(files);
@@ -6303,13 +6652,234 @@ mod tests {
         }
         h.input.mouse(MouseButton::Left, false);
         let actions = h.frame();
-        let [FieldAction::Apply(FieldOp::CreateProject { absorb, .. })] = actions.as_slice() else {
+        let [
+            FieldAction::Apply(FieldOp::CreateProject {
+                project, absorb, ..
+            }),
+        ] = actions.as_slice()
+        else {
             panic!("expected CreateProject, got {actions:?}");
         };
         assert_eq!(absorb, &vec![editor, files]);
+        // A group of favourites, not a project: nothing on disk is created for it, and the host
+        // only asks Projects1 for a `TileKind::Project`.
+        assert!(
+            matches!(project.kind, TileKind::AppGroup { .. }),
+            "{:?}",
+            project.kind
+        );
+        assert_eq!(project.title, "Apps");
         h.apply(&actions);
-        assert_eq!(h.doc.parent_of(files), h.doc.parent_of(editor));
-        assert!(h.doc.parent_of(files).is_some());
+        assert_eq!(h.doc.parent_of(files), Some(project.id));
+        assert_eq!(h.doc.parent_of(editor), Some(project.id));
+    }
+
+    /// The group's icons launch; a third application dropped on the group joins it.
+    #[test]
+    fn an_app_group_launches_from_its_icons_and_takes_another_application() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        let editor = tile_id_for("app:org.example.Editor");
+        let actions = h.drag_onto(files, editor, false);
+        h.apply(&actions);
+        let group = h.doc.parent_of(files).expect("grouped");
+        let rect = h.rect_of(group);
+        // The first icon slot: inside the body, left of centre.
+        let actions = h.click(rect.x + rect.w / 5, rect.y + rect.h * 3 / 5);
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, FieldAction::Launch(id) if id.as_str() == "org.example.Editor" || id.as_str() == "org.legeos.Files")),
+            "{actions:?}"
+        );
+        assert!(
+            h.screen.zoomed.is_none(),
+            "an icon launches; it does not open the group"
+        );
+
+        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
+        h.doc = apply(
+            &h.doc,
+            &FieldOp::Place {
+                tile: field_model::app_tile(&gimp),
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(0, 0),
+                },
+            },
+        )
+        .expect("a free cell for gimp")
+        .0;
+        let actions = h.drag_onto(field_model::app_tile_id(&gimp), group, false);
+        let joined = actions.iter().any(|a| {
+            matches!(a, FieldAction::Apply(FieldOp::Move { id, landing })
+                if *id == field_model::app_tile_id(&gimp) && landing.container == Some(group))
+        });
+        assert!(joined, "{actions:?}");
+    }
+
+    /// Taking the last application out of a group dissolves the group in the same op.
+    #[test]
+    fn emptying_an_app_group_dissolves_it() {
+        let mut h = Harness::new();
+        let files = tile_id_for("app:org.legeos.Files");
+        let editor = tile_id_for("app:org.example.Editor");
+        let actions = h.drag_onto(files, editor, false);
+        h.apply(&actions);
+        let group = h.doc.parent_of(files).expect("grouped");
+        h.screen.zoomed = Some(group);
+        h.screen.focus = Some(files);
+        let actions = h.key(KeyInput::Backspace);
+        assert!(
+            matches!(actions.as_slice(), [FieldAction::Apply(FieldOp::Move { id, .. })] if *id == files),
+            "one left, so the group stays: {actions:?}"
+        );
+        h.apply(&actions);
+        h.screen.focus = Some(editor);
+        let actions = h.key(KeyInput::Backspace);
+        let [FieldAction::Apply(FieldOp::Batch { ops })] = actions.as_slice() else {
+            panic!("expected a move and a removal, got {actions:?}");
+        };
+        assert!(
+            matches!(ops.as_slice(), [FieldOp::Move { id, .. }, FieldOp::Remove { id: removed }] if *id == editor && *removed == group)
+        );
+        h.apply(&actions);
+        assert!(h.doc.tile(group).is_none());
+        assert!(
+            h.doc
+                .location(editor)
+                .is_some_and(|l| l.container.is_none())
+        );
+    }
+
+    // ---- dragging out of the results --------------------------------------------------------
+
+    impl Harness {
+        /// Press on the first result row and carry it to `(x, y)` without releasing.
+        fn carry_first_result_to(&mut self, x: i32, y: i32) {
+            let (sx, sy) = (W / 2, omnibox_row_y(0));
+            self.input.cursor_moved(sx as f32, sy as f32);
+            self.input.mouse(MouseButton::Left, true);
+            self.frame();
+            for step in 1..=10 {
+                let t = step as f32 / 10.0;
+                self.input.cursor_moved(
+                    sx as f32 + (x - sx) as f32 * t,
+                    sy as f32 + (y - sy) as f32 * t,
+                );
+                self.now += 100;
+                self.frame();
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_an_application_out_of_the_results_places_it_where_it_is_dropped() {
+        let mut h = Harness::new();
+        h.with_only(Vec::new());
+        h.screen.search_focused = true;
+        h.screen.search.set_text("image");
+        h.frame();
+        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
+        let (x, y) = (W - 80, H - 80);
+        h.carry_first_result_to(x, y);
+        assert!(
+            h.screen.pending.is_some(),
+            "the row's tile is being carried"
+        );
+        assert!(!h.screen.search_focused, "the list gave way to the field");
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        let placed = actions.iter().find_map(|a| match a {
+            FieldAction::Apply(FieldOp::Place { tile, .. }) => Some(tile.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            placed.map(|tile| tile.kind),
+            Some(TileKind::App {
+                app_id: gimp.clone()
+            }),
+            "{actions:?}"
+        );
+        assert!(!actions.iter().any(|a| matches!(a, FieldAction::Launch(_))));
+        assert!(h.screen.pending.is_none());
+        h.apply(&actions);
+        let rect = h.rect_of(field_model::app_tile_id(&gimp));
+        assert!(
+            rect.contains(x, y),
+            "{rect:?} is not under the drop at {x},{y}"
+        );
+    }
+
+    #[test]
+    fn a_press_and_release_on_a_result_row_still_launches_it() {
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        h.screen.search.set_text("image");
+        h.frame();
+        h.input
+            .cursor_moved((W / 2) as f32, omnibox_row_y(0) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        h.frame();
+        assert!(h.screen.pending.is_some());
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
+        assert_eq!(actions, vec![FieldAction::Launch(gimp)]);
+        assert!(h.screen.pending.is_none());
+        assert_eq!(h.screen.drag, Drag::Idle);
+    }
+
+    #[test]
+    fn a_cancelled_drag_out_of_the_results_leaves_no_tile() {
+        let mut h = Harness::new();
+        h.with_only(Vec::new());
+        h.screen.search_focused = true;
+        h.screen.search.set_text("image");
+        h.frame();
+        h.carry_first_result_to(W - 80, H - 80);
+        let actions = h.key(KeyInput::Escape);
+        assert!(actions.is_empty(), "{actions:?}");
+        assert!(h.screen.pending.is_none());
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        assert!(actions.is_empty(), "{actions:?}");
+        assert!(h.doc.tiles.is_empty());
+    }
+
+    #[test]
+    fn dragging_an_already_pinned_application_moves_the_tile_that_is_there() {
+        let mut h = Harness::new();
+        let files_app: AppId = "org.legeos.Files".parse().unwrap();
+        h.with_only(vec![(
+            tile_id_for("app:org.legeos.Files"),
+            TileKind::App { app_id: files_app },
+            Cell::new(0, 0),
+        )]);
+        h.screen.search_focused = true;
+        h.screen.search.set_text("Files");
+        h.frame();
+        let files = tile_id_for("app:org.legeos.Files");
+        h.carry_first_result_to(W - 80, H - 80);
+        assert!(
+            h.screen.pending.is_none(),
+            "the pinned tile itself is carried"
+        );
+        assert_eq!(h.screen.drag.tile(), Some(files));
+        h.input.mouse(MouseButton::Left, false);
+        let actions = h.frame();
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, FieldAction::Apply(FieldOp::Move { id, .. }) if *id == files)),
+            "{actions:?}"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, FieldAction::Apply(FieldOp::Place { .. }))),
+            "{actions:?}"
+        );
     }
 
     // ---- the context menu ---------------------------------------------------------------

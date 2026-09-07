@@ -8,8 +8,24 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct TileId(pub u64);
 
+impl TileId {
+    /// The id a named object always has, so opening the same thing twice finds the tile that is
+    /// already there. FNV-1a, 64-bit; collisions are astronomically unlikely for a few hundred
+    /// keys, and `0` is reserved.
+    #[must_use]
+    pub fn for_key(key: &str) -> Self {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in key.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        Self(hash.max(1))
+    }
+}
+
 /// What a tile stands for. The outer shape is always a rectangle; type is expressed through
-/// internal structure and behaviour (`docs/homefield.md` "Visual identity"), so this is the one
+/// internal structure and behaviour
+/// (`@legeos.decision.home-field-stable-bounded-semantic-grammar`), so this is the one
 /// place the kinds are enumerated.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -26,6 +42,11 @@ pub enum TileKind {
     /// so nothing here creates or dissolves a group. `identifier` is the group's id as a decimal
     /// string, the same shape `ParkedSession::identifier` uses for a window.
     WindowGroup { identifier: String },
+    /// A container of application shortcuts: the favourites a person put together by dropping
+    /// one app tile on another. Shown as a grid of icons, each a launch; opened like a project to
+    /// rearrange. Holds `App` tiles only, one level deep like every container, and nothing on
+    /// disk corresponds to it — unlike a project, it is a Home arrangement and nothing more.
+    AppGroup { group_id: String },
     /// A dormant or running application.
     App { app_id: AppId },
     /// A window collapsed into the field — explicit minimisation made visible. `identifier` is
@@ -60,7 +81,10 @@ pub struct TrayId(pub u64);
 impl TileKind {
     /// Whether this kind is a container that may hold other tiles.
     pub fn is_container(&self) -> bool {
-        matches!(self, Self::Project { .. } | Self::WindowGroup { .. })
+        matches!(
+            self,
+            Self::Project { .. } | Self::WindowGroup { .. } | Self::AppGroup { .. }
+        )
     }
 
     /// Short lower-case name for text rendering and logs.
@@ -68,6 +92,7 @@ impl TileKind {
         match self {
             Self::Project { .. } => "project",
             Self::WindowGroup { .. } => "group",
+            Self::AppGroup { .. } => "app group",
             Self::App { .. } => "app",
             Self::ParkedSession { .. } => "session",
             Self::Tray { .. } => "tray",
@@ -155,6 +180,12 @@ impl SpanRange {
                 Span::new(cols.clamp(1, 6), rows.clamp(1, 3)),
                 Span::new(cols, rows),
             ),
+            // A handful of favourites: a 2×2 preferred size shows four icons, and the interior
+            // grid `ops::container_for` derives from it (4×4) holds sixteen, whatever the tile's
+            // own span is squeezed to.
+            TileKind::AppGroup { .. } => {
+                Self::new(Span::new(2, 2), Span::new(2, 2), Span::new(6, 4))
+            }
             TileKind::App { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
             TileKind::File { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 1)),
             TileKind::ParkedSession { .. } => {
@@ -198,7 +229,7 @@ pub struct Tile {
 
 /// How much of itself a tile shows. Presentation adapts to the allotted area: a tile that
 /// becomes too small for one rung chooses a simpler one rather than shrinking its text
-/// (`docs/homefield.md` "What malleable should mean").
+/// (`@legeos.decision.home-field-stable-bounded-semantic-grammar`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum Representation {
     /// Icon or single figure only (1×1 for most kinds).
@@ -316,7 +347,10 @@ impl RungLadder {
             // point of the shape ladder — an 8×1 strip has the area of a 4×2 block and room for
             // none of the same content, so it stays at Small rather than being handed a body
             // that has to be truncated away again.
-            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => Self {
+            TileKind::Tray { .. }
+            | TileKind::Folder { .. }
+            | TileKind::Widget { .. }
+            | TileKind::AppGroup { .. } => Self {
                 base: Representation::Small,
                 small: Some(RungFloor::ANY),
                 wide: Some(RungFloor::new(2, 2, 6)),
@@ -403,6 +437,9 @@ mod tests {
             TileKind::WindowGroup {
                 identifier: "4".into(),
             },
+            TileKind::AppGroup {
+                group_id: "g".into(),
+            },
         ]
     }
 
@@ -413,7 +450,12 @@ mod tests {
     fn kinds_with_an_area_ladder() -> Vec<TileKind> {
         every_kind()
             .into_iter()
-            .filter(|kind| !matches!(kind, TileKind::WindowGroup { .. }))
+            .filter(|kind| {
+                !matches!(
+                    kind,
+                    TileKind::WindowGroup { .. } | TileKind::AppGroup { .. }
+                )
+            })
             .collect()
     }
 
@@ -640,7 +682,7 @@ mod tests {
             },
             // Never had one; `kinds_with_an_area_ladder` is what keeps this unreachable, and the
             // panic is what makes that filter's removal visible instead of silent.
-            TileKind::WindowGroup { .. } => {
+            TileKind::WindowGroup { .. } | TileKind::AppGroup { .. } => {
                 unreachable!("a window group predates no area ladder — it postdates the shape one")
             }
         }
@@ -709,7 +751,7 @@ mod tests {
         /// every floor is a conjunction of `>=`.
         #[test]
         fn growing_a_span_in_either_axis_never_lowers_the_rung(
-            kind_index in 0usize..9,
+            kind_index in 0usize..10,
             cols in 1u16..64,
             rows in 1u16..64,
         ) {

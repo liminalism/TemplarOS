@@ -1,4 +1,4 @@
-//! The invariants `docs/homefield.md` asks for, as properties: no overlap, locality, exact
+//! The invariants in `@legeos.decision.home-field-stable-bounded-semantic-grammar`, as properties: no overlap, locality, exact
 //! inverses, boundedness, ghost fidelity, and stability under everything that is not a layout
 //! command.
 
@@ -54,6 +54,15 @@ fn project(id: u64) -> Tile {
     )
 }
 
+fn app_group(id: u64) -> Tile {
+    tile(
+        id,
+        TileKind::AppGroup {
+            group_id: format!("g{id}"),
+        },
+    )
+}
+
 fn landing() -> impl Strategy<Value = Landing> {
     (0..COLS, 0..ROWS).prop_map(|(col, row)| Landing {
         container: None,
@@ -71,6 +80,8 @@ enum Step {
     Remove(u64),
     Tidy,
     Group(u64, u64, Landing),
+    /// The same container op making an app group rather than a project.
+    GroupApps(u64, u64, Landing),
     MoveInto(u64, u64, Cell),
 }
 
@@ -83,6 +94,7 @@ fn step() -> impl Strategy<Value = Step> {
         1 => (1u64..40).prop_map(Step::Remove),
         1 => Just(Step::Tidy),
         1 => (1u64..40, 1u64..40, landing()).prop_map(|(a, b, l)| Step::Group(a, b, l)),
+        1 => (1u64..40, 1u64..40, landing()).prop_map(|(a, b, l)| Step::GroupApps(a, b, l)),
         1 => (1u64..40, 1u64..40, (0..4u16, 0..4u16)).prop_map(|(a, p, (c, r))| Step::MoveInto(a, p, Cell::new(c, r))),
     ]
 }
@@ -107,6 +119,11 @@ fn to_op(doc: &FieldDocument, step: &Step) -> FieldOp {
         Step::Tidy => FieldOp::Tidy { container: None },
         Step::Group(a, b, landing) => FieldOp::CreateProject {
             project: project(fresh),
+            landing: *landing,
+            absorb: vec![TileId(*a), TileId(*b)],
+        },
+        Step::GroupApps(a, b, landing) => FieldOp::CreateProject {
+            project: app_group(fresh),
             landing: *landing,
             absorb: vec![TileId(*a), TileId(*b)],
         },

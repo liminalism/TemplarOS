@@ -103,6 +103,31 @@ pub fn area(
     panel_rect(ui, anchor, bounds, rows.len(), files)
 }
 
+/// The dropdown row under `(x, y)`, by the arithmetic `draw` places rows with — the panel's
+/// inset and one `ROW_HEIGHT` per row, only rows that fit. `None` in the panel shape, whose rows
+/// are not draggable onto the field.
+pub fn row_at(
+    ui: &Ui<'_>,
+    anchor: Rect,
+    bounds: Rect,
+    rows: &[Row],
+    files: FileState,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    if crate::omnibox::is_panel(rows) {
+        return None;
+    }
+    let inner = panel_rect(ui, anchor, bounds, rows.len(), files)?.inset(ui.px(4));
+    if !inner.contains(x, y) {
+        return None;
+    }
+    let row_height = ui.px(ROW_HEIGHT);
+    let index = usize::try_from((y - inner.y) / row_height).ok()?;
+    let fits = inner.y + (index as i32 + 1) * row_height <= inner.bottom();
+    (fits && index < rows.len().min(MAX_VISIBLE)).then_some(index)
+}
+
 /// The search panel's rectangle: two thirds of the field each way, centred on it. Independent of
 /// how many rows there are — a panel that resized as answers arrived would move the row under
 /// the pointer between one frame and the next.

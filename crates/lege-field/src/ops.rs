@@ -15,6 +15,63 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
 
+/// Open `path` as a folder window on the field: the op that places one at the first free cell,
+/// or `None` when a tile with `id` is already there (the caller then raises what exists).
+///
+/// A folder window is a tile and nothing more exotic than that — it drags, resizes, groups and
+/// survives a restart because every one of those is something the field already does. Shared by
+/// the shell and the session daemon so a folder added from any client lands the same way.
+#[must_use]
+pub fn place_folder_op(doc: &FieldDocument, id: TileId, path: &std::path::Path) -> Option<FieldOp> {
+    if doc.tile(id).is_some() {
+        return None;
+    }
+    let tile = folder_tile(id, path, doc.cols, doc.rows);
+    let cell = first_free_cell(doc, tile.spans.preferred);
+    Some(FieldOp::Place {
+        tile,
+        landing: Landing {
+            container: None,
+            cell,
+        },
+    })
+}
+
+/// The folder window tile for `path`, before it is placed anywhere.
+#[must_use]
+pub fn folder_tile(id: TileId, path: &std::path::Path, cols: u16, rows: u16) -> Tile {
+    let kind = crate::tile::TileKind::Folder {
+        path: path.to_path_buf(),
+    };
+    let spans = SpanRange::for_kind(&kind, cols, rows);
+    let title = path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Tile {
+        id,
+        kind,
+        title,
+        spans,
+        accent: None,
+    }
+}
+
+/// The first cell, reading the field the way a page is read, where a `span`-sized tile fits with
+/// nothing under it. `Cell::new(0, 0)` when the field is full: the place op then displaces
+/// whatever is there, which is what the reflow is for and is better than refusing to open.
+fn first_free_cell(doc: &FieldDocument, span: Span) -> Cell {
+    for row in 0..doc.rows {
+        for col in 0..doc.cols {
+            let candidate = Placement::new(Cell::new(col, row), span);
+            if candidate.fits(doc.cols, doc.rows) && doc.is_free(None, candidate, None) {
+                return candidate.cell;
+            }
+        }
+    }
+    Cell::new(0, 0)
+}
+
 /// Why an op was refused. Nothing is applied on error: [`apply`] works on a copy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FieldError {
@@ -193,7 +250,15 @@ impl FieldOp {
             Self::Layout { .. } => "ARRANGE",
             Self::Tidy { .. } => "TIDY",
             Self::SetGrid { .. } => "RESIZE FIELD",
-            Self::CreateProject { .. } => "NEW PROJECT FROM THESE",
+            // The one op that makes two kinds of container, named for the one it makes: a
+            // person who dropped two apps together made a group of favourites, not a project.
+            Self::CreateProject { project, .. } => {
+                if matches!(project.kind, crate::tile::TileKind::Project { .. }) {
+                    "NEW PROJECT FROM THESE"
+                } else {
+                    "NEW GROUP FROM THESE"
+                }
+            }
             Self::CreateTray { .. } => "NEW TRAY",
             Self::RemoveTray { .. } => "REMOVE TRAY",
             Self::AddReference { .. } => "ADD REFERENCE · files remain in place",
@@ -513,8 +578,8 @@ fn resize(doc: &mut FieldDocument, id: TileId, span: Span) -> Result<FieldOp, Fi
     // Nothing in the widget system may fill its whole grid. A tile that covers everything is a
     // maximised window wearing a tile's clothes, and the field stops being a field. Only a
     // container may, because a project's full-field state is the zoom *view* — a different
-    // mechanism that leaves the document alone (`docs/homefield.md`, "Do not recreate virtual
-    // desktops under another name").
+    // mechanism that leaves the document alone
+    // (`@legeos.decision.home-field-stable-bounded-semantic-grammar`).
     if !tile.kind.is_container() && span.cols >= grid_cols && span.rows >= grid_rows {
         return Err(FieldError::BadSpan);
     }

@@ -74,7 +74,8 @@ pub fn nearest_in(
 /// This is how `Super+Left`/`Super+Right` move between the windows of one contiguous group. Two
 /// things about it are deliberate:
 ///
-/// * **It is geometry, computed on demand, and never stored.** `docs/homefield.md` is explicit
+/// * **It is geometry, computed on demand, and never stored.**
+///   `@legeos.decision.home-field-stable-bounded-semantic-grammar` is explicit
 ///   that adjacency must not imply a relationship — "two adjacent tiles should not automatically
 ///   become related" — because local reflow could then silently change what things mean. Nothing
 ///   here is written back to the document, nothing changes what a drop does, and nothing about a

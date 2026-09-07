@@ -46,7 +46,8 @@ impl Grid {
 
 /// What a placement costs. **Field order is the priority order**: `Ord` is derived, so the
 /// comparison is lexicographic — a candidate that displaces one tile fewer wins regardless of
-/// every other term, and so on down. `docs/homefield.md` lists the same terms in this order.
+/// every other term, and so on down. The ordering is governed by
+/// `@legeos.decision.home-field-stable-bounded-semantic-grammar`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct LayoutCost {
     /// Tiles that had to move to make room.
@@ -334,7 +335,8 @@ fn yields_for(
 /// This is the one reflow that never relocates anything. [`find_placement`] answers "where does
 /// this tile go", and its second pass evicts whoever is in the way to the nearest free cell;
 /// that is right for a drop, and wrong for a resize, where the neighbour jumping to the far side
-/// of the field is exactly the loss of spatial memory `docs/homefield.md` warns about. Here the
+/// of the field is exactly the loss of spatial memory guarded by
+/// `@legeos.decision.home-field-stable-bounded-semantic-grammar`. Here the
 /// resized tile keeps its cell, every neighbour keeps its far edge, and a request that would
 /// take some neighbour below its `min` is **clamped to the largest span that fits** instead of
 /// being refused or paid for by an eviction.

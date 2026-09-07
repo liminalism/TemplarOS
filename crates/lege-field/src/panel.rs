@@ -1,4 +1,5 @@
-//! Home-only layout groups — panels, rails and docks (`docs/homefield.md`). A panel is a named
+//! Home-only layout groups — panels, rails and docks
+//! (`@legeos.decision.home-field-stable-bounded-semantic-grammar`). A panel is a named
 //! set of member tiles and a rectangle of the field they are arranged within. It owns *layout*,
 //! never identity: arranging a panel moves and sizes its members, and nothing else about them.
 //!
