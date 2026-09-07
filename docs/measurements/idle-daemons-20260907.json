@@ -1,0 +1,16 @@
+{
+  "label": "NOT EXECUTED (development host, 2026-09-07)",
+  "seconds": 60,
+  "daemons": [],
+  "note": "NOT EXECUTED: no LegeOS daemon is running on this host. LegeOS is not installed here and the development session is Lubuntu, so scripts/idle-wakeups.sh found none of lege-sessiond, lege-resourced, lege-filed, lege-hostd, lege-comp or lege-shell to watch. A run that measured nothing is not a run that measured zero.",
+  "how_to_produce_it": [
+    "On an installed LegeOS session, leave the machine alone and run:",
+    "  scripts/idle-wakeups.sh 300 > docs/measurements/idle-daemons-<date>.json",
+    "Or against a nested session on any host:",
+    "  scripts/nested-session.sh start",
+    "  scripts/idle-wakeups.sh 300 > docs/measurements/idle-nested-<date>.json",
+    "  scripts/nested-session.sh stop",
+    "The nested route was deliberately not taken by the agent that added this script: it needs a build of lege-comp, and two other lanes were editing the compositor in the same working tree at the time."
+  ],
+  "reference": "docs/measurements/idle-after-head.json is the index watcher's own before/after, measured by `cargo xtask index-bench idle` against a fixture rather than against a running session."
+}
