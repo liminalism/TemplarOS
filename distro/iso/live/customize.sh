@@ -87,5 +87,11 @@ cp "$rootfs/usr/lib/shim/shimx64.efi.signed" "$out/efi/BOOTX64.EFI"
 cp "$rootfs/usr/lib/shim/mmx64.efi" "$out/efi/mmx64.efi"
 cp "$rootfs/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed" "$out/efi/grubx64.efi"
 chroot "$rootfs" dpkg-query -W --showformat='${Package} ${Version}\n' > "$out/casper/filesystem.manifest"
+# Ubuntu installs the kernel 0600 root-only, and inside mmdebstrap's user namespace that root is a
+# subordinate uid the host user cannot read as. xorriso runs as the host user, so every file that
+# leaves the namespace here is made world-readable before it does (2026-09-07: the first build's
+# xorriso failed on exactly this, "Access to file is not allowed" for casper/vmlinuz).
+chmod 0644 "$out/casper/vmlinuz" "$out/casper/initrd" "$out/casper/filesystem.manifest" \
+    "$out/efi/BOOTX64.EFI" "$out/efi/mmx64.efi" "$out/efi/grubx64.efi"
 # The kernel's own version line, for the record and for `lege doctor` on the medium.
 basename "$kernel" | sed 's/^vmlinuz-//' > "$out/legeos/kernel"
