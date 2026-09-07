@@ -68,13 +68,28 @@ components="main,universe,restricted"
 # What goes in: the metapackages (they pull the whole seed selection at the set's version) and the
 # live layer, which exists only here. `cargo xtask seeds` keeps live.seed current.
 ( cd "$root" && cargo run -q -p xtask -- seeds >/dev/null )
-includes="legeos-desktop,legeos-kernel,legeos-nvidia-open,legeos-dev-rust"
-includes="$includes,$(grep -v '^#' "$root/distro/seeds/live.seed" | grep -v '^$' | paste -sd,)"
+# No legeos-nvidia-open on the medium. The live session runs on whatever KMS driver the kernel
+# binds (the Intel iGPU on the reference laptop), and the NVIDIA LRM is installed into the *target*
+# by the provisioner, where there is a real /boot and a configured initramfs. In an unshared
+# bootstrap chroot nvidia-kernel-common's postinst runs `update-initramfs` for the *host's* kernel
+# before initramfs-tools has been configured, which fails the whole transaction (2026-09-07).
+includes="legeos-desktop,legeos-kernel,legeos-dev-rust"
+for seed in live hardware; do
+    includes="$includes,$(grep -v '^#' "$root/distro/seeds/$seed.seed" | grep -v '^$' | paste -sd,)"
+done
+# hardware.seed is listed as well as legeos-desktop on purpose: the metapackage inside a published
+# set was rendered when that set was built, so a firmware or module package added to the seeds
+# after it would not reach the medium until the next publish. The declaration wins on the medium.
 
 tree="$work/iso"
 squashfs="$tree/casper/filesystem.squashfs"
 iso="$out/legeos-$set_id.iso"
-mkdir -p "$tree/casper" "$tree/.disk" "$tree/boot/grub" "$tree/legeos"
+mkdir -p "$tree/casper" "$tree/.disk" "$tree/boot/grub" "$tree/legeos" "$tree/efi"
+# The customize hook runs inside mmdebstrap's user namespace, where this user's uid is not mapped:
+# from in there these directories belong to nobody and even the namespace's root cannot write to
+# them, so the hook cannot drop the kernel, the initramfs and the signed boot files here. A
+# world-writable mode is what lets it; this is a scratch build tree, never a shipped path.
+chmod 0777 "$tree" "$tree/casper" "$tree/efi" "$tree/legeos"
 
 printf 'LegeOS live medium\n  set      %s\n  archive  %s\n  mirror   %s\n  work     %s\n  out      %s\n' \
     "$set_id" "$archive" "$mirror" "$work" "$iso"
@@ -103,7 +118,8 @@ else
         "deb $mirror $codename-updates main universe restricted" \
         "deb $security $codename-security main universe restricted" \
         "deb copy://$archive ./" \
-        | mksquashfs - "$squashfs" -tar -comp zstd -Xcompression-level 15 -noappend -quiet
+        | mksquashfs - "$squashfs" -tar -comp zstd -Xcompression-level 15 -noappend -quiet \
+        || { rm -f "$squashfs"; die "the bootstrap failed (see above); the partial squashfs was removed"; }
     [ -s "$squashfs" ] || die "no squashfs was produced"
 fi
 for f in casper/vmlinuz casper/initrd efi/BOOTX64.EFI efi/grubx64.efi efi/mmx64.efi casper/filesystem.manifest; do
@@ -145,6 +161,24 @@ menuentry "LegeOS $set_id — live session" {
 }
 menuentry "LegeOS $set_id — live session, loaded into RAM" {
     linux /casper/vmlinuz boot=casper toram console=ttyS0,115200 console=tty0 quiet ---
+    initrd /casper/initrd
+}
+# The two rescue entries. Neither is a variant of the first for its own sake: each answers one of
+# the two ways a machine fails to reach a session.
+#
+# Safe graphics does NOT use nomodeset. nomodeset turns off kernel modesetting for every driver,
+# including the Intel one the compositor renders on, so the session would come up on a blank
+# screen — the very symptom being escaped. What actually goes wrong on a hybrid laptop is the
+# NVIDIA stack, so this entry removes exactly that and leaves i915/amdgpu modesetting alone.
+menuentry "LegeOS $set_id — safe graphics (no NVIDIA)" {
+    linux /casper/vmlinuz boot=casper modprobe.blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nouveau console=ttyS0,115200 console=tty0 ---
+    initrd /casper/initrd
+}
+# No session at all: multi-user.target stops before greetd, so casper's autologin lands on a text
+# console with the preflight report already printed. This is the entry to boot when the graphical
+# one shows nothing, and it is where nomodeset belongs, since nothing here needs modesetting.
+menuentry "LegeOS $set_id — text console (no session)" {
+    linux /casper/vmlinuz boot=casper systemd.unit=multi-user.target nomodeset console=ttyS0,115200 console=tty0 ---
     initrd /casper/initrd
 }
 CFG

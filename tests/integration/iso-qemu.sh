@@ -41,4 +41,12 @@ grep -q 'boot=casper' "$serial" || fail "the kernel never started (no casper com
 grep -qi 'Secure boot enabled' "$serial" || fail "the kernel did not report Secure Boot enabled"
 grep -q 'Reached target .*Graphical Interface\|Started .*greetd\|legeos-live login:' "$serial" \
     || fail "userspace did not reach the session (last lines: $(tail -3 "$serial" | tr '\n' '|'))"
-echo "iso-qemu: OK — shim → GRUB → kernel with Secure Boot on, live userspace reached"
+
+# The medium's own hardware preflight, read off the console it printed to (legeos-preflight.service
+# in distro/iso/live/customize.sh). QEMU gives the guest a virtio-net device, so `preflight-network`
+# passing is a real assertion here: it fails if the module or its declaration ever falls out of the
+# medium. The line is the `lege doctor` row format: "pass  preflight-network  …".
+grep -qE '^pass +preflight-network ' "$serial" \
+    || fail "the live preflight did not report a working network (preflight lines: $(grep -c preflight- "$serial" || true); \
+$(grep -E '^(fail|skipped) +preflight-' "$serial" | head -3 | tr '\n' '|'))"
+echo "iso-qemu: OK — shim → GRUB → kernel with Secure Boot on, live userspace reached, preflight network pass"

@@ -48,6 +48,32 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 CONF
 rm -f "$rootfs/etc/apt/preferences.d/legeos-set"
 
+# The hardware preflight, once, at boot. The report is what `legeos-install` refuses on
+# (installer/provision.sh), and journal+console puts it on the serial console as well, which is
+# how tests/integration/iso-qemu.sh reads it. The unit never fails: a hardware failure is a
+# finding for the person at the machine, not a boot failure that hides itself.
+mkdir -p "$rootfs/usr/lib/systemd/system" "$rootfs/etc/systemd/system/multi-user.target.wants"
+cat > "$rootfs/usr/lib/systemd/system/legeos-preflight.service" <<CONF
+# LIVE MEDIUM ONLY — written by distro/iso/live/customize.sh.
+[Unit]
+Description=LegeOS live hardware preflight
+After=NetworkManager.service systemd-udevd.service
+Before=greetd.service
+ConditionPathExists=/usr/bin/lege
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/bin/sh -c 'mkdir -p /run/legeos; lege doctor --preflight > /run/legeos/preflight.txt 2>&1 || true; cat /run/legeos/preflight.txt'
+
+[Install]
+WantedBy=multi-user.target
+CONF
+ln -sf ../../../../usr/lib/systemd/system/legeos-preflight.service \
+    "$rootfs/etc/systemd/system/multi-user.target.wants/legeos-preflight.service"
+
 # The live initramfs: casper's hooks go in when initramfs-tools runs with casper installed.
 chroot "$rootfs" update-initramfs -u -k all
 

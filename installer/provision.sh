@@ -72,6 +72,9 @@ format_data=0
 reuse=0
 plan_out=""
 plan_in=""
+ignore_preflight=0
+# The live medium leaves the boot-time hardware report here (distro/iso/live/customize.sh).
+PREFLIGHT_REPORT="${PREFLIGHT_REPORT:-/run/legeos/preflight.txt}"
 
 
 die() { printf 'provision: %s\n' "$*" >&2; exit 1; }
@@ -106,6 +109,7 @@ usage: provision.sh --image PATH [--apply] [options]
   --reuse             preserve every filesystem that already exists: no mkfs on the ESP or the
                       root, and no GPT type code rewritten. Refuses if a required one is absent.
   --plan-out PATH     write the reviewed operation sequence here (default: alongside the target).
+  --ignore-preflight  install even though the live medium's hardware preflight reported a failure.
   --plan PATH         with --apply: run *this* reviewed plan. The machine is observed again first
                       and any drift in topology, filesystem identity or mounted state is refused.
   --help              this text.
@@ -130,6 +134,7 @@ while [ $# -gt 0 ]; do
         --data) data_arg="${2:?--data needs a partition}"; shift 2 ;;
         --format-data) format_data=1; shift ;;
         --reuse) reuse=1; shift ;;
+        --ignore-preflight) ignore_preflight=1; shift ;;
         --plan-out) plan_out="${2:?--plan-out needs a path}"; shift 2 ;;
         --plan) plan_in="${2:?--plan needs a path}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
@@ -180,6 +185,19 @@ cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
 # --- Refusals ------------------------------------------------------------------------------------
 # Everything below this line is destructive. These are the conditions under which it must not run,
 # stated once, before any of it.
+
+# The live medium runs `lege doctor --preflight` once at boot and leaves its report behind.
+# Installing onto a machine whose display or network the kernel could not drive is exactly how
+# somebody ends up with a system that boots to nothing, so a failed line refuses to write. Nothing
+# is probed again here: the report is the observation, and --ignore-preflight is the override.
+if [ "$apply" = 1 ] && [ "$ignore_preflight" = 0 ] && [ -r "$PREFLIGHT_REPORT" ]; then
+    preflight_failures="$(grep '^fail ' "$PREFLIGHT_REPORT" || true)"
+    [ -z "$preflight_failures" ] || die "the hardware preflight failed on this machine:
+$preflight_failures
+  (report: $PREFLIGHT_REPORT)
+Boot the medium's safe-graphics or text-console entry and report this, or pass --ignore-preflight
+to install anyway."
+fi
 if [ -n "$esp_arg" ] || [ -n "$root_arg" ]; then
     [ -n "$esp_arg" ] && [ -n "$root_arg" ] || die "--esp and --root go together"
     [ -z "$target" ] || die "--esp/--root name the target; do not also pass --image, --device or --free-space"
