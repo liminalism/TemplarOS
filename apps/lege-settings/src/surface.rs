@@ -18,11 +18,14 @@ use pixelkit_ui::{Dropdown, ScrollState, Theme, Ui};
 use std::sync::{Arc, Mutex, mpsc};
 
 const HOME_PREFIX: &str = "shell.home-field.";
+const APPEARANCE_PREFIX: &str = "shell.appearance.";
 /// `System` is second because it is the page the Home Field's Settings widget opens into: the
 /// widget reports the battery, the volume and the brightness, and this is where they can be set
 /// outright. The rest keep the order they have had, so a person who learned where a tab is does
 /// not have to learn it again.
-const PAGE_NAMES: [&str; 8] = [
+/// Appearance is last rather than beside Home Field for the same reason: it is new, and moving
+/// six tabs to make room for it would cost every person who already knows where History is.
+const PAGE_NAMES: [&str; 9] = [
     "Home Field",
     "System",
     "Providers",
@@ -31,6 +34,7 @@ const PAGE_NAMES: [&str; 8] = [
     "Resources",
     "History",
     "Hardware",
+    "Appearance",
 ];
 /// The index of each page that draws controls rather than rendered text.
 const HOME_PAGE: usize = 0;
@@ -39,6 +43,7 @@ const PROVIDERS_PAGE: usize = 2;
 const ASSOCIATIONS_PAGE: usize = 3;
 const BACKGROUND_PAGE: usize = 4;
 const HISTORY_PAGE: usize = 6;
+const APPEARANCE_PAGE: usize = 8;
 /// How far one press of a stepper moves a level: the same five points `lege status louder` and
 /// the Home Field's own controls use, so no two surfaces disagree about what one step means.
 const STEP_PERCENT: i32 = 5;
@@ -476,6 +481,9 @@ fn associations_confirmation(command: &AssociationsCommand) -> Option<String> {
 
 struct SettingsApp {
     home: Vec<SettingRow>,
+    /// `shell.appearance.*`, kept apart from the Home Field's keys so each page lists only its
+    /// own — a page that shows a key it is not about is a page a person has to read twice.
+    appearance: Vec<SettingRow>,
     system: crate::system::SystemState,
     background: Vec<BackgroundEntry>,
     history: Vec<Event>,
@@ -504,16 +512,35 @@ struct SettingsApp {
 }
 
 impl SettingsApp {
-    fn change(&mut self, index: usize, value: SettingValue) {
-        self.home[index].value = value.clone();
-        let key = self.home[index].spec.key.clone();
+    /// The rows one page of typed keys is editing.
+    fn rows_for(&self, page: usize) -> &[SettingRow] {
+        if page == APPEARANCE_PAGE {
+            &self.appearance
+        } else {
+            &self.home
+        }
+    }
+
+    fn rows_for_mut(&mut self, page: usize) -> &mut Vec<SettingRow> {
+        if page == APPEARANCE_PAGE {
+            &mut self.appearance
+        } else {
+            &mut self.home
+        }
+    }
+
+    fn change(&mut self, page: usize, index: usize, value: SettingValue) {
+        let rows = self.rows_for_mut(page);
+        rows[index].value = value.clone();
+        let key = rows[index].spec.key.clone();
         self.status = format!("Saving {key}…");
         let _ = self.backend.commands.send(Command::Set { key, value });
     }
 
-    fn reset(&mut self, index: usize) {
-        self.home[index].value = self.home[index].spec.default.clone();
-        let key = self.home[index].spec.key.clone();
+    fn reset(&mut self, page: usize, index: usize) {
+        let rows = self.rows_for_mut(page);
+        rows[index].value = rows[index].spec.default.clone();
+        let key = rows[index].spec.key.clone();
         self.status = format!("Resetting {key}…");
         let _ = self.backend.commands.send(Command::Reset { key });
     }
@@ -580,10 +607,24 @@ impl SettingsApp {
     }
 
     fn draw_home(&mut self, ui: &mut Ui<'_>, area: Rect) {
-        let rows = self.home.clone();
+        self.draw_key_form(ui, area, HOME_PAGE, HOME_PREFIX);
+    }
+
+    /// The Appearance page: light or dark, and the accent. Same form as the Home Field page,
+    /// because they are the same kind of thing — a typed key with a control and a Reset.
+    fn draw_appearance(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        self.draw_key_form(ui, area, APPEARANCE_PAGE, APPEARANCE_PREFIX);
+    }
+
+    /// One page of typed settings: a name, the sentence under it, its control and a Reset.
+    ///
+    /// `page` picks both the scroll state and which list of rows is being edited, so a change on
+    /// the Appearance page can never write an index into the Home Field's list.
+    fn draw_key_form(&mut self, ui: &mut Ui<'_>, area: Rect, page: usize, prefix: &str) {
+        let rows = self.rows_for(page).to_vec();
         let heights = vec![ui.px(88); rows.len()];
         let mut wanted: Option<(usize, Option<SettingValue>)> = None;
-        let mut scroll = self.scroll[HOME_PAGE];
+        let mut scroll = self.scroll[page];
         ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
             let row_area = Rect::new(rect.x, rect.y, rect.w, ui.px(78));
             ui.painter
@@ -593,9 +634,9 @@ impl SettingsApp {
             let name = rows[index]
                 .spec
                 .key
-                .strip_prefix(HOME_PREFIX)
+                .strip_prefix(prefix)
                 .unwrap_or(&rows[index].spec.key)
-                .replace('-', " ");
+                .replace(['-', '.'], " ");
             ui.label(
                 Rect::new(
                     row_area.x + ui.px(12),
@@ -632,10 +673,10 @@ impl SettingsApp {
                 wanted = Some((index, Some(value)));
             }
         });
-        self.scroll[HOME_PAGE] = scroll;
+        self.scroll[page] = scroll;
         match wanted {
-            Some((index, Some(value))) => self.change(index, value),
-            Some((index, None)) => self.reset(index),
+            Some((index, Some(value))) => self.change(page, index, value),
+            Some((index, None)) => self.reset(page, index),
             None => {}
         }
     }
@@ -1399,6 +1440,7 @@ impl PixelApp for SettingsApp {
                 ASSOCIATIONS_PAGE => self.draw_associations(&mut ui, content),
                 BACKGROUND_PAGE => self.draw_background(&mut ui, content),
                 HISTORY_PAGE => self.draw_history(&mut ui, content),
+                APPEARANCE_PAGE => self.draw_appearance(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
             // Last, so nothing the page drew afterwards covers the open list.
@@ -1477,24 +1519,43 @@ fn fonts() -> &'static FontSet {
     })
 }
 
+/// Which page of typed controls a schema key belongs on, or `None` for a key no page shows.
+///
+/// The two prefixes are disjoint by construction, and this is where that is stated once: a key
+/// appearing on both pages, or on neither, is a control a person either sees twice or cannot
+/// find at all.
+fn page_for(key: &str) -> Option<usize> {
+    if key.starts_with(HOME_PREFIX) {
+        Some(HOME_PAGE)
+    } else if key.starts_with(APPEARANCE_PREFIX) {
+        Some(APPEARANCE_PAGE)
+    } else {
+        None
+    }
+}
+
 async fn load() -> Result<SettingsApp> {
     let connection = zbus::Connection::session().await.context("session bus")?;
     let proxy = SettingsProxy::new(&connection).await?;
     let values: std::collections::HashMap<_, _> = proxy.list().await?.into_iter().collect();
-    let mut home = Vec::new();
+    let (mut home, mut appearance) = (Vec::new(), Vec::new());
     for json in proxy.schema_details().await? {
         let spec: SettingSpec = serde_json::from_str(&json)?;
-        if !spec.key.starts_with(HOME_PREFIX) {
-            continue;
-        }
+        let list = match page_for(&spec.key) {
+            Some(APPEARANCE_PAGE) => &mut appearance,
+            Some(_) => &mut home,
+            None => continue,
+        };
         let value = values
             .get(&spec.key)
             .map(|json| serde_json::from_str(json))
             .transpose()?
             .unwrap_or_else(|| spec.default.clone());
-        home.push(SettingRow { spec, value });
+        list.push(SettingRow { spec, value });
     }
-    home.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
+    for list in [&mut home, &mut appearance] {
+        list.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
+    }
 
     // One entry per tab, so `selected_page` indexes both. The four interactive pages draw their
     // own controls and keep an empty entry here rather than a rendered copy of themselves.
@@ -1515,6 +1576,7 @@ async fn load() -> Result<SettingsApp> {
             .lines()
             .map(str::to_owned)
             .collect(),
+        Vec::new(),
     ];
     // The System page's first reading, taken here with the rest so the page is populated the
     // moment it is opened rather than blank until the first command comes back. Every interface
@@ -1559,6 +1621,7 @@ async fn load() -> Result<SettingsApp> {
 
     Ok(SettingsApp {
         home,
+        appearance,
         system,
         background,
         history,
@@ -1587,4 +1650,59 @@ pub fn run() -> Result<()> {
         WindowConfig::new("Settings", 1040.0, 680.0).min_size(820.0, 600.0),
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each page of typed controls lists its own keys and nobody else's, checked against the
+    /// real schema rather than a list written out here — a key added under the wrong prefix is
+    /// a control that appears on the wrong page, or on none.
+    #[test]
+    fn appearance_page_lists_only_appearance_keys() {
+        let schema = lege_session_core::settings::baseline_schema();
+        let mut appearance = Vec::new();
+        let mut home = Vec::new();
+        for key in schema.specs.keys() {
+            match page_for(key) {
+                Some(APPEARANCE_PAGE) => appearance.push(key.as_str()),
+                Some(HOME_PAGE) => home.push(key.as_str()),
+                Some(other) => panic!("{key} claims page {other}, which draws no key form"),
+                None => {}
+            }
+        }
+        assert_eq!(
+            appearance,
+            vec!["shell.appearance.accent", "shell.appearance.theme"],
+            "the Appearance page shows the wrong set of keys"
+        );
+        assert!(!home.is_empty(), "the Home Field page lost its keys");
+        for key in &home {
+            assert!(!appearance.contains(key), "{key} is on both pages");
+        }
+        // Every key either page shows has to be a real schema key with a default, or its Reset
+        // has nothing to reset to.
+        for key in appearance.iter().chain(&home) {
+            assert!(schema.specs.contains_key(*key));
+        }
+    }
+
+    /// The tab list and the page indices are two halves of one thing; a page index past the end
+    /// of the names is a tab a person can never reach.
+    #[test]
+    fn every_named_page_index_is_within_the_tab_list() {
+        for page in [
+            HOME_PAGE,
+            SYSTEM_PAGE,
+            PROVIDERS_PAGE,
+            ASSOCIATIONS_PAGE,
+            BACKGROUND_PAGE,
+            HISTORY_PAGE,
+            APPEARANCE_PAGE,
+        ] {
+            assert!(page < PAGE_NAMES.len(), "page {page} has no tab");
+        }
+        assert_eq!(PAGE_NAMES[APPEARANCE_PAGE], "Appearance");
+    }
 }

@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
 
     if let Some(path) = &cli.render {
         let (width, height) = parse_size(&cli.size)?;
+        lege_shell::surface::design::set_palette(lege_shell::settings::load_appearance().await);
         lege_shell::surface::offscreen::render_field(path, width, height).await?;
         println!("{}", path.display());
         return Ok(());
@@ -95,6 +96,9 @@ async fn main() -> Result<()> {
             wayland_display = ?std::env::var_os("WAYLAND_DISPLAY"),
             "starting graphical shell; connecting to Wayland"
         );
+        // The palette is chosen here, before any surface exists, because every painter reads it
+        // and a frame drawn in one palette and finished in another is worse than either.
+        lege_shell::surface::design::set_palette(lege_shell::settings::load_appearance().await);
         return lege_shell::surface::run();
     }
 

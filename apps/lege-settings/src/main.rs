@@ -61,6 +61,7 @@ struct Cli {
 }
 
 const PAGES: &[&str] = &[
+    "appearance",
     "system",
     "providers",
     "associations",
@@ -97,6 +98,10 @@ async fn print_page(cli: Cli) {
 
     let output = match page {
         "hardware" => hardware::render().await,
+        // Appearance has no read-only rendering of its own: `lege settings get/list` already
+        // prints these two typed keys, and a second spelling of the same two values would be a
+        // second thing to keep in step for no new information.
+        "appearance" => "Appearance: see `lege settings list shell.appearance`".to_owned(),
         "system" | "providers" | "associations" | "background" | "resources" | "history" => {
             let connection = match zbus::Connection::session().await {
                 Ok(connection) => connection,

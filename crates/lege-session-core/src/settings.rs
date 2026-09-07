@@ -156,6 +156,7 @@ pub fn baseline_schema() -> SettingsSchema {
         max: None,
         privileged: false,
     });
+    add_appearance_specs(&mut schema);
     add_home_field_specs(&mut schema);
     schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
@@ -204,6 +205,41 @@ pub fn baseline_schema() -> SettingsSchema {
         privileged: true,
     });
     schema
+}
+
+/// The shell's appearance keys (`shell.appearance.*`), read by `lege-shell` at startup.
+fn add_appearance_specs(schema: &mut SettingsSchema) {
+    schema.add(SettingSpec {
+        key: "shell.appearance.theme".into(),
+        description: "Light or dark shell colours. Applies at the next shell start, which is \
+                      about half a second (lege-shell restarts on its own; the compositor does \
+                      not need to)"
+            .into(),
+        default: SettingValue::Choice("light".into()),
+        choices: vec!["light".into(), "dark".into()],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
+        key: "shell.appearance.accent".into(),
+        description: "The accent colour the shell highlights with. `default` keeps the theme's \
+                      own; every other value names one of the bundled accents"
+            .into(),
+        default: SettingValue::Choice("default".into()),
+        choices: vec![
+            "default".into(),
+            "teal".into(),
+            "blue".into(),
+            "violet".into(),
+            "green".into(),
+            "amber".into(),
+            "red".into(),
+        ],
+        min: None,
+        max: None,
+        privileged: false,
+    });
 }
 
 /// The Home Field's keys (`shell.home-field.*`), read by `lege-shell`.
