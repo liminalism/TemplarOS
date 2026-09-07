@@ -327,7 +327,7 @@ struct ShellApp {
     home_dir: Option<PathBuf>,
     /// What each open folder window is showing, keyed by the directory. Bounded by how many
     /// folder tiles are on the field, which is bounded by the field.
-    folder_listings: HashMap<PathBuf, DirectoryListing>,
+    folder_listings: HashMap<PathBuf, Result<DirectoryListing, String>>,
     /// Directories a folder window has asked for and not yet received, and when each was last
     /// asked for, so a window refreshes on a slow beat instead of once and never again.
     folder_pending: HashSet<PathBuf>,
@@ -971,16 +971,14 @@ impl ShellApp {
                 }
                 DataUpdate::FolderListing { path, result } => {
                     self.folder_pending.remove(&path);
-                    match result {
-                        Ok(listing) => {
-                            self.folder_listings.insert(path, listing);
-                        }
-                        Err(error) => {
-                            tracing::debug!(%error, path = %path.display(), "a folder window's listing failed");
-                            self.folder_listings.remove(&path);
-                        }
+                    if let Err(error) = &result {
+                        tracing::debug!(%error, path = %path.display(), "a folder window's listing failed");
                     }
+                    // Keep failures as view data: removing the entry made a failed request
+                    // indistinguishable from one still loading, forever.
+                    self.folder_listings.insert(path, result);
                 }
+
                 DataUpdate::FileThumbnail {
                     generation,
                     path,

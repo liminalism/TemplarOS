@@ -86,6 +86,28 @@ record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
     as_of git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
 }
 
+record legeos.assessment.home-vision-review-20260905/1 : assessment {
+    title "Home vision and daily-development usability review"
+    state verified
+    statement """
+        Reviewed Home against @legeos.work.home-surface-usability-next, the representation-ladder decision, the application-only launcher decision and hands-on run 5. Source inspection and deterministic renders support the core shape: one bounded field with stable user-directed geometry, explicit folder/project/window-group containers, an application-only launcher, one Settings object and Home occlusion beneath application windows. The pinned Files application in the visual fixture is an explicit pin, not evidence that automatic app duplicates returned. This review does not establish real-seat composition, hardware input or mixed-scale acceptance.
+
+        Concrete defects repaired at this commit: (1) context menus clamped their background but continued painting and hit-testing rows off-screen; the menu now pages and scrolls within its bounds, including keyboard wrap to the last action and two-press close confirmation. (2) Files ground had no terminal route and the row verb demanded one selected item; ground now targets the current directory independently of selection. (3) Copy/Cut existed as toolbar/keyboard verbs but were missing from the row menu. (4) Help compressed busy categories into overlapping rows; readable fixed-height rows now scroll, including keyboard navigation, with Close remaining outside the viewport. (5) folder request failures were removed from the cache and rendered forever as reading; the error is now retained and shown while the existing refresh beat can recover. (6) parent navigation retained the child scroll offset and truncated-list captions overpainted the last row; both are corrected.
+
+        Remaining existing-scope priorities: folder windows still use a separate minimal listing (paint_folder_window), with immediate file opening, no row selection or full file context menu, no hidden-file toggle and no sort/view controls. Their existing three-second BrowseDirectory refresh is not integration with index change signals. The richer Files object supports many of these verbs, but it is not yet a shared per-folder browsing surface. Carry its state and actions into folder windows rather than inventing another file-operation implementation. The action gate still exempts pointer routes for group cycling and terminal toggle, as the existing application-integration and window-group records already acknowledge. These are implementation gaps within the existing vision, not requests to adopt a conventional taskbar or a new workspace model.
+
+        The mostly-empty cold Home layout remains an unresolved product choice. Filling all space would conflict with stable placement and useful drop space. Two extrapolations are proposed separately, with no code implementation: @legeos.work.home-developer-setup-preview (an opt-in preview of a developer working set) and @legeos.work.home-project-development-status (service-backed, explicit project build/test status with freshness). Neither authorizes background repository commands, automatic project inference or live repacking.
+        """
+    confidence high
+    as_of git:75f32ba4305e50067c2bf71c45630cf72e819042
+    derived_from [ @legeos.work.home-surface-usability-next ]
+    supported_by [
+        @legeos.evidence.home-review-actions-20260905,
+        @legeos.evidence.home-review-tests-20260905,
+        @legeos.evidence.home-review-visual-20260905
+    ]
+}
+
 record legeos.assessment.hotfixability-current-state-20260831/1 : assessment {
     title "Hot-fixability and daily-development readiness, 2026-08-31"
     state superseded
