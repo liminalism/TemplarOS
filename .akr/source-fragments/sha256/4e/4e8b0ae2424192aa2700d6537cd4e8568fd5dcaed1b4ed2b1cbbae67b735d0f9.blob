@@ -1,0 +1,300 @@
+# LegeOS Developer Edition 0.1 — mid-level agent campaign plan
+
+Status: campaign-planning companion, 2026-09-03.
+
+AKR campaign head: proposed `@legeos.milestone.developer-edition-0-1`.
+
+This document is the delegation layer between the high-level direction in
+[`distroagentplan.md`](distroagentplan.md) and the implementation plans written by individual agents.
+The campaign planning agent should read both documents. It may also consult the longer-horizon
+[`planning/ubuntu-derived-full-distribution-roadmap.md`](planning/ubuntu-derived-full-distribution-roadmap.md)
+when a task concerns a future supportable public distribution, but that longer roadmap is not the scope
+of this push.
+
+This is deliberately a mid-level plan. It assigns outcomes, boundaries, dependencies, decision gates
+and acceptance responsibilities. It does not prescribe functions, data structures or patches before the
+owner has inspected the current tree.
+
+## 1. Campaign outcome
+
+The campaign target is a narrow **LegeOS Developer Edition 0.1** for the known Intel + RTX 4060 laptop,
+not a supportable distribution for strangers.
+
+The target is reached when declared Ubuntu 26.04 and LegeOS inputs can recreate a system which:
+
+- boots a LegeOS session while retaining a known-good Ubuntu kernel and recovery route;
+- uses the Ubuntu-supported kernel/NVIDIA coupling for the stable path;
+- can build the LegeOS workspace and ordinary Rust/CUDA projects;
+- provides working browser, terminal, Files, media, networking, audio and essential portals;
+- maintains one durable file index for Files, FSearch and Silvaview consumers;
+- installs coherent LegeOS package build sets and can roll back one bad userspace set;
+- stages boot-critical changes separately and can identify the booted and known-good deployments;
+- survives a normal development day on the reference laptop without requiring another desktop session.
+
+The campaign produces a reproducible developer image and a narrow target-machine provisioner. It does
+not have to produce a public ISO or a general graphical installer.
+
+## 2. Authority, vocabulary and scope locks
+
+### 2.1 Order of authority
+
+When two instructions disagree, use this order:
+
+1. repository `AGENTS.md`, safety rules and accepted project constraints;
+2. the validated current head of an active AKR record;
+3. this mid-level campaign plan;
+4. `distroagentplan.md`, which supplies product direction and scope cuts;
+5. the public-distribution roadmap and other planning proposals;
+6. a subagent's local implementation plan.
+
+An AKR search result is not authority. Before changing a lane, the responsible agent must call
+`knowledge.context` with the exact live goal and owned paths, read the complete result, and check the
+state of every cited record. Proposed decisions are decision gates, not permission to implement one
+option silently.
+
+### 2.2 Names
+
+The repository, packages, interfaces and AKR namespace are **LegeOS** and `org.legeos`. The use of
+“TemplarOS” in the high-level plan is not authorization for a repository-wide rename. Keep existing
+LegeOS names unless a separate accepted naming decision says otherwise. The current namespace authority
+is `@legeos.decision.toolchain-licence-namespace`.
+
+### 2.3 Scope locks
+
+The following are fixed for this campaign unless the user explicitly changes them through an accepted
+AKR decision:
+
+- Ubuntu 26.04 remains the binary base. See `@legeos.decision.base-ubuntu-2604-kernel-70`.
+- Ubuntu's supported GA/HWE kernel and matching NVIDIA LRM are the stable path. A mainline kernel is an
+  experiment or transaction candidate, never a Developer Edition 0.1 gate.
+- The previous known-good Ubuntu kernel remains selectable.
+- The mkosi developer/VM image keeps its existing systemd-boot role. See
+  `@legeos.decision.mkosi-images`.
+- Canonical shim + GRUB is the intended bare-metal direction from the high-level plan, but the production
+  Secure Boot path is still a proposed decision in `@legeos.decision.boot-deploy-secure-boot`. Resolve
+  that record before implementation claims it is settled.
+- A target-machine provisioner replaces a general installer in this campaign. Dual boot, OEM flows,
+  arbitrary layouts, TPM FDE and a polished live installer are out of scope.
+- Flatpak is the sandboxed application route and Snap is absent from the seeds. See
+  `@legeos.decision.flatpak-and-crash-handling`.
+- All shipped components and policy remain Debian-packaged. See
+  `@legeos.decision.debian-packaging` and `@legeos.constraint.packaging-and-render-thread`.
+- No custom libc, package manager, base userland, display protocol, broad app store or universal hardware
+  claim. See `@legeos.constraint.first-release-scope`.
+
+### 2.4 Explicit non-goals
+
+Do not spend this push on:
+
+- a public multi-pocket archive, mirror/CDN or public security operation;
+- a LegeOS-built stable kernel or an independent NVIDIA module-signing pipeline;
+- a public, polished or general-purpose installer;
+- arm64, legacy BIOS, broad OEM support or every NVIDIA generation;
+- office, mail, calendar, printer/scanner or graphical app-store features;
+- TempleOS homage applications;
+- high generated line counts as an objective.
+
+The longer public-distribution work remains represented by `@legeos.work.full-distribution-roadmap` and
+the companion long-horizon roadmap. Finishing this campaign must not be reported as completing that
+larger work item.
+
+## 3. What the planning agent must do before delegation
+
+### 3.1 Establish one campaign head
+
+1. Record the base commit and the complete dirty-path list. Existing changes belong to the user or other
+   work; do not overwrite, stash or fold them into a lane accidentally.
+2. Run `knowledge.context(@legeos.milestone.developer-edition-0-1, paths)` and
+   `knowledge.validate`. Read `@legeos.work.full-distribution-roadmap` only as the broader work from
+   which the narrow milestone was derived.
+3. Read this file, `distroagentplan.md`, the active AKR bundle and only the relevant sections of the
+   longer public-distribution roadmap.
+4. Load and, if the user accepts this scope, accept or revise the proposed narrow campaign milestone
+   `@legeos.milestone.developer-edition-0-1`. Do not use
+   `@legeos.work.full-distribution-roadmap` as though its supportable-public-distro acceptance were the
+   one-month target.
+5. Make every lane either a child of that campaign milestone or an explicitly related existing work
+   record. Never create a duplicate when an existing live record already owns the outcome.
+
+The milestone is proposed, not silently accepted. Its seven checks cover the declared package/image,
+coherent build sets, disposable provisioning, reference hardware, userspace/boot recovery, one shared
+index and a daily-driver day.
+
+### 3.2 Reconcile plan statements against HEAD
+
+Before assigning implementation, classify every requested result as:
+
+- **present and evidenced** — no code task; close or retain the evidence;
+- **present but not evidenced** — verification/AKR task first;
+- **partial** — delegate only the missing behavior;
+- **absent** — delegate an implementation plan;
+- **blocked by a decision or external input** — keep it out of an implementation lane;
+- **out of campaign scope** — leave it in the longer roadmap.
+
+This is mandatory because both high-level roadmaps describe a moving tree. For example, the hardware
+runner previously identified as inert now has a non-destructive plan implementation in the repository;
+an owner must inspect and test it rather than rewrite it from the older assessment. Likewise, existing
+deployment, portal and package work may have advanced beyond a proposal's wording.
+
+### 3.3 Capture a baseline without touching the live desktop
+
+Use safe, non-mutating checks appropriate to the host:
+
+```text
+just check
+just deb-plan
+just image summary
+```
+
+Record unavailable prerequisites and network-dependent checks instead of applying undocumented host
+fixes. Never deploy, restart a live `lege-*` user unit, log the user out, alter boot state, suspend the
+machine, change GPU mode or operate on a real target disk. The user owns those steps. Agents may use unit
+tests, fixtures, clean roots, QEMU, headless renders and `scripts/nested-session.sh`.
+
+### 3.4 Freeze ownership before spawning agents
+
+For every lane, publish:
+
+- the exact base commit;
+- the governing AKR goal and any decision/question keys;
+- writable paths, read-only paths and forbidden paths;
+- the interface or generated artifact it produces for other lanes;
+- acceptance commands and which checks remain manual;
+- its upstream dependencies and downstream consumers;
+- the integration owner.
+
+If two lanes need the same file, assign that file to one lane and make the other submit a requested
+contract change. “We will resolve the merge later” is not path ownership.
+
+Every delegated prompt must start with:
+
+```text
+You are a subagent. Don't run memo.
+```
+
+Subagents still follow AKR: they call `knowledge.context` for their assigned goal and paths, register
+durable evidence/changes through the ledger protocol, and run `knowledge.validate` before handoff.
+
+## 4. Campaign work breakdown
+
+The identifiers below are campaign lane names, not existing AKR keys. Agent numbers preserve the mapping
+from `distroagentplan.md`: Agent 0 plus Agents 1–7 are the core eight; Agent 8 is optional until the core
+contracts are stable.
+
+### Agent 0 / P0 — repository truth and campaign control
+
+**Outcome:** every implementation agent receives the complete source/build inputs and one reconciled,
+validated campaign ledger.
+
+**Start gate:** none. This lane completes before code-heavy lanes are released.
+
+**Ownership:** agent-pack generator and its tests only if its source is actually located and placed in
+scope; otherwise this is a coordinator task with no invented generator patch. It may add a repository
+source-closure check in a planner-assigned, non-overlapping tooling path.
+
+**Read:** the entire distro input surface, Debian packaging declarations, mkosi configuration, Rust
+`include_str!`/`include_bytes!` inputs and the two campaign documents.
+
+**Deliverables:**
+
+- base commit, dirty-path inventory and lane ownership matrix;
+- a generated included/excluded manifest for any agent pack used in the campaign;
+- verification that `.seed`, extensionless distro data, Debian helper files and embedded Rust inputs are
+  not silently omitted;
+- an early failure when a referenced build input would be absent from a pack;
+- the narrow campaign AKR milestone and a gap disposition for every lane;
+- a baseline report for `just check`, `just deb-plan` and `just image summary`.
+
+**Acceptance:** a newly generated pack, if packs are used, contains enough declared inputs for an agent
+to plan all three baseline commands without guessing. If the generator lives outside this repository,
+the handoff names its actual owner/location and records this lane as external rather than fabricating
+local source.
+
+**AKR:** no focused work record currently governs the pack/source-closure outcome. Suggested gap key:
+`@legeos.work.agent-pack-source-closure`. Use
+`@legeos.constraint.packaging-and-render-thread` as a constraint, not as a substitute work item.
+
+### Agent 1 / D1 — lean image, seeds and package closure
+
+**Outcome:** one machine-readable package-selection model drives the image, metapackages and support
+report for Developer Edition 0.1.
+
+**Start gate:** P0 source truth complete.
+
+**Writable paths:**
+
+- `distro/seeds/**`;
+- `distro/metapackages/**`;
+- `distro/image/**` except production boot files explicitly assigned to D3;
+- a dedicated seed/closure module under `tools/xtask/**` assigned by the planner.
+
+**Forbidden ownership:** installer/provisioning code, hostd transactions, archive publication and general
+`tools/xtask/**` files owned by D2.
+
+**Deliverables:**
+
+- explicit layers for bootstrap/minimal, hardware, graphics, session, desktop, browser, media, Rust
+  development, CUDA development and optional accessibility/IME/Bluetooth;
+- generated `50-seeds.conf`, not an independently maintained image list;
+- generated metapackage dependencies from the same declarations;
+- direct/transitive package closure, installed-size estimate, recommends report and reason for every
+  direct package;
+- a machine-readable supported-set manifest and missing/duplicate-provider diagnostics;
+- a documented `--no-recommends` experiment without making it policy blindly;
+- actual separation of Rust and CUDA development selections;
+- preservation of the no-Snap policy.
+
+**Acceptance responsibility:** `just image summary` consumes exactly the generated closure; the closure
+reports no unresolved package and the generated metapackages agree with it. Network/archive-dependent
+resolution must identify the exact Ubuntu snapshot or observation time.
+
+**AKR:** governed by `@legeos.decision.mkosi-images`,
+`@legeos.decision.base-ubuntu-2604-kernel-70`, `@legeos.decision.debian-packaging`,
+`@legeos.decision.flatpak-and-crash-handling` and `@legeos.constraint.first-release-scope`.
+There is no focused live package-closure work item; suggested gap key:
+`@legeos.work.developer-edition-package-closure`.
+
+### Agent 2 / D2 — build identity, local archive and reproducibility
+
+**Outcome:** one version authority produces coherent LegeOS build sets which can be cleanly built,
+verified, retained and consumed by the local image/deployment path.
+
+**Start gate:** P0 complete; the version-authority decision is assigned explicitly.
+
+**Writable paths:**
+
+- `crates/lege-build/**`;
+- `distro/apt/**`;
+- `cli/lege/src/dev/repo.rs` and archive/build modules assigned by the planner;
+- Debian archive/source-build plumbing;
+- dedicated build-set/archive modules under `tools/xtask/**`.
+
+**Read-only dependency:** D1's package-selection manifest. D2 does not edit seeds to make archive tests
+pass.
+
+**Deliverables:**
+
+- one authoritative version value feeding both BuildSetId/cargo-deb and `debian/changelog` source builds;
+- verified local signed archive states `candidate`, `current` and `previous`, retaining at least three
+  coherent sets;
+- checks for common build-set identity, missing components, signatures and continued satisfiability of
+  the rollback set;
+- build provenance and a clean disposable Ubuntu 26.04 source-build lane;
+- proof that installed packages need no developer checkout at runtime;
+- a local archive snapshot consumable by `just image`.
+
+Do not build the public `incoming/proposed/release/updates/security` operation in this campaign.
+
+**Acceptance responsibility:** `just deb-plan`, `just deb` where host prerequisites permit, the archive
+verification suite, and a dry-run image consuming a named local snapshot. Never use `lege dev deploy`
+against the live system for acceptance.
+
+**AKR:** start from `@legeos.work.deployment-activation-and-resourced`,
+`@legeos.decision.debian-packaging`, `@legeos.assessment.hotfixability-current-state-20260831` and the
+open `@legeos.question.package-version-authority-across-lanes`. The open question must be resolved in
+AKR before the chosen mechanism is treated as policy.
+
+### Agent 3 / D3 — target-machine provisioning and production boot path
+
+**Outcome:** a declarative, testable route from a clean target to the exact Developer Edition layout,
+without designing a general installer.

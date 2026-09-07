@@ -59,6 +59,114 @@ record legeos.assessment.desktop-test-readiness-20260827/1 : assessment {
     ]
 }
 
+record legeos.assessment.documentation-authority-and-root-draft-retirement-20260907/1 : assessment {
+    title "Documentation authority audit — seven root drafts retired; live reference and evidence docs retained"
+    state verified
+    scope [ path "ISO-PLAN.md", path "crates/**", path "docs/**", path "shell/**" ]
+    statement """
+        The seven root design drafts have no remaining authority or repository-reference role after migration into AKR. Their durable design is represented by the integrated roadmap and focused decisions/work; rejected and deferred ideas are explicit there, so the originals are retired. Remaining docs serve distinct live roles: ADRs are readable mirrors of AKR decisions; architecture and protocol pages explain current code and machine-readable interfaces; measurement and research reports are evidence artifacts; focused planning pages map to live work or preserve registered founding analysis; testing is an operational guide; docs/README.md is an index. Those remaining documents are not duplicate project authority and should be retained until their specific role is replaced.
+        """
+    confidence high
+    derived_from [ @legeos.work.design-consolidation-roadmap/1 ]
+    supported_by [
+        @legeos.evidence.astra-consolidation-advice-20260907/1,
+        @legeos.evidence.legacy-root-doc-migration-20260907/1,
+        @legeos.evidence.remaining-doc-authority-audit-20260907/1
+    ]
+    author "GitHub Uploader"
+    source {
+        kind external
+        role evidence
+        document "full-side-two-axis-window-resizing-first-draft"
+        start_byte 0
+        end_byte 22477
+        start_line 1
+        end_line 1169
+        excerpt_hash "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977"
+        use """
+            Complete retired resize draft retained as source context for its adopted and rejected alternatives.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-files-design"
+        start_byte 0
+        end_byte 16368
+        start_line 1
+        end_line 670
+        excerpt_hash "sha256:cb6d1ab969c3cdd19901aeb4ccae0fd34903802b60d42c9970dd734244a6ea3f"
+        use """
+            Complete retired Files draft retained as source context, including the rejected default-client replacement.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-filesystem-design"
+        start_byte 0
+        end_byte 16246
+        start_line 1
+        end_line 671
+        excerpt_hash "sha256:50ac5746b503ef37a3f486181e2c2547426867b19e5956db34b98d8eaafe3449"
+        use """
+            Complete retired filesystem draft retained as source context for staged storage work.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-homefield-design"
+        start_byte 0
+        end_byte 26914
+        start_line 1
+        end_line 501
+        excerpt_hash "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9"
+        use """
+            Complete retired Home draft retained as source context for the consolidated grammar and later overrides.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-polling-services-design"
+        start_byte 0
+        end_byte 19332
+        start_line 1
+        end_line 808
+        excerpt_hash "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb"
+        use """
+            Complete retired polling draft retained as source context for the service-authority policy.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-distro-agent-plan"
+        start_byte 0
+        end_byte 37411
+        start_line 1
+        end_line 1279
+        excerpt_hash "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1"
+        use """
+            Complete retired campaign draft retained as dated source context; active milestone and current evidence govern.
+            """
+    }
+    source {
+        kind external
+        role evidence
+        document "legacy-distro-agent-midplan"
+        start_byte 0
+        end_byte 38729
+        start_line 1
+        end_line 759
+        excerpt_hash "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4"
+        use """
+            Complete retired lane plan retained as dated source context; current child records govern.
+            """
+    }
+}
+
 record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
     title "Home Field usability audit — a deliberate divergence is a gap only where its substitute is missing, weaker or undiscoverable"
     state verified

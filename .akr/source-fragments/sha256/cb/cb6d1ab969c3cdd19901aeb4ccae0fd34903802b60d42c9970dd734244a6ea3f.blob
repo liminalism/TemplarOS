@@ -1,0 +1,670 @@
+I would **use PCManFM-Qt as the default file manager for TemplarOS 0.1 and stop spending significant effort on `lege-files` for now**.
+
+That does not mean abandoning the Templar file architecture. The important part of what you built is not the file-manager window; it is `lege-filed`, the unified index, file operations, associations, projects, recents, volumes, and the APIs around them. Your own architecture already says the file manager is supposed to be a client rather than the owner of file state. PCManFM-Qt can fill that client/UI role while you work on things that actually distinguish TemplarOS.
+
+PCManFM-Qt remains actively maintained—the current changelog has 2.4.1 from August 2026—and it works independently of LXQt on Wayland. You do not need its desktop mode or daemon mode. ([GitHub][1])
+
+## The division I would establish
+
+| Component                 | Responsibility                                                         |
+| ------------------------- | ---------------------------------------------------------------------- |
+| **Taskbar**               | Running windows and applications                                       |
+| **Home**                  | Persistent projects, workspaces, information widgets and launch points |
+| **PCManFM-Qt**            | General-purpose filesystem browsing                                    |
+| **`lege-filed`**          | Filesystem services, index, operations, volumes, recents, policy       |
+| **Projects1**             | Semantic project/workspace definitions                                 |
+| **Launcher/Associations** | Resolve *what program* opens something                                 |
+
+That is much cleaner than making Home a file manager and a taskbar and a project manager simultaneously.
+
+The crucial conceptual distinction is:
+
+> **A folder is filesystem structure. A project is an intentional working context whose root happens to be a folder.**
+
+That should drive the Home design.
+
+---
+
+## What to do with `lege-files`
+
+Freeze it.
+
+Don't delete it. It is useful as:
+
+* a reference client for `lege-filed`;
+* a test that your file APIs are sufficient for an independent frontend;
+* a future basis for a truly Templar-specific file manager if you eventually discover reasons PCManFM cannot satisfy.
+
+But don't make “catch up with PCManFM-Qt” part of your immediate roadmap.
+
+PCManFM has years of work invested in ordinary file-manager details: tabs, histories, places, selection behavior, views, mounting, dialogs, drag/drop, properties, thumbnails, keyboard behavior, and endless edge cases. Reimplementing all that only makes sense if you eventually want a substantially different file-management interaction.
+
+Right now you don't.
+
+---
+
+# Integrate PCManFM-Qt shallowly first
+
+I would package it with a dedicated profile:
+
+```text
+pcmanfm-qt --profile=templaros
+```
+
+and explicitly **never** launch:
+
+```text
+--desktop
+--daemon-mode
+```
+
+as part of the Templar session.
+
+That makes it an ordinary on-demand application.
+
+Make it the default handler for directories, so every generic Templar action that means:
+
+```text
+open folder
+```
+
+resolves to PCManFM today without knowing that PCManFM exists.
+
+That abstraction is important.
+
+Home should not contain:
+
+```text
+Exec=pcmanfm-qt /foo/bar
+```
+
+It should effectively say:
+
+```text
+Launcher:
+    open_directory("/foo/bar")
+```
+
+Then you can replace PCManFM five years from now without changing Home or Projects.
+
+---
+
+# PCManFM gives you an immediate Project integration hook
+
+PCManFM-Qt supports freedesktop-style custom actions whose visibility can depend on MIME type, selection count, folder, etc. They can be installed system-wide under `/usr/share/file-manager/actions`. ([GitHub][2])
+
+So package Templar actions for directories.
+
+For example, right-clicking a directory could show:
+
+```text
+TemplarOS
+    Create Project
+    Add to Existing Project
+    Open Terminal Here
+    Open as Project in Editor
+    Pin to Home
+```
+
+The important one initially is:
+
+```text
+Create Templar Project
+```
+
+which calls something like:
+
+```text
+templar project create --root <selected-directory>
+```
+
+That should call `Projects1.Create`, not create some PCMan-specific configuration.
+
+Then:
+
+```text
+folder
+  ↓
+Create Templar Project
+  ↓
+Projects1.Create
+  ↓
+project record exists
+  ↓
+Projects1.Changed
+  ↓
+Home automatically displays project
+```
+
+PCMan is merely the point at which the user expressed the intent.
+
+---
+
+# Do not make project shortcuts literal applications
+
+Your proposed **Dev** widget is exactly where I think Home should go.
+
+Suppose you create a project from:
+
+```text
+/data/projects/lege
+```
+
+Home might initially render:
+
+```text
+┌─────────────────────────────────┐
+│ LEGE                            │
+│ /data/projects/lege             │
+│                                 │
+│  >_ Terminal   📁 Files   </> Edit
+└─────────────────────────────────┘
+```
+
+Those three buttons should be **semantic project actions**, not stored program paths.
+
+Conceptually:
+
+```text
+Terminal
+    → launch terminal role
+    → cwd = project.root
+
+Files
+    → launch directory-handler role
+    → path = project.root
+
+Edit
+    → launch code-editor role
+    → project root = project.root
+```
+
+So today that might resolve to:
+
+```text
+Terminal → kitty
+Files    → PCManFM-Qt
+Edit     → your preferred editor
+```
+
+but the project doesn't know those names.
+
+This is exactly what your logical-application work is useful for.
+
+---
+
+# Don't put those three default actions into every project manifest
+
+Your existing project schema is already close to sufficient.
+
+It has:
+
+* root;
+* additional directories;
+* remembered apps;
+* terminal directories;
+* environment;
+* mounts;
+* references;
+* importance;
+* current/open state.
+
+I would **not** add:
+
+```text
+terminal = kitty
+files = pcmanfm-qt
+editor = whatever
+```
+
+to every project.
+
+Those are OS/user defaults.
+
+The project needs only:
+
+```text
+root = /data/projects/lege
+```
+
+and possibly an override later:
+
+```text
+preferred editor = ...
+```
+
+if a particular project genuinely needs one.
+
+This keeps projects portable when you change software.
+
+Also keep your existing `apps` concept semantically separate:
+
+> `apps` = applications/session state remembered and restored with the project.
+
+It should not become:
+
+> `apps` = the three buttons shown on the project tile.
+
+Those are different concepts.
+
+---
+
+# I would adjust the meaning of “open project”
+
+Right now Projects already has an `Open` operation that restores remembered applications.
+
+That's useful, but Home needs a weaker operation too.
+
+There are really three actions:
+
+```text
+Enter Project
+    → make it the current project
+    → launch nothing
+
+Launch Tool
+    → terminal / files / editor
+    → scoped to project
+
+Restore Workspace
+    → reopen remembered project applications
+```
+
+You already have `SetCurrent`, so **Enter Project** can basically exist today without changing the protocol.
+
+That makes a project tile much less aggressive.
+
+Sometimes you just want:
+
+```text
+LEGE
+    → Terminal
+```
+
+You shouldn't have to resurrect six old windows first.
+
+---
+
+# Home should become less of a file manager
+
+This is the bigger recommendation.
+
+Your existing Home implementation has started embedding actual file browsing into Downloads/Documents/Media/Drives.
+
+Given your reaction to PCManFM versus the current Files UI, I would pull back from that.
+
+Use the **small-widget → full-application** principle instead.
+
+For example:
+
+```text
+┌ Downloads ──────────────┐
+│ 3 recent                 │
+│ paper.pdf                │
+│ archive.zip              │
+│ screenshot.png           │
+│                          │
+│ Open Downloads →         │
+└──────────────────────────┘
+```
+
+That is useful.
+
+Turning the expanded widget into another full hierarchical file manager is mostly duplication.
+
+Likewise:
+
+### Documents
+
+Home:
+
+```text
+recent / pinned / relevant documents
+```
+
+Full navigation:
+
+```text
+PCManFM
+```
+
+### Drives
+
+Home:
+
+```text
+2.0 TB
+73% used
+health good
+```
+
+Click:
+
+```text
+drive root in PCManFM
+```
+
+### Downloads
+
+Home:
+
+```text
+recent files + active transfers
+```
+
+Click:
+
+```text
+full directory
+```
+
+### Projects
+
+Home:
+
+```text
+semantic project controls
+```
+
+Click Files:
+
+```text
+project root in PCManFM
+```
+
+That is a much stronger division of labor.
+
+---
+
+# The taskbar/Home split is also correct
+
+I would now remove **ordinary running-window management from Home**.
+
+Your earlier Home design included concepts such as parked windows and the Window Shelf. With a dedicated taskbar being reworked, that distinction is no longer necessary.
+
+Make:
+
+```text
+Taskbar = what is running now
+
+Home = what matters across time
+```
+
+That is very clean.
+
+A project tile can still show something understated like:
+
+```text
+LEGE
+3 running
+```
+
+because that's useful context.
+
+But clicking those three running windows or selecting individual ones belongs to the taskbar.
+
+This avoids the classic desktop-shell problem where task switching, workspace management, launching and file organization slowly converge into the same enormous interface.
+
+---
+
+# A project widget should scale by available space
+
+This also fits your existing representation-ladder idea unusually well.
+
+A single project can have several representations:
+
+```text
+SMALL
+
+┌───────────┐
+│ LEGE      │
+│ ● active  │
+└───────────┘
+```
+
+```text
+MEDIUM
+
+┌────────────────────────────┐
+│ LEGE                       │
+│                            │
+│ >_ Terminal  📁 Files  Edit│
+└────────────────────────────┘
+```
+
+```text
+LARGE
+
+┌─────────────────────────────────────┐
+│ LEGE                                │
+│ /data/projects/Lege                 │
+│                                     │
+│ >_ Terminal   📁 Files   </> Edit   │
+│                                     │
+│ Recent                              │
+│ README.md                           │
+│ distro/planning/...                 │
+│                                     │
+│ References                          │
+│ GitHub · docs · benchmark results   │
+└─────────────────────────────────────┘
+```
+
+The tile doesn't become a file manager when enlarged.
+
+It becomes a richer **project control surface**.
+
+That distinction matters.
+
+---
+
+# Your `Dev` idea should probably be a standard project template
+
+Rather than manually creating a special Dev widget, define a project presentation/template:
+
+```text
+Project type: Development
+```
+
+Not necessarily stored as a hard taxonomy; it can initially just be inferred or selected.
+
+Its standard actions are:
+
+```text
+Terminal
+Files
+Editor
+```
+
+Later you could add:
+
+```text
+Build
+Test
+Run
+Repository
+Docs
+```
+
+when the project defines those actions.
+
+For example, a Rust project could expose:
+
+```text
+Build → cargo build
+Test  → cargo test
+```
+
+but I would **not automatically execute commands merely because Cargo.toml exists** until you have a proper project-action model.
+
+The first three are universal and safe.
+
+---
+
+# There's a useful interaction between this and your no-polling rule
+
+Avoid turning project tiles into little monitoring daemons.
+
+It's tempting to put:
+
+```text
+Git branch
+12 modified files
+tests passing
+CPU used by project
+latest commit
+build status
+```
+
+on every project tile.
+
+That can recreate exactly the background-service mess you were trying to eliminate.
+
+The rule should be:
+
+> Project widgets may display continuously changing information only when an existing authoritative event source already provides it.
+
+So:
+
+```text
+running instances
+```
+
+can come from session/window state.
+
+```text
+active build
+```
+
+can come from the resource/process manager.
+
+```text
+recent files
+```
+
+can come from the shared index.
+
+Don't initially have every project tile launch its own `git status` every five seconds.
+
+That would undermine your new system philosophy.
+
+---
+
+# One compromise with PCManFM needs to be understood
+
+Stock PCManFM will not automatically use all of `lege-filed`.
+
+It uses libfm-qt/GLib for its own file-management behavior. ([GitHub][3])
+
+So initially:
+
+```text
+PCMan copy/move/delete
+        ↓
+filesystem
+        ↓
+Templar index notices events
+```
+
+rather than:
+
+```text
+PCMan
+   ↓
+Files.Operations1
+   ↓
+journalled Templar operation
+   ↓
+filesystem
+```
+
+That means PCMan operations initially bypass some features you've designed:
+
+* Templar transaction journal;
+* system-wide undo;
+* reserve-space policy;
+* direct mutation notifications;
+* your operation progress API.
+
+**I think that's acceptable for 0.1.**
+
+The shared index will still observe the resulting filesystem changes.
+
+Then, if you decide those semantics are important enough, make a **small Templar fork of PCManFM/libfm-qt**.
+
+Do not rewrite its interface.
+
+Patch the mutation boundary:
+
+```text
+PCMan UI
+    ↓
+copy / move / rename / trash requested
+    ↓
+Templar adapter
+    ↓
+Files.Operations1
+```
+
+That's where deeper integration has a high payoff.
+
+Eventually you could similarly delegate:
+
+```text
+Search      → Index1
+Trash       → Templar Trash
+Volumes     → Volumes1
+Open        → Associations1 / Launcher1
+```
+
+Browsing itself doesn't desperately need to go through `lege-filed`. An actively open file-manager window listing its current directory directly is not the kind of redundant background scanning you're trying to eliminate.
+
+---
+
+## The development path I recommend
+
+1. **Make stock PCManFM-Qt the TemplarOS default file manager.**
+2. Run it on demand only; no PCMan desktop and no PCMan daemon.
+3. Give it a `templaros` profile and Templar visual defaults.
+4. Package directory context actions for **Create Project**, **Terminal Here**, and **Pin/Create on Home**.
+5. Freeze `lege-files` as an experimental/reference frontend.
+6. Simplify Home's file drawers so they summarize and launch rather than becoming another full file manager.
+7. Make Projects the primary Home object.
+8. Give every project the derived `Terminal / Files / Editor` actions.
+9. Keep task/window management in the new taskbar.
+10. Later, if worthwhile, patch PCManFM's mutation/search boundaries to delegate into `lege-filed` rather than trying to replace PCManFM wholesale.
+
+The resulting architecture is essentially:
+
+```text
+                       HOME
+                         │
+                    PROJECT: LEGE
+                 ┌───────┼────────┐
+                 ↓       ↓        ↓
+              Terminal  Files    Editor
+                 │       │        │
+                 │       ↓        │
+                 │    PCManFM     │
+                 │       │        │
+                 └───────┼────────┘
+                         │
+                 Templar services
+                  /      |       \
+             Projects   Index   Launcher
+
+
+                  RUNNING WINDOWS
+                         │
+                       TASKBAR
+```
+
+That feels much closer to the distinctive OS you're describing.
+
+**PCManFM solves navigation. The taskbar solves running state. Home solves intent.**
+
+I would concentrate your custom UI effort almost entirely on that third problem, because that is the part existing Linux desktops do not already solve well.
+
+[1]: https://github.com/lxqt/pcmanfm-qt/blob/master/CHANGELOG?utm_source=chatgpt.com "pcmanfm-qt/CHANGELOG at master · lxqt/pcmanfm-qt · GitHub"
+[2]: https://github.com/lxqt/pcmanfm-qt/wiki/custom_actions?utm_source=chatgpt.com "custom_actions · lxqt/pcmanfm-qt Wiki · GitHub"
+[3]: https://github.com/lxqt/pcmanfm-qt?utm_source=chatgpt.com "GitHub - lxqt/pcmanfm-qt: File manager and desktop icon manager (Qt port of PCManFM and libfm) · GitHub"

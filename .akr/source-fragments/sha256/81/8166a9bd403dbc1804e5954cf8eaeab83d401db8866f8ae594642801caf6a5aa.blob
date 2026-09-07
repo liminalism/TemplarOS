@@ -1,0 +1,340 @@
+and possibly an override later:
+
+```text
+preferred editor = ...
+```
+
+if a particular project genuinely needs one.
+
+This keeps projects portable when you change software.
+
+Also keep your existing `apps` concept semantically separate:
+
+> `apps` = applications/session state remembered and restored with the project.
+
+It should not become:
+
+> `apps` = the three buttons shown on the project tile.
+
+Those are different concepts.
+
+---
+
+# I would adjust the meaning of “open project”
+
+Right now Projects already has an `Open` operation that restores remembered applications.
+
+That's useful, but Home needs a weaker operation too.
+
+There are really three actions:
+
+```text
+Enter Project
+    → make it the current project
+    → launch nothing
+
+Launch Tool
+    → terminal / files / editor
+    → scoped to project
+
+Restore Workspace
+    → reopen remembered project applications
+```
+
+You already have `SetCurrent`, so **Enter Project** can basically exist today without changing the protocol.
+
+That makes a project tile much less aggressive.
+
+Sometimes you just want:
+
+```text
+LEGE
+    → Terminal
+```
+
+You shouldn't have to resurrect six old windows first.
+
+---
+
+# Home should become less of a file manager
+
+This is the bigger recommendation.
+
+Your existing Home implementation has started embedding actual file browsing into Downloads/Documents/Media/Drives.
+
+Given your reaction to PCManFM versus the current Files UI, I would pull back from that.
+
+Use the **small-widget → full-application** principle instead.
+
+For example:
+
+```text
+┌ Downloads ──────────────┐
+│ 3 recent                 │
+│ paper.pdf                │
+│ archive.zip              │
+│ screenshot.png           │
+│                          │
+│ Open Downloads →         │
+└──────────────────────────┘
+```
+
+That is useful.
+
+Turning the expanded widget into another full hierarchical file manager is mostly duplication.
+
+Likewise:
+
+### Documents
+
+Home:
+
+```text
+recent / pinned / relevant documents
+```
+
+Full navigation:
+
+```text
+PCManFM
+```
+
+### Drives
+
+Home:
+
+```text
+2.0 TB
+73% used
+health good
+```
+
+Click:
+
+```text
+drive root in PCManFM
+```
+
+### Downloads
+
+Home:
+
+```text
+recent files + active transfers
+```
+
+Click:
+
+```text
+full directory
+```
+
+### Projects
+
+Home:
+
+```text
+semantic project controls
+```
+
+Click Files:
+
+```text
+project root in PCManFM
+```
+
+That is a much stronger division of labor.
+
+---
+
+# The taskbar/Home split is also correct
+
+I would now remove **ordinary running-window management from Home**.
+
+Your earlier Home design included concepts such as parked windows and the Window Shelf. With a dedicated taskbar being reworked, that distinction is no longer necessary.
+
+Make:
+
+```text
+Taskbar = what is running now
+
+Home = what matters across time
+```
+
+That is very clean.
+
+A project tile can still show something understated like:
+
+```text
+LEGE
+3 running
+```
+
+because that's useful context.
+
+But clicking those three running windows or selecting individual ones belongs to the taskbar.
+
+This avoids the classic desktop-shell problem where task switching, workspace management, launching and file organization slowly converge into the same enormous interface.
+
+---
+
+# A project widget should scale by available space
+
+This also fits your existing representation-ladder idea unusually well.
+
+A single project can have several representations:
+
+```text
+SMALL
+
+┌───────────┐
+│ LEGE      │
+│ ● active  │
+└───────────┘
+```
+
+```text
+MEDIUM
+
+┌────────────────────────────┐
+│ LEGE                       │
+│                            │
+│ >_ Terminal  📁 Files  Edit│
+└────────────────────────────┘
+```
+
+```text
+LARGE
+
+┌─────────────────────────────────────┐
+│ LEGE                                │
+│ /data/projects/Lege                 │
+│                                     │
+│ >_ Terminal   📁 Files   </> Edit   │
+│                                     │
+│ Recent                              │
+│ README.md                           │
+│ distro/planning/...                 │
+│                                     │
+│ References                          │
+│ GitHub · docs · benchmark results   │
+└─────────────────────────────────────┘
+```
+
+The tile doesn't become a file manager when enlarged.
+
+It becomes a richer **project control surface**.
+
+That distinction matters.
+
+---
+
+# Your `Dev` idea should probably be a standard project template
+
+Rather than manually creating a special Dev widget, define a project presentation/template:
+
+```text
+Project type: Development
+```
+
+Not necessarily stored as a hard taxonomy; it can initially just be inferred or selected.
+
+Its standard actions are:
+
+```text
+Terminal
+Files
+Editor
+```
+
+Later you could add:
+
+```text
+Build
+Test
+Run
+Repository
+Docs
+```
+
+when the project defines those actions.
+
+For example, a Rust project could expose:
+
+```text
+Build → cargo build
+Test  → cargo test
+```
+
+but I would **not automatically execute commands merely because Cargo.toml exists** until you have a proper project-action model.
+
+The first three are universal and safe.
+
+---
+
+# There's a useful interaction between this and your no-polling rule
+
+Avoid turning project tiles into little monitoring daemons.
+
+It's tempting to put:
+
+```text
+Git branch
+12 modified files
+tests passing
+CPU used by project
+latest commit
+build status
+```
+
+on every project tile.
+
+That can recreate exactly the background-service mess you were trying to eliminate.
+
+The rule should be:
+
+> Project widgets may display continuously changing information only when an existing authoritative event source already provides it.
+
+So:
+
+```text
+running instances
+```
+
+can come from session/window state.
+
+```text
+active build
+```
+
+can come from the resource/process manager.
+
+```text
+recent files
+```
+
+can come from the shared index.
+
+Don't initially have every project tile launch its own `git status` every five seconds.
+
+That would undermine your new system philosophy.
+
+---
+
+# One compromise with PCManFM needs to be understood
+
+Stock PCManFM will not automatically use all of `lege-filed`.
+
+It uses libfm-qt/GLib for its own file-management behavior. ([GitHub][3])
+
+So initially:
+
+```text
+PCMan copy/move/delete
+        ↓
+filesystem
+        ↓
+Templar index notices events
+```
+
+rather than:

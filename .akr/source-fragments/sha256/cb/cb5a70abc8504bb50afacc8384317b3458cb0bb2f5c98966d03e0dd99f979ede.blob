@@ -1,0 +1,260 @@
+Yes. With the scope you just described, I think the advisor estimate is simultaneously correct and much too pessimistic for what you actually need.
+
+The 31–56 engineer-month estimate in `docs/planning/ubuntu-derived-full-distribution-roadmap.md` is an estimate for a **supportable public distribution**: independent archive operations, security response, broad installer cases, real hardware qualification, your own newest-kernel release lane, recovery, signing infrastructure, release engineering, support commitments, and repeatable upgrades over years. You do not need most of that to make TemplarOS useful on your own machine.
+
+For the next month I would explicitly redefine the target as:
+
+> **TemplarOS Developer Edition 0.1:** a reproducibly generated, Ubuntu 26.04-derived amd64 system for one known Intel + RTX 4060 laptop, optimized for Rust/CUDA development, heavy multitasking, browsing and media, with a small Templar package overlay, a recoverable Btrfs root, working NVIDIA/CUDA, and enough installation machinery to recreate the machine from scratch.
+
+That is a very different project.
+
+## Where the project actually is
+
+There is substantially more foundation here than the advisor's percentage makes it sound like.
+
+The pack contains about **132,700 lines of Rust already**, plus roughly 20,000 lines of configuration/docs/interfaces. More importantly, several difficult architectural pieces aren't hypothetical anymore:
+
+* `lege dev` has real build-set identity, local signed repository handling, pinned installation, rollback, activation rules, and installed-versus-running convergence reporting.
+* `lege-hostd` already contains a boot deployment abstraction, Btrfs snapshot machinery, update transaction states and GRUB/systemd-boot backends.
+* `lege-boot-health` can now actually bless a healthy trial deployment or request rollback of an unhealthy one.
+* you have the component matrix in `distro/deploy/components.toml`.
+* hardware qualification is already defined specifically for the Intel/NVIDIA laptop.
+* the current image skeleton is mkosi + UEFI + Btrfs.
+* Debian packaging exists.
+* the shared file index has a unusually well-developed design before implementation.
+* the distro roadmap already made the important architectural decision: **binary derivative of Ubuntu, not an Ubuntu rebuild**.
+
+There is also an important wrinkle I found while inspecting this particular agent pack. The pack generator says it omitted **54 "unsupported/non-development" files**. The archive contains generated `distro/image/mkosi.conf.d/50-seeds.conf`, but not the `.seed` inputs it says generated it; likewise several ordinary Debian files and extensionless distro data appear absent. I would *not* conclude the actual repository lacks them—the more likely explanation is that the agent-pack allowlist rejects `.seed`, extensionless files such as `os-release`, and some Debian packaging suffixes.
+
+**Fix the agent-pack generator before unleashing six agents on distro engineering.** Otherwise they will be reasoning from a selectively incomplete distro tree. This is a 30-minute class of problem with outsized consequences.
+
+---
+
+# The architectural shortcut I recommend
+
+For TemplarOS 0.1, deliberately **do not build a miniature Canonical**.
+
+Use Canonical for everything that does not distinguish TemplarOS:
+
+**Ubuntu owns:**
+
+* glibc
+* systemd
+* apt/dpkg
+* coreutils
+* kernel **initially**
+* shim
+* GRUB
+* Mesa
+* firmware
+* NetworkManager
+* PipeWire
+* Bluetooth stack
+* NVIDIA kernel modules initially
+* CUDA packages initially
+* security fixes to all of those
+
+**TemplarOS owns:**
+
+* compositor/session/shell
+* system services you have already designed
+* Files and the shared index
+* app identity
+* resource management
+* defaults
+* package selection
+* Templar packages
+* image recipe
+* local/release overlay archive
+* your Btrfs deployment/update mechanism
+* your particular machine's qualification
+* eventually installer/ISO
+* eventually kernel, **only if there is a demonstrated reason**
+
+This is what makes the one-month version plausible.
+
+Ubuntu 26.04 is particularly convenient for you because CUDA itself is now in the Ubuntu archive: `cuda-toolkit` exists in Resolute, currently at CUDA 13.1.1. ([Ubuntu Packages][1]) NVIDIA's current CUDA 13.3 documentation also explicitly lists Ubuntu 26.04 x86-64 as a qualified platform. ([NVIDIA Docs][2])
+
+So **CUDA no longer requires turning NVIDIA's repository into another distribution authority**.
+
+That simplifies your distro considerably.
+
+---
+
+# I would reverse one part of the current roadmap
+
+For your immediate goal, **do not make Linux 7.2 a requirement for TemplarOS 0.1.**
+
+As of September 3, 2026, Linux 7.2.3 is the current stable kernel and 7.3-rc1 is mainline. ([Kernel.org][3]) It is perfectly reasonable to build a 7.2.3 experimental lane.
+
+But your machine is:
+
+* Intel iGPU
+* RTX 4060 Laptop GPU
+* Wayland
+* CUDA
+* hybrid graphics
+
+That is exactly the kind of machine where turning the kernel into an independently maintained component gives you disproportionate pain.
+
+Ubuntu's current Resolute kernel already has matching `linux-modules-nvidia-580-open-generic` packages; the current generic LRM tracks the Ubuntu 7.0 ABI. ([Ubuntu Packages][4])
+
+The best initial policy is therefore:
+
+| Channel        | TemplarOS 0.1                                           |
+| -------------- | ------------------------------------------------------- |
+| `stable`       | Ubuntu 26.04 GA/HWE kernel + Ubuntu matching NVIDIA LRM |
+| `rescue`       | previous known-good Ubuntu kernel                       |
+| `candidate`    | 7.2.3 Templar kernel experiment                         |
+| `experimental` | 7.3 RC, if you feel like testing it                     |
+
+The distinction from the advisor roadmap is simply that **Ubuntu's kernel remains stable instead of rescue for the first personal release**.
+
+Move 7.2 to stable only after it offers you something you can name.
+
+Faster compilation? Almost certainly not meaningfully.
+
+Better scheduler behavior? Measure it.
+
+Hardware support you need? Then it becomes justified.
+
+Interesting technical project? Fine—but don't put it in the critical path.
+
+That change alone removes a huge amount of the advisor's 5–9 engineer-month kernel/driver/Secure-Boot workstream from your one-month target.
+
+---
+
+# Secure Boot: take the boring route
+
+I think ADR-0004 should be resolved for now as:
+
+> **Canonical-signed shim → Canonical-signed GRUB → Ubuntu-signed kernel → Canonical-signed matching NVIDIA LRM.**
+
+Ubuntu documents this as its normal amd64 Secure Boot chain. Shim is Microsoft-signed, GRUB and the normal kernel are Canonical-signed, and kernel modules are signature-enforced. ([Ubuntu Documentation][5])
+
+That gives you actual Secure Boot while doing very little security engineering yourself.
+
+Do **not** make "LegeOS-signed systemd-boot" your first production boot path.
+
+Your current mkosi systemd-boot setup is fine for VM/dev images. Bare metal should use GRUB initially.
+
+Later, if you qualify your own 7.2 kernel, enroll a Templar MOK and use it for the custom kernel/modules. Ubuntu's shim/MokManager infrastructure explicitly supports enrolling your own keys for unofficial kernels and modules. ([Ubuntu Documentation][5])
+
+That is still work, but it isn't "become a Secure Boot platform vendor."
+
+---
+
+# You also do not need an installer yet
+
+This is another enormous scope reduction.
+
+A public distribution needs:
+
+* live environment
+* polished graphical installer
+* empty disk
+* dual boot
+* encryption
+* weird partition tables
+* offline installation
+* non-US keyboards
+* accessibility
+* failed installation recovery
+* OEM mode
+* NVIDIA detection
+* arbitrary disk sizes
+* lots of firmware
+
+**Your personal distro doesn't.**
+
+You know the hardware.
+
+You know the desired disk layout.
+
+You know the user.
+
+You know that it is UEFI.
+
+You can define one supported installation.
+
+So TemplarOS 0.1 should initially have a **reproducible target-machine provisioner**, not a general installer.
+
+I would support these two installation paths:
+
+1. **mkosi raw image** for VM/debugging.
+2. **Ubuntu 26.04 autoinstall/bootstrap → Templarize** for bare metal.
+
+The second can eventually be wrapped into your own ISO. For now, an official Ubuntu installation environment can create the base installation, after which one Templar bootstrap step:
+
+* configures Btrfs/subvolumes;
+* adds the Templar local/archive source;
+* installs `templaros-desktop`;
+* installs your session;
+* selects NVIDIA profile;
+* installs CUDA developer packages;
+* configures GRUB;
+* sets OS identity;
+* creates the user;
+* enables required services;
+* runs `templar doctor --install`;
+* reboots.
+
+Once that is fully declarative, **making an ISO around it becomes packaging**, rather than discovering what your installer is supposed to do.
+
+---
+
+# What "lighter than Lubuntu" should mean
+
+Don't optimize around ISO size.
+
+Lubuntu 26.04.1's current ISO is about 3.7 GB. ([cdimage.ubuntu.com][6]) That's interesting, but it tells you little about runtime responsiveness.
+
+Your founding document had the better definition: lightness should mean responsiveness.
+
+I would measure TemplarOS with five numbers:
+
+| Metric                           |                              Suggested target |
+| -------------------------------- | --------------------------------------------: |
+| Idle memory after login          | **<700 MB** initially; push toward 450–600 MB |
+| Templar-owned idle CPU           |                                effectively 0% |
+| Boot → usable Home/session       |            <8–12 s after firmware on your SSD |
+| Background write I/O at idle     |                            approximately zero |
+| Always-running desktop processes | preferably <20 Templar/user-session processes |
+
+Don't contort the system to hit arbitrary RAM numbers. A 48 GB development machine is harmed more by a 1% CPU polling loop or constant filesystem rescanning than by a 40 MB daemon that sleeps.
+
+## Things I would leave out
+
+For **your personal build**, not a public distribution:
+
+* LibreOffice
+* email client
+* calendar
+* contacts
+* graphical software store
+* Snap
+* Ubuntu reporting
+* Apport/Whoopsie
+* games
+* printer stack
+* scanner stack
+* modem support
+* Samba server
+* remote desktop server
+* GNOME stack
+* LXQt stack
+* KDE stack
+* generic desktop settings daemons
+* multiple terminals
+* multiple file managers
+* desktop widgets implemented as separate daemons
+* content indexing
+* thumbnail daemons running continuously
+* automatic discovery daemons you don't use
+* redundant network applets
+* redundant update applets
+* generic OEM support
+* legacy BIOS support
+* arm64
+* TPM FDE initially
+* multiple bootloaders in the installed system

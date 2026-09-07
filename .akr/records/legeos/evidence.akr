@@ -59,6 +59,30 @@ record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.astra-consolidation-advice-20260907/1 : evidence {
+    title "Astra advisor independently reconciled the seven drafts with current code and AKR"
+    state verified
+    result pass
+    method observation
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    summary """
+        Advisor result rs-2c84e80bdacd confirmed the seven-phase plan and identified three source-level corrections: existing-partition mode still formats both partitions, DRM named cursors still render as the arrow, and Index1 ChangesSince uses event sequence rather than generation. No tests or live operations were run.
+        """
+    author "GitHub Uploader"
+}
+
+record legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 : evidence {
+    title "Bottom bar, window tags and Home app groups: full gate green"
+    state verified
+    result pass
+    method command
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    command "just check"
+    summary """
+        just check exit 0 on the uncommitted tree at 9855da2 with all three lanes in: fmt, clippy -D warnings, 1835 workspace tests (lege-field AppGroup grammar and Step::GroupApps property; lege-shell drag-from-results, app-group, taskbar and bar_screen tests, Home baseline re-reviewed and rehashed; lege-window tag strip, has_frame-under-a-bottom-zone, zone-is-a-floor; lege-comp name-tag/control-tag hit tests; lege-state WAL race 10/10), MSRV, tree/deps/interfaces/signatures (prose-only XML change, no member added)/proxies/packaging/assets/actions (network.open-control keeps its pointer route via the bar).
+        """
+}
+
 record legeos.evidence.btrfs-delta-correctness-gate-passes/1 : evidence {
     title "baseline + btrfs delta equals a fresh direct scan, field for field, on the fifth fixture run"
     state verified
@@ -564,6 +588,18 @@ record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
     command "cargo test -p lege-filed video_preview"
     summary """
         The unit test passed with a 1000-second duration producing an ffmpeg -ss value of 30.000000, and a real MP4 rendered a 256x144 PNG through the ffmpeg video-at-3% route.
+        """
+}
+
+record legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 : evidence {
+    title "Files windows, bookmarks and Home folder objects: full gate green"
+    state verified
+    result pass
+    method command
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    command "just check"
+    summary """
+        just check exit 0 on the uncommitted tree at 9855da2: fmt, clippy -D warnings, 1817 workspace tests (62 suites) including lege-window home-hidden-unless-revealed, lege-comp scene, lege-shell Files-object-launches-Files and lege-files menu/bookmark paths; MSRV; tree/deps/interfaces/signatures (186 members, PlaceFolder and SetBookmark frozen as additions)/proxies/packaging/assets/actions checks.
         """
 }
 
@@ -1163,6 +1199,32 @@ record legeos.evidence.home-material-roles-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.home-navigation-lint-20260907/1 : evidence {
+    title "Uncommitted working tree: shell clippy with warnings denied, rustfmt, action-manifest check and diff whitespace check passed. Files list/grid fixture PNGs reviewed in kept home-usability-20260907 scratch."
+    state verified
+    result pass
+    method command
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    command "cargo clippy -p lege-shell --all-targets -- -D warnings; cargo fmt --all -- --check; cargo run -q -p xtask -- check-actions; git diff --check"
+    artifact ".agent/scratch/home-usability-20260907/clippy.log"
+    summary """
+        Uncommitted working tree: shell clippy with warnings denied, rustfmt, action-manifest check and diff whitespace check passed. Files list/grid fixture PNGs reviewed in kept home-usability-20260907 scratch.
+        """
+}
+
+record legeos.evidence.home-navigation-tests-20260907/1 : evidence {
+    title "Uncommitted working tree on 9855da2: 313 library tests and 11 binary tests passed; includes six new interaction regressions. No live-session deployment or hands-on verification."
+    state verified
+    result pass
+    method command
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    command "cargo test -p lege-shell --quiet"
+    artifact ".agent/scratch/home-usability-20260907/tests.log"
+    summary """
+        Uncommitted working tree on 9855da2: 313 library tests and 11 binary tests passed; includes six new interaction regressions. No live-session deployment or hands-on verification.
+        """
+}
+
 record legeos.evidence.home-panels-20260831/1 : evidence {
     title "Home panel layout groups: acceptance filters and full gate green"
     state verified
@@ -1312,6 +1374,18 @@ record legeos.evidence.layout-declaration-matches-repart-20260903/1 : evidence {
     summary """
         distro/deploy/layout.toml parses, declares @deployments alongside @ @home @var @snapshots, and agrees with mkosi.repart 00-esp.conf/10-root.conf on partition type, format and size, and with hostd's compiled-in command-line key, ESP directory and id grammar.
         """
+}
+
+record legeos.evidence.legacy-root-doc-migration-20260907/1 : evidence {
+    title "Seven root design drafts were migrated into AKR and their repository references retired"
+    state verified
+    result pass
+    method observation
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    summary """
+        Source inspection covered the complete seven root drafts; their adopted contracts, conflicts, deferrals and implementation gaps were collated into the integrated roadmap and focused records, all non-source references were migrated to AKR keys, and the original root Markdown files were removed.
+        """
+    author "GitHub Uploader"
 }
 
 record legeos.evidence.lege-treemap-lifted-and-pure/1 : evidence {
@@ -1798,6 +1872,18 @@ record legeos.evidence.refinement-integration-smoke-20260824/1 : evidence {
     summary """
         The integration smoke rebuilt the workspace, exercised compositor check and exec lifetimes, and completed with 'integration smoke: ok'.
         """
+}
+
+record legeos.evidence.remaining-doc-authority-audit-20260907/1 : evidence {
+    title "Remaining docs were classified against the ledger and their live role"
+    state verified
+    result pass
+    method observation
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    summary """
+        The remaining non-generated docs were inventoried by category and compared with AKR search results: ADRs mirror ledger decisions; architecture and protocols explain current code/interface contracts; measurements and research are evidence artifacts; focused planning documents map to live work or registered founding sources; testing is an operational guide; docs/README.md is the directory index.
+        """
+    author "GitHub Uploader"
 }
 
 record legeos.evidence.rust-1-97-baseline-20260831/1 : evidence {

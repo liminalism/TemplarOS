@@ -1,0 +1,198 @@
+# How the supplied treemap work fits
+
+Your current port is useful, but it should not directly become the top-level home layout engine.
+
+## What should be retained
+
+The layout already represents every visible object as a rectangle with position, dimensions, depth, and an O(1) node-to-rectangle lookup. That is a useful basis for hit-testing, selection, previews, and nested containers. 
+
+The directory hierarchy has visible frame and header reservations, and the scene draws lightweight container overlays over the cached treemap.   This is close to the visual grammar a tray or project container needs.
+
+The color system is also more considered than arbitrary Metro-style brand colors. It supports category, category-plus-extension, and extension-hash modes, with a controlled pastel-to-bold axis.  Directories derive their color from the categories they contain, so a file tray can communicate its composition even before the user reads its contents. 
+
+The scene pipeline already caches the CPU-rendered treemap as a single image and then adds vector overlays, labels, selection, and hover effects.  That is a good rendering strategy for a file-tray tile:
+
+* Recompute the interior only when its filesystem content changes.
+* Move and animate the whole cached tile with a GPU transform.
+* Draw interaction affordances and landing previews separately.
+* Recompute its treemap only after an item is actually added or removed.
+
+## What should not be retained at the top level
+
+The current treemap intentionally makes visual area proportional to file bytes and uses file count only as an ordering tie-breaker.  That is correct for storage visualization. It is wrong for the home field.
+
+A 500 GB media folder should not consume half the home screen merely because it is large. Top-level area should express:
+
+* User-assigned importance.
+* Current activity.
+* Preferred information density.
+* Tile type.
+* Available display space.
+
+The current squarifier also sorts and repacks items. A small content or weight change can therefore move many rectangles. That is acceptable inside a disk visualization, but it would destroy spatial memory on the home screen.
+
+The architecture should have two separate layout systems:
+
+```text
+Home Field
+    └── stable, local, user-directed rectangular layout
+
+File tray interior
+    └── byte-proportional squarified treemap
+```
+
+Do not force one algorithm to serve both semantics.
+
+## Cushion shading
+
+The cushion renderer gives the file treemap a strong tactile identity, using accumulated surface coefficients and Lambertian lighting.  The full-quality mode normalizes lighting per pixel, while a faster path is available. 
+
+That visual language could be useful in two places:
+
+* Inside file and storage trays.
+* Temporarily when a tile is picked up, to make it feel raised and graspable.
+
+It should probably not cover every home-screen tile permanently. A whole field of inflated cushions would make the interface look primarily like a disk-usage visualizer and could become visually tiring. The outer tile shells should be flatter and calmer, with the cushion treatment reserved for content surfaces or manipulation states.
+
+---
+
+# The top-level layout should optimize stability, not mathematical density
+
+Rectangles tessellate efficiently, but complete packing is not automatically good interface design. A small amount of blank space has a functional role:
+
+* It gives the user somewhere to begin a throw.
+* It creates visible insertion points.
+* It separates projects from utilities.
+* It prevents a full-screen wall of equal visual intensity.
+* It allows the layout to reflow locally without moving everything.
+
+The blank field is no longer wasted wallpaper. It becomes **interaction space**.
+
+For the first implementation, I would use a bounded logical grid that does not visibly look rigid:
+
+* Tiles occupy integer spans such as 1×1, 2×1, 2×2, or 4×3.
+* Gaps remain consistent.
+* A tile has minimum, preferred, and maximum spans.
+* Removing a tile creates a temporary hole.
+* The projected throw position chooses a nearby insertion slot.
+* Only tiles in the affected row, column, or container move.
+* An explicit “tidy” command may perform global packing.
+
+The optimization objective should heavily penalize movement of unaffected tiles:
+
+```text
+layout cost =
+    movement of existing tiles
+  + distance from requested landing point
+  + aspect-ratio distortion
+  + unusable gaps
+  + crossing a container boundary
+```
+
+The current squarifier can remain inside trays. A new stable layout should control the field.
+
+---
+
+# Visual identity without changing the outer shape
+
+Rectangles are enough. Type should be expressed through internal structure, framing, typography, and behavior rather than different outer silhouettes.
+
+| Type              | Visual grammar                                                                   |
+| ----------------- | -------------------------------------------------------------------------------- |
+| **Application**   | Large application symbol, strong identity area, running count or status          |
+| **Parked window** | Live or cached preview, app badge, document title, session indicator             |
+| **File**          | Thumbnail or document surface, extension/type badge, no app-style icon dominance |
+| **Tray**          | Header band, inset contents, nested miniatures or treemap                        |
+| **Project**       | Strong enclosing frame and title; contains other tiles                           |
+| **Widget**        | Data-first layout, source name, freshness timestamp                              |
+| **System tile**   | Restrained monochrome frame, explicit measurements and controls                  |
+
+Color should reinforce this grammar, not replace it. The attached palette code already acknowledges the danger of saturation turning everything into an undifferentiated wall of color and instead interpolates between controlled pastel and bold endpoints. 
+
+A sensible division would be:
+
+* File and folder contents use your category palette.
+* Projects use a user-selected restrained accent.
+* Applications use a muted brand accent.
+* Widgets are mostly neutral with one data accent.
+* Running sessions use a consistent activity border.
+* System controls remain comparatively monochrome.
+
+The existing directory composition bands could be retained inside file trays, where the top content categories are rendered proportionally. 
+
+---
+
+# Important interaction guardrails
+
+## Do not let reflow destroy memory
+
+Tiles should never move merely because:
+
+* A calendar event changed.
+* A drive gained or lost space.
+* An application received a notification.
+* A folder gained new files.
+* A widget refreshed.
+* Resource usage changed.
+
+Live content changes inside the rectangle. Geometry changes only through explicit user action, monitor reconfiguration, or an explicit layout command.
+
+## Do not infer hidden meaning from proximity
+
+Two adjacent tiles should not automatically become related. Relationships should be represented by visible containment or an explicit group frame. Otherwise local reflow could accidentally alter meaning.
+
+## Do not permit infinite canvas behavior
+
+An infinite panning surface would recreate the exact “where did that go?” problem you want to eliminate. The field should be bounded and always recoverable. Projects may expand, but the user should always have a visible route to the full overview.
+
+## Do not embed arbitrary full application interfaces in small tiles
+
+Most desktop applications are not designed to operate inside a 250×180 rectangle. A parked application tile should normally be a preview and control surface, not the entire live application UI compressed into miniature form.
+
+Widgets can be natively responsive. Applications should expand into windows.
+
+## Keep file operations non-destructive by default
+
+* File into project: add reference.
+* File into tray: add reference.
+* File into application: open.
+* Tile into shelf: remove from the field, not from disk.
+* Actual copy or move into a filesystem folder: explicit operation and visible preview.
+* Delete: conventional command with recovery through trash.
+
+## Preserve alternative control methods
+
+Throwing needs equivalent operations for:
+
+* Keyboard.
+* Conventional drag-and-drop.
+* Touch.
+* Trackpad.
+* Reduced-motion mode.
+* Accessibility tools.
+
+A tile also needs a clear grab region. File trays and widgets contain clickable or scrollable content, so the entire rectangle cannot ambiguously mean both “interact with contents” and “move the tile.” A title band, edge grip, modifier, or brief lift gesture can disambiguate those modes.
+
+---
+
+# Resource and security implications
+
+The home field should not become the new source of desktop instability.
+
+Widgets and live previews need budgets:
+
+* Fixed maximum update rates.
+* Suspension when fully covered.
+* Static snapshots under resource pressure.
+* Out-of-process execution.
+* No arbitrary plugin code inside the compositor.
+* Per-widget cgroups through the application identity and resource systems.
+* Clear network and background permissions.
+
+The Home Field itself belongs in the restartable shell, not the minimal compositor core. The compositor should expose window previews, activation, collapse, restoration, and secure input. The shell should own the tiles, animation, projects, and layout.
+
+Your current distro work already spans the Files application, file portal, application library, and dock behavior.  The home surface is therefore best treated as the place where those services become visibly unified, rather than another isolated fork.
+
+---
+
+# Recommended first implementation

@@ -11,6 +11,80 @@
     "title": "External design review: Home Field, file service, projects, app identity, resourced, hotfixability (2026-09-01)"
   },
   {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 22477,
+    "content_hash": "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977",
+    "fragments": [
+      {
+        "blob": "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977",
+        "captured_range": {
+          "end_byte": 22477,
+          "end_line": 1169,
+          "excerpt_hash": "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 22477,
+            "end_line": 1169,
+            "excerpt_hash": "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:f2cf997fbe99a3b1a5f82cf46c89497094efcfce500295ba04cbaa19c97fe977"
+      },
+      {
+        "blob": "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2",
+        "captured_range": {
+          "end_byte": 8357,
+          "end_line": 380,
+          "excerpt_hash": "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2",
+          "start_byte": 2255,
+          "start_line": 120
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 8357,
+            "end_line": 380,
+            "excerpt_hash": "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2",
+            "start_byte": 2255,
+            "start_line": 120
+          }
+        ],
+        "content_hash": "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2"
+      },
+      {
+        "blob": "sha256:0d0b53428cc68c27fda25132296e370a662de64ae2f9f82a46f6909e7d1d6d08",
+        "captured_range": {
+          "end_byte": 20514,
+          "end_line": 1081,
+          "excerpt_hash": "sha256:0d0b53428cc68c27fda25132296e370a662de64ae2f9f82a46f6909e7d1d6d08",
+          "start_byte": 19703,
+          "start_line": 1020
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 20514,
+            "end_line": 1081,
+            "excerpt_hash": "sha256:0d0b53428cc68c27fda25132296e370a662de64ae2f9f82a46f6909e7d1d6d08",
+            "start_byte": 19703,
+            "start_line": 1020
+          }
+        ],
+        "content_hash": "sha256:0d0b53428cc68c27fda25132296e370a662de64ae2f9f82a46f6909e7d1d6d08"
+      }
+    ],
+    "id": "full-side-two-axis-window-resizing-first-draft",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/full-side-two-axis-window-resizing-first-draft--f2cf997f.md",
+    "scope": "crates/lege-window/**",
+    "title": "Full-Side Two-Axis Window Resizing — First Draft"
+  },
+  {
     "added_at": "2026-08-22",
     "availability": "full",
     "byte_len": 26221,
@@ -21,6 +95,430 @@
     "path": "sources/external/homefield-design-advice--1f62a430.md",
     "scope": "shell/**",
     "title": "Home Field design advice (tiles, projects, trays, parked sessions, throwing)"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 38729,
+    "content_hash": "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4",
+    "fragments": [
+      {
+        "blob": "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4",
+        "captured_range": {
+          "end_byte": 38729,
+          "end_line": 759,
+          "excerpt_hash": "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 38729,
+            "end_line": 759,
+            "excerpt_hash": "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:01344d7a7be862233048417222989f29e62daecc035cd4a6b2a331ac37d34cf4"
+      },
+      {
+        "blob": "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9",
+        "captured_range": {
+          "end_byte": 15293,
+          "end_line": 300,
+          "excerpt_hash": "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 15293,
+            "end_line": 300,
+            "excerpt_hash": "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9"
+      }
+    ],
+    "id": "legacy-distro-agent-midplan",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-distro-agent-midplan--01344d7a.md",
+    "scope": "distro/**",
+    "title": "Legacy Developer Edition 0.1 agent campaign plan"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 37411,
+    "content_hash": "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1",
+    "fragments": [
+      {
+        "blob": "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1",
+        "captured_range": {
+          "end_byte": 37411,
+          "end_line": 1279,
+          "excerpt_hash": "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 37411,
+            "end_line": 1279,
+            "excerpt_hash": "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:40137bc7e7933dd6536f652bf86220183941825b39dbfc6b8f084bddd4101ad1"
+      },
+      {
+        "blob": "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede",
+        "captured_range": {
+          "end_byte": 10767,
+          "end_line": 260,
+          "excerpt_hash": "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 10767,
+            "end_line": 260,
+            "excerpt_hash": "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede"
+      }
+    ],
+    "id": "legacy-distro-agent-plan",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-distro-agent-plan--40137bc7.md",
+    "scope": "distro/**",
+    "title": "Legacy distribution agent plan"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 16369,
+    "content_hash": "sha256:ba1c98e0a7b6c4c95ebd0aae41742cfaefe517863f0e50b8b9318b208ff46a04",
+    "fragments": [
+      {
+        "blob": "sha256:cb6d1ab969c3cdd19901aeb4ccae0fd34903802b60d42c9970dd734244a6ea3f",
+        "captured_range": {
+          "end_byte": 16368,
+          "end_line": 670,
+          "excerpt_hash": "sha256:cb6d1ab969c3cdd19901aeb4ccae0fd34903802b60d42c9970dd734244a6ea3f",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 16368,
+            "end_line": 670,
+            "excerpt_hash": "sha256:cb6d1ab969c3cdd19901aeb4ccae0fd34903802b60d42c9970dd734244a6ea3f",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:cb6d1ab969c3cdd19901aeb4ccae0fd34903802b60d42c9970dd734244a6ea3f"
+      },
+      {
+        "blob": "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa",
+        "captured_range": {
+          "end_byte": 12841,
+          "end_line": 569,
+          "excerpt_hash": "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa",
+          "start_byte": 6138,
+          "start_line": 230
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 12841,
+            "end_line": 569,
+            "excerpt_hash": "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa",
+            "start_byte": 6138,
+            "start_line": 230
+          }
+        ],
+        "content_hash": "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa"
+      }
+    ],
+    "id": "legacy-files-design",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-files-design--ba1c98e0.md",
+    "scope": "apps/lege-files/**",
+    "title": "Files design notes"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 16247,
+    "content_hash": "sha256:3de7c6ac4fcb5c853eccbf707e02655539a365a5d5ec5a8fe54029e14ce6ea8d",
+    "fragments": [
+      {
+        "blob": "sha256:50ac5746b503ef37a3f486181e2c2547426867b19e5956db34b98d8eaafe3449",
+        "captured_range": {
+          "end_byte": 16246,
+          "end_line": 671,
+          "excerpt_hash": "sha256:50ac5746b503ef37a3f486181e2c2547426867b19e5956db34b98d8eaafe3449",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 16246,
+            "end_line": 671,
+            "excerpt_hash": "sha256:50ac5746b503ef37a3f486181e2c2547426867b19e5956db34b98d8eaafe3449",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:50ac5746b503ef37a3f486181e2c2547426867b19e5956db34b98d8eaafe3449"
+      },
+      {
+        "blob": "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413",
+        "captured_range": {
+          "end_byte": 9080,
+          "end_line": 390,
+          "excerpt_hash": "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 9080,
+            "end_line": 390,
+            "excerpt_hash": "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413"
+      },
+      {
+        "blob": "sha256:7cc1bb7ead4402d3b9b909ca51980507adbaaefeafef65e9665a6febedd71048",
+        "captured_range": {
+          "end_byte": 16246,
+          "end_line": 671,
+          "excerpt_hash": "sha256:7cc1bb7ead4402d3b9b909ca51980507adbaaefeafef65e9665a6febedd71048",
+          "start_byte": 10029,
+          "start_line": 438
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 16246,
+            "end_line": 671,
+            "excerpt_hash": "sha256:7cc1bb7ead4402d3b9b909ca51980507adbaaefeafef65e9665a6febedd71048",
+            "start_byte": 10029,
+            "start_line": 438
+          }
+        ],
+        "content_hash": "sha256:7cc1bb7ead4402d3b9b909ca51980507adbaaefeafef65e9665a6febedd71048"
+      }
+    ],
+    "id": "legacy-filesystem-design",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-filesystem-design--3de7c6ac.md",
+    "scope": "distro/**",
+    "title": "Filesystem and distribution design notes"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 26914,
+    "content_hash": "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9",
+    "fragments": [
+      {
+        "blob": "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9",
+        "captured_range": {
+          "end_byte": 26914,
+          "end_line": 501,
+          "excerpt_hash": "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 26914,
+            "end_line": 501,
+            "excerpt_hash": "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:5f223a99d983e1785c4ff352bf41bb6bc6e5529cc4e1a38f3498274c8bfb51c9"
+      },
+      {
+        "blob": "sha256:bd9b38bbb6a9c8c0a12d208b9ae09c6e2206c068326ad39d5fbd7ac6a0025460",
+        "captured_range": {
+          "end_byte": 23844,
+          "end_line": 435,
+          "excerpt_hash": "sha256:bd9b38bbb6a9c8c0a12d208b9ae09c6e2206c068326ad39d5fbd7ac6a0025460",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 23844,
+            "end_line": 435,
+            "excerpt_hash": "sha256:bd9b38bbb6a9c8c0a12d208b9ae09c6e2206c068326ad39d5fbd7ac6a0025460",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:bd9b38bbb6a9c8c0a12d208b9ae09c6e2206c068326ad39d5fbd7ac6a0025460"
+      },
+      {
+        "blob": "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220",
+        "captured_range": {
+          "end_byte": 24693,
+          "end_line": 460,
+          "excerpt_hash": "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 24693,
+            "end_line": 460,
+            "excerpt_hash": "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220"
+      },
+      {
+        "blob": "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099",
+        "captured_range": {
+          "end_byte": 23844,
+          "end_line": 435,
+          "excerpt_hash": "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099",
+          "start_byte": 14150,
+          "start_line": 238
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 23844,
+            "end_line": 435,
+            "excerpt_hash": "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099",
+            "start_byte": 14150,
+            "start_line": 238
+          }
+        ],
+        "content_hash": "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099"
+      }
+    ],
+    "id": "legacy-homefield-design",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-homefield-design--5f223a99.md",
+    "scope": "shell/lege-shell/**",
+    "title": "Home Field design notes"
+  },
+  {
+    "added_at": "2026-09-07",
+    "availability": "cited-only",
+    "byte_len": 19333,
+    "content_hash": "sha256:c8916508113fad3d236d2803252be8da664a20a5b63f08942e73771b73de950a",
+    "fragments": [
+      {
+        "blob": "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb",
+        "captured_range": {
+          "end_byte": 19332,
+          "end_line": 808,
+          "excerpt_hash": "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 19332,
+            "end_line": 808,
+            "excerpt_hash": "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb"
+      },
+      {
+        "blob": "sha256:8ab3e8e61899cf6d46312a0fce8f2bce7ab4b666368cdcd706247b0927916371",
+        "captured_range": {
+          "end_byte": 5464,
+          "end_line": 209,
+          "excerpt_hash": "sha256:8ab3e8e61899cf6d46312a0fce8f2bce7ab4b666368cdcd706247b0927916371",
+          "start_byte": 0,
+          "start_line": 1
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 5464,
+            "end_line": 209,
+            "excerpt_hash": "sha256:8ab3e8e61899cf6d46312a0fce8f2bce7ab4b666368cdcd706247b0927916371",
+            "start_byte": 0,
+            "start_line": 1
+          }
+        ],
+        "content_hash": "sha256:8ab3e8e61899cf6d46312a0fce8f2bce7ab4b666368cdcd706247b0927916371"
+      },
+      {
+        "blob": "sha256:d252c4840e230bf05e755974dab4b08dbd259792f2e12a009cc17b0d4ad8cb5f",
+        "captured_range": {
+          "end_byte": 13221,
+          "end_line": 630,
+          "excerpt_hash": "sha256:d252c4840e230bf05e755974dab4b08dbd259792f2e12a009cc17b0d4ad8cb5f",
+          "start_byte": 5465,
+          "start_line": 211
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 13221,
+            "end_line": 630,
+            "excerpt_hash": "sha256:d252c4840e230bf05e755974dab4b08dbd259792f2e12a009cc17b0d4ad8cb5f",
+            "start_byte": 5465,
+            "start_line": 211
+          }
+        ],
+        "content_hash": "sha256:d252c4840e230bf05e755974dab4b08dbd259792f2e12a009cc17b0d4ad8cb5f"
+      },
+      {
+        "blob": "sha256:3bd5e48f86c3ffb33a98384e4c97db1f90fed26ad1a2b3f3c0ffcc441e0ea21a",
+        "captured_range": {
+          "end_byte": 19332,
+          "end_line": 808,
+          "excerpt_hash": "sha256:3bd5e48f86c3ffb33a98384e4c97db1f90fed26ad1a2b3f3c0ffcc441e0ea21a",
+          "start_byte": 13221,
+          "start_line": 631
+        },
+        "cited_ranges": [
+          {
+            "end_byte": 19332,
+            "end_line": 808,
+            "excerpt_hash": "sha256:3bd5e48f86c3ffb33a98384e4c97db1f90fed26ad1a2b3f3c0ffcc441e0ea21a",
+            "start_byte": 13221,
+            "start_line": 631
+          }
+        ],
+        "content_hash": "sha256:3bd5e48f86c3ffb33a98384e4c97db1f90fed26ad1a2b3f3c0ffcc441e0ea21a"
+      }
+    ],
+    "id": "legacy-polling-services-design",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/legacy-polling-services-design--c8916508.md",
+    "scope": "services/**",
+    "title": "Event-driven and polling services design notes"
   },
   {
     "added_at": "2026-08-17",

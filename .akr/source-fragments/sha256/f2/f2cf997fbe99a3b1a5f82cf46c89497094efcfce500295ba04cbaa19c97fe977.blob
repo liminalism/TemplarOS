@@ -1,0 +1,1169 @@
+# TemplarOS Full-Side Two-Axis Window Resizing
+
+## Goal
+
+Remove the dedicated bottom-right resize grip and make every side of a normal floating window capable of two-axis resizing.
+
+A press anywhere along a side selects:
+
+1. that side as the primary resize edge; and
+2. one perpendicular edge according to which half of the side was grabbed.
+
+The selected two edges are fixed when the drag begins. They do not change if the pointer later crosses the window's center or crosses through the minimum-size boundary.
+
+This produces corner-like resizing from every point along every side without requiring visible corner controls.
+
+---
+
+# 1. Intended interaction
+
+Divide the window conceptually through its horizontal and vertical center lines:
+
+```text
+                    TOP
+
+          top-left       top-right
+               \           /
+                \         /
+                 +-------+
+                 |       |
+ LEFT-upper  ←   |   |   |   → RIGHT-upper
+                 |---+---|
+ LEFT-lower  ←   |   |   |   → RIGHT-lower
+                 |       |
+                 +-------+
+                /         \
+               /           \
+        bottom-left     bottom-right
+
+                  BOTTOM
+```
+
+The center lines determine which secondary edge a side chooses.
+
+## Top side
+
+Press left of the vertical center:
+
+```text
+edges = TOP + LEFT
+```
+
+Dragging:
+
+```text
+left  → expands left
+up    → expands upward
+
+right → shrinks horizontally
+down  → shrinks vertically
+```
+
+Press right of center:
+
+```text
+edges = TOP + RIGHT
+```
+
+---
+
+## Bottom side
+
+Press left of center:
+
+```text
+edges = BOTTOM + LEFT
+```
+
+So dragging left and down gives exactly the behavior described:
+
+```text
+        original
+      ┌─────────┐
+      │         │
+      │         │
+      └─────────●
+               drag start
+
+drag ↙
+
+  ┌─────────────┐
+  │             │
+  │             │
+  │             │
+  └─────────────┘
+```
+
+Press right of center:
+
+```text
+edges = BOTTOM + RIGHT
+```
+
+---
+
+## Left side
+
+Press above the horizontal center:
+
+```text
+edges = LEFT + TOP
+```
+
+Press below it:
+
+```text
+edges = LEFT + BOTTOM
+```
+
+---
+
+## Right side
+
+Press above the horizontal center:
+
+```text
+edges = RIGHT + TOP
+```
+
+Press below it:
+
+```text
+edges = RIGHT + BOTTOM
+```
+
+---
+
+# 2. Complete mapping
+
+The mapping should be deterministic at mouse-down:
+
+| Grab location | Resize edges |
+|---|---|
+| top, left half | top + left |
+| top, right half | top + right |
+| bottom, left half | bottom + left |
+| bottom, right half | bottom + right |
+| left, upper half | left + top |
+| left, lower half | left + bottom |
+| right, upper half | right + top |
+| right, lower half | right + bottom |
+
+This means there are effectively eight resize regions, but no eight visible controls.
+
+The whole perimeter is useful.
+
+---
+
+# 3. Preserve the current outside-frame hit zone
+
+The current implementation deliberately detects compositor resize edges **outside the client frame** using `RESIZE_MARGIN`.
+
+Keep that behavior.
+
+Do not turn the outermost client pixels into resize controls because applications may already use them for:
+
+- scrollbars;
+- client-side borders;
+- text selection;
+- application controls.
+
+Conceptually:
+
+```text
+           resize zone
+               ↓
+       ┌──────────────┐
+       │              │
+  ←    │    WINDOW    │    →
+       │              │
+       └──────────────┘
+               ↑
+           resize zone
+```
+
+The zone can remain invisible.
+
+An 8-logical-pixel external hit margin is already present and is a reasonable starting point.
+
+---
+
+# 4. Change `resize_edges_at()`
+
+The current:
+
+```text
+crates/lege-window/src/geometry.rs
+```
+
+already contains:
+
+```rust
+pub struct ResizeEdges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+```
+
+That representation is exactly what this interaction needs.
+
+The current `resize_edges_at()` behaves conventionally:
+
+- middle of left side → `LEFT`
+- middle of bottom side → `BOTTOM`
+- corner → `LEFT + BOTTOM`
+
+Change it so every side always supplies a perpendicular edge too.
+
+A first implementation could look like this:
+
+```rust
+pub fn resize_edges_at(frame: Rect, point: Point) -> Option<ResizeEdges> {
+    // Client pixels remain client-owned. The resize region exists just
+    // outside the frame.
+    let inside = point.x >= frame.x
+        && point.x < frame.right()
+        && point.y >= frame.y
+        && point.y < frame.bottom();
+
+    if inside {
+        return None;
+    }
+
+    let left_zone = point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.x
+        && point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN);
+
+    let right_zone = point.x >= frame.right()
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN)
+        && point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN);
+
+    let top_zone = point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.y
+        && point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN);
+
+    let bottom_zone = point.y >= frame.bottom()
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN)
+        && point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN);
+
+    if !(left_zone || right_zone || top_zone || bottom_zone) {
+        return None;
+    }
+
+    let center_x = frame.x.saturating_add(frame.width / 2);
+    let center_y = frame.y.saturating_add(frame.height / 2);
+
+    // A vertical side chooses top/bottom from the pointer's vertical
+    // position. A horizontal side chooses left/right from its horizontal
+    // position.
+    //
+    // Corner overlap is harmless: either participating side resolves to
+    // the same pair of edges.
+    if left_zone {
+        return Some(ResizeEdges {
+            left: true,
+            top: point.y < center_y,
+            bottom: point.y >= center_y,
+            ..ResizeEdges::default()
+        });
+    }
+
+    if right_zone {
+        return Some(ResizeEdges {
+            right: true,
+            top: point.y < center_y,
+            bottom: point.y >= center_y,
+            ..ResizeEdges::default()
+        });
+    }
+
+    if top_zone {
+        return Some(ResizeEdges {
+            top: true,
+            left: point.x < center_x,
+            right: point.x >= center_x,
+            ..ResizeEdges::default()
+        });
+    }
+
+    Some(ResizeEdges {
+        bottom: true,
+        left: point.x < center_x,
+        right: point.x >= center_x,
+        ..ResizeEdges::default()
+    })
+}
+```
+
+This eliminates the need for the current `RESIZE_CORNER` concept.
+
+Every part of every side is effectively associated with its nearest corner.
+
+---
+
+# 5. Keep the edges latched at drag start
+
+This is important.
+
+Do **not** continuously recalculate:
+
+```rust
+resize_edges_at(window, current_pointer)
+```
+
+during the resize.
+
+The current architecture already gets this right.
+
+`begin_resize()` stores:
+
+```rust
+ResizeState {
+    window_id,
+    edges,
+    origin,
+    pointer_origin,
+}
+```
+
+That means this:
+
+```text
+grab bottom-left region
+        ↓
+edges = LEFT + BOTTOM
+        ↓
+pointer crosses center line
+        ↓
+still LEFT + BOTTOM
+```
+
+The gesture never turns into `RIGHT + BOTTOM`.
+
+That is exactly what prevents the interaction from folding or flipping unpredictably.
+
+The resize edge combination describes **what the user grabbed**, not where the pointer currently happens to be.
+
+---
+
+# 6. The current minimum-size logic already has the correct mathematical behavior
+
+The existing `resize_rect()` is already mostly what this design needs.
+
+For example:
+
+```rust
+if edges.right {
+    resized.width =
+        origin.width
+            .saturating_add(dx)
+            .max(MIN_WINDOW_WIDTH);
+}
+
+if edges.left {
+    let width =
+        origin.width
+            .saturating_sub(dx)
+            .max(MIN_WINDOW_WIDTH);
+
+    resized.x = origin.right().saturating_sub(width);
+    resized.width = width;
+}
+```
+
+And the same applies vertically.
+
+That produces the desired invariant:
+
+```text
+width  >= MIN_WINDOW_WIDTH
+height >= MIN_WINDOW_HEIGHT
+```
+
+at all times.
+
+There is never:
+
+```text
+width < 0
+```
+
+and therefore never:
+
+```text
+left edge passes right edge
+```
+
+or:
+
+```text
+top edge passes bottom edge
+```
+
+---
+
+# 7. Example of the requested bottom-left behavior
+
+Suppose:
+
+```rust
+let origin = Rect::new(
+    100, // x
+    100, // y
+    400, // width
+    300, // height
+);
+```
+
+The user presses the **bottom edge left of center**.
+
+The hit test produces:
+
+```rust
+ResizeEdges {
+    left: true,
+    bottom: true,
+    right: false,
+    top: false,
+}
+```
+
+Then the pointer moves:
+
+```text
+80 px left
+60 px down
+```
+
+so:
+
+```rust
+dx = -80;
+dy = 60;
+```
+
+Calling:
+
+```rust
+resize_rect(origin, edges, -80, 60)
+```
+
+produces:
+
+```text
+x      = 20
+y      = 100
+width  = 480
+height = 360
+```
+
+The right and top edges remain anchored.
+
+Graphically:
+
+```text
+before:
+
+        x=100
+          ↓
+          ┌────────────┐
+          │            │
+          │            │
+          └────────────┘
+                       ↑
+                    x=500
+
+
+after:
+
+  x=20
+    ↓
+    ┌──────────────────┐
+    │                  │
+    │                  │
+    │                  │
+    └──────────────────┘
+                       ↑
+                 still x=500
+```
+
+Exactly one horizontal edge and one vertical edge move.
+
+---
+
+# 8. Shrinking cannot turn into inversion
+
+Now take that same bottom-left resize and drag far to the right:
+
+```rust
+dx = 10_000;
+```
+
+The calculation:
+
+```rust
+origin.width - dx
+```
+
+would normally become negative.
+
+Instead:
+
+```rust
+.max(MIN_WINDOW_WIDTH)
+```
+
+stops it.
+
+So:
+
+```text
+                anchored right edge
+                         ↓
+                 ┌───────┐
+                 │       │
+                 └───────┘
+                 ↑
+          left edge stops here
+```
+
+Further rightward pointer movement does nothing.
+
+It does **not** become:
+
+```text
+                 ┌───────┐
+                         └────────→
+                    inverted window
+```
+
+And it does not suddenly become a right-edge resize.
+
+This is already tested in the existing geometry code and should remain a core invariant.
+
+---
+
+# 9. Preserve origin-relative resizing
+
+The current `ResizeState` also correctly stores the original geometry and total pointer displacement:
+
+```rust
+let dx = pointer_global.x
+    .saturating_sub(resize.pointer_origin.x);
+
+let dy = pointer_global.y
+    .saturating_sub(resize.pointer_origin.y);
+
+resize_rect(
+    resize.origin,
+    resize.edges,
+    dx,
+    dy,
+)
+```
+
+Keep this.
+
+Do not accumulate individual mouse-motion deltas.
+
+Origin-relative resizing means:
+
+```text
+drag beyond minimum
+        ↓
+window clamps
+        ↓
+drag backward
+        ↓
+window immediately retraces its real geometry
+```
+
+rather than having the clamped movement permanently distort the relationship between pointer and window.
+
+The current test:
+
+```text
+a_resize_past_the_minimum_and_back_returns_to_the_size_the_pointer_names
+```
+
+is exactly the behavior this design needs.
+
+---
+
+# 10. Remove the bottom-right grip
+
+Once perimeter resizing is reliable, the dedicated grip is redundant.
+
+Remove the grip from:
+
+```text
+crates/lege-window/src/geometry.rs
+```
+
+including:
+
+```rust
+RESIZE_GRIP_SIZE
+resize_grip()
+```
+
+Remove the service wrapper:
+
+```rust
+WindowService::resize_grip()
+```
+
+from:
+
+```text
+crates/lege-window/src/service.rs
+```
+
+Remove:
+
+```rust
+Affordance::Grip
+```
+
+from:
+
+```text
+compositor/lege-comp/src/input.rs
+```
+
+and remove:
+
+```rust
+grip: Option<Rect>
+```
+
+from `PressCandidate`.
+
+The compositor-owned resize path then becomes simply:
+
+```text
+pointer near side
+      ↓
+resize_edges_at()
+      ↓
+Affordance::Edge(edges)
+      ↓
+Gesture::Resize { edges }
+      ↓
+WindowService::begin_resize()
+```
+
+There is only one compositor resize mechanism.
+
+That is cleaner than keeping a special case for bottom-right.
+
+---
+
+# 11. Remove grip rendering
+
+The current compositor also paints the resize grip.
+
+Remove that rendering path from:
+
+```text
+compositor/lege-comp/src/chrome/mod.rs
+compositor/lege-comp/src/chrome/paint.rs
+```
+
+The visible window chrome can then return to essentially:
+
+```text
+recovery/title band
++
+window contents
+```
+
+with resizing represented by cursor feedback rather than a permanent graphical control.
+
+---
+
+# 12. Decouple minimum size from the deleted grip
+
+There is one detail that should not be missed.
+
+At present:
+
+```rust
+MIN_WINDOW_HEIGHT
+```
+
+is partly justified by guaranteeing enough room for:
+
+```text
+recovery band + resize grip
+```
+
+Once the grip disappears, that rationale no longer exists.
+
+For the first patch, I would **preserve the current numerical minimum** so this resize change does not simultaneously alter window sizing behavior.
+
+But rename/restate the minimum so it no longer depends conceptually on the grip.
+
+For example:
+
+```rust
+pub const MIN_WINDOW_WIDTH: i32 = MIN_RECOVERY_WIDTH;
+
+pub const MIN_RESIZABLE_CLIENT_HEIGHT: i32 = 24;
+
+pub const MIN_WINDOW_HEIGHT: i32 =
+    RECOVERY_BAND_HEIGHT + MIN_RESIZABLE_CLIENT_HEIGHT;
+```
+
+Later the better model is:
+
+```text
+effective minimum =
+    max(
+        Templar compositor minimum,
+        application's xdg minimum
+    )
+```
+
+That should be a separate change.
+
+---
+
+# 13. Cursor feedback
+
+Because every edge now performs diagonal two-axis resizing, the cursor should communicate the latched pair.
+
+For example:
+
+```rust
+fn resize_cursor(edges: ResizeEdges) -> CursorIcon {
+    match (
+        edges.left,
+        edges.right,
+        edges.top,
+        edges.bottom,
+    ) {
+        (true, false, true, false)
+        | (false, true, false, true) => CursorIcon::NwseResize,
+
+        (false, true, true, false)
+        | (true, false, false, true) => CursorIcon::NeswResize,
+
+        _ => CursorIcon::Default,
+    }
+}
+```
+
+So:
+
+```text
+top-left half       ↖↘
+bottom-right half   ↖↘
+
+top-right half      ↗↙
+bottom-left half    ↗↙
+```
+
+The cursor changes as the user moves across the midpoint **before pressing**.
+
+Once pressed, the edges remain latched.
+
+That gives a strong visual explanation for the otherwise invisible behavior.
+
+---
+
+# 14. Center-line behavior
+
+There is one minor ambiguity:
+
+```text
+exactly on the center line
+```
+
+Integer coordinates mean this can happen.
+
+The simplest first implementation is:
+
+```rust
+point.x < center_x
+```
+
+versus:
+
+```rust
+point.x >= center_x
+```
+
+and likewise vertically.
+
+So the exact center pixel belongs to right/bottom.
+
+That is deterministic and probably sufficient.
+
+If testing makes the seam feel twitchy, a later refinement could introduce a small center dead zone:
+
+```text
+        left     undecided     right
+──────────────|────────────|──────────────
+             -4px         +4px
+```
+
+and choose the secondary edge from the first meaningful secondary-axis movement.
+
+I would **not implement that complexity initially**.
+
+Try the simple midpoint split first.
+
+---
+
+# 15. Tests to add
+
+Most of the important work should be expressible as pure geometry tests.
+
+## Every side gets two axes
+
+```rust
+#[test]
+fn every_side_half_resizes_toward_its_nearest_corner() {
+    let frame = Rect::new(100, 100, 400, 300);
+
+    // Top.
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 200, y: 95 }),
+        Some(ResizeEdges {
+            top: true,
+            left: true,
+            ..Default::default()
+        })
+    );
+
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 400, y: 95 }),
+        Some(ResizeEdges {
+            top: true,
+            right: true,
+            ..Default::default()
+        })
+    );
+
+    // Bottom.
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 200, y: 403 }),
+        Some(ResizeEdges {
+            bottom: true,
+            left: true,
+            ..Default::default()
+        })
+    );
+
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 400, y: 403 }),
+        Some(ResizeEdges {
+            bottom: true,
+            right: true,
+            ..Default::default()
+        })
+    );
+
+    // Left.
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 96, y: 175 }),
+        Some(ResizeEdges {
+            left: true,
+            top: true,
+            ..Default::default()
+        })
+    );
+
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 96, y: 325 }),
+        Some(ResizeEdges {
+            left: true,
+            bottom: true,
+            ..Default::default()
+        })
+    );
+
+    // Right.
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 503, y: 175 }),
+        Some(ResizeEdges {
+            right: true,
+            top: true,
+            ..Default::default()
+        })
+    );
+
+    assert_eq!(
+        resize_edges_at(frame, Point { x: 503, y: 325 }),
+        Some(ResizeEdges {
+            right: true,
+            bottom: true,
+            ..Default::default()
+        })
+    );
+}
+```
+
+---
+
+## Bottom-left expands correctly
+
+```rust
+#[test]
+fn bottom_left_side_resize_expands_left_and_down() {
+    let origin = Rect::new(100, 100, 400, 300);
+
+    let edges = ResizeEdges {
+        left: true,
+        bottom: true,
+        ..Default::default()
+    };
+
+    let resized = resize_rect(origin, edges, -80, 60);
+
+    assert_eq!(
+        resized,
+        Rect::new(20, 100, 480, 360)
+    );
+
+    // Opposite edges remain anchored.
+    assert_eq!(resized.right(), origin.right());
+    assert_eq!(resized.y, origin.y);
+}
+```
+
+---
+
+## It can never fold over itself
+
+```rust
+#[test]
+fn two_axis_resize_clamps_without_changing_sides() {
+    let origin = Rect::new(100, 100, 400, 300);
+
+    let edges = ResizeEdges {
+        left: true,
+        bottom: true,
+        ..Default::default()
+    };
+
+    let resized =
+        resize_rect(origin, edges, 100_000, -100_000);
+
+    assert_eq!(resized.width, MIN_WINDOW_WIDTH);
+    assert_eq!(resized.height, MIN_WINDOW_HEIGHT);
+
+    assert_eq!(resized.right(), origin.right());
+    assert_eq!(resized.y, origin.y);
+}
+```
+
+---
+
+## Crossing the center during the gesture changes nothing
+
+This belongs at the `WindowService` level.
+
+Start a bottom-left resize and then move the pointer far to the right.
+
+Assert that:
+
+```text
+right edge stays anchored
+```
+
+rather than the operation becoming a bottom-right resize.
+
+The existing `ResizeState.edges` design should make this pass without additional implementation.
+
+---
+
+# 16. Input hit-testing changes
+
+The existing `press_target_at()` already does:
+
+```rust
+if candidate.has_frame
+    && !candidate.maximized
+    && let Some(edges) =
+        lege_window::resize_edges_at(candidate.geometry, pos)
+{
+    return PressTarget::Affordance(
+        candidate.window_id,
+        Affordance::Edge(edges),
+    );
+}
+```
+
+That path can remain almost unchanged.
+
+Once `resize_edges_at()` returns two edges instead of one, the rest of the input system already knows how to execute the gesture.
+
+That is why this should be a fairly contained change.
+
+Remove only the grip branch:
+
+```rust
+Affordance::Grip => Gesture::Resize {
+    edges: ResizeEdges::BOTTOM_RIGHT,
+},
+```
+
+and leave:
+
+```rust
+Affordance::Edge(edges) =>
+    Gesture::Resize { edges },
+```
+
+as the single compositor-controlled route.
+
+---
+
+# 17. Do not change client-requested resize behavior
+
+This distinction matters.
+
+Wayland applications can send:
+
+```text
+xdg_toplevel.resize
+```
+
+with conventional directions such as:
+
+```text
+left
+right
+top
+bottom
+top_left
+...
+```
+
+Do not reinterpret those.
+
+A client asking for:
+
+```text
+RIGHT
+```
+
+should continue to get a one-axis right-edge resize.
+
+The new two-axis side semantics should apply specifically to **TemplarOS compositor-owned pointer affordances**.
+
+So:
+
+```text
+client resize protocol
+        ↓
+honor requested edges exactly
+```
+
+while:
+
+```text
+Templar perimeter press
+        ↓
+derive two edges from side + midpoint
+```
+
+This keeps protocol behavior correct.
+
+---
+
+# 18. Recommended implementation sequence
+
+### Patch 1 — geometry behavior
+
+Change only:
+
+```text
+resize_edges_at()
+```
+
+and its tests.
+
+Verify all eight regions.
+
+Do not remove anything yet.
+
+---
+
+### Patch 2 — compositor interaction
+
+Verify that every region reaches:
+
+```text
+Gesture::Resize { edges }
+```
+
+and behaves correctly in the nested compositor.
+
+Add hover cursor feedback if it is not already provided.
+
+---
+
+### Patch 3 — remove the grip
+
+Once perimeter resizing works:
+
+- remove `resize_grip()`;
+- remove `RESIZE_GRIP_SIZE`;
+- remove `WindowService::resize_grip()`;
+- remove `Affordance::Grip`;
+- remove grip rendering;
+- remove grip-specific tests;
+- rewrite minimum-size comments.
+
+---
+
+### Patch 4 — interaction polishing
+
+Test:
+
+- all four sides;
+- both halves of each side;
+- very small windows;
+- multiple output scales;
+- windows against screen edges;
+- XWayland;
+- native Wayland;
+- rapidly crossing the center while dragging;
+- dragging far beyond minimum size and back;
+- resizing partially off-screen windows.
+
+Only after that should the hit margin or midpoint behavior be tuned.
+
+---
+
+# 19. Final interaction invariant
+
+The useful way to specify the feature is:
+
+> A TemplarOS-managed window has no dedicated resize corner. Every point along each resizeable side represents the corner on that side nearest to the point of initial contact. The resulting horizontal and vertical edges are latched for the duration of the gesture. Opposite edges remain fixed, and minimum dimensions clamp movement rather than allowing an edge to cross its opposite edge.
+
+That gives the system a very simple geometry model:
+
+```text
+press location
+      ↓
+choose one of four edge pairs
+      ↓
+LEFT+TOP
+RIGHT+TOP
+LEFT+BOTTOM
+RIGHT+BOTTOM
+      ↓
+ordinary two-edge resize
+```
+
+The unusual part exists entirely in **edge selection**. The actual resizing remains conventional and uses the existing `ResizeEdges`/`resize_rect()` implementation.

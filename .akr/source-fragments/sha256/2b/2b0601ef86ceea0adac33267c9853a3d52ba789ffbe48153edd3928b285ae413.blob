@@ -1,0 +1,390 @@
+# TemplarOS Storage and Installer Implementation Plan
+
+## Goal
+
+Implement a storage and installation system suitable for installing TemplarOS as the sole operating system on the current two-drive machine.
+
+The immediate design should optimize for:
+
+* reliability;
+* simple recovery;
+* good Rust compilation performance;
+* Btrfs integration with TemplarOS snapshots and indexing;
+* minimal installer-specific code;
+* the ability to prepare arbitrary partitions manually when necessary;
+* reuse of the existing TemplarOS provisioning/deployment code.
+
+Do not build a general-purpose graphical partition editor, a new filesystem, or a full Ubuntu-style installer framework at this stage.
+
+---
+
+## 1. Adopt Btrfs as the standard TemplarOS persistent filesystem
+
+Use separate Btrfs filesystems for the OS drive and data drive.
+
+Do **not** combine both physical disks into one Btrfs filesystem. Independent filesystems make failure, recovery, reinstallation, and replacement considerably simpler.
+
+### OS drive
+
+Use GPT with:
+
+```text
+OS NVMe
+├── EFI System Partition
+│     FAT32
+│     ~1 GiB
+│
+└── TemplarOS
+      Btrfs
+      ├── @
+      ├── @home
+      ├── @var
+      ├── @build
+      ├── @snapshots
+      └── @deployments
+```
+
+The exact sizes do not need to be exposed as complicated installer options. The normal installer should allocate approximately 1 GiB to EFI and give the remaining space to Btrfs.
+
+### Data drive
+
+Use one GPT partition containing a second independent Btrfs filesystem:
+
+```text
+Data NVMe
+└── Templar Data
+      Btrfs
+      ├── @projects
+      ├── @data
+      ├── @media
+      ├── @archives
+      ├── @snapshots
+      └── @index-checkpoints
+```
+
+Use filesystem labels and UUIDs rather than relying on `/dev/nvme...` names after installation.
+
+---
+
+## 2. Use conservative Btrfs defaults
+
+Start with normal Btrfs behavior rather than tuning aggressively.
+
+Recommended baseline:
+
+```text
+noatime
+compress=zstd:1
+```
+
+Do not enable unusual performance options globally until they have been benchmarked on the actual machine.
+
+Important source code, Git repositories, documents, media and other persistent data should retain normal:
+
+* copy-on-write;
+* checksumming;
+* compression where beneficial;
+* snapshot capability.
+
+This is the primary reason to standardize on Btrfs rather than XFS or ext4.
+
+---
+
+## 3. Treat build output as disposable storage
+
+Rust build output has fundamentally different requirements from source code.
+
+TemplarOS should recognize that distinction explicitly.
+
+Persistent project data:
+
+```text
+source
+Git repositories
+assets
+documents
+configuration
+```
+
+should use normal Btrfs protection.
+
+Build output:
+
+```text
+target/
+incremental compiler state
+temporary object files
+generated intermediates
+```
+
+is reproducible and does not require snapshots or ordinary filename search.
+
+Create `@build` as a separate subvolume so its policy can evolve independently.
+
+Initially leave it as normal Btrfs.
+
+Later benchmark:
+
+1. normal Btrfs;
+2. Btrfs + compression;
+3. Btrfs NOCOW for build output;
+4. XFS scratch storage if necessary.
+
+Do not choose NOCOW merely because it sounds faster. It sacrifices data checksumming and compression and should only be used for reproducible data if measurements justify it.
+
+---
+
+## 4. Support a centralized TemplarOS build directory
+
+Investigate separating source reads from build-output writes across the two physical NVMe devices.
+
+TemplarOS should eventually be capable of mapping:
+
+```text
+/data/projects/foo/
+```
+
+to a build location such as:
+
+```text
+/var/build/<project-id>/
+```
+
+through `CARGO_TARGET_DIR`.
+
+This has several potential advantages:
+
+* build output does not contaminate project snapshots;
+* the shared file index does not need to catalog millions of compiler artifacts;
+* source and build I/O can potentially use separate drives;
+* build data can be purged safely;
+* different filesystem policies can be applied to builds.
+
+Do not make this mandatory until benchmarked.
+
+Implement the directory structure now so that testing it later is easy.
+
+---
+
+# Installer Architecture
+
+## 5. Split storage preparation from TemplarOS deployment
+
+The existing installer/provisioner already performs most of the actual installation.
+
+Its main architectural problem is that it currently assumes ownership of the entire disk.
+
+Refactor it into two independent layers:
+
+```text
+Storage preparation
+        ↓
+Validated storage layout
+        ↓
+TemplarOS deployment
+```
+
+The deployment layer must not care whether its partitions were created automatically, through GParted, or by some future installer frontend.
+
+Its inputs should simply describe where TemplarOS is going.
+
+---
+
+## 6. Define a storage-layout contract
+
+Introduce a machine-readable installation layout.
+
+For example:
+
+```text
+OS:
+    ESP:  /dev/nvme0n1p1
+    root: /dev/nvme0n1p2
+
+Data:
+    filesystem: /dev/nvme1n1p1
+```
+
+Internally this should transition to UUID/PARTUUID references as soon as the storage devices have been identified.
+
+A JSON/TOML structure can eventually express:
+
+```text
+device
+partition
+filesystem
+label
+mount role
+format requested
+subvolume layout
+```
+
+The installer frontend produces this declaration.
+
+The installer backend validates it.
+
+Only then does destructive work begin.
+
+---
+
+## 7. Preserve the existing automatic erase-disk path
+
+Keep the current simple installation path.
+
+The normal installation should be:
+
+```text
+Erase disk and install TemplarOS
+```
+
+For the current machine it should automatically:
+
+1. wipe the selected OS disk;
+2. create GPT;
+3. create the EFI partition;
+4. create the Btrfs root partition;
+5. create the TemplarOS subvolumes;
+6. bootstrap the Ubuntu base;
+7. install TemplarOS packages;
+8. install the supported kernel/NVIDIA stack;
+9. configure shim/GRUB;
+10. create the initial deployment;
+11. reboot.
+
+This should remain the best-tested and simplest installation mode.
+
+---
+
+## 8. Add an existing-partition installation mode
+
+Refactor the provisioner so it can also receive already-created storage:
+
+```text
+templar install \
+    --esp /dev/... \
+    --root /dev/...
+```
+
+This mode must:
+
+* never repartition the disk;
+* verify that the selected partitions actually exist;
+* identify filesystem types;
+* verify EFI suitability;
+* clearly distinguish partitions that will and will not be formatted;
+* optionally create a Btrfs filesystem on the selected root partition;
+* create the required TemplarOS subvolumes;
+* continue through the normal deployment path.
+
+This is the key installer feature to implement.
+
+Once this works, TemplarOS is no longer dependent on its own partitioning implementation.
+
+---
+
+## 9. Put GParted on the TemplarOS live USB
+
+Use GParted as the advanced partition editor.
+
+Do not recreate its functionality.
+
+The TemplarOS live environment should provide:
+
+```text
+Install TemplarOS
+
+    Erase disk and install
+
+    Use existing partitions
+
+    Advanced partitioning...
+```
+
+`Advanced partitioning` launches GParted.
+
+After GParted exits:
+
+1. force the kernel to rescan partition tables if necessary;
+2. rerun `lsblk`/`blkid`;
+3. rebuild the installer device model;
+4. let the user choose the resulting ESP/root/data partitions.
+
+The installer must **never assume that the device topology remains unchanged after GParted runs**.
+
+GParted belongs on the live USB only. It does not need to be installed onto the resulting TemplarOS system.
+
+---
+
+## 10. Add a two-drive guided installation mode
+
+Because the immediate target machine has two drives, support the useful case directly.
+
+Something like:
+
+```text
+Install TemplarOS
+
+OS drive:
+    Samsung NVMe 1 TB
+
+Data drive:
+    Crucial NVMe 2 TB
+
+[x] Erase OS drive and install TemplarOS
+[x] Initialize second drive as Templar Data
+
+[ Install ]
+```
+
+This should generate the standard layouts automatically.
+
+The data-drive option must be independently selectable because formatting the second drive destroys all of its contents.
+
+The installer should never silently decide that a second disk is expendable.
+
+---
+
+## 11. Require an explicit destructive-operation review
+
+Before executing anything destructive, generate a final plan.
+
+For example:
+
+```text
+The following operations will be performed:
+
+Samsung 1 TB
+    DELETE existing partition table
+    CREATE 1 GiB EFI partition
+    CREATE 999 GiB Btrfs partition
+    FORMAT Btrfs
+    INSTALL TemplarOS
+
+Crucial 2 TB
+    DELETE existing NTFS filesystem
+    FORMAT Btrfs
+    CREATE Templar Data layout
+
+All existing data on both selected drives will be destroyed.
+```
+
+Only after this review does the backend receive permission to execute.
+
+The UI and the storage backend should share the same generated operation plan so the frontend cannot display one thing while the backend does another.
+
+---
+
+# Live USB and Recovery
+
+## 12. Make one TemplarOS live/recovery image
+
+Do not maintain separate installer and recovery images.
+
+The USB should boot into a lightweight TemplarOS live system containing:
+
+```text
+Try TemplarOS
+
+Install TemplarOS
+
+Recovery

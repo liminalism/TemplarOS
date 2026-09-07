@@ -53,6 +53,20 @@ record legeos.constraint.identity-and-launch-safety/1 : constraint {
     }
 }
 
+record legeos.constraint.native-lubuntu-is-the-development-environment/1 : constraint {
+    title "LegeOS development and validation run in the native Lubuntu installation, not WSL"
+    state active
+    scope [ all ]
+    topic development-environment
+    statement """
+        The machine's native Lubuntu installation is the authoritative LegeOS development and validation environment. A Windows-hosted request may use WSL for agent-only helpers such as OptMem, but WSL results must not be treated as LegeOS build, test, packaging, runtime, hardware, or deployment evidence.
+        """
+    rationale """
+        The working LegeOS toolchain, system dependencies, live-session boundary and reference-hardware context belong to the Lubuntu partition. Treating an incidental Windows/WSL request environment as the project host creates false setup work and invalid evidence.
+        """
+    author "GitHub Uploader"
+}
+
 record legeos.constraint.one-provider-per-role/1 : constraint {
     title "Exactly one selected provider per exclusive system role may autostart"
     state active

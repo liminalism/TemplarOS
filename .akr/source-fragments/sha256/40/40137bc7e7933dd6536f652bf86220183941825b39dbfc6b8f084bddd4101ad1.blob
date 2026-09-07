@@ -1,0 +1,1279 @@
+Yes. With the scope you just described, I think the advisor estimate is simultaneously correct and much too pessimistic for what you actually need.
+
+The 31–56 engineer-month estimate in `docs/planning/ubuntu-derived-full-distribution-roadmap.md` is an estimate for a **supportable public distribution**: independent archive operations, security response, broad installer cases, real hardware qualification, your own newest-kernel release lane, recovery, signing infrastructure, release engineering, support commitments, and repeatable upgrades over years. You do not need most of that to make TemplarOS useful on your own machine.
+
+For the next month I would explicitly redefine the target as:
+
+> **TemplarOS Developer Edition 0.1:** a reproducibly generated, Ubuntu 26.04-derived amd64 system for one known Intel + RTX 4060 laptop, optimized for Rust/CUDA development, heavy multitasking, browsing and media, with a small Templar package overlay, a recoverable Btrfs root, working NVIDIA/CUDA, and enough installation machinery to recreate the machine from scratch.
+
+That is a very different project.
+
+## Where the project actually is
+
+There is substantially more foundation here than the advisor's percentage makes it sound like.
+
+The pack contains about **132,700 lines of Rust already**, plus roughly 20,000 lines of configuration/docs/interfaces. More importantly, several difficult architectural pieces aren't hypothetical anymore:
+
+* `lege dev` has real build-set identity, local signed repository handling, pinned installation, rollback, activation rules, and installed-versus-running convergence reporting.
+* `lege-hostd` already contains a boot deployment abstraction, Btrfs snapshot machinery, update transaction states and GRUB/systemd-boot backends.
+* `lege-boot-health` can now actually bless a healthy trial deployment or request rollback of an unhealthy one.
+* you have the component matrix in `distro/deploy/components.toml`.
+* hardware qualification is already defined specifically for the Intel/NVIDIA laptop.
+* the current image skeleton is mkosi + UEFI + Btrfs.
+* Debian packaging exists.
+* the shared file index has a unusually well-developed design before implementation.
+* the distro roadmap already made the important architectural decision: **binary derivative of Ubuntu, not an Ubuntu rebuild**.
+
+There is also an important wrinkle I found while inspecting this particular agent pack. The pack generator says it omitted **54 "unsupported/non-development" files**. The archive contains generated `distro/image/mkosi.conf.d/50-seeds.conf`, but not the `.seed` inputs it says generated it; likewise several ordinary Debian files and extensionless distro data appear absent. I would *not* conclude the actual repository lacks them—the more likely explanation is that the agent-pack allowlist rejects `.seed`, extensionless files such as `os-release`, and some Debian packaging suffixes.
+
+**Fix the agent-pack generator before unleashing six agents on distro engineering.** Otherwise they will be reasoning from a selectively incomplete distro tree. This is a 30-minute class of problem with outsized consequences.
+
+---
+
+# The architectural shortcut I recommend
+
+For TemplarOS 0.1, deliberately **do not build a miniature Canonical**.
+
+Use Canonical for everything that does not distinguish TemplarOS:
+
+**Ubuntu owns:**
+
+* glibc
+* systemd
+* apt/dpkg
+* coreutils
+* kernel **initially**
+* shim
+* GRUB
+* Mesa
+* firmware
+* NetworkManager
+* PipeWire
+* Bluetooth stack
+* NVIDIA kernel modules initially
+* CUDA packages initially
+* security fixes to all of those
+
+**TemplarOS owns:**
+
+* compositor/session/shell
+* system services you have already designed
+* Files and the shared index
+* app identity
+* resource management
+* defaults
+* package selection
+* Templar packages
+* image recipe
+* local/release overlay archive
+* your Btrfs deployment/update mechanism
+* your particular machine's qualification
+* eventually installer/ISO
+* eventually kernel, **only if there is a demonstrated reason**
+
+This is what makes the one-month version plausible.
+
+Ubuntu 26.04 is particularly convenient for you because CUDA itself is now in the Ubuntu archive: `cuda-toolkit` exists in Resolute, currently at CUDA 13.1.1. ([Ubuntu Packages][1]) NVIDIA's current CUDA 13.3 documentation also explicitly lists Ubuntu 26.04 x86-64 as a qualified platform. ([NVIDIA Docs][2])
+
+So **CUDA no longer requires turning NVIDIA's repository into another distribution authority**.
+
+That simplifies your distro considerably.
+
+---
+
+# I would reverse one part of the current roadmap
+
+For your immediate goal, **do not make Linux 7.2 a requirement for TemplarOS 0.1.**
+
+As of September 3, 2026, Linux 7.2.3 is the current stable kernel and 7.3-rc1 is mainline. ([Kernel.org][3]) It is perfectly reasonable to build a 7.2.3 experimental lane.
+
+But your machine is:
+
+* Intel iGPU
+* RTX 4060 Laptop GPU
+* Wayland
+* CUDA
+* hybrid graphics
+
+That is exactly the kind of machine where turning the kernel into an independently maintained component gives you disproportionate pain.
+
+Ubuntu's current Resolute kernel already has matching `linux-modules-nvidia-580-open-generic` packages; the current generic LRM tracks the Ubuntu 7.0 ABI. ([Ubuntu Packages][4])
+
+The best initial policy is therefore:
+
+| Channel        | TemplarOS 0.1                                           |
+| -------------- | ------------------------------------------------------- |
+| `stable`       | Ubuntu 26.04 GA/HWE kernel + Ubuntu matching NVIDIA LRM |
+| `rescue`       | previous known-good Ubuntu kernel                       |
+| `candidate`    | 7.2.3 Templar kernel experiment                         |
+| `experimental` | 7.3 RC, if you feel like testing it                     |
+
+The distinction from the advisor roadmap is simply that **Ubuntu's kernel remains stable instead of rescue for the first personal release**.
+
+Move 7.2 to stable only after it offers you something you can name.
+
+Faster compilation? Almost certainly not meaningfully.
+
+Better scheduler behavior? Measure it.
+
+Hardware support you need? Then it becomes justified.
+
+Interesting technical project? Fine—but don't put it in the critical path.
+
+That change alone removes a huge amount of the advisor's 5–9 engineer-month kernel/driver/Secure-Boot workstream from your one-month target.
+
+---
+
+# Secure Boot: take the boring route
+
+I think ADR-0004 should be resolved for now as:
+
+> **Canonical-signed shim → Canonical-signed GRUB → Ubuntu-signed kernel → Canonical-signed matching NVIDIA LRM.**
+
+Ubuntu documents this as its normal amd64 Secure Boot chain. Shim is Microsoft-signed, GRUB and the normal kernel are Canonical-signed, and kernel modules are signature-enforced. ([Ubuntu Documentation][5])
+
+That gives you actual Secure Boot while doing very little security engineering yourself.
+
+Do **not** make "LegeOS-signed systemd-boot" your first production boot path.
+
+Your current mkosi systemd-boot setup is fine for VM/dev images. Bare metal should use GRUB initially.
+
+Later, if you qualify your own 7.2 kernel, enroll a Templar MOK and use it for the custom kernel/modules. Ubuntu's shim/MokManager infrastructure explicitly supports enrolling your own keys for unofficial kernels and modules. ([Ubuntu Documentation][5])
+
+That is still work, but it isn't "become a Secure Boot platform vendor."
+
+---
+
+# You also do not need an installer yet
+
+This is another enormous scope reduction.
+
+A public distribution needs:
+
+* live environment
+* polished graphical installer
+* empty disk
+* dual boot
+* encryption
+* weird partition tables
+* offline installation
+* non-US keyboards
+* accessibility
+* failed installation recovery
+* OEM mode
+* NVIDIA detection
+* arbitrary disk sizes
+* lots of firmware
+
+**Your personal distro doesn't.**
+
+You know the hardware.
+
+You know the desired disk layout.
+
+You know the user.
+
+You know that it is UEFI.
+
+You can define one supported installation.
+
+So TemplarOS 0.1 should initially have a **reproducible target-machine provisioner**, not a general installer.
+
+I would support these two installation paths:
+
+1. **mkosi raw image** for VM/debugging.
+2. **Ubuntu 26.04 autoinstall/bootstrap → Templarize** for bare metal.
+
+The second can eventually be wrapped into your own ISO. For now, an official Ubuntu installation environment can create the base installation, after which one Templar bootstrap step:
+
+* configures Btrfs/subvolumes;
+* adds the Templar local/archive source;
+* installs `templaros-desktop`;
+* installs your session;
+* selects NVIDIA profile;
+* installs CUDA developer packages;
+* configures GRUB;
+* sets OS identity;
+* creates the user;
+* enables required services;
+* runs `templar doctor --install`;
+* reboots.
+
+Once that is fully declarative, **making an ISO around it becomes packaging**, rather than discovering what your installer is supposed to do.
+
+---
+
+# What "lighter than Lubuntu" should mean
+
+Don't optimize around ISO size.
+
+Lubuntu 26.04.1's current ISO is about 3.7 GB. ([cdimage.ubuntu.com][6]) That's interesting, but it tells you little about runtime responsiveness.
+
+Your founding document had the better definition: lightness should mean responsiveness.
+
+I would measure TemplarOS with five numbers:
+
+| Metric                           |                              Suggested target |
+| -------------------------------- | --------------------------------------------: |
+| Idle memory after login          | **<700 MB** initially; push toward 450–600 MB |
+| Templar-owned idle CPU           |                                effectively 0% |
+| Boot → usable Home/session       |            <8–12 s after firmware on your SSD |
+| Background write I/O at idle     |                            approximately zero |
+| Always-running desktop processes | preferably <20 Templar/user-session processes |
+
+Don't contort the system to hit arbitrary RAM numbers. A 48 GB development machine is harmed more by a 1% CPU polling loop or constant filesystem rescanning than by a 40 MB daemon that sleeps.
+
+## Things I would leave out
+
+For **your personal build**, not a public distribution:
+
+* LibreOffice
+* email client
+* calendar
+* contacts
+* graphical software store
+* Snap
+* Ubuntu reporting
+* Apport/Whoopsie
+* games
+* printer stack
+* scanner stack
+* modem support
+* Samba server
+* remote desktop server
+* GNOME stack
+* LXQt stack
+* KDE stack
+* generic desktop settings daemons
+* multiple terminals
+* multiple file managers
+* desktop widgets implemented as separate daemons
+* content indexing
+* thumbnail daemons running continuously
+* automatic discovery daemons you don't use
+* redundant network applets
+* redundant update applets
+* generic OEM support
+* legacy BIOS support
+* arm64
+* TPM FDE initially
+* multiple bootloaders in the installed system
+* multiple package-store front ends
+* app store/backend
+* public crash reporting infrastructure
+
+Potentially optional on your private image:
+
+* Fcitx5, if you don't need multilingual IME
+* Orca/AT-SPI/speech-dispatcher
+* Bluetooth, if you don't use it
+* Avahi
+* printing/scanning
+* full documentation packages/locales
+
+I would **not** strip low-level Ubuntu dependencies merely to shave disk space. Once removing a package requires maintaining a patch against something fundamental, you have lost.
+
+---
+
+# What I would keep
+
+A surprisingly small graphical development OS can still be complete for your use case:
+
+### Base
+
+* systemd
+* udev
+* dbus-broker
+* polkit
+* apt/dpkg
+* sudo
+* ca-certificates
+* kernel
+* initramfs/dracut
+* GRUB + shim
+* firmware
+* Intel microcode
+* Btrfs tools
+
+### Hardware/runtime
+
+* NetworkManager
+* PipeWire
+* WirePlumber
+* udisks2
+* upower
+* power-profiles-daemon
+* fwupd
+* Mesa
+* Vulkan
+* VA-API
+* NVIDIA LRM/userspace
+* XWayland
+
+### Desktop
+
+* Templar compositor
+* Templar shell
+* sessiond
+* filed
+* hostd
+* resourced
+* portal
+* Files
+* Settings
+* CLI
+* kitty
+* Flatpak
+* browser
+* `mpv`
+* a modest font set
+
+### Development
+
+I would make this an explicit `templaros-dev-rust` metapackage:
+
+* git
+* curl
+* rustup
+* current Rust toolchain
+* clang
+* lld
+* mold if you're happy with it
+* GCC/build-essential
+* pkg-config
+* cmake
+* ninja
+* gdb
+* lldb
+* strace
+* perf
+* bpf tooling when useful
+* jq
+* ripgrep
+* fd
+* just
+* Python minimal enough for build systems
+* CUDA toolkit
+* Vulkan tools
+
+There is no virtue in keeping build tools off the image when **the purpose of the image is Rust development**.
+
+Treat them as first-class.
+
+---
+
+# Browser and media policy
+
+This deserves an explicit decision because your current tree excludes Snap while your hands-on run is still finding Snap-installed browsers.
+
+Pick one.
+
+For your stated system, I would use:
+
+**Flatpak Firefox or Chromium as the default browser initially.**
+
+Why:
+
+* doesn't force Snap back into the base;
+* isolates a giant rapidly changing application from your distro;
+* doesn't make you package a browser;
+* fits the portal architecture you already want.
+
+Disk usage from Flatpak runtimes is not "light" in the ISO-size sense, but idle RAM/CPU is what matters here.
+
+There is, however, one major prerequisite:
+
+**portals must work.**
+
+Your own current-state audit correctly identified that FileChooser/AppChooser/Background had previously terminated in `NoUiAvailable`. Some native UI seams now exist in the source, but this is a daily-driver gate that needs direct testing.
+
+A browser that cannot reliably upload/download/open files means the distro is not usable.
+
+---
+
+# The reusable drive index should be a major month-one feature
+
+I agree with your priority here because it is not merely a Files feature.
+
+The design in `shared-incremental-file-index.md` is exactly the sort of architectural feature that can make TemplarOS genuinely better rather than merely different.
+
+The key decision is correct:
+
+> **one user, one filesystem index owner, many views**
+
+That means:
+
+* Files uses it.
+* Home uses it.
+* FSearch becomes a UI client.
+* Silvaview becomes a visualization client.
+* future project search uses it.
+* a command-line client uses it.
+* removable drives remain queryable from their last snapshot while offline.
+
+Do not let every program rescan disks.
+
+This is especially relevant to the goal of being lighter than Lubuntu: **one maintained index is cheaper than three clever scanners.**
+
+---
+
+# Eight-agent push for today
+
+I would run **eight agents**, with a ninth only if you have capacity.
+
+The critical principle is that they should own different paths and have explicit integration contracts. Don't send eight agents the prompt "make the distro more complete."
+
+## Agent 0 — Agent-pack/repository truth
+
+**Mission:** make the source given to all other agents complete and self-verifying.
+
+Own:
+
+* agent-pack generation machinery
+* `__AGENT_PACK_REPORT.md` logic
+* new distro-tree verification tests
+* preferably no runtime code
+
+Tasks:
+
+1. Make `.seed` files included.
+2. Include extensionless Debian/distro inputs.
+3. Include `.install`, `.links`, `.dirs`, `.postinst`, `.prerm`, etc.
+4. Include `os-release` and similar data.
+5. Add a test that finds every path referenced by:
+
+   * `compose.sh`;
+   * Debian packaging;
+   * mkosi config;
+   * `include_str!`;
+   * distro metapackages.
+6. Make agent-pack creation fail if a referenced build input would be silently omitted.
+7. Produce an explicit excluded-files manifest.
+
+**Acceptance:**
+
+A fresh agent pack contains all source inputs required to run:
+
+```text
+just check
+just deb-plan
+just image summary
+```
+
+even if the actual networked build cannot occur.
+
+**Merge first.**
+
+---
+
+# Agent 1 — Lean image, seeds and package closure
+
+**Mission:** establish exactly what TemplarOS installs.
+
+Own:
+
+* `distro/seeds/`
+* `distro/metapackages/`
+* `distro/image/`
+* package-closure tooling
+* relevant `xtask` code
+
+Do not own installer or hostd.
+
+Tasks:
+
+1. Divide seeds into explicit layers:
+
+```text
+bootstrap
+hardware
+graphics
+session
+desktop
+browser
+media
+dev-rust
+dev-cuda
+optional-a11y
+optional-ime
+optional-bluetooth
+```
+
+2. Generate `50-seeds.conf`; never check in an independently maintained package list.
+3. Add dependency-closure resolution against Resolute.
+4. Report:
+
+   * direct packages;
+   * transitive packages;
+   * installed size;
+   * recommends;
+   * reason each direct package exists.
+5. Add a `--no-recommends` experiment and identify what functionality it breaks rather than applying it blindly.
+6. Produce a machine-readable supported-set manifest.
+7. Add `templaros-dev-rust`.
+8. Add `templaros-dev-cuda`.
+9. Make optional features genuinely removable instead of baking all of them into `desktop`.
+10. Generate the metapackages from the same declarations.
+
+**Acceptance:**
+
+One command produces:
+
+```text
+TemplarOS package closure
+direct packages: ...
+total packages: ...
+estimated installed size: ...
+missing packages: 0
+duplicate providers: 0
+```
+
+and mkosi consumes exactly that closure.
+
+---
+
+# Agent 2 — Build/archive/reproducibility
+
+Your repo has already implemented much of the earlier WS6 plan. This agent should **finish and consolidate it**, not reinvent it.
+
+Own:
+
+* `crates/lege-build`
+* `tools/xtask`
+* `cli/lege/src/dev/repo.rs`
+* Debian archive/build plumbing
+* `distro/apt/`
+
+Tasks:
+
+1. Reconcile the two version authorities already called out by `OPEN-QUESTIONS.md`:
+
+   * BuildSetId used by `cargo-deb`;
+   * `debian/changelog` used by source builds.
+2. Make one version authority feed both.
+3. Make the local signed archive the canonical personal-machine distribution path.
+4. Retain at least three complete build sets.
+5. Add archive verification:
+
+   * every package has same BuildSetId;
+   * no missing component;
+   * Packages/Release signatures valid;
+   * previous set still satisfiable.
+6. Add a clean disposable Resolute source-build lane.
+7. Record build provenance.
+8. Ensure no package needs the developer checkout at runtime.
+9. Make `just image` capable of using a local snapshot of the overlay.
+
+For your own system, **do not build incoming/proposed/security/release pockets today**.
+
+That is public-distribution machinery.
+
+Local:
+
+```text
+current
+previous
+candidate
+```
+
+is enough.
+
+---
+
+# Agent 3 — Bare-metal provisioning + Secure Boot
+
+**Mission:** get from empty target disk to a bootable Templar installation without writing a general graphical installer.
+
+Own:
+
+* `installer/`
+* production boot configuration
+* new provisioning scripts/library
+* ADR-0004 resolution
+* install tests
+
+Tasks:
+
+1. Resolve ADR-0004 to **shim + GRUB** for TemplarOS 0.1.
+2. Keep systemd-boot for mkosi VM images.
+3. Specify exact partition scheme for your laptop.
+4. Specify Btrfs layout once.
+5. Create a declarative personal-machine provisioning path.
+6. Install Canonical-signed Ubuntu kernel.
+7. Install matching NVIDIA LRM.
+8. Preserve at least one known-good kernel.
+9. Create Templar GRUB entries.
+10. Ensure `legeos.deployment=`/future `templaros.deployment=` is actually carried into boot entries.
+11. Implement recovery-shell documentation/tooling.
+12. Create unattended QEMU installation/provisioning test where feasible.
+
+Do **not** work on:
+
+* Calamares;
+* custom Flutter installer;
+* polished live UI;
+* arbitrary dual boot;
+* OEM;
+* TPM FDE.
+
+**Acceptance on the target machine:**
+
+```text
+Secure Boot: enabled
+shim: trusted
+GRUB: trusted
+kernel: trusted
+NVIDIA module: trusted
+Templar session: boots
+Ubuntu/previous kernel: selectable
+```
+
+Ubuntu's supported Secure Boot chain gives you most of this without becoming your own boot-signing operation. ([Ubuntu Documentation][5])
+
+---
+
+# Agent 4 — NVIDIA/CUDA and reference-hardware qualification
+
+**Mission:** make the RTX 4060 laptop an actual supported target rather than a TOML aspiration.
+
+Own:
+
+* `lege-hwdetect`
+* `tests/hardware/`
+* hardware-specific diagnostics
+* NVIDIA/CUDA package-selection logic
+
+Avoid bootloader code.
+
+Your current hardware profile is already sufficiently narrow.
+
+Tasks:
+
+1. Resolve exact Resolute packages for:
+
+   * current kernel;
+   * `linux-modules-nvidia-580-open-generic`;
+   * NVIDIA userspace;
+   * PRIME;
+   * CUDA toolkit.
+2. Verify package versions are mutually coherent.
+3. Make `lege doctor --hardware` **actually execute** the hardware matrix—the generated state explicitly says this previously didn't happen.
+4. Automate everything that can be automated:
+
+   * `nvidia-smi`;
+   * module version;
+   * Secure Boot module signer;
+   * Vulkan;
+   * PRIME render offload;
+   * CUDA `deviceQuery`;
+   * hardware encode/decode where appropriate.
+5. Record output after suspend/resume.
+6. Test hybrid mode first.
+7. Test discrete.
+8. Test integrated.
+9. Validate HDMI/USB-C paths.
+10. Produce one generated hardware qualification report.
+
+**Acceptance:**
+
+One command answers:
+
+```text
+GPU mode
+kernel
+NVIDIA branch
+module signer
+CUDA runtime/toolkit
+Vulkan devices
+PRIME offload
+external outputs
+boot-health state
+```
+
+Ubuntu 26.04 currently publishes NVIDIA 580 open modules specifically matched to its generic 7.0 kernel, which is why I would exploit that initially rather than manufacture your own coupling. ([Ubuntu Packages][4])
+
+---
+
+# Agent 5 — Hotfix/update/rollback completion
+
+This may give you more practical value than an installer.
+
+Own:
+
+* `cli/lege/src/dev/`
+* `services/lege-hostd`
+* `services/lege-boot-health`
+* `distro/deploy/`
+
+Tasks:
+
+1. Finish `lege dev deploy` so all failures are accurately classified.
+2. Fix the remaining hostd/system-bus installation issue from hands-on run 4 if it is still reproducible.
+3. Add a **Btrfs snapshot-before-system-mutation** safety layer, stealing Omarchy's best low-complexity idea.
+4. Keep package rollback and boot rollback separate conceptually:
+
+   * Templar userspace → package build-set rollback;
+   * boot-critical set → boot deployment rollback.
+5. Test power loss at every hostd transaction stage.
+6. Verify current/previous deployment IDs survive reboot.
+7. Exercise intentionally broken shell.
+8. Exercise intentionally broken session daemon.
+9. Exercise intentionally broken kernel candidate in VM.
+10. Make `templar/lege doctor` explain:
+
+    * installed set;
+    * running set;
+    * rollback set;
+    * current root snapshot;
+    * booted deployment;
+    * known-good deployment.
+
+This is where you can get the "install it and keep developing it while running it" characteristic you originally wanted.
+
+---
+
+# Agent 6 — Shared file-index core
+
+**Mission:** implement Phase 0 + Phase 1 of `shared-incremental-file-index.md`.
+
+Own:
+
+* new `crates/lege-file-index`
+* `lege-filed` index integration
+* Index1 XML/client
+* index cache schema
+
+Avoid monitoring initially.
+
+Tasks:
+
+1. Extract current index from the general state database.
+2. Create:
+
+```text
+$XDG_CACHE_HOME/templaros/file-index-v1.sqlite3
+```
+
+3. WAL.
+4. Serialized writer.
+5. Read connections.
+6. Atomic generations.
+7. Lossless Unix paths.
+8. Native filesystem identity.
+9. Root state/freshness.
+10. Remove 50k truncation.
+11. Add configured storage/I/O budgets instead.
+12. Preserve last committed generation during failed rebuild.
+13. Benchmark FTS5 trigram.
+14. Add paging.
+15. Add Index1.
+16. Keep Search1 compatibility.
+17. Add bulk snapshot framing suitable for Silvaview.
+18. Add CLI:
+
+```text
+templar files index status
+templar files search
+templar files index reconcile
+```
+
+**Acceptance:**
+
+* 2 million fixture entries accepted.
+* daemon restart does not scan before returning existing results.
+* old generation survives killed rebuild.
+* p95 100-result name query target ≈50 ms.
+* non-UTF-8 paths round-trip.
+
+This is substantial enough to occupy a strong agent by itself.
+
+---
+
+# Agent 7 — Incremental index maintenance
+
+This one can work in parallel if Agent 6 defines the backend traits first.
+
+Own:
+
+* new monitoring modules under `lege-file-index`/`lege-filed`
+* monitoring fixtures
+* watcher/reconciliation tests
+
+Do not change query/schema contracts independently.
+
+Tasks:
+
+1. inotify backend.
+2. fanotify feasibility/backend if justified.
+3. watcher normalization.
+4. 250–1000 ms coalescing.
+5. mutation integration.
+6. overflow detection.
+7. rename ambiguity.
+8. mount disappearance.
+9. offline removable drives.
+10. daemon-downtime reconciliation.
+11. stale state propagation.
+12. watcher exhaustion diagnostics.
+
+The important invariant is not "never rescan."
+
+It is:
+
+> **never synchronously rescan merely because a consumer opened.**
+
+Reconciliation can happen cheaply in the background.
+
+**Acceptance:**
+
+Create/move/rename/delete appears in search within 2 seconds, and forced `IN_Q_OVERFLOW` produces:
+
+```text
+current → stale → reconciling → current
+```
+
+rather than pretending nothing went wrong.
+
+---
+
+# Agent 8 — Daily-driver completeness, not Home
+
+This is the agent I'd use if you can afford eight.
+
+Own the boring desktop integration that determines whether you can actually stay in TemplarOS all day.
+
+Focus on:
+
+* portals;
+* browser;
+* media;
+* power;
+* removable media;
+* secret storage;
+* sane MIME handling.
+
+Tasks in priority order:
+
+1. browser download.
+2. browser upload/FileChooser.
+3. opening URLs externally.
+4. opening downloaded files.
+5. Flatpak portal behavior.
+6. clipboard.
+7. video/audio playback.
+8. hardware video decode.
+9. suspend/resume.
+10. brightness/audio keys.
+11. removable disk mount/eject.
+12. password/keyring integration.
+13. terminal.
+14. SSH keys.
+15. camera/microphone permissions only if actually needed.
+
+Do not add:
+
+* office suite;
+* graphical software store;
+* printer setup;
+* calendar;
+* mail;
+* desktop toys.
+
+The test is simple:
+
+> **Could you develop Rust for eight hours in TemplarOS without logging back into Ubuntu?**
+
+---
+
+# How these agents should coordinate
+
+Do **not** let all of them merge continuously into each other's branches.
+
+Use this dependency graph:
+
+```text
+                ┌── Agent 1: seeds/image ──────┐
+Agent 0 ────────┤                               ├── integration
+pack truth       ├── Agent 2: archive/build ────┤
+                │                               │
+                ├── Agent 3: install/boot ─────┤
+                │          ↑                    │
+                ├── Agent 4: NVIDIA/CUDA ──────┤
+                │          ↑                    │
+                └── Agent 5: rollback ──────────┘
+
+Agent 6: Index core ───────→ Agent 7: watchers
+
+Agent 8: daily-driver integration
+```
+
+Agent 0 merges first.
+
+Agents 1/2/3/4/5 then proceed in parallel.
+
+Agent 6 should commit its public index types early so Agent 7 can target them.
+
+Agent 8 stays mostly independent.
+
+---
+
+# What I would expect to get done **today**
+
+With good agents, I would not attempt "the distro" today.
+
+I would aim for these concrete results:
+
+### By the end of today's push
+
+**Distribution**
+
+* complete distro-aware agent packs;
+* adopted personal-system 0.1 scope;
+* ADR-0004 resolved to GRUB/shim;
+* custom kernel removed from 0.1 critical path;
+* package seeds reorganized;
+* generated closure report;
+* Rust/CUDA development metapackages;
+* one version authority for local packages;
+* local signed archive path verified;
+* mkosi image gets substantially closer to actually building;
+* target-machine provisioning design becomes executable rather than prose.
+
+**Hardware**
+
+* exact RTX 4060/NVIDIA/CUDA package set;
+* hardware tests actually runnable through `doctor`;
+* CUDA/Vulkan/nvidia-smi automation;
+* Secure Boot diagnostics.
+
+**Update/recovery**
+
+* `lege dev deploy` hardened;
+* Btrfs pre-mutation snapshot path;
+* clearer boot deployment state;
+* reproducible rollback test.
+
+**Index**
+
+* `lege-file-index` crate skeleton;
+* cache DB;
+* generations;
+* uncapped durable scan;
+* Search1 compatibility;
+* Index1 contract;
+* watcher abstraction/fixtures possibly in parallel.
+
+That would be a very productive day.
+
+---
+
+# Then the one-month roadmap
+
+## Week 1 — The system is buildable
+
+Goal:
+
+> TemplarOS exists as a reproducible package/image definition.
+
+Deliver:
+
+* seeds;
+* closure;
+* overlay;
+* metapackages;
+* dev tooling;
+* CUDA;
+* mkosi;
+* GRUB decision;
+* personal install specification;
+* QEMU boot.
+
+At the end of this week, stop counting architecture documents and start counting **booted artifacts**.
+
+---
+
+## Week 2 — The system installs on your machine
+
+Goal:
+
+> wipe/spare disk → TemplarOS → session.
+
+Deliver:
+
+* Btrfs target layout;
+* provisioning;
+* Secure Boot;
+* Ubuntu kernel;
+* NVIDIA;
+* CUDA;
+* network;
+* audio;
+* browser;
+* portal;
+* Files;
+* terminal;
+* suspend;
+* external displays.
+
+Use an alternate disk if possible during this phase.
+
+---
+
+## Week 3 — The system survives development
+
+Goal:
+
+> use TemplarOS to develop TemplarOS.
+
+Deliver:
+
+* reliable `templar dev deploy`;
+* package rollback;
+* root snapshots;
+* boot rollback;
+* build identity;
+* interface/schema gates;
+* current/previous builds;
+* filesystem index running continuously;
+* zero repeated drive scans.
+
+At this point I would begin using it as the main development environment.
+
+---
+
+## Week 4 — Make it boring
+
+This is important.
+
+Do **not** spend week 4 adding clever features.
+
+Spend it trying to make yourself forget you're using your own distro.
+
+Fix:
+
+* suspend failures;
+* browser quirks;
+* DPI;
+* file chooser;
+* clipboard;
+* USB devices;
+* sound switching;
+* GPU mode;
+* terminal launching;
+* MIME opening;
+* low disk;
+* broken package transaction;
+* boot failure;
+* index corruption;
+* stale file index;
+* external monitor;
+* shutdown;
+* firmware;
+* update from an old build.
+
+At the end, rebuild it onto a blank disk from nothing.
+
+If the result reproduces your existing environment, **0.1 exists**.
+
+---
+
+# A useful definition of 0.1 success
+
+I would put this in the repo:
+
+> TemplarOS 0.1 is complete when the reference Intel/RTX 4060 system can be recreated from declared Ubuntu 26.04 inputs and the TemplarOS repository, boot with Secure Boot enabled, run the TemplarOS session, compile the TemplarOS workspace and CUDA programs, browse the web, play common media, search indexed local/removable files, update TemplarOS packages transactionally, roll back one bad userspace build, retain one known-good boot path, and complete a normal workday without requiring another desktop environment.
+
+Notice what isn't in that definition:
+
+* public ISO;
+* arbitrary computer;
+* security advisory team;
+* kernel 7.2;
+* mirrors;
+* OEM installer;
+* five-year support;
+* public crash reporting;
+* ARM;
+* graphical app store.
+
+That's why it is achievable.
+
+---
+
+# How much code should this take?
+
+This is where I'd push back on your **100k–400k lines in a month** estimate.
+
+You may be capable of generating that much with agents.
+
+I don't think you should.
+
+The pack already has about **133k lines of Rust**. If "turn this into a personal distro" adds another 300,000 lines of custom Rust, something has probably gone wrong.
+
+A good Ubuntu derivative should contain surprisingly little distribution-specific code.
+
+A productive month might add something more like:
+
+| Work                          | Rough new code/config/tests |
+| ----------------------------- | --------------------------: |
+| image/archive/package tooling |                       5–15k |
+| provisioning/install          |                       3–10k |
+| deployment/recovery hardening |                       5–15k |
+| hardware diagnostics          |                        2–8k |
+| shared index core             |                      10–25k |
+| monitoring/reconciliation     |                       5–15k |
+| daily-driver fixes            |                       5–15k |
+| tests/fixtures                |                      10–30k |
+
+So perhaps **40–100k high-value new lines**, including extensive tests.
+
+More importantly, thousands of lines should disappear as provisional implementations are consolidated.
+
+For this project:
+
+> **negative LOC is often progress.**
+
+One index replacing three scanners is progress.
+
+One system action manifest replacing three menus is progress.
+
+Ubuntu's boot chain replacing custom Secure Boot infrastructure is progress.
+
+A 500-line provisioner replacing a 20,000-line installer is progress.
+
+---
+
+# What spending years on it would buy you
+
+There *is* a legitimate long-term payoff, but it changes in character.
+
+The first month buys you **a product for yourself**.
+
+Another six months could buy you **a distinctive operating system**.
+
+Several years could buy you **a distribution platform**.
+
+## After several months
+
+You could reasonably own:
+
+* polished live ISO;
+* Subiquity integration;
+* clean source builds;
+* public signed overlay;
+* reproducible images;
+* robust installer;
+* actual deployment rollback;
+* custom 7.x kernel lane;
+* independent NVIDIA module builds;
+* polished shared file index;
+* FSearch remote frontend;
+* Silvaview integration;
+* sophisticated memory/resource management;
+* comprehensive hardware diagnostics;
+* stronger app identity;
+* system-wide semantic project integration.
+
+At that point TemplarOS starts having meaningful platform technology Ubuntu/Lubuntu don't have.
+
+## After several years
+
+The value would not mainly be "lighter Ubuntu."
+
+You could own a coherent alternative desktop platform where:
+
+* application identity is reliable;
+* apps are treated as supervised systemd objects;
+* resource control is systemic;
+* file indexing is shared infrastructure;
+* projects are first-class;
+* Home is an information/work surface rather than a wallpaper;
+* file operations are journalled;
+* application associations are centrally coherent;
+* system actions are declared once;
+* OS updates are transactional;
+* kernel/driver sets are qualified;
+* every relevant state is visible through one CLI;
+* system components have explicit activation/rollback semantics.
+
+That is genuinely interesting OS engineering.
+
+And eventually the Ubuntu base becomes almost incidental: TemplarOS's defining intellectual property lives in the integration layer above it.
+
+---
+
+# TempleOS homage
+
+I would keep this deliberately separate from the distro critical path.
+
+The name **TemplarOS** is actually useful here because it gives you permission to make the project visually and culturally distinctive without pretending its architecture resembles TempleOS.
+
+I would establish:
+
+```text
+apps/temple/
+    README.md
+    common/
+    games/
+    demos/
+    tools/
+```
+
+and have one long-term rule:
+
+> Port ideas, not dependencies.
+
+Translate Terry's small games/utilities into ordinary safe Rust applications using your own toolkit/interfaces. Don't create a HolyC runtime inside the OS merely for authenticity.
+
+Some of these could become excellent system demos:
+
+* a tiny graphics game demonstrating your renderer;
+* a procedural sound app demonstrating PipeWire;
+* a simple file/graphics utility;
+* a TempleOS-inspired terminal/demo surface;
+* system information tools with the deliberately primitive visual aesthetic.
+
+I'd also keep the homage visibly an homage, rather than implying compatibility or lineage.
+
+But I would assign **zero core distro agents to this today**.
+
+First make the machine boot.
+
+---
+
+# The biggest scope cuts
+
+If you want the simple answer to **"How do I make this good without spending years?"**, these are the decisions that matter most:
+
+1. **Target exactly your laptop.**
+2. **Stay an Ubuntu binary derivative.**
+3. **Use Ubuntu's kernel initially.**
+4. **Use Ubuntu's NVIDIA LRM.**
+5. **Use Ubuntu's CUDA packages.**
+6. **Use Canonical shim + GRUB for Secure Boot.**
+7. **Don't build a graphical installer yet.**
+8. **Don't create a public build/archive/security operation.**
+9. **Use the already-built local signed BuildSet deployment mechanism.**
+10. **Use Btrfs as a cheap safety net.**
+11. **Finish the shared file index because it actually differentiates the OS.**
+12. **Make browser, terminal, media, files, GPU and suspend flawless before adding general-purpose desktop software.**
+13. **Measure lightness by idle work and responsiveness, not package count.**
+14. **Delete duplicated infrastructure whenever Ubuntu already does it adequately.**
+15. **Do not equate agent-generated LOC with progress.**
+
+Under those constraints, **I think one month to a genuinely usable personal TemplarOS is plausible**.
+
+Not "Ubuntu competitor 1.0."
+
+Not "supportable distro for strangers."
+
+But something stronger than a themed desktop session: an independently composed, installable, recoverable Ubuntu-derived developer OS that you can actually use to build itself.
+
+And that is the right intermediate milestone.
+
+[1]: https://packages.ubuntu.com/cuda-toolkit?utm_source=chatgpt.com "Ubuntu – Package Search Results -- cuda-toolkit"
+[2]: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html?pStoreID=contenttest&utm_source=chatgpt.com "CUDA Installation Guide for Linux — Installation Guide for Linux 13.3 documentation"
+[3]: https://kernel.org/?utm_source=chatgpt.com "The Linux Kernel Archives"
+[4]: https://packages.ubuntu.com/en/linux-modules-nvidia-580-open-generic?utm_source=chatgpt.com "Ubuntu – Package Search Results -- linux-modules-nvidia-580-open-generic"
+[5]: https://documentation.ubuntu.com/security/docs/security-features/platform-protections/secure-boot/?utm_source=chatgpt.com "UEFI Secure Boot - Ubuntu security documentation"
+[6]: https://www.cdimage.ubuntu.com/cdimage/lubuntu/releases/26.04/release/?utm_source=chatgpt.com "Lubuntu 26.04.1 LTS (Resolute Raccoon)"

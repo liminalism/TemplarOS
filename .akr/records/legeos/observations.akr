@@ -193,6 +193,21 @@ record legeos.observation.fanotify-cannot-span-btrfs-subvolumes/1 : observation 
     watches [ "crates/lege-fanotify/**", "distro/deploy/layout.toml" ]
 }
 
+record legeos.observation.fresh-store-wal-switch-races-without-a-busy-handler/1 : observation {
+    title "Two daemons opening one fresh session.db still raced, at the WAL switch: SQLite skips the busy handler for a journal-mode change while another connection holds a shared lock"
+    state verified
+    scope [ path "crates/lege-state/**" ]
+    statement """
+        lege-state's race test (a_fresh_store_survives_several_daemons_opening_it_at_once) failed 5 of 5 runs on 2026-09-07 with 'switching to WAL: database is locked', having passed in an earlier gate the same day. The earlier fix (a838247) made the migration transaction IMMEDIATE and installed a 5 s busy timeout, but the timeout was set after the journal_mode=WAL pragma, and moving it first did not help either: SQLite returns SQLITE_BUSY at once, without invoking the busy handler, when a connection needs the exclusive lock a journal-mode change takes while another connection holds a shared lock on the same file. lege-state now retries the WAL pragma while the database reports busy or locked, for up to five seconds, and every step of open() carries a context string; the test then passed 10 of 10 runs.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    method command
+    watches [ "crates/lege-state/src/lib.rs" ]
+    derived_from [
+        @legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrations
+    ]
+}
+
 record legeos.observation.hands-on-run-20260831-findings/1 : observation {
     title "Hands-on run after logout/login: usable but rough — placement, inert tiling menu, no tile drag, widget sprawl, label noise, no drive route"
     state verified
@@ -447,6 +462,20 @@ record legeos.observation.reconciliation-cost-tracks-tree-size-not-change-size/2
     ]
     derived_from [ @legeos.work.adaptive-index-maintenance ]
     supersedes [ @legeos.observation.reconciliation-cost-tracks-tree-size-not-change-size/1 ]
+}
+
+record legeos.observation.release-debs-ship-unstripped-line-tables/1 : observation {
+    title "Every shipped binary carries its line tables: the debs are ~5x their stripped size, deliberately, and the ISO will inherit that"
+    state verified
+    scope [ path "Cargo.toml", path "distro/iso/**", path "distro/metapackages/**" ]
+    statement """
+        `[profile.release]` sets `debug = "line-tables-only"` (Cargo.toml:139, present since the initial commit) so a panic backtrace off a real desktop names file:line rather than a hex address. `cargo deb` is told neither to strip nor to split symbols, so the byte-identical unstripped binary goes into the package: lege-hostd is 22.7 MB shipped against 4.5 MB stripped, and every deb in the set carries the same multiple. This is the accepted trade for the developer edition, not an oversight — the point is that a live ISO built from this archive will be several hundred MB larger than the same set stripped, and that is the expected size, not a fault to chase. Turning it off later is `separate-debug-symbols = true` under each `[package.metadata.deb]` (thirteen one-line additions), which keeps the line tables in a sidecar and ships the stripped binary; do that when medium size starts to matter, and expect the ISO to shrink sharply.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    method command
+    watches [ "Cargo.toml", "*/*/Cargo.toml", "distro/iso/**" ]
+    blocks [ @legeos.work.self-hosting-legeos ]
+    derived_from [ @legeos.decision.debian-packaging ]
 }
 
 record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {

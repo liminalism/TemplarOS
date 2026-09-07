@@ -1,0 +1,178 @@
+
+That's a lot of duplicated scanning eliminated.
+
+But battery, network, GPU, process and memory services don't belong in it.
+
+---
+
+# There's another useful optimization: derived state should have one owner
+
+This generalizes the index idea.
+
+If three programs care about disk free space, don't let all three run:
+
+```text
+statvfs()
+```
+
+every second.
+
+Have the storage owner maintain that state and signal meaningful changes.
+
+Likewise:
+
+```text
+NetworkManager → network truth
+UPower         → battery truth
+PipeWire       → audio device truth
+lege-filed     → filesystem truth
+resourced      → workload/resource truth
+sessiond       → application/session truth
+```
+
+Then consumers don't repeatedly rediscover facts.
+
+This is probably the deeper architectural insight you're reaching:
+
+> **Every piece of derived system state should have one authoritative owner, and all other components should consume its state/events rather than independently measuring the same thing.**
+
+That can materially reduce background work.
+
+---
+
+# I would actually codify this as a TemplarOS design rule
+
+Something along these lines:
+
+### TemplarOS Event-Driven Service Policy
+
+1. **No periodic polling of local state when an event-capable authoritative source exists.**
+2. **Each system state domain has one preferred authority.**
+3. **Consumers query authorities rather than independently rediscovering state.**
+4. **Services should be socket-, D-Bus-, device-, filesystem-, or event-activated where practical.**
+5. **Services that do not need persistent in-memory state should terminate when idle.**
+6. **File namespace/metadata consumers use the shared storage index, never independent crawlers.**
+7. **Resource reactions use kernel threshold events such as PSI rather than high-frequency sampling where possible.**
+8. **Timers are reserved for inherently temporal operations, retry/backoff, and bounded reconciliation.**
+9. **Polling exceptions must document why no trustworthy event mechanism exists.**
+10. **Every persistent daemon must justify why activation-on-demand cannot work.**
+
+That last one is worth emphasizing.
+
+Instead of asking:
+
+> Can we make this daemon lighter?
+
+first ask:
+
+> **Why is this a daemon?**
+
+---
+
+# You could enforce this mechanically
+
+Because you own TemplarOS, this doesn't have to remain a style guide.
+
+Create a service manifest for every Templar component:
+
+```toml
+[service]
+name = "templar-example"
+
+lifetime = "on-demand"
+
+activation = [
+    "dbus:org.templar.Example1"
+]
+
+observes = [
+    "storage-index"
+]
+
+polling = false
+```
+
+For a persistent service:
+
+```toml
+[service]
+name = "lege-filed"
+
+lifetime = "persistent"
+justification = """
+Owns mount, portal and storage-catalog state requiring
+continuous kernel event ownership.
+"""
+```
+
+And for a legitimate timer:
+
+```toml
+[service]
+name = "templar-scrub"
+
+lifetime = "oneshot"
+activation = ["timer:weekly"]
+
+polling = false
+```
+
+Then `xtask`/CI can inspect the installed system for:
+
+* unexpected enabled services;
+* unexpected timers;
+* Templar services without manifests;
+* periodic timers below some threshold;
+* services declared persistent without justification.
+
+You can't reliably statically detect every hand-written `sleep(5)` loop in third-party code, but you can absolutely govern **Templar-owned components and systemd units**.
+
+---
+
+## The architecture I'd aim for
+
+```text
+                     TemplarOS
+                        │
+       ┌────────────────┼─────────────────┐
+       │                │                 │
+   filesystem         devices          network
+       │                │                 │
+ fsnotify/Btrfs        udev            netlink
+       │                │                 │
+       ↓                ↓                 ↓
+ storage catalog    device owner     NetworkManager
+       │                │                 │
+       └────────────┬───┴──────────┬──────┘
+                    │              │
+                   D-Bus / typed APIs
+                    │              │
+        ┌───────────┴──────────────┴──────────┐
+        │                                     │
+ on-demand consumers                  persistent core
+ start only when needed               only when necessary
+        │                                     │
+        └──────────── systemd ────────────────┘
+
+ resources:
+ kernel PSI/cgroups → resourced
+
+ time:
+ systemd timer → oneshot job
+```
+
+The target isn't literally **zero background processes**. Some persistent owners are cheaper and more effective than constantly reconstructing their state.
+
+The target is:
+
+> **Zero redundant observation. Zero periodic local-state polling where events exist. Zero permanently resident service that can safely be activation-driven.**
+
+That is both workable and a better formulation of your original idea.
+
+And it could become one of TemplarOS's more meaningful performance differentiators: not merely shipping fewer applications than Lubuntu, but having an explicit OS-wide model in which **state is observed once and reused**, instead of dozens of components independently waking up to ask the machine what changed.
+
+[1]: https://man7.org/linux/man-pages/man7/fanotify.7.html?utm_source=chatgpt.com "fanotify(7) - Linux manual page"
+[2]: https://dbus.freedesktop.org/doc/dbus-daemon.1.html?utm_source=chatgpt.com "dbus-daemon"
+[3]: https://man7.org/linux/man-pages/man7/rtnetlink.7.html?utm_source=chatgpt.com "rtnetlink(7) - Linux manual page"
+[4]: https://cgit.freedesktop.org/systemd/systemd/tree/src/udev/udevadm-monitor.c?utm_source=chatgpt.com "udevadm-monitor.c « udev « src - systemd/systemd - System and Session Manager"
+[5]: https://cdn.kernel.org/doc/html/latest/accounting/psi.html?utm_source=chatgpt.com "PSI - Pressure Stall Information — The Linux Kernel documentation"

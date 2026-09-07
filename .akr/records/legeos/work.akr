@@ -168,6 +168,66 @@ record legeos.work.application-integration-interim/2 : work {
     supersedes [ @legeos.work.application-integration-interim/1 ]
 }
 
+record legeos.work.bottom-bar-taskbar/1 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state active
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by paint and hit-test: network and clock left, cells centred with the active entry wearing icon+title, park/maximize/close right when the activated window is maximized; hover dwell 400 ms opens a multi-window entry's row, 200 ms grace after leaving closes it; row items activate). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain; a press on empty bar ground re-activates the activated window. Home's information row keeps only the live/parked summary; network and clock moved to the bar. Compositor: shell_surface_placement treats the exclusive zone as a floor on the surface's thickness and adopt_client_size re-places a zone-holding shell surface at its committed size, so the row grows the surface without reflowing windows (lege-shell-v1.xml prose only, no version bump). Dead dock_screen.rs and settings::dock_grouping deleted; dock.rs declared as a module and reused.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). B4's compositor edits need a logout; the bar itself is hot-swappable.
+        """
+    acceptance {
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: the bar is visible over kitty and on Home with network and clock at the left; each open application is one icon, groups first; hovering an application with two windows shows a row above the bar and clicking a row item activates it; a maximized window's park/maximize/close sit at the bar's right and act.
+                """
+            method manual
+        }
+        check taskbar-model {
+            statement """
+                Groups before applications, one entry per application, a single-window application carries the window, grouped windows never double as application entries, order stable under reordering.
+                """
+            method command
+            command "cargo test -p lege-shell taskbar"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check zone-is-a-floor {
+            statement """
+                An exclusive surface thicker than its zone stays edge-anchored and the work area is unchanged.
+                """
+            method command
+            command "cargo test -p lege-window an_exclusive_surface_may_be_thicker_than_its_zone"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.build-set-archive-verification/1 : work {
     title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
     state proposed
@@ -376,41 +436,173 @@ record legeos.work.deployment-rollback-completion/1 : work {
 }
 
 record legeos.work.design-consolidation-roadmap/1 : work {
-    title "Design consolidation roadmap — subtraction, one Files object, federated omnibox, semantic projects, app variants, activation system"
+    title "Integrated design roadmap — Home, Files, perimeter resize, event services and Developer Edition storage"
     state proposed
     scope [
+        path "apps/lege-files/**",
         path "cli/lege/**",
+        path "compositor/lege-comp/**",
         path "crates/lege-appd/**",
         path "crates/lege-associationd/**",
         path "crates/lege-field/**",
+        path "crates/lege-file-index/**",
         path "crates/lege-session-core/**",
         path "crates/lege-state/**",
         path "crates/lege-types/**",
+        path "crates/lege-window/**",
         path "debian/**",
         path "distro/**",
+        path "installer/**",
         path "interfaces/**",
-        path "services/lege-boot-health/**",
-        path "services/lege-hostd/**",
-        path "services/lege-resourced/**",
-        path "services/lege-sessiond/**",
+        path "services/**",
         path "shell/lege-shell/**",
         path "tools/xtask/**"
     ]
     intent """
-        Carry out the six workstreams of the approved 2026-09-01 consolidation plan (plan file: recursive-crunching-boot). WS1 Home presentation subtraction: shape-aware representation floors, the eight drawers collapse into one adaptive Files object, App tiles only when pinned, conditional LIVE/PARKED. WS2 adaptive Files surface and federated omnibox: HomeSurfaceScreen retired, one persistent FilesSurfaceState across every rung, one search control federating apps, projects, files and actions. WS3 chrome reduction and spatial continuity: per-rung chrome replacing the 34px band, expansion animating from the tile's place. WS4 project semantics: Projects1 extended additively (Describe, ListDetailed, Update, current, state, AddLogicalApp), priority_boost replaced by ProjectImportance feeding SetInstanceHints. WS5 logical app and variant identity: AppId is the variant id, LogicalAppId is new, provenance and trust tiers recorded, flatpak import collision fixed via resolve-through-alias, variant-keyed rights with trust gates. WS6 deployment activation and resourced: BuildSetId as the Debian version, runtime build stamps, component matrix, local signed APT repo, lege dev deploy with pre-activation interface/schema gates, boot-health promotion loop closed, and resourced improved behind a trace-replay harness (scaled thresholds, unsaved-work freshness, richer signals, reclaim plans, memory.low fixes, oomd ownership ADR).
+        Execute the reconciled design in seven phases. P0 migrates durable claims and document references into AKR. P1 adds deterministic two-axis resizing from every side half and real diagonal cursor presentation. P2 establishes recoverable state-and-event service contracts and audits authorities, activation and bounded timer exceptions. P3 makes Home persistent project intent, native Files the folder surface, the taskbar the ordinary window selector, and Enter/Launch Tool/Restore distinct provider-backed actions. P4 adds a reviewed, identity-safe provisioning plan with explicit create/reuse/format choices and optional independent data roles. P5 connects that storage backend to the existing live/recovery and Developer Edition lanes. P6 adopts build placement, index checkpoints, richer developer status and presentation refinements only after native Lubuntu measurements justify them.
         """
     note """
-        User decisions 2026-09-01: all six workstreams in full detail; Settings GUI proceeds in parallel; full Home subtraction; full activation tool in the first iteration with Btrfs boot deployments as the later lane. Sequencing: WS1 → WS2 → WS3, then WS4/WS5 (WS5's types precede WS4's consumption), with WS6 parallel throughout. Ordering within WS6: A1 A2 A3 A4 B1 B2 B3 E0 C1 C2 B4 E1 E5 E6 D1 D2 E2 E3 E4 C3.
+        Sequence P0 first. P1 and P2 may then proceed independently. P3 depends on its own authority/subscription contracts, not completion of the entire P2 audit. P4 follows the current D1 package and D2 archive contracts; P5 follows P4 plus current D3/D5 work. Existing Developer Edition, distribution, index, activation and Home evidence remains valid and must not be restarted. The active native Files and bottom-bar decisions override older PCManFM-default, taskbar-free-chrome and automatic-shelf prose. Existing-partition mode currently reformats both ESP and root; ChangesSince uses an event sequence; DRM named cursors currently render as an arrow.
         """
+    acceptance {
+        check document-concordance {
+            statement """
+                The remaining architecture, ADR, protocol, research, measurement, planning and testing documents have an explicit authority/retention classification, and retired root-draft references are migrated.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.legacy-root-doc-migration-20260907/1,
+                @legeos.evidence.remaining-doc-authority-audit-20260907/1
+            ]
+        }
+        check knowledge-migration {
+            statement """
+                Every adopted contract, rejected alternative, deferred experiment and unfinished acceptance gate from the seven root drafts is understandable from AKR without relying on those Markdown files.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.astra-consolidation-advice-20260907/1,
+                @legeos.evidence.legacy-root-doc-migration-20260907/1
+            ]
+        }
+        check native-validation {
+            statement """
+                All implementation phases use native Lubuntu for build, test, packaging, runtime, hardware and deployment evidence; WSL is never cited as LegeOS validation.
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
     derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
-    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    implements [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.home-projects-and-tool-actions,
+        @legeos.decision.perimeter-resize-selects-two-axes-by-side-half,
+        @legeos.decision.representation-ladder-is-the-organizing-principle
+    ]
     part_of [ @legeos.work.home-field ]
     source {
         kind external
         role origin
         document "design-review-home-and-platform-20260901"
+        start_byte 0
+        end_byte 28861
+        start_line 1
+        end_line 579
+        excerpt_hash "sha256:63db09f6fe91f5b42ff5e6ad53665baebc3271a567f94b9a81d33bd6ee92bbcf"
         use """
-            The six workstreams and their sequencing follow the review's 'What I would change first' list, verified and elaborated by three plan agents on 2026-09-01.
+            Preserves the original six-workstream consolidation review.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "full-side-two-axis-window-resizing-first-draft"
+        start_byte 2255
+        end_byte 8357
+        start_line 120
+        end_line 380
+        excerpt_hash "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2"
+        use """
+            Adds P1's deterministic perimeter interaction.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-files-design"
+        start_byte 6138
+        end_byte 12841
+        start_line 230
+        end_line 569
+        excerpt_hash "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa"
+        use """
+            Reconciles Files, Home, taskbar and project action responsibilities.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-filesystem-design"
+        start_byte 0
+        end_byte 9080
+        start_line 1
+        end_line 390
+        excerpt_hash "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413"
+        use """
+            Adds the staged storage and provisioning boundary.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 0
+        end_byte 24693
+        start_line 1
+        end_line 460
+        excerpt_hash "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220"
+        use """
+            Preserves Home geometry, semantic grammar and representation principles.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-polling-services-design"
+        start_byte 0
+        end_byte 19332
+        start_line 1
+        end_line 808
+        excerpt_hash "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb"
+        use """
+            Adds P2's state-and-event authority model.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-distro-agent-plan"
+        start_byte 0
+        end_byte 10767
+        start_line 1
+        end_line 260
+        excerpt_hash "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede"
+        use """
+            Retains the narrow Developer Edition outcome and supported platform direction.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-distro-agent-midplan"
+        start_byte 0
+        end_byte 15293
+        start_line 1
+        end_line 300
+        excerpt_hash "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9"
+        use """
+            Retains producer/consumer lanes, freeze points and evidence discipline.
             """
     }
 }
@@ -762,6 +954,54 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
     implements [ @legeos.decision.session-greeter-lock/2 ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
     supersedes [ @legeos.work.display-manager-session-startup-reliability/3 ]
+}
+
+record legeos.work.event-driven-service-audit/1 : work {
+    title "Inventory service authorities, activation, recovery and bounded polling exceptions"
+    state proposed
+    scope [
+        path "crates/lege-file-index/**",
+        path "distro/**",
+        path "interfaces/**",
+        path "services/**"
+    ]
+    intent """
+        Derive one inventory from existing component and unit metadata where possible; declare each service's authoritative domain, lifetime, activation, typed consumer boundary, reconnect procedure, recovery path, deadlines and justified timer or polling exceptions. Reuse filed's sequence/snapshot model. Investigate PSI threshold wakeups for resourced while retaining bounded sampling during active pressure, the replay harness, governor stages and recovery behavior.
+        """
+    note """
+        P1 perimeter resize and this audit may proceed independently. Removing a timer is not completion unless correctness and pressure recovery remain intact.
+        """
+    acceptance {
+        check file-index-contract {
+            statement """
+                Index consumers synchronize snapshots and sequence-based changes without a read/subscribe gap, handle SnapshotRequired by resnapshotting, and do not open the owner's SQLite store.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+        }
+        check idle-activity {
+            statement """
+                Native Lubuntu measurements show reduced or justified idle wakeups without missed state changes or recovery regressions.
+                """
+            method observation
+        }
+        check resourced-policy {
+            statement """
+                Trace replay covers PSI-triggered wakeup, bounded active-pressure sampling, recovery, deadlines and shutdown without changing governor policy.
+                """
+            method command
+            command "cargo test -p lege-resourced"
+        }
+        check service-inventory {
+            statement """
+                Every owned service has a declared authority, lifetime, activation path, consumer interface, recovery procedure, deadlines and any persistent-daemon or timer exception.
+                """
+            method observation
+        }
+    }
+    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
+    implements [ @legeos.decision.event-driven-service-authorities ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
 record legeos.work.file-index-core/1 : work {
@@ -1177,6 +1417,69 @@ record legeos.work.filed-transactions/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.files-windows-bookmarks-home-objects-20260907/1 : work {
+    title "Home hidden behind translucent windows, Files as its own windows, folder icons and menus with bookmarks, folders added to Home from a Files window"
+    state active
+    scope [
+        path "apps/lege-files/**",
+        path "compositor/lege-comp/src/scene.rs",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "interfaces/dbus/org.legeos.Files.Browse1.xml",
+        path "interfaces/dbus/org.legeos.HomeField1.xml",
+        path "services/lege-filed/**",
+        path "services/lege-sessiond/src/apis/homefield.rs",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        User request (2026-09-07): 'making sure that the homescreen does not bleed through transparent windows like kitty windows. it should only be visible when expressly switching to it with the super key or similar. then the file manager doesnt seem to open instances of its own, they should be their own instances so that they can be alt tabbed to. on the left side of the file manager, there are labels for files or folders, those should be folder icons, justified to the left of the text, not word labels. there should be a right click menu for folders in the file manager for actions like copy, paste, properties (with file size), and bookmark. it should also be possible to remove bookmarks from the left side. i should also be able to drag folders to the home screen and create clickable objects out of them.' Implemented uncommitted: lege-window hides Layer::HomeSurface unless home_revealed and the compositor scene skips invisible windows entirely; the Home Files object, folder tiles and folder rows in the Files widget launch org.legeos.Files through Launcher1 so each folder is a switcher-listed window; the Files app rail draws a folder or drive glyph left of the label; a right-click menu on entries, ground and bookmark rows (Open, Open in new window, Copy, Cut, Paste into folder, Bookmark, Add to Home, Rename, Trash, Properties) with bookmarks persisted by lege-filed (Files.Browse1.SetBookmark, folder_bookmarks table, bookmark: roots) and removable from the rail; folders reach Home through HomeField1.PlaceFolder (lege_field::place_folder_op shared with the shell's folder_tile_id derivation) and the shell adopts tiles other clients placed by watching HomeField1.Changed.
+        """
+    note """
+        Dragging a folder out of a Files window onto Home is served by the 'Add to Home' menu row, not by a cross-client wl_data_device drop: the Files app has no drag source and Home is hidden while a client window has the pointer, which makes a pointer drop onto Home unreachable by design. A drop target in the shell belongs to @legeos.work.wayland-clipboard-and-dnd-transport. Desktop added via PlaceFolder derives folder:<path> while the shell's own Desktop object uses folder:desktop; the shell's merge places Desktop itself, so this only matters if a user adds ~/Desktop by hand.
+        """
+    acceptance {
+        check files-is-a-window {
+            statement """
+                A press on the Home Files object's ground yields FieldAction::Launch(org.legeos.Files) and does not expand the shell into a file manager; the shell-only views still expand in place.
+                """
+            method command
+            command "cargo test -p lege-shell expanding_grows_out_of_the_tile"
+            verified_by [
+                @legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1
+            ]
+        }
+        check gate-green {
+            statement """
+                just check passes: fmt, clippy -D warnings, workspace tests, MSRV, interface/proxy/baseline/action checks, with HomeField1.PlaceFolder and Files.Browse1.SetBookmark frozen as additions.
+                """
+            method command
+            command "just check"
+            verified_by [
+                @legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1
+            ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At the installed desktop: nothing of Home shows through a translucent kitty window; each folder opens its own Alt+Tab-able Files window; the rail shows glyphs left of names; the right-click menu adds and removes bookmarks; Add to Home puts a clickable folder object on Home.
+                """
+            method manual
+        }
+        check home-hidden-unless-revealed {
+            statement """
+                lege-window: a Layer::HomeSurface window is not visible until home_revealed, and visible again once it is; the compositor scene draws no invisible window.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-comp"
+            verified_by [
+                @legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1
+            ]
+        }
+    }
+    derived_from [ @legeos.work.home-navigation-manipulation-20260907 ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.hands-on-run-5-fixes ]
+}
+
 record legeos.work.full-distribution-roadmap/1 : work {
     title "Ubuntu-derived full distribution and latest-stable kernel roadmap"
     state proposed
@@ -1530,6 +1833,61 @@ record legeos.work.hands-on-run-5-fixes/1 : work {
         }
     }
     derived_from [ @legeos.observation.hands-on-run-5-findings-20260904 ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.home-app-drag-and-app-groups/1 : work {
+    title "Lane C — Home: drag an application out of the search results onto the field, and app-on-app makes an app group"
+    state active
+    scope [
+        path "crates/lege-field/**",
+        path "docs/homefield.md",
+        path "shell/lege-shell/src/field_model.rs",
+        path "shell/lege-shell/src/surface/field_screen.rs",
+        path "shell/lege-shell/src/surface/omnibox_screen.rs"
+    ]
+    intent """
+        lege-field: TileKind::AppGroup { group_id } is a container of App tiles (2x2 preferred, 4x4 interior, 6x4 max) created by the existing FieldOp::CreateProject, whose label now reads NEW GROUP FROM THESE for a non-Project container; grammar: App on App is GroupIntoAppGroup (before the GroupIntoNewProject fall-through, which stays for other pairs), App on AppGroup is AddToAppGroup, an AppGroup never groups into a tile; folder_tile shared with the shell; property test Step::GroupApps. Shell: op_for builds the group tile ('Apps', tile_id_for app-group:N); the body is a grid of the members' icons, each a Launch, claimed before the body's zoom click; move_out_op dissolves an AppGroup its last member leaves (Batch[Move, Remove]) from both a drag out and Backspace; the host's Projects1.Create interception is untouched because it matches TileKind::Project only. Drag from results: FieldScreen.pending holds the tile a row stands for (app_tile, or folder_tile for a typed path); result rows become release-clicks (pixelkit registers a click at the press) so a press can arm a drag; the lift closes the dropdown; source_kind and as_new_tile make the ordinary drop path place the pending tile (Move->Place at the landing, CreateProject->Batch[Place, CreateProject]); an already-pinned application drags the tile that is there; Escape or a release inside the list leaves nothing.
+        """
+    note """
+        Requested drag-only; no menu alternative. docs/homefield.md gained the App group term and two grammar rows.
+        """
+    acceptance {
+        check field-grammar {
+            statement """
+                Two applications make an app group and a third joins it; a group never groups into a tile; nothing but an application joins one; the container op inverts exactly under the property test.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                On Home: type an application, drag its row onto the field, a tile appears where it is dropped; drop it on another app tile and an Apps group appears whose icons launch.
+                """
+            method manual
+        }
+        check shell-gestures {
+            statement """
+                Drag from a result row places the tile at the drop cell and launches nothing; press-and-release on a row still launches; Escape leaves no tile; an already-pinned application moves its tile; app-on-app makes an app group titled Apps, not a project; a group icon launches; a third app joins; emptying dissolves.
+                """
+            method command
+            command "cargo test -p lege-shell field_screen"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+    }
+    implements [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.one-persistent-bottom-bar-tags-not-bands
+    ]
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
@@ -2095,6 +2453,35 @@ record legeos.work.home-input-and-refinement/1 : work {
     part_of [ @legeos.work.home-field ]
 }
 
+record legeos.work.home-navigation-manipulation-20260907/1 : work {
+    title "Home and Files interaction refinement from the original Home Field plan"
+    state completed
+    scope [ path "shell/lege-shell/**" ]
+    intent """
+        Refine the existing Home container model: preserve inside clicks in expanded Files; make navigation and selection predictable across list/grid; reserve breadcrumb space; cycle Home focus and cancel pointer manipulation. User requested an uncommitted improvement pass; no deployment or live-session interaction.
+        """
+    acceptance {
+        check lint-and-actions {
+            statement """
+                Shell clippy with warnings denied, formatting, and action-manifest validation pass.
+                """
+            method command
+            command "cargo clippy -p lege-shell --all-targets -- -D warnings; cargo fmt --all -- --check; cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.home-navigation-lint-20260907/1 ]
+        }
+        check shell-regressions {
+            statement """
+                Shell tests cover inside/outside Files clicks, reversible Tab traversal, pointer gesture cancellation, grid selection/context menus, navigation accelerators and focus scrolling.
+                """
+            method command
+            command "cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.home-navigation-tests-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+}
+
 record legeos.work.home-panel-and-dock-layouts/1 : work {
     title "Adjustable Home panels and docks with automatic arrangements for each output shape"
     state completed
@@ -2210,6 +2597,57 @@ record legeos.work.home-project-development-status/1 : work {
     }
     implements [ @legeos.constraint.services-not-indicators ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.home-project-tool-actions/1 : work {
+    title "Add semantic project actions across Home, Projects1 and native Files"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "crates/lege-field/**",
+        path "interfaces/dbus/org.legeos.Projects1.xml",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Make Enter Project, Launch Tool and Restore Workspace distinct actions; add native Files project creation from the selected real directory; resolve Terminal and FileManager through providers; settle an additive CodeEditor role before implementing Editor; and migrate ordinary automatic running-window selection to the taskbar while preserving explicit project/session relationships.
+        """
+    note """
+        Reuse Projects1.SetCurrent for Enter and Projects1.Open for Restore. Do not route selected-directory creation through generic grouping that invents ~/Projects/<id>. Home summaries open full native Files windows instead of embedding a second browser.
+        """
+    acceptance {
+        check enter-restore-separation {
+            statement """
+                Enter changes current project without launching applications, while Restore launches only remembered applications and supported checkpoints.
+                """
+            method command
+            command "cargo test -p lege-sessiond -p lege-shell"
+        }
+        check files-create-project {
+            statement """
+                Native Files creates a project using the selected directory's real root, and project creation remains distinct from pinning it on Home.
+                """
+            method command
+            command "cargo test -p lege-files -p lege-sessiond"
+        }
+        check home-taskbar-migration {
+            statement """
+                A nested session shows stable Home project/folder placement, separate Files windows, ordinary taskbar switching and preserved explicit park/group/restore relationships.
+                """
+            method manual
+        }
+        check provider-scoped-tools {
+            statement """
+                Terminal, FileManager and the accepted CodeEditor role resolve through providers with typed arguments and the project root as working context; missing providers are explicit.
+                """
+            method command
+            command "cargo test -p lege-sessiond -p lege-shell -p lege-files"
+        }
+    }
+    depends_on [ @legeos.work.files-windows-bookmarks-home-objects-20260907/1 ]
+    implements [ @legeos.decision.home-projects-and-tool-actions ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    author "GitHub Uploader"
 }
 
 record legeos.work.home-review-usability-20260905/1 : work {
@@ -2680,6 +3118,66 @@ record legeos.work.project-semantic-service/1 : work {
     part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
+record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
+    title "Implement reviewed per-partition storage plans, preservation and optional data roles"
+    state proposed
+    scope [
+        path "distro/deploy/**",
+        path "installer/**",
+        path "services/lege-filed/**",
+        path "services/lege-sessiond/**",
+        path "tests/**"
+    ]
+    intent """
+        Extend the canonical layout and narrow Developer Edition provisioner with stable device/filesystem identity, explicit create/reuse/format choices, optional independent data roles, per-filesystem indexing policy and a reviewed operation plan shared by dry-run and apply. Coordinate any label-to-UUID/PARTUUID migration across fstab, boot entries, deployment activation and rollback. Reuse the existing live/recovery image and deployment owner after backend acceptance.
+        """
+    note """
+        Existing --esp/--root mode is destructive formatting, not preservation. GParted and a guided two-drive UI follow backend acceptance. Central build placement, NOCOW and active index checkpoints remain measured opt-ins.
+        """
+    acceptance {
+        check boot-deployment-identity {
+            statement """
+                Provisioner, fstab, boot-entry, activation and rollback agree on stable installation and deployment identities, including fixtures with duplicate filesystem labels.
+                """
+            method command
+            command "just provision-test"
+        }
+        check data-index-boundaries {
+            statement """
+                Independent data roots report correct freshness, search visibility, acquisition coverage and accounting scope without treating index checkpoints as user content or backup.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+        }
+        check live-recovery {
+            statement """
+                The same live medium installs and recovers a disposable installation through the existing deployment owner; hardware and Secure Boot remain user-run gates.
+                """
+            method manual
+        }
+        check operation-plan-identity {
+            statement """
+                Dry-run and apply consume one operation sequence; apply refuses topology, identity or mounted-state drift and reports the exact create/reuse/format actions.
+                """
+            method command
+            command "just provision-test"
+        }
+        check partition-preservation {
+            statement """
+                Disposable fixtures prove preservation does not rewrite type codes or format ESP/root/data unless requested, while explicit formatting produces the declared layout.
+                """
+            method observation
+        }
+    }
+    depends_on [
+        @legeos.constraint.native-lubuntu-is-the-development-environment/1,
+        @legeos.work.reference-machine-provisioning/1
+    ]
+    implements [ @legeos.decision.independent-storage-roles ]
+    part_of [ @legeos.milestone.developer-edition-0-1/1 ]
+    author "GitHub Uploader"
+}
+
 record legeos.work.reference-hardware-qualification/1 : work {
     title "D4 — lege doctor --hardware executes bounded read-only probes and emits one qualification report with four outcomes"
     state proposed
@@ -2792,40 +3290,53 @@ record legeos.work.reference-machine-provisioning/1 : work {
 }
 
 record legeos.work.representation-chrome-and-continuity/1 : work {
-    title "WS3 — per-rung chrome and spatially continuous expansion"
+    title "WS3 — Home representation controls and spatially continuous expansion"
     state proposed
-    scope [ path "shell/lege-shell/**" ]
+    scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
     intent """
-        Shell phases 5-6. Phase 5: retire the unconditional 34px GRAB_BAND_HEIGHT; add HEADING_HEIGHT=30, EDGE_GRAB_HEIGHT=10, REVEAL_HEIGHT=20; FieldScreen::band becomes grab_strip(doc, id, rect, ui) consulting representation_of so painting and hit-testing share one function — Micro/Small get a 10px grabbable edge not reserved from content with a hover-or-focus reveal strip carrying the manipulation controls and the title drawn inside the body (identity always visible, only manipulation revealed); Wide and above keep a 30px heading. Phase 6: Expansion { from, started_ms, collapsing } with EXPAND_MS=140 eased, reduced_motion forcing zero duration; the Files body draws into the interpolated rect under clip with the rung ladder itself providing the cross-fade; collapse targets the Files tile's rect recomputed per frame.
+        Complete manipulation controls for current Home representations without reviving the retired title band or visible compositor resize grip. Micro and Small tiles keep identity in the body and reveal compact Home manipulation controls on hover or keyboard focus; Wide and larger representations may use a persistent heading when their content contract requires it. Expansion animates from the tile's current rect and collapse recomputes that target each frame, with the representation ladder supplying the content transition and reduced-motion removing intermediate frames.
         """
     note """
-        Re-baseline --render at the end of phases 5 and 6 only, never mid-phase, so every baseline diff has one explanation.
+        This is shell-tile chrome inside Home. The persistent compositor bottom tags and exterior resize perimeter are governed separately. Re-baseline headless renders only after a coherent representation phase.
         """
     acceptance {
         check expansion-interpolation {
             statement """
-                Expansion interpolation is monotone, terminates, equals the tile rect at t=0 and the full area at t=1, and reduced_motion yields no intermediate frames.
+                Expansion interpolation is monotone, terminates, equals the current tile rect at t=0 and the full area at t=1, collapse follows reflowed tile position, and reduced_motion yields no intermediate frames.
                 """
             method command
             command "cargo test -p lege-shell"
         }
-        check grip-overlap-all-rungs {
+        check hands-on-chrome {
             statement """
-                the_grip_never_overlaps_the_move_band holds at every representation rung, including a 1x1 App tile.
+                In a nested session, compact Home tiles reveal usable manipulation controls, larger representations remain calm, and expansion visibly grows from and collapses back to the tile's current place.
+                """
+            method manual
+        }
+        check representation-controls {
+            statement """
+                Every representation keeps identity visible, exposes manipulation to pointer and keyboard without covering required content, and shares painting and hit-testing geometry.
                 """
             method command
             command "cargo test -p lege-shell field_screen"
-        }
-        check hands-on-chrome {
-            statement """
-                In a nested session, small tiles show content with no permanent band, hover and keyboard focus both reveal manipulation controls, and expansion visibly grows from and collapses back to the tile's place.
-                """
-            method manual
         }
     }
     depends_on [ @legeos.work.adaptive-files-and-omnibox ]
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 14150
+        end_byte 23844
+        start_line 238
+        end_line 435
+        excerpt_hash "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099"
+        use """
+            Retains representation ladders, stable bounded geometry, local reflow and restrained visual identity.
+            """
+    }
 }
 
 record legeos.work.reversible-window-arrangement-presets/1 : work {
@@ -3566,4 +4077,98 @@ record legeos.work.window-groups-protocol/1 : work {
     depends_on [ @legeos.work.window-groups-model ]
     implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
     part_of [ @legeos.work.window-groups ]
+}
+
+record legeos.work.window-perimeter-two-axis-resize/1 : work {
+    title "Implement full-side two-axis perimeter resize and diagonal cursor presentation"
+    state proposed
+    scope [ path "compositor/lege-comp/**", path "crates/lege-window/**" ]
+    intent """
+        Replace the remaining corner-threshold selector with deterministic side-half two-axis selection, carry the latched edge pair through compositor input, render the matching diagonal cursor in nested and DRM backends, and preserve conventional client-protocol resize behavior.
+        """
+    note """
+        This extends the current tag-era exterior margin. It does not repeat the already completed grip removal or change the current numerical minimum size.
+        """
+    acceptance {
+        check cursor-backends {
+            statement """
+                Nested and DRM cursor paths render the intended diagonal during each compositor gesture and restore client cursor ownership afterward.
+                """
+            method observation
+        }
+        check eight-side-halves {
+            statement """
+                Geometry coverage proves all eight side halves, exact midpoint ownership, very small windows, negative coordinates and scaled outputs select the intended edge pair.
+                """
+            method command
+            command "cargo test -p lege-window"
+        }
+        check latched-origin-resize {
+            statement """
+                Drag coverage proves edges latch at press, opposite edges remain anchored, minimum clamping does not invert, and client-requested single-axis edges retain their protocol meaning.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-comp"
+        }
+        check nested-perimeter-gesture {
+            statement """
+                A nested session demonstrates two-axis resize from every side half, correct cursor feedback, covered-window precedence, screen-boundary recovery and maximized/fullscreen exclusions.
+                """
+            method manual
+        }
+    }
+    depends_on [ @legeos.work.window-tags-replace-the-band/1 ]
+    implements [ @legeos.decision.perimeter-resize-selects-two-axes-by-side-half ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    author "GitHub Uploader"
+}
+
+record legeos.work.window-tags-replace-the-band/1 : work {
+    title "Lane A — compositor: bottom tags replace the title band, the corner grip goes, a maximized window under the bar has no frame"
+    state active
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**"
+    ]
+    intent """
+        lege-window: RECOVERY_BAND_HEIGHT becomes TAG_HEIGHT and recovery_band becomes tag_strip, the full-width strip at a window's bottom edge; client_area/frame_around keep the origin and differ by one strip height; repair_window clamps so the bottom strip stays on an output (a tall window hangs off the top); move_into_view sets a too-tall window flush with the bottom edge; resize_grip and RESIZE_GRIP_SIZE are deleted and MIN_WINDOW_HEIGHT is two tag heights; Output::reserves_bottom derives 'a bar holds this edge' from the usable area; WindowService::has_frame is false for fullscreen and for a maximized window on an output that reserves its bottom, so the shell's bar carries those controls and the compositor draws the tags again when no zone is claimed. Compositor chrome: layout::control_tags/control_tag_at (the former band_buttons, verbatim) and layout::name_tag (left end, up to TAG_GAP before the first control, capped at NAME_TAG_MAX_WIDTH); collect_name_tag and collect_control_tags replace collect_band and collect_grip and bail when !has_frame. Input: Affordance::Tag replaces Band, Grip is gone, the gap between the tags falls through to the window beneath, edges and corners resize as before. window_groups::tag_drop_target hit-tests the name tag only. COMPOSITOR.md's band rows describe tags. Also: on_outputs_changed's repairs now configure every repaired window through space_sync::apply_resized_geometry, not X11 alone, so a maximized Wayland client is re-sent its size when the bar appears.
+        """
+    note """
+        Needs a logout to take effect (lege-comp is Restart=no). Accepted: windows flush with the bottom jump up by the bar height when the bar first appears; XWayland self-placed windows grow downward; group outlines enclose the strip.
+        """
+    acceptance {
+        check chrome-and-input {
+            statement """
+                A name-tag press moves and focuses, a control-tag press acts, a press in the gap falls through to the window beneath, a frameless window offers no tags, hidden windows draw nothing.
+                """
+            method command
+            command "cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes with the compositor change.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check geometry-and-service {
+            statement """
+                tag_strip is the bottom strip; client_area sits above it and frame_around inverts it; repair keeps the strip on an output; has_frame is false for a maximized window only while a bottom zone is claimed; every corner resizes.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                After logout: a sized kitty shows its name tag bottom-left and park/maximize/close bottom-right, moves by the name tag, resizes from every edge and corner; a maximized kitty shows no tags while the bar is up and shows them when the shell is killed.
+                """
+            method manual
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
 }

@@ -1,0 +1,460 @@
+# Overall judgment
+
+The idea has a coherent philosophical center. The valuable part is not simply **tiles with momentum**. It is replacing the desktop as passive decoration and accidental file storage with a **spatial representation of active work**.
+
+It becomes meaningfully better than Windows 8 when three rules hold:
+
+1. **The launcher is inventory; the home screen is working memory.**
+   The application library contains everything installed. The home surface contains only what matters now: active projects, parked sessions, useful collections, and a few live instruments.
+
+2. **Throwing changes an explicit relationship, not merely coordinates.**
+   A file thrown into a project becomes part of that working set. A running window thrown there becomes a parked project session. A calendar thrown there becomes scoped to that project. The gesture is spatial, but the result is semantic.
+
+3. **Placement remains stable and reflow remains local.**
+   Nothing should cause the entire screen to rearrange itself. That would destroy the spatial memory that makes this approach useful.
+
+The strongest framing is:
+
+> **A tile is a persistent representation of an object, collection, application, or session. A window is the expanded state of certain tiles. Throwing changes where the object belongs or what it is connected to.**
+
+That is substantially more interesting than Windows 8.
+
+---
+
+# The home screen should be a field, not another launcher
+
+Windows 8’s useful idea was that applications could have variable-size, live representations. Its basic limitation was that the Start screen still amounted primarily to a full-screen application launcher. The tiles contained information, but they did not form meaningful working relationships with each other.
+
+Your home screen should instead answer:
+
+* What am I currently working on?
+* Which files, applications, and sessions belong together?
+* What is waiting for my attention?
+* What can be resumed immediately?
+* Which system resources matter right now?
+
+It should **not** answer “what software is installed?” Search and the application library already answer that better.
+
+A good term for the surface would be something like **Home Field**. The terminology could remain simple:
+
+| Object      | Meaning                                                          |
+| ----------- | ---------------------------------------------------------------- |
+| **Tile**    | A visual representation of one object or live state              |
+| **Tray**    | A non-destructive collection of references                       |
+| **Project** | A container for files, tools, sessions, and scoped widgets       |
+| **App group** | A container of application shortcuts, shown as a grid of icons |
+| **Shelf**   | A visible place for collapsed or temporarily stashed tiles       |
+| **Window**  | The expanded interactive state of an application or session tile |
+
+A tray must not be confused with a filesystem folder. Throwing a document into a tray should add a reference, not silently move the underlying file. A real folder tile can still represent an actual filesystem directory, but its operation needs to be visibly different.
+
+---
+
+# The most compelling extension: replace minimization with collapse
+
+The home screen becomes much more than a decorative surface when windows participate in it.
+
+Instead of minimizing a window into an obscure taskbar state:
+
+```text
+Dormant app tile
+       │ launch
+       ▼
+Application window
+       │ collapse / park
+       ▼
+Live session tile
+       │ restore
+       ▼
+Application window
+```
+
+A parked window tile could contain:
+
+* A current or recent preview.
+* The application icon and canonical identity.
+* The document or project name.
+* A count of additional windows.
+* Resource usage or suspended status.
+* Unsaved-state status when the application reports it.
+
+This would directly address one of your broader objections to existing desktops: windows would no longer “disappear.” They would collapse into visible objects on the field.
+
+Your existing COSMIC dock work already points in this direction. It supports both application grouping and one-preview-per-window presentation, including screencopy previews with application badges.  The Home Field could take that model out of the narrow dock and make it part of the session lifecycle.
+
+A grouped application tile might show:
+
+```text
+┌─────────────────────────┐
+│ WATERFOX              6 │
+│                         │
+│  [current-page preview] │
+│                         │
+│  6 windows · 23 tabs    │
+└─────────────────────────┘
+```
+
+Selecting it could expand its individual windows. Throwing one of those window previews into a project would park that specific session there.
+
+---
+
+# A plausible visual form
+
+A default home field should not be fully packed with every application. It might look more like this:
+
+```text
+┌────────────────────────────── HOME FIELD ──────────────────────────────┐
+│                                                                        │
+│ ┌─ PROJECT · JPEG XL ──────────────────────────┐ ┌─ CALENDAR ───────┐ │
+│ │                                              │ │ FRI 21 AUG       │ │
+│ │ ┌─ Repository tray ─────┐ ┌─ Agent session ┐ │ │                  │ │
+│ │ │ docs   src     tests  │ │ 3 terminals    │ │ │ 14:00 Benchmark │ │
+│ │ │  ▓▓▓▓  ▒▒▒▒▒  ░░░    │ │ 2 active       │ │ │ 18:00 Review    │ │
+│ │ │ mini file treemap     │ │                │ │ │                  │ │
+│ │ └───────────────────────┘ └────────────────┘ │ └──────────────────┘ │
+│ │                                              │                      │
+│ │ ┌─ Benchmarks ──────────┐ ┌─ Optimization ┐ │ ┌─ INBOX ──────────┐ │
+│ │ │ speed · quality       │ │ guide + notes  │ │ │ Downloads     6 │ │
+│ │ │ last run: 2.71 s      │ │ 4 open items   │ │ │ Screenshots   3 │ │
+│ │ └───────────────────────┘ └────────────────┘ │ │ New documents 2 │ │
+│ └──────────────────────────────────────────────┘ └──────────────────┘ │
+│                                                                        │
+│ ┌─ DRIVES ─────────────────┐ ┌─ PARKED SESSIONS ────────────────────┐ │
+│ │ System       412 GB free │ │ Waterfox │ Files │ Lege │ Terminal   │ │
+│ │ Projects     684 GB free │ │ 23 tabs  │ /src  │ PDF  │ cargo test │ │
+│ └──────────────────────────┘ └───────────────────────────────────────┘ │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+The important distinction is that the project is not another hidden desktop. It is a visible container on the one home field. It may expand to fill the screen temporarily, but the transition should be a visible zoom into that rectangle, with a persistent breadcrumb or overview route back out.
+
+Do not recreate virtual desktops under another name.
+
+---
+
+# What “malleable” should mean
+
+Malleability should not mean arbitrary warped geometry. Keep every object axis-aligned and rectangular. The useful malleability is that a tile’s **presentation adapts to its allotted area**.
+
+For example, one calendar object could have several representations:
+
+```text
+Small                    Wide                     Large
+
+┌──────┐           ┌────────────────┐      ┌──────────────────────┐
+│  21  │           │ 21 AUG         │      │ AUGUST 2026          │
+│ FRI  │           │ Benchmark 14:00│      │ Mo Tu We Th Fr Sa Su │
+└──────┘           └────────────────┘      │        1  2  3  4  5 │
+                                          │ ...                  │
+                                          └──────────────────────┘
+```
+
+The object has not changed. Only its information density has.
+
+The same principle applies to every tile type:
+
+| Tile             | Compact state                   | Expanded state                     |
+| ---------------- | ------------------------------- | ---------------------------------- |
+| Application      | Icon and running indicator      | Preview, documents, session state  |
+| File tray        | Name, count, content-color band | Thumbnails or nested treemap       |
+| Calendar         | Date and next event             | Agenda or month view               |
+| Drive            | Free-space figure               | Volumes, health, active operations |
+| Project          | Name and activity count         | Full contained working layout      |
+| Terminal session | Command/status line             | Live or recent terminal preview    |
+
+This is where the current SequoiaView-derived code is genuinely relevant. Its layout already has minimum visible areas, minimum dimensions, recursion thresholds, and level-of-detail culling.  Those ideas can become a general **representation ladder**: when a tile becomes too small for one view, it chooses a simpler view rather than merely shrinking text and controls.
+
+---
+
+# Throwing should be accelerated direct manipulation
+
+The home field must still work well as an ordinary drag-and-snap interface. Throwing should make a known action faster; it should not be the only reliable way to perform it.
+
+A clean interaction model would be:
+
+* A slow release means precise placement.
+* A release with meaningful velocity projects the tile toward a destination.
+* Compatible targets attract it.
+* A ghost rectangle previews its exact landing position.
+* The target states the pending operation in text.
+* Nearby tiles preview their new positions before release.
+* Escape cancels.
+* Undo reverses the result.
+
+For example:
+
+```text
+┌ paper.pdf ┐  ───────────────▶  ┌ LEGE VIEWER ┐
+└───────────┘                     │  OPEN        │
+                                  └──────────────┘
+```
+
+```text
+┌ benchmark.csv ┐  ───────────▶  ┌ PROJECT · JPEG XL ─────────┐
+└───────────────┘                 │ + ADD REFERENCE            │
+                                  │ Files remain in place      │
+                                  └────────────────────────────┘
+```
+
+```text
+┌ Waterfox window ┐  ─────────▶  ┌ PROJECT · RESEARCH ────────┐
+└─────────────────┘               │ PARK SESSION HERE          │
+                                  └────────────────────────────┘
+```
+
+Three invariants should apply to every throw:
+
+> **Before release, the exact operation is shown. After release, it is undoable. When no semantic operation is shown, only placement changes.**
+
+There should be no hidden “throw far enough to delete” behavior. Destructive filesystem operations are unsuitable for ballistic gestures.
+
+---
+
+# A restrained semantic grammar
+
+The source and target types can determine the available operation, but the grammar must remain small enough to learn.
+
+| Source           | Target                  | Default result          |
+| ---------------- | ----------------------- | ----------------------- |
+| Any tile         | Empty field             | Relocate                |
+| Any tile         | Visible shelf           | Stash or collapse       |
+| File reference   | Compatible application  | Open file               |
+| File reference   | Tray or project         | Add reference           |
+| Application tile | Project                 | Pin tool to project     |
+| Application tile | Application tile        | New app group           |
+| Application tile | App group               | Add to group            |
+| Running window   | Project                 | Park session in project |
+| Widget           | Project                 | Scope widget to project |
+| Tile             | Explicit group boundary | Add to group            |
+| Project          | Larger project area     | Expand or reposition    |
+
+The file-association service can determine which application tiles accept a particular file type. Only compatible applications need to illuminate when a file is lifted. The application-identity service can connect dormant app tiles, running instances, and parked windows. The resource governor can suspend or reduce update rates for parked sessions. The window service can implement collapse and restoration.
+
+That makes the Home Field a natural client of the services already being built rather than a separate visual experiment.
+
+---
+
+# How the supplied treemap work fits
+
+Your current port is useful, but it should not directly become the top-level home layout engine.
+
+## What should be retained
+
+The layout already represents every visible object as a rectangle with position, dimensions, depth, and an O(1) node-to-rectangle lookup. That is a useful basis for hit-testing, selection, previews, and nested containers. 
+
+The directory hierarchy has visible frame and header reservations, and the scene draws lightweight container overlays over the cached treemap.   This is close to the visual grammar a tray or project container needs.
+
+The color system is also more considered than arbitrary Metro-style brand colors. It supports category, category-plus-extension, and extension-hash modes, with a controlled pastel-to-bold axis.  Directories derive their color from the categories they contain, so a file tray can communicate its composition even before the user reads its contents. 
+
+The scene pipeline already caches the CPU-rendered treemap as a single image and then adds vector overlays, labels, selection, and hover effects.  That is a good rendering strategy for a file-tray tile:
+
+* Recompute the interior only when its filesystem content changes.
+* Move and animate the whole cached tile with a GPU transform.
+* Draw interaction affordances and landing previews separately.
+* Recompute its treemap only after an item is actually added or removed.
+
+## What should not be retained at the top level
+
+The current treemap intentionally makes visual area proportional to file bytes and uses file count only as an ordering tie-breaker.  That is correct for storage visualization. It is wrong for the home field.
+
+A 500 GB media folder should not consume half the home screen merely because it is large. Top-level area should express:
+
+* User-assigned importance.
+* Current activity.
+* Preferred information density.
+* Tile type.
+* Available display space.
+
+The current squarifier also sorts and repacks items. A small content or weight change can therefore move many rectangles. That is acceptable inside a disk visualization, but it would destroy spatial memory on the home screen.
+
+The architecture should have two separate layout systems:
+
+```text
+Home Field
+    └── stable, local, user-directed rectangular layout
+
+File tray interior
+    └── byte-proportional squarified treemap
+```
+
+Do not force one algorithm to serve both semantics.
+
+## Cushion shading
+
+The cushion renderer gives the file treemap a strong tactile identity, using accumulated surface coefficients and Lambertian lighting.  The full-quality mode normalizes lighting per pixel, while a faster path is available. 
+
+That visual language could be useful in two places:
+
+* Inside file and storage trays.
+* Temporarily when a tile is picked up, to make it feel raised and graspable.
+
+It should probably not cover every home-screen tile permanently. A whole field of inflated cushions would make the interface look primarily like a disk-usage visualizer and could become visually tiring. The outer tile shells should be flatter and calmer, with the cushion treatment reserved for content surfaces or manipulation states.
+
+---
+
+# The top-level layout should optimize stability, not mathematical density
+
+Rectangles tessellate efficiently, but complete packing is not automatically good interface design. A small amount of blank space has a functional role:
+
+* It gives the user somewhere to begin a throw.
+* It creates visible insertion points.
+* It separates projects from utilities.
+* It prevents a full-screen wall of equal visual intensity.
+* It allows the layout to reflow locally without moving everything.
+
+The blank field is no longer wasted wallpaper. It becomes **interaction space**.
+
+For the first implementation, I would use a bounded logical grid that does not visibly look rigid:
+
+* Tiles occupy integer spans such as 1×1, 2×1, 2×2, or 4×3.
+* Gaps remain consistent.
+* A tile has minimum, preferred, and maximum spans.
+* Removing a tile creates a temporary hole.
+* The projected throw position chooses a nearby insertion slot.
+* Only tiles in the affected row, column, or container move.
+* An explicit “tidy” command may perform global packing.
+
+The optimization objective should heavily penalize movement of unaffected tiles:
+
+```text
+layout cost =
+    movement of existing tiles
+  + distance from requested landing point
+  + aspect-ratio distortion
+  + unusable gaps
+  + crossing a container boundary
+```
+
+The current squarifier can remain inside trays. A new stable layout should control the field.
+
+---
+
+# Visual identity without changing the outer shape
+
+Rectangles are enough. Type should be expressed through internal structure, framing, typography, and behavior rather than different outer silhouettes.
+
+| Type              | Visual grammar                                                                   |
+| ----------------- | -------------------------------------------------------------------------------- |
+| **Application**   | Large application symbol, strong identity area, running count or status          |
+| **Parked window** | Live or cached preview, app badge, document title, session indicator             |
+| **File**          | Thumbnail or document surface, extension/type badge, no app-style icon dominance |
+| **Tray**          | Header band, inset contents, nested miniatures or treemap                        |
+| **Project**       | Strong enclosing frame and title; contains other tiles                           |
+| **Widget**        | Data-first layout, source name, freshness timestamp                              |
+| **System tile**   | Restrained monochrome frame, explicit measurements and controls                  |
+
+Color should reinforce this grammar, not replace it. The attached palette code already acknowledges the danger of saturation turning everything into an undifferentiated wall of color and instead interpolates between controlled pastel and bold endpoints. 
+
+A sensible division would be:
+
+* File and folder contents use your category palette.
+* Projects use a user-selected restrained accent.
+* Applications use a muted brand accent.
+* Widgets are mostly neutral with one data accent.
+* Running sessions use a consistent activity border.
+* System controls remain comparatively monochrome.
+
+The existing directory composition bands could be retained inside file trays, where the top content categories are rendered proportionally. 
+
+---
+
+# Important interaction guardrails
+
+## Do not let reflow destroy memory
+
+Tiles should never move merely because:
+
+* A calendar event changed.
+* A drive gained or lost space.
+* An application received a notification.
+* A folder gained new files.
+* A widget refreshed.
+* Resource usage changed.
+
+Live content changes inside the rectangle. Geometry changes only through explicit user action, monitor reconfiguration, or an explicit layout command.
+
+## Do not infer hidden meaning from proximity
+
+Two adjacent tiles should not automatically become related. Relationships should be represented by visible containment or an explicit group frame. Otherwise local reflow could accidentally alter meaning.
+
+## Do not permit infinite canvas behavior
+
+An infinite panning surface would recreate the exact “where did that go?” problem you want to eliminate. The field should be bounded and always recoverable. Projects may expand, but the user should always have a visible route to the full overview.
+
+## Do not embed arbitrary full application interfaces in small tiles
+
+Most desktop applications are not designed to operate inside a 250×180 rectangle. A parked application tile should normally be a preview and control surface, not the entire live application UI compressed into miniature form.
+
+Widgets can be natively responsive. Applications should expand into windows.
+
+## Keep file operations non-destructive by default
+
+* File into project: add reference.
+* File into tray: add reference.
+* File into application: open.
+* Tile into shelf: remove from the field, not from disk.
+* Actual copy or move into a filesystem folder: explicit operation and visible preview.
+* Delete: conventional command with recovery through trash.
+
+## Preserve alternative control methods
+
+Throwing needs equivalent operations for:
+
+* Keyboard.
+* Conventional drag-and-drop.
+* Touch.
+* Trackpad.
+* Reduced-motion mode.
+* Accessibility tools.
+
+A tile also needs a clear grab region. File trays and widgets contain clickable or scrollable content, so the entire rectangle cannot ambiguously mean both “interact with contents” and “move the tile.” A title band, edge grip, modifier, or brief lift gesture can disambiguate those modes.
+
+---
+
+# Resource and security implications
+
+The home field should not become the new source of desktop instability.
+
+Widgets and live previews need budgets:
+
+* Fixed maximum update rates.
+* Suspension when fully covered.
+* Static snapshots under resource pressure.
+* Out-of-process execution.
+* No arbitrary plugin code inside the compositor.
+* Per-widget cgroups through the application identity and resource systems.
+* Clear network and background permissions.
+
+The Home Field itself belongs in the restartable shell, not the minimal compositor core. The compositor should expose window previews, activation, collapse, restoration, and secure input. The shell should own the tiles, animation, projects, and layout.
+
+Your current distro work already spans the Files application, file portal, application library, and dock behavior.  The home surface is therefore best treated as the place where those services become visibly unified, rather than another isolated fork.
+
+---
+
+# Recommended first implementation
+
+The current prototype makes bare Super reveal this bounded field. Eight useful service/file
+drawers occupy a compact 2×4 block; live window previews are placed before redundant application
+badges, so the rest of the field remains an active overview of open work. Downloads, Documents,
+Media and Drives expand into a real places-and-volumes browser backed by `Files.Browse1`, with
+clickable folder navigation, actionable search results and brokered file opening.
+
+The first serious prototype should deliberately stop between the minimum and maximum versions.
+
+It should contain only these tile types:
+
+* Project.
+* Application or parked session.
+* File tray.
+* Widget.
+* System status.
+
+It should support only these operations:
+
+* Relocate.
+* Resize.
+* Add to project or tray.
+* Open with application.
+* Park or restore a window.
+* Stash on shelf.

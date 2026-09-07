@@ -72,6 +72,18 @@ record legeos.papercut.a-prior-continuation-s-the-change-log-is/1 : papercut {
     created_at 2026-09-03
 }
 
+record legeos.papercut.a-repository-search-pattern-beginning-with-esp/1 : papercut {
+    title "A repository search pattern beginning with `--esp` was parsed as an rg…"
+    state verified
+    statement """
+        A repository search pattern beginning with `--esp` was parsed as an rg option and the combined search failed. The reliable Windows/PowerShell form is `rg -n -- '<pattern>' <paths>` whenever a pattern may begin with a dash.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "ripgrep"
+    author "codex-gpt-6"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.a-second-promise-batched-diagnostic-script/1 : papercut {
     title "A second Promise-batched diagnostic script failed JavaScript parsing…"
     state verified
@@ -129,6 +141,18 @@ record legeos.papercut.adr-0012-landed-as-a-markdown-adr-without-a/1 : papercut 
     created_at 2026-08-21
 }
 
+record legeos.papercut.advisor-context-for-broad-code-doc-globs/1 : papercut {
+    title "Advisor context for broad code/doc globs exceeded its requested budget…"
+    state verified
+    statement """
+        Advisor context for broad code/doc globs exceeded its requested budget and duplicated prose in structured tool output, so the first read was truncated; narrowing to the exact legacy docs yielded a complete readable bundle. A guessed project-semantics key also missed; exact search is required before get.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "akr"
+    author "astra-advisor"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.after-cargo-test-clippy-passed-target-debug/1 : papercut {
     title "After cargo test/clippy passed, target/debug/lege-comp was still the…"
     state verified
@@ -150,6 +174,18 @@ record legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 : papercut 
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.agents-md-and-the-global-instructions-describe/1 : papercut {
+    title "AGENTS.md and the global instructions describe `akr handoff session…"
+    state verified
+    statement """
+        AGENTS.md and the global instructions describe `akr handoff session begin` / `akr handoff worker|scout|advisor|reviewer` for cutting subagent packets, but the installed akr answers `error[AKR-C001]: unknown command "handoff"`. Packets are written by hand as Markdown under .agent/scratch/pre-iso/ instead, as the DE0.1 campaign did.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "akr"
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
@@ -208,6 +244,17 @@ record legeos.papercut.cargo-run-q-p-xtask-check-packaging-fails-on-a/1 : paperc
     created_at 2026-09-02
 }
 
+record legeos.papercut.cargo-test-runs-from-the-crate-directory-so-a/1 : papercut {
+    title "Cargo test runs from the crate directory, so a repository-relative…"
+    state verified
+    statement """
+        Cargo test runs from the crate directory, so a repository-relative LEGE_FILES_RENDER_DIR failed with ENOENT. Use an absolute output directory for the optional Files fixture renders.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    author "codex"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.cargo-xtask-check-packaging-reports-three/1 : papercut {
     title "`cargo xtask check-packaging` reports three mismatches on a fresh…"
     state verified
@@ -240,6 +287,18 @@ record legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 : papercut
     observed_at git:cd6563649c3c85e3c23b92adb22d60de7ce90e44
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.context-output-with-a-4000-token-budget-still/1 : papercut {
+    title "Context output with a 4000-token budget still contained about 11433…"
+    state verified
+    statement """
+        Context output with a 4000-token budget still contained about 11433 tokens; 2500 was rejected as below mandatory 3473. Read the large bundle in sections.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "akr"
+    author "codex"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.copy-path-in-the-shell-rendered-the-path/1 : papercut {
@@ -285,6 +344,17 @@ record legeos.papercut.debian-control-s-build-depends-names-only/1 : papercut {
     observed_at git:5681cf26fb7f1616cefb5f557d0eb84208923242
     author "claude"
     created_at 2026-09-05
+}
+
+record legeos.papercut.deploy-pinned-the-image-metapackages/1 : papercut {
+    title "`lege dev deploy` pinned the archive metapackages, so apt refused every set the ISO lane built"
+    state verified
+    scope [ path "cli/lege/src/dev/**", path "distro/metapackages/**" ]
+    statement """
+        Since the ISO lane started building the eight metapackages into the build set, `lege dev deploy` pinned all 21 packages in one apt transaction — including legeos-kernel, legeos-desktop, legeos-dev-*, and both NVIDIA rows, which Conflict with each other. apt refused the whole set on the development host ("Reached two conflicting decisions", plus unmet deps that only resolve inside a LegeOS rootfs), so no deployment could happen at all. Fixed in Installer::plan: pin only the component matrix's packages, which is what verify() already checked afterwards; the metapackages stay published so the image build can resolve against them.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "cli/lege/src/dev/install.rs"
 }
 
 record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : papercut {
@@ -386,6 +456,17 @@ record legeos.papercut.just-check-failed-because-xtask-s-check-assets/1 : paperc
     observed_at git:25591b2d63d556aacf86b45dbae565354e9b2c53
     author "claude"
     created_at 2026-08-31
+}
+
+record legeos.papercut.just-check-failed-on-head-9855da2-before-any-of/1 : papercut {
+    title "just check failed on HEAD 9855da2 before any of this pass:…"
+    state verified
+    statement """
+        just check failed on HEAD 9855da2 before any of this pass: cli/lege/src/dev/cmd.rs carried an unused `use std::io::Read as _;` (the generic bound already brings the trait in) that clippy -D warnings rejects. Removed it here; the commit 482c92f that introduced it evidently was not gated.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.just-check-fails-when-run-from-a-terminal/1 : papercut {
@@ -545,6 +626,18 @@ record legeos.papercut.making-the-integration-smoke-hermetic-by/1 : papercut {
     observed_at git:042611b922f63aa4248c2e0c39d2db82f2bae234
     author "codex"
     created_at 2026-08-27
+}
+
+record legeos.papercut.multi-grep-with-compositor-lege-comp-src/1 : papercut {
+    title "multi_grep with compositor/lege-comp/src/ constraints returned ledger…"
+    state verified
+    statement """
+        multi_grep with compositor/lege-comp/src/ constraints returned ledger and generated-doc matches instead of compositor code. Switched to direct rg in explicit source files.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "fff"
+    author "codex"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 : papercut {
@@ -726,6 +819,17 @@ record legeos.papercut.the-btrfs-delta-harness-writes-docs/1 : papercut {
     created_at 2026-09-04
 }
 
+record legeos.papercut.the-context-cli-requires-goal-while-start/1 : papercut {
+    title "The context CLI requires --goal while start accepts a positional task;…"
+    state verified
+    statement """
+        The context CLI requires --goal while start accepts a positional task; retried context with --goal after AKR-C003.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    author "codex"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.the-conventional-cargo-xtask-invocation-is-not/1 : papercut {
     title "The conventional cargo xtask invocation is not installed in this…"
     state verified
@@ -768,6 +872,18 @@ record legeos.papercut.the-documented-pre-login-check-lege-doctor-root/1 : paper
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.the-documented-rg-first-discovery-pattern-used/1 : papercut {
+    title "The documented rg-first discovery pattern used a Unix-style README*…"
+    state verified
+    statement """
+        The documented rg-first discovery pattern used a Unix-style README* positional glob, which PowerShell passed literally and rg rejected with Windows error 123. Use `rg -g 'README*' ... .` or enumerate with `rg --files` on Windows.
+        """
+    observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
+    about "PowerShell repository setup"
+    author "codex-gpt-6"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.the-explicit-rust-1-93-verification-tried-to/1 : papercut {

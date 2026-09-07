@@ -1,0 +1,234 @@
+## 14. Make both Btrfs filesystems first-class index roots
+
+The shared TemplarOS index should understand the OS and data filesystems independently.
+
+For example:
+
+```text
+filesystem A
+    TemplarOS root/home
+
+filesystem B
+    Templar Data
+```
+
+Each must have its own:
+
+* filesystem UUID;
+* freshness state;
+* monitoring state;
+* index checkpoint state;
+* Btrfs snapshot/delta state.
+
+Do not model `/data` merely as another directory beneath `/`.
+
+The index should retain filesystem identity.
+
+---
+
+## 15. Separate searchable data from storage-accounting data
+
+Use the storage layout to help the unified index distinguish useful files from build noise.
+
+Conceptually:
+
+```text
+@projects
+    detailed indexing
+    searchable names
+    snapshots
+
+@data
+    detailed indexing
+    searchable names
+    snapshots
+
+@media
+    detailed/indexed as required
+
+@build
+    not normally included in filename FTS
+    storage usage tracked
+    descendants materialized only when requested
+
+@snapshots
+    excluded from ordinary search
+
+@index-checkpoints
+    excluded entirely from user-visible search
+```
+
+This prevents Rust compilation from generating huge amounts of useless search-index work while still allowing storage tools to answer:
+
+> Why is this drive using 400 GB?
+
+---
+
+## 16. Reserve Btrfs index checkpoints now
+
+Create the `@index-checkpoints` subvolume during formatting even if Btrfs-delta indexing is not fully implemented yet.
+
+This avoids having to alter storage layouts later.
+
+The eventual adaptive indexer can use this space to maintain read-only checkpoint snapshots for incremental catch-up.
+
+Do not treat these snapshots as backups.
+
+They are disposable index infrastructure.
+
+---
+
+# Performance Validation
+
+## 17. Benchmark build placement after installation
+
+Once TemplarOS is running natively on both drives, test at minimum:
+
+```text
+A. project and target on data Btrfs drive
+
+B. project on data drive,
+   target on OS-drive @build
+
+C. project on OS drive,
+   target on data drive
+
+D. normal vs compressed Btrfs build storage
+
+E. NOCOW @build if justified
+```
+
+Use actual representative repositories rather than synthetic I/O benchmarks alone.
+
+Measure:
+
+* clean `cargo build`;
+* incremental build;
+* `cargo check`;
+* `cargo test`;
+* `cargo clean`;
+* several projects compiling simultaneously;
+* interactive desktop latency while compiling;
+* filesystem CPU consumption;
+* storage I/O;
+* compression ratio;
+* indexer overhead.
+
+The winning configuration should become TemplarOS's development default.
+
+---
+
+# Explicitly Out of Scope
+
+Do not work on these as part of this implementation:
+
+* a new filesystem;
+* modifications to Btrfs;
+* ZFS;
+* bcachefs as production storage;
+* a custom partition editor;
+* a full Calamares integration;
+* a full Subiquity/Desktop Provision integration;
+* generalized dual-boot support;
+* Windows-preserving installation;
+* OEM installation;
+* arbitrary exotic storage layouts;
+* RAID/multi-device Btrfs;
+* filesystem performance patches;
+* complicated automatic partition resizing.
+
+They can be reconsidered after the basic installer has successfully rebuilt the actual TemplarOS workstation from blank disks.
+
+---
+
+# Implementation Order
+
+## Phase 1 — Storage backend
+
+1. Define the canonical OS-drive layout.
+2. Define the canonical data-drive layout.
+3. Refactor storage preparation out of the current provisioner.
+4. Add existing-partition inputs.
+5. Implement storage discovery with `lsblk`/`blkid`.
+6. Add UUID/PARTUUID handling.
+7. Add layout validation.
+8. Generate a destructive-operation plan before execution.
+9. Create all canonical Btrfs subvolumes.
+10. Mount them into the deployment root.
+
+### Completion gate
+
+The existing installer can install TemplarOS onto manually prepared ESP/root partitions without repartitioning them.
+
+---
+
+## Phase 2 — Live USB
+
+1. Produce a bootable TemplarOS live image.
+2. Include GParted.
+3. Include Btrfs, EFI, GRUB and disk-diagnostic tools.
+4. Add `Install TemplarOS`.
+5. Add `Advanced partitioning`, which launches GParted.
+6. Rescan storage after GParted exits.
+7. Feed selected storage into the Phase 1 backend.
+
+### Completion gate
+
+Boot USB → GParted → prepare blank drive → close GParted → install TemplarOS → reboot into TemplarOS.
+
+---
+
+## Phase 3 — Guided two-drive install
+
+1. Detect both physical disks.
+2. Add OS-drive selection.
+3. Add optional Templar Data drive initialization.
+4. Generate both standard Btrfs layouts.
+5. Add final destructive-operation review.
+6. Format/install only after explicit confirmation.
+
+### Completion gate
+
+The current two-drive machine can be rebuilt from empty disks without manually typing partition commands.
+
+---
+
+## Phase 4 — Recovery
+
+1. Detect an installed TemplarOS root.
+2. Mount its Btrfs topology.
+3. inspect deployments.
+4. expose existing rollback mechanisms.
+5. repair GRUB/initramfs.
+6. expose GParted and terminal tools.
+
+### Completion gate
+
+The same USB that installs TemplarOS can recover a deliberately broken installed deployment.
+
+---
+
+## Phase 5 — Development-storage tuning
+
+Only after the installed system is reliable:
+
+1. benchmark build-location strategies;
+2. decide whether `@build` should live on OS or data storage;
+3. benchmark compression;
+4. benchmark NOCOW;
+5. integrate selected build location with the Templar project/resource system;
+6. configure the unified index to treat build output as inventory rather than ordinary searchable data.
+
+### Completion gate
+
+Several concurrent Rust builds can saturate the machine while TemplarOS remains responsive, and filesystem/index maintenance introduces negligible measurable overhead.
+
+---
+
+# Immediate Target
+
+The next practical milestone should therefore be:
+
+> **A TemplarOS live USB containing GParted and recovery tools, backed by an installer that can either create the canonical two-drive Btrfs layout itself or consume partitions prepared manually in GParted, and then feed either path into the same existing TemplarOS deployment backend.**
+
+That is enough infrastructure to safely wipe the current Windows/Lubuntu installation and establish TemplarOS as the sole installed operating system without prematurely building a general-purpose installer or storage stack.

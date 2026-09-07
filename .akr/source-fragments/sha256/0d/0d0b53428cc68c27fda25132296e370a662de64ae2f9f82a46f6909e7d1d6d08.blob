@@ -1,0 +1,62 @@
+
+```rust
+Affordance::Edge(edges) =>
+    Gesture::Resize { edges },
+```
+
+as the single compositor-controlled route.
+
+---
+
+# 17. Do not change client-requested resize behavior
+
+This distinction matters.
+
+Wayland applications can send:
+
+```text
+xdg_toplevel.resize
+```
+
+with conventional directions such as:
+
+```text
+left
+right
+top
+bottom
+top_left
+...
+```
+
+Do not reinterpret those.
+
+A client asking for:
+
+```text
+RIGHT
+```
+
+should continue to get a one-axis right-edge resize.
+
+The new two-axis side semantics should apply specifically to **TemplarOS compositor-owned pointer affordances**.
+
+So:
+
+```text
+client resize protocol
+        ↓
+honor requested edges exactly
+```
+
+while:
+
+```text
+Templar perimeter press
+        ↓
+derive two edges from side + midpoint
+```
+
+This keeps protocol behavior correct.
+
+---

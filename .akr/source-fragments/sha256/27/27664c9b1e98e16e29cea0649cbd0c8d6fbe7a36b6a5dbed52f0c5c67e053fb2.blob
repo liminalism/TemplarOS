@@ -1,0 +1,261 @@
+
+## Right side
+
+Press above the horizontal center:
+
+```text
+edges = RIGHT + TOP
+```
+
+Press below it:
+
+```text
+edges = RIGHT + BOTTOM
+```
+
+---
+
+# 2. Complete mapping
+
+The mapping should be deterministic at mouse-down:
+
+| Grab location | Resize edges |
+|---|---|
+| top, left half | top + left |
+| top, right half | top + right |
+| bottom, left half | bottom + left |
+| bottom, right half | bottom + right |
+| left, upper half | left + top |
+| left, lower half | left + bottom |
+| right, upper half | right + top |
+| right, lower half | right + bottom |
+
+This means there are effectively eight resize regions, but no eight visible controls.
+
+The whole perimeter is useful.
+
+---
+
+# 3. Preserve the current outside-frame hit zone
+
+The current implementation deliberately detects compositor resize edges **outside the client frame** using `RESIZE_MARGIN`.
+
+Keep that behavior.
+
+Do not turn the outermost client pixels into resize controls because applications may already use them for:
+
+- scrollbars;
+- client-side borders;
+- text selection;
+- application controls.
+
+Conceptually:
+
+```text
+           resize zone
+               ↓
+       ┌──────────────┐
+       │              │
+  ←    │    WINDOW    │    →
+       │              │
+       └──────────────┘
+               ↑
+           resize zone
+```
+
+The zone can remain invisible.
+
+An 8-logical-pixel external hit margin is already present and is a reasonable starting point.
+
+---
+
+# 4. Change `resize_edges_at()`
+
+The current:
+
+```text
+crates/lege-window/src/geometry.rs
+```
+
+already contains:
+
+```rust
+pub struct ResizeEdges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+```
+
+That representation is exactly what this interaction needs.
+
+The current `resize_edges_at()` behaves conventionally:
+
+- middle of left side → `LEFT`
+- middle of bottom side → `BOTTOM`
+- corner → `LEFT + BOTTOM`
+
+Change it so every side always supplies a perpendicular edge too.
+
+A first implementation could look like this:
+
+```rust
+pub fn resize_edges_at(frame: Rect, point: Point) -> Option<ResizeEdges> {
+    // Client pixels remain client-owned. The resize region exists just
+    // outside the frame.
+    let inside = point.x >= frame.x
+        && point.x < frame.right()
+        && point.y >= frame.y
+        && point.y < frame.bottom();
+
+    if inside {
+        return None;
+    }
+
+    let left_zone = point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.x
+        && point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN);
+
+    let right_zone = point.x >= frame.right()
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN)
+        && point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN);
+
+    let top_zone = point.y >= frame.y.saturating_sub(RESIZE_MARGIN)
+        && point.y < frame.y
+        && point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN);
+
+    let bottom_zone = point.y >= frame.bottom()
+        && point.y < frame.bottom().saturating_add(RESIZE_MARGIN)
+        && point.x >= frame.x.saturating_sub(RESIZE_MARGIN)
+        && point.x < frame.right().saturating_add(RESIZE_MARGIN);
+
+    if !(left_zone || right_zone || top_zone || bottom_zone) {
+        return None;
+    }
+
+    let center_x = frame.x.saturating_add(frame.width / 2);
+    let center_y = frame.y.saturating_add(frame.height / 2);
+
+    // A vertical side chooses top/bottom from the pointer's vertical
+    // position. A horizontal side chooses left/right from its horizontal
+    // position.
+    //
+    // Corner overlap is harmless: either participating side resolves to
+    // the same pair of edges.
+    if left_zone {
+        return Some(ResizeEdges {
+            left: true,
+            top: point.y < center_y,
+            bottom: point.y >= center_y,
+            ..ResizeEdges::default()
+        });
+    }
+
+    if right_zone {
+        return Some(ResizeEdges {
+            right: true,
+            top: point.y < center_y,
+            bottom: point.y >= center_y,
+            ..ResizeEdges::default()
+        });
+    }
+
+    if top_zone {
+        return Some(ResizeEdges {
+            top: true,
+            left: point.x < center_x,
+            right: point.x >= center_x,
+            ..ResizeEdges::default()
+        });
+    }
+
+    Some(ResizeEdges {
+        bottom: true,
+        left: point.x < center_x,
+        right: point.x >= center_x,
+        ..ResizeEdges::default()
+    })
+}
+```
+
+This eliminates the need for the current `RESIZE_CORNER` concept.
+
+Every part of every side is effectively associated with its nearest corner.
+
+---
+
+# 5. Keep the edges latched at drag start
+
+This is important.
+
+Do **not** continuously recalculate:
+
+```rust
+resize_edges_at(window, current_pointer)
+```
+
+during the resize.
+
+The current architecture already gets this right.
+
+`begin_resize()` stores:
+
+```rust
+ResizeState {
+    window_id,
+    edges,
+    origin,
+    pointer_origin,
+}
+```
+
+That means this:
+
+```text
+grab bottom-left region
+        ↓
+edges = LEFT + BOTTOM
+        ↓
+pointer crosses center line
+        ↓
+still LEFT + BOTTOM
+```
+
+The gesture never turns into `RIGHT + BOTTOM`.
+
+That is exactly what prevents the interaction from folding or flipping unpredictably.
+
+The resize edge combination describes **what the user grabbed**, not where the pointer currently happens to be.
+
+---
+
+# 6. The current minimum-size logic already has the correct mathematical behavior
+
+The existing `resize_rect()` is already mostly what this design needs.
+
+For example:
+
+```rust
+if edges.right {
+    resized.width =
+        origin.width
+            .saturating_add(dx)
+            .max(MIN_WINDOW_WIDTH);
+}
+
+if edges.left {
+    let width =
+        origin.width
+            .saturating_sub(dx)
+            .max(MIN_WINDOW_WIDTH);
+
+    resized.x = origin.right().saturating_sub(width);
+    resized.width = width;
+}
+```
+
+And the same applies vertically.

@@ -182,6 +182,62 @@ record legeos.decision.debian-packaging/1 : decision {
     supported_by [ @legeos.evidence.m0-deb-builds ]
 }
 
+record legeos.decision.event-driven-service-authorities/1 : decision {
+    title "Local state has one authoritative owner with recoverable state-and-event delivery"
+    state proposed
+    scope [ path "crates/**", path "distro/**", path "interfaces/**", path "services/**" ]
+    topic service-observation-and-activation
+    decision """
+        Each local state domain has one authoritative owner. Consumers read typed state, synchronize a subscription without a read/subscribe race, and recover missed history by sequence or by taking a fresh snapshot. A generation identifies a committed view; an event sequence identifies change-log position. SnapshotRequired means continuity is unavailable and the consumer must resnapshot. Consumers never read an owner's private SQLite representation. Services use event or threshold wakeups and socket/D-Bus activation where practical; timers remain explicit for temporal conditions, backoff, bounded active episodes and reconciliation.
+        """
+    context """
+        Files.Index1 already provides sealed snapshots, ChangesSince(sequence), SnapshotRequired and freshness signals, and the filed watcher blocks with an explicit waker. resourced still samples and sleeps, so its conversion requires policy-preserving investigation rather than a blanket timer removal.
+        """
+    consequences """
+        Keep explicit browsing and narrowly documented service-unavailable fallbacks. Do not introduce a universal event daemon, RAM-only index, competing background crawlers, or a rule that every service must exit when idle. Each persistent daemon and polling exception records its authority, lifetime, activation, recovery, deadline and justification.
+        """
+    author "GitHub Uploader"
+    source {
+        kind external
+        role origin
+        document "legacy-polling-services-design"
+        start_byte 0
+        end_byte 5464
+        start_line 1
+        end_line 209
+        excerpt_hash "sha256:8ab3e8e61899cf6d46312a0fce8f2bce7ab4b666368cdcd706247b0927916371"
+        use """
+            Adopts domain ownership, typed consumer APIs and recoverable state plus events.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-polling-services-design"
+        start_byte 5465
+        end_byte 13221
+        start_line 211
+        end_line 630
+        excerpt_hash "sha256:d252c4840e230bf05e755974dab4b08dbd259792f2e12a009cc17b0d4ad8cb5f"
+        use """
+            Adopts event-first activation and bounded polling exceptions while rejecting a universal daemon.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-polling-services-design"
+        start_byte 13221
+        end_byte 19332
+        start_line 631
+        end_line 808
+        excerpt_hash "sha256:3bd5e48f86c3ffb33a98384e4c97db1f90fed26ad1a2b3f3c0ffcc441e0ea21a"
+        use """
+            Adopts audit metadata and one-owner policy with explicit exceptions.
+            """
+    }
+}
+
 record legeos.decision.flatpak-and-crash-handling/1 : decision {
     title "D11/ADR-0011 — Flatpak for sandboxed apps (no snapd in the seeds); telemetry-free crash handling via systemd-coredump ingested into history"
     state active
@@ -287,6 +343,40 @@ record legeos.decision.home-field-default-leaves-slack/1 : decision {
     supported_by [ @legeos.evidence.home-field-density-and-composition-20260830 ]
 }
 
+record legeos.decision.home-field-stable-bounded-semantic-grammar/1 : decision {
+    title "Home uses stable bounded rectangles, local reflow and explicit reversible semantics"
+    state proposed
+    scope [ path "apps/lege-files/**", path "crates/lege-field/**", path "shell/lege-shell/**" ]
+    topic home-field-layout-and-interaction-grammar
+    decision """
+        Home is a bounded field of stable rectangular objects. Moving or resizing one object triggers deterministic local reflow around the user's chosen anchor; content changes never move tiles, global repacking never destroys spatial memory, proximity never creates hidden relations, and Home does not become an infinite canvas or a set of disguised virtual desktops. A shape-and-area representation ladder controls information density while identity remains visible. Treemap layout belongs inside storage views, not across Home.
+        """
+    context """
+        The explicit semantic grammar is type-directed: file and folder references enter containers without moving the underlying item; app-on-app creates an explicit app group; project, window and widget relations are created only by named operations. Throwing, previews and richer widget execution remain staged features.
+        """
+    consequences """
+        Every destructive-looking gesture previews the outcome and offers undo or a keyboard-accessible equivalent. Preserve non-destructive references, containment, minimum usable sizes, stable type identity and bounded resource use. Reject arbitrary miniature full applications, ballistic deletion, content-driven reflow and proximity semantics.
+        """
+    derived_from [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1,
+        @legeos.decision.representation-ladder-is-the-organizing-principle/1
+    ]
+    author "GitHub Uploader"
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 0
+        end_byte 23844
+        start_line 1
+        end_line 435
+        excerpt_hash "sha256:bd9b38bbb6a9c8c0a12d208b9ae09c6e2206c068326ad39d5fbd7ac6a0025460"
+        use """
+            Consolidates Home's working-memory model, representation ladder, geometry, semantic drops, non-destructive operations and guardrails.
+            """
+    }
+}
+
 record legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1 : decision {
     title "Home is momentary chrome; folders, shortcut panes and widgets are placeable, loose files are not"
     state active
@@ -308,6 +398,109 @@ record legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1 
         @legeos.work.home-field
     ]
     implements [ @legeos.constraint.services-not-indicators ]
+}
+
+record legeos.decision.home-projects-and-tool-actions/1 : decision {
+    title "Home stores project intent; native Files opens folders; the taskbar selects running windows"
+    state proposed
+    scope [
+        path "apps/lege-files/**",
+        path "crates/lege-field/**",
+        path "interfaces/dbus/org.legeos.Projects1.xml",
+        path "services/lege-sessiond/**",
+        path "shell/lege-shell/**"
+    ]
+    topic home-project-and-window-responsibilities
+    decision """
+        Home is bounded persistent working memory for stable folders, collections, projects, widgets and explicit project/session relationships. Opening a folder creates a separately switchable native lege-files window. The persistent bottom bar owns ordinary automatic per-window selection; automatic parked-window shelves migrate without losing explicit group, park or restoration relationships. Enter Project selects context and launches nothing, Launch Tool opens a provider-resolved role at the real project root, and Restore Workspace restores remembered applications and supported checkpoints.
+        """
+    context """
+        The first-party native Files client and service boundary remain authoritative. PCManFM-Qt as the default and direct mutation that bypasses LegeOS operation semantics are rejected. Apps remains the remembered session application set; Terminal, FileManager and a future CodeEditor are derived provider roles rather than copied paths in every manifest.
+        """
+    consequences """
+        Projects1.Create receives the selected directory's real root; creation and pinning to Home stay distinct. Keep Apps launcher search separate from scoped Files search. Status updates never move tiles. Repository discovery never runs commands or hooks; build, test, run and repository status remain opt-in service work.
+        """
+    derived_from [
+        @legeos.decision.forks-by-manifest/3,
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers/1,
+        @legeos.decision.one-persistent-bottom-bar-tags-not-bands/1
+    ]
+    author "GitHub Uploader"
+    source {
+        kind external
+        role origin
+        document "legacy-files-design"
+        start_byte 6138
+        end_byte 12841
+        start_line 230
+        end_line 569
+        excerpt_hash "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa"
+        use """
+            Adopts the Home, taskbar, Files and project-action responsibility split while rejecting the proposed default-client replacement.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 0
+        end_byte 24693
+        start_line 1
+        end_line 460
+        excerpt_hash "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220"
+        use """
+            Retains bounded stable geometry, local reflow, representation ladders, non-destructive references and reversible operations.
+            """
+    }
+}
+
+record legeos.decision.independent-storage-roles/1 : decision {
+    title "Provisioning declares independent storage roles and per-partition preservation policy"
+    state proposed
+    scope [
+        path "distro/deploy/**",
+        path "installer/**",
+        path "services/lege-filed/**",
+        path "services/lege-sessiond/**"
+    ]
+    topic developer-edition-storage-layout
+    decision """
+        One versioned layout contract describes device and filesystem identity, mount and subvolume roles, per-partition create/reuse/format policy, boot and deployment identity, recovery ownership, search visibility, acquisition coverage and accounting policy. Discovery and preparation are separate from deployment but use the same backend operation model. Dry-run and apply consume the same reviewed operation sequence, and apply revalidates topology, identity and mounted state immediately before mutation.
+        """
+    context """
+        The current existing-partition mode preserves the partition table but rewrites GPT type codes and formats both ESP and root. It is not preservation. The current root=LABEL=legeos-root boot contract also makes identity migration a coordinated provisioner, fstab, boot-entry and rollback change.
+        """
+    consequences """
+        Keep image, erase-disk, free-tail and existing-partition modes, adding explicit preservation semantics. No type-code rewrite or formatting occurs in preservation mode unless selected. A second data filesystem is optional and never assumed expendable. Preserve current OS subvolumes; stage optional @build and independent project/data/media/archive roles. Search, acquisition and accounting scopes are distinct; checkpoint activation remains opt-in and per filesystem.
+        """
+    derived_from [ @legeos.milestone.developer-edition-0-1/1 ]
+    author "GitHub Uploader"
+    source {
+        kind external
+        role origin
+        document "legacy-filesystem-design"
+        start_byte 0
+        end_byte 9080
+        start_line 1
+        end_line 390
+        excerpt_hash "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413"
+        use """
+            Adopts independent OS/data roles, explicit layout, preparation/deployment separation and reviewed destructive operations.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-filesystem-design"
+        start_byte 10029
+        end_byte 16246
+        start_line 438
+        end_line 671
+        excerpt_hash "sha256:7cc1bb7ead4402d3b9b909ca51980507adbaaefeafef65e9665a6febedd71048"
+        use """
+            Adopts filesystem identity and search/accounting boundaries while deferring unmeasured optimization.
+            """
+    }
 }
 
 record legeos.decision.inotify-remains-the-index-event-backend/1 : decision {
@@ -375,6 +568,32 @@ record legeos.decision.mkosi-images/1 : decision {
     ]
 }
 
+record legeos.decision.one-persistent-bottom-bar-tags-not-bands/1 : decision {
+    title "One persistent shell-drawn bottom bar is the taskbar and holds the maximized window's controls; sized windows carry bottom tags, not a title band"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    topic bottom-bar
+    decision """
+        A single shell-drawn bottom bar is always visible, over application windows and on Home, and reserves an Edge::Bottom exclusive zone. Bottom-left: network and clock indicators only. Middle: the taskbar, LegeOS window groups first (one entry each in the group accent), then one icon per open application (a single-window application is that window); hovering an entry after a dwell opens a second row above the bar listing its windows, a grace period closes it, a click activates. Bottom-right: minimize, maximize and close for the activated window when it is maximized. The compositor-drawn title band above every window is retired: a non-maximized window carries compositor-drawn tags on its bottom edge, a name tag bottom-left (title, group accent stripe; the grab-to-move and group-drop affordance) and contiguous control tags bottom-right; a maximized window on an output with a bottom exclusive zone draws no tags, and draws them again whenever no such zone is claimed, so controls never vanish when the shell is dead. The corner resize grip is removed; resize is the margin ring outside every edge and corner. None of this is configurable.
+        """
+    context """
+        The user's hands-on runs showed a disconnect between Home and open windows: a mouse-only user had no persistent route between windows because Home is momentary and Alt+Tab is keyboard, and a window's controls sat at the top while the user's attention and the proposed taskbar sit at the bottom. The user first proposed moving the band to the bottom with a Windows 3.1 style window-list box, then replaced that with the shared bar: 'every open window shares the bar and the bar does double duty as a taskbar'. The hover-row behaviour is ported from cosmic-app-list (GPL-3, libcosmic); behaviour only, no code copied into this AGPL-3 repository.
+        """
+    consequences """
+        Supersedes the clause of @legeos.decision.home-is-momentary-and-placeable-objects-are-containers that Home panels 'reserve no work area while an application is visible'; the rest of that decision (momentary Home, placeable containers, no loose files) stands. @legeos.work.home-panel-and-dock-layouts' check home-only-no-exclusive-zone is historical. Output::usable's refusal of a zone that leaves less than 96x32 remains the safety clause. compositor/COMPOSITOR.md's band sections are rewritten for tags. The exclusive zone is a floor on the surface's thickness so the hover row can grow the bar surface without reflowing windows (prose-only change to lege-shell-v1.xml).
+        """
+    derived_from [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.window-groups-are-explicit-and-compositor-owned
+    ]
+    implements [ @legeos.constraint.services-not-indicators ]
+}
+
 record legeos.decision.one-privileged-host-daemon/1 : decision {
     title "D4/ADR-0003 — One privileged host daemon (lege-hostd): updates, deployments, driver authority, storage reserve, hardware profile; timezone policy stays in sessiond"
     state active
@@ -423,6 +642,50 @@ record legeos.decision.one-session-policy-daemon/1 : decision {
         @legeos.constraint.services-not-indicators
     ]
     supported_by [ @legeos.evidence.m0-check-interfaces, @legeos.evidence.m0-smoke ]
+}
+
+record legeos.decision.perimeter-resize-selects-two-axes-by-side-half/1 : decision {
+    title "Perimeter resize selects one horizontal and one vertical edge from the contacted side half"
+    state proposed
+    scope [ path "compositor/lege-comp/**", path "crates/lege-window/**" ]
+    topic window-perimeter-resize
+    decision """
+        Compositor-owned pointer resize uses the eight-logical-pixel exterior perimeter. Pressing either half of any side selects the adjacent corner's horizontal and vertical edge, with exact midpoints assigned to right or bottom. The selected pair and origin geometry latch at press; motion resizes from that origin, anchors the opposite edges, applies the existing minimum size, and never inverts the rectangle. Hover and the active gesture show the matching diagonal cursor, including on DRM, then restore client cursor ownership. Client-requested xdg resize edges retain their protocol meaning and bypass side-half reinterpretation.
+        """
+    context """
+        The current implementation already removed the visible corner grip and owns an outside resize margin, but middle portions of a side still select one axis and DRM maps every named cursor to the arrow.
+        """
+    consequences """
+        Remove RESIZE_CORNER only after its selection role is replaced. Preserve bottom tags, stacking precedence, maximized/fullscreen exclusions, keyboard/recovery paths and current size minima. Defer dead zones and motion-selected secondary edges until the fixed mapping is evaluated.
+        """
+    derived_from [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/1 ]
+    author "GitHub Uploader"
+    source {
+        kind external
+        role origin
+        document "full-side-two-axis-window-resizing-first-draft"
+        start_byte 2255
+        end_byte 8357
+        start_line 120
+        end_line 380
+        excerpt_hash "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2"
+        use """
+            Adopts the deterministic side-half mapping, press-time latching and origin-relative resize invariants.
+            """
+    }
+    source {
+        kind external
+        role constraint
+        document "full-side-two-axis-window-resizing-first-draft"
+        start_byte 19703
+        end_byte 20514
+        start_line 1020
+        end_line 1081
+        excerpt_hash "sha256:0d0b53428cc68c27fda25132296e370a662de64ae2f9f82a46f6909e7d1d6d08"
+        use """
+            Preserves the distinction between compositor pointer hit testing and client-requested resize edges.
+            """
+    }
 }
 
 record legeos.decision.representation-ladder-is-the-organizing-principle/1 : decision {

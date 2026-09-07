@@ -1,0 +1,420 @@
+---
+
+# Then systemd becomes useful rather than something to fight
+
+TemplarOS already inherits an excellent activation system.
+
+D-Bus services can be launched on demand rather than running for the whole session, and systemd can manage that activation. ([D-Bus][2])
+
+So instead of:
+
+```text
+boot
+ ↓
+launch 27 Templar daemons
+ ↓
+27 mostly idle processes forever
+```
+
+aim for:
+
+```text
+boot
+ ↓
+5 genuinely persistent system components
+ ↓
+everything else dormant
+```
+
+Then:
+
+```text
+client calls Files API
+       ↓
+D-Bus activation
+       ↓
+service starts
+       ↓
+does work
+       ↓
+becomes idle
+       ↓
+exits
+```
+
+Or socket activation:
+
+```text
+kernel/systemd owns socket
+       ↓
+nothing running
+       ↓
+connection arrives
+       ↓
+service starts
+```
+
+D-Bus explicitly supports on-demand service activation, including delegating activation to systemd. ([D-Bus][2])
+
+This is very aligned with what you're trying to achieve.
+
+---
+
+# I would establish a TemplarOS hierarchy of observation
+
+Every service needing to know about state should be forced down this decision tree:
+
+```text
+1. Is there already an authoritative owner?
+       YES → subscribe/query it.
+
+2. Does the kernel expose an event FD?
+       YES → poll/epoll that FD.
+
+3. Does another system service emit a D-Bus/netlink event?
+       YES → subscribe/use activation.
+
+4. Is the condition inherently time-based?
+       YES → systemd timer.
+
+5. Is the underlying event mechanism lossy?
+       YES → event-driven operation
+             + infrequent reconciliation.
+
+6. Nothing exposes the change?
+       → polling allowed as explicit exception.
+```
+
+Polling becomes the **last resort**, rather than the default programming technique.
+
+---
+
+# Examples
+
+### Filesystem
+
+Bad:
+
+```text
+every 5 seconds:
+    stat 20,000 files
+```
+
+Templar:
+
+```text
+filesystem event
+      ↓
+shared index
+      ↓
+generation advances
+      ↓
+interested operation runs
+```
+
+---
+
+### Network
+
+Don't put this through the file index.
+
+Use NetworkManager/netlink.
+
+Linux netlink is explicitly designed for asynchronous kernel→userspace notifications, including network link/address/routing state. ([man7.org][3])
+
+So:
+
+```text
+Wi-Fi link changes
+      ↓
+kernel/netlink
+      ↓
+NetworkManager
+      ↓
+D-Bus signal
+      ↓
+Templar shell reacts
+```
+
+No:
+
+```text
+every 1 second:
+    ask ifconfig whether Wi-Fi changed
+```
+
+---
+
+### Hardware
+
+Use udev.
+
+`udevadm monitor` is literally an event listener for kernel and udev device events. ([freedesktop.org][4])
+
+```text
+USB disk inserted
+      ↓
+kernel uevent
+      ↓
+udev
+      ↓
+filed
+      ↓
+mount/index/update UI
+```
+
+No removable-drive poller.
+
+---
+
+### Resource manager
+
+This one is especially relevant to TemplarOS.
+
+Bad:
+
+```text
+every 250 ms:
+    read CPU
+    read memory
+    read IO
+    decide whether system is overloaded
+```
+
+Linux PSI lets you register a pressure threshold and then block on `poll()`/`epoll()` until that threshold is crossed. ([Linux Kernel Archives][5])
+
+So `resourced` can potentially do:
+
+```text
+sleep indefinitely
+        ↓
+memory pressure becomes significant
+        ↓
+kernel wakes resourced
+        ↓
+throttle/pause low-value compilation
+```
+
+That is almost exactly your philosophy implemented by the kernel.
+
+---
+
+# RAM should not have a general "index"
+
+This is the one part I would reject.
+
+An index of filesystem state works because filesystem changes are:
+
+* relatively infrequent;
+* semantically meaningful;
+* persistent;
+* naturally named/identified.
+
+RAM writes are:
+
+* continuous;
+* enormous in volume;
+* usually meaningless in isolation.
+
+During a Rust compilation your CPU might generate billions of memory operations.
+
+Trying to turn those into a state index would destroy performance.
+
+Instead, monitor the **semantic abstraction produced by the kernel**:
+
+```text
+RAM writes
+    ↓
+kernel MM
+    ↓
+memory pressure / cgroup state / OOM conditions
+    ↓
+PSI event
+```
+
+The insight is therefore not:
+
+> observe every change.
+
+It's:
+
+> **observe every meaningful transition at the highest layer that already knows what it means.**
+
+That's much cheaper.
+
+---
+
+# Time shouldn't be banned either
+
+There are legitimate time-based conditions.
+
+Examples:
+
+```text
+Run a backup at midnight.
+Certificate expires in 7 days.
+Retry failed server connection in 30 seconds.
+Refresh remote repository metadata after 6 hours.
+Garbage collect cache once a week.
+```
+
+Nothing changes on the local filesystem to announce that:
+
+> this certificate is now one day closer to expiration.
+
+Time itself is the state transition.
+
+So systemd timers should remain allowed.
+
+The rule I'd use is:
+
+> **Time may trigger something only when elapsed/calendar time is itself part of the condition—not as a substitute for observing another condition.**
+
+Good:
+
+```text
+OnCalendar=weekly
+    → scrub data drive
+```
+
+Bad:
+
+```text
+OnUnitActiveSec=5s
+    → check whether network changed
+```
+
+That's a useful distinction.
+
+---
+
+# Another legitimate exception: reconciliation
+
+Event systems aren't magically perfect.
+
+We already encountered this with filesystem events:
+
+* queues overflow;
+* daemon may be stopped;
+* external changes may occur;
+* bugs happen.
+
+So there is a useful pattern:
+
+```text
+            EVENT PATH
+               │
+          normal operation
+               │
+               ↓
+          near-zero overhead
+
+
+        RECONCILIATION PATH
+               │
+        rarely / on evidence
+               │
+               ↓
+          verify reality
+```
+
+You shouldn't make the philosophical mistake of saying:
+
+> polling is prohibited, therefore reconciliation is prohibited.
+
+Instead:
+
+> **continuous polling is prohibited where event-driven observation is available.**
+
+Occasional verification is reliability engineering.
+
+Your Btrfs/index-delta work is a very good example: it makes reconciliation proportional to changes rather than repeatedly scanning everything.
+
+---
+
+# I wouldn't build a giant new Templar event daemon
+
+There's a temptation now to create:
+
+```text
+templar-eventd
+```
+
+that everything connects to.
+
+I wouldn't.
+
+Linux/systemd already gives you most of the transport:
+
+* D-Bus;
+* Unix sockets;
+* epoll;
+* netlink;
+* udev;
+* fanotify;
+* pidfds;
+* PSI;
+* cgroups;
+* systemd activation.
+
+Adding another always-running broker to eliminate always-running services would be slightly self-defeating.
+
+Instead, create a **common Rust library and protocol conventions**.
+
+For example:
+
+```text
+crates/templar-events/
+```
+
+could expose ergonomic wrappers around:
+
+```rust
+FilesystemChanges
+DeviceChanges
+NetworkChanges
+ResourcePressure
+ProcessLifecycle
+PowerChanges
+```
+
+but underneath each should use the correct native Linux mechanism.
+
+The unification is at the **developer API and policy level**, not necessarily the kernel/event-transport level.
+
+---
+
+# The index can still be the most important Templar authority
+
+I'd give it ownership of a broader concept than simply filename search.
+
+Something like a **persistent storage catalog**:
+
+```text
+                    Storage Catalog
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   namespace          metadata           generations
+        │                  │                  │
+ filenames           sizes/type          change history
+ parentage           timestamps          freshness
+ filesystem ID       allocation          checkpoints
+ project ID          attributes
+```
+
+Then:
+
+```text
+Files
+FSearch
+Silvaview
+Home
+project manager
+build manager
+backup tooling
+storage cleaner
+recent-files UI
+```
+
+can all operate from it.
