@@ -776,6 +776,78 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Provider(ProviderRole::Terminal),
     },
+    // ---- Projects ---------------------------------------------------------------------
+    // Entering a project and restoring one are deliberately two actions, not one with a
+    // surprise: `Projects1.SetCurrent` selects the context and starts nothing, and
+    // `Projects1.Open` starts the applications the project remembers. A person who wanted the
+    // first and got the second has had eight windows opened at them.
+    ActionDecl {
+        id: "project.enter",
+        label: "Enter project",
+        control: Some("Enter"),
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: Some("project current"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "project.restore",
+        label: "Restore workspace",
+        control: Some("Restore"),
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: Some("project open"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    // The three tools, each a provider role rather than a path copied into a project: "open this
+    // project in the editor" has to keep meaning something after the person changes editors.
+    // Every one of them opens at the project's real root, which is the service's answer and not
+    // a directory this shell inferred.
+    ActionDecl {
+        id: "project.open-terminal",
+        label: "Open terminal at project",
+        control: Some("Terminal"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::Terminal),
+    },
+    ActionDecl {
+        id: "project.open-files",
+        label: "Open project folder",
+        control: Some("Files"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::FileManager),
+    },
+    ActionDecl {
+        id: "project.open-editor",
+        label: "Open project in editor",
+        control: Some("Editor"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Provider(ProviderRole::CodeEditor),
+    },
+    // Creating a project from a folder you are already looking at, which is where the root comes
+    // from — never a directory invented under ~/Projects for a name. Files only: the Home Field
+    // has no selected real directory to mean.
+    ActionDecl {
+        id: "project.create-here",
+        label: "Create project here",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: Some("project create"),
+        confirm: false,
+        requires: Requires::Always,
+    },
     ActionDecl {
         id: "files.select-all",
         label: "Select all",
