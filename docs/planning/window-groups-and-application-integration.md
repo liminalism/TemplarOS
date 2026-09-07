@@ -34,7 +34,7 @@ Seven rules, each with the reason it is a rule:
 
 1. **Groups are explicit.** A group exists only because the user made it, by dropping one
    window on another or by a chord. Nothing is grouped by proximity, by application, or by
-   time. `docs/homefield.md` already forbids inferred relations ("do not infer hidden meaning
+   time. `@legeos.decision.home-field-stable-bounded-semantic-grammar` forbids inferred relations ("do not infer hidden meaning
    from proximity") and the existing `Super+Left/Right` spatial step deliberately stores
    nothing; groups are the stored, visible form that rule asks for.
 2. **The compositor owns groups, through `lege-window`.** `Alt+Tab` and `Super+Tab` must keep

@@ -1,6 +1,6 @@
 # The throw experiment
 
-`docs/homefield.md` proposes *throwing* a tile — a release with velocity projects it toward a
+`@legeos.decision.home-field-stable-bounded-semantic-grammar` stages *throwing* a tile — a release with velocity projects it toward a
 destination — as accelerated direct manipulation, and the author's brief was plain: it may not beat
 drag-and-drop, but it is worth testing. So it is built as an experiment with a kill switch, not a
 feature with a roadmap.

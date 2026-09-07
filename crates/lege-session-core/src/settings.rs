@@ -220,7 +220,8 @@ fn add_home_field_specs(schema: &mut SettingsSchema) {
         (
             "shell.home-field.throw",
             "The throw experiment: `off` places a tile exactly where it is released; `full` \
-             projects a fast release along its velocity (docs/homefield.md)",
+             projects a fast release along its velocity \
+             (@legeos.decision.home-field-stable-bounded-semantic-grammar)",
             SettingValue::Choice("off".into()),
             vec!["off".into(), "full".into()],
             None,

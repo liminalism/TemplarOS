@@ -1,3 +1,36 @@
+# Memory
+
+Your memory is OptMem. LegeOS is developed and validated from the machine's native
+Lubuntu installation; WSL is only an agent-side helper when a request starts from
+Windows and must not be treated as the LegeOS build environment.
+
+- On Lubuntu, the tool is `~/.optmem/memo` and its storage is
+  `~/.optmem/memory`.
+- From a Windows-hosted agent session, invoke the helper store with
+  `wsl.exe bash -lc '~/.optmem/memo <command>'`; do not run project builds or
+  validation there.
+
+OptMem outlives every session, compaction, model and vendor change.
+
+## At startup: activating OptMem (mandatory)
+
+Run `~/.optmem/memo wake` before any other tool call in a Lubuntu session. From a
+Windows-hosted agent session, use
+`wsl.exe bash -lc '~/.optmem/memo wake'`. Follow its output to the end.
+
+## While working: register memories (mandatory)
+
+Run `~/.optmem/memo note "<1 line, max 280 bytes>"` whenever you learn a durable,
+non-redundant fact or complete meaningful work. Use the WSL invocation above from
+Windows. If `note` asks for a compression, finish it before the next action. Never
+edit or delete anything under `~/.optmem/memory`; the tool owns that storage.
+
+Use `memo recall <regex>` to search raw memories and `memo zoom <lo>-<hi>` to
+expand a summary node.
+
+Subagents must not run OptMem. When spawning one, state: `You are a subagent.
+Don't run memo.`
+
 # Agent protocol
 
 ## Project knowledge (AKR)

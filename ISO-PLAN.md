@@ -8,7 +8,7 @@ Governing ledger: `@legeos.milestone.developer-edition-0-1` (all seven checks un
 `@legeos.work.developer-edition-package-closure`. This plan supersedes the *route* in
 `docs/planning/self-hosting-legeos.md` §4–§5 (provision from Lubuntu) with "provision from a LegeOS
 live ISO"; that document's §6–§7 (develop inside, retire Lubuntu) still apply unchanged and are not
-repeated here. `docs/distroagentmidplan.md` remains the lane-delegation companion; this is the route.
+repeated here. The Developer Edition lanes are tracked by `@legeos.milestone.developer-edition-0-1`; this is the route.
 
 ---
 

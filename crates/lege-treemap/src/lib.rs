@@ -1,7 +1,7 @@
 //! Cushion treemaps (van Wijk & van de Wetering, INFOVIS 1999) for the Home Field's file trays:
 //! the *interior* of a tray or a standard-path drawer tile, where visual area proportional to
 //! bytes is the right semantics — never the field's own layout, which optimises stability instead
-//! (`docs/homefield.md`, "How the supplied treemap work fits").
+//! (`@legeos.decision.home-field-stable-bounded-semantic-grammar`).
 //!
 //! Lifted from Silvaview-rs (the author's SequoiaView revival, AGPL-3.0-only like this
 //! workspace, ADR-0013), keeping exactly its pure parts: the arena [`tree`], the squarified

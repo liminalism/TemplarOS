@@ -3,8 +3,8 @@
 The goal in one sentence: a LegeOS that boots on this machine, joins WiFi, and builds its own
 source tree — after which Lubuntu is deletable rather than load-bearing.
 
-This is not a restatement of `docs/distroagentplan.md` (what the distribution is) or
-`docs/distroagentmidplan.md` (how the Developer Edition 0.1 lanes were delegated). Those describe
+This is not a restatement of `@legeos.milestone.developer-edition-0-1` (what the distribution is) or
+`@legeos.work.design-consolidation-roadmap` (how its current cross-cutting work is sequenced). Those describe
 the product. This describes the next fifteen or so hours of work on **this laptop**, in the order
 they have to happen, with the facts about the machine that decide the order. Everything under
 "Verified" below was measured on the host on 2026-09-04; everything else is marked as unknown.
