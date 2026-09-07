@@ -276,6 +276,17 @@ record legeos.papercut.creating-the-home-review-work-record-failed/1 : papercut 
     created_at 2026-09-05
 }
 
+record legeos.papercut.debian-control-s-build-depends-names-only/1 : papercut {
+    title "debian/control's Build-Depends names only libsqlite3-dev, but the built…"
+    state verified
+    statement """
+        debian/control's Build-Depends names only libsqlite3-dev, but the built packages link libdisplay-info, libgbm, libinput, libpixman, libseat, libudev and libxkbcommon, so ci/source-build.sh's chroot would fail at pkg-config; and cargo-deb's $auto on the development host resolved libEGL to libnvidia-gl-580, a dependency no LegeOS package should carry. Both are symptoms of building native packages on a host that is not the target release; scripts/build-in-resolute.sh is the workaround until the source build is the normal route.
+        """
+    observed_at git:5681cf26fb7f1616cefb5f557d0eb84208923242
+    author "claude"
+    created_at 2026-09-05
+}
+
 record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : papercut {
     title "distro/metapackages/README.md promised a distro/metapackages/build.sh…"
     state verified

@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:bd9364a094e9960f531720304cada7a5814f09f503a88a2f20a4ef9d6eb05097"
+    source_graph "sha256:6d7545fbc5a00ced05bf70bdd85f2ec1a032dbf2345f2b60c09eb70bd36aab9c"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:f4372b29deb026f12b0d45d78e3212b9da62e48f2d357181eef50dc2bfbb7071"
-    records 100
+    hash "sha256:6a6428252d9a510425e42c8ee2c50d3e19e31b7ab8c7c145afbf1fad067bad7e"
+    records 101
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -3554,6 +3554,11 @@ seal @legeos.papercut.correcting-my-earlier-papercut-allow/1 {
 seal @legeos.papercut.creating-the-home-review-work-record-failed/1 {
     state verified
     hash "sha256:78e54a70b0240034a19661499ba86d0aaaf00cc4e3f9fa59389e4cbabb3a4b59"
+}
+
+seal @legeos.papercut.debian-control-s-build-depends-names-only/1 {
+    state verified
+    hash "sha256:5c673eec849528757db8f907524cbab41672c2f903e185958e6c2db196eeab6f"
 }
 
 seal @legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 {
