@@ -82,17 +82,50 @@ pub fn open(path: &Path) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("opening {}", path.display()))?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "NORMAL")?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
     // One store per user, opened by more than one daemon: lege-sessiond and lege-filed are
     // separate crash units (ADR-0001, ADR-0002) over the same file, and systemd starts them at
     // once. Without a busy timeout the loser of any write overlap gets SQLITE_BUSY immediately
-    // and fails to start, which on a first login is the whole session.
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    // and fails to start, which on a first login is the whole session. Installed before the
+    // pragmas: switching a fresh database to WAL takes an exclusive lock, and that is the first
+    // overlap two daemons opening one new file ever have.
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .context("setting the busy timeout")?;
+    retry_while_locked(|| connection.pragma_update(None, "journal_mode", "WAL"))
+        .context("switching to WAL")?;
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .context("setting synchronous=NORMAL")?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .context("enabling foreign keys")?;
     refuse_if_too_new(&connection, &path.display().to_string())?;
     migrate(&connection)?;
     Ok(connection)
+}
+
+/// Retry `op` while SQLite reports the database busy or locked, for up to five seconds.
+///
+/// The busy handler does not cover this case: switching a fresh database's journal mode needs an
+/// exclusive lock, and when another connection holds a shared lock on the same file SQLite
+/// returns SQLITE_BUSY at once instead of waiting — which is exactly what two daemons opening one
+/// new store do on a first login. Each retry asks again, so once the winner has switched the file
+/// to WAL the losers find it already there and return.
+fn retry_while_locked<T>(mut op: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match op() {
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Refuse a database a newer build migrated past this one's reach.
@@ -190,7 +223,9 @@ pub fn migrate(connection: &Connection) -> Result<usize> {
         // to run it. The loser reached `CREATE TABLE instances` after the winner had committed
         // one and died with "table instances already exists" — a first login where whichever of
         // lege-sessiond and lege-filed started second did not start at all.
-        connection.execute_batch("BEGIN IMMEDIATE;")?;
+        connection
+            .execute_batch("BEGIN IMMEDIATE;")
+            .with_context(|| format!("beginning the transaction for migration {name}"))?;
         let applied_meanwhile: bool = connection.query_row(
             "SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
             [name],
