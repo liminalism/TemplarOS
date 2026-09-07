@@ -67,10 +67,20 @@ impl Installer {
 
     /// What installing `build_set` would do.
     ///
+    /// Only the component matrix's packages are pinned. A set also carries the archive's
+    /// metapackages — `legeos-desktop`, `legeos-kernel`, `legeos-dev-*` and the two NVIDIA rows —
+    /// and those describe an *image*, not a development host: their dependencies resolve inside a
+    /// LegeOS rootfs and nowhere else, and `legeos-nvidia-open` conflicts with
+    /// `legeos-nvidia-proprietary` by design, so a plan that pinned the whole set would be
+    /// unsatisfiable on any machine. They stay in the archive, which is where the image build
+    /// resolves against them. This is also what [`Installer::verify`] already checks afterwards.
+    ///
     /// # Errors
     /// If the set was never published to this archive.
     pub fn plan(&self, build_set: &str) -> Result<InstallPlan> {
         let manifest = self.repo.manifest(build_set)?;
+        let matrix = super::load_matrix(&self.root);
+        let components = matrix.packages();
         let rollback_to = self
             .repo
             .current()?
@@ -78,7 +88,12 @@ impl Installer {
             .or(self.repo.previous()?);
         Ok(InstallPlan {
             build_set: build_set.to_owned(),
-            pinned: manifest.pinned_packages(),
+            pinned: manifest
+                .packages
+                .iter()
+                .filter(|package| components.contains(&package.package.as_str()))
+                .map(|package| format!("{}={}", package.package, package.version))
+                .collect(),
             rollback_to,
         })
     }
@@ -206,6 +221,12 @@ mod tests {
 
     const SET: &str = "0.1.0~dev2000+gaaaaaaa";
     const OLDER: &str = "0.1.0~dev1000+gbbbbbbb";
+    const METAPACKAGES: &[&str] = &[
+        "legeos-desktop",
+        "legeos-kernel",
+        "legeos-nvidia-open",
+        "legeos-nvidia-proprietary",
+    ];
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("lege-install-{name}-{}", std::process::id()));
@@ -214,12 +235,15 @@ mod tests {
         dir
     }
 
+    /// The matrix's packages plus the archive metapackages a real set also carries — including
+    /// the two NVIDIA rows, which conflict with each other and so can never be installed together.
     fn build_set(scratch: &Path, version: &str) -> Vec<(String, String, PathBuf)> {
         let built = scratch.join(format!("built-{version}"));
         fs::create_dir_all(&built).unwrap();
         lege_build::components::Matrix::embedded()
             .packages()
             .into_iter()
+            .chain(METAPACKAGES.iter().copied())
             .map(|package| {
                 let file = built.join(format!("{package}_{version}_amd64.deb"));
                 fs::write(&file, b"deb").unwrap();
@@ -277,6 +301,24 @@ mod tests {
             13,
             "every package must be pinned in the one command: {install}"
         );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn the_archive_metapackages_are_never_part_of_an_install() {
+        // A set carries the image's metapackages so the image build can resolve against them.
+        // Pinning them on a host asks apt for an impossible set — the two NVIDIA rows conflict —
+        // and apt then refuses the whole deployment.
+        let (installer, _runner, scratch) = installer("metapackages");
+        let plan = installer.plan(SET).unwrap();
+        for meta in METAPACKAGES {
+            assert!(
+                !plan.pinned.iter().any(|pin| pin.starts_with(meta)),
+                "{meta} must not be pinned: {:?}",
+                plan.pinned
+            );
+        }
+        assert_eq!(plan.pinned.len(), 13, "{:?}", plan.pinned);
         let _ = fs::remove_dir_all(scratch);
     }
 

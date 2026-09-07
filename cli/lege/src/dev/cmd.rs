@@ -11,7 +11,6 @@
 //! no business inheriting; if a third appears, extract then.
 
 use anyhow::{Context, Result};
-use std::io::Read as _;
 use std::{
     path::Path,
     process::{Command, Output},
