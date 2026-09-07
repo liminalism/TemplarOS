@@ -10,7 +10,7 @@ use lege_client::{
     proxies::{
         AssociationsProxy, FilesActionsProxy, FilesBrowseProxy, FilesOperationsProxy,
         FilesPreviewsProxy, FilesRecentsProxy, FilesTrashProxy, FilesVolumesProxy, HomeFieldProxy,
-        LauncherProxy,
+        LauncherProxy, ProjectsProxy,
     },
 };
 use pixelkit_shell::Waker;
@@ -188,6 +188,36 @@ impl Backend {
                 Ok(()) => Update::Notice(format!("Added {} to Home", path.display())),
                 Err(error) => Update::OperationFailed {
                     summary: format!("Add {} to Home", path.display()),
+                    error: error_text(error),
+                },
+            };
+            deliver(&tx, &waker, update);
+        });
+    }
+
+    /// Make `path` a `Projects1` project rooted at `path` itself.
+    ///
+    /// The root is the directory the person is looking at — never a directory invented under
+    /// `~/Projects` from the name, which is what `Projects1.Create` gets when the shell groups
+    /// tiles into a project. A folder that is already a project is what the service says it is;
+    /// this reports the refusal rather than deciding what "already exists" should mean.
+    pub fn create_project(&self, path: PathBuf) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let (id, name) = project_identity(&path);
+            let result: Result<()> = async {
+                let connection = session().await?;
+                ProjectsProxy::new(&connection)
+                    .await?
+                    .create(&id, &name, &path.to_string_lossy())
+                    .await?;
+                Ok(())
+            }
+            .await;
+            let update = match result {
+                Ok(()) => Update::Notice(format!("{name} is now a project")),
+                Err(error) => Update::OperationFailed {
+                    summary: format!("Create a project at {}", path.display()),
                     error: error_text(error),
                 },
             };
@@ -469,6 +499,35 @@ fn error_text(error: impl std::fmt::Display) -> String {
 static SESSIONS: tokio::sync::Mutex<
     Option<std::collections::HashMap<tokio::runtime::Id, zbus::Connection>>,
 > = tokio::sync::Mutex::const_new(None);
+
+/// A project's id and its display name, from the directory it is rooted at.
+///
+/// The name is the folder's own, unchanged — it is what the person calls this place. The id is a
+/// slug of it, because a project id travels through D-Bus, the CLI and a state database: ASCII
+/// letters, digits and single hyphens, lower case, and never empty. A directory whose name slugs
+/// away to nothing (`"..."`, a name in a script with no ASCII at all) still gets a usable id
+/// rather than an empty one the service would have to refuse.
+fn project_identity(path: &Path) -> (String, String) {
+    let name = path
+        .file_name()
+        .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy)
+        .into_owned();
+    let mut slug = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_owned();
+    let id = if slug.is_empty() {
+        "project".to_owned()
+    } else {
+        slug
+    };
+    (id, name)
+}
 
 async fn session() -> Result<zbus::Connection> {
     let runtime = tokio::runtime::Handle::current().id();
@@ -926,6 +985,37 @@ mod tests {
             self.0.lock().unwrap().push(text.to_owned());
             Ok(())
         }
+    }
+
+    /// A project id travels through D-Bus, the CLI and a state database, so it is a slug of the
+    /// folder's name — and never empty, whatever the folder is called. The *name* stays the
+    /// folder's own, because that is what the person calls this place.
+    #[test]
+    fn a_project_takes_its_name_from_the_folder_and_a_usable_id_from_that() {
+        for (path, id, name) in [
+            ("/home/dk/src/LegeOS", "legeos", "LegeOS"),
+            ("/home/dk/My Notes", "my-notes", "My Notes"),
+            ("/home/dk/lege_shell.v2", "lege-shell-v2", "lege_shell.v2"),
+            ("/home/dk/--weird--", "weird", "--weird--"),
+            ("/home/dk/2026", "2026", "2026"),
+        ] {
+            assert_eq!(
+                project_identity(Path::new(path)),
+                (id.to_owned(), name.to_owned()),
+                "{path}"
+            );
+        }
+
+        // A name with no ASCII at all still has to produce an id the service will accept.
+        let (id, name) = project_identity(Path::new("/home/dk/\u{7b14}\u{8bb0}"));
+        assert_eq!(id, "project");
+        assert_eq!(name, "\u{7b14}\u{8bb0}");
+        assert!(!id.is_empty());
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "{id} is not a slug"
+        );
     }
 
     #[tokio::test]

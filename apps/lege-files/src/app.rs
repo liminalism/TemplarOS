@@ -396,6 +396,7 @@ impl FilesApp {
                 self.start_operation(operation);
             }
             Command::AddToHome(path) => self.backend.add_to_home(path),
+            Command::CreateProject(path) => self.backend.create_project(path),
             // Opened by the surface itself; it never reaches here.
             Command::ContextMenu { .. } => {}
         }

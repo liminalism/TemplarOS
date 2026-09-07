@@ -97,6 +97,10 @@ impl FileMenu {
                             },
                         ));
                         rows.push(("Add to Home", Command::AddToHome(entry.path.clone())));
+                        rows.push((
+                            "Create project here",
+                            Command::CreateProject(entry.path.clone()),
+                        ));
                     }
                     rows.push(("Rename", action(ActionId::Rename)));
                     rows.push(("Move to Trash", action(ActionId::Trash)));
@@ -119,6 +123,10 @@ impl FileMenu {
                         },
                     ));
                     rows.push(("Add to Home", Command::AddToHome(path.to_path_buf())));
+                    rows.push((
+                        "Create project here",
+                        Command::CreateProject(path.to_path_buf()),
+                    ));
                 }
             }
         }

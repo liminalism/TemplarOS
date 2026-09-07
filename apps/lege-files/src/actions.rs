@@ -134,6 +134,12 @@ pub enum Command {
     },
     /// Place the folder on Home as a clickable object, through `HomeField1`.
     AddToHome(PathBuf),
+    /// Make this directory a real `Projects1` project, rooted at the directory itself.
+    ///
+    /// Deliberately not the same thing as [`Command::AddToHome`]: creating a project is a
+    /// session fact, and pinning one on Home is a layout choice. Doing both from one row would
+    /// make it impossible to have either without the other.
+    CreateProject(PathBuf),
     Select {
         index: usize,
         modifiers: SelectionModifiers,
