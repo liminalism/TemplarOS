@@ -156,6 +156,12 @@ const DEFAULT_FILE_SEARCH: &str = "fsearch";
 /// silently take the role, and choosing one in Settings still overrules both.
 const DEFAULT_TERMINAL: &str = "kitty";
 
+/// The freedesktop category every file manager carries, and the one LegeOS ships. A file manager
+/// declares no more about LegeOS than a terminal does, so the role is read off `Categories=` the
+/// same way — and `pcmanfm-qt` wins by priority for the same reason kitty does.
+const FILE_MANAGER_CATEGORY: &str = "FileManager";
+const DEFAULT_FILE_MANAGER: &str = "pcmanfm-qt";
+
 /// The roles an installed application fills by *being what it is*, rather than by declaring them.
 ///
 /// Every other exclusive role is claimed: an application says `X-LegeOS-Provides=lock-screen` in
@@ -183,6 +189,20 @@ pub fn derived_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
         derived.push(ProviderCapability {
             role: ProviderRole::Terminal,
             priority: if executable_is(manifest, DEFAULT_TERMINAL) {
+                100
+            } else {
+                50
+            },
+        });
+    }
+    if manifest
+        .categories
+        .iter()
+        .any(|category| category == FILE_MANAGER_CATEGORY)
+    {
+        derived.push(ProviderCapability {
+            role: ProviderRole::FileManager,
+            priority: if executable_is(manifest, DEFAULT_FILE_MANAGER) {
                 100
             } else {
                 50
@@ -499,6 +519,33 @@ mod tests {
             derived_capabilities(&cosmic),
             vec![cap(ProviderRole::Terminal, 50)],
             "another terminal is a candidate, not the default"
+        );
+    }
+
+    #[test]
+    fn a_file_manager_declares_the_file_manager_role_by_its_category() {
+        let pcmanfm = app(
+            "desktop-import.pcmanfm-qt",
+            "pcmanfm-qt",
+            &["FileManager", "Utility", "Core", "Qt"],
+            true,
+        );
+        assert_eq!(
+            derived_capabilities(&pcmanfm),
+            vec![cap(ProviderRole::FileManager, 100)],
+            "the file manager LegeOS ships with wins by priority"
+        );
+
+        let thunar = app(
+            "desktop-import.thunar",
+            "thunar",
+            &["System", "FileManager"],
+            true,
+        );
+        assert_eq!(
+            derived_capabilities(&thunar),
+            vec![cap(ProviderRole::FileManager, 50)],
+            "another file manager is a candidate, not the default"
         );
     }
 

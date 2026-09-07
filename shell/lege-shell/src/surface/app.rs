@@ -926,6 +926,28 @@ impl ShellApp {
         });
     }
 
+    /// Open a folder in whichever application holds [`ProviderRole::FileManager`].
+    ///
+    /// Not a hardcoded application. LegeOS's own Files is no longer the file manager — pcmanfm-qt
+    /// is — and the role is the only thing that knows which one this session chose, so this takes
+    /// the same route `project.open-files` already took (`tool_launch`) rather than naming one.
+    fn open_in_file_manager(&mut self, path: &std::path::Path) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let Some(app_id) = self.providers.get(&ProviderRole::FileManager).cloned() else {
+            // The sentence every unfilled role uses, pointing at the same page.
+            self.field_screen.report(
+                format!(
+                    "No {} is selected — choose one in Settings ▸ Providers",
+                    ProviderRole::FileManager
+                ),
+                now_ms,
+            );
+            return;
+        };
+        self.record_recent(&app_id);
+        self.spawn_launch_with_args(app_id, vec![path.to_string_lossy().into_owned()]);
+    }
+
     fn spawn_open_file(&mut self, path: PathBuf) {
         self.browser_status = Some(format!("Opening {}…", path.display()));
         let tx = self.data_tx.clone();
@@ -1604,12 +1626,7 @@ impl ShellApp {
                 self.perform(FieldAction::OpenInFiles(path));
             }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
-            FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
-                Ok(app_id) => {
-                    self.spawn_launch_with_args(app_id, vec![path.to_string_lossy().into_owned()]);
-                }
-                Err(error) => tracing::error!(%error, "the Files app id failed to parse"),
-            },
+            FieldAction::OpenInFiles(path) => self.open_in_file_manager(&path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),

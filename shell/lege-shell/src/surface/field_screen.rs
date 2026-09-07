@@ -92,7 +92,7 @@ pub enum FieldAction {
     /// Open `path` as a folder window on Home — a tile placed on the field, not a mode the whole
     /// screen enters. Raises the window already showing that path rather than opening a second.
     OpenFolderWindow(PathBuf),
-    /// Open this folder in the standalone Files manager (`org.legeos.Files`), the surface with
+    /// Open this folder in whichever application holds `ProviderRole::FileManager`, the surface with
     /// the full drives sidebar — the browse pane's door to somewhere it does not go itself.
     OpenInFiles(PathBuf),
     /// Perform one declared action (`lege_types::action::MANIFEST`). This is how every widget
