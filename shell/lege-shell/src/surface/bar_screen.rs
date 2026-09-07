@@ -277,6 +277,17 @@ impl BarScreen {
         self.update_hover(ui, &layout, data);
         let layout = Self::layout(ui, area, data, self.open_row);
 
+        // Every pixel of the surface, first. This surface has no alpha — softbuffer attaches an
+        // `Xrgb8888` shm buffer — so anything a frame does not write shows as black, and a strip
+        // that painted only its chips was a black block in the corner of the screen rather than
+        // chips floating on the desktop. Home's own ground is the honest fill: the chips then
+        // read as sitting on Home, which is what is actually behind them.
+        //
+        // ponytail: an opaque ground, not transparency. The upgrade is a bridge-owned
+        // `Argb8888` wl_shm surface painted by pixelkit, the way `session_lock` already does it,
+        // instead of a winit window over softbuffer.
+        ui.painter.fill_rect(area, design::ground());
+
         // The row first: it floats over whatever is above the bar and claims its clicks before
         // the bar's own cells can.
         if let Some(index) = self.open_row
@@ -629,6 +640,36 @@ mod tests {
             );
             let top = BAR_HEIGHT + ROW_BAND - self.height;
             BarScreen::layout(&ui, Rect::new(0, top, self.width, self.height), &data, None).cells
+        }
+    }
+
+    /// The bar surface has no alpha: softbuffer attaches an `Xrgb8888` shm buffer, so a pixel
+    /// this paint does not write shows as black rather than as the desktop. Painting only the
+    /// chips left a black block in the corner of the screen with the chips on it — the mess the
+    /// user reported. Every pixel of the surface, in every state, must be written every frame.
+    #[test]
+    fn every_pixel_of_the_surface_is_painted() {
+        const SENTINEL: u32 = 0x00ff_00ff;
+        for toplevels in [
+            Vec::new(),
+            vec![window(1, "org.example.Editor", "notes", true, true)],
+        ] {
+            let mut h = Harness::new(toplevels);
+            h.frame();
+            let (width, height) = (h.width, h.height);
+            h.buffer.pixels.fill(SENTINEL);
+            h.frame();
+            let stride = h.buffer.width as usize;
+            let top = BAR_HEIGHT + ROW_BAND - height;
+            for y in top..top + height {
+                for x in 0..width {
+                    assert_ne!(
+                        h.buffer.pixels[y as usize * stride + x as usize],
+                        SENTINEL,
+                        "the bar left {x},{y} unpainted"
+                    );
+                }
+            }
         }
     }
 

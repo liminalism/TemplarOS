@@ -149,6 +149,85 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
 }
 
+/// Render the bottom bar at rest to a PNG: the network and clock chips plus three taskbar
+/// entries — a group (active, with its accent stripe and its plate), a plain application, and one
+/// under the pointer — at `scale`, in a surface exactly the size the host would ask for.
+///
+/// The counterpart to [`render_field`] for the one surface nobody could see: the bar is a few
+/// hundred pixels in the corner of a live session, and every question about it (is the ground
+/// there, do the labels fit, does the stripe eat the plate) is answerable from an image.
+pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
+    use crate::surface::bar_screen::{BarData, BarScreen, wanted_size};
+
+    let entries = vec![
+        crate::taskbar::Entry {
+            key: "group:7".to_owned(),
+            label: "Notes and sources".to_owned(),
+            accent: Some(0x00e0_7b39),
+            app_id: None,
+            windows: vec![
+                (lege_window::WindowId(1), "Notes".to_owned()),
+                (lege_window::WindowId(2), "Sources".to_owned()),
+            ],
+            active: true,
+        },
+        crate::taskbar::Entry {
+            key: "org.example.Editor".to_owned(),
+            label: "Editor".to_owned(),
+            accent: None,
+            app_id: Some("org.example.Editor".to_owned()),
+            windows: vec![(lege_window::WindowId(3), "draft.md".to_owned())],
+            active: false,
+        },
+        crate::taskbar::Entry {
+            key: "org.legeos.Settings".to_owned(),
+            label: "Settings".to_owned(),
+            accent: None,
+            app_id: Some("org.legeos.Settings".to_owned()),
+            windows: vec![(lege_window::WindowId(4), "Appearance".to_owned())],
+            active: false,
+        },
+    ];
+    let logical = wanted_size(
+        &entries,
+        Some((lege_window::WindowId(1), false)),
+        false,
+        2560,
+    );
+    let scale = Scale::new(scale);
+    let (width, height) = (scale.px(logical.0) as u32, scale.px(logical.1) as u32);
+
+    let mut buffer = WindowBuffer::new(width, height);
+    let mut text = pixelkit_text::TextCache::new(fonts::set());
+    let mut kernel = RasterKernel::new();
+    let mut input = Input::new();
+    let mut screen = BarScreen::default();
+    let icons = HashMap::new();
+    let data = BarData {
+        entries: &entries,
+        icons: &icons,
+        clock_label: &crate::surface::app::clock_label_now(),
+        network_control_available: true,
+        activated: Some((lege_window::WindowId(1), false)),
+        now_ms: 0,
+    };
+    // The pointer over the last chip, so one entry is drawn hovered. The dwell has not elapsed
+    // (`now_ms` is 0), so no row opens and the strip stays its resting width.
+    let last = width as f32 - scale.px(24) as f32;
+    input.cursor_moved(last, height as f32 / 2.0);
+    let mut ui = Ui::new(
+        Painter::new(&mut buffer),
+        &mut text,
+        &mut input,
+        design::theme(),
+        scale,
+        &mut kernel,
+    );
+    screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
+    input.end_frame();
+    write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
+}
+
 /// `WindowBuffer` is 0xAARRGGBB in native order; PNG wants RGBA bytes.
 pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
     let mut rgba = Vec::with_capacity(buffer.pixels.len() * 4);
