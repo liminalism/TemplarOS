@@ -82,6 +82,10 @@ pub struct Invocation {
 pub struct FakeCommandRunner {
     pub calls: std::sync::Mutex<Vec<Invocation>>,
     pub failures: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// `(substring of "program arg arg…", stdout)`, first match wins. Keyed on a substring
+    /// rather than the program because one tool has many subcommands: `btrfs subvolume show`
+    /// and `btrfs filesystem du` are parsed by different callers and must answer differently.
+    pub outputs: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
 }
 
 #[cfg(test)]
@@ -91,6 +95,14 @@ impl FakeCommandRunner {
             .lock()
             .expect("poisoned")
             .insert(program.to_owned());
+    }
+
+    /// Answer any invocation whose command line contains `matching` with `stdout`.
+    pub fn respond(&self, matching: &str, stdout: &str) {
+        self.outputs
+            .lock()
+            .expect("poisoned")
+            .push((matching.to_owned(), stdout.as_bytes().to_vec()));
     }
 
     pub fn calls(&self) -> Vec<Invocation> {
@@ -112,9 +124,21 @@ impl CommandRunner for FakeCommandRunner {
         if self.failures.lock().expect("poisoned").contains(program) {
             anyhow::bail!("{program} failed (fake)");
         }
+        let line = std::iter::once(program)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let stdout = self
+            .outputs
+            .lock()
+            .expect("poisoned")
+            .iter()
+            .find(|(matching, _)| line.contains(matching.as_str()))
+            .map(|(_, stdout)| stdout.clone())
+            .unwrap_or_default();
         Ok(Output {
             status: std::process::ExitStatus::from_raw(0),
-            stdout: Vec::new(),
+            stdout,
             stderr: Vec::new(),
         })
     }

@@ -53,6 +53,16 @@ pub struct Checkpoint {
     pub uuid: Option<String>,
     pub ctransid: Option<u64>,
     pub created_ms: i64,
+    /// What holding this checkpoint costs: bytes referenced by it and by nothing else, so
+    /// discarding it frees them and nothing else does. `None` when `btrfs filesystem du` could
+    /// not be read, and `None` from [`IndexCheckpoints::create`] — a snapshot taken a moment ago
+    /// shares every extent with the live subvolume, so the number is only meaningful once the
+    /// checkpoint has been retained for a while, which is exactly what [`IndexCheckpoints::list`]
+    /// reports on.
+    ///
+    /// Serde-defaulted: the List JSON grows, the D-Bus signature does not.
+    #[serde(default)]
+    pub exclusive_bytes: Option<u64>,
 }
 
 /// A written delta stream.
@@ -168,6 +178,8 @@ impl IndexCheckpoints {
             uuid,
             ctransid,
             created_ms: self.now_ms(),
+            // Nothing is pinned yet: see the field's own doc.
+            exclusive_bytes: None,
         })
     }
 
@@ -200,6 +212,10 @@ impl IndexCheckpoints {
                 .and_then(|metadata| metadata.created().ok())
                 .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |since| since.as_millis() as i64);
+            // ponytail: one `btrfs filesystem du` per checkpoint per List. There is one
+            // retained checkpoint per subvolume and List runs once per catch-up, so this is a
+            // handful of calls a day; cache it on the checkpoint if that ever stops being true.
+            let exclusive_bytes = self.exclusive_bytes(&path);
             checkpoints.push(Checkpoint {
                 id,
                 path: path.to_string_lossy().into_owned(),
@@ -207,6 +223,7 @@ impl IndexCheckpoints {
                 uuid,
                 ctransid,
                 created_ms,
+                exclusive_bytes,
             });
         }
         checkpoints.sort_by(|a, b| a.id.cmp(&b.id));
@@ -272,6 +289,24 @@ impl IndexCheckpoints {
             bytes,
             duration_ms,
         })
+    }
+
+    /// [`Self::delta`], handed over as an open file rather than as a path.
+    ///
+    /// The stream is unlinked before this returns, so the bytes reach exactly one caller: after
+    /// the `remove_file` no other process can open the name, and the kernel frees the blocks when
+    /// the last descriptor closes. That is what makes a metadata delta — which names every path
+    /// under `@home` — safe to hand to an unprivileged per-user daemon, and it is the same shape
+    /// `org.legeos.Files.Index1.OpenSnapshot` already uses on the session bus.
+    ///
+    /// The returned [`DeltaStream::path`] is the name the file *had*. It is kept for the log line
+    /// and the byte count; opening it again finds nothing.
+    pub fn delta_open(&self, request: &DeltaRequest) -> Result<(std::fs::File, DeltaStream)> {
+        let stream = self.delta(request)?;
+        let file = std::fs::File::open(&stream.path)
+            .with_context(|| format!("opening {}", stream.path))?;
+        std::fs::remove_file(&stream.path).with_context(|| format!("unlinking {}", stream.path))?;
+        Ok((file, stream))
     }
 
     /// Delete a checkpoint. The delta protocol retains the newer snapshot and drops the older one,
@@ -346,6 +381,35 @@ impl IndexCheckpoints {
             }
         }
         (uuid, ctransid)
+    }
+
+    /// `btrfs filesystem du -s --raw`'s Exclusive column, or `None` when it cannot be read.
+    ///
+    /// The output is a header line and then one row per path:
+    ///
+    /// ```text
+    ///      Total   Exclusive  Set shared  Filename
+    ///   12582912     4194304           -  /.snapshots/index-home-…
+    /// ```
+    fn exclusive_bytes(&self, path: &Path) -> Option<u64> {
+        let output = self
+            .commands
+            .run(
+                "btrfs",
+                &["filesystem", "du", "-s", "--raw", &path.to_string_lossy()],
+            )
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            // The header's first field is "Total"; a data row's is a byte count.
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                fields.next()?.parse::<u64>().ok()?;
+                fields.next()?.parse::<u64>().ok()
+            })
     }
 }
 
@@ -554,5 +618,95 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (checkpoints, _) = store(dir.path());
         assert!(checkpoints.list().unwrap().is_empty());
+    }
+
+    /// `btrfs send` with the bytes it would have written. The real thing writes to the path after
+    /// `-f`, and everything `delta_open` does — open it, unlink it, hand it over — depends on
+    /// that file existing, so a runner that records the call and writes nothing cannot test it.
+    #[derive(Debug)]
+    struct SendingRunner(Vec<u8>);
+
+    impl CommandRunner for SendingRunner {
+        fn run(&self, _program: &str, args: &[&str]) -> Result<std::process::Output> {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(index) = args.iter().position(|arg| *arg == "-f") {
+                std::fs::write(args[index + 1], &self.0)?;
+            }
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn sending_store(dir: &Path, bytes: &[u8]) -> IndexCheckpoints {
+        IndexCheckpoints::new(
+            Arc::new(FakeSnapshotter::default()),
+            Arc::new(SendingRunner(bytes.to_vec())),
+            Arc::new(FixedClock(UNIX_EPOCH + Duration::from_secs(1_800_000_000))),
+            dir.join("snapshots/index"),
+            dir.join("streams"),
+            dir.join("home"),
+        )
+    }
+
+    #[test]
+    fn delta_open_hands_over_the_stream_and_leaves_no_path_behind() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        let checkpoints = sending_store(dir.path(), b"btrfs-stream\0the bytes");
+        let first = checkpoints.create(&CheckpointRequest::default()).unwrap();
+        std::fs::create_dir_all(dir.path().join("snapshots/index/index-home-second")).unwrap();
+
+        let (mut file, stream) = checkpoints
+            .delta_open(&DeltaRequest {
+                from: first.id,
+                to: "index-home-second".to_owned(),
+                ..DeltaRequest::default()
+            })
+            .unwrap();
+
+        let mut read = Vec::new();
+        file.read_to_end(&mut read).unwrap();
+        assert_eq!(read, b"btrfs-stream\0the bytes");
+        assert_eq!(stream.bytes, read.len() as u64);
+        assert!(
+            !Path::new(&stream.path).exists(),
+            "the stream is still readable at {} — a metadata delta names every path under @home",
+            stream.path
+        );
+    }
+
+    #[test]
+    fn a_listed_checkpoint_says_what_holding_it_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        let (checkpoints, commands) = store(dir.path());
+        commands.respond(
+            "filesystem du",
+            "     Total   Exclusive  Set shared  Filename\n  12582912     4194304           -  /snap\n",
+        );
+        let created = checkpoints.create(&CheckpointRequest::default()).unwrap();
+        assert_eq!(
+            created.exclusive_bytes, None,
+            "a snapshot taken a moment ago pins nothing of its own"
+        );
+
+        let listed = checkpoints.list().unwrap();
+        assert_eq!(listed[0].exclusive_bytes, Some(4_194_304));
+    }
+
+    #[test]
+    fn a_checkpoint_whose_disk_cost_cannot_be_read_says_so_rather_than_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        let (checkpoints, _) = store(dir.path());
+        checkpoints.create(&CheckpointRequest::default()).unwrap();
+        // The fake answers `btrfs filesystem du` with nothing at all, which is what a kernel
+        // without the ioctl, or a non-btrfs path, looks like.
+        assert_eq!(checkpoints.list().unwrap()[0].exclusive_bytes, None);
     }
 }

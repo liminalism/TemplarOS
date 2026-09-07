@@ -333,6 +333,24 @@ impl IndexCheckpointApi {
         to_json(&stream)
     }
 
+    /// The same delta, handed over as a descriptor: hostd opens the stream and unlinks it before
+    /// returning, so the bytes reach exactly one caller and no path survives the call. This is
+    /// the form `lege-filed` uses; `Delta` above names a root-only file and is for measurement.
+    async fn delta_open(
+        &self,
+        request_json: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<(zbus::zvariant::OwnedFd, String)> {
+        require_authorized(&*self.state.polkit, &header, "index-checkpoint").await?;
+        let request = parse_request(request_json)?;
+        let checkpoints = self.checkpoints.clone();
+        let (file, stream) = tokio::task::spawn_blocking(move || checkpoints.delta_open(&request))
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
+            .map_err(failed)?;
+        Ok((std::os::fd::OwnedFd::from(file).into(), to_json(&stream)?))
+    }
+
     /// Drop a checkpoint, once the delta taken against it has been applied.
     async fn discard(&self, id: &str, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
         require_authorized(&*self.state.polkit, &header, "index-checkpoint").await?;
