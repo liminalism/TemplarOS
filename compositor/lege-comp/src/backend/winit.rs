@@ -18,6 +18,7 @@ use smithay::{
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
+    input::pointer::{CursorIcon, CursorImageStatus},
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{calloop::EventLoop, wayland_server::Display},
     utils::Transform,
@@ -129,6 +130,8 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
     let output_for_loop = output.clone();
     let mut damage_tracker = OutputDamageTracker::from_output(&output_for_loop);
     let mut ready_notified = false;
+    // The host cursor last asked for, so the window is only told when it actually changes.
+    let mut host_cursor: Option<CursorIcon> = None;
     event_loop
         .handle()
         .insert_source(
@@ -236,6 +239,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                             |_, _| Some(output_for_loop.clone()),
                         );
                     });
+                    apply_host_cursor(graphics.window(), &state.cursor_status, &mut host_cursor);
                     graphics.window().request_redraw();
                 }
                 WinitEvent::CloseRequested => {
@@ -259,4 +263,33 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
         }
     })?;
     Ok(session_command.map_or(0, |command| command.shut_down()))
+}
+
+/// Show `status` on the host window, so the compositor's own cursors (the resize perimeter, most
+/// of all) are visible when running nested — where there is no scanout to paint one onto and
+/// `src/cursor.rs` therefore never runs.
+///
+/// A client-supplied cursor surface is drawn by the scene like any other surface, so the host
+/// pointer is hidden underneath it rather than showing two cursors at once. `last` is the icon
+/// already applied: winit's `set_cursor` is not free, and this is called once per frame.
+fn apply_host_cursor(
+    window: &dyn smithay::reexports::winit::window::Window,
+    status: &CursorImageStatus,
+    last: &mut Option<CursorIcon>,
+) {
+    let wanted = match status {
+        CursorImageStatus::Named(icon) => Some(*icon),
+        CursorImageStatus::Hidden | CursorImageStatus::Surface(_) => None,
+    };
+    if *last == wanted {
+        return;
+    }
+    match wanted {
+        Some(icon) => {
+            window.set_cursor(icon.into());
+            window.set_cursor_visible(true);
+        }
+        None => window.set_cursor_visible(false),
+    }
+    *last = wanted;
 }
