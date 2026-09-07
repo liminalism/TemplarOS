@@ -16,6 +16,9 @@ pub trait FilesBrowse {
     /// A `BrowserSources` JSON snapshot: XDG places and service-approved drives.
     fn roots(&self) -> zbus::Result<String>;
 
+    /// Add/remove a persistent folder bookmark. Never changes the folder itself.
+    fn set_bookmark(&self, path: &str, bookmarked: bool) -> zbus::Result<()>;
+
     /// A `DirectoryListing` JSON snapshot: immediate children, folder-first natural order.
     fn list_directory(
         &self,

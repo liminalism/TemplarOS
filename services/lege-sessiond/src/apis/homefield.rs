@@ -111,6 +111,40 @@ impl HomeFieldApi {
         to_json(&doc)
     }
 
+    async fn place_folder(
+        &self,
+        output: &str,
+        path: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<u64> {
+        let path = std::path::Path::new(path);
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(fdo::Error::InvalidArgs(
+                "path must be an existing absolute folder".into(),
+            ));
+        }
+        let doc = homefield::load(&self.store, output)
+            .map_err(failed)?
+            .ok_or_else(|| {
+                fdo::Error::InvalidArgs(format!("no home field stored for {output:?}"))
+            })?;
+        // The same key the shell derives (`field_model::folder_tile_id`), so a folder placed here
+        // and one opened from Home are one tile, not two.
+        let id = lege_field::TileId::for_key(&format!("folder:{}", path.to_string_lossy()));
+        let Some(op) = lege_field::place_folder_op(&doc, id, path) else {
+            return Ok(doc.revision);
+        };
+        let doc = homefield::apply_op(&self.store, output, &op)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        self.record(format!(
+            "Home Field on {output}: folder {} added (revision {}).",
+            path.display(),
+            doc.revision
+        ));
+        let _ = emitter.changed(output.to_owned(), doc.revision).await;
+        Ok(doc.revision)
+    }
+
     async fn get_revision(&self, output: &str) -> fdo::Result<u64> {
         Ok(homefield::load(&self.store, output)
             .map_err(failed)?

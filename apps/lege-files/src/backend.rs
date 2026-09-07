@@ -9,7 +9,8 @@ use lege_client::{
     },
     proxies::{
         AssociationsProxy, FilesActionsProxy, FilesBrowseProxy, FilesOperationsProxy,
-        FilesPreviewsProxy, FilesRecentsProxy, FilesTrashProxy, FilesVolumesProxy, LauncherProxy,
+        FilesPreviewsProxy, FilesRecentsProxy, FilesTrashProxy, FilesVolumesProxy, HomeFieldProxy,
+        LauncherProxy,
     },
 };
 use pixelkit_shell::Waker;
@@ -55,6 +56,8 @@ pub enum Update {
         request: crate::model::ThumbnailRequest,
         bitmap: Option<pixelkit_raster::Bitmap>,
     },
+    /// A one-line status, nothing to refresh.
+    Notice(String),
     CopiedPath {
         path: PathBuf,
         result: std::result::Result<String, String>,
@@ -121,6 +124,74 @@ impl Backend {
         self.runtime.spawn(async move {
             let result = fetch_roots().await.map_err(error_text);
             deliver(&tx, &waker, Update::Roots(result));
+        });
+    }
+
+    pub fn bookmark(&self, path: PathBuf, bookmarked: bool) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let result: Result<BrowserSources> = async {
+                let connection = session().await?;
+                FilesBrowseProxy::new(&connection)
+                    .await?
+                    .set_bookmark(&path.to_string_lossy(), bookmarked)
+                    .await?;
+                fetch_roots().await
+            }
+            .await;
+            deliver(&tx, &waker, Update::Roots(result.map_err(error_text)));
+        });
+    }
+
+    /// Another Files window on `path`, through the launcher so it is its own instance — one the
+    /// window switcher lists — rather than a child of this process.
+    pub fn open_window(&self, path: PathBuf) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let result: Result<()> = async {
+                let connection = session().await?;
+                LauncherProxy::new(&connection)
+                    .await?
+                    .launch(APP_ID, vec![path.to_string_lossy().into_owned()], "")
+                    .await?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                deliver(
+                    &tx,
+                    &waker,
+                    Update::OperationFailed {
+                        summary: format!("Open {} in a new window", path.display()),
+                        error: error_text(error),
+                    },
+                );
+            }
+        });
+    }
+
+    /// Place `path` on Home as a folder object. The daemon owns the field document, so it decides
+    /// where the tile lands; this window only names the folder.
+    pub fn add_to_home(&self, path: PathBuf) {
+        let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
+        self.runtime.spawn(async move {
+            let result: Result<()> = async {
+                let connection = session().await?;
+                HomeFieldProxy::new(&connection)
+                    .await?
+                    .place_folder("primary", &path.to_string_lossy())
+                    .await?;
+                Ok(())
+            }
+            .await;
+            let update = match result {
+                Ok(()) => Update::Notice(format!("Added {} to Home", path.display())),
+                Err(error) => Update::OperationFailed {
+                    summary: format!("Add {} to Home", path.display()),
+                    error: error_text(error),
+                },
+            };
+            deliver(&tx, &waker, update);
         });
     }
 

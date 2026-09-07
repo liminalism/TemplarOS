@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
         },
         Recents::new(store.clone()),
         index,
-        LastDirectoryStore::new(store, home.clone()),
+        LastDirectoryStore::new(store.clone(), home.clone()),
         cli.reserve_percent,
     );
 
@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
             names::ROOT_PATH,
             BrowseApi {
                 reserve_percent: cli.reserve_percent,
+                bookmarks: lege_filed::bookmarks::Bookmarks(store.clone()),
             },
         )?
         .serve_at(names::ROOT_PATH, PreviewsApi)?

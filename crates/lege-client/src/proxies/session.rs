@@ -366,6 +366,9 @@ mod homefield {
         /// `cols`×`rows`, which the shell's next merge fills with the default layout.
         fn reset(&self, output: &str, cols: u16, rows: u16) -> zbus::Result<String>;
 
+        /// Place `path` as a folder object on `output`'s field; returns the revision.
+        fn place_folder(&self, output: &str, path: &str) -> zbus::Result<u64>;
+
         fn get_revision(&self, output: &str) -> zbus::Result<u64>;
 
         #[zbus(signal)]

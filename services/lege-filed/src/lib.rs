@@ -13,6 +13,7 @@
 // std, and each call site carries a `SAFETY:` note. Everything else in the crate is safe.
 
 pub mod actions;
+pub mod bookmarks;
 pub mod browse;
 pub mod dbus;
 pub mod execute;

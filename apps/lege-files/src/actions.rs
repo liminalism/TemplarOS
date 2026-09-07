@@ -122,6 +122,18 @@ impl ActionId {
 pub enum Command {
     Action(ActionId, SelectionModifiers),
     Navigate(PathBuf),
+    OpenWindow(PathBuf),
+    Bookmark {
+        path: PathBuf,
+        enabled: bool,
+    },
+    PasteInto(PathBuf),
+    ContextMenu {
+        at: (i32, i32),
+        target: MenuTarget,
+    },
+    /// Place the folder on Home as a clickable object, through `HomeField1`.
+    AddToHome(PathBuf),
     Select {
         index: usize,
         modifiers: SelectionModifiers,
@@ -133,6 +145,13 @@ pub enum Command {
     /// The thumbnail grid reported which entry range it can see; the app asks the backend for
     /// the bounded batch the model derives from it.
     ThumbnailsVisible(std::ops::Range<usize>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MenuTarget {
+    Entry(usize),
+    Ground,
+    Bookmark(PathBuf),
 }
 
 pub fn shortcut(key: &KeyInput, modifiers: Modifiers) -> Option<ActionId> {

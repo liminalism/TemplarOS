@@ -7,9 +7,10 @@
 
 use super::Migration;
 
-pub const MIGRATIONS: &[Migration] = &[Migration::additive(
-    "0003-files",
-    r"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration::additive(
+        "0003-files",
+        r"
         -- Progress and provenance for a journalled operation. The journal itself stays in
         -- file_operations.journal; these columns are what a UI lists without parsing it.
         ALTER TABLE file_operations ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0;
@@ -68,4 +69,15 @@ pub const MIGRATIONS: &[Migration] = &[Migration::additive(
             at_ms  INTEGER NOT NULL
         );
         ",
-)];
+    ),
+    Migration::additive(
+        "files-folder-bookmarks",
+        "
+    CREATE TABLE folder_bookmarks (
+        path TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        at_ms INTEGER NOT NULL
+    );
+",
+    ),
+];

@@ -57,6 +57,10 @@ impl FilesApp {
                     self.model
                         .apply_thumbnail(request.generation, &request.path, bitmap);
                 }
+                Update::Notice(text) => {
+                    self.model.error = None;
+                    self.model.status = Some(text);
+                }
                 Update::CopiedPath { path, result } => match result {
                     Ok(copied) => {
                         self.model.error = None;
@@ -385,6 +389,15 @@ impl FilesApp {
                 }
             }
             Command::DismissDialog => self.surface.dismiss_dialog(),
+            Command::OpenWindow(path) => self.backend.open_window(path),
+            Command::Bookmark { path, enabled } => self.backend.bookmark(path, enabled),
+            Command::PasteInto(path) => {
+                let operation = self.model.paste_into(path);
+                self.start_operation(operation);
+            }
+            Command::AddToHome(path) => self.backend.add_to_home(path),
+            // Opened by the surface itself; it never reaches here.
+            Command::ContextMenu { .. } => {}
         }
     }
 }

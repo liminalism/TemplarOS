@@ -811,8 +811,13 @@ impl BrowserModel {
     }
 
     pub fn paste(&self) -> Option<PlannedOperation> {
+        self.paste_into(self.directory()?.to_path_buf())
+    }
+
+    /// Paste the clipboard into `destination_dir` rather than the open folder — a right-click on
+    /// a folder row.
+    pub fn paste_into(&self, destination_dir: PathBuf) -> Option<PlannedOperation> {
         let clipboard = self.clipboard.as_ref()?;
-        let destination_dir = self.directory()?.to_path_buf();
         let request = match clipboard.mode {
             ClipboardMode::Copy => OperationRequest::Copy {
                 sources: clipboard.paths.clone(),

@@ -7,7 +7,7 @@ use pixelkit_text::{Align, TextCache, TextStyle};
 use pixelkit_ui::{ScrollState, Theme, Ui};
 
 use crate::{
-    actions::{ActionId, Command, shortcut},
+    actions::{ActionId, Command, MenuTarget, shortcut},
     fonts, format,
     model::{BrowserModel, SelectionModifiers},
 };
@@ -36,6 +36,135 @@ const GOOD: u32 = 0x001f_8f60;
 const FOLDER_PLATE: u32 = 0x00fb_f8f1;
 const FOLDER_PLATE_EDGE: u32 = 0x00e2_dbc9;
 
+fn draw_place_icon(ui: &mut Ui<'_>, area: Rect, drive: bool) {
+    let side = ui.px(20);
+    let icon = Rect::new(area.x, area.y + ui.px(3), side, ui.px(16));
+    if !drive {
+        ui.painter.fill_rounded_rect(
+            Rect::new(icon.x, icon.y, side / 2, ui.px(6)),
+            ui.px(2),
+            ACCENT,
+        );
+    }
+    ui.painter.fill_rounded_rect(
+        Rect::new(icon.x, icon.y + ui.px(4), side, ui.px(12)),
+        ui.px(2),
+        if drive { TEXT_DIM } else { ACCENT },
+    );
+}
+
+#[derive(Debug)]
+struct FileMenu {
+    at: (i32, i32),
+    rows: Vec<(&'static str, Command)>,
+}
+
+impl FileMenu {
+    fn new(at: (i32, i32), target: &MenuTarget, model: &BrowserModel) -> Self {
+        let action = |id| Command::Action(id, SelectionModifiers::default());
+        let mut rows = Vec::new();
+        match target {
+            MenuTarget::Bookmark(path) => {
+                rows.push(("Open", Command::Navigate(path.clone())));
+                rows.push(("Open in new window", Command::OpenWindow(path.clone())));
+                rows.push(("Add to Home", Command::AddToHome(path.clone())));
+                rows.push((
+                    "Remove bookmark",
+                    Command::Bookmark {
+                        path: path.clone(),
+                        enabled: false,
+                    },
+                ));
+            }
+            MenuTarget::Entry(index) => {
+                if let Some(entry) = model.listing.as_ref().and_then(|l| l.entries.get(*index)) {
+                    rows.push(("Open", action(ActionId::Open)));
+                    if entry.is_dir() {
+                        rows.push((
+                            "Open in new window",
+                            Command::OpenWindow(entry.path.clone()),
+                        ));
+                    }
+                    rows.push(("Copy", action(ActionId::Copy)));
+                    rows.push(("Cut", action(ActionId::Cut)));
+                    if entry.is_dir() {
+                        rows.push(("Paste into folder", Command::PasteInto(entry.path.clone())));
+                        rows.push((
+                            "Bookmark folder",
+                            Command::Bookmark {
+                                path: entry.path.clone(),
+                                enabled: true,
+                            },
+                        ));
+                        rows.push(("Add to Home", Command::AddToHome(entry.path.clone())));
+                    }
+                    rows.push(("Rename", action(ActionId::Rename)));
+                    rows.push(("Move to Trash", action(ActionId::Trash)));
+                    rows.push(("Properties", action(ActionId::Properties)));
+                }
+            }
+            MenuTarget::Ground => {
+                rows.push(("Paste", action(ActionId::Paste)));
+                rows.push(("Select all", action(ActionId::SelectAll)));
+                if let Some(path) = model.directory() {
+                    rows.push((
+                        "Open in new window",
+                        Command::OpenWindow(path.to_path_buf()),
+                    ));
+                    rows.push((
+                        "Bookmark folder",
+                        Command::Bookmark {
+                            path: path.to_path_buf(),
+                            enabled: true,
+                        },
+                    ));
+                    rows.push(("Add to Home", Command::AddToHome(path.to_path_buf())));
+                }
+            }
+        }
+        Self { at, rows }
+    }
+
+    fn rect(&self, ui: &Ui<'_>, bounds: Rect) -> Rect {
+        let w = ui.px(230).min(bounds.w);
+        let h = (self.rows.len() as i32 * ui.px(32)).min(bounds.h);
+        Rect::new(
+            self.at.0.clamp(bounds.x, bounds.right() - w),
+            self.at.1.clamp(bounds.y, bounds.bottom() - h),
+            w,
+            h,
+        )
+    }
+
+    fn update(&self, ui: &mut Ui<'_>, bounds: Rect) -> (Option<Command>, bool) {
+        let escape = ui.input.take_keys().contains(&KeyInput::Escape);
+        let rect = self.rect(ui, bounds);
+        for (index, (_, command)) in self.rows.iter().enumerate() {
+            let row = Rect::new(rect.x, rect.y + index as i32 * ui.px(32), rect.w, ui.px(32));
+            if ui.input.take_click(row) {
+                return (Some(command.clone()), true);
+            }
+        }
+        (
+            None,
+            escape || ui.input.take_click(bounds) || ui.input.take_context_click(bounds),
+        )
+    }
+
+    fn paint(&self, ui: &mut Ui<'_>, bounds: Rect) {
+        let rect = self.rect(ui, bounds);
+        ui.painter.fill_rect(rect, PANEL);
+        ui.painter.stroke_rect(rect, ui.scale.hairline(), EDGE);
+        for (index, (label, _)) in self.rows.iter().enumerate() {
+            let row = Rect::new(rect.x, rect.y + index as i32 * ui.px(32), rect.w, ui.px(32));
+            if ui.input.hovering(row) {
+                ui.painter.fill_rect(row.inset(1), ACCENT_SOFT);
+            }
+            ui.label(row.inset(ui.px(6)), label, TEXT, Align::Left);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Dialog {
     Rename { text: String, error: Option<String> },
@@ -49,6 +178,7 @@ pub struct FileSurface {
     roots_scroll: ScrollState,
     entries_scroll: ScrollState,
     dialog: Option<Dialog>,
+    menu: Option<FileMenu>,
 }
 
 impl std::fmt::Debug for FileSurface {
@@ -69,6 +199,7 @@ impl Default for FileSurface {
             roots_scroll: ScrollState::new(),
             entries_scroll: ScrollState::new(),
             dialog: None,
+            menu: None,
         }
     }
 }
@@ -117,7 +248,14 @@ impl FileSurface {
             &mut self.kernel,
         );
         ui.painter.clear(GROUND);
-        let mut commands = if let Some(dialog) = &mut self.dialog {
+        let whole = Rect::new(0, 0, ui.painter.width(), ui.painter.height());
+        let mut commands = if let Some(menu) = &mut self.menu {
+            let (chosen, close) = menu.update(&mut ui, whole);
+            if close {
+                self.menu = None;
+            }
+            chosen.into_iter().collect()
+        } else if let Some(dialog) = &mut self.dialog {
             handle_dialog_keys(&mut ui, dialog)
         } else {
             let modifiers = ui.input.modifiers();
@@ -158,11 +296,28 @@ impl FileSurface {
             model,
             &mut self.entries_scroll,
         ));
+        if !model.in_trash() && ui.input.take_context_click(entries) {
+            commands.push(Command::ContextMenu {
+                at: ui.input.cursor().unwrap_or((entries.x, entries.y)),
+                target: MenuTarget::Ground,
+            });
+        }
         draw_properties(&mut ui, properties, model);
         commands.extend(draw_status(&mut ui, status, model));
 
         if let Some(dialog) = &mut self.dialog {
             commands.extend(draw_dialog(&mut ui, whole, dialog));
+        }
+        commands.retain(|command| {
+            if let Command::ContextMenu { at, target } = command {
+                self.menu = Some(FileMenu::new(*at, target, model));
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(menu) = &self.menu {
+            menu.paint(&mut ui, whole);
         }
         ui.input.end_frame();
         commands
@@ -428,7 +583,9 @@ fn draw_roots(
         // repeated down the rail, and a place's path underneath it was the home folder repeated
         // once per row; the detail line now says only what the name does not — free space for a
         // drive, and a path only where it is not the obvious one under the home folder.
-        let (label, detail) = row.inset(ui.px(6)).split_top(ui.px(22));
+        let (icon, text) = row.inset(ui.px(6)).split_left(ui.px(28));
+        draw_place_icon(ui, icon, root.kind == RootKind::Drive);
+        let (label, detail) = text.split_top(ui.px(22));
         ui.label(
             label,
             &root.label,
@@ -460,9 +617,38 @@ fn draw_roots(
             TEXT_DIM,
             Align::Left,
         );
+        if root.key.starts_with("bookmark:") && ui.input.take_context_click(row) {
+            commands.push(Command::ContextMenu {
+                at: ui.input.cursor().unwrap_or((row.x, row.y)),
+                target: MenuTarget::Bookmark(root.path.clone()),
+            });
+        }
         if root.available && ui.input.take_click(row) {
             commands.push(Command::Navigate(root.path.clone()));
         }
+    });
+    commands
+}
+
+/// A secondary click on entry `index`: select it first unless it already is (a right-click on
+/// one of several selected rows keeps the set), then open the menu at the pointer.
+fn entry_menu(ui: &Ui<'_>, at: Rect, index: usize, model: &BrowserModel) -> Vec<Command> {
+    let mut commands = Vec::new();
+    let selected = model
+        .listing
+        .as_ref()
+        .and_then(|listing| listing.entries.get(index))
+        .is_some_and(|entry| model.selected.contains(&entry.path));
+    if !selected {
+        commands.push(Command::Select {
+            index,
+            modifiers: SelectionModifiers::default(),
+            activate_if_selected: false,
+        });
+    }
+    commands.push(Command::ContextMenu {
+        at: ui.input.cursor().unwrap_or((at.x, at.y)),
+        target: MenuTarget::Entry(index),
     });
     commands
 }
@@ -577,6 +763,9 @@ fn draw_thumbnail_grid(
                 ui.label(image, &chip, TEXT_DIM, Align::Centre);
             }
             ui.label(caption.inset(ui.px(2)), &entry.name, TEXT, Align::Left);
+            if ui.input.take_context_click(tile) {
+                commands.extend(entry_menu(ui, tile, index, model));
+            }
             if ui.input.take_click(tile) {
                 commands.push(Command::Select {
                     index,
@@ -684,11 +873,7 @@ fn draw_directory_entries(
                 activate_if_selected: true,
             });
         } else if ui.input.take_context_click(row) {
-            commands.push(Command::Select {
-                index,
-                modifiers: SelectionModifiers::default(),
-                activate_if_selected: false,
-            });
+            commands.extend(entry_menu(ui, row, index, model));
         }
     });
     if listing.truncated {

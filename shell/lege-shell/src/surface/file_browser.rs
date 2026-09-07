@@ -325,7 +325,13 @@ impl FilesBrowseView {
         // underneath can act on a keystroke meant for the name being typed.
         let renaming = self.rename.is_some();
         if action.is_none() && keyboard_enabled && !renaming && !self.menu.is_open() {
-            action = self.handle_keys(ui, state, data.sources, listing, visible_entries);
+            let width = area.w - ui.px(ROOTS_WIDTH).min(area.w / 3) - ui.px(16);
+            let columns = if state.view == ViewMode::Thumbnails && !searching {
+                (width / ui.px(120).max(40)).max(1) as usize
+            } else {
+                1
+            };
+            action = self.handle_keys(ui, state, data.sources, listing, visible_entries, columns);
         }
 
         ui.panel(area);
@@ -333,7 +339,7 @@ impl FilesBrowseView {
         Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
 
         let browser_area = browser_area.inset(ui.px(8));
-        let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT));
+        let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT * 2));
         let toolbar_action = Self::draw_toolbar(ui, toolbar, state, listing, searching);
         if action.is_none() {
             action = toolbar_action;
@@ -343,8 +349,13 @@ impl FilesBrowseView {
         if action.is_none() {
             action = verb_action;
         }
-        let (columns, entries_area) = below_verbs.split_top(ui.px(COLUMNS_HEIGHT));
-        Self::draw_columns(ui, columns);
+        let entries_area = if state.view == ViewMode::List || searching {
+            let (columns, entries_area) = below_verbs.split_top(ui.px(COLUMNS_HEIGHT));
+            Self::draw_columns(ui, columns);
+            entries_area
+        } else {
+            below_verbs
+        };
 
         let error = data.search_error.or_else(|| {
             data.error
@@ -381,7 +392,7 @@ impl FilesBrowseView {
             );
         } else if let Some(listing) = listing {
             let drawn = if state.view == ViewMode::Thumbnails {
-                Self::draw_thumbnails(ui, entries_area, state, visible_entries, data.thumbnails)
+                self.draw_thumbnails(ui, entries_area, state, visible_entries, data.thumbnails)
             } else {
                 self.draw_entries(ui, entries_area, state, visible_entries, listing.truncated)
             };
@@ -620,6 +631,7 @@ impl FilesBrowseView {
         sources: &BrowserSources,
         listing: Option<&DirectoryListing>,
         entries: &[BrowseEntry],
+        columns: usize,
     ) -> Option<FileBrowserAction> {
         let mut action = None;
         let modifiers = ui.input.modifiers();
@@ -627,6 +639,40 @@ impl FilesBrowseView {
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         for key in ui.input.keys() {
             match key {
+                KeyInput::Left if modifiers.alt => {
+                    state.go_back();
+                }
+                KeyInput::Right if modifiers.alt => {
+                    state.go_forward();
+                }
+                KeyInput::Up if modifiers.alt => {
+                    state.go_up(listing.and_then(|listing| listing.parent.as_deref()));
+                }
+                KeyInput::Function(5) => {
+                    action = Some(FileBrowserAction::Load {
+                        location: state.location().clone(),
+                        show_hidden: state.show_hidden,
+                    });
+                }
+                KeyInput::Character('h' | 'H') if modifiers.control => {
+                    state.show_hidden = !state.show_hidden;
+                    action = Some(FileBrowserAction::Load {
+                        location: state.location().clone(),
+                        show_hidden: state.show_hidden,
+                    });
+                }
+                KeyInput::Left | KeyInput::Right
+                    if state.view == ViewMode::Thumbnails
+                        && state.focus_area == FocusArea::Entries =>
+                {
+                    let to = if *key == KeyInput::Left {
+                        state.focus.saturating_sub(1)
+                    } else {
+                        state.focus.saturating_add(1)
+                    };
+                    state.focus_entry(to, entries, modifiers.shift);
+                }
+
                 // The ordinary file verbs. Surface-local accelerators, exactly like Ctrl+G and
                 // Ctrl+S beneath them: these are not compositor-reserved chords, so they cost
                 // the recovery keys nothing and work only where a file surface has focus.
@@ -673,7 +719,7 @@ impl FilesBrowseView {
                         state.pinned_focus = state.pinned_focus.saturating_sub(1);
                     }
                     FocusArea::Entries => {
-                        let to = state.focus.saturating_sub(1);
+                        let to = state.focus.saturating_sub(columns);
                         state.focus_entry(to, entries, modifiers.shift);
                     }
                 },
@@ -683,20 +729,24 @@ impl FilesBrowseView {
                             (state.pinned_focus + 1).min(sources.pinned.len().saturating_sub(1));
                     }
                     FocusArea::Entries => {
-                        let to = state.focus + 1;
+                        let to = state.focus.saturating_add(columns);
                         state.focus_entry(to, entries, modifiers.shift);
                     }
                 },
                 KeyInput::Home => match state.focus_area {
                     FocusArea::Pinned => state.pinned_focus = 0,
-                    FocusArea::Entries => state.focus = 0,
+                    FocusArea::Entries => state.focus_entry(0, entries, modifiers.shift),
                 },
                 KeyInput::End => match state.focus_area {
                     FocusArea::Pinned => {
                         state.pinned_focus = sources.pinned.len().saturating_sub(1);
                     }
                     FocusArea::Entries => {
-                        state.focus = entries.len().saturating_sub(1);
+                        state.focus_entry(
+                            entries.len().saturating_sub(1),
+                            entries,
+                            modifiers.shift,
+                        );
                     }
                 },
                 KeyInput::Backspace => {
@@ -801,6 +851,17 @@ impl FilesBrowseView {
         }
     }
 
+    fn navigation_button(ui: &mut Ui<'_>, area: Rect, label: &str, enabled: bool) -> bool {
+        let area = area.inset(ui.px(4));
+        if enabled {
+            ui.button(area, label)
+        } else {
+            ui.label(area, label, ui.theme.text_dim, Align::Centre);
+            false
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn draw_toolbar(
         ui: &mut Ui<'_>,
         area: Rect,
@@ -810,14 +871,36 @@ impl FilesBrowseView {
     ) -> Option<FileBrowserAction> {
         let current = state.directory().map(Path::to_path_buf);
         let current = current.as_deref();
-        let (up, rest) = area.split_left(ui.px(64));
-        let (refresh, rest) = rest.split_left(ui.px(88));
-        let (files, rest) = rest.split_left(ui.px(72));
-        let (hidden, rest) = rest.split_right(ui.px(116));
+        // Navigation keeps its own row so the current path survives in a narrow window.
+        let (navigation, options) = area.split_top(ui.px(TOOLBAR_HEIGHT));
+        let (back, rest) = navigation.split_left(ui.px(64));
+        let (forward, rest) = rest.split_left(ui.px(88));
+        let (files, path_area) = rest.split_left(ui.px(72));
+        let (hidden, rest) = options.split_right(ui.px(116));
         let (view, rest) = rest.split_right(ui.px(96));
         let (direction, rest) = rest.split_right(ui.px(72));
-        let (sort, path_area) = rest.split_right(ui.px(110));
+        let (sort, summary) = rest.split_right(ui.px(110));
+        let (refresh, summary) = summary.split_left(ui.px(88));
+        if ui.button(refresh.inset(ui.px(4)), "Refresh") {
+            return Some(FileBrowserAction::Load {
+                location: state.location().clone(),
+                show_hidden: state.show_hidden,
+            });
+        }
         let entries: &[BrowseEntry] = listing.map_or(&[], |listing| listing.entries.as_slice());
+        let count = if state.selection.is_empty() {
+            format!("{} items", entries.len())
+        } else {
+            format!("{} of {} selected", state.selection.len(), entries.len())
+        };
+        if !searching {
+            ui.label(
+                summary.inset(ui.px(6)),
+                &count,
+                ui.theme.text_dim,
+                Align::Left,
+            );
+        }
         let sort_label = format!(
             "Sort: {}",
             match state.sort.field {
@@ -846,12 +929,10 @@ impl FilesBrowseView {
         ) {
             state.toggle_view();
         }
-        // Back and Forward share the slot Up had: the history is the gesture people reach for,
-        // and Up is still Backspace and still the breadcrumb's own parent step.
-        if ui.button(up.inset(ui.px(4)), "Back") {
+        if Self::navigation_button(ui, back, "Back", state.can_back()) {
             state.go_back();
         }
-        if ui.button(refresh.inset(ui.px(4)), "Forward") {
+        if Self::navigation_button(ui, forward, "Forward", state.can_forward()) {
             state.go_forward();
         }
         if ui.button(files.inset(ui.px(4)), "Files")
@@ -893,6 +974,10 @@ impl FilesBrowseView {
             );
             return None;
         };
+        let (up, path_area) = path_area.split_left(ui.px(48).min(path_area.w));
+        if Self::navigation_button(ui, up, "Up", path.parent().is_some()) {
+            state.go_up(path.parent());
+        }
         Self::draw_breadcrumb(ui, path_area, state, path);
         None
     }
@@ -1128,11 +1213,42 @@ impl FilesBrowseView {
         );
     }
 
+    fn reveal_keyboard_focus(
+        ui: &Ui<'_>,
+        state: &mut FilesSurfaceState,
+        area: Rect,
+        row_height: i32,
+        columns: usize,
+        count: usize,
+    ) {
+        if state.focus_area == FocusArea::Entries
+            && ui.input.keys().iter().any(|key| {
+                matches!(
+                    key,
+                    KeyInput::Up
+                        | KeyInput::Down
+                        | KeyInput::Left
+                        | KeyInput::Right
+                        | KeyInput::Home
+                        | KeyInput::End
+                )
+            })
+        {
+            state.entry_scroll.reveal(
+                (state.focus / columns) as i32 * row_height,
+                row_height,
+                area.h,
+                count.div_ceil(columns) as i32 * row_height,
+            );
+        }
+    }
+
     /// The thumbnail grid: the same entries, selection and focus as the list, drawn as
     /// responsive preview cells. Cells without a decoded bitmap show the entry's kind chip; the
     /// grid itself never reads a file.
     #[allow(clippy::too_many_lines)]
     fn draw_thumbnails(
+        &mut self,
         ui: &mut Ui<'_>,
         area: Rect,
         state: &mut FilesSurfaceState,
@@ -1151,8 +1267,10 @@ impl FilesBrowseView {
         let cell = ui.px(120).max(40);
         let columns = ((area.w / cell).max(1)) as usize;
         let rows = entries.len().div_ceil(columns);
+        Self::reveal_keyboard_focus(ui, state, area, cell, columns, entries.len());
         let heights = vec![cell; rows];
         let mut chosen = None;
+        let mut secondary = None;
         let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         let mut seen: Option<(usize, usize)> = None;
         ui.scroll_list(
@@ -1217,6 +1335,14 @@ impl FilesBrowseView {
                         ui.theme.text,
                         Align::Centre,
                     );
+                    if ui.input.take_context_click(tile) {
+                        state.focus_area = FocusArea::Entries;
+                        state.focus = index;
+                        if !state.selection.contains(&entry.path) {
+                            state.selection.replace(entry.path.clone());
+                        }
+                        secondary = ui.input.cursor();
+                    }
                     if ui.input.take_click(tile) {
                         state.focus_area = FocusArea::Entries;
                         let previous = state.focus;
@@ -1231,14 +1357,28 @@ impl FilesBrowseView {
                                 state.selection.replace(anchor.path.clone());
                             }
                             state.selection.extend_to(&order, entry.path.clone());
+                        } else if state.selection.len() == 1
+                            && state.selection.contains(&entry.path)
+                        {
+                            chosen = Some(entry.clone());
                         } else {
                             state.selection.replace(entry.path.clone());
-                            chosen = Some(entry.clone());
                         }
                     }
                 }
             },
         );
+        if let Some(at) = secondary {
+            self.menu_on_ground = false;
+            self.menu.open_rows_at(
+                at,
+                crate::surface::context_menu::FilesTarget {
+                    row: true,
+                    directory: state.directory().is_some(),
+                }
+                .rows(),
+            );
+        }
         if let Some((low, high)) = seen {
             // One row of lookahead in each direction, so a slow scroll never shows a beat of
             // empty cells.
@@ -1247,6 +1387,7 @@ impl FilesBrowseView {
         chosen.and_then(|entry| activate(state, &entry))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn draw_entries(
         &mut self,
         ui: &mut Ui<'_>,
@@ -1264,6 +1405,7 @@ impl FilesBrowseView {
             );
             return None;
         }
+        Self::reveal_keyboard_focus(ui, state, area, ui.px(ENTRY_HEIGHT), 1, entries.len());
         let heights = vec![ui.px(ENTRY_HEIGHT); entries.len()];
         let mut selected = None;
         let mut secondary: Option<(i32, i32)> = None;
@@ -1735,7 +1877,7 @@ mod tests {
     fn a_secondary_click_on_a_row_opens_its_menu_and_the_rows_act_on_it() {
         let mut harness = Harness::new();
         harness.frame();
-        assert_eq!(harness.context_click(400.0, 168.0), None, "the menu opened");
+        assert_eq!(harness.context_click(400.0, 210.0), None, "the menu opened");
         assert_eq!(
             harness.state.selected_paths(),
             vec![PathBuf::from("/home/test/Downloads/paper.pdf")],
@@ -1746,7 +1888,7 @@ mod tests {
             .iter()
             .position(|id| *id == "files.trash")
             .unwrap();
-        let trashed = verb_of(harness.click(534.0, 168.0 + 5.0 + 28.0 * index as f32 + 14.0));
+        let trashed = verb_of(harness.click(534.0, 210.0 + 5.0 + 28.0 * index as f32 + 14.0));
         assert_eq!(
             trashed,
             Some((
@@ -1968,7 +2110,7 @@ mod tests {
         let mut harness = Harness::new();
         harness.frame();
         harness.select(&["/home/test/Downloads/paper.pdf"]);
-        let clicked = verb_of(harness.click(260.0, 62.0));
+        let clicked = verb_of(harness.click(260.0, 104.0));
         assert_eq!(
             clicked.map(|(verb, _)| verb),
             Some(FileVerb::Copy),
@@ -2055,7 +2197,7 @@ mod tests {
         //
         // The first press selects and nothing else — that is what gives the file verbs a
         // selection to act on — and the second press on the selected row opens it.
-        assert_eq!(harness.click(400.0, 130.0), None);
+        assert_eq!(harness.click(400.0, 172.0), None);
         assert_eq!(
             harness.state.selected_paths(),
             vec![PathBuf::from("/home/test/Downloads/Folder")]
@@ -2065,7 +2207,7 @@ mod tests {
             FilesLocation::Directory(PathBuf::from("/home/test/Downloads"))
         );
         assert_eq!(
-            harness.click(400.0, 130.0),
+            harness.click(400.0, 172.0),
             Some(FileBrowserAction::Load {
                 location: FilesLocation::Directory(PathBuf::from("/home/test/Downloads/Folder")),
                 show_hidden: false,
@@ -2079,9 +2221,9 @@ mod tests {
         // has no rows for; go back to where the rows are, and the same two presses apply.
         harness.state.go_back();
         harness.frame();
-        assert_eq!(harness.click(400.0, 168.0), None);
+        assert_eq!(harness.click(400.0, 210.0), None);
         assert_eq!(
-            harness.click(400.0, 168.0),
+            harness.click(400.0, 210.0),
             Some(FileBrowserAction::Open(PathBuf::from(
                 "/home/test/Downloads/paper.pdf"
             )))
@@ -2123,6 +2265,111 @@ mod tests {
 
     /// The history the whole object is built on: three folders deep, Back walks out and Forward
     /// walks back in, and the surface never asks the host for anything to do it.
+    #[test]
+    fn grid_selects_before_opening_and_context_menu_targets_the_clicked_file() {
+        let mut h = Harness::new();
+        h.frame();
+        if let Ok(dir) = std::env::var("LEGE_FILES_RENDER_DIR") {
+            super::super::offscreen::write_png(&Path::new(&dir).join("files-list.png"), &h.buffer)
+                .unwrap();
+        }
+        h.state.view = ViewMode::Thumbnails;
+        h.frame();
+        if let Ok(dir) = std::env::var("LEGE_FILES_RENDER_DIR") {
+            super::super::offscreen::write_png(&Path::new(&dir).join("files-grid.png"), &h.buffer)
+                .unwrap();
+        }
+        assert_eq!(h.click(400.0, 210.0), None);
+        assert_eq!(
+            h.state.selected_paths(),
+            vec![h.listing.entries[1].path.clone()]
+        );
+        assert!(matches!(
+            h.click(400.0, 210.0),
+            Some(FileBrowserAction::Open(_))
+        ));
+        h.state.selection.clear();
+        assert_eq!(h.context_click(400.0, 210.0), None);
+        assert!(h.screen.menu.is_open());
+        assert!(!h.screen.menu_on_ground);
+        assert_eq!(
+            h.state.selected_paths(),
+            vec![h.listing.entries[1].path.clone()]
+        );
+    }
+
+    #[test]
+    fn grid_arrows_follow_rows_and_end_reveals_and_selects_the_last_file() {
+        let mut h = Harness::new();
+        let template = h.listing.entries[1].clone();
+        h.listing.entries = (0..100)
+            .map(|i| BrowseEntry {
+                name: format!("file-{i:03}"),
+                path: h.listing.directory.join(format!("file-{i:03}")),
+                ..template.clone()
+            })
+            .collect();
+        h.state.view = ViewMode::Thumbnails;
+        h.frame();
+        h.press(KeyInput::Right, Modifiers::default());
+        assert_eq!(h.state.focus, 1);
+        h.press(KeyInput::Down, Modifiers::default());
+        assert_eq!(h.state.focus, 7, "six columns at this width");
+        h.press(
+            KeyInput::End,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(h.state.focus, 99);
+        assert_eq!(h.state.selection.len(), 93);
+        assert!(h.state.entry_scroll.offset() > 0);
+        h.press(KeyInput::Home, Modifiers::default());
+        assert_eq!(
+            h.state.selected_paths(),
+            vec![h.listing.entries[0].path.clone()]
+        );
+        assert_eq!(h.state.entry_scroll.offset(), 0);
+    }
+
+    #[test]
+    fn alt_navigation_and_hidden_refresh_use_the_current_location() {
+        let mut h = Harness::new();
+        h.frame();
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        h.press(KeyInput::Up, alt);
+        assert_eq!(h.here(), FilesLocation::Directory("/home/test".into()));
+        // Harness supplies the original directory again; its history still contains Recent.
+        h.press(KeyInput::Left, alt);
+        assert_eq!(
+            h.here(),
+            FilesLocation::Directory(h.listing.directory.clone())
+        );
+        h.press(KeyInput::Right, alt);
+        assert_eq!(
+            h.here(),
+            FilesLocation::Directory(h.listing.directory.clone())
+        );
+        assert!(matches!(
+            h.press(KeyInput::Character('h'), control()),
+            Some(FileBrowserAction::Load {
+                show_hidden: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            h.press(KeyInput::Function(5), Modifiers::default()),
+            Some(FileBrowserAction::Load {
+                show_hidden: true,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn navigation_history_walks_back_and_forward_without_a_service() {
         let mut harness = Harness::new();
@@ -2167,7 +2414,7 @@ mod tests {
             control: true,
             ..Modifiers::default()
         });
-        harness.input.cursor_moved(400.0, 130.0);
+        harness.input.cursor_moved(400.0, 172.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);
         assert_eq!(harness.frame(), None);
@@ -2187,7 +2434,7 @@ mod tests {
         let entries = harness.listing.entries.clone();
         harness.frame_with_search(Some("paper"), Some(&entries));
         // Select, then open: the same two presses a directory listing takes.
-        harness.input.cursor_moved(400.0, 168.0);
+        harness.input.cursor_moved(400.0, 210.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);
         // The harness never serves a search listing, so every frame here also asks for one;
@@ -2200,7 +2447,7 @@ mod tests {
             harness.state.selected_paths(),
             vec![PathBuf::from("/home/test/Downloads/paper.pdf")]
         );
-        harness.input.cursor_moved(400.0, 168.0);
+        harness.input.cursor_moved(400.0, 210.0);
         harness.input.mouse(MouseButton::Left, true);
         harness.input.mouse(MouseButton::Left, false);
         assert_eq!(

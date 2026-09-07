@@ -290,6 +290,7 @@ impl VolumesApi {
 #[derive(Debug)]
 pub struct BrowseApi {
     pub reserve_percent: u64,
+    pub bookmarks: crate::bookmarks::Bookmarks,
 }
 
 #[zbus::interface(name = "org.legeos.Files.Browse1")]
@@ -297,11 +298,25 @@ impl BrowseApi {
     /// XDG places and every user-visible mounted drive, with volume data attached to drives.
     async fn roots(&self) -> fdo::Result<String> {
         let reserve_percent = self.reserve_percent;
-        let sources = tokio::task::spawn_blocking(move || browse::sources(reserve_percent))
+        let bookmarks = self.bookmarks.clone();
+        let sources = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let mut sources = browse::sources(reserve_percent)?;
+            sources.roots.extend(bookmarks.roots()?);
+            Ok(sources)
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
+        json(&sources)
+    }
+
+    async fn set_bookmark(&self, path: &str, bookmarked: bool) -> fdo::Result<()> {
+        let bookmarks = self.bookmarks.clone();
+        let path = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || bookmarks.set(&path, bookmarked))
             .await
             .map_err(failed)?
-            .map_err(failed)?;
-        json(&sources)
+            .map_err(failed)
     }
 
     async fn list_directory(
