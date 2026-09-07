@@ -26,8 +26,8 @@ pub use commands::{
 pub use geometry::{
     Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect,
     client_area, frame_around, is_beside, is_recoverable, logical_to_physical, move_into_view,
-    physical_to_logical, place_beside, recovery_affordance, recovery_band, repair_window,
-    resize_edges_at, resize_grip, resize_rect, scatter_layout,
+    physical_to_logical, place_beside, recovery_affordance, repair_window, resize_edges_at,
+    resize_rect, scatter_layout, tag_strip,
 };
 pub use group::{GROUP_ACCENTS, GroupId, GroupRecord, accent_for};
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};

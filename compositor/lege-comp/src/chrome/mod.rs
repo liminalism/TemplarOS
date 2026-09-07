@@ -1,11 +1,11 @@
-//! Compositor-drawn chrome: the recovery band/tab, the resource-pressure overlay, the
+//! Compositor-drawn chrome: a window's name and control tags, the resource-pressure overlay, the
 //! "show every window" scatter labels, the fallback switcher and the lock screen, rendered with
 //! `pixelkit-raster`/`pixelkit-text` (root `Cargo.toml`'s `[workspace.dependencies]` comment on
 //! why those two crates specifically are safe to link into the render thread: no dependencies of
 //! their own).
 //!
 //! Nothing here decides layout policy — `crates/lege-window` already computed every rectangle
-//! (`recovery_band`, `scatter_layout`) before this module ever runs; this module only turns those
+//! (`tag_strip`, `scatter_layout`) before this module ever runs; this module only turns those
 //! rectangles into pixels and positions them on screen. `chrome::layout` holds the pure
 //! chrome-specific geometry (button rects, the switcher panel) that *is* decided here;
 //! `chrome::text` finds a font without ever being able to panic; `chrome::paint` draws with one;
@@ -17,11 +17,11 @@
 //! switcher, the "show every window" scatter — which sits above every window there is; its own
 //! internal order makes the lock screen win over the pressure overlay and the switcher win over
 //! the scatter, matching `lege_window::Layer`'s ordering (`SecureLock` < `Recovery` <
-//! `ShellOverlay`). [`collect_window_chrome`] paints what belongs to *one window* — its title
-//! band and its resize grip — and that is emitted per window, interleaved with that window's own
-//! surface, by `src/scene.rs`. A band is part of its window, not of the screen: emitting every
-//! band ahead of every surface (which is what a single flat list did) painted a buried window's
-//! title over the translucent terminal in front of it.
+//! `ShellOverlay`). [`collect_window_chrome`] paints what belongs to *one window* — its name tag
+//! and its control tags, along its bottom edge — and that is emitted per window, interleaved with
+//! that window's own surface, by `src/scene.rs`. A tag is part of its window, not of the screen:
+//! emitting every band ahead of every surface (which is what a single flat list did) painted a
+//! buried window's title over the translucent terminal in front of it.
 
 pub mod cache;
 pub mod layout;
@@ -76,8 +76,8 @@ pub struct SwitcherState {
 pub struct ChromeState {
     fonts: Option<ChromeFonts>,
     scratch: pixelkit_raster::WindowBuffer,
-    bands: HashMap<WindowId, CachedWidget>,
-    grips: HashMap<WindowId, CachedWidget>,
+    name_tags: HashMap<WindowId, CachedWidget>,
+    control_tags: HashMap<WindowId, CachedWidget>,
     pressure: CachedWidget,
     lock: CachedWidget,
     scatter_cards: HashMap<WindowId, CachedWidget>,
@@ -92,7 +92,7 @@ impl std::fmt::Debug for ChromeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChromeState")
             .field("has_font", &self.fonts.is_some())
-            .field("bands", &self.bands.len())
+            .field("name_tags", &self.name_tags.len())
             .field("scatter_cards", &self.scatter_cards.len())
             .finish_non_exhaustive()
     }
@@ -118,8 +118,8 @@ impl ChromeState {
         Self {
             fonts,
             scratch: pixelkit_raster::WindowBuffer::new(1, 1),
-            bands: HashMap::new(),
-            grips: HashMap::new(),
+            name_tags: HashMap::new(),
+            control_tags: HashMap::new(),
             pressure: CachedWidget::new(),
             lock: CachedWidget::new(),
             scatter_cards: HashMap::new(),
@@ -140,16 +140,16 @@ impl ChromeState {
     /// window that closed or was shelved stops holding a GPU texture. `chrome::cache`'s doc: a
     /// widget that no longer applies is discarded rather than kept "just in case".
     pub fn retain_window_chrome(&mut self, live: &std::collections::HashSet<WindowId>) {
-        self.bands.retain(|id, _| live.contains(id));
-        self.grips.retain(|id, _| live.contains(id));
+        self.name_tags.retain(|id, _| live.contains(id));
+        self.control_tags.retain(|id, _| live.contains(id));
         self.outlines.retain(|id, _| live.contains(id));
     }
 
-    /// Drop every window's band and grip: the lock screen or the pressure overlay owns the
-    /// screen, so no window chrome is drawn at all this frame.
+    /// Drop every window's tags: the lock screen or the pressure overlay owns the screen, so no
+    /// window chrome is drawn at all this frame.
     fn forget_window_chrome(&mut self) {
-        self.bands.clear();
-        self.grips.clear();
+        self.name_tags.clear();
+        self.control_tags.clear();
         self.outlines.clear();
     }
 }
@@ -261,8 +261,10 @@ pub fn collect_output_chrome(
     (elements, true)
 }
 
-/// One window's own chrome, front-to-back: its title band (`WindowService::recovery_affordance`)
-/// then its resize grip (`WindowService::resize_grip`), appended to `elements`.
+/// One window's own chrome, front-to-back: its name tag then its control tags, both laid out on
+/// `WindowService::recovery_affordance`'s strip along the window's bottom edge, then its group
+/// outline, appended to `elements`. Nothing for a window without a frame (`WindowService::has_frame`):
+/// a fullscreen window, or a maximized one whose controls the shell's bar holds.
 ///
 /// Both belong to `window_id` and to nothing else, so `src/scene.rs` emits them immediately
 /// *above that window's surface and below every window in front of it* — never as part of one
@@ -290,25 +292,27 @@ pub fn collect_window_chrome(
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
     renderer: &mut GlesRenderer,
 ) {
-    collect_band(
-        chrome,
-        window_service,
-        window_id,
-        drop_target == Some(window_id),
-        output_rect,
-        output_scale,
-        renderer,
-        elements,
-    );
-    collect_grip(
-        chrome,
-        window_service,
-        window_id,
-        output_rect,
-        output_scale,
-        renderer,
-        elements,
-    );
+    if window_service.has_frame(window_id) {
+        collect_name_tag(
+            chrome,
+            window_service,
+            window_id,
+            drop_target == Some(window_id),
+            output_rect,
+            output_scale,
+            renderer,
+            elements,
+        );
+        collect_control_tags(
+            chrome,
+            window_service,
+            window_id,
+            output_rect,
+            output_scale,
+            renderer,
+            elements,
+        );
+    }
     collect_group_outline(
         chrome,
         window_service,
@@ -609,7 +613,7 @@ fn collect_scatter(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_band(
+fn collect_name_tag(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
     window_id: WindowId,
@@ -625,13 +629,14 @@ fn collect_band(
     let Some(affordance) = window_service.recovery_affordance(window_id) else {
         return;
     };
-    let band = affordance.band;
+    let band = layout::name_tag(affordance.strip);
     if output_rect.intersection(band).is_none() {
         return;
     }
     let background = if drop_target {
-        // A band being hovered by another window's band drag: releasing here groups the two, and
-        // saying so before the release is the difference between a gesture and an accident.
+        // A name tag being hovered by another window's name-tag drag: releasing here groups the
+        // two, and saying so before the release is the difference between a gesture and an
+        // accident.
         paint::BAND_DROP_TARGET_COLOR
     } else if affordance.requires_compositor_paint {
         paint::RECOVERY_TAB_COLOR
@@ -653,20 +658,8 @@ fn collect_band(
         Point::from((output_rect.x, output_rect.y)),
         output_scale,
     );
-    // The buttons in the band's own coordinates: `layout::band_buttons` places them in the
-    // global band rect (which is also what `src/input.rs` hit-tests), and the widget's
-    // buffer starts at the band's origin.
-    let buttons: Vec<(layout::BandButton, Rect)> = layout::band_buttons(band)
-        .into_iter()
-        .map(|(button, rect)| {
-            (
-                button,
-                Rect::new(rect.x - band.x, rect.y - band.y, rect.width, rect.height),
-            )
-        })
-        .collect();
     let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
-    let widget = chrome.bands.entry(window_id).or_default();
+    let widget = chrome.name_tags.entry(window_id).or_default();
     if let Some(element) = widget.ensure(
         key,
         (band.width, band.height),
@@ -676,11 +669,7 @@ fn collect_band(
         renderer,
         move |painter, pixel_w, pixel_h| {
             let scale = scale_factor(pixel_w, band.width);
-            let buttons: Vec<(layout::BandButton, pixelkit_raster::Rect)> = buttons
-                .iter()
-                .map(|(button, rect)| (*button, paint::scaled_px(*rect, scale)))
-                .collect();
-            paint::recovery_band(
+            paint::name_tag(
                 painter,
                 pixel_w,
                 pixel_h,
@@ -689,7 +678,6 @@ fn collect_band(
                 group
                     .as_ref()
                     .map(|(accent, name)| (*accent, name.as_str())),
-                &buttons,
                 fonts,
                 scale,
             );
@@ -763,7 +751,10 @@ fn collect_group_outline(
     }
 }
 
-fn collect_grip(
+/// The control tags — park, maximize, close — packed against the right end of the window's tag
+/// strip (`layout::control_tags`, the same rectangles `src/input.rs` hit-tests), painted as one
+/// widget over their union.
+fn collect_control_tags(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
     window_id: WindowId,
@@ -772,30 +763,56 @@ fn collect_grip(
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    let Some(grip) = window_service.resize_grip(window_id) else {
+    let Some(affordance) = window_service.recovery_affordance(window_id) else {
         return;
     };
-    if output_rect.intersection(grip).is_none() {
+    let strip = affordance.strip;
+    let tags = layout::control_tags(strip);
+    let Some((_, first)) = tags.first() else {
+        return;
+    };
+    let union = Rect::new(first.x, strip.y, strip.right() - first.x, strip.height);
+    if output_rect.intersection(union).is_none() {
         return;
     }
-    // Nothing about a grip varies with the window but its size, and `ensure` already keys on
-    // that: the cache key is a constant.
-    let key = WidgetKey::new("resize-grip", paint::RECOVERY_BAND_COLOR);
+    let background = if affordance.requires_compositor_paint {
+        paint::RECOVERY_TAB_COLOR
+    } else {
+        paint::RECOVERY_BAND_COLOR
+    };
+    // Nothing about the tags varies with the window but how many fit, and `ensure` already keys
+    // on the size: the count is the whole key.
+    let key = WidgetKey::new("control-tags", background)
+        .with_variant(u32::try_from(tags.len()).unwrap_or(0));
     let location = to_physical(
-        grip,
+        union,
         Point::from((output_rect.x, output_rect.y)),
         output_scale,
     );
-    let widget = chrome.grips.entry(window_id).or_default();
+    let local: Vec<(layout::ControlTag, Rect)> = tags
+        .into_iter()
+        .map(|(tag, rect)| {
+            (
+                tag,
+                Rect::new(rect.x - union.x, rect.y - union.y, rect.width, rect.height),
+            )
+        })
+        .collect();
+    let widget = chrome.control_tags.entry(window_id).or_default();
     if let Some(element) = widget.ensure(
         key,
-        (grip.width, grip.height),
+        (union.width, union.height),
         output_scale,
         location,
         &mut chrome.scratch,
         renderer,
         move |painter, pixel_w, pixel_h| {
-            paint::resize_grip(painter, pixel_w, pixel_h, scale_factor(pixel_w, grip.width));
+            let scale = scale_factor(pixel_w, union.width);
+            let tags: Vec<(layout::ControlTag, pixelkit_raster::Rect)> = local
+                .iter()
+                .map(|(tag, rect)| (*tag, paint::scaled_px(*rect, scale)))
+                .collect();
+            paint::control_tags(painter, pixel_w, pixel_h, background, &tags, scale);
         },
     ) {
         elements.push(element);

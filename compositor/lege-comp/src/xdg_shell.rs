@@ -302,9 +302,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
         let trusted_shell =
             client.is_some_and(|client| crate::state::client_is_trusted_shell(&client));
         let claims = claims_from_wayland(app_id);
-        // The client's size, asked for as the frame it needs: the band goes above the client
-        // (`lege_window::geometry::client_area`), so what is placed and clamped is the whole of
-        // what will be on screen. The geometry's own location is the window's offset inside its
+        // The client's size, asked for as the frame it needs: the tag strip goes below the
+        // client (`lege_window::geometry::client_area`), so what is placed and clamped is the
+        // whole of what will be on screen. The geometry's own location is the window's offset inside its
         // surface (a client-side shadow margin), not a position — an xdg client cannot ask for
         // one — and would otherwise read as a placed window that skips centring.
         let requested = lege_window::frame_around(lege_window::Rect::new(
@@ -370,8 +370,27 @@ impl<B: Backend + 'static> LegeCompState<B> {
         let Some(record) = self.window_service.window(window_id) else {
             return;
         };
-        if record.maximized
-            || record.fullscreen
+        let (maximized, fullscreen, geometry) =
+            (record.maximized, record.fullscreen, record.geometry);
+        // A shell surface holding an exclusive zone chooses its own thickness (the zone is a
+        // floor, `shell_surface_placement`): a committed size other than the one it has is
+        // re-placed at the same edge with that size. One round trip — the placement of the
+        // committed size is the committed size, so it does not configure again.
+        if self
+            .shell_protocol
+            .exclusive_zones
+            .contains_key(&surface.id())
+        {
+            let committed = window.geometry().size;
+            if (committed.w, committed.h) != (geometry.width, geometry.height) {
+                let requested =
+                    lege_window::Rect::new(geometry.x, geometry.y, committed.w, committed.h);
+                crate::protocols_shell::apply_surface_claims(self, surface, window_id, requested);
+            }
+            return;
+        }
+        if maximized
+            || fullscreen
             || self.window_service.is_resizing(window_id)
             || !self.window_service.has_frame(window_id)
         {
@@ -594,12 +613,12 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
 impl<B: Backend + 'static> XdgDecorationHandler for LegeCompState<B> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // The compositor draws the frame: the recovery band above every client window is a
-        // title bar with park, maximize and close controls (`chrome::collect_bands`,
-        // `chrome::layout::band_buttons`), and the window is movable by it, resizable by its
-        // corner grip and its outside edges (`lege_window::geometry::resize_edges_at`). A client
-        // that also drew its own title bar would be showing two, so server-side is the answer
-        // unless the client insists on client-side in `request_mode`.
+        // The compositor draws the frame: the tags along every client window's bottom edge are
+        // its name and its park, maximize and close controls (`chrome::collect_window_chrome`,
+        // `chrome::layout::control_tags`), and the window is movable by its name tag and
+        // resizable from its outside edges and corners (`lege_window::geometry::resize_edges_at`).
+        // A client that also drew its own title bar would be showing two sets of controls, so
+        // server-side is the answer unless the client insists on client-side in `request_mode`.
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });

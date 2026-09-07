@@ -72,25 +72,20 @@ fn canvas(pixel_w: i32, pixel_h: i32) -> PxRect {
 /// group visible with no font at all, and legible at a glance on a band that may be 96 pixels
 /// wide — the name is the elaboration, not the signal.
 #[allow(clippy::too_many_arguments)]
-pub fn recovery_band(
+pub fn name_tag(
     painter: &mut Painter<'_>,
     pixel_w: i32,
     pixel_h: i32,
     background: u32,
     title: &str,
     group: Option<(u32, &str)>,
-    buttons: &[(layout::BandButton, PxRect)],
     fonts: Fonts<'_>,
     scale: f32,
 ) {
     let area = canvas(pixel_w, pixel_h);
     painter.fill_rect(area, background);
     let ink = layout::text_ink_for(background);
-    let mut title_right = area.right();
-    for (button, rect) in buttons {
-        band_button(painter, *button, *rect, ink, scale);
-        title_right = title_right.min(rect.x);
-    }
+    let title_right = area.right();
 
     let mut left = area.x;
     if let Some((accent, _)) = group {
@@ -123,12 +118,30 @@ pub fn recovery_band(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
-/// One band control, as a glyph anyone recognises without a font: a bar to park, a square to
-/// maximize, a cross to close. Drawn with filled rectangles only, like the grip, so it is
-/// legible at the band's own 32 logical pixels and identical whether or not a font was found.
-fn band_button(
+/// The control tags, contiguous at the right end of the strip: `tags` are in the widget's own
+/// coordinates (`chrome::collect_control_tags`), already scaled.
+pub fn control_tags(
     painter: &mut Painter<'_>,
-    button: layout::BandButton,
+    pixel_w: i32,
+    pixel_h: i32,
+    background: u32,
+    tags: &[(layout::ControlTag, PxRect)],
+    scale: f32,
+) {
+    let area = canvas(pixel_w, pixel_h);
+    painter.fill_rect(area, background);
+    let ink = layout::text_ink_for(background);
+    for (tag, rect) in tags {
+        control_tag_glyph(painter, *tag, *rect, ink, scale);
+    }
+}
+
+/// One control tag, as a glyph anyone recognises without a font: a bar to park, a square to
+/// maximize, a cross to close. Drawn with filled rectangles only, so it is legible at the tag's
+/// own 32 logical pixels and identical whether or not a font was found.
+fn control_tag_glyph(
+    painter: &mut Painter<'_>,
+    button: layout::ControlTag,
     rect: PxRect,
     ink: u32,
     scale: f32,
@@ -144,16 +157,16 @@ fn band_button(
     let left = cx - reach / 2;
     let top = cy - reach / 2;
     match button {
-        layout::BandButton::Park => {
+        layout::ControlTag::Park => {
             painter.fill_rect(PxRect::new(left, cy - stroke / 2, reach, stroke), ink);
         }
-        layout::BandButton::Maximize => {
+        layout::ControlTag::Maximize => {
             painter.fill_rect(PxRect::new(left, top, reach, stroke), ink);
             painter.fill_rect(PxRect::new(left, top + reach - stroke, reach, stroke), ink);
             painter.fill_rect(PxRect::new(left, top, stroke, reach), ink);
             painter.fill_rect(PxRect::new(left + reach - stroke, top, stroke, reach), ink);
         }
-        layout::BandButton::Close => {
+        layout::ControlTag::Close => {
             // Two diagonals as staircases of `stroke`-sized squares, the way the grip draws its
             // rules: `Painter` fills rectangles, so a diagonal is stepped rather than stroked.
             for step in 0..reach {
@@ -163,38 +176,6 @@ fn band_button(
                     ink,
                 );
             }
-        }
-    }
-}
-
-/// A window's compositor-owned resize grip (`lege_window::geometry::resize_grip`): the corner
-/// counterpart to [`recovery_band`], drawn as three stepped diagonal rules — the one shape a
-/// resize corner has meant on every desktop for thirty years, and legible at 24 logical pixels
-/// with no font involved at all.
-///
-/// Opaque like every other chrome widget, and for the same reason: the client may be drawing
-/// anything underneath, and an affordance that only shows up over dark content is not an
-/// affordance.
-pub fn resize_grip(painter: &mut Painter<'_>, pixel_w: i32, pixel_h: i32, scale: f32) {
-    let area = canvas(pixel_w, pixel_h);
-    painter.fill_rect(area, RECOVERY_BAND_COLOR);
-
-    let ink = layout::text_ink_for(RECOVERY_BAND_COLOR);
-    let block = (2.0 * scale).round().max(1.0) as i32;
-    let spacing = ((5.0 * scale).round() as i32).max(block + 1);
-    // Three rules parallel to the corner's diagonal, each a staircase of `block`-sized squares:
-    // `Painter` fills rectangles, so a diagonal is drawn rather than stroked. Rule `r` runs from
-    // `spacing * r` in from the corner along the bottom edge up to the same distance along the
-    // right edge.
-    for rule in 1..=3 {
-        let reach = spacing * rule;
-        if reach >= area.w || reach >= area.h {
-            break;
-        }
-        for step in 0..(reach / block) {
-            let x = area.right() - reach + step * block;
-            let y = area.bottom() - block - step * block;
-            painter.fill_rect(PxRect::new(x, y, block, block), ink);
         }
     }
 }
@@ -486,18 +467,17 @@ mod tests {
     }
 
     #[test]
-    fn recovery_band_with_no_fonts_is_opaque_flat_background() {
+    fn name_tag_with_no_fonts_is_opaque_flat_background() {
         let mut buffer = WindowBuffer::new(200, 32);
         {
             let mut painter = Painter::new(&mut buffer);
-            recovery_band(
+            name_tag(
                 &mut painter,
                 200,
                 32,
                 RECOVERY_BAND_COLOR,
                 "Waterfox",
                 None,
-                &[],
                 None,
                 1.0,
             );
@@ -512,14 +492,13 @@ mod tests {
         let mut buffer = WindowBuffer::new(64, 32);
         {
             let mut painter = Painter::new(&mut buffer);
-            recovery_band(
+            name_tag(
                 &mut painter,
                 64,
                 32,
                 RECOVERY_TAB_COLOR,
                 "",
                 None,
-                &[],
                 None,
                 1.0,
             );
@@ -629,19 +608,18 @@ mod tests {
         use pixelkit_text::font::test_fonts;
 
         #[test]
-        fn recovery_band_draws_more_than_just_the_background() {
+        fn name_tag_draws_more_than_just_the_background() {
             let mut cache = TextCache::new(test_fonts::set());
             let mut buffer = WindowBuffer::new(200, 32);
             {
                 let mut painter = Painter::new(&mut buffer);
-                recovery_band(
+                name_tag(
                     &mut painter,
                     200,
                     32,
                     RECOVERY_BAND_COLOR,
                     "Waterfox",
                     None,
-                    &[],
                     Some((&mut cache, test_fonts::LATIN)),
                     1.0,
                 );

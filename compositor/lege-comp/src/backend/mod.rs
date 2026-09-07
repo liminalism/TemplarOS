@@ -46,38 +46,13 @@ pub fn recompute_outputs<B: Backend + 'static>(state: &mut LegeCompState<B>) {
         .collect();
 
     let repaired = state.window_service.on_outputs_changed(outputs);
+    // A repair can change a window's size as well as its position — a maximized window follows
+    // its output's usable area, which a new exclusive zone just shrank — so every repaired window
+    // is configured on whichever shell it speaks, not re-mapped alone.
     for (window_id, rect) in &repaired {
-        configure_x11_geometry(state, *window_id, *rect);
+        crate::space_sync::apply_resized_geometry(state, *window_id, *rect, false);
     }
     crate::space_sync::sync_after_change(state);
-}
-
-/// `WindowService::on_outputs_changed`/`repair_window` never change a window's *size*, only its
-/// position (`lege_window::geometry`'s doc) — so a native Wayland toplevel needs no protocol
-/// message at all; an X11 window does, since its position is compositor-pushed rather than
-/// compositor-decided-and-silent the way `xdg_toplevel` position is.
-fn configure_x11_geometry<B: Backend + 'static>(
-    state: &LegeCompState<B>,
-    window_id: WindowId,
-    _rect: lege_window::Rect,
-) {
-    let Some(surface) = state.windows.surface_for(window_id) else {
-        return;
-    };
-    let rect = crate::space_sync::client_area(state, window_id);
-    let Some(window) = state
-        .space
-        .elements()
-        .find(|w| w.wl_surface().as_deref() == Some(surface))
-    else {
-        return;
-    };
-    if let Some(x11) = window.x11_surface() {
-        let _ = x11.configure(Some(smithay::utils::Rectangle::new(
-            smithay::utils::Point::from((rect.x, rect.y)),
-            smithay::utils::Size::from((rect.width, rect.height)),
-        )));
-    }
 }
 
 /// `WindowCommand::Close`'s effect: `xdg_toplevel.close` or the X11 delete protocol, whichever the

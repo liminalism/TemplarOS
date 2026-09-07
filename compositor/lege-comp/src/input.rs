@@ -9,7 +9,7 @@
 //! `MotionEvent` onward (`WindowService::update_drag`, hit-testing, focus) stays in that one
 //! logical space, matching `crates/lege-window`'s own invariant.
 
-use crate::chrome::layout::{self, BandButton};
+use crate::chrome::layout::{self, ControlTag};
 use crate::state::{Backend, LegeCompState};
 use lege_window::{Point as LegePoint, WindowId};
 use smithay::{
@@ -183,12 +183,10 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
 /// ([`press_target_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Affordance {
-    /// One of the band's controls (`chrome::layout::band_buttons`).
-    Button(BandButton),
-    /// The band itself: a move.
-    Band,
-    /// The bottom-right grip: a corner resize.
-    Grip,
+    /// One of the control tags (`chrome::layout::control_tags`).
+    Button(ControlTag),
+    /// The name tag: a move.
+    Tag,
     /// Just outside the frame: a resize of these edges.
     Edge(lege_window::ResizeEdges),
 }
@@ -198,13 +196,13 @@ enum Affordance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PressCandidate {
     window_id: WindowId,
-    /// The window's *frame* (band included), which is what owns the point.
+    /// The window's *frame* (tag strip included), which is what owns the point.
     geometry: lege_window::Rect,
     is_client: bool,
     has_frame: bool,
     maximized: bool,
-    band: Option<lege_window::Rect>,
-    grip: Option<lege_window::Rect>,
+    /// The tag strip along the bottom edge, when the window wears one (`has_frame`).
+    strip: Option<lege_window::Rect>,
 }
 
 /// What a pointer press at a point is asking for.
@@ -229,18 +227,18 @@ fn press_target_at(candidates: &[PressCandidate], pos: LegePoint) -> PressTarget
             if !candidate.is_client {
                 return PressTarget::Window(candidate.window_id);
             }
-            if let Some(band) = candidate.band
-                && rect_contains(band, pos)
+            if let Some(strip) = candidate.strip
+                && rect_contains(strip, pos)
             {
-                return PressTarget::Affordance(
-                    candidate.window_id,
-                    layout::band_button_at(band, pos).map_or(Affordance::Band, Affordance::Button),
-                );
-            }
-            if let Some(grip) = candidate.grip
-                && rect_contains(grip, pos)
-            {
-                return PressTarget::Affordance(candidate.window_id, Affordance::Grip);
+                if let Some(tag) = layout::control_tag_at(strip, pos) {
+                    return PressTarget::Affordance(candidate.window_id, Affordance::Button(tag));
+                }
+                if rect_contains(layout::name_tag(strip), pos) {
+                    return PressTarget::Affordance(candidate.window_id, Affordance::Tag);
+                }
+                // The gap between the two tags: no pixels of this window are there, so the press
+                // belongs to whatever is behind it.
+                continue;
             }
             return PressTarget::Window(candidate.window_id);
         }
@@ -257,13 +255,13 @@ fn press_target_at(candidates: &[PressCandidate], pos: LegePoint) -> PressTarget
 /// Which window a press should bring forward before it does anything else, or `None` when it
 /// should bring none forward.
 ///
-/// Everything a window owns focuses it: its client area, its title band, its resize grip and its
-/// edge zones. The two exceptions are the band's close and park buttons — activating a window in
+/// Everything a window owns focuses it: its client area, its name tag and its edge zones. The two
+/// exceptions are the close and park tags — activating a window in
 /// order to close it, or to send it to the shelf a frame later, would take the keyboard away from
 /// whatever the user was typing into and hand it to something that is about to disappear.
 fn press_activates(target: PressTarget) -> Option<WindowId> {
     match target {
-        PressTarget::Affordance(_, Affordance::Button(BandButton::Close | BandButton::Park))
+        PressTarget::Affordance(_, Affordance::Button(ControlTag::Close | ControlTag::Park))
         | PressTarget::Nothing => None,
         PressTarget::Affordance(window_id, _) | PressTarget::Window(window_id) => Some(window_id),
     }
@@ -496,7 +494,7 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
                 // (planning doc §2 rule 6). Only a band — an ordinary drop anywhere else,
                 // including on top of another window, still just moves a window.
                 data.drop_target =
-                    crate::window_groups::band_drop_target(data, self.window_id, pointer);
+                    crate::window_groups::tag_drop_target(data, self.window_id, pointer);
             }
             Gesture::Resize { .. } => {
                 if let Some((_, geometry)) = data.window_service.update_resize(pointer) {
@@ -977,11 +975,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     is_client: self.window_service.is_client_window(window_id),
                     has_frame: self.window_service.has_frame(window_id),
                     maximized: record.maximized,
-                    band: self
-                        .window_service
-                        .recovery_affordance(window_id)
-                        .map(|affordance| affordance.band),
-                    grip: self.window_service.resize_grip(window_id),
+                    strip: if self.window_service.has_frame(window_id) {
+                        self.window_service
+                            .recovery_affordance(window_id)
+                            .map(|affordance| affordance.strip)
+                    } else {
+                        None
+                    },
                 })
             })
             .collect();
@@ -1033,15 +1033,15 @@ impl<B: Backend + 'static> LegeCompState<B> {
         {
             let seat = self.seat.clone();
             let gesture = match affordance {
-                Affordance::Button(BandButton::Close) => {
+                Affordance::Button(ControlTag::Close) => {
                     crate::backend::close_window(self, window_id);
                     return;
                 }
-                Affordance::Button(BandButton::Park) => {
+                Affordance::Button(ControlTag::Park) => {
                     park_window(self, window_id);
                     return;
                 }
-                Affordance::Button(BandButton::Maximize) => {
+                Affordance::Button(ControlTag::Maximize) => {
                     let maximized = self
                         .window_service
                         .window(window_id)
@@ -1049,10 +1049,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::xdg_shell::apply_maximized(self, window_id, !maximized);
                     return;
                 }
-                Affordance::Band => Gesture::Move,
-                Affordance::Grip => Gesture::Resize {
-                    edges: lege_window::ResizeEdges::BOTTOM_RIGHT,
-                },
+                Affordance::Tag => Gesture::Move,
                 Affordance::Edge(edges) => Gesture::Resize { edges },
             };
             start_gesture(
@@ -1209,8 +1206,8 @@ mod tests {
     }
 
     /// A framed client window, laid out the way the compositor lays one out: the record's
-    /// geometry is the *frame*, and the band is the strip `lege_window` puts above the client
-    /// area (`frame_around`/`recovery_band`).
+    /// geometry is the *frame*, and the strip is the one `lege_window` puts below the client
+    /// area (`frame_around`/`tag_strip`).
     fn framed(raw: u64, client: Rect) -> PressCandidate {
         let geometry = frame_around(client);
         PressCandidate {
@@ -1219,13 +1216,7 @@ mod tests {
             is_client: true,
             has_frame: true,
             maximized: false,
-            band: Some(Rect::new(
-                geometry.x,
-                geometry.y,
-                geometry.width,
-                geometry.height - client.height,
-            )),
-            grip: None,
+            strip: Some(lege_window::tag_strip(geometry)),
         }
     }
 
@@ -1235,19 +1226,46 @@ mod tests {
     /// window they *had* been typing into kept the keyboard — every drag left the two disagreeing
     /// about which window was in front.
     #[test]
-    fn pressing_a_windows_title_band_focuses_that_window() {
+    fn pressing_a_windows_name_tag_focuses_that_window() {
         let window = framed(1, Rect::new(100, 140, 400, 300));
-        let band = window.band.expect("a framed window has a band");
-        let target = press_target_at(&[window], at(band.x + 200, band.y + 4));
+        let strip = window.strip.expect("a framed window has a strip");
+        let target = press_target_at(&[window], at(strip.x + 20, strip.y + 4));
         assert_eq!(
             target,
-            PressTarget::Affordance(WindowId(1), Affordance::Band)
+            PressTarget::Affordance(WindowId(1), Affordance::Tag)
         );
         assert_eq!(
             press_activates(target),
             Some(WindowId(1)),
-            "a press on the band is click-to-focus before it is a drag"
+            "a press on the name tag is click-to-focus before it is a drag"
         );
+        // The control tags act; the gap between the two tags belongs to nobody here.
+        let close = press_target_at(&[window], at(strip.right() - 4, strip.y + 4));
+        assert_eq!(
+            close,
+            PressTarget::Affordance(WindowId(1), Affordance::Button(ControlTag::Close))
+        );
+        let name = layout::name_tag(strip);
+        let gap = press_target_at(&[window], at(name.right() + 2, strip.y + 4));
+        assert_eq!(gap, PressTarget::Nothing, "the gap falls through");
+        // A window beneath owns the gap when it is there.
+        let beneath = framed(2, Rect::new(0, 0, 900, 700));
+        assert_eq!(
+            press_target_at(&[window, beneath], at(name.right() + 2, strip.y + 4)),
+            PressTarget::Window(WindowId(2))
+        );
+    }
+
+    /// A maximized window under the shell's bar has no strip: its whole frame is the client's,
+    /// and its controls are the bar's.
+    #[test]
+    fn a_window_without_a_frame_offers_no_tags() {
+        let mut window = framed(1, Rect::new(0, 0, 1600, 900));
+        window.has_frame = false;
+        window.maximized = true;
+        window.strip = None;
+        let target = press_target_at(&[window], at(1590, 928));
+        assert_eq!(target, PressTarget::Window(WindowId(1)));
     }
 
     /// The same for the client area — the ordinary click-to-focus case — and for the resize
@@ -1257,7 +1275,7 @@ mod tests {
         let window = framed(1, Rect::new(100, 140, 400, 300));
         let geometry = window.geometry;
 
-        let inside = press_target_at(&[window], at(geometry.x + 50, geometry.bottom() - 20));
+        let inside = press_target_at(&[window], at(geometry.x + 50, geometry.y + 20));
         assert_eq!(inside, PressTarget::Window(WindowId(1)));
         assert_eq!(press_activates(inside), Some(WindowId(1)));
 
@@ -1277,7 +1295,7 @@ mod tests {
     /// the person was typing into and hands it to something about to disappear.
     #[test]
     fn closing_or_parking_a_window_does_not_hand_it_the_keyboard_first() {
-        for button in [BandButton::Close, BandButton::Park] {
+        for button in [ControlTag::Close, ControlTag::Park] {
             assert_eq!(
                 press_activates(PressTarget::Affordance(
                     WindowId(1),
@@ -1290,7 +1308,7 @@ mod tests {
         assert_eq!(
             press_activates(PressTarget::Affordance(
                 WindowId(1),
-                Affordance::Button(BandButton::Maximize)
+                Affordance::Button(ControlTag::Maximize)
             )),
             Some(WindowId(1)),
             "maximizing a background window brings it forward, like every other band press"
@@ -1306,17 +1324,17 @@ mod tests {
     /// looks like.
     #[test]
     fn the_window_on_top_owns_every_point_inside_its_frame() {
-        let top = framed(1, Rect::new(100, 140, 400, 300));
-        let buried = framed(2, Rect::new(120, 300, 400, 300));
-        let buried_band = buried.band.expect("a framed window has a band");
-        let overlap = at(buried_band.x + 200, buried_band.y + 4);
+        let top = framed(1, Rect::new(100, 340, 400, 300));
+        let buried = framed(2, Rect::new(120, 140, 400, 300));
+        let buried_strip = buried.strip.expect("a framed window has a strip");
+        let overlap = at(buried_strip.x + 20, buried_strip.y + 4);
         assert!(
             rect_contains(top.geometry, overlap),
             "the test point overlaps"
         );
         assert!(
-            !rect_contains(top.band.expect("a framed window has a band"), overlap),
-            "and lands in the top window's client area rather than its own band"
+            !rect_contains(top.strip.expect("a framed window has a strip"), overlap),
+            "and lands in the top window's client area rather than its own tags"
         );
 
         let target = press_target_at(&[top, buried], overlap);
@@ -1330,15 +1348,14 @@ mod tests {
     /// A shell surface (the Home Surface) is not a client window: it takes the keyboard, but it
     /// is never activated or raised, and it has no band to press.
     #[test]
-    fn a_shell_surface_takes_the_press_without_offering_a_band() {
+    fn a_shell_surface_takes_the_press_without_offering_a_tag() {
         let home = PressCandidate {
             window_id: WindowId(9),
             geometry: Rect::new(0, 0, 1920, 1080),
             is_client: false,
             has_frame: false,
             maximized: false,
-            band: None,
-            grip: None,
+            strip: None,
         };
         let target = press_target_at(&[home], at(400, 400));
         assert_eq!(target, PressTarget::Window(WindowId(9)));

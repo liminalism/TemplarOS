@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3a5c541d3530a3e8645391f5b4fdd4f081997d75dab450bdc6c207d3ea4d33f7 # shrinks to window = Rect { x: 0, y: 0, width: 1, height: 2274 }, outputs = [Output { name: "out", logical: Rect { x: 0, y: 0, width: 200, height: 200 }, scale_milli: 1000, work_area: None }]

@@ -4,7 +4,7 @@
 use crate::{
     geometry::{
         Output, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect, choose_target_output,
-        recovery_affordance, repair_window, resize_grip, resize_rect,
+        recovery_affordance, repair_window, resize_rect,
     },
     group::{GroupId, GroupRecord, accent_for},
     layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition},
@@ -505,6 +505,9 @@ impl<I: IdentityCache> WindowService<I> {
         if window.shelved {
             return false;
         }
+        if self.layer_of(window_id) == Some(Layer::HomeSurface) {
+            return self.home_revealed;
+        }
         if self.home_revealed {
             return !matches!(
                 self.layer_of(window_id),
@@ -630,37 +633,30 @@ impl<I: IdentityCache> WindowService<I> {
             .is_some_and(|resize| resize.window_id == window_id)
     }
 
-    /// The compositor-owned resize grip for `window_id`
-    /// ([`resize_grip`](crate::geometry::resize_grip)) — the pointer route to a resize for a
-    /// window that draws no frame of its own and so never sends `xdg_toplevel.resize`.
-    ///
-    /// `None` for anything that must not be resized this way: a non-client window (shell chrome,
-    /// the Home Surface), a maximized one (see [`begin_resize`](Self::begin_resize)), a
-    /// fullscreen one, and one too short to hold a grip clear of its band.
-    pub fn resize_grip(&self, window_id: WindowId) -> Option<Rect> {
-        if !self.is_client_window(window_id) {
-            return None;
-        }
-        let window = self.windows.get(&window_id)?;
-        if window.maximized || window.fullscreen || window.shelved {
-            return None;
-        }
-        resize_grip(window.geometry)
-    }
-
-    /// Whether `window_id` wears the compositor's frame — the recovery band drawn above its
-    /// client area rather than over it. Every client window does, except a fullscreen one:
-    /// fullscreen is the client's whole output by definition, and the band stays an overlay
-    /// there so the window remains grabbable without giving up a strip of the picture.
+    /// Whether `window_id` wears the compositor's frame — the tag strip drawn below its client
+    /// area rather than over it. Every client window does, with two exceptions. A fullscreen
+    /// window is the client's whole output by definition. A maximized window on an output whose
+    /// bottom edge a shell surface holds (`Output::reserves_bottom`, the shell's bar) draws no
+    /// tags: its controls are the bar's. The moment no such zone is claimed — the shell is dead,
+    /// or never claimed one — the tags come back, so controls never vanish.
     pub fn has_frame(&self, window_id: WindowId) -> bool {
-        self.is_client_window(window_id)
-            && self
-                .windows
-                .get(&window_id)
-                .is_some_and(|window| !window.fullscreen)
+        if !self.is_client_window(window_id) {
+            return false;
+        }
+        let Some(window) = self.windows.get(&window_id) else {
+            return false;
+        };
+        if window.fullscreen {
+            return false;
+        }
+        if window.maximized && !self.outputs.is_empty() {
+            return !crate::geometry::choose_target_output(window.geometry, &self.outputs)
+                .reserves_bottom();
+        }
+        true
     }
 
-    /// The rectangle `window_id`'s client surface occupies: under the band for a framed window
+    /// The rectangle `window_id`'s client surface occupies: above the tags for a framed window
     /// ([`client_area`](crate::geometry::client_area)), the whole geometry for anything else —
     /// a shell surface, a fullscreen window. What the compositor maps the surface at and
     /// configures the client to; the geometry itself is the frame.
@@ -836,8 +832,9 @@ impl<I: IdentityCache> WindowService<I> {
         true
     }
 
-    /// The compositor's grab affordance for `window_id`: the recovery band, and whether the
+    /// The compositor's grab affordance for `window_id`: the tag strip, and whether the
     /// compositor must paint a temporary tab over it (client-side-decorated / borderless).
+    /// Answered for every client window; whether the tags are *drawn* is [`Self::has_frame`].
     pub fn recovery_affordance(&self, window_id: WindowId) -> Option<RecoveryAffordance> {
         if !self.is_client_window(window_id) {
             return None;
@@ -1451,22 +1448,41 @@ mod tests {
         // thrown away the next time anything about the topology moved.
         service.set_maximized(id, true);
         assert!(!service.begin_resize(id, Point { x: 0, y: 0 }, crate::ResizeEdges::BOTTOM_RIGHT));
-        assert_eq!(service.resize_grip(id), None);
     }
 
+    /// A maximized window draws no tags while a bar holds its output's bottom edge — its
+    /// controls are the bar's — and draws them again the moment the zone is gone.
     #[test]
-    fn the_grip_is_offered_for_a_client_window_and_nothing_else() {
+    fn a_maximized_window_has_no_frame_only_while_a_bottom_zone_is_claimed() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert!(service.has_frame(id));
+        service.set_maximized(id, true);
+        assert!(service.has_frame(id), "no zone: the tags stay");
+        let screen = outputs()[0].logical;
+        let with_bar =
+            Output::new("eDP-1", screen, 1000).with_work_area(crate::geometry::work_area_for(
+                screen,
+                &[crate::geometry::Exclusive {
+                    edge: crate::geometry::Edge::Bottom,
+                    size: 48,
+                }],
+            ));
+        service.on_outputs_changed(vec![with_bar]);
+        assert!(!service.has_frame(id), "the bar holds the controls");
         assert_eq!(
-            service.resize_grip(id),
-            crate::resize_grip(Rect::new(100, 100, 400, 300))
+            service.client_area(id),
+            service.window(id).map(|window| window.geometry),
+            "no frame: the client is the whole maximized geometry"
         );
+        service.on_outputs_changed(outputs());
+        assert!(
+            service.has_frame(id),
+            "the zone is released: the tags come back"
+        );
+        service.set_maximized(id, false);
+        assert!(service.has_frame(id));
         service.set_fullscreen(id, true);
-        assert_eq!(service.resize_grip(id), None, "fullscreen has no corner");
-        service.set_fullscreen(id, false);
-        service.shelve(id);
-        assert_eq!(service.resize_grip(id), None, "nor does a parked window");
-        assert_eq!(service.resize_grip(WindowId(9999)), None);
+        assert!(!service.has_frame(id), "fullscreen never has a frame");
     }
 
     #[test]
@@ -1845,6 +1861,14 @@ mod tests {
         assert!(!service.home_revealed());
         assert!(service.is_visible(fresh));
         assert!(service.is_visible(app));
+        assert!(
+            !service.is_visible(home),
+            "Home cannot blend through client transparency"
+        );
+        service.set_home_revealed(true);
+        assert!(service.is_visible(home));
+        service.set_home_revealed(false);
+        assert!(!service.is_visible(home));
     }
 
     #[test]

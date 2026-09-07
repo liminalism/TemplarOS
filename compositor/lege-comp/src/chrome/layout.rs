@@ -187,38 +187,44 @@ pub fn scatter_label_band(tile: Rect, label_height: i32) -> (Rect, Rect) {
     )
 }
 
-/// The three controls at the right end of every recovery band, in the left-to-right order they
-/// are drawn: park to the Home shelf, maximize/restore, close. Close is rightmost and the last
-/// to give way on a narrow band, because it is the one a person looks for first.
+/// The three control tags at the right end of every window's tag strip, in the left-to-right
+/// order they are drawn: park to the Home shelf, maximize/restore, close. Close is rightmost and
+/// the last to give way on a narrow strip, because it is the one a person looks for first.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BandButton {
+pub enum ControlTag {
     Park,
     Maximize,
     Close,
 }
 
-impl BandButton {
-    /// Every button, in drawing order.
-    pub const ALL: [BandButton; 3] = [Self::Park, Self::Maximize, Self::Close];
+impl ControlTag {
+    /// Every tag, in drawing order.
+    pub const ALL: [ControlTag; 3] = [Self::Park, Self::Maximize, Self::Close];
 }
 
-/// Logical width of one band button — a square of the band's own height.
-pub const BAND_BUTTON_WIDTH: i32 = lege_window::geometry::RECOVERY_BAND_HEIGHT;
+/// Logical width of one control tag — a square of the strip's own height.
+pub const CONTROL_TAG_WIDTH: i32 = lege_window::geometry::TAG_HEIGHT;
 
-/// Room the title keeps at the left of a band before buttons start giving way.
-const BAND_TITLE_MIN_WIDTH: i32 = 64;
+/// Room the name tag keeps at the left of a strip before control tags start giving way.
+const NAME_TAG_MIN_WIDTH: i32 = 64;
+/// The gap between the name tag and the control tags; a press there belongs to whatever is
+/// behind the window, because no pixels of this window are there.
+pub const TAG_GAP: i32 = 8;
+/// A name tag is a tag, not a bar: it stops here however wide the window is.
+pub const NAME_TAG_MAX_WIDTH: i32 = 240;
 
-/// The buttons that fit on `band`, with their rectangles, packed against its right edge in
-/// [`BandButton::ALL`] order. On a band too narrow for all three the leftmost go first:
+/// The control tags that fit on `strip`, with their rectangles, packed against its right edge in
+/// [`ControlTag::ALL`] order. On a strip too narrow for all three the leftmost go first:
 /// [`MIN_RECOVERY_WIDTH`](lege_window::geometry::MIN_RECOVERY_WIDTH) is wide enough for Close
-/// alone plus a sliver of title, which is the least a recoverable window ever has.
-pub fn band_buttons(band: Rect) -> Vec<(BandButton, Rect)> {
-    let width = BAND_BUTTON_WIDTH.min(band.height.max(1)).max(1);
-    let room = (band.width - BAND_TITLE_MIN_WIDTH).max(0);
+/// alone plus a sliver of name, which is the least a recoverable window ever has.
+pub fn control_tags(strip: Rect) -> Vec<(ControlTag, Rect)> {
+    let band = strip;
+    let width = CONTROL_TAG_WIDTH.min(band.height.max(1)).max(1);
+    let room = (band.width - NAME_TAG_MIN_WIDTH).max(0);
     let count = usize::try_from(room / width)
         .unwrap_or(0)
-        .min(BandButton::ALL.len());
-    let shown = &BandButton::ALL[BandButton::ALL.len() - count..];
+        .min(ControlTag::ALL.len());
+    let shown = &ControlTag::ALL[ControlTag::ALL.len() - count..];
     shown
         .iter()
         .enumerate()
@@ -237,8 +243,19 @@ pub fn band_buttons(band: Rect) -> Vec<(BandButton, Rect)> {
         .collect()
 }
 
-/// Logical width of the accent stripe a grouped window wears at the left of its band (planning
-/// doc §2 rule 7: "a stripe of the same colour in each member's band").
+/// The name tag: the strip's left end, up to the first control tag less [`TAG_GAP`], capped at
+/// [`NAME_TAG_MAX_WIDTH`]. The grab-to-move and group-drop affordance, and where the title and the
+/// group stripe are painted.
+pub fn name_tag(strip: Rect) -> Rect {
+    let limit = control_tags(strip)
+        .first()
+        .map_or(strip.right(), |(_, rect)| rect.x - TAG_GAP);
+    let width = (limit - strip.x).clamp(1, NAME_TAG_MAX_WIDTH.min(strip.width.max(1)));
+    Rect::new(strip.x, strip.y, width, strip.height)
+}
+
+/// Logical width of the accent stripe a grouped window wears at the left of its name tag
+/// (planning doc §2 rule 7: "a stripe of the same colour in each member's band").
 pub const GROUP_STRIPE_WIDTH: i32 = 4;
 
 /// The four bars of a group outline of `thickness`, drawn **outside** `union` — top, bottom,
@@ -265,10 +282,10 @@ pub fn outline_bars(union: Rect, thickness: i32) -> [Rect; 4] {
     ]
 }
 
-/// The band button containing `point`, if any — the same rectangles [`band_buttons`] draws, so
+/// The control tag containing `point`, if any — the same rectangles [`control_tags`] draws, so
 /// the drawn control and the clickable area cannot drift apart.
-pub fn band_button_at(band: Rect, point: lege_window::Point) -> Option<BandButton> {
-    band_buttons(band)
+pub fn control_tag_at(strip: Rect, point: lege_window::Point) -> Option<ControlTag> {
+    control_tags(strip)
         .into_iter()
         .find(|(_, rect)| rect_contains(*rect, point))
         .map(|(button, _)| button)
@@ -423,15 +440,15 @@ mod tests {
     }
 
     #[test]
-    fn band_buttons_pack_against_the_right_edge_close_last() {
+    fn control_tags_pack_against_the_right_edge_close_last() {
         let band = Rect::new(100, 50, 400, 32);
-        let buttons = band_buttons(band);
+        let buttons = control_tags(band);
         assert_eq!(
             buttons.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
-            BandButton::ALL.to_vec()
+            ControlTag::ALL.to_vec()
         );
         let (close, close_rect) = buttons[2];
-        assert_eq!(close, BandButton::Close);
+        assert_eq!(close, ControlTag::Close);
         assert_eq!(close_rect.right(), band.right());
         assert_eq!(close_rect.height, band.height);
         for pair in buttons.windows(2) {
@@ -440,10 +457,10 @@ mod tests {
         // The title keeps everything left of the first button.
         assert_eq!(buttons[0].1.x, band.right() - 3 * 32);
         for (button, rect) in &buttons {
-            assert_eq!(band_button_at(band, rect.center()), Some(*button));
+            assert_eq!(control_tag_at(band, rect.center()), Some(*button));
         }
         assert_eq!(
-            band_button_at(
+            control_tag_at(
                 band,
                 lege_window::Point {
                     x: band.x + 10,
@@ -455,14 +472,31 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_band_keeps_close_and_gives_up_the_rest() {
+    fn a_narrow_strip_keeps_close_and_gives_up_the_rest() {
         let band = Rect::new(0, 0, lege_window::geometry::MIN_RECOVERY_WIDTH, 32);
-        let buttons = band_buttons(band);
+        let buttons = control_tags(band);
         assert_eq!(buttons.len(), 1);
-        assert_eq!(buttons[0].0, BandButton::Close);
-        assert_eq!(band_buttons(Rect::new(0, 0, 130, 32)).len(), 2);
-        assert!(band_buttons(Rect::new(0, 0, 40, 32)).is_empty());
-        assert!(band_buttons(Rect::new(0, 0, 0, 0)).is_empty());
+        assert_eq!(buttons[0].0, ControlTag::Close);
+        assert_eq!(control_tags(Rect::new(0, 0, 130, 32)).len(), 2);
+        assert!(control_tags(Rect::new(0, 0, 40, 32)).is_empty());
+        assert!(control_tags(Rect::new(0, 0, 0, 0)).is_empty());
+    }
+
+    /// The name tag is a tag: it stops short of the controls by the gap, and short of the strip's
+    /// width by its cap, so a wide window has a gap of bare frame between its two tags.
+    #[test]
+    fn the_name_tag_stops_short_of_the_controls_and_is_capped() {
+        let wide = Rect::new(0, 968, 1600, 32);
+        let name = name_tag(wide);
+        assert_eq!(name, Rect::new(0, 968, NAME_TAG_MAX_WIDTH, 32));
+        let first_control = control_tags(wide)[0].1;
+        assert!(name.right() + TAG_GAP <= first_control.x);
+        // A narrow window: the name tag runs up to the gap before Close and no further.
+        let narrow = Rect::new(0, 0, 200, 32);
+        let controls = control_tags(narrow);
+        assert_eq!(name_tag(narrow).right(), controls[0].1.x - TAG_GAP);
+        // No controls fit: the name tag is the whole strip.
+        assert_eq!(name_tag(Rect::new(0, 0, 40, 32)), Rect::new(0, 0, 40, 32));
     }
 
     #[test]

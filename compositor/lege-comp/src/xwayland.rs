@@ -68,7 +68,7 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
         };
         let geometry = window.geometry();
         // An X11 client may have placed itself, and that position is honoured; the size is
-        // asked for as the frame around it, since the band goes above the client.
+        // asked for as the frame around it, since the tag strip goes below the client.
         let requested = lege_window::frame_around(lege_window::Rect::new(
             geometry.loc.x,
             geometry.loc.y,
@@ -142,8 +142,8 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
             h.map_or(current.size.h, |h| h as i32),
         ));
         // The frame follows the size the client chose, at the position the window has — the
-        // X11 counterpart of `adopt_client_size` — so the band stays above the client rather
-        // than over a client that just grew under it.
+        // X11 counterpart of `adopt_client_size` — so the tags stay below the client rather
+        // than over a client that just grew over them.
         if let Some(window_id) = self.window_id_of(&window)
             && let Some(record) = self.window_service.window(window_id)
             && !record.maximized

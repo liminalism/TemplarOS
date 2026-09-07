@@ -138,7 +138,13 @@ pub fn collect(
     // A `Vec` rather than a set: `smithay::desktop::Window` has interior mutability and so cannot
     // be a hash key (clippy's `mutable_key_type`), and a scene has a handful of windows in it,
     // not thousands.
-    let mut drawn: Vec<Window> = Vec::new();
+    let mut drawn: Vec<Window> = inputs
+        .window_service
+        .stacking_order()
+        .into_iter()
+        .filter(|id| !inputs.window_service.is_visible(*id))
+        .filter_map(|id| windows.element_of(id).cloned())
+        .collect();
     let mut chrome_elements = Vec::new();
     for piece in window_scene_order(&plan) {
         match piece {
@@ -290,7 +296,7 @@ mod tests {
     /// (shelved, or behind a "go home" reveal) contributes nothing at all — COMPOSITOR.md's
     /// property 7, "a hidden window neither renders, takes clicks nor paints a band".
     #[test]
-    fn a_hidden_window_contributes_neither_band_nor_surface() {
+    fn a_hidden_window_contributes_neither_tags_nor_surface() {
         let visible = id(1);
         let hidden = id(2);
         let order = window_scene_order(&[(visible, true, true), (hidden, false, true)]);

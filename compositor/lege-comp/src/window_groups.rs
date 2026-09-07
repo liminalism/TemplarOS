@@ -138,14 +138,15 @@ pub fn unshelve_group<B: Backend + 'static>(state: &mut LegeCompState<B>, window
     crate::space_sync::sync_after_change(state);
 }
 
-/// The window whose title band is under `pointer`, ignoring `dragged` — the drop target of a band
-/// drag (planning doc §2 rule 6: "only the band is a drop target, so ordinary overlapping
-/// placement is untouched").
+/// The window whose name tag is under `pointer`, ignoring `dragged` — the drop target of a
+/// name-tag drag (planning doc §2 rule 6: "only the band is a drop target, so ordinary
+/// overlapping placement is untouched"; the name tag is what the band became).
 ///
-/// Walks the stacking order top-first exactly as the press hit test does, so the band a person
+/// Walks the stacking order top-first exactly as the press hit test does, so the tag a person
 /// can see under the pointer is the one that answers and never one buried beneath it. The dragged
-/// window is skipped because it is on top and the pointer is inside *its* band by definition.
-pub fn band_drop_target<B: Backend + 'static>(
+/// window is skipped because it is on top and the pointer is inside *its* tag by definition. A
+/// window without a frame (maximized under the bar) has no tag to drop on.
+pub fn tag_drop_target<B: Backend + 'static>(
     state: &LegeCompState<B>,
     dragged: WindowId,
     pointer: Point,
@@ -158,12 +159,15 @@ pub fn band_drop_target<B: Backend + 'static>(
             *id != dragged
                 && state.window_service.is_visible(*id)
                 && state.window_service.is_client_window(*id)
+                && state.window_service.has_frame(*id)
         })
         .find(|id| {
             state
                 .window_service
                 .recovery_affordance(*id)
-                .is_some_and(|affordance| contains(affordance.band, pointer))
+                .is_some_and(|affordance| {
+                    contains(crate::chrome::layout::name_tag(affordance.strip), pointer)
+                })
         })
 }
 

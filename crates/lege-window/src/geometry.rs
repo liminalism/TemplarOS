@@ -1,8 +1,8 @@
 //! Geometry primitives and the recovery invariant.
 //!
-//! Every normal window must keep a compositor-owned **recovery band** (its top strip) visible on
-//! at least one active output, after every drag, output change, scale change, resume and
-//! application geometry request. All coordinates are global compositor-logical coordinates.
+//! Every normal window must keep a compositor-owned **tag strip** (its bottom strip, where the
+//! name tag and the control tags are drawn) visible on at least one active output, after every
+//! drag, output change, scale change, resume and application geometry request. All coordinates are global compositor-logical coordinates.
 
 use crate::layers::Layer;
 use serde::{Deserialize, Serialize};
@@ -118,13 +118,17 @@ impl Output {
             return self.logical;
         };
         match requested.intersection(self.logical) {
-            Some(area)
-                if area.width >= MIN_RECOVERY_WIDTH && area.height >= RECOVERY_BAND_HEIGHT =>
-            {
-                area
-            }
+            Some(area) if area.width >= MIN_RECOVERY_WIDTH && area.height >= TAG_HEIGHT => area,
             _ => self.logical,
         }
+    }
+
+    /// Whether a shell surface holds this output's bottom edge — a bar. A maximized window on
+    /// such an output has no frame of its own: its controls live in the bar
+    /// (`WindowService::has_frame`). Derived from the usable area rather than recorded, so a
+    /// refused claim ([`Output::usable`]) reserves nothing here either.
+    pub fn reserves_bottom(&self) -> bool {
+        self.usable().bottom() < self.logical.bottom()
     }
 }
 
@@ -200,11 +204,20 @@ pub fn shell_surface_placement(
 ) -> Rect {
     let full = output.logical;
     if let Some(zone) = exclusive {
+        // The zone is a floor on the surface's thickness, not its size (`lege-shell-v1.xml`'s
+        // `set_exclusive_zone`): a bar that opens a row above itself grows over the windows
+        // beside it without moving them, because `work_area_for` follows the zone alone.
         let size = zone.size.max(0);
+        let thickness = |requested_side: i32| requested_side.max(size);
         return match zone.edge {
-            Edge::Top => Rect::new(full.x, full.y, full.width, size.min(full.height)),
+            Edge::Top => Rect::new(
+                full.x,
+                full.y,
+                full.width,
+                thickness(requested.height).min(full.height),
+            ),
             Edge::Bottom => {
-                let height = size.min(full.height);
+                let height = thickness(requested.height).min(full.height);
                 Rect::new(
                     full.x,
                     full.bottom().saturating_sub(height),
@@ -212,9 +225,14 @@ pub fn shell_surface_placement(
                     height,
                 )
             }
-            Edge::Left => Rect::new(full.x, full.y, size.min(full.width), full.height),
+            Edge::Left => Rect::new(
+                full.x,
+                full.y,
+                thickness(requested.width).min(full.width),
+                full.height,
+            ),
             Edge::Right => {
-                let width = size.min(full.width);
+                let width = thickness(requested.width).min(full.width);
                 Rect::new(
                     full.right().saturating_sub(width),
                     full.y,
@@ -245,9 +263,9 @@ pub fn shell_surface_placement(
     move_into_view(requested, std::slice::from_ref(output))
 }
 
-/// How far each successive cascaded window is stepped down-right from centre
-/// ([`place_new_window`]). One recovery-band height: exactly enough that the previous window's
-/// band stays visible above the new window.
+/// One tag height. The cascade steps down-right, so each new window leaves the previous one's
+/// left edge and its name tag's leading pixels showing; the recovery invariant is about
+/// reachability on an output, not visibility above other windows, which is the switcher's job.
 pub const PLACEMENT_CASCADE_STEP: i32 = 32;
 
 /// Where a newly mapped client window goes.
@@ -291,26 +309,31 @@ pub fn place_new_window(requested: Rect, existing_windows: usize, outputs: &[Out
     repair_window(placed, outputs)
 }
 
-/// Minimum visible width of the recovery band.
+/// Minimum visible width of the tag strip.
 pub const MIN_RECOVERY_WIDTH: i32 = 96;
-/// Height of the compositor-owned recovery band at the top of a window.
-pub const RECOVERY_BAND_HEIGHT: i32 = 32;
+/// Height of the compositor-owned tag strip at the bottom of a window: the name tag at its left
+/// and the control tags at its right are this tall.
+pub const TAG_HEIGHT: i32 = 32;
 
-/// The compositor-owned strip through which a window can always be grabbed.
-pub fn recovery_band(window: Rect) -> Rect {
+/// The compositor-owned strip along a window's bottom edge, through which it can always be
+/// grabbed (by its name tag, `chrome::layout::name_tag`) and controlled (by its control tags).
+/// The one derivation of where the tags are: everything else is relative to this rectangle.
+pub fn tag_strip(window: Rect) -> Rect {
+    let height = window.height.clamp(1, TAG_HEIGHT);
     Rect {
         x: window.x,
-        y: window.y,
+        // `max` keeps a degenerate (zero-height) window's strip at its own origin.
+        y: window.bottom().saturating_sub(height).max(window.y),
         width: window.width.max(1),
-        height: window.height.clamp(1, RECOVERY_BAND_HEIGHT),
+        height,
     }
 }
 
-/// The compositor's grab affordance for one window: the recovery band, plus whether the
-/// compositor must actively paint a temporary tab over it.
+/// The compositor's grab affordance for one window: the tag strip, plus whether the compositor
+/// must actively paint a temporary tab over it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryAffordance {
-    pub band: Rect,
+    pub strip: Rect,
     /// True for client-side-decorated and borderless windows: the client controls that screen
     /// area and may draw over it, so the compositor cannot rely on a client-drawn title bar to
     /// make the window recoverable and must paint its own temporary tab.
@@ -322,23 +345,24 @@ pub struct RecoveryAffordance {
 /// enum itself so this module stays free of window-record concerns.
 pub fn recovery_affordance(geometry: Rect, client_owns_band: bool) -> RecoveryAffordance {
     RecoveryAffordance {
-        band: recovery_band(geometry),
+        strip: tag_strip(geometry),
         requires_compositor_paint: client_owns_band,
     }
 }
 
-/// True when enough of the recovery band is visible on some output's usable area.
+/// True when enough of the tag strip is visible on some output's usable area.
 ///
 /// Against [`Output::usable`], not [`Output::logical`]: a band hidden underneath a dock is not
 /// something the user can grab, so counting it would make "recoverable" mean "drawn somewhere"
 /// rather than "reachable".
 pub fn is_recoverable(window: Rect, outputs: &[Output]) -> bool {
-    let band = recovery_band(window);
+    let strip = tag_strip(window);
     let required_width = window.width.clamp(1, MIN_RECOVERY_WIDTH);
 
     outputs.iter().any(|output| {
-        band.intersection(output.usable())
-            .is_some_and(|visible| visible.width >= required_width && visible.height >= band.height)
+        strip.intersection(output.usable()).is_some_and(|visible| {
+            visible.width >= required_width && visible.height >= strip.height
+        })
     })
 }
 
@@ -356,19 +380,19 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
         .width
         .clamp(1, MIN_RECOVERY_WIDTH)
         .min(output.width.max(1));
-    let visible_height = window
-        .height
-        .clamp(1, RECOVERY_BAND_HEIGHT)
-        .min(output.height.max(1));
+    let visible_height = window.height.clamp(1, TAG_HEIGHT).min(output.height.max(1));
 
-    // Permit most of a large window to remain outside the output, but guarantee that a
-    // compositor-owned recovery band remains reachable.
+    // Permit most of a large window to remain outside the output, but guarantee that the
+    // compositor-owned tag strip along its bottom edge remains reachable: a tall window may hang
+    // off the top of the output, never off the bottom.
     let minimum_x = output
         .x
         .saturating_sub(window.width.saturating_sub(visible_width));
     let maximum_x = output.right().saturating_sub(visible_width);
-    let minimum_y = output.y;
-    let maximum_y = output.bottom().saturating_sub(visible_height);
+    let minimum_y = output
+        .y
+        .saturating_sub(window.height.saturating_sub(visible_height));
+    let maximum_y = output.bottom().saturating_sub(window.height);
 
     Rect {
         x: clamp(window.x, minimum_x, maximum_x),
@@ -377,69 +401,46 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
     }
 }
 
-/// Side of the compositor-owned resize grip's square, in logical pixels. Deliberately the same
-/// order of size as [`RECOVERY_BAND_HEIGHT`]: the two are the compositor's whole management
-/// vocabulary for a window that draws no frame of its own, and a grip smaller than the band it
-/// pairs with would be the harder of the two to hit.
-pub const RESIZE_GRIP_SIZE: i32 = 24;
-
 /// The smallest a window may be resized to. Not an arbitrary floor: it is exactly the size at
-/// which the recovery band is still grabbable ([`MIN_RECOVERY_WIDTH`]) *and* there is still room
-/// for the resize grip underneath it ([`RECOVERY_BAND_HEIGHT`] + [`RESIZE_GRIP_SIZE`]). A window
-/// shrunk to this size can therefore still be moved and still be grown again, which is the
+/// which the tag strip is still grabbable ([`MIN_RECOVERY_WIDTH`]) *and* there is a client area
+/// at least as tall as the strip above it. A window shrunk to this size can therefore still be
+/// moved and still be grown again — from any edge or corner ([`resize_edges_at`]) — which is the
 /// property that makes an interactive resize safe to offer at all.
 pub const MIN_WINDOW_WIDTH: i32 = MIN_RECOVERY_WIDTH;
 /// See [`MIN_WINDOW_WIDTH`].
-pub const MIN_WINDOW_HEIGHT: i32 = RECOVERY_BAND_HEIGHT + RESIZE_GRIP_SIZE;
+pub const MIN_WINDOW_HEIGHT: i32 = 2 * TAG_HEIGHT;
 
-/// The compositor-owned corner through which any window can be resized, whoever draws its frame
-/// — the resize counterpart to [`recovery_band`]. Placed at the bottom-right, never overlapping
-/// the band, so a press can only ever mean one of the two gestures.
+/// The rectangle a framed window's client surface occupies: everything above the tag strip.
+/// The strip is the compositor's, drawn *below* the client rather than over it — chrome painted
+/// over a client's own pixels hid the first line of every terminal and the close button of every
+/// client-decorated window.
 ///
-/// `None` when the window is too short for a grip to fit below its band. That cannot happen to a
-/// window this module resized ([`MIN_WINDOW_HEIGHT`] leaves exactly enough room); it can happen
-/// to one a client sized itself, and the honest answer there is to offer no grip rather than one
-/// that steals the band.
-pub fn resize_grip(window: Rect) -> Option<Rect> {
-    let width = RESIZE_GRIP_SIZE.min(window.width);
-    let height = RESIZE_GRIP_SIZE.min(window.height.saturating_sub(RECOVERY_BAND_HEIGHT));
-    (width > 0 && height > 0).then(|| Rect {
-        x: window.right().saturating_sub(width),
-        y: window.bottom().saturating_sub(height),
-        width,
-        height,
-    })
-}
-
-/// The rectangle a framed window's client surface occupies: everything under the recovery
-/// band. The band is the compositor's, drawn *above* the client rather than over it — a band
-/// painted over the top of a client's own pixels hid the first line of every terminal and the
-/// close button of every client-decorated window.
-///
-/// Never empty: a frame shorter than the band still yields a one-pixel client area, so a caller
+/// Never empty: a frame shorter than the strip still yields a one-pixel client area, so a caller
 /// can always configure it.
 pub fn client_area(frame: Rect) -> Rect {
     Rect {
         x: frame.x,
-        y: frame.y.saturating_add(RECOVERY_BAND_HEIGHT),
+        y: frame.y,
         width: frame.width.max(1),
-        height: frame.height.saturating_sub(RECOVERY_BAND_HEIGHT).max(1),
+        height: frame.height.saturating_sub(TAG_HEIGHT).max(1),
     }
 }
 
-/// The frame a client surface of `client` needs — the inverse of [`client_area`].
+/// The frame a client surface of `client` needs — the inverse of [`client_area`]: the same
+/// origin, one tag strip taller.
 pub fn frame_around(client: Rect) -> Rect {
     Rect {
         x: client.x,
-        y: client.y.saturating_sub(RECOVERY_BAND_HEIGHT),
+        y: client.y,
         width: client.width.max(1),
-        height: client.height.max(1).saturating_add(RECOVERY_BAND_HEIGHT),
+        height: client.height.max(1).saturating_add(TAG_HEIGHT),
     }
 }
 
 /// How far outside a window's frame a press still grabs its edge, in logical pixels. Outside,
 /// never inside: an edge zone inside the frame would take the client's own outermost pixels —
-/// its scrollbar, its own resize border — and the band already owns the top.
+/// its scrollbar, its own resize border — and the tags own the bottom strip. Every edge and every
+/// corner resizes; there is no separate grip.
 pub const RESIZE_MARGIN: i32 = 8;
 
 /// How far along an edge from a corner a press still grabs the corner as well.
@@ -548,8 +549,10 @@ pub fn move_into_view(window: Rect, outputs: &[Output]) -> Rect {
 
     let minimum_x = output.x;
     let maximum_x = output.right().saturating_sub(window.width.max(1));
-    let minimum_y = output.y;
+    // A window taller than the output cannot fit; it is set flush with the bottom edge, so the
+    // tag strip along that edge stays reachable and the excess hangs off the top.
     let maximum_y = output.bottom().saturating_sub(window.height.max(1));
+    let minimum_y = output.y.min(maximum_y);
 
     Rect {
         x: clamp(window.x, minimum_x, maximum_x),
@@ -804,11 +807,13 @@ pub fn nearest_window<Id: Copy + Ord>(
 /// It is computed here, from window geometry, rather than from the Home Field's tile layout, and
 /// that choice is load-bearing in three ways. It keeps the chord working with `lege-shell` dead,
 /// like every other compositor-reserved binding. It needs no round trip to the shell and no wire
-/// protocol change. And it stays inside the compositor's own remit — `docs/homefield.md` gives
+/// protocol change. And it stays inside the compositor's own remit —
+/// `@legeos.decision.home-field-stable-bounded-semantic-grammar` gives
 /// the shell the tiles and the compositor the windows, and this reasons only about windows.
 ///
 /// Nothing is stored. The relation is recomputed per keypress and discarded, so no window
-/// becomes *related* to another by sitting next to it — the proximity rule `docs/homefield.md`
+/// becomes *related* to another by sitting next to it — the proximity rule in
+/// `@legeos.decision.home-field-stable-bounded-semantic-grammar`
 /// sets out ("do not infer hidden meaning from proximity") is about meaning, and this changes
 /// none: it decides where a keypress goes and nothing else.
 ///
@@ -1106,7 +1111,9 @@ mod tests {
                 &output,
                 asked_for,
             ),
-            Rect::new(0, 0, 1920, 40)
+            // The request is thicker than its zone, and the surface keeps its thickness: the
+            // zone is a floor (a bar with its hover row open), and only the work area follows it.
+            Rect::new(0, 0, 1920, 64)
         );
         assert_eq!(
             shell_surface_placement(
@@ -1118,7 +1125,7 @@ mod tests {
                 &output,
                 asked_for,
             ),
-            Rect::new(0, 0, 72, 1080)
+            Rect::new(0, 0, 900, 1080)
         );
         assert_eq!(
             shell_surface_placement(
@@ -1130,7 +1137,7 @@ mod tests {
                 &output,
                 asked_for,
             ),
-            Rect::new(1848, 0, 72, 1080)
+            Rect::new(1020, 0, 900, 1080)
         );
 
         // The Home Surface is the backdrop, so it fills the output whatever it asked for.
@@ -1280,30 +1287,61 @@ mod tests {
     #[test]
     fn a_window_under_the_dock_is_not_considered_recoverable() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        // A panel occupying the top 80 logical pixels.
+        // A bar occupying the bottom 80 logical pixels.
         let output = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
+            screen,
+            &[Exclusive {
+                edge: Edge::Bottom,
+                size: 80,
+            }],
+        ));
+        let outputs = vec![output];
+
+        // A window whose whole tag strip sits beneath the bar: visible, but not grabbable.
+        let buried = Rect::new(200, 370, 900, 700);
+        assert!(
+            !is_recoverable(buried, &outputs),
+            "a strip hidden under the bar must not count as reachable"
+        );
+
+        let repaired = repair_window(buried, &outputs);
+        assert!(is_recoverable(repaired, &outputs));
+        assert!(
+            repaired.bottom() <= 1000,
+            "repaired to {repaired:?}, still under the bar"
+        );
+        assert_eq!((repaired.width, repaired.height), (900, 700));
+
+        // A panel at the top buries nothing that matters: the tags are at the bottom.
+        let panelled = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
             screen,
             &[Exclusive {
                 edge: Edge::Top,
                 size: 80,
             }],
         ));
-        let outputs = vec![output];
+        assert!(is_recoverable(Rect::new(200, 10, 900, 700), &[panelled]));
+    }
 
-        // A window whose whole recovery band sits beneath the panel: visible, but not grabbable.
-        let buried = Rect::new(200, 10, 900, 700);
-        assert!(
-            !is_recoverable(buried, &outputs),
-            "a band hidden under the panel must not count as reachable"
-        );
-
-        let repaired = repair_window(buried, &outputs);
+    /// A tall window may hang off the top of its output, never off the bottom: the repair keeps
+    /// the whole tag strip reachable and moves nothing else.
+    #[test]
+    fn a_window_dragged_off_the_bottom_is_pulled_back_until_its_tags_show() {
+        let outputs = vec![Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)];
+        let dropped = Rect::new(300, 1070, 800, 600);
+        let repaired = repair_window(dropped, &outputs);
+        assert_eq!(repaired, Rect::new(300, 480, 800, 600));
         assert!(is_recoverable(repaired, &outputs));
-        assert!(
-            repaired.y >= 80,
-            "repaired to {repaired:?}, still under the panel"
+        let hanging = Rect::new(300, -500, 800, 600);
+        assert_eq!(
+            repair_window(hanging, &outputs),
+            hanging,
+            "the strip is on screen"
         );
-        assert_eq!((repaired.width, repaired.height), (900, 700));
+        let output = Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)
+            .with_work_area(Rect::new(0, 0, 1920, 1032));
+        assert!(output.reserves_bottom());
+        assert!(!Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000).reserves_bottom());
     }
 
     #[test]
@@ -1340,23 +1378,51 @@ mod tests {
         assert_eq!(repair_window(w, &[]), w);
     }
 
+    /// A bar that grows above its zone (a hover row) keeps its edge and its full width, and the
+    /// work area does not follow it — nothing beside the bar moves when the row opens.
     #[test]
-    fn the_client_area_sits_under_the_band_and_the_frame_is_its_inverse() {
+    fn an_exclusive_surface_may_be_thicker_than_its_zone_without_moving_the_work_area() {
+        let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
+        let zone = Exclusive {
+            edge: Edge::Bottom,
+            size: 48,
+        };
+        let resting = shell_surface_placement(
+            Layer::ShellOverlay,
+            Some(zone),
+            &output,
+            Rect::new(0, 0, 1600, 48),
+        );
+        assert_eq!(resting, Rect::new(0, 952, 1600, 48));
+        let grown = shell_surface_placement(
+            Layer::ShellOverlay,
+            Some(zone),
+            &output,
+            Rect::new(0, 0, 1600, 88),
+        );
+        assert_eq!(
+            grown,
+            Rect::new(0, 912, 1600, 88),
+            "anchored to the edge, thicker"
+        );
+        assert_eq!(
+            work_area_for(output.logical, &[zone]),
+            Rect::new(0, 0, 1600, 952),
+            "the zone, not the surface, is what windows are placed beside"
+        );
+    }
+
+    #[test]
+    fn the_client_area_sits_above_the_tags_and_the_frame_is_its_inverse() {
         let frame = Rect::new(100, 200, 640, 480);
         let client = client_area(frame);
-        assert_eq!(
-            client,
-            Rect::new(
-                100,
-                200 + RECOVERY_BAND_HEIGHT,
-                640,
-                480 - RECOVERY_BAND_HEIGHT
-            )
-        );
+        assert_eq!(client, Rect::new(100, 200, 640, 480 - TAG_HEIGHT));
         assert_eq!(frame_around(client), frame);
+        let strip = tag_strip(frame);
+        assert_eq!(strip, Rect::new(100, 680 - TAG_HEIGHT, 640, TAG_HEIGHT));
         assert!(
-            client.intersection(recovery_band(frame)).is_none(),
-            "the band is above the client, never over it"
+            client.intersection(strip).is_none(),
+            "the tags are below the client, never over it"
         );
         // A frame too short for a client still yields one the compositor can configure.
         assert_eq!(client_area(Rect::new(0, 0, 100, 10)).height, 1);
@@ -1400,9 +1466,25 @@ mod tests {
                 ..ResizeEdges::default()
             })
         );
-        // A corner, reached from either of its edges.
+        // Every corner, reached from either of its edges — there is no separate grip.
         assert_eq!(at(503, 390), Some(ResizeEdges::BOTTOM_RIGHT));
         assert_eq!(at(490, 403), Some(ResizeEdges::BOTTOM_RIGHT));
+        assert_eq!(
+            at(97, 403),
+            Some(ResizeEdges {
+                left: true,
+                bottom: true,
+                ..ResizeEdges::default()
+            })
+        );
+        assert_eq!(
+            at(503, 110),
+            Some(ResizeEdges {
+                right: true,
+                top: true,
+                ..ResizeEdges::default()
+            })
+        );
         assert_eq!(
             at(95, 105),
             Some(ResizeEdges {
@@ -1417,40 +1499,14 @@ mod tests {
     }
 
     #[test]
-    fn the_grip_sits_in_the_corner_and_never_reaches_the_recovery_band() {
-        let window = Rect::new(100, 200, 800, 600);
-        let grip = resize_grip(window).expect("a large window has a grip");
-        assert_eq!(
-            grip,
-            Rect::new(
-                900 - RESIZE_GRIP_SIZE,
-                800 - RESIZE_GRIP_SIZE,
-                RESIZE_GRIP_SIZE,
-                RESIZE_GRIP_SIZE
-            )
-        );
-        assert!(
-            grip.intersection(recovery_band(window)).is_none(),
-            "the move band and the resize grip must never be the same pixel"
-        );
-    }
-
-    #[test]
-    fn a_window_at_the_minimum_size_still_has_both_a_band_and_a_grip() {
+    fn a_window_at_the_minimum_size_still_has_a_full_tag_strip_and_a_client() {
         // The property that makes shrinking safe: it is always undoable by pointer.
         let window = Rect::new(0, 0, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
-        let grip = resize_grip(window).expect("the minimum size still affords a grip");
-        assert_eq!(grip.height, RESIZE_GRIP_SIZE);
-        assert!(grip.intersection(recovery_band(window)).is_none());
-    }
-
-    #[test]
-    fn a_window_shorter_than_its_own_band_offers_no_grip_rather_than_stealing_it() {
-        assert_eq!(
-            resize_grip(Rect::new(0, 0, 400, RECOVERY_BAND_HEIGHT)),
-            None
-        );
-        assert_eq!(resize_grip(Rect::new(0, 0, 0, 0)), None);
+        assert_eq!(tag_strip(window).height, TAG_HEIGHT);
+        assert_eq!(client_area(window).height, TAG_HEIGHT);
+        // A window shorter than its own strip is nothing but strip.
+        assert_eq!(tag_strip(Rect::new(0, 0, 400, 10)).height, 10);
+        assert_eq!(tag_strip(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
     }
 
     #[test]
