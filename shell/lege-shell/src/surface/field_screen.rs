@@ -498,6 +498,11 @@ impl FieldScreen {
     /// inside a project is drawn nested within it, `lege_field::tile_rect`); zoomed into a
     /// project, only that project's children have rects, laid out on the interior grid.
     pub fn tile_rect(&self, doc: &FieldDocument, tile: TileId, ui: &Ui<'_>) -> Option<Rect> {
+        self.placed_rect(doc, tile, ui)
+            .map(|rect| nudge_inside(rect, self.bounds))
+    }
+
+    fn placed_rect(&self, doc: &FieldDocument, tile: TileId, ui: &Ui<'_>) -> Option<Rect> {
         match self.zoomed {
             None => tile_rect(doc, to_pixel(self.bounds), tile, ui.px(GAP)).map(from_pixel),
             Some(project) => {
@@ -717,7 +722,16 @@ impl FieldScreen {
 
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &FieldData<'_>) -> Vec<FieldAction> {
-        ui.painter.fill_rect(area, ui.theme.background);
+        // The whole buffer, not just `area`. Home's buffer is never cleared between frames
+        // (`HostedWindow::prepare` keeps it, and the window's size does not change), and `area`
+        // is the output *minus* the bar's strip — but only once the bar exists. The shell draws
+        // several frames before that, at the full height of the output, with tiles laid out down
+        // to the bottom edge; from then on nothing ever wrote to those last 48 rows again, so
+        // they kept the bottoms of those tiles — a row of widget controls, body, region strip and
+        // border, sitting under the clock for the rest of the session. That is the second half of
+        // "the bottom left is a mess", and it is the same failure as the bar's own: a surface that
+        // paints only part of itself keeps whatever was there before.
+        ui.painter.clear(ui.theme.background);
         let mut actions = Vec::new();
         if self.handle_help_mode(ui, area) {
             return actions;
@@ -4779,6 +4793,31 @@ fn created_op(op: &FieldOp) -> Option<&FieldOp> {
     }
 }
 
+/// Keep a tile's rectangle inside the field.
+///
+/// A defence, not a fix for anything known to happen: `lege_field::cell_rect` extrapolates rather
+/// than clamping — `edge()` is linear in the cell index with no bound at `count` — so a placement
+/// outside the document's own grid would be handed a rectangle outside `bounds`, and below the
+/// field is the bar's strip. Every `FieldOp` that places a tile goes through
+/// `FieldDocument::is_free`, which does check `Placement::fits`, so nothing should create one;
+/// nothing in the type forbids it either, and the consequence would land on the bar.
+///
+/// The paint and the pointer both go through `tile_rect`, so this moves the rectangle a person
+/// aims at and the rectangle that reacts together.
+fn nudge_inside(rect: Rect, bounds: Rect) -> Rect {
+    if bounds.w <= 0 || bounds.h <= 0 {
+        return rect;
+    }
+    let w = rect.w.min(bounds.w);
+    let h = rect.h.min(bounds.h);
+    Rect::new(
+        rect.x.clamp(bounds.x, bounds.right() - w),
+        rect.y.clamp(bounds.y, bounds.bottom() - h),
+        w,
+        h,
+    )
+}
+
 fn to_pixel(rect: Rect) -> PixelRect {
     PixelRect::new(rect.x, rect.y, rect.w, rect.h)
 }
@@ -4840,6 +4879,10 @@ mod tests {
         buffer: WindowBuffer,
         input: Input,
         now: u64,
+        /// The rectangle the host hands `draw`. The session's is the output minus the bar's
+        /// strip; before the bar exists it is the whole output, which is what leaves pixels in
+        /// the strip if the field does not clear the whole buffer.
+        area: Rect,
     }
 
     impl Harness {
@@ -4880,6 +4923,7 @@ mod tests {
                 buffer: WindowBuffer::new(W as u32, H as u32),
                 input: Input::new(),
                 now: 0,
+                area: Rect::new(0, 0, W, H),
             }
         }
 
@@ -4951,7 +4995,7 @@ mod tests {
                 Scale::ONE,
                 &mut self.kernel,
             );
-            let actions = self.screen.draw(&mut ui, Rect::new(0, 0, W, H), &data);
+            let actions = self.screen.draw(&mut ui, self.area, &data);
             self.input.end_frame();
             actions
         }
@@ -5887,6 +5931,72 @@ mod tests {
     /// Micro and Small have no heading, so manipulation waits for attention — and when it
     /// arrives it takes width from the name rather than being drawn on top of it. Focus counts
     /// as attention, which is what makes a compact tile reachable without a pointer.
+    #[test]
+    fn the_bar_strip_never_keeps_pixels_from_a_taller_frame() {
+        use crate::surface::bar_screen::BAR_HEIGHT;
+        const SENTINEL: u32 = 0x00ff_00ff;
+        let mut h = Harness::new();
+        h.buffer = WindowBuffer::new(W as u32, (H + BAR_HEIGHT) as u32);
+        h.buffer.pixels.fill(SENTINEL);
+
+        // The frames the shell draws before the bar exists: `app.rs::redraw_home` insets by
+        // BAR_HEIGHT only while `self.bar.is_some()`, and the bar is created after the bridge
+        // connects. The field runs the full height of the output and lays tiles down to it.
+        h.area = Rect::new(0, 0, W, H + BAR_HEIGHT);
+        h.frame();
+        // Then the bar arrives and the field is one strip shorter, for the rest of the session.
+        h.area = Rect::new(0, 0, W, H);
+        h.frame();
+
+        let background = design::theme().background;
+        let stride = h.buffer.width as usize;
+        let mut offenders: Vec<(i32, i32, u32)> = Vec::new();
+        for y in H..H + BAR_HEIGHT {
+            for x in 0..W {
+                let pixel = h.buffer.pixels[y as usize * stride + x as usize];
+                if pixel != background {
+                    offenders.push((x, y, pixel));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "the bar's strip kept {} pixel(s) from the taller frame, first at {:?}",
+            offenders.len(),
+            offenders.first()
+        );
+    }
+
+    /// A defence, not the cause: `lege_field::cell_rect` extrapolates rather than clamping, so a
+    /// placement outside the document's own grid — which nothing should create, but which no type
+    /// forbids either — would be handed a rectangle outside the field, and below the field is the
+    /// bar. `tile_rect` shoves it back inside instead.
+    #[test]
+    fn a_tile_placed_off_the_grid_is_drawn_back_inside_the_field() {
+        let mut h = Harness::new();
+        let stray = h.doc.located[0].0;
+        let rows = h.doc.rows;
+        h.doc.located[0].1.placement.cell = lege_field::Cell::new(2, rows);
+        h.frame();
+        let bounds = h.screen.bounds;
+        let ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            design::theme(),
+            Scale::ONE,
+            &mut h.kernel,
+        );
+        let rect = h
+            .screen
+            .tile_rect(&h.doc, stray, &ui)
+            .expect("the stray tile still has a rectangle");
+        assert!(
+            rect.bottom() <= bounds.bottom() && rect.y >= bounds.y,
+            "a tile placed off the grid was drawn outside the field: {rect:?} in {bounds:?}"
+        );
+    }
+
     #[test]
     fn compact_rungs_reveal_controls_only_when_hovered_or_focused_and_never_cover_the_title_line() {
         let mut h = Harness::new();
