@@ -303,7 +303,25 @@ pub struct Lineage {
 
 /// Decode a send stream from a file.
 pub fn decode_file(path: &Path) -> Result<SendStream, DeltaError> {
-    let bytes = std::fs::read(path).map_err(|error| DeltaError::Io(error.to_string()))?;
+    let file = std::fs::File::open(path).map_err(|error| DeltaError::Io(error.to_string()))?;
+    decode_reader(file)
+}
+
+/// Decode a send stream from anything readable.
+///
+/// This is the form the adopted transport needs: `org.legeos.Host.IndexCheckpoint1.DeltaOpen`
+/// hands back a descriptor to a file it has already unlinked, so there is no path left to read
+/// and [`decode_file`] cannot be used.
+///
+/// The whole stream is read into memory first, because [`decode`] needs random access to check
+/// each command's CRC against its own header. The cap that keeps that honest is the caller's:
+/// `lege-filed` refuses a stream over `LEGE_FILED_DELTA_CAP_BYTES` before it opens one, on the
+/// grounds that past that size a reconcile is cheaper anyway.
+pub fn decode_reader(mut reader: impl std::io::Read) -> Result<SendStream, DeltaError> {
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| DeltaError::Io(error.to_string()))?;
     decode(&bytes)
 }
 
@@ -1293,6 +1311,30 @@ mod tests {
 
     fn planned(bytes: &[u8]) -> DeltaPlan {
         plan(&decode(bytes).expect("decodes")).expect("plans")
+    }
+
+    #[test]
+    fn a_stream_decodes_the_same_from_a_reader_as_from_a_slice() {
+        // The adopted transport is a descriptor to an already-unlinked file, so the reader form
+        // is the only one `lege-filed` can use; it must not be a second, weaker decoder.
+        let bytes = StreamBuilder::new()
+            .snapshot()
+            .mkfile(b"dk/notes.md")
+            .rename(b"dk/old", b"dk/new")
+            .unlink(b"dk/gone")
+            .end();
+        assert_eq!(
+            decode_reader(std::io::Cursor::new(bytes.clone())).expect("reader decodes"),
+            decode(&bytes).expect("slice decodes")
+        );
+    }
+
+    #[test]
+    fn a_reader_that_is_not_a_stream_is_refused_rather_than_read_as_an_empty_delta() {
+        assert!(matches!(
+            decode_reader(std::io::Cursor::new(b"not a send stream".to_vec())),
+            Err(DeltaError::NotAStream)
+        ));
     }
 
     /// Metadata for whatever the test says exists, keyed by the **absolute** path — which is what
