@@ -98,6 +98,34 @@ pub trait HostStorage {
 }
 
 #[proxy(
+    interface = "org.legeos.Host.IndexCheckpoint1",
+    default_service = "org.legeos.Host",
+    default_path = "/org/legeos/Host"
+)]
+pub trait IndexCheckpoint {
+    /// Take a read-only checkpoint. `CheckpointRequest` JSON in (an empty string is the default
+    /// request), `Checkpoint` JSON out.
+    fn create(&self, request_json: &str) -> zbus::Result<String>;
+
+    /// Every retained checkpoint, as JSON (`Vec<Checkpoint>`), oldest id first. An
+    /// unauthenticated read.
+    fn list(&self) -> zbus::Result<String>;
+
+    /// The metadata delta between two checkpoints, as an open stream plus the `DeltaStream` JSON
+    /// that describes it: `(fd, delta_json)`. hostd unlinks the file before returning, so the
+    /// descriptor is the only way to the bytes and the JSON's `path` is a name that no longer
+    /// resolves.
+    ///
+    /// The stream's paths are relative to `DeltaStream::subvolume`, which is the mount point of
+    /// the snapshotted subvolume and *not* the consumer's index root — see
+    /// `lege_file_index::btrfs_delta::DeltaTarget`.
+    fn delta_open(&self, request_json: &str) -> zbus::Result<(zbus::zvariant::OwnedFd, String)>;
+
+    /// Drop a checkpoint once the delta taken against it has been applied.
+    fn discard(&self, id: &str) -> zbus::Result<()>;
+}
+
+#[proxy(
     interface = "org.legeos.Host.Session1",
     default_service = "org.legeos.Host",
     default_path = "/org/legeos/Host"
