@@ -23,7 +23,7 @@ fn the_checked_in_traces_replay_identically_through_this_build() {
     let dir = fixtures();
     assert!(dir.is_dir(), "replay fixtures missing at {}", dir.display());
     let reports = replay::replay_path(&dir, GovernorConfig::default()).expect("reading fixtures");
-    assert_eq!(reports.len(), 6, "six scenarios are checked in");
+    assert_eq!(reports.len(), 8, "eight scenarios are checked in");
 
     let mut diff = String::new();
     for report in &reports {
@@ -44,7 +44,7 @@ fn the_checked_in_traces_replay_identically_through_this_build() {
 }
 
 #[test]
-fn the_fixtures_still_cover_the_four_situations_they_were_written_for() {
+fn the_fixtures_still_cover_the_situations_they_were_written_for() {
     // A fixture that has quietly stopped exercising the thing it was written for is worse than
     // no fixture: it is a green test standing in for coverage that is gone.
     let reports = replay::replay_path(&fixtures(), GovernorConfig::default()).expect("fixtures");
@@ -58,6 +58,8 @@ fn the_fixtures_still_cover_the_four_situations_they_were_written_for() {
             "04-critical-then-recovery.jsonl",
             "05-low-memory-no-stall.jsonl",
             "06-attention-and-intent.jsonl",
+            "07-pressure-trigger-wakeup.jsonl",
+            "08-no-trigger-fallback-sampling.jsonl",
         ]
     );
 
@@ -161,4 +163,52 @@ fn attention_and_intent_change_which_instance_is_chosen() {
             assert!(report.agrees(), "{}", report.render());
         }
     }
+}
+
+#[test]
+fn why_the_loop_woke_is_recorded_and_changes_nothing_it_decides() {
+    // `07` and `08` are the same episode — the same memory, the same PSI, the same instances —
+    // recorded on a kernel that offers a pressure trigger and on one that does not. The governor
+    // must reach identical conclusions from both: `wakeup` says why the loop was awake, which is
+    // a diagnostic about the *service*, and it must never become an input to policy.
+    let reports = replay::replay_path(&fixtures(), GovernorConfig::default()).expect("fixtures");
+    let triggered = reports
+        .iter()
+        .find(|report| report.source.starts_with("07-"))
+        .expect("the trigger fixture");
+    let fallback = reports
+        .iter()
+        .find(|report| report.source.starts_with("08-"))
+        .expect("the fallback fixture");
+
+    assert!(triggered.agrees() && fallback.agrees());
+    assert_eq!(
+        triggered.records, fallback.records,
+        "the two fixtures must be the same episode"
+    );
+
+    let with_trigger =
+        std::fs::read_to_string(fixtures().join("07-pressure-trigger-wakeup.jsonl")).expect("07");
+    let without = std::fs::read_to_string(fixtures().join("08-no-trigger-fallback-sampling.jsonl"))
+        .expect("08");
+    assert!(
+        with_trigger.contains("\"wakeup\":\"trigger\"")
+            && with_trigger.contains("\"wakeup\":\"timeout\""),
+        "07 must cover both a pressure-triggered wake and the idle heartbeat"
+    );
+    assert!(
+        !without.contains("\"wakeup\":\"trigger\""),
+        "08 is the kernel with no trigger; every wake there is an interval sample"
+    );
+    // Strip the field that is meant to differ, and nothing else may.
+    let strip = |text: &str| {
+        text.replace("\"wakeup\":\"trigger\"", "")
+            .replace("\"wakeup\":\"timeout\"", "")
+            .replace("\"wakeup\":\"fallback\"", "")
+    };
+    assert_eq!(
+        strip(&with_trigger),
+        strip(&without),
+        "the two fixtures differ in something other than why the loop woke"
+    );
 }

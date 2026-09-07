@@ -60,6 +60,9 @@ pub struct TickContext {
     kmsg_watcher: KmsgWatcher,
     started_at: Instant,
     paths: TickPaths,
+    /// Why the loop is awake for this tick. Set by [`run_loop`] before each [`tick`] rather than
+    /// passed as an argument, so no policy code, test or replay caller changes shape.
+    wakeup: crate::psi::Wakeup,
 }
 
 impl TickContext {
@@ -71,11 +74,18 @@ impl TickContext {
             kmsg_watcher: KmsgWatcher::open(&paths.kmsg_path),
             started_at: Instant::now(),
             paths,
+            wakeup: crate::psi::Wakeup::default(),
         }
     }
 
     pub fn managed_count(&self) -> usize {
         self.managed.len()
+    }
+
+    /// Record why this tick is happening, so the trace says whether the governor was woken by
+    /// pressure or by the clock.
+    pub fn note_wakeup(&mut self, wakeup: crate::psi::Wakeup) {
+        self.wakeup = wakeup;
     }
 }
 
@@ -163,7 +173,7 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
     };
     *shared.report.write() = Some(report.clone());
 
-    record_trace(shared, &report, level_changed, victim, &actions);
+    record_trace(shared, &report, level_changed, victim, &actions, ctx.wakeup);
 
     TickOutcome {
         level,
@@ -388,6 +398,7 @@ fn record_trace(
     level_changed: bool,
     victim: Option<InstanceId>,
     actions: &[ActionOutcome],
+    wakeup: crate::psi::Wakeup,
 ) {
     let interesting = report.level != PressureLevel::Normal
         || level_changed
@@ -397,6 +408,7 @@ fn record_trace(
     }
     shared.traces.lock().append(&TraceRecord {
         trace_version: crate::replay::TRACE_VERSION,
+        wakeup,
         timestamp_ms: trace::now_ms(),
         level: report.level,
         stage: report.stage,
@@ -532,7 +544,31 @@ pub fn run_once() -> Result<()> {
     Ok(())
 }
 
-/// The long-running loop: tick every `interval`, forever, on its own thread.
+/// How long the loop sleeps when nothing is under pressure.
+///
+/// It is not zero: the tick re-reads cgroup membership, and an instance appearing or leaving
+/// `app.slice` produces no event anybody can wait on. A minute is long enough that an idle
+/// desktop is not paying for a governor that has nothing to govern, and short enough that a
+/// newly launched application is protected before it can matter.
+pub const IDLE_HEARTBEAT: Duration = Duration::from_secs(60);
+
+/// A stall of 150ms in any second is the kernel's signal that memory is starting to hurt — well
+/// below the Elevated threshold the governor acts on, so the loop is awake and sampling before
+/// there is anything to decide.
+const TRIGGER_STALL: Duration = Duration::from_millis(150);
+const TRIGGER_WINDOW: Duration = Duration::from_secs(1);
+
+/// The long-running loop: wake on memory pressure or on the heartbeat, forever, on its own
+/// thread.
+///
+/// It used to `sleep(interval)` unconditionally, which meant an idle machine woke this thread
+/// once a second to read PSI files and discover that nothing had changed. Now the kernel says
+/// when memory starts stalling and the loop waits for it; `interval` is what it samples at
+/// *while* something is happening, which is the bounded active episode
+/// `@legeos.decision.event-driven-service-authorities` allows.
+///
+/// The policy is untouched: `tick` reads the same files, `Governor` makes the same decisions, and
+/// the replay fixtures prove it. What changed is only how often the loop asks.
 ///
 /// `shared` and `events` are taken by value, not by reference: this runs inside a
 /// `thread::Builder::spawn`ed closure, which requires `'static` owned captures — a borrow cannot
@@ -544,7 +580,17 @@ pub fn run_loop(
     interval: Duration,
     events: tokio::sync::mpsc::UnboundedSender<SignalEvent>,
 ) {
+    let session = crate::cgroup::Cgroup::from_directory(ctx.paths.session_slice.clone());
+    let wait = crate::psi::PressureWait::for_cgroup(&session, TRIGGER_STALL, TRIGGER_WINDOW);
+    tracing::info!(
+        event_driven = wait.is_event_driven(),
+        pressure = %session.directory().join("memory.pressure").display(),
+        "governor loop armed"
+    );
+
+    let mut wakeup = crate::psi::Wakeup::default();
     loop {
+        ctx.note_wakeup(wakeup);
         let outcome = tick(&mut ctx, &shared, Instant::now());
 
         if outcome.level_changed {
@@ -575,9 +621,19 @@ pub fn run_loop(
             level = %outcome.level,
             instances = ctx.managed_count(),
             actions = outcome.actions.len(),
+            wakeup = wakeup.as_str(),
             "tick"
         );
-        std::thread::sleep(interval);
+
+        // Under pressure, keep the sampling interval: the governor is tracking a moving situation
+        // and a trigger that has already fired says nothing more until the stall clears. Calm,
+        // wait for the kernel — and the heartbeat is the backstop for the one thing PSI cannot
+        // report, which is an instance appearing in or leaving the slice.
+        wakeup = if outcome.level == PressureLevel::Normal {
+            wait.wait(IDLE_HEARTBEAT)
+        } else {
+            wait.wait(interval)
+        };
     }
 }
 

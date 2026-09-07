@@ -371,6 +371,7 @@ mod tests {
 
     fn record(available: u64, some: f64, full: f64, instances: Vec<InstanceTrace>) -> TraceRecord {
         TraceRecord {
+            wakeup: crate::psi::Wakeup::default(),
             trace_version: TRACE_VERSION,
             timestamp_ms: 0,
             level: PressureLevel::Normal,

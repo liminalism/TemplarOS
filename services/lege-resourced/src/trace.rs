@@ -78,6 +78,12 @@ pub struct TraceRecord {
     pub instances: Vec<InstanceTrace>,
     pub victim: Option<InstanceId>,
     pub actions: Vec<ActionTrace>,
+    /// Why the loop was awake for this tick: the kernel's pressure trigger fired, the idle
+    /// heartbeat came round, or there is no trigger on this kernel and the loop is sampling on
+    /// the clock. Serde-defaulted, so every trace recorded before the loop became event-driven
+    /// still replays — it reads as `timeout`, which is what an interval sample was.
+    #[serde(default)]
+    pub wakeup: crate::psi::Wakeup,
 }
 
 fn default_trace_version() -> u32 {
@@ -195,6 +201,7 @@ mod tests {
 
     fn sample_record(level: PressureLevel) -> TraceRecord {
         TraceRecord {
+            wakeup: crate::psi::Wakeup::default(),
             trace_version: crate::replay::TRACE_VERSION,
             timestamp_ms: now_ms(),
             level,

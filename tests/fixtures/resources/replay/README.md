@@ -1,6 +1,6 @@
 # Replay fixtures — hand-authored, not recordings
 
-These six traces are **written by hand**. Nobody's desktop produced them. They are scenarios
+These eight traces are **written by hand**. Nobody's desktop produced them. They are scenarios
 chosen to exercise the parts of the governor that are hard to reach otherwise, in the format
 `lege-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
 `lege-resourced --replay` can push them back through the current policy.
@@ -24,7 +24,7 @@ cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay --bless 
 Blessing is how a deliberate policy change gets committed, *after* its diff has been read and
 quoted in the commit message. It is never the way to make a surprising diff go away.
 
-## The six scenarios
+## The eight scenarios
 
 **`01-calm-desktop.jsonl`** — 20 GiB free, no pressure, four instances including the protected
 shell. Every tick should be `normal` and should emit nothing but `restore-limits`. The trace that
@@ -66,3 +66,11 @@ carries an attention signal.
 
 Note that `stage` is `observe-only` in every record: these are decisions, not actions taken. At
 that stage the executor logs what it would have done and does none of it.
+
+**`07-pressure-trigger-wakeup.jsonl`** and **`08-no-trigger-fallback-sampling.jsonl`** — the same
+episode twice: calm on the idle heartbeat, an escalation the kernel's PSI trigger woke the loop
+for, then calm again. `07` is a kernel that offers a trigger on the delegated cgroup's
+`memory.pressure`; `08` is one that does not, so every wake there is an ordinary interval sample.
+They exist to hold one property: `wakeup` records why the loop was awake and must never become an
+input to policy — the two must decide identically, and
+`why_the_loop_woke_is_recorded_and_changes_nothing_it_decides` fails if they stop.

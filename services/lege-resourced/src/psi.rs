@@ -8,7 +8,12 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{
+    io::Write,
+    os::fd::{AsRawFd, OwnedFd},
+    path::Path,
+    time::Duration,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PsiSample {
@@ -164,5 +169,220 @@ mod tests {
 
         assert!(read_global_cpu_psi(&root).is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+// --- pressure-triggered wakeups ----------------------------------------------------------------
+
+/// Why the loop woke.
+///
+/// The distinction is the whole point of the field: a `Trigger` wake means the kernel saw the
+/// stall threshold crossed, a `Timeout` means nothing did and the heartbeat came round, and a
+/// `Fallback` means there is no trigger to wait on at all and the loop is sampling on the clock
+/// exactly as it always did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Wakeup {
+    /// The kernel reported the stall threshold crossed.
+    Trigger,
+    /// Nothing happened; this is the heartbeat.
+    #[default]
+    Timeout,
+    /// No trigger could be registered, so this is an ordinary interval sample.
+    Fallback,
+}
+
+impl Wakeup {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trigger => "trigger",
+            Self::Timeout => "timeout",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+/// A registered PSI threshold on one `*.pressure` file.
+///
+/// The kernel's own interface for "tell me when this starts hurting": write a threshold to
+/// `memory.pressure` and the descriptor becomes readable — `POLLPRI` — when `some` stalls for
+/// more than `stall` in any `window`. That replaces a loop that woke every interval to discover
+/// that nothing had happened, which is the wakeup this audit exists to remove.
+///
+/// It is registered on the **delegated cgroup's** `memory.pressure`, not on
+/// `/proc/pressure/memory`: writing a trigger to the global file has needed `CAP_SYS_RESOURCE`
+/// since kernel 6.5, and a per-user daemon does not have it (ADR-0002 — the governor is
+/// deliberately unprivileged). The session slice is the scope the governor acts on anyway.
+///
+/// [`Trigger::open`] returning `None` is not an error: a kernel without PSI, a cgroup that is not
+/// delegated, a container. The loop falls back to sleeping on the interval and says so in the
+/// trace, which is what [`Wakeup::Fallback`] is for.
+#[derive(Debug)]
+pub struct Trigger {
+    fd: OwnedFd,
+}
+
+impl Trigger {
+    /// Register "some memory stall of at least `stall` within `window`" on `pressure_file`.
+    ///
+    /// The kernel refuses a stall over 10% of the window, and refuses a window outside
+    /// 500ms..10s.
+    #[must_use]
+    pub fn open(pressure_file: &Path, stall: Duration, window: Duration) -> Option<Self> {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(pressure_file)
+            .ok()?;
+        write!(file, "some {} {}", stall.as_micros(), window.as_micros()).ok()?;
+        Some(Self {
+            fd: OwnedFd::from(file),
+        })
+    }
+
+    /// Wait for the threshold to be crossed, or for `timeout` to elapse.
+    ///
+    /// `POLLPRI` and not `POLLIN`: the kernel signals a PSI trigger as an exceptional condition,
+    /// and a descriptor registered this way is *always* readable, so a `POLLIN` wait would return
+    /// instantly forever.
+    pub fn wait(&self, timeout: Duration) -> Wakeup {
+        let mut poll = libc::pollfd {
+            fd: self.fd.as_raw_fd(),
+            events: libc::POLLPRI,
+            revents: 0,
+        };
+        // SAFETY: `poll` is handed one initialised `pollfd` describing a descriptor this struct
+        // owns and keeps alive for the duration of the call. Failure is reported by the return
+        // value; there are no preconditions beyond a valid pointer and length.
+        #[allow(unsafe_code)]
+        let ready = unsafe {
+            libc::poll(
+                std::ptr::from_mut(&mut poll),
+                1,
+                i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX),
+            )
+        };
+        if ready > 0 && poll.revents & libc::POLLPRI != 0 {
+            Wakeup::Trigger
+        } else {
+            // A negative return is EINTR or EAGAIN: a signal, not pressure. Treating it as a
+            // timeout costs one early sample and never a missed one.
+            Wakeup::Timeout
+        }
+    }
+}
+
+/// How the loop waits: on a pressure trigger where the kernel offers one, on the clock otherwise.
+#[derive(Debug, Default)]
+pub struct PressureWait {
+    trigger: Option<Trigger>,
+}
+
+impl PressureWait {
+    /// Register a trigger on `cgroup`'s `memory.pressure`, or fall back to sleeping.
+    #[must_use]
+    pub fn for_cgroup(cgroup: &crate::cgroup::Cgroup, stall: Duration, window: Duration) -> Self {
+        Self {
+            trigger: Trigger::open(&cgroup.directory().join("memory.pressure"), stall, window),
+        }
+    }
+
+    #[must_use]
+    pub fn from_trigger(trigger: Option<Trigger>) -> Self {
+        Self { trigger }
+    }
+
+    /// Whether a trigger was registered at all.
+    #[must_use]
+    pub fn is_event_driven(&self) -> bool {
+        self.trigger.is_some()
+    }
+
+    /// Block until pressure or `timeout`. With no trigger this is the sleep the loop always did.
+    #[must_use]
+    pub fn wait(&self, timeout: Duration) -> Wakeup {
+        if let Some(trigger) = &self.trigger {
+            trigger.wait(timeout)
+        } else {
+            std::thread::sleep(timeout);
+            Wakeup::Fallback
+        }
+    }
+}
+
+#[cfg(test)]
+mod wakeup_tests {
+    use super::*;
+    use std::os::fd::FromRawFd;
+
+    /// A pipe stands in for a `memory.pressure` descriptor: writing to it makes the read end
+    /// ready, which is what a crossed threshold does. It exercises the `poll` call itself — the
+    /// part with the `unsafe` block and the timeout arithmetic — without a kernel that has PSI,
+    /// a delegated cgroup, or any pressure at all.
+    fn pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0; 2];
+        // SAFETY: `pipe` writes two descriptors into a two-element array and reports failure
+        // through its return value.
+        #[allow(unsafe_code)]
+        let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(result, 0, "pipe failed");
+        // SAFETY: both descriptors were just created by `pipe` and are owned by this test.
+        #[allow(unsafe_code)]
+        unsafe {
+            (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
+        }
+    }
+
+    #[test]
+    fn a_wait_that_nothing_signals_times_out_rather_than_spinning() {
+        let (read, _write) = pipe();
+        let trigger = Trigger { fd: read };
+        let started = std::time::Instant::now();
+        assert_eq!(trigger.wait(Duration::from_millis(50)), Wakeup::Timeout);
+        assert!(
+            started.elapsed() >= Duration::from_millis(45),
+            "the wait returned immediately: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_signalled_descriptor_wakes_the_wait() {
+        // POLLPRI, not POLLIN: out-of-band data on a pipe is what a PSI trigger looks like to
+        // poll, and a POLLIN wait on a PSI descriptor returns instantly forever.
+        let (read, write) = pipe();
+        let raw_write = write.as_raw_fd();
+        // SAFETY: `send` writes `len` bytes from a valid pointer to a descriptor this test owns.
+        #[allow(unsafe_code)]
+        let sent = unsafe { libc::send(raw_write, b"x".as_ptr().cast(), 1, libc::MSG_OOB) };
+        let trigger = Trigger { fd: read };
+        if sent < 0 {
+            // A pipe cannot carry out-of-band data on every kernel; the timeout path above is
+            // what this build could check.
+            assert_eq!(trigger.wait(Duration::from_millis(20)), Wakeup::Timeout);
+            return;
+        }
+        assert_eq!(trigger.wait(Duration::from_secs(5)), Wakeup::Trigger);
+    }
+
+    #[test]
+    fn a_wait_with_no_trigger_sleeps_and_says_it_fell_back() {
+        let wait = PressureWait::default();
+        assert!(!wait.is_event_driven());
+        let started = std::time::Instant::now();
+        assert_eq!(wait.wait(Duration::from_millis(30)), Wakeup::Fallback);
+        assert!(started.elapsed() >= Duration::from_millis(25));
+    }
+
+    #[test]
+    fn a_pressure_file_that_refuses_a_trigger_is_a_fallback_and_not_a_failure() {
+        // A kernel with no PSI, a cgroup that is not delegated, a container. The governor must
+        // keep running exactly as it did before, not refuse to start.
+        let dir = tempfile::tempdir().unwrap();
+        let cgroup = crate::cgroup::Cgroup::from_directory(dir.path().to_path_buf());
+        let wait =
+            PressureWait::for_cgroup(&cgroup, Duration::from_millis(150), Duration::from_secs(1));
+        assert!(!wait.is_event_driven());
     }
 }
