@@ -1,0 +1,1649 @@
+{
+  "audio": [
+    "NVidia: HDA-Intel - HDA NVidia",
+    "PCH: HDA-Intel - HDA Intel PCH"
+  ],
+  "cpu": {
+    "microcode": "0x6134",
+    "model": "13th Gen Intel(R) Core(TM) i7-13700H",
+    "vendor": "GenuineIntel"
+  },
+  "drm": [
+    {
+      "card": "card1",
+      "connected": [],
+      "device_node": true,
+      "driver": "nvidia"
+    },
+    {
+      "card": "card2",
+      "connected": [
+        "eDP-2"
+      ],
+      "device_node": true,
+      "driver": "i915"
+    }
+  ],
+  "firmware_declared": [
+    "cirrus/cs35l41-*.bin",
+    "cirrus/cs35l41-*.wmfw",
+    "i915/adlp_dmc.bin",
+    "i915/adlp_dmc_ver2_16.bin",
+    "i915/adlp_guc_69.0.3.bin",
+    "i915/adlp_guc_70.1.1.bin",
+    "i915/adlp_guc_70.bin",
+    "i915/adls_dmc_ver2_01.bin",
+    "i915/bmg_dmc.bin",
+    "i915/bxt_dmc_ver1_07.bin",
+    "i915/bxt_guc_70.1.1.bin",
+    "i915/bxt_huc_2.0.0.bin",
+    "i915/cml_guc_70.1.1.bin",
+    "i915/cml_huc_4.0.0.bin",
+    "i915/dg1_dmc_ver2_02.bin",
+    "i915/dg1_guc_70.bin",
+    "i915/dg1_huc.bin",
+    "i915/dg2_dmc_ver2_08.bin",
+    "i915/dg2_guc_70.bin",
+    "i915/dg2_huc_gsc.bin",
+    "i915/ehl_guc_70.1.1.bin",
+    "i915/ehl_huc_9.0.0.bin",
+    "i915/glk_dmc_ver1_04.bin",
+    "i915/glk_guc_70.1.1.bin",
+    "i915/glk_huc_4.0.0.bin",
+    "i915/icl_dmc_ver1_09.bin",
+    "i915/icl_guc_70.1.1.bin",
+    "i915/icl_huc_9.0.0.bin",
+    "i915/kbl_dmc_ver1_04.bin",
+    "i915/kbl_guc_70.1.1.bin",
+    "i915/kbl_huc_4.0.0.bin",
+    "i915/mtl_dmc.bin",
+    "i915/mtl_gsc_1.bin",
+    "i915/mtl_guc_70.bin",
+    "i915/mtl_huc_gsc.bin",
+    "i915/rkl_dmc_ver2_03.bin",
+    "i915/skl_dmc_ver1_27.bin",
+    "i915/skl_guc_70.1.1.bin",
+    "i915/skl_huc_2.0.0.bin",
+    "i915/tgl_dmc_ver2_12.bin",
+    "i915/tgl_guc_69.0.3.bin",
+    "i915/tgl_guc_70.1.1.bin",
+    "i915/tgl_guc_70.bin",
+    "i915/tgl_huc.bin",
+    "i915/tgl_huc_7.9.3.bin",
+    "i915/xe2lpd_dmc.bin",
+    "i915/xe3lpd_3002_dmc.bin",
+    "i915/xe3lpd_dmc.bin",
+    "intel/avs/adl/dsp_basefw.bin",
+    "intel/avs/adl_n/dsp_basefw.bin",
+    "intel/avs/apl/dsp_basefw.bin",
+    "intel/avs/cnl/dsp_basefw.bin",
+    "intel/avs/ehl/dsp_basefw.bin",
+    "intel/avs/icl/dsp_basefw.bin",
+    "intel/avs/jsl/dsp_basefw.bin",
+    "intel/avs/lkf/dsp_basefw.bin",
+    "intel/avs/skl/dsp_basefw.bin",
+    "intel/avs/tgl/dsp_basefw.bin",
+    "intel/fcl/dsp_basefw.bin",
+    "intel/ibt-11-5.ddc",
+    "intel/ibt-11-5.sfi",
+    "intel/ibt-12-16.ddc",
+    "intel/ibt-12-16.sfi",
+    "mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin",
+    "mediatek/BT_RAM_CODE_MT7961_1_2_hdr.bin",
+    "mediatek/mt7622pr2h.bin",
+    "mediatek/mt7663pr2h.bin",
+    "mediatek/mt7668pr2h.bin",
+    "mediatek/mt7925/BT_RAM_CODE_MT7925_1_1_hdr.bin",
+    "nvidia/610.43.02/gsp_ga10x.bin",
+    "nvidia/610.43.02/gsp_tu10x.bin",
+    "nvidia/610.43.02/ucodes_ga10x.bin",
+    "nvidia/610.43.02/ucodes_tu10x.bin",
+    "regulatory.db",
+    "regulatory.db.p7s",
+    "rtl_bt/rtl8723a_fw.bin",
+    "rtl_bt/rtl8723b_config.bin",
+    "rtl_bt/rtl8723b_fw.bin",
+    "rtl_bt/rtl8723bs_config.bin",
+    "rtl_bt/rtl8723bs_fw.bin",
+    "rtl_bt/rtl8723cs_cg_config.bin",
+    "rtl_bt/rtl8723cs_cg_fw.bin",
+    "rtl_bt/rtl8723cs_vf_config.bin",
+    "rtl_bt/rtl8723cs_vf_fw.bin",
+    "rtl_bt/rtl8723cs_xx_config.bin",
+    "rtl_bt/rtl8723cs_xx_fw.bin",
+    "rtl_bt/rtl8723d_config.bin",
+    "rtl_bt/rtl8723d_fw.bin",
+    "rtl_bt/rtl8723ds_config.bin",
+    "rtl_bt/rtl8723ds_fw.bin",
+    "rtl_bt/rtl8761a_config.bin",
+    "rtl_bt/rtl8761a_fw.bin",
+    "rtl_bt/rtl8761b_config.bin",
+    "rtl_bt/rtl8761b_fw.bin",
+    "rtl_bt/rtl8761bu_config.bin",
+    "rtl_bt/rtl8761bu_fw.bin",
+    "rtl_bt/rtl8821a_config.bin",
+    "rtl_bt/rtl8821a_fw.bin",
+    "rtl_bt/rtl8821c_config.bin",
+    "rtl_bt/rtl8821c_fw.bin",
+    "rtl_bt/rtl8821cs_config.bin",
+    "rtl_bt/rtl8821cs_fw.bin",
+    "rtl_bt/rtl8822b_config.bin",
+    "rtl_bt/rtl8822b_fw.bin",
+    "rtl_bt/rtl8822cs_config.bin",
+    "rtl_bt/rtl8822cs_fw.bin",
+    "rtl_bt/rtl8822cu_config.bin",
+    "rtl_bt/rtl8822cu_fw.bin",
+    "rtl_bt/rtl8851bu_config.bin",
+    "rtl_bt/rtl8851bu_fw.bin",
+    "rtl_bt/rtl8852au_config.bin",
+    "rtl_bt/rtl8852au_fw.bin",
+    "rtl_bt/rtl8852bs_config.bin",
+    "rtl_bt/rtl8852bs_fw.bin",
+    "rtl_bt/rtl8852btu_config.bin",
+    "rtl_bt/rtl8852btu_fw.bin",
+    "rtl_bt/rtl8852bu_config.bin",
+    "rtl_bt/rtl8852bu_fw.bin",
+    "rtl_bt/rtl8852cu_config.bin",
+    "rtl_bt/rtl8852cu_fw.bin",
+    "rtl_bt/rtl8852cu_fw_v2.bin",
+    "rtl_bt/rtl8922au_config.bin",
+    "rtl_bt/rtl8922au_fw.bin",
+    "rtw89/rtw8852c_fw-2.bin",
+    "xe/bmg_guc_70.bin",
+    "xe/bmg_huc.bin",
+    "xe/lnl_gsc_1.bin",
+    "xe/lnl_guc_70.bin",
+    "xe/lnl_huc.bin",
+    "xe/ptl_guc_70.bin",
+    "xe/ptl_huc.bin"
+  ],
+  "firmware_failed": [],
+  "firmware_loaded": [
+    "cirrus/cs35l41-dsp1-spk-prot-17aa38b5-spkid1-l0.bin",
+    "cirrus/cs35l41-dsp1-spk-prot-17aa38b5-spkid1-r0.bin",
+    "cirrus/cs35l41-dsp1-spk-prot-17aa38b5.wmfw",
+    "i915/adlp_dmc.bin",
+    "i915/adlp_guc_70.bin",
+    "i915/tgl_huc.bin",
+    "rtl_bt/rtl8852cu_config.bin",
+    "rtl_bt/rtl8852cu_fw_v2.bin",
+    "rtw89/rtw8852c_fw-2.bin"
+  ],
+  "host": "dk-82y3",
+  "input": [
+    "AT Translated Set 2 keyboard",
+    "ELAN06FA:00 04F3:3280 Mouse",
+    "ELAN06FA:00 04F3:3280 Touchpad",
+    "HDA Intel PCH HDMI/DP,pcm=3",
+    "HDA Intel PCH HDMI/DP,pcm=7",
+    "HDA Intel PCH HDMI/DP,pcm=8",
+    "HDA Intel PCH HDMI/DP,pcm=9",
+    "HDA Intel PCH Headphone",
+    "HDA Intel PCH Mic",
+    "HDA NVidia HDMI/DP,pcm=3",
+    "HDA NVidia HDMI/DP,pcm=7",
+    "HDA NVidia HDMI/DP,pcm=8",
+    "HDA NVidia HDMI/DP,pcm=9",
+    "ITE Tech. Inc. ITE Device(8258)",
+    "ITE Tech. Inc. ITE Device(8258) Keyboard",
+    "ITE Tech. Inc. ITE Device(8258) Wireless Radio Control",
+    "Ideapad extra buttons",
+    "Lid Switch",
+    "Power Button",
+    "Video Bus"
+  ],
+  "kernel": "6.17.0-41-generic",
+  "kernel_log_source": "journalctl -k -b",
+  "modules": [
+    {
+      "firmware": [],
+      "name": "842_compress",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "842_decompress",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ac97_bus",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "acpi_pad",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "acpi_thermal_rel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "aesni_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "af_alg",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "algif_hash",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "algif_skcipher",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "arp_tables",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "autofs4",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "binfmt_misc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "blake2b_generic",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "bluetooth",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "bnep",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "br_netfilter",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "bridge",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "btbcm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "intel/ibt-11-5.ddc",
+        "intel/ibt-11-5.sfi",
+        "intel/ibt-12-16.ddc",
+        "intel/ibt-12-16.sfi"
+      ],
+      "name": "btintel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin",
+        "mediatek/BT_RAM_CODE_MT7961_1_2_hdr.bin",
+        "mediatek/mt7622pr2h.bin",
+        "mediatek/mt7663pr2h.bin",
+        "mediatek/mt7668pr2h.bin",
+        "mediatek/mt7925/BT_RAM_CODE_MT7925_1_1_hdr.bin"
+      ],
+      "name": "btmtk",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "btrfs",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "rtl_bt/rtl8723a_fw.bin",
+        "rtl_bt/rtl8723b_config.bin",
+        "rtl_bt/rtl8723b_fw.bin",
+        "rtl_bt/rtl8723bs_config.bin",
+        "rtl_bt/rtl8723bs_fw.bin",
+        "rtl_bt/rtl8723cs_cg_config.bin",
+        "rtl_bt/rtl8723cs_cg_fw.bin",
+        "rtl_bt/rtl8723cs_vf_config.bin",
+        "rtl_bt/rtl8723cs_vf_fw.bin",
+        "rtl_bt/rtl8723cs_xx_config.bin",
+        "rtl_bt/rtl8723cs_xx_fw.bin",
+        "rtl_bt/rtl8723d_config.bin",
+        "rtl_bt/rtl8723d_fw.bin",
+        "rtl_bt/rtl8723ds_config.bin",
+        "rtl_bt/rtl8723ds_fw.bin",
+        "rtl_bt/rtl8761a_config.bin",
+        "rtl_bt/rtl8761a_fw.bin",
+        "rtl_bt/rtl8761b_config.bin",
+        "rtl_bt/rtl8761b_fw.bin",
+        "rtl_bt/rtl8761bu_config.bin",
+        "rtl_bt/rtl8761bu_fw.bin",
+        "rtl_bt/rtl8821a_config.bin",
+        "rtl_bt/rtl8821a_fw.bin",
+        "rtl_bt/rtl8821c_config.bin",
+        "rtl_bt/rtl8821c_fw.bin",
+        "rtl_bt/rtl8821cs_config.bin",
+        "rtl_bt/rtl8821cs_fw.bin",
+        "rtl_bt/rtl8822b_config.bin",
+        "rtl_bt/rtl8822b_fw.bin",
+        "rtl_bt/rtl8822cs_config.bin",
+        "rtl_bt/rtl8822cs_fw.bin",
+        "rtl_bt/rtl8822cu_config.bin",
+        "rtl_bt/rtl8822cu_fw.bin",
+        "rtl_bt/rtl8851bu_config.bin",
+        "rtl_bt/rtl8851bu_fw.bin",
+        "rtl_bt/rtl8852au_config.bin",
+        "rtl_bt/rtl8852au_fw.bin",
+        "rtl_bt/rtl8852bs_config.bin",
+        "rtl_bt/rtl8852bs_fw.bin",
+        "rtl_bt/rtl8852btu_config.bin",
+        "rtl_bt/rtl8852btu_fw.bin",
+        "rtl_bt/rtl8852bu_config.bin",
+        "rtl_bt/rtl8852bu_fw.bin",
+        "rtl_bt/rtl8852cu_config.bin",
+        "rtl_bt/rtl8852cu_fw.bin",
+        "rtl_bt/rtl8852cu_fw_v2.bin",
+        "rtl_bt/rtl8922au_config.bin",
+        "rtl_bt/rtl8922au_fw.bin"
+      ],
+      "name": "btrtl",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "btusb",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ccm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "cec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "regulatory.db",
+        "regulatory.db.p7s"
+      ],
+      "name": "cfg80211",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "cmac",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "cmdlinepart",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "coretemp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "cqhci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "crc8",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "cs_dsp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "dm_log",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "dm_mirror",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "dm_region_hash",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "dmi_sysfs",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_buddy",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_display_helper",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_exec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_gpusvm_helper",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_gpuvm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_suballoc_helper",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "drm_ttm_helper",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "efi_pstore",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "exfat",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "firmware_attributes_class",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ghash_clmulni_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "gpu_sched",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "hid",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "hid_generic",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "hid_multitouch",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_algo_bit",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_hid",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_hid_acpi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_i801",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_mux",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "i2c_smbus",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "i915/adlp_dmc.bin",
+        "i915/adlp_dmc_ver2_16.bin",
+        "i915/adlp_guc_69.0.3.bin",
+        "i915/adlp_guc_70.1.1.bin",
+        "i915/adlp_guc_70.bin",
+        "i915/adls_dmc_ver2_01.bin",
+        "i915/bmg_dmc.bin",
+        "i915/bxt_dmc_ver1_07.bin",
+        "i915/bxt_guc_70.1.1.bin",
+        "i915/bxt_huc_2.0.0.bin",
+        "i915/cml_guc_70.1.1.bin",
+        "i915/cml_huc_4.0.0.bin",
+        "i915/dg1_dmc_ver2_02.bin",
+        "i915/dg1_guc_70.bin",
+        "i915/dg1_huc.bin",
+        "i915/dg2_dmc_ver2_08.bin",
+        "i915/dg2_guc_70.bin",
+        "i915/dg2_huc_gsc.bin",
+        "i915/ehl_guc_70.1.1.bin",
+        "i915/ehl_huc_9.0.0.bin",
+        "i915/glk_dmc_ver1_04.bin",
+        "i915/glk_guc_70.1.1.bin",
+        "i915/glk_huc_4.0.0.bin",
+        "i915/icl_dmc_ver1_09.bin",
+        "i915/icl_guc_70.1.1.bin",
+        "i915/icl_huc_9.0.0.bin",
+        "i915/kbl_dmc_ver1_04.bin",
+        "i915/kbl_guc_70.1.1.bin",
+        "i915/kbl_huc_4.0.0.bin",
+        "i915/mtl_dmc.bin",
+        "i915/mtl_gsc_1.bin",
+        "i915/mtl_guc_70.bin",
+        "i915/mtl_huc_gsc.bin",
+        "i915/rkl_dmc_ver2_03.bin",
+        "i915/skl_dmc_ver1_27.bin",
+        "i915/skl_guc_70.1.1.bin",
+        "i915/skl_huc_2.0.0.bin",
+        "i915/tgl_dmc_ver2_12.bin",
+        "i915/tgl_guc_69.0.3.bin",
+        "i915/tgl_guc_70.1.1.bin",
+        "i915/tgl_guc_70.bin",
+        "i915/tgl_huc.bin",
+        "i915/tgl_huc_7.9.3.bin",
+        "i915/xe2lpd_dmc.bin",
+        "i915/xe3lpd_3002_dmc.bin",
+        "i915/xe3lpd_dmc.bin"
+      ],
+      "name": "i915",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ideapad_laptop",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "idma64",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "igen6_edac",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "input_leds",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "int3400_thermal",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "int3403_thermal",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "int340x_thermal_zone",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_cstate",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_lpss",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_lpss_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_pmc_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_pmc_ssram_telemetry",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_powerclamp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_rapl_common",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_rapl_msr",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_tcc_cooling",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_uncore_frequency",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_uncore_frequency_common",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "intel_vsec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ip6_tables",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ip6table_filter",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ip_set",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ip_tables",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "iptable_filter",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "irqbypass",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "joydev",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "kvm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "kvm_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "legion_laptop",
+      "origin": "dkms"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_capdata01",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_events",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_gamezone",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_helpers",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_hotkey_utilities",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lenovo_wmi_other",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "libarc4",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "llc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lz4_compress",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "lz4hc_compress",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mac80211",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mac_hid",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mei",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mei_hdcp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mei_me",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mei_pxp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "msr",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "mtd",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nf_conntrack",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nf_defrag_ipv4",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nf_defrag_ipv6",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nf_nat",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nf_tables",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nfnetlink",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nft_chain_nat",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nft_compat",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nls_iso8859_1",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "nvidia/610.43.02/gsp_ga10x.bin",
+        "nvidia/610.43.02/gsp_tu10x.bin",
+        "nvidia/610.43.02/ucodes_ga10x.bin",
+        "nvidia/610.43.02/ucodes_tu10x.bin"
+      ],
+      "name": "nvidia",
+      "origin": "dkms"
+    },
+    {
+      "firmware": [],
+      "name": "nvidia_drm",
+      "origin": "dkms"
+    },
+    {
+      "firmware": [],
+      "name": "nvidia_modeset",
+      "origin": "dkms"
+    },
+    {
+      "firmware": [],
+      "name": "nvidia_uvm",
+      "origin": "dkms"
+    },
+    {
+      "firmware": [],
+      "name": "nvidia_wmi_ec_backlight",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nvme",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nvme_auth",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nvme_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "nvme_keyring",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "overlay",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "parport",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "parport_pc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "pinctrl_tigerlake",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "platform_profile",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "platform_temperature_control",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "pmt_class",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "pmt_discovery",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "pmt_telemetry",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "polyval_clmulni",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ppdev",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_device",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_device_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_mbox",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_power_floor",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_rapl",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_rfim",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_soc_slider",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_wt_hint",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "processor_thermal_wt_req",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "qrtr",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "raid6_pq",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rapl",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rc_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rfcomm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "rtw89/rtw8852c_fw-2.bin"
+      ],
+      "name": "rtw89_8852c",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rtw89_8852ce",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rtw89_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "rtw89_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "sch_fq_codel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "sdhci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "sdhci_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "sdhci_uhs2",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "serial_multi_instantiate",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "serio_raw",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_compress",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_ctl_led",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_alc269",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_generic",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_hdmi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_intelhdmi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_nvhdmi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_codec_realtek_lib",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_ext_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_scodec_component",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "cirrus/cs35l41-*.bin",
+        "cirrus/cs35l41-*.wmfw"
+      ],
+      "name": "snd_hda_scodec_cs35l41",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_scodec_cs35l41_i2c",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hda_scodec_cs35l41_spi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hrtimer",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_hwdep",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_intel_dspcfg",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_intel_sdw_acpi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_pcm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_pcm_dmaengine",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_rawmidi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_seq",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_seq_device",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_seq_dummy",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_seq_midi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_seq_midi_event",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_acpi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_acpi_intel_match",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_acpi_intel_sdca_quirks",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "intel/avs/adl/dsp_basefw.bin",
+        "intel/avs/adl_n/dsp_basefw.bin",
+        "intel/avs/apl/dsp_basefw.bin",
+        "intel/avs/cnl/dsp_basefw.bin",
+        "intel/avs/ehl/dsp_basefw.bin",
+        "intel/avs/icl/dsp_basefw.bin",
+        "intel/avs/jsl/dsp_basefw.bin",
+        "intel/avs/lkf/dsp_basefw.bin",
+        "intel/avs/skl/dsp_basefw.bin",
+        "intel/avs/tgl/dsp_basefw.bin",
+        "intel/fcl/dsp_basefw.bin"
+      ],
+      "name": "snd_soc_avs",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_core",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_cs35l41_lib",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_cs_amp_lib",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_hda_codec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_hdac_hda",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_soc_sdca",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_intel_hda",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_intel_hda_common",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_intel_hda_generic",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_intel_hda_mlink",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_intel_hda_sdw_bpt",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_pci_intel_cnl",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_pci_intel_tgl",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_utils",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_sof_xtensa_dsp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "snd_timer",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "soundcore",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "soundwire_bus",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "soundwire_cadence",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "soundwire_generic_allocation",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "soundwire_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "sparse_keymap",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "spi_intel",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "spi_intel_pci",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "spi_nor",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "stp",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "thunderbolt",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ttm",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "typec",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "typec_ucsi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "uas",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "ucsi_acpi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "usb_storage",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "usbhid",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "uvc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "uvcvideo",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "video",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "videobuf2_common",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "videobuf2_memops",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "videobuf2_v4l2",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "videobuf2_vmalloc",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "videodev",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "wmi",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "wmi_bmof",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "x86_pkg_temp_thermal",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "x_tables",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [
+        "i915/adlp_dmc.bin",
+        "i915/adlp_dmc_ver2_16.bin",
+        "i915/adlp_guc_70.bin",
+        "i915/adls_dmc_ver2_01.bin",
+        "i915/bmg_dmc.bin",
+        "i915/bxt_dmc_ver1_07.bin",
+        "i915/dg1_dmc_ver2_02.bin",
+        "i915/dg1_guc_70.bin",
+        "i915/dg1_huc.bin",
+        "i915/dg2_dmc_ver2_08.bin",
+        "i915/dg2_guc_70.bin",
+        "i915/glk_dmc_ver1_04.bin",
+        "i915/icl_dmc_ver1_09.bin",
+        "i915/kbl_dmc_ver1_04.bin",
+        "i915/mtl_dmc.bin",
+        "i915/mtl_gsc_1.bin",
+        "i915/mtl_guc_70.bin",
+        "i915/mtl_huc_gsc.bin",
+        "i915/rkl_dmc_ver2_03.bin",
+        "i915/skl_dmc_ver1_27.bin",
+        "i915/tgl_dmc_ver2_12.bin",
+        "i915/tgl_guc_70.bin",
+        "i915/tgl_huc.bin",
+        "i915/xe2lpd_dmc.bin",
+        "i915/xe3lpd_3002_dmc.bin",
+        "i915/xe3lpd_dmc.bin",
+        "xe/bmg_guc_70.bin",
+        "xe/bmg_huc.bin",
+        "xe/lnl_gsc_1.bin",
+        "xe/lnl_guc_70.bin",
+        "xe/lnl_huc.bin",
+        "xe/ptl_guc_70.bin",
+        "xe/ptl_huc.bin"
+      ],
+      "name": "xe",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xfrm_algo",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xfrm_user",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xor",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xt_MASQUERADE",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xt_addrtype",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xt_conntrack",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "xt_set",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "zram",
+      "origin": "kernel"
+    },
+    {
+      "firmware": [],
+      "name": "zstd",
+      "origin": "kernel"
+    }
+  ],
+  "net": [
+    {
+      "driver": "none",
+      "name": "docker0",
+      "operstate": "down",
+      "wireless": false
+    },
+    {
+      "driver": "rtw89_8852ce",
+      "name": "wlp55s0",
+      "operstate": "up",
+      "wireless": true
+    }
+  ],
+  "observed_at": "2026-09-07T10:18:48Z",
+  "product": "82Y3",
+  "regulatory_domain": "00",
+  "storage": [
+    {
+      "driver": "nvme",
+      "name": "nvme0n1"
+    },
+    {
+      "driver": "nvme",
+      "name": "nvme1n1"
+    }
+  ],
+  "uefi": true
+}
