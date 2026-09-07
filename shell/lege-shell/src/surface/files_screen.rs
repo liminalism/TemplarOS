@@ -125,16 +125,16 @@ fn draw_compact(ui: &mut Ui<'_>, inner: Rect, data: FilesData<'_>) -> FilesActio
         Rect::new(inner.x, y, inner.w, row),
         data.storage(),
         design::measurement_style(ui),
-        design::TEXT,
+        design::text(),
         Align::Left,
     );
     y += row;
     if y + row <= inner.bottom() {
         let (text, colour) = match data.latest() {
-            Some(name) => (name, design::TEXT_DIM),
+            Some(name) => (name, design::text_dim()),
             None => (
                 data.headline(Drawer::Recent).unwrap_or("…"),
-                design::TEXT_FAINT,
+                design::text_faint(),
             ),
         };
         ui.label_styled(
@@ -168,7 +168,7 @@ fn draw_full(ui: &mut Ui<'_>, inner: Rect, data: FilesData<'_>) -> FilesAction {
         Rect::new(inner.x, inner.y, inner.w, row),
         data.storage(),
         design::measurement_style(ui),
-        design::TEXT,
+        design::text(),
         Align::Left,
     );
     if let Some(name) = data.latest() {
@@ -176,7 +176,7 @@ fn draw_full(ui: &mut Ui<'_>, inner: Rect, data: FilesData<'_>) -> FilesAction {
             Rect::new(inner.x, inner.y, inner.w, row),
             name,
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Right,
         );
     }
@@ -226,21 +226,21 @@ fn draw_locations(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_>
             chip,
             ui.px(design::CHIP_RADIUS),
             if hovered {
-                design::ACCENT_SOFT
+                design::accent_soft()
             } else {
-                design::SHELL_LOW
+                design::shell_low()
             },
         );
         ui.painter
-            .stroke_rect(chip, ui.scale.hairline(), design::EDGE);
+            .stroke_rect(chip, ui.scale.hairline(), design::edge());
         ui.label_styled(
             chip,
             label,
             design::state_style(ui),
             if hovered {
-                design::ACCENT
+                design::accent()
             } else {
-                design::TEXT_DIM
+                design::text_dim()
             },
             Align::Centre,
         );
@@ -287,16 +287,16 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
         };
         let hovered = ui.input.hovering(strip);
         if hovered {
-            ui.painter.fill_rect(strip, design::ACCENT_SOFT);
+            ui.painter.fill_rect(strip, design::accent_soft());
         }
         ui.label_styled(
             strip,
             drawer.name(),
             design::state_style(ui),
             if hovered {
-                design::ACCENT
+                design::accent()
             } else {
-                design::TEXT
+                design::text()
             },
             Align::Left,
         );
@@ -304,7 +304,7 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
             strip,
             &label,
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Right,
         );
         if ui.input.take_click(strip) {
@@ -321,21 +321,21 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
                 control,
                 ui.px(design::CHIP_RADIUS),
                 if hovered {
-                    design::DANGER_SOFT
+                    design::danger_soft()
                 } else {
-                    design::SHELL_LOW
+                    design::shell_low()
                 },
             );
             ui.painter
-                .stroke_rect(control, ui.scale.hairline(), design::EDGE);
+                .stroke_rect(control, ui.scale.hairline(), design::edge());
             ui.label_styled(
                 control,
                 empty_label,
                 design::state_style(ui),
                 if hovered {
-                    design::DANGER
+                    design::danger()
                 } else {
-                    design::TEXT_DIM
+                    design::text_dim()
                 },
                 Align::Centre,
             );
@@ -358,7 +358,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
             Rect::new(inner.x, top, inner.w, row),
             "Recent",
             design::section_label_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
         top += row;
@@ -383,7 +383,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
             strip,
             name,
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Left,
         );
     }
@@ -395,7 +395,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
             Rect::new(listing.x, listing.y, listing.w, row),
             "nothing recent",
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
     }
@@ -438,16 +438,16 @@ fn draw_progress(ui: &mut Ui<'_>, area: Rect, label: &str, fraction: f32) {
         text,
         label,
         design::state_style(ui),
-        design::ACCENT,
+        design::accent(),
         Align::Left,
     );
     let track = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
-    ui.painter.fill_rect(track, design::ACCENT_SOFT);
+    ui.painter.fill_rect(track, design::accent_soft());
     let filled = (f64::from(track.w) * f64::from(fraction.clamp(0.0, 1.0))) as i32;
     if filled > 0 {
         ui.painter.fill_rect(
             Rect::new(track.x, track.y, filled, bar_height),
-            design::ACCENT,
+            design::accent(),
         );
     }
 }

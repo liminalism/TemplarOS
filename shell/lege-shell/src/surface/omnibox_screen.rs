@@ -185,12 +185,12 @@ pub fn draw(
     };
     let row_height = ui.px(ROW_HEIGHT);
     ui.painter
-        .shadow_rect(panel, ui.px(6), ui.px(10), design::TEXT, 80);
+        .shadow_rect(panel, ui.px(6), ui.px(10), design::text(), 80);
     design::shell(
         ui,
         panel,
-        design::SHELL,
-        design::EDGE_STRONG,
+        design::shell_fill(),
+        design::edge_strong(),
         Elevation::Rest,
     );
 
@@ -214,7 +214,7 @@ pub fn draw(
             Rect::new(inner.x + ui.px(10), y, inner.w, ui.px(20)),
             "still searching files…",
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
     }
@@ -239,8 +239,8 @@ fn draw_panel(
     design::shell(
         ui,
         panel,
-        design::SHELL,
-        design::EDGE_STRONG,
+        design::shell_fill(),
+        design::edge_strong(),
         Elevation::Rest,
     );
     let inner = panel.inset(ui.px(6));
@@ -291,7 +291,7 @@ fn draw_panel(
                 FileState::Idle | FileState::Searching => "Searching…",
             },
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
     }
@@ -299,7 +299,7 @@ fn draw_panel(
     if let Some(index) = everywhere {
         ui.painter.fill_rect(
             Rect::new(footer.x, footer.y, footer.w, ui.scale.hairline()),
-            design::EDGE,
+            design::edge(),
         );
         if draw_panel_row(ui, footer, &rows[index], index == state.highlighted) {
             outcome = commit(&rows[index]);
@@ -331,7 +331,7 @@ fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
             Align::Right,
         ),
     ] {
-        ui.label_styled(rect, text, style, design::TEXT_FAINT, align);
+        ui.label_styled(rect, text, style, design::text_faint(), align);
     }
     ui.painter.fill_rect(
         Rect::new(
@@ -340,7 +340,7 @@ fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
             header.w,
             ui.scale.hairline(),
         ),
-        design::EDGE,
+        design::edge(),
     );
 }
 
@@ -351,7 +351,7 @@ fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> 
         ui.painter.fill_rounded_rect(
             rect.inset(ui.px(1)),
             ui.px(design::CHIP_RADIUS),
-            design::ACCENT_SOFT,
+            design::accent_soft(),
         );
     }
     let (changed_at, left_of_it) = rect.split_right(ui.px(150).min(rect.w / 4));
@@ -373,9 +373,9 @@ fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> 
         &format!("{}{marker}", row.label),
         design::title_style(ui),
         if highlighted || hovered {
-            design::ACCENT
+            design::accent()
         } else {
-            design::TEXT
+            design::text()
         },
         Align::Left,
     );
@@ -383,7 +383,7 @@ fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> 
         detail,
         &row.detail,
         design::state_style(ui),
-        design::TEXT_FAINT,
+        design::text_faint(),
         Align::Left,
     );
     if let RowExtra::File {
@@ -400,7 +400,7 @@ fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> 
             size,
             &size_label,
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Right,
         );
         ui.label_styled(
@@ -412,7 +412,7 @@ fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> 
             ),
             &crate::format::timestamp_ms(mtime_ms),
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Right,
         );
     }
@@ -441,7 +441,7 @@ fn draw_row(
         ui.painter.fill_rounded_rect(
             rect.inset(ui.px(1)),
             ui.px(design::CHIP_RADIUS),
-            design::ACCENT_SOFT,
+            design::accent_soft(),
         );
     }
     let mark_size = ui.px(22).min(rect.h - ui.px(8)).max(4);
@@ -459,12 +459,12 @@ fn draw_row(
         ui.painter.blit(bitmap, mark, ScaleFilter::Bilinear);
     } else {
         ui.painter
-            .fill_rounded_rect(mark, ui.px(design::CHIP_RADIUS), design::RECESSED);
+            .fill_rounded_rect(mark, ui.px(design::CHIP_RADIUS), design::recessed());
         ui.label_styled(
             mark,
             kind_mark(&row.hit),
             TextStyle::tracked(ui.theme.body.face, 9.0, 0.06),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Centre,
         );
     }
@@ -481,9 +481,9 @@ fn draw_row(
             &row.label,
             design::title_style(ui),
             if highlighted || hovered {
-                design::ACCENT
+                design::accent()
             } else {
-                design::TEXT
+                design::text()
             },
             Align::Left,
         );
@@ -491,7 +491,7 @@ fn draw_row(
             detail,
             &row.detail,
             design::state_style(ui),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
     }

@@ -74,9 +74,9 @@ pub fn draw(
         return NotificationsOutcome::None;
     }
     let colour = if data.available {
-        design::TEXT
+        design::text()
     } else {
-        design::TEXT_DIM
+        design::text_dim()
     };
     ui.label_styled(
         Rect::new(inner.x, inner.y, inner.w, ui.px(18)),
@@ -107,14 +107,14 @@ pub fn draw(
             text,
             &format!("{} — {}", row.app, row.summary),
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Left,
         );
         ui.label_styled(
             dismiss,
             "×",
             design::state_style(ui),
-            design::TEXT,
+            design::text(),
             Align::Centre,
         );
         if ui.input.take_click(dismiss) {
@@ -138,15 +138,15 @@ pub fn draw(
                 ui.painter.fill_rounded_rect(
                     chip,
                     ui.px(design::CHIP_RADIUS),
-                    design::SYSTEM_SHELL,
+                    design::system_shell(),
                 );
                 ui.painter
-                    .stroke_rect(chip, ui.scale.hairline(), design::EDGE);
+                    .stroke_rect(chip, ui.scale.hairline(), design::edge());
                 ui.label_styled(
                     chip,
                     label,
                     design::state_style(ui),
-                    design::TEXT,
+                    design::text(),
                     Align::Centre,
                 );
                 if ui.input.take_click(chip) {

@@ -193,7 +193,12 @@ mod tests {
         }
     }
 
-    /// Fixed-pixel baseline for the default Home Field. Unlike `render_field`, this fixture reads
+    /// Fixed-pixel baseline for the default Home Field.
+    ///
+    /// Last reviewed 2026-09-07, when the palette refactor landed: the only change was the Home
+    /// plate's label ink, `0x00f2_f4f6` to the palette's `strong_ink` (`0x00ff_ffff` on the light
+    /// palette). Imperceptible on light, and the reason the dark palette's Home plate is legible
+    /// at all — it was a hardcoded near-white on a light plate. Unlike `render_field`, this fixture reads
     /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
     /// therefore be reviewed and deliberately update this hash; environment changes cannot make
     /// it flicker.
@@ -492,7 +497,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xdecb_56a2_222e_636f,
+            hash, 0x7194_7ca1_8c3a_8cf5,
             "review the Home Field pixels before updating this baseline"
         );
     }

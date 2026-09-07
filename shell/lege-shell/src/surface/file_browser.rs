@@ -1312,12 +1312,12 @@ impl FilesBrowseView {
                         ui.painter.fill_rounded_rect(
                             plate,
                             ui.px(crate::surface::design::CHIP_RADIUS),
-                            crate::surface::design::FOLDER_SHELL,
+                            crate::surface::design::folder_shell(),
                         );
                         ui.painter.stroke_rect(
                             plate,
                             ui.scale.hairline(),
-                            crate::surface::design::FOLDER_EDGE,
+                            crate::surface::design::folder_edge(),
                         );
                     } else {
                         // A file with an extension names it once; one without shows nothing —
@@ -1649,6 +1649,24 @@ mod tests {
             self.input.mouse(MouseButton::Left, false);
             self.frame()
         }
+
+        /// Where the open menu actually put one of its rows. Asked of the menu rather than
+        /// computed from its row height, so adding a row to `FILES_MENU` — which makes the popup
+        /// taller and can push it up the screen to stay on it — does not move the click.
+        fn menu_row(&mut self, index: usize) -> Rect {
+            let ui = Ui::new(
+                Painter::new(&mut self.buffer),
+                &mut self.text,
+                &mut self.input,
+                crate::surface::design::theme(),
+                Scale::ONE,
+                &mut self.kernel,
+            );
+            self.screen
+                .menu
+                .row(&ui, Rect::new(0, 0, 1000, 600), index)
+                .expect("the menu has that row")
+        }
     }
 
     impl Harness {
@@ -1909,7 +1927,8 @@ mod tests {
             .iter()
             .position(|id| *id == "files.new-folder")
             .unwrap();
-        let asked = verb_of(harness.click(534.0, 400.0 + 5.0 + 28.0 * index as f32 + 14.0));
+        let row = harness.menu_row(index);
+        let asked = verb_of(harness.click((row.x + row.w / 2) as f32, (row.y + row.h / 2) as f32));
         assert_eq!(asked.map(|(verb, _)| verb), Some(FileVerb::NewFolder));
     }
 

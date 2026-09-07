@@ -99,6 +99,14 @@ pub enum FieldAction {
     /// region, and every menu row, reaches a capability: the tile names an action id and the
     /// host decides what performing it means, so a new control never needs a new variant here.
     RunAction(&'static str),
+    /// The same, for an action about a project: `project.enter`, `project.restore` and the three
+    /// tools. The project id is the one the menu was opened over, carried from there rather than
+    /// looked up again — the field reflows while a menu is open, and "which project" must not be
+    /// able to change under it.
+    Project {
+        id: &'static str,
+        project_id: String,
+    },
     /// The same, for an action that needs to name *which* window it applies to — everything the
     /// context menu offers over a session tile. One declaration, two routes: this is the pointer
     /// half of what the compositor's reserved chords do from the keyboard.
@@ -645,6 +653,63 @@ impl FieldScreen {
         }
     }
 
+    /// Where a tile's name and its controls go, given how it is grabbed.
+    ///
+    /// The companion to [`Self::grab_strip`], and split out for the same reason: the painter, the
+    /// hit-test and a test all need to agree about where a control is, and geometry computed
+    /// inline inside a draw call can only be checked by drawing. With a heading the name and the
+    /// controls share it. Without one — Micro and Small — the name is the body's first line and
+    /// the controls wait for a hover or a keyboard focus, then appear in a strip over the top of
+    /// the body. Identity is never hidden; only manipulation is.
+    pub fn control_rects(
+        strip: GrabStrip,
+        rect: Rect,
+        controls_width: i32,
+        revealed: bool,
+        ui: &Ui<'_>,
+    ) -> TileChrome {
+        if let Some(heading) = strip.heading {
+            // `split_right` hands back the right strip first.
+            let (controls, title) = heading.split_right(ui.px(controls_width).min(heading.w / 2));
+            return TileChrome {
+                reveal: None,
+                controls,
+                title,
+                content: strip.body,
+            };
+        }
+        // The name is the first line of the body, not a band over it: the tile keeps saying what
+        // it is at every size, and pays one line rather than a third of itself for the privilege.
+        let line = ui.px(design::COMPACT_TITLE_HEIGHT).min(strip.body.h);
+        let (title, content) = strip.body.split_top(line + ui.px(4));
+        if !revealed || controls_width == 0 {
+            return TileChrome {
+                reveal: None,
+                controls: Rect::new(rect.right(), rect.y, 0, 0),
+                title,
+                content,
+            };
+        }
+        let reveal = Rect::new(
+            rect.x,
+            rect.y,
+            rect.w,
+            ui.px(design::REVEAL_HEIGHT).min(rect.h),
+        );
+        let controls = reveal
+            .split_right(ui.px(controls_width).min(reveal.w / 2))
+            .0;
+        TileChrome {
+            reveal: Some(reveal),
+            controls,
+            // The name gives up the width the controls took rather than being drawn under them.
+            // Identity is never hidden, so what a revealed tile shows is a shorter name, not a
+            // name with three buttons on top of it.
+            title: Rect::new(title.x, title.y, (controls.x - title.x).max(0), title.h),
+            content,
+        }
+    }
+
     /// The same, for a tile the document has placed.
     pub fn strip_of(doc: &FieldDocument, tile: &Tile, rect: Rect, ui: &Ui<'_>) -> GrabStrip {
         Self::grab_strip(rect, representation_of(doc, tile), ui)
@@ -708,8 +773,7 @@ impl FieldScreen {
                 // and a large one the Large body, exactly as a tile of that size would.
                 Some(expansion) if !expansion.finished(data.now_ms, duration) => {
                     let to = if expansion.collapsing {
-                        self.tile_rect(data.field, field_model::files_tile_id(), ui)
-                            .unwrap_or(expansion.from)
+                        self.collapse_target(data.field, expansion.from, ui)
                     } else {
                         files_window_rect(rest, ui)
                     };
@@ -732,7 +796,7 @@ impl FieldScreen {
             // Home, not a mode Home enters. Pressing that ground puts it away, which is the same
             // gesture as clicking off any other window and is why it is dimmed rather than hidden.
             if window != rest {
-                ui.painter.blend_rect(rest, design::GROUND, 150);
+                ui.painter.blend_rect(rest, design::ground(), 150);
                 if ui
                     .input
                     .cursor()
@@ -744,8 +808,8 @@ impl FieldScreen {
                 design::shell(
                     ui,
                     window,
-                    design::SHELL,
-                    design::EDGE_STRONG,
+                    design::shell_fill(),
+                    design::edge_strong(),
                     Elevation::Lifted,
                 );
             }
@@ -820,7 +884,7 @@ impl FieldScreen {
 
         self.draw_overlays(ui, doc, data, ghost.as_ref(), lifted, &mut actions);
         if let Some(marquee) = self.marquee {
-            design::dashed_rect(ui, marquee.rect(), design::ACCENT);
+            design::dashed_rect(ui, marquee.rect(), design::accent());
         }
         self.draw_resize_preview(ui, doc);
         self.draw_notice(ui, rest);
@@ -873,7 +937,7 @@ impl FieldScreen {
             if right > left && bottom > top {
                 ui.painter.fill_rect(
                     Rect::new(left, top, right - left, bottom - top),
-                    design::GROUND,
+                    design::ground(),
                 );
             }
         }
@@ -928,13 +992,13 @@ impl FieldScreen {
             }
             let rect = self.rect_of(doc, now.placement, ui);
             if *id == tile {
-                ui.painter.blend_rect(rect, design::ACCENT, 30);
-                design::dashed_rect(ui, rect, design::ACCENT);
+                ui.painter.blend_rect(rect, design::accent(), 30);
+                design::dashed_rect(ui, rect, design::accent());
             } else {
                 // A yielding neighbour: shown at the size it would become, so the cost of the
                 // growth is visible before it is paid for.
-                ui.painter.blend_rect(rect, design::GROUND, 100);
-                design::dashed_rect(ui, rect, design::EDGE_STRONG);
+                ui.painter.blend_rect(rect, design::ground(), 100);
+                design::dashed_rect(ui, rect, design::edge_strong());
             }
         }
     }
@@ -954,9 +1018,9 @@ impl FieldScreen {
             ui.px(42),
         );
         ui.painter
-            .shadow_rect(rect, ui.px(4), ui.px(6), design::TEXT, 80);
+            .shadow_rect(rect, ui.px(4), ui.px(6), design::text(), 80);
         ui.painter
-            .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::TEXT);
+            .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::text());
         let (undo, message) = rect.split_right(ui.px(82));
         ui.label_styled(
             message.inset(ui.px(12)),
@@ -990,8 +1054,8 @@ impl FieldScreen {
             && let Some(origin) = self.tile_rect(doc, id, ui)
         {
             ui.painter
-                .fill_rounded_rect(origin, ui.px(design::TILE_RADIUS), design::RECESSED);
-            design::dashed_rect(ui, origin, design::RECESSED_EDGE);
+                .fill_rounded_rect(origin, ui.px(design::TILE_RADIUS), design::recessed());
+            design::dashed_rect(ui, origin, design::recessed_edge());
         }
         if let Some(ghost) = ghost {
             let ghost_rect = from_pixel(lege_field::cell_rect(
@@ -1002,8 +1066,8 @@ impl FieldScreen {
                 ghost.placement.span,
                 ui.px(GAP),
             ));
-            ui.painter.blend_rect(ghost_rect, design::ACCENT, 24);
-            design::dashed_rect(ui, ghost_rect, design::ACCENT);
+            ui.painter.blend_rect(ghost_rect, design::accent(), 24);
+            design::dashed_rect(ui, ghost_rect, design::accent());
             for (id, to) in &ghost.moved {
                 let Some(located) = doc.location(*id) else {
                     continue;
@@ -1016,16 +1080,16 @@ impl FieldScreen {
                     located.placement.span,
                     ui.px(GAP),
                 ));
-                ui.painter.blend_rect(preview, design::GROUND, 110);
-                design::dashed_rect(ui, preview, design::EDGE_STRONG);
+                ui.painter.blend_rect(preview, design::ground(), 110);
+                design::dashed_rect(ui, preview, design::edge_strong());
             }
             if let (Some(label), Some(at)) = (ghost.label, ghost.label_at) {
-                ui.painter.fill_rect(at, design::ACCENT);
+                ui.painter.fill_rect(at, design::accent());
                 ui.label_styled(
                     at.inset(ui.px(8)),
                     label,
                     TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
-                    0x00ff_ffff,
+                    design::strong_ink(),
                     Align::Left,
                 );
             }
@@ -1096,15 +1160,15 @@ impl FieldScreen {
         let (home, after_home) = bar.split_left(ui.px(design::HOME_WIDTH));
         if ui.input.hovering(home) {
             ui.painter
-                .shadow_rect(home, ui.px(2), ui.px(3), design::TEXT, 55);
+                .shadow_rect(home, ui.px(2), ui.px(3), design::text(), 55);
         }
         ui.painter.fill_rounded_rect(
             home,
             ui.px(design::TILE_RADIUS),
             if data.home_revealed {
-                design::ACCENT
+                design::accent()
             } else {
-                design::TEXT
+                design::text()
             },
         );
         let home_label = lege_types::action::action("home.reveal")
@@ -1113,7 +1177,10 @@ impl FieldScreen {
             home,
             home_label,
             TextStyle::tracked(ui.theme.body.face, 13.0, 0.14),
-            0x00f2_f4f6,
+            // The plate is drawn in the text colour, so its label is ink *on* a strong fill —
+            // light on a light palette's dark plate, dark on a dark palette's light one. It was
+            // a hardcoded near-white, which on the dark palette was invisible.
+            design::strong_ink(),
             Align::Centre,
         );
         if ui.input.take_click(home) {
@@ -1176,7 +1243,7 @@ impl FieldScreen {
             crate::omnibox::Scope::Applications => "Open an application".to_owned(),
         };
         let previous_theme = ui.theme;
-        ui.theme.background = design::SHELL;
+        ui.theme.background = design::shell_fill();
         ui.theme.padding = 14;
         ui.text_field(
             &mut self.search,
@@ -1259,7 +1326,7 @@ impl FieldScreen {
                 ui.painter.fill_rounded_rect(
                     chip.inset(ui.px(2)),
                     ui.px(design::CHIP_RADIUS),
-                    design::ACCENT_SOFT,
+                    design::accent_soft(),
                 );
             }
             let icon = Rect::new(
@@ -1275,7 +1342,7 @@ impl FieldScreen {
                     ui.kernel,
                     icon,
                     ui.px(design::CHIP_RADIUS) as f32,
-                    design::ACCENT_SOFT,
+                    design::accent_soft(),
                     255,
                 );
                 let initial = app
@@ -1285,7 +1352,7 @@ impl FieldScreen {
                     .unwrap_or('?')
                     .to_uppercase()
                     .to_string();
-                ui.label(icon, &initial, design::ACCENT, Align::Centre);
+                ui.label(icon, &initial, design::accent(), Align::Centre);
             }
             let name = Rect::new(
                 chip.x + ui.px(4),
@@ -1299,9 +1366,9 @@ impl FieldScreen {
                     app.label(),
                     design::state_style(ui),
                     if hovered {
-                        design::ACCENT
+                        design::accent()
                     } else {
-                        design::TEXT
+                        design::text()
                     },
                     Align::Centre,
                 );
@@ -1360,6 +1427,17 @@ impl FieldScreen {
         )
     }
 
+    /// Where a collapsing object is heading: the Files tile's rectangle *now*.
+    ///
+    /// Recomputed every frame rather than remembered at the start of the collapse, because the
+    /// field reflows while the object is open — a tile that moved would otherwise be somewhere
+    /// the object falls past. `fallback` is where it grew out of, used only when the tile is no
+    /// longer placed at all.
+    fn collapse_target(&self, doc: &FieldDocument, fallback: Rect, ui: &Ui<'_>) -> Rect {
+        self.tile_rect(doc, field_model::files_tile_id(), ui)
+            .unwrap_or(fallback)
+    }
+
     /// The Files object mid-flight: its own shell and its own body, at whatever size it has
     /// reached, clipped so nothing spills past the rectangle it currently occupies.
     ///
@@ -1382,8 +1460,8 @@ impl FieldScreen {
         design::shell(
             ui,
             rect,
-            design::SHELL,
-            design::EDGE_STRONG,
+            design::shell_fill(),
+            design::edge_strong(),
             Elevation::Lifted,
         );
         ui.painter.push_clip(rect);
@@ -1393,7 +1471,7 @@ impl FieldScreen {
                 Rect::new(heading.x + ui.px(12), heading.y, heading.w, heading.h),
                 "Files",
                 design::system_label_style(ui),
-                design::TEXT,
+                design::text(),
                 Align::Left,
             );
         }
@@ -1485,15 +1563,21 @@ impl FieldScreen {
         let help_label = lege_types::action::action("field.help")
             .map_or("Help", |declaration| declaration.control_label());
         let (help, before_help) = area.split_right(ui.px(64).min(area.w / 4));
-        design::shell(ui, help, design::SHELL, design::EDGE, Elevation::Rest);
+        design::shell(
+            ui,
+            help,
+            design::shell_fill(),
+            design::edge(),
+            Elevation::Rest,
+        );
         if ui.input.hovering(help) {
-            ui.painter.fill_rect(help.inset(1), design::ACCENT_SOFT);
+            ui.painter.fill_rect(help.inset(1), design::accent_soft());
         }
         ui.label_styled(
             help.inset(ui.px(6)),
             help_label,
             TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Centre,
         );
         if ui.input.take_click(help) {
@@ -1547,14 +1631,20 @@ impl FieldScreen {
             ("Right-click", "More for a tile or the field"),
             ("Drop a title bar", "On another, to group two windows"),
         ];
-        design::shell(ui, area, design::RECESSED, design::EDGE, Elevation::Rest);
+        design::shell(
+            ui,
+            area,
+            design::recessed(),
+            design::edge(),
+            Elevation::Rest,
+        );
         let inner = area.inset(ui.px(12));
         let heading_h = ui.px(22);
         ui.label_styled(
             Rect::new(inner.x, inner.y, inner.w, heading_h),
             "How Home works",
             TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
         let body = Rect::new(
@@ -1572,14 +1662,14 @@ impl FieldScreen {
                 key_rect,
                 key,
                 design::state_style(ui),
-                design::TEXT,
+                design::text(),
                 Align::Left,
             );
             ui.label_styled(
                 rest,
                 intent,
                 design::state_style(ui),
-                design::TEXT_DIM,
+                design::text_dim(),
                 Align::Left,
             );
         }
@@ -1588,14 +1678,14 @@ impl FieldScreen {
     /// The action manifest rendered as product help, rather than copied into another list that
     /// can drift. Actions without an accelerator remain visible as deliberate on-screen routes.
     fn draw_help_overlay(&mut self, ui: &mut Ui<'_>, area: Rect) {
-        ui.painter.blend_rect(area, design::TEXT, 105);
+        ui.painter.blend_rect(area, design::text(), 105);
         let panel = area.inset(ui.px(24));
         ui.painter
-            .shadow_rect(panel, ui.px(5), ui.px(9), design::TEXT, 90);
+            .shadow_rect(panel, ui.px(5), ui.px(9), design::text(), 90);
         ui.painter
-            .fill_rounded_rect(panel, ui.px(design::WELL_RADIUS), design::SHELL);
+            .fill_rounded_rect(panel, ui.px(design::WELL_RADIUS), design::shell_fill());
         ui.painter
-            .stroke_rect(panel, ui.scale.hairline(), design::EDGE_STRONG);
+            .stroke_rect(panel, ui.scale.hairline(), design::edge_strong());
 
         let (header, content) = panel.inset(ui.px(18)).split_top(ui.px(52));
         let (close, title) = header.split_right(ui.px(116).min(header.w / 3));
@@ -1603,18 +1693,24 @@ impl FieldScreen {
             title,
             "Help",
             TextStyle::tracked(ui.theme.heading.face, 20.0, 0.06),
-            design::TEXT,
+            design::text(),
             Align::Left,
         );
-        design::shell(ui, close, design::RECESSED, design::EDGE, Elevation::Rest);
+        design::shell(
+            ui,
+            close,
+            design::recessed(),
+            design::edge(),
+            Elevation::Rest,
+        );
         if ui.input.hovering(close) {
-            ui.painter.fill_rect(close.inset(1), design::ACCENT_SOFT);
+            ui.painter.fill_rect(close.inset(1), design::accent_soft());
         }
         ui.label_styled(
             close.inset(ui.px(6)),
             "Close  ·  F1",
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Centre,
         );
         if ui.input.take_click(close) {
@@ -1690,14 +1786,20 @@ impl FieldScreen {
         cell: Rect,
         category: lege_types::action::ActionCategory,
     ) {
-        design::shell(ui, cell, design::RECESSED, design::EDGE, Elevation::Rest);
+        design::shell(
+            ui,
+            cell,
+            design::recessed(),
+            design::edge(),
+            Elevation::Rest,
+        );
         let inner = cell.inset(ui.px(10));
         let (heading, body) = inner.split_top(ui.px(24));
         ui.label_styled(
             heading,
             category.title(),
             TextStyle::tracked(ui.theme.body.face, 11.0, 0.12),
-            design::TEXT_FAINT,
+            design::text_faint(),
             Align::Left,
         );
         for (index, declaration) in lege_types::action::in_category(category).enumerate() {
@@ -1707,7 +1809,7 @@ impl FieldScreen {
                 label,
                 declaration.label,
                 design::state_style(ui),
-                design::TEXT,
+                design::text(),
                 Align::Left,
             );
             let route = declaration
@@ -1717,7 +1819,7 @@ impl FieldScreen {
                 accelerator,
                 &route,
                 TextStyle::tracked(ui.theme.body.face, 10.0, 0.08),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Right,
             );
         }
@@ -1727,7 +1829,13 @@ impl FieldScreen {
     /// (`crate::surface::bar_screen`), which is visible on Home too, so the row says only what
     /// the field itself does not show.
     fn draw_information_row(ui: &mut Ui<'_>, status: Rect, data: &FieldData<'_>) {
-        design::shell(ui, status, design::RECESSED, design::EDGE, Elevation::Rest);
+        design::shell(
+            ui,
+            status,
+            design::recessed(),
+            design::edge(),
+            Elevation::Rest,
+        );
         // The counts are a fallback, not a readout. When every live window already has a tile of
         // its own on the field, saying "3 LIVE" beside three visible tiles is a number that
         // repeats what the eye can already see — so it is only drawn when the field is *not*
@@ -1752,7 +1860,7 @@ impl FieldScreen {
                 status.inset(ui.px(8)),
                 &summary,
                 design::state_style(ui),
-                design::TEXT_DIM,
+                design::text_dim(),
                 Align::Centre,
             );
         }
@@ -2540,6 +2648,10 @@ impl FieldScreen {
                 shelved: doc.shelved().next().is_some(),
                 window_group,
                 in_window_group,
+                project: tile.and_then(|id| match doc.kind_of(id) {
+                    Some(TileKind::Project { project_id }) => Some(project_id.clone()),
+                    _ => None,
+                }),
             },
             choices,
         );
@@ -2553,6 +2665,7 @@ impl FieldScreen {
     /// request for them, deliberately, because they are reserved chords that must keep working
     /// with this process dead (`compositor/lege-comp/src/keybindings.rs`). Activating the window
     /// the same rule picks reaches the same place by the route the shell does have.
+    #[allow(clippy::too_many_lines)]
     fn run_menu_choice(
         &mut self,
         chosen: Chosen,
@@ -2603,6 +2716,15 @@ impl FieldScreen {
                 }
             }
             "home.reveal" => actions.push(FieldAction::RevealHome),
+            id @ ("project.enter"
+            | "project.restore"
+            | "project.open-terminal"
+            | "project.open-files"
+            | "project.open-editor") => {
+                if let Some(project_id) = chosen.target.project.clone() {
+                    actions.push(FieldAction::Project { id, project_id });
+                }
+            }
             "window.park" => {
                 if let Some(window) = window {
                     actions.push(FieldAction::Park(window));
@@ -3292,7 +3414,7 @@ impl FieldScreen {
                 inner,
                 "no windows",
                 design::state_style(ui),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Left,
             );
             return;
@@ -3309,8 +3431,8 @@ impl FieldScreen {
             ui.badge(
                 badge,
                 &count.to_string(),
-                design::TEXT,
-                design::SHELL,
+                design::text(),
+                design::shell_fill(),
                 accent,
             );
             return;
@@ -3326,7 +3448,7 @@ impl FieldScreen {
                 inner,
                 &line,
                 design::state_style(ui),
-                design::TEXT_DIM,
+                design::text_dim(),
                 Align::Left,
             );
             return;
@@ -3363,15 +3485,15 @@ impl FieldScreen {
             };
             if rung == Representation::Wide {
                 ui.painter
-                    .stroke_rect(cell, ui.scale.hairline(), design::EDGE);
+                    .stroke_rect(cell, ui.scale.hairline(), design::edge());
                 ui.label_styled(
                     cell.inset(ui.px(4)),
                     &title,
                     design::state_style(ui),
                     if member.shelved {
-                        design::TEXT_DIM
+                        design::text_dim()
                     } else {
-                        design::TEXT
+                        design::text()
                     },
                     Align::Left,
                 );
@@ -3384,11 +3506,11 @@ impl FieldScreen {
                 ui.kernel,
                 well,
                 ui.px(design::WELL_RADIUS) as f32,
-                0x00ff_ffff,
+                design::well_fill(),
                 255,
             );
             ui.painter
-                .stroke_rect(well, ui.scale.hairline(), design::EDGE);
+                .stroke_rect(well, ui.scale.hairline(), design::edge());
             let identifier = field_model::session_identifier(member, None);
             if let Some(preview) = data.previews.get(&identifier) {
                 ui.painter
@@ -3412,7 +3534,7 @@ impl FieldScreen {
                 caption.inset(ui.px(4)),
                 &title,
                 design::state_style(ui),
-                design::TEXT_DIM,
+                design::text_dim(),
                 Align::Left,
             );
         }
@@ -3443,7 +3565,7 @@ impl FieldScreen {
             toggle,
             if expanded { "\u{2013}" } else { "\u{2b}" },
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Centre,
         );
         if ui.input.take_click(toggle)
@@ -3477,7 +3599,7 @@ impl FieldScreen {
             crumb,
             &format!("↑  {}", here.to_string_lossy()),
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Left,
         );
         if ui.input.take_click(crumb) {
@@ -3507,7 +3629,7 @@ impl FieldScreen {
                 list,
                 "reading…",
                 design::state_style(ui),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Left,
             );
             return None;
@@ -3520,14 +3642,14 @@ impl FieldScreen {
                     heading,
                     "Could not read folder",
                     design::state_style(ui),
-                    design::DANGER,
+                    design::danger(),
                     Align::Left,
                 );
                 ui.label_styled(
                     detail.split_top((row_height * 2).min(detail.h)).0,
                     error,
                     design::state_style(ui),
-                    design::TEXT_DIM,
+                    design::text_dim(),
                     Align::Left,
                 );
                 return None;
@@ -3538,7 +3660,7 @@ impl FieldScreen {
                 list,
                 "empty",
                 design::state_style(ui),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Left,
             );
             return None;
@@ -3616,9 +3738,9 @@ impl FieldScreen {
                 &entry.name,
                 design::state_style(ui),
                 if entry.hidden {
-                    design::TEXT_DIM
+                    design::text_dim()
                 } else {
-                    design::TEXT
+                    design::text()
                 },
                 Align::Left,
             );
@@ -3641,7 +3763,7 @@ impl FieldScreen {
                 foot,
                 &format!("first {} shown", listing.limit),
                 design::state_style(ui),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Right,
             );
         }
@@ -3676,18 +3798,18 @@ impl FieldScreen {
         // wears it as a hairline edge and nothing else — no tint, no second fill: a container
         // whose whole job is to be recognised at a glance does not need a card to say so, and the
         // theme direction (§6) is thin explicit geometry rather than more surface.
-        let group_accent = tile.accent.unwrap_or(design::ACCENT);
+        let group_accent = tile.accent.unwrap_or(design::accent());
         let (fill, edge) = match &tile.kind {
-            TileKind::Project { .. } => (design::ACCENT_SOFT, design::PROJECT_EDGE),
-            TileKind::WindowGroup { .. } => (design::SHELL, group_accent),
-            TileKind::ParkedSession { .. } => (design::SHELL, design::EDGE_STRONG),
-            TileKind::System { .. } => (design::SYSTEM_SHELL, design::EDGE_STRONG),
-            TileKind::Folder { .. } => (design::FOLDER_SHELL, design::FOLDER_EDGE),
-            TileKind::Tray { .. } => (design::TRAY_SHELL, design::TRAY_EDGE),
+            TileKind::Project { .. } => (design::accent_soft(), design::project_edge()),
+            TileKind::WindowGroup { .. } => (design::shell_fill(), group_accent),
+            TileKind::ParkedSession { .. } => (design::shell_fill(), design::edge_strong()),
+            TileKind::System { .. } => (design::system_shell(), design::edge_strong()),
+            TileKind::Folder { .. } => (design::folder_shell(), design::folder_edge()),
+            TileKind::Tray { .. } => (design::tray_shell(), design::tray_edge()),
             TileKind::App { .. }
             | TileKind::AppGroup { .. }
             | TileKind::Widget { .. }
-            | TileKind::File { .. } => (design::SHELL, design::EDGE),
+            | TileKind::File { .. } => (design::shell_fill(), design::edge()),
         };
         let elevation = if visual.lifted {
             Elevation::Lifted
@@ -3699,7 +3821,7 @@ impl FieldScreen {
         design::shell(ui, rect, fill, edge, elevation);
         if visual.selected && !visual.lifted {
             ui.painter
-                .stroke_rect(rect.inset(ui.px(2)), ui.px(2).max(1), design::ACCENT);
+                .stroke_rect(rect.inset(ui.px(2)), ui.px(2).max(1), design::accent());
         }
 
         let widget_composition = match &tile.kind {
@@ -3756,48 +3878,22 @@ impl FieldScreen {
             _ => 0,
         };
         let title_colour = match &tile.kind {
-            TileKind::Project { .. } => design::ACCENT,
+            TileKind::Project { .. } => design::accent(),
             TileKind::WindowGroup { .. } => group_accent,
-            _ => design::TEXT,
+            _ => design::text(),
         };
 
-        // Where the name goes, and where the controls go. With a heading they share it; without
-        // one the name is the body's first line and the controls wait for a hover or a focus.
+        // Where the name goes and where the controls go — one answer, so the strip a person aims
+        // at and the strip that reacts can never be two different rectangles.
         let revealed = visual.hovered || visual.focused || visual.lifted;
-        let mut content = strip.body;
-        let (band_controls, title_area) = if let Some(heading) = strip.heading {
-            // `split_right` hands back the right strip first.
-            heading.split_right(ui.px(controls_width).min(heading.w / 2))
-        } else {
-            {
-                // The name is the first line of the body, not a band over it: the tile keeps
-                // saying what it is at every size, and pays one line rather than a third of
-                // itself for the privilege.
-                let line = ui.px(design::COMPACT_TITLE_HEIGHT).min(content.h);
-                let (name_line, below) = content.split_top(line + ui.px(4));
-                content = below;
-                if !revealed || controls_width == 0 {
-                    (Rect::new(rect.right(), rect.y, 0, 0), name_line)
-                } else {
-                    // Manipulation, and only manipulation, waits for attention: a strip fades in
-                    // over the top of the body carrying what a heading would have held. Focus
-                    // counts as attention, so this is reachable without a pointer.
-                    let reveal = Rect::new(
-                        rect.x,
-                        rect.y,
-                        rect.w,
-                        ui.px(design::REVEAL_HEIGHT).min(rect.h),
-                    );
-                    ui.painter.blend_rect(reveal, design::SHELL_LOW, 225);
-                    (
-                        reveal
-                            .split_right(ui.px(controls_width).min(reveal.w / 2))
-                            .0,
-                        name_line,
-                    )
-                }
-            }
-        };
+        let chrome = Self::control_rects(strip, rect, controls_width, revealed, ui);
+        let (band_controls, title_area, content) = (chrome.controls, chrome.title, chrome.content);
+        if let Some(reveal) = chrome.reveal {
+            // Manipulation, and only manipulation, waits for attention: the strip fades in over
+            // the top of the body carrying what a heading would have held. Focus counts as
+            // attention, so this is reachable without a pointer.
+            ui.painter.blend_rect(reveal, design::shell_low(), 225);
+        }
         let title_area = Rect::new(
             title_area.x + ui.px(left_mark + 12),
             title_area.y,
@@ -3847,9 +3943,9 @@ impl FieldScreen {
                         control,
                         ui.px(design::CHIP_RADIUS),
                         if hovered {
-                            design::ACCENT_SOFT
+                            design::accent_soft()
                         } else {
-                            design::SHELL
+                            design::shell_fill()
                         },
                     );
                     ui.painter
@@ -3860,7 +3956,7 @@ impl FieldScreen {
                         control,
                         label,
                         TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Centre,
                     );
                     if let Some(member) = member
@@ -3876,9 +3972,9 @@ impl FieldScreen {
                     ui.badge(
                         band_controls.inset(ui.px(4)),
                         &running.to_string(),
-                        design::TEXT,
-                        design::ACTIVITY_SOFT,
-                        design::ACTIVITY,
+                        design::text(),
+                        design::activity_soft(),
+                        design::activity(),
                     );
                 }
                 TileKind::Project { .. } if child_count > 0 => {
@@ -3886,7 +3982,7 @@ impl FieldScreen {
                         band_controls.inset(ui.px(6)),
                         &format!("{child_count} tiles"),
                         design::state_style(ui),
-                        design::ACCENT,
+                        design::accent(),
                         Align::Right,
                     );
                 }
@@ -3931,7 +4027,7 @@ impl FieldScreen {
                         inner,
                         "empty — drop apps here",
                         design::state_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Left,
                     );
                 }
@@ -3952,7 +4048,7 @@ impl FieldScreen {
                         ui.painter.fill_rounded_rect(
                             slot,
                             ui.px(design::CHIP_RADIUS),
-                            design::ACCENT_SOFT,
+                            design::accent_soft(),
                         );
                     }
                     paint_app_icon(ui, icon, app_id, title, data.icons);
@@ -3967,11 +4063,11 @@ impl FieldScreen {
                     ui.kernel,
                     inner,
                     ui.px(design::WELL_RADIUS) as f32,
-                    0x00ff_ffff,
+                    design::well_fill(),
                     255,
                 );
                 ui.painter
-                    .stroke_rect(inner, ui.scale.hairline(), design::EDGE);
+                    .stroke_rect(inner, ui.scale.hairline(), design::edge());
                 if let Some(preview) = data.previews.get(identifier) {
                     ui.painter
                         .blit(preview, inner.inset(ui.px(1)), ScaleFilter::Bilinear);
@@ -4000,7 +4096,7 @@ impl FieldScreen {
                     state_area.inset(ui.px(4)),
                     state,
                     small,
-                    design::TEXT_DIM,
+                    design::text_dim(),
                     Align::Right,
                 );
                 if let Some(w) = window
@@ -4013,20 +4109,20 @@ impl FieldScreen {
                         park,
                         ui.px(design::CHIP_RADIUS),
                         if hovered {
-                            design::ACCENT_SOFT
+                            design::accent_soft()
                         } else {
-                            design::SHELL
+                            design::shell_fill()
                         },
                     );
                     ui.painter
-                        .stroke_rect(park, ui.scale.hairline(), design::EDGE_STRONG);
+                        .stroke_rect(park, ui.scale.hairline(), design::edge_strong());
                     let park_label = lege_types::action::action("window.park")
                         .map_or("Park", |declaration| declaration.control_label());
                     ui.label_styled(
                         park,
                         park_label,
                         TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Centre,
                     );
                     if ui.input.take_click(park) {
@@ -4070,7 +4166,7 @@ impl FieldScreen {
                         inner.inset(ui.px(8)),
                         "no such widget",
                         design::state_style(ui),
-                        design::TEXT_FAINT,
+                        design::text_faint(),
                         Align::Left,
                     );
                 }
@@ -4102,16 +4198,19 @@ impl FieldScreen {
                             placement.span,
                             ui.px(3),
                         ));
+                        ui.painter.fill_rounded_rect(
+                            chip,
+                            ui.px(design::CHIP_RADIUS),
+                            design::well_fill(),
+                        );
                         ui.painter
-                            .fill_rounded_rect(chip, ui.px(design::CHIP_RADIUS), 0x00ff_ffff);
-                        ui.painter
-                            .stroke_rect(chip, ui.scale.hairline(), design::PROJECT_EDGE);
+                            .stroke_rect(chip, ui.scale.hairline(), design::project_edge());
                         if let Some(child_tile) = data.field.tile(*child) {
                             ui.label_styled(
                                 chip.inset(ui.px(3)),
                                 &child_tile.title,
                                 small,
-                                design::TEXT,
+                                design::text(),
                                 Align::Left,
                             );
                         }
@@ -4122,7 +4221,7 @@ impl FieldScreen {
                             inner,
                             "empty — drop tiles here",
                             small,
-                            design::TEXT_DIM,
+                            design::text_dim(),
                             Align::Left,
                         );
                     }
@@ -4157,7 +4256,7 @@ impl FieldScreen {
                         row,
                         &name,
                         design::measurement_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Left,
                     );
                 }
@@ -4167,7 +4266,7 @@ impl FieldScreen {
                         inner,
                         "empty tray — add references here",
                         design::state_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Left,
                     );
                 }
@@ -4192,22 +4291,25 @@ impl FieldScreen {
                         .parent()
                         .map_or_else(String::new, |parent| parent.to_string_lossy().into_owned()),
                     design::state_style(ui),
-                    design::TEXT_DIM,
+                    design::text_dim(),
                     Align::Left,
                 );
                 if !extension.is_empty() {
                     ui.painter.fill_rounded_rect(
                         chip.inset(ui.px(3)),
                         ui.px(design::CHIP_RADIUS),
-                        design::SHELL_LOW,
+                        design::shell_low(),
                     );
-                    ui.painter
-                        .stroke_rect(chip.inset(ui.px(3)), ui.scale.hairline(), design::EDGE);
+                    ui.painter.stroke_rect(
+                        chip.inset(ui.px(3)),
+                        ui.scale.hairline(),
+                        design::edge(),
+                    );
                     ui.label_styled(
                         chip.inset(ui.px(5)),
                         &extension,
                         design::state_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Centre,
                     );
                 }
@@ -4295,7 +4397,7 @@ impl FieldScreen {
                         content.inset(ui.px(12)),
                         &format!("{probe} — no such widget"),
                         design::state_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Left,
                     );
                 }
@@ -4310,11 +4412,11 @@ impl FieldScreen {
                     ui.px(design::ACTIVITY_EDGE_WIDTH).min(rect.w),
                     rect.h,
                 ),
-                design::ACTIVITY,
+                design::activity(),
             );
         }
         if visual.displaced.is_some() {
-            ui.painter.blend_rect(rect, design::GROUND, 115);
+            ui.painter.blend_rect(rect, design::ground(), 115);
         }
         if visual.focused && !visual.lifted {
             design::focus_ring(ui, rect);
@@ -4331,9 +4433,9 @@ impl FieldScreen {
         {
             let thickness = ui.px(2).max(1);
             let colour = if on_grip {
-                design::ACCENT
+                design::accent()
             } else {
-                design::EDGE_STRONG
+                design::edge_strong()
             };
             ui.painter.fill_rect(
                 Rect::new(grip.x, grip.bottom() - thickness, grip.w, thickness),
@@ -4552,6 +4654,22 @@ pub struct GrabStrip {
     pub heading: Option<Rect>,
     /// What is left for the tile's content — the whole rect when there is no heading.
     pub body: Rect,
+}
+
+/// Where a tile's name, its manipulation controls and its remaining content go. See
+/// [`FieldScreen::control_rects`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TileChrome {
+    /// The strip that fades in over a compact tile's body to carry its controls. `None` for a
+    /// tile with a heading (the heading is already that strip) and for one nothing has revealed.
+    pub reveal: Option<Rect>,
+    /// Where the controls are drawn and where a press on one lands. Zero-width when the tile has
+    /// no controls, or has them but has not been hovered or focused.
+    pub controls: Rect,
+    /// Where the tile says what it is. Never covered by [`Self::controls`].
+    pub title: Rect,
+    /// What is left for the tile's content once the name has taken its line.
+    pub content: Rect,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -5753,6 +5871,179 @@ mod tests {
         );
     }
 
+    /// A `Ui` at scale 1, for the pure geometry functions that need one to answer in pixels.
+    fn with_ui<R>(h: &mut Harness, f: impl FnOnce(&Ui<'_>) -> R) -> R {
+        let ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            design::theme(),
+            Scale::ONE,
+            &mut h.kernel,
+        );
+        f(&ui)
+    }
+
+    /// Micro and Small have no heading, so manipulation waits for attention — and when it
+    /// arrives it takes width from the name rather than being drawn on top of it. Focus counts
+    /// as attention, which is what makes a compact tile reachable without a pointer.
+    #[test]
+    fn compact_rungs_reveal_controls_only_when_hovered_or_focused_and_never_cover_the_title_line() {
+        let mut h = Harness::new();
+        h.frame();
+        let rect = Rect::new(40, 80, 96, 96);
+        let (resting, revealed) = with_ui(&mut h, |ui| {
+            let strip = FieldScreen::grab_strip(rect, Representation::Small, ui);
+            assert!(strip.heading.is_none(), "a compact tile has no heading");
+            (
+                FieldScreen::control_rects(strip, rect, 64, false, ui),
+                FieldScreen::control_rects(strip, rect, 64, true, ui),
+            )
+        });
+
+        assert!(resting.reveal.is_none(), "nothing revealed it");
+        assert_eq!(resting.controls.w, 0, "and so it has no controls to hit");
+        assert!(resting.title.w > 0, "but it still says what it is");
+        assert!(resting.content.y >= resting.title.bottom() - 4);
+
+        let reveal = revealed.reveal.expect("hover or focus reveals the strip");
+        assert_eq!(reveal.x, rect.x);
+        assert_eq!(reveal.w, rect.w);
+        assert!(
+            revealed.controls.w > 0,
+            "and the controls are there to press"
+        );
+        assert_eq!(
+            revealed.controls.right(),
+            reveal.right(),
+            "packed against the tile's right edge, where a heading would have put them"
+        );
+        assert!(
+            revealed.title.right() <= revealed.controls.x,
+            "the name was drawn under the controls: {:?} vs {:?}",
+            revealed.title,
+            revealed.controls
+        );
+        assert!(
+            revealed.title.w > 0,
+            "identity is never hidden, only shortened"
+        );
+        assert_eq!(
+            revealed.content, resting.content,
+            "revealing controls must not move the body: the strip floats over it"
+        );
+    }
+
+    /// Above the compact rungs the heading is permanent, and the controls live in it — so
+    /// nothing appears or disappears under the pointer, and the body never changes size.
+    #[test]
+    fn wide_and_up_keep_a_persistent_heading() {
+        let mut h = Harness::new();
+        h.frame();
+        let rect = Rect::new(40, 80, 300, 220);
+        let (resting, hovered) = with_ui(&mut h, |ui| {
+            let strip = FieldScreen::grab_strip(rect, Representation::Wide, ui);
+            let heading = strip.heading.expect("Wide and up have a heading");
+            assert_eq!(heading.y, rect.y);
+            assert_eq!(strip.grab, heading, "the heading is what a move grabs");
+            (
+                FieldScreen::control_rects(strip, rect, 64, false, ui),
+                FieldScreen::control_rects(strip, rect, 64, true, ui),
+            )
+        });
+
+        assert!(resting.reveal.is_none(), "a heading is not a reveal strip");
+        assert_eq!(
+            resting, hovered,
+            "a persistent heading does not change under the pointer"
+        );
+        assert!(resting.controls.w > 0, "the controls are always there");
+        assert!(
+            resting.title.right() <= resting.controls.x,
+            "the name and the controls share the heading rather than overlapping"
+        );
+        assert!(
+            resting.content.y >= resting.title.bottom(),
+            "the heading is taken from the tile, not drawn over the body"
+        );
+    }
+
+    /// Reduced motion is not a shorter animation, it is none: every frame is the destination,
+    /// so there is no intermediate state for a person to see at all.
+    #[test]
+    fn reduced_motion_expansion_has_no_intermediate_frames() {
+        let from = Rect::new(20, 60, 96, 90);
+        let to = Rect::new(10, 62, 1260, 760);
+        let expansion = Expansion {
+            from,
+            started_ms: 7,
+            collapsing: false,
+        };
+        for step in 0..200 {
+            let now = 7 + step;
+            assert_eq!(
+                expansion.rect(to, now, 0),
+                to,
+                "an intermediate frame at {step}ms"
+            );
+            assert!(expansion.finished(now, 0));
+            let progress = expansion.progress(now, 0);
+            assert!(
+                (progress - 1.0).abs() < f32::EPSILON,
+                "progress {progress} at {step}ms is neither begun nor arrived"
+            );
+        }
+        // And the same on the way back: reduced motion is symmetric or it is a jump one way.
+        let collapsing = Expansion {
+            from: to,
+            started_ms: 7,
+            collapsing: true,
+        };
+        assert_eq!(collapsing.rect(from, 7, 0), from);
+    }
+
+    /// A tile that reflowed while the object was open is still where the object lands: the
+    /// collapse target is recomputed every frame rather than remembered when the collapse began.
+    #[test]
+    fn collapse_target_follows_a_moved_tile() {
+        let mut h = Harness::new();
+        h.frame();
+        let files = field_model::files_tile_id();
+        let before = h.rect_of(files);
+
+        // Somewhere it certainly was not: two cells down and to the right.
+        let placement = h
+            .doc
+            .placements_in(None)
+            .into_iter()
+            .find_map(|(id, placement)| (id == files).then_some(placement))
+            .expect("the Files tile is placed");
+        let landing = lege_field::Landing {
+            container: None,
+            cell: Cell::new(placement.cell.col + 2, placement.cell.row + 2),
+        };
+        let (moved, _) = lege_field::ops::apply(&h.doc, &FieldOp::Move { id: files, landing })
+            .expect("moving the Files tile");
+        h.doc = moved;
+        let after = h.rect_of(files);
+        assert_ne!(before, after, "the tile did not actually move");
+
+        // The laid-out screen, borrowed out of the harness so `with_ui` can have the rest of it.
+        let fallback = Rect::new(-1, -1, 1, 1);
+        let doc = h.doc.clone();
+        let screen = std::mem::take(&mut h.screen);
+        let target = with_ui(&mut h, |ui| screen.collapse_target(&doc, fallback, ui));
+        assert_eq!(
+            target, after,
+            "the collapse headed for where the tile used to be"
+        );
+
+        // With no Files tile at all there is nowhere to fall back to but where it grew from.
+        let empty = FieldDocument::new("empty", 8, 6);
+        let orphan = with_ui(&mut h, |ui| screen.collapse_target(&empty, fallback, ui));
+        assert_eq!(orphan, fallback);
+    }
+
     /// The expansion's interpolation: exact at both ends, monotone in between, and finished when
     /// it says it is. A motion that overshoots or that never quite arrives is a motion a person
     /// waits for, which is the one thing this must never be.
@@ -6604,7 +6895,7 @@ mod tests {
         let bare = at(&h, x, y);
         assert_ne!(
             bare & 0x00ff_ffff,
-            design::GROUND,
+            design::ground(),
             "with nothing in front of it the Files object is drawn on the field"
         );
 
@@ -6614,7 +6905,7 @@ mod tests {
         h.frame();
         assert_eq!(
             at(&h, x, y) & 0x00ff_ffff,
-            design::GROUND,
+            design::ground(),
             "under a window the field is ground and nothing else"
         );
 

@@ -86,7 +86,7 @@ fn draw_readings(ui: &mut Ui<'_>, body: Rect, snapshot: Option<&WidgetSnapshot>)
         return;
     }
     let Some(snapshot) = snapshot else {
-        ui.label(inner, "…", design::TEXT_FAINT, Align::Left);
+        ui.label(inner, "…", design::text_faint(), Align::Left);
         return;
     };
     let readings = rows(snapshot);
@@ -96,7 +96,7 @@ fn draw_readings(ui: &mut Ui<'_>, body: Rect, snapshot: Option<&WidgetSnapshot>)
             inner,
             &snapshot.headline,
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Left,
         );
         return;
@@ -112,14 +112,14 @@ fn draw_readings(ui: &mut Ui<'_>, body: Rect, snapshot: Option<&WidgetSnapshot>)
             Rect::new(inner.x, y, label_width, line),
             label,
             design::state_style(ui),
-            design::TEXT_DIM,
+            design::text_dim(),
             Align::Left,
         );
         ui.label_styled(
             Rect::new(inner.x + label_width, y, inner.w - label_width, line),
             value,
             design::measurement_style(ui),
-            design::TEXT,
+            design::text(),
             Align::Left,
         );
     }

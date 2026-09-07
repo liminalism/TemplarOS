@@ -1,11 +1,21 @@
-//! The bottom bar: network and clock at the left, the taskbar in the middle, and the maximized
-//! window's controls at the right.
+//! The bottom bar: a strip of chips at the left — network, clock, one per taskbar entry — which
+//! becomes a full-width row only when there is something that needs the width.
+//!
+//! There is no bar when there is nothing to put on one. A person with no windows open should see
+//! the clock and the network, not a band of empty furniture across the bottom of their screen, so
+//! the resting state is chips on the compositor's own tag colours and nothing else: the surface
+//! is exactly as wide as they are, and the desktop shows through everywhere else. Two things
+//! still want the full width — a maximized window's controls, which belong at the right-hand end
+//! of the screen rather than beside the clock, and an entry's hover row, which needs somewhere to
+//! open. [`wanted_size`] is the one answer to which of those is true, and the host sizes the
+//! surface to it.
 //!
 //! One `layout` computes every rectangle and both the painting and the hit-testing read it, so a
 //! click can never land on a rectangle the paint did not use. The bar's own surface is the
 //! bottom `BAR_HEIGHT` of `area`; anything above it is the hover row, drawn only when the host
-//! has grown the surface to make room (the exclusive zone stays `BAR_HEIGHT`, so opening the
-//! row reflows nothing).
+//! has grown the surface to make room (the exclusive zone stays `BAR_HEIGHT` across the whole
+//! bottom edge whatever the surface's own width is, so neither growing the row nor shrinking to
+//! the chips reflows anything).
 //!
 //! Hover behaviour follows cosmic-app-list, reimplemented here: a dwell on an entry with more
 //! than one window opens its row, and the row stays while the pointer is on the entry or the
@@ -28,6 +38,11 @@ pub const BAR_HEIGHT: i32 = 48;
 /// The hover row's height, plus the gap between it and the bar.
 pub const ROW_BAND: i32 = 40;
 const ROW_ITEM_WIDTH: i32 = 220;
+/// A chip's height, and the compositor's tag height: the same object on the bar as on the window.
+const CHIP_H: i32 = lege_window::geometry::TAG_HEIGHT;
+const CHIP_GAP: i32 = 8;
+/// The margin at each end of the strip, and what centres a chip in the bar's own height.
+const CHIP_PAD: i32 = 8;
 const CELL: i32 = 48;
 const ICON: i32 = 32;
 const ACTIVE_WIDTH: i32 = 220;
@@ -87,6 +102,49 @@ struct Layout {
     row: Vec<Rect>,
 }
 
+/// The surface size the host should ask for, in logical pixels.
+///
+/// Normally the chips and nothing else: there is no bar to see when there is nothing on one. Two
+/// things claim the whole width instead — a maximized window's controls, which belong at the
+/// right-hand end of the screen, and an open hover row, which needs room to open into.
+/// `full_width` is the output's own logical width, which the shell already knows from its Home
+/// surface; the compositor never configures this surface's width, so the answer has to come from
+/// here.
+///
+/// Pure, because getting it wrong means either a bar that clips its own clock or a full-width
+/// band the user explicitly said they did not want, and neither is worth finding out by looking.
+pub fn wanted_size(
+    entries: &[Entry],
+    activated: Option<(WindowId, bool)>,
+    row_open: bool,
+    full_width: i32,
+) -> (i32, i32) {
+    let full_width = full_width.max(1);
+    let height = BAR_HEIGHT + if row_open { ROW_BAND } else { 0 };
+    if row_open || activated.is_some_and(|(_, maximized)| maximized) {
+        return (full_width, height);
+    }
+    let chips: i32 = [NETWORK_WIDTH, CLOCK_WIDTH]
+        .into_iter()
+        .chain(
+            entries
+                .iter()
+                .map(|entry| if entry.active { ACTIVE_WIDTH } else { CELL }),
+        )
+        .map(|width| width + CHIP_GAP)
+        .sum();
+    ((2 * CHIP_PAD + chips - CHIP_GAP).min(full_width), height)
+}
+
+/// One chip's ground: the compositor's tag, rounded the way every other small shell object is.
+fn chip(ui: &mut Ui<'_>, rect: Rect, fill: u32) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    ui.painter
+        .fill_rounded_rect(rect, ui.px(design::CHIP_RADIUS), fill);
+}
+
 impl BarScreen {
     /// Whether the host should make room for a row above the bar.
     pub fn row_open(&self) -> bool {
@@ -113,42 +171,41 @@ impl BarScreen {
     fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_row: Option<usize>) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
         let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
-        let (network, rest) = bar.split_left(ui.px(NETWORK_WIDTH).min(bar.w / 4));
-        let (clock, rest) = rest.split_left(ui.px(CLOCK_WIDTH).min(rest.w / 3));
-        let controls_width = if data.activated.is_some_and(|(_, maximized)| maximized) {
-            ui.px(CONTROL) * 3
-        } else {
-            0
+        let chip_h = ui.px(CHIP_H).min(bar.h);
+        let chip_y = bar.y + (bar.h - chip_h) / 2;
+        let gap = ui.px(CHIP_GAP);
+
+        // The maximized window's controls, if there are any, are placed first: they own the right
+        // end of the bar, and the chips stop before them rather than sliding underneath.
+        let control = ui.px(CONTROL).min(chip_h);
+        let controls = data
+            .activated
+            .is_some_and(|(_, maximized)| maximized)
+            .then(|| {
+                let right = bar.right() - ui.px(CHIP_PAD);
+                std::array::from_fn(|which| {
+                    let from_right = i32::try_from(3 - which).unwrap_or(1);
+                    Rect::new(right - from_right * control, chip_y, control, chip_h)
+                })
+            });
+        let limit = controls.map_or(bar.right(), |c: [Rect; 3]| c[0].x - gap);
+
+        // The chips, left to right from the bar's own left edge. Each one is clipped to whatever
+        // room is left rather than being dropped: a half-width clock still says the time.
+        let mut x = bar.x + ui.px(CHIP_PAD);
+        let mut chip = |width: i32| {
+            let rect = Rect::new(x, chip_y, width.min((limit - x).max(0)), chip_h);
+            x += width + gap;
+            rect
         };
-        let (controls_area, rest) = rest.split_right(controls_width.min(rest.w));
-        let controls = (controls_width > 0).then(|| {
-            let w = controls_area.w / 3;
-            [
-                Rect::new(controls_area.x, controls_area.y, w, controls_area.h),
-                Rect::new(controls_area.x + w, controls_area.y, w, controls_area.h),
-                Rect::new(
-                    controls_area.x + 2 * w,
-                    controls_area.y,
-                    controls_area.w - 2 * w,
-                    controls_area.h,
-                ),
-            ]
-        });
-        let widths: Vec<i32> = data
+        let network = chip(ui.px(NETWORK_WIDTH));
+        let clock = chip(ui.px(CLOCK_WIDTH));
+        let cells: Vec<Rect> = data
             .entries
             .iter()
-            .map(|entry| ui.px(if entry.active { ACTIVE_WIDTH } else { CELL }))
+            .map(|entry| chip(ui.px(if entry.active { ACTIVE_WIDTH } else { CELL })))
             .collect();
-        let total: i32 = widths.iter().sum();
-        let mut x = rest.x + ((rest.w - total) / 2).max(0);
-        let cells = widths
-            .iter()
-            .map(|w| {
-                let cell = Rect::new(x, bar.y, (*w).min((rest.right() - x).max(0)), bar.h);
-                x += w;
-                cell
-            })
-            .collect::<Vec<_>>();
+
         let row =
             match open_row.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
                 Some((cell, entry)) if area.h > bar_height => {
@@ -231,18 +288,18 @@ impl BarScreen {
                     ui,
                     *rect,
                     if hovered {
-                        design::ACCENT_SOFT
+                        design::accent_soft()
                     } else {
-                        design::SHELL
+                        design::shell_fill()
                     },
-                    design::EDGE_STRONG,
+                    design::edge_strong(),
                     Elevation::Lifted,
                 );
                 ui.label_styled(
                     rect.inset(ui.px(8)),
                     title,
                     design::state_style(ui),
-                    design::TEXT,
+                    design::text(),
                     Align::Left,
                 );
                 if ui.input.take_click(*rect) {
@@ -253,30 +310,28 @@ impl BarScreen {
             }
         }
 
-        design::shell(
-            ui,
-            layout.bar,
-            design::SHELL,
-            design::EDGE_STRONG,
-            Elevation::Rest,
-        );
-
         // Indicators. The label comes from the action manifest, so the bar and the cheat sheet
         // cannot call the same capability two different things.
         let network_label = lege_types::action::action("network.open-control")
             .map_or("Network", |declaration| declaration.label);
-        if data.network_control_available && ui.input.hovering(layout.network) {
-            ui.painter
-                .fill_rect(layout.network.inset(ui.px(4)), design::ACCENT_SOFT);
-        }
+        let network_hovered = data.network_control_available && ui.input.hovering(layout.network);
+        chip(
+            ui,
+            layout.network,
+            if network_hovered {
+                design::accent()
+            } else {
+                design::TAG_FILL
+            },
+        );
         ui.label_styled(
-            layout.network.inset(ui.px(8)),
+            layout.network.inset(ui.px(6)),
             network_label,
             design::state_style(ui),
             if data.network_control_available {
-                design::ACCENT
+                design::TAG_INK
             } else {
-                design::TEXT_DIM
+                design::text_faint()
             },
             Align::Centre,
         );
@@ -285,50 +340,41 @@ impl BarScreen {
                 "network.open-control",
             )));
         }
+
+        chip(ui, layout.clock, design::TAG_FILL);
         ui.label_styled(
-            layout.clock.inset(ui.px(8)),
+            layout.clock.inset(ui.px(6)),
             data.clock_label,
             design::state_style(ui),
-            design::TEXT,
+            design::TAG_INK,
             Align::Centre,
         );
-        ui.painter.fill_rect(
-            Rect::new(
-                layout.clock.right(),
-                layout.bar.y + ui.px(10),
-                1,
-                layout.bar.h - ui.px(20),
-            ),
-            design::EDGE,
-        );
 
-        // The taskbar.
+        // The taskbar: one chip per entry, in the same colours the compositor gives that window's
+        // own name tag, so the two read as the same object.
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
-            let hovered = ui.input.hovering(*cell);
+            let hovered = ui.input.hovering(*cell) || self.open_row == Some(index);
+            let (fill, ink) = match (entry.active, hovered) {
+                (true, _) => (design::accent_soft(), design::text()),
+                (false, true) => (design::accent(), design::TAG_INK),
+                (false, false) => (design::TAG_FILL, design::TAG_INK),
+            };
+            chip(ui, *cell, fill);
             if entry.active {
-                ui.painter.fill_rounded_rect(
-                    cell.inset(ui.px(4)),
-                    ui.px(design::CHIP_RADIUS),
-                    design::ACCENT_SOFT,
-                );
-            } else if hovered || self.open_row == Some(index) {
-                ui.painter.fill_rounded_rect(
-                    cell.inset(ui.px(4)),
-                    ui.px(design::CHIP_RADIUS),
-                    design::RECESSED,
-                );
+                ui.painter
+                    .stroke_rect(*cell, ui.px(2).max(1), design::accent());
             }
-            let icon_side = ui.px(ICON).min(cell.h - ui.px(8));
+            let icon_side = ui.px(ICON).min(cell.h - ui.px(6));
             let icon = Rect::new(
-                cell.x + ui.px(8),
+                cell.x + ui.px(4),
                 cell.y + (cell.h - icon_side) / 2,
-                icon_side,
+                icon_side.min(cell.w),
                 icon_side,
             );
             if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
                 ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
             } else {
-                let plate = entry.accent.unwrap_or(design::ACCENT_SOFT);
+                let plate = entry.accent.unwrap_or(fill);
                 ui.painter
                     .fill_rounded_rect(icon, ui.px(design::CHIP_RADIUS), plate);
                 let mark = if entry.accent.is_some() {
@@ -342,36 +388,33 @@ impl BarScreen {
                         .to_uppercase()
                         .to_string()
                 };
-                let ink = if entry.accent.is_some() {
-                    0x00ff_ffff
-                } else {
-                    design::ACCENT
-                };
                 ui.label(icon, &mark, ink, Align::Centre);
             }
             if entry.active {
                 // The active entry wears the window's name tag: its icon and its title.
                 let title = Rect::new(
-                    icon.right() + ui.px(8),
+                    icon.right() + ui.px(6),
                     cell.y,
-                    (cell.right() - icon.right() - ui.px(16)).max(0),
+                    (cell.right() - icon.right() - ui.px(12)).max(0),
                     cell.h,
                 );
                 ui.label_styled(
                     title,
                     &entry.label,
                     design::state_style(ui),
-                    design::TEXT,
+                    ink,
                     Align::Left,
                 );
             }
             if let Some(accent) = entry.accent {
+                // A grouped entry keeps its group's stripe, the same one the window's own band
+                // wears — at a chip's scale it runs down the left edge rather than the bottom.
                 ui.painter.fill_rect(
                     Rect::new(
-                        cell.x + ui.px(6),
-                        cell.bottom() - ui.px(3),
-                        cell.w - ui.px(12),
+                        cell.x,
+                        cell.y + ui.px(4),
                         ui.px(3),
+                        (cell.h - ui.px(8)).max(1),
                     ),
                     accent,
                 );
@@ -390,15 +433,22 @@ impl BarScreen {
             }
         }
 
-        // The maximized window's controls, bottom-right.
+        // The maximized window's controls, at the right-hand end of the full-width bar — the
+        // place they sit on the window's own strip, and the reason the bar takes the width.
         if let (Some(controls), Some((window, _))) = (&layout.controls, data.activated) {
-            let ink = design::TEXT_DIM;
             let stroke = ui.px(2).max(1);
             for (which, rect) in controls.iter().enumerate() {
-                if ui.input.hovering(*rect) {
-                    ui.painter
-                        .fill_rect(rect.inset(ui.px(4)), design::ACCENT_SOFT);
-                }
+                let hovered = ui.input.hovering(*rect);
+                chip(
+                    ui,
+                    *rect,
+                    if hovered {
+                        design::danger()
+                    } else {
+                        design::TAG_FILL
+                    },
+                );
+                let ink = design::TAG_INK;
                 let glyph = Rect::new(
                     rect.x + (rect.w - ui.px(12)) / 2,
                     rect.y + (rect.h - ui.px(12)) / 2,
@@ -430,8 +480,11 @@ impl BarScreen {
         }
 
         // A press on empty bar ground: the compositor gave this surface the keyboard for it, and
-        // the activated window is the one that should have it.
-        if ui.input.take_click(layout.bar)
+        // the activated window is the one that should have it. Only where there *is* ground —
+        // when the strip is chips alone the surface is the chips, and the pixels between them are
+        // padding rather than a band to click on.
+        if (layout.controls.is_some() || self.open_row.is_some())
+            && ui.input.take_click(layout.bar)
             && let Some((window, _)) = data.activated
         {
             actions.push(BarAction::Activate(window));
@@ -448,6 +501,7 @@ mod tests {
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, MouseButton, Scale};
 
+    /// The output's logical width, which is what the host passes as `full_width`.
     const W: i32 = 1200;
 
     fn window(id: u64, app: &str, title: &str, activated: bool, maximized: bool) -> ShellToplevel {
@@ -476,6 +530,7 @@ mod tests {
         buffer: WindowBuffer,
         input: Input,
         now: u64,
+        width: i32,
         height: i32,
     }
 
@@ -490,17 +545,32 @@ mod tests {
                 buffer: WindowBuffer::new(W as u32, (BAR_HEIGHT + ROW_BAND) as u32),
                 input: Input::new(),
                 now: 0,
+                width: W,
                 height: BAR_HEIGHT,
             }
         }
 
-        fn frame(&mut self) -> Vec<BarAction> {
-            let entries = taskbar::entries(&self.toplevels);
-            let activated = self
-                .toplevels
+        fn activated(&self) -> Option<(WindowId, bool)> {
+            self.toplevels
                 .iter()
                 .find(|t| t.activated)
-                .map(|t| (t.window_id, t.maximized));
+                .map(|t| (t.window_id, t.maximized))
+        }
+
+        /// The surface the host would give the bar this frame — width included, exactly as
+        /// `app.rs` computes it, so a test never clicks somewhere the real surface does not have.
+        fn wanted(&self) -> (i32, i32) {
+            wanted_size(
+                &taskbar::entries(&self.toplevels),
+                self.activated(),
+                self.screen.open_row.is_some(),
+                W,
+            )
+        }
+
+        fn frame(&mut self) -> Vec<BarAction> {
+            let entries = taskbar::entries(&self.toplevels);
+            let activated = self.activated();
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
@@ -509,6 +579,7 @@ mod tests {
                 activated,
                 now_ms: self.now,
             };
+            let (width, height) = (self.width, self.height);
             let mut ui = Ui::new(
                 Painter::new(&mut self.buffer),
                 &mut self.text,
@@ -517,12 +588,17 @@ mod tests {
                 Scale::ONE,
                 &mut self.kernel,
             );
-            let top = BAR_HEIGHT + ROW_BAND - self.height;
+            let top = BAR_HEIGHT + ROW_BAND - height;
             let actions = self
                 .screen
-                .draw(&mut ui, Rect::new(0, top, W, self.height), &data);
+                .draw(&mut ui, Rect::new(0, top, width, height), &data);
             drop(ui);
             self.input.end_frame();
+            // The host resizes the surface the moment the answer changes; so does the harness,
+            // so the next frame's rectangles are the ones a real click would land on.
+            let (width, height) = self.wanted();
+            self.width = width;
+            self.height = height;
             actions
         }
 
@@ -552,7 +628,7 @@ mod tests {
                 &mut self.kernel,
             );
             let top = BAR_HEIGHT + ROW_BAND - self.height;
-            BarScreen::layout(&ui, Rect::new(0, top, W, self.height), &data, None).cells
+            BarScreen::layout(&ui, Rect::new(0, top, self.width, self.height), &data, None).cells
         }
     }
 
@@ -572,8 +648,9 @@ mod tests {
         let actions = h.click(files.x + files.w / 2, files.y + files.h / 2);
         assert!(actions.is_empty(), "{actions:?}");
         assert_eq!(h.screen.open_row, Some(1));
-        // The host makes room; the row's first item activates its window and closes the row.
-        h.height = BAR_HEIGHT + ROW_BAND;
+        // The host has already made room (the harness resizes exactly where `app.rs` does); the
+        // row's first item activates its window and closes the row.
+        assert_eq!(h.wanted(), (W, BAR_HEIGHT + ROW_BAND));
         h.frame();
         let actions = h.click(files.x + 20, 12);
         assert_eq!(actions, vec![BarAction::Activate(WindowId(2))]);
@@ -614,10 +691,15 @@ mod tests {
     fn controls_exist_only_for_a_maximized_activated_window_and_act_on_it() {
         let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, false)]);
         h.frame();
+        // Not maximized: the surface is the chip strip, so the right-hand end of the output is
+        // not this window at all — there is no bar ground out there to press.
+        assert!(h.width < W, "the strip should be narrower than the output");
         let actions = h.click(W - 20, BAR_HEIGHT + ROW_BAND - 24);
-        // No controls: a press on bar ground hands the keyboard back to the activated window.
-        assert_eq!(actions, vec![BarAction::Activate(WindowId(1))]);
+        assert!(actions.is_empty(), "{actions:?}");
         h.toplevels[0].maximized = true;
+        // One frame to take the width the controls need, then the controls are there to press.
+        h.frame();
+        assert_eq!(h.width, W);
         h.frame();
         let close = h.click(W - 20, BAR_HEIGHT + ROW_BAND - 24);
         assert_eq!(
@@ -657,14 +739,59 @@ mod tests {
             window(3, "org.legeos.Files", "Pictures", false, false),
             term,
         ]);
-        h.height = BAR_HEIGHT + ROW_BAND;
         h.screen.open_row = Some(2);
+        // One frame to let the harness take the size the open row asks for, then the render.
+        h.frame();
         h.frame();
         if let Ok(path) = std::env::var("LEGE_BAR_BASELINE_DUMP") {
             crate::surface::offscreen::write_png(std::path::Path::new(&path), &h.buffer)
                 .expect("dumping the bar render");
         }
         assert!(h.buffer.pixels.iter().any(|&p| p != 0));
+    }
+
+    /// The user's rule, as arithmetic: no bar unless there is something on one that needs the
+    /// width. Chips normally; the whole output only for a maximized window's controls or an open
+    /// row.
+    #[test]
+    fn wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width() {
+        let none: Vec<Entry> = Vec::new();
+        let bare = wanted_size(&none, None, false, W);
+        assert_eq!(
+            bare,
+            (
+                2 * CHIP_PAD + NETWORK_WIDTH + CHIP_GAP + CLOCK_WIDTH,
+                BAR_HEIGHT
+            ),
+            "with nothing running the bar is the network chip and the clock chip"
+        );
+        assert!(bare.0 < W, "and nothing like the width of the output");
+
+        let toplevels = vec![
+            window(1, "org.example.Editor", "notes", true, false),
+            window(2, "org.legeos.Files", "Downloads", false, false),
+        ];
+        let entries = taskbar::entries(&toplevels);
+        let with_windows = wanted_size(&entries, Some((WindowId(1), false)), false, W);
+        assert_eq!(with_windows.0, bare.0 + 2 * CHIP_GAP + ACTIVE_WIDTH + CELL);
+        assert_eq!(
+            with_windows.1, BAR_HEIGHT,
+            "no row, so no band above the bar"
+        );
+        assert!(with_windows.0 < W);
+
+        // A maximized window's controls belong at the right-hand end of the screen.
+        assert_eq!(
+            wanted_size(&entries, Some((WindowId(1), true)), false, W),
+            (W, BAR_HEIGHT)
+        );
+        // An open row needs both the width to open into and the band to open in.
+        assert_eq!(
+            wanted_size(&entries, Some((WindowId(1), false)), true, W),
+            (W, BAR_HEIGHT + ROW_BAND)
+        );
+        // A strip wider than the output is the output's width, never more.
+        assert_eq!(wanted_size(&entries, None, false, 100), (100, BAR_HEIGHT));
     }
 
     #[test]

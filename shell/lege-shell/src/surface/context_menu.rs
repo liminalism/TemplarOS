@@ -55,6 +55,8 @@ pub enum MenuScope {
     GroupedWindow,
     /// Needs a window group's own tile under the pointer.
     WindowGroup,
+    /// Needs a project's own tile under the pointer.
+    Project,
     /// Needs at least one tile on the shelf. Offered on bare background like the other field
     /// rows, but only when there is actually something to bring back — a permanently visible
     /// "bring shelved tiles back" would be a row that does nothing almost every time it is read.
@@ -120,6 +122,14 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("window.cycle-backward", MenuScope::Window),
     MenuItem::new("window.step-right", MenuScope::Window),
     MenuItem::new("window.step-left", MenuScope::Window),
+    // A project's own rows, above the generic tile rows: entering a project and restoring its
+    // workspace are what a person came to the menu for, and the three tools are the reason a
+    // project is a place rather than a folder.
+    MenuItem::new("project.enter", MenuScope::Project),
+    MenuItem::new("project.restore", MenuScope::Project),
+    MenuItem::new("project.open-terminal", MenuScope::Project),
+    MenuItem::new("project.open-files", MenuScope::Project),
+    MenuItem::new("project.open-editor", MenuScope::Project),
     MenuItem::new("field.move", MenuScope::Tile),
     MenuItem::new("field.resize", MenuScope::Tile),
     MenuItem::new("field.stash", MenuScope::Tile),
@@ -188,7 +198,8 @@ impl FilesTarget {
             | MenuScope::Window
             | MenuScope::Shelf
             | MenuScope::GroupedWindow
-            | MenuScope::WindowGroup => false,
+            | MenuScope::WindowGroup
+            | MenuScope::Project => false,
         }
     }
 
@@ -202,7 +213,7 @@ impl FilesTarget {
 }
 
 /// What the menu was opened over.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MenuTarget {
     pub tile: Option<TileId>,
     /// The live window that tile stands for, if it stands for one.
@@ -214,13 +225,18 @@ pub struct MenuTarget {
     pub window_group: bool,
     /// The window under the pointer belongs to a window group.
     pub in_window_group: bool,
+    /// The project whose tile is under the pointer. Carried here rather than looked up again
+    /// when a row is chosen: the field has reflowed by then, and "which project" must be the
+    /// one the menu was opened over, not whatever is under the pointer now.
+    pub project: Option<String>,
 }
 
 impl MenuTarget {
-    fn offers(self, scope: MenuScope) -> bool {
+    fn offers(&self, scope: MenuScope) -> bool {
         match scope {
             MenuScope::Field => true,
             MenuScope::Tile => self.tile.is_some(),
+            MenuScope::Project => self.project.is_some(),
             MenuScope::Window => self.window.is_some(),
             MenuScope::Shelf => self.shelved,
             MenuScope::WindowGroup => self.window_group && self.window.is_some(),
@@ -236,7 +252,7 @@ impl MenuTarget {
     }
 
     /// The rows this target offers, in [`MENU`] order.
-    pub fn rows(self) -> Vec<&'static MenuItem> {
+    pub fn rows(&self) -> Vec<&'static MenuItem> {
         MENU.iter()
             .filter(|item| self.offers(item.scope) && item.declaration().is_some())
             .collect()
@@ -300,7 +316,7 @@ impl ContextMenu {
 
     /// What the menu is currently open over, if it is open.
     pub fn target(&self) -> Option<MenuTarget> {
-        self.open.as_ref().map(|open| open.target)
+        self.open.as_ref().map(|open| open.target.clone())
     }
 
     /// Open over `target` at the pointer. A target with no rows at all opens nothing, rather
@@ -477,7 +493,7 @@ impl ContextMenu {
                 }
                 let chosen = Chosen {
                     action: item.action,
-                    target: open.target,
+                    target: open.target.clone(),
                     choice: None,
                 };
                 self.open = None;
@@ -486,7 +502,7 @@ impl ContextMenu {
             if let Some(choice) = open.choices.get(index - open.rows.len()) {
                 let chosen = Chosen {
                     action: LAUNCH_VARIANT,
-                    target: open.target,
+                    target: open.target.clone(),
                     choice: Some(choice.id.clone()),
                 };
                 self.open = None;
@@ -558,16 +574,16 @@ impl ContextMenu {
             ),
         ] {
             if enabled && ui.input.hovering(control) {
-                ui.painter.fill_rect(control, design::ACCENT_SOFT);
+                ui.painter.fill_rect(control, design::accent_soft());
             }
             ui.label_styled(
                 control,
                 label,
                 design::state_style(ui),
                 if enabled {
-                    design::TEXT
+                    design::text()
                 } else {
-                    design::TEXT_FAINT
+                    design::text_faint()
                 },
                 Align::Centre,
             );
@@ -576,11 +592,11 @@ impl ContextMenu {
 
     fn paint_shell(ui: &mut Ui<'_>, rect: Rect) {
         ui.painter
-            .shadow_rect(rect, ui.px(3), ui.px(6), design::TEXT, 70);
+            .shadow_rect(rect, ui.px(3), ui.px(6), design::text(), 70);
         ui.painter
-            .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::SHELL);
+            .fill_rounded_rect(rect, ui.px(design::WELL_RADIUS), design::shell_fill());
         ui.painter
-            .stroke_rect(rect, ui.scale.hairline(), design::EDGE_STRONG);
+            .stroke_rect(rect, ui.scale.hairline(), design::edge_strong());
     }
 
     /// Draw the menu over everything else. Purely visual — [`update`](Self::update) already took
@@ -612,12 +628,18 @@ impl ContextMenu {
             let armed = open.armed == Some(item.action);
             let hovered = ui.input.hovering(row) || open.highlighted == Some(index);
             let destructive = declaration.confirm;
-            if armed {
-                ui.painter
-                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), design::DANGER_SOFT);
+            // An armed destructive row wears the danger plate, a merely hovered one the accent:
+            // one fill, so the two states cannot drift into different radii.
+            let plate = if armed {
+                Some(design::danger_soft())
             } else if hovered {
+                Some(design::accent_soft())
+            } else {
+                None
+            };
+            if let Some(plate) = plate {
                 ui.painter
-                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), design::ACCENT_SOFT);
+                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), plate);
             }
             let (accelerator, label) = row.split_right(ui.px(96).min(row.w / 2));
             // Armed rows say what the second press will do, in plain words: a row that only
@@ -637,9 +659,9 @@ impl ContextMenu {
                 &text,
                 design::title_style(ui),
                 if armed || destructive {
-                    design::DANGER
+                    design::danger()
                 } else {
-                    design::TEXT
+                    design::text()
                 },
                 Align::Left,
             );
@@ -653,23 +675,28 @@ impl ContextMenu {
                     ),
                     &chord.to_string(),
                     TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                    design::TEXT_FAINT,
+                    design::text_faint(),
                     Align::Right,
                 );
             }
         }
 
-        // The copies, under the declared rows: which one, and where it came from. They are the
-        // only rows the manifest does not name, and they say so by looking like what they are —
-        // a name and a provenance, not a verb.
+        self.paint_choices(ui, area, open);
+    }
+
+    /// The copies, under the declared rows: which one, and where it came from. They are the only
+    /// rows the manifest does not name, and they say so by looking like what they are — a name
+    /// and a provenance, not a verb.
+    fn paint_choices(&self, ui: &mut Ui<'_>, area: Rect, open: &Open) {
         for (offset, choice) in open.choices.iter().enumerate() {
             let index = open.rows.len() + offset;
             let Some(row) = self.row(ui, area, index) else {
                 continue;
             };
             if ui.input.hovering(row) || open.highlighted == Some(index) {
+                let plate = design::accent_soft();
                 ui.painter
-                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), design::ACCENT_SOFT);
+                    .fill_rounded_rect(row, ui.px(design::CHIP_RADIUS), plate);
             }
             let (detail, label) = row.split_right(ui.px(120).min(row.w / 2));
             ui.label_styled(
@@ -681,14 +708,14 @@ impl ContextMenu {
                 ),
                 &choice.label,
                 design::title_style(ui),
-                design::TEXT,
+                design::text(),
                 Align::Left,
             );
             ui.label_styled(
                 Rect::new(detail.x, detail.y, (detail.w - ui.px(8)).max(0), detail.h),
                 &choice.detail,
                 TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                design::TEXT_FAINT,
+                design::text_faint(),
                 Align::Right,
             );
         }
@@ -800,7 +827,7 @@ mod tests {
             ..MenuTarget::default()
         };
         let mut menu = ContextMenu::default();
-        menu.open_at((10, 10), target);
+        menu.open_at((10, 10), target.clone());
         let declared = menu.open.as_ref().expect("open").rows.len();
 
         menu.open_at_with(
@@ -892,32 +919,60 @@ mod tests {
         };
         let grouped = MenuTarget {
             in_window_group: true,
-            ..window
+            ..window.clone()
         };
         let group_tile = MenuTarget {
             window_group: true,
             in_window_group: true,
-            ..window
+            ..window.clone()
+        };
+        // A project's tile: the five project rows, and nothing about a window it does not have.
+        let project = MenuTarget {
+            tile: Some(TileId(7)),
+            project: Some("notes".to_owned()),
+            ..MenuTarget::default()
         };
         let shelf = MenuTarget {
             shelved: true,
             ..MenuTarget::default()
         };
 
-        let ids = |target: MenuTarget| -> Vec<&'static str> {
+        let ids = |target: &MenuTarget| -> Vec<&'static str> {
             target.rows().iter().map(|item| item.action).collect()
         };
-        assert!(!ids(nothing).contains(&"field.stash"));
-        assert!(!ids(nothing).contains(&"window.close"));
-        assert!(ids(nothing).contains(&"field.undo"));
-        assert!(ids(tile).contains(&"field.stash"));
+        assert!(!ids(&nothing).contains(&"field.stash"));
+        assert!(!ids(&nothing).contains(&"window.close"));
+        assert!(ids(&nothing).contains(&"field.undo"));
+        assert!(ids(&tile).contains(&"field.stash"));
+        // A project's tile offers entering it, restoring it, and its three tools — and an
+        // ordinary tile offers none of them, because there is no project for them to mean.
+        for row in [
+            "project.enter",
+            "project.restore",
+            "project.open-terminal",
+            "project.open-files",
+            "project.open-editor",
+        ] {
+            assert!(ids(&project).contains(&row), "a project has no {row} row");
+            assert!(!ids(&tile).contains(&row), "an ordinary tile offers {row}");
+            assert!(!ids(&nothing).contains(&row), "bare ground offers {row}");
+        }
+        // Creating a project belongs to the native Files application, which has its own menu:
+        // this browse pane is a summary, and Home has no selected real directory to root one at.
+        assert!(!ids(&project).contains(&"project.create-here"));
         assert!(
-            !ids(tile).contains(&"window.close"),
+            !FILES_MENU
+                .iter()
+                .any(|item| item.action == "project.create-here"),
+            "the browse pane offers a row it cannot perform"
+        );
+        assert!(
+            !ids(&tile).contains(&"window.close"),
             "a tile with no live window has nothing to close"
         );
-        assert!(ids(window).contains(&"window.close"));
+        assert!(ids(&window).contains(&"window.close"));
         assert_eq!(
-            ids(window).last(),
+            ids(&window).last(),
             Some(&"window.close"),
             "the destructive row stays at the bottom"
         );
@@ -925,15 +980,15 @@ mod tests {
         // Restoring is offered only when there is something on the shelf: a row that reads
         // "bring shelved tiles back" and does nothing is worse than no row.
         assert!(
-            !ids(nothing).contains(&"field.restore"),
+            !ids(&nothing).contains(&"field.restore"),
             "an empty shelf offers nothing to bring back"
         );
-        assert!(!ids(tile).contains(&"field.restore"));
-        assert!(ids(shelf).contains(&"field.restore"));
+        assert!(!ids(&tile).contains(&"field.restore"));
+        assert!(ids(&shelf).contains(&"field.restore"));
 
         // Reset is a field row, so it is reachable from bare background — that is the whole
         // point, since a field can be reset when no tile is worth pointing at.
-        assert!(ids(nothing).contains(&"field.reset"));
+        assert!(ids(&nothing).contains(&"field.reset"));
 
         // Window groups. A window in no group is offered none of it; a member is offered the way
         // out; the group's own tile is offered the verbs that act on the set. "Take out of group"
@@ -944,16 +999,16 @@ mod tests {
             "window.shelve-group",
             "window.rename-group",
         ] {
-            assert!(!ids(window).contains(&id), "{id} over an ungrouped window");
+            assert!(!ids(&window).contains(&id), "{id} over an ungrouped window");
         }
-        assert!(ids(grouped).contains(&"window.ungroup"));
-        assert!(!ids(grouped).contains(&"window.activate-group"));
-        assert!(ids(group_tile).contains(&"window.activate-group"));
-        assert!(ids(group_tile).contains(&"window.shelve-group"));
-        assert!(ids(group_tile).contains(&"window.unshelve-group"));
-        assert!(ids(group_tile).contains(&"window.rename-group"));
+        assert!(ids(&grouped).contains(&"window.ungroup"));
+        assert!(!ids(&grouped).contains(&"window.activate-group"));
+        assert!(ids(&group_tile).contains(&"window.activate-group"));
+        assert!(ids(&group_tile).contains(&"window.shelve-group"));
+        assert!(ids(&group_tile).contains(&"window.unshelve-group"));
+        assert!(ids(&group_tile).contains(&"window.rename-group"));
         assert!(
-            !ids(group_tile).contains(&"window.ungroup"),
+            !ids(&group_tile).contains(&"window.ungroup"),
             "a group's own tile is not one of its members"
         );
     }

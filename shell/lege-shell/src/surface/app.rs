@@ -3,7 +3,7 @@
 //! loop that keeps its content live. See `window.rs`'s module doc for why this crate drives winit
 //! itself rather than `pixelkit_shell::run_app`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use lege_client::proxies::{
 use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
 use lege_types::action;
+use lege_types::provider::ProviderRole;
 use lege_window::RevealHome;
 
 use crate::clipboard::Clipboard;
@@ -76,6 +77,10 @@ enum DataUpdate {
         role: &'static str,
         app_id: Option<String>,
     },
+    /// `Lifecycle1.LockRequested`: somebody asked for the session to be locked.
+    LockRequested,
+    /// What `lege-unlock` said about a password: `Ok` unlocks, `Err` is the message shown.
+    Unlock(std::result::Result<(), String>),
     /// The persisted recent-apps list. Applied only while the in-memory list is still empty,
     /// so a launch that happened before the load landed is not overwritten by a stale read.
     RecentApps(crate::recents::RecentApps),
@@ -265,17 +270,22 @@ struct ShellApp {
     /// The screen-off delay last relayed to the compositor, so an unchanged reading costs
     /// nothing (`DataUpdate::IdleTimeout`). `None` until the first read lands.
     idle_timeout: Option<u32>,
-    /// The selected `terminal` provider — what the drop-down chord launches when no terminal
-    /// window exists. `None` when nothing fills the role.
-    terminal_provider: Option<AppId>,
+    /// Who fills each exclusive role the shell acts on, from `Providers1.Report`. A map rather
+    /// than a field per role: "open this at the project root" is the same code for a terminal, a
+    /// file manager and an editor, and the only difference between them is which role to resolve
+    /// and what arguments that program takes.
+    providers: BTreeMap<ProviderRole, AppId>,
     /// What `set_terminal` last told the compositor, so an unchanged reading costs no round
     /// trip. `None` until the first read lands; the empty string is a real value meaning "no
     /// terminal is selected", and the compositor needs to be told that too.
     terminal_relayed: Option<String>,
-    /// The selected `file-search` provider — FSearch by default. Read here rather than in the
-    /// pure omnibox because which application answers "search everywhere" is a Providers1
-    /// choice, and the panel names the intent rather than the program.
-    file_search_provider: Option<AppId>,
+    /// The lock screen's own state, and whether a lock is up. The surfaces belong to the
+    /// bridge (`crate::session_lock`); this is what is painted on them.
+    lock_screen: crate::surface::lock_screen::LockScreen,
+    /// A pointer/keyboard state for the lock screen's painter. The lock screen takes no pointer
+    /// input at all — this exists because `Ui` needs one, and a shared one would let a stray
+    /// click queued for Home land on the lock.
+    lock_input: pixelkit_shell::Input,
     /// The last question asked of a location, so the panel's "Search everywhere" row can hand
     /// it on. The row is composed by a pure module with no bus and no clock; the question it is
     /// about is the one this host asked on its behalf.
@@ -379,8 +389,9 @@ struct ShellApp {
     /// bottom exclusive zone, absent only while a window is fullscreen.
     bar: Option<HostedWindow>,
     bar_screen: crate::surface::bar_screen::BarScreen,
-    /// Whether the bar surface was last sized to show its hover row.
-    bar_row_shown: bool,
+    /// The size the bar surface was last asked for (`bar_screen::wanted_size`). The compositor
+    /// never configures this surface's width, so the shell is the only thing that knows it.
+    bar_wanted: (i32, i32),
     /// The bridge generation the bar and Home were last drawn for.
     bridge_generation: u64,
     /// The newest notification id a toast has been shown for, so re-fetches do not re-toast.
@@ -417,9 +428,10 @@ impl ShellApp {
             wake_proxy,
             bridge: None,
             idle_timeout: None,
-            terminal_provider: None,
+            providers: BTreeMap::new(),
             terminal_relayed: None,
-            file_search_provider: None,
+            lock_screen: crate::surface::lock_screen::LockScreen::default(),
+            lock_input: pixelkit_shell::Input::new(),
             location_query: String::new(),
             home: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
@@ -465,7 +477,7 @@ impl ShellApp {
             toast: None,
             bar: None,
             bar_screen: crate::surface::bar_screen::BarScreen::default(),
-            bar_row_shown: false,
+            bar_wanted: (0, 0),
             bridge_generation: 0,
             last_toasted_id: None,
             browser_pending: None,
@@ -715,28 +727,33 @@ impl ShellApp {
                 None
             }
         });
-        match role {
-            "terminal" => {
-                let wire = parsed.as_ref().map_or("", AppId::as_str).to_owned();
-                self.terminal_provider = parsed;
-                if self.terminal_relayed.as_deref() == Some(wire.as_str()) {
-                    return;
-                }
-                // Nothing is recorded as relayed until there is a connection to relay it over,
-                // so a shell that started before the compositor answered still tells it once it
-                // does rather than believing it already had.
-                let Some(bridge) = &self.bridge else {
-                    return;
-                };
-                self.terminal_relayed = Some(wire.clone());
-                if let Err(error) = bridge.set_terminal(&wire) {
-                    // Ordinary against a compositor older than version 5: the chord is not there
-                    // to be told about yet.
-                    tracing::debug!(%error, "relaying the terminal provider to the compositor");
-                }
+        let Some(known) = ProviderRole::ALL.iter().find(|r| r.as_str() == role) else {
+            tracing::debug!(role, "a provider nothing here acts on");
+            return;
+        };
+        match parsed.clone() {
+            Some(app_id) => self.providers.insert(*known, app_id),
+            None => self.providers.remove(known),
+        };
+        // Only the terminal has a second consumer that has to be told; every other role is
+        // recorded above and read where it is needed.
+        if role == "terminal" {
+            let wire = parsed.as_ref().map_or("", AppId::as_str).to_owned();
+            if self.terminal_relayed.as_deref() == Some(wire.as_str()) {
+                return;
             }
-            "file-search" => self.file_search_provider = parsed,
-            other => tracing::debug!(role = other, "a provider nothing here acts on"),
+            // Nothing is recorded as relayed until there is a connection to relay it over, so a
+            // shell that started before the compositor answered still tells it once it does
+            // rather than believing it already had.
+            let Some(bridge) = &self.bridge else {
+                return;
+            };
+            self.terminal_relayed = Some(wire.clone());
+            if let Err(error) = bridge.set_terminal(&wire) {
+                // Ordinary against a compositor older than version 5: the chord is not there to
+                // be told about yet.
+                tracing::debug!(%error, "relaying the terminal provider to the compositor");
+            }
         }
     }
 
@@ -753,7 +770,7 @@ impl ShellApp {
         if requests == 0 {
             return false;
         }
-        let Some(app_id) = self.terminal_provider.clone() else {
+        let Some(app_id) = self.providers.get(&ProviderRole::Terminal).cloned() else {
             let now_ms = self.started.elapsed().as_millis() as u64;
             self.field_screen.report(
                 "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
@@ -988,6 +1005,15 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::Provider { role, app_id } => self.note_provider(role, app_id),
+                DataUpdate::LockRequested => self.engage_lock(),
+                DataUpdate::Unlock(Ok(())) => {
+                    self.lock_screen.accepted();
+                    self.release_lock();
+                }
+                DataUpdate::Unlock(Err(reason)) => {
+                    self.lock_screen.rejected(reason);
+                    self.paint_lock();
+                }
                 DataUpdate::RecentApps(loaded) => {
                     if self.recent.ids().is_empty() {
                         self.recent = loaded;
@@ -1399,9 +1425,12 @@ impl ShellApp {
         if !home.prepare() {
             return;
         }
+        // `bar_inset` is logical, and the buffer is physical: on a scaled output the two are not
+        // the same number, and subtracting the logical one from a physical height left the field
+        // painting into the strip the bar covers.
         let (width, height) = (
             home.buffer.width as i32,
-            home.buffer.height as i32 - bar_inset,
+            home.buffer.height as i32 - scale.px(bar_inset),
         );
         // A search result is shown only while it still answers the question on screen: the same
         // scope and the same query. The staleness guard is the one it always was, keyed on the
@@ -1585,6 +1614,7 @@ impl ShellApp {
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
+            FieldAction::Project { id, project_id } => self.perform_project(id, &project_id),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             // `window.group`, which is the one window verb naming two windows and so cannot go
             // through `perform_on_window`.
@@ -1700,6 +1730,70 @@ impl ShellApp {
         {
             tracing::warn!(%error, "{what} request failed");
         }
+    }
+
+    /// Enter a project, restore its workspace, or open one of its tools at its root.
+    ///
+    /// Entering and restoring are deliberately different requests. `Projects1.SetCurrent` selects
+    /// the context and launches nothing; `Projects1.Open` launches what the project remembers. A
+    /// person who wanted to say "I am working on this now" and got eight windows has been
+    /// answered with something they did not ask for, so the two are never the same row.
+    ///
+    /// A tool opens at the project's **real** root, from `Projects1`'s own record — never a
+    /// directory this shell inferred from the project's name.
+    fn perform_project(&mut self, id: &'static str, project_id: &str) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let root = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.root.clone())
+            .unwrap_or_default();
+        if let Some(request) = project_request(id) {
+            self.spawn_project_request(id, project_id.to_owned(), request);
+            return;
+        }
+        let Some((role, arguments)) = tool_launch(id, &root) else {
+            return;
+        };
+        if root.is_empty() {
+            self.field_screen
+                .report(format!("{project_id} has no folder to open"), now_ms);
+            return;
+        }
+        let Some(app_id) = self.providers.get(&role).cloned() else {
+            // The same sentence the terminal chord uses, pointing at the same page: a role
+            // nobody fills is a choice the person has not made yet, not a failure.
+            self.field_screen.report(
+                format!("No {role} is selected — choose one in Settings ▸ Providers"),
+                now_ms,
+            );
+            return;
+        };
+        self.record_recent(&app_id);
+        self.spawn_launch_with_args(app_id, arguments);
+    }
+
+    /// `Projects1.SetCurrent` or `Projects1.Open`, whichever the row asked for.
+    fn spawn_project_request(&self, id: &'static str, project_id: String, request: ProjectRequest) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = ProjectsProxy::new(&connection).await?;
+                match request {
+                    ProjectRequest::SetCurrent => proxy.set_current(&project_id).await?,
+                    ProjectRequest::Open => proxy.open(&project_id).await?,
+                }
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = result {
+                let _ = tx.send(DataUpdate::Notice(format!("{id} failed — {error:#}")));
+                let _ = proxy_wake.send_event(Wake);
+            }
+        });
     }
 
     /// A project grouped on the field becomes a real `Projects1` project, rooted under
@@ -2007,6 +2101,151 @@ impl ShellApp {
         }
     }
 
+    /// Lock the session: take the compositor's lock and paint the screen onto it.
+    ///
+    /// Only the compositor can actually lock — this drives `ext-session-lock-v1` on the trusted
+    /// connection (`crate::session_lock`), which is why the shell is where this lives and
+    /// sessiond only emits `Lifecycle1.LockRequested`. A compositor that offers no lock manager
+    /// is told about rather than pretended past: a lock screen that did not lock would be worse
+    /// than none, because it looks locked.
+    fn engage_lock(&mut self) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let Some(bridge) = &mut self.bridge else {
+            self.field_screen
+                .report("Cannot lock: no compositor connection".to_owned(), now_ms);
+            return;
+        };
+        if bridge.lock_engaged() {
+            return;
+        }
+        if !bridge.lock_available() {
+            self.field_screen.report(
+                "Cannot lock: this compositor offers no session lock".to_owned(),
+                now_ms,
+            );
+            return;
+        }
+        self.lock_screen.accepted();
+        if let Err(error) = bridge.lock() {
+            tracing::warn!(%error, "taking the session lock");
+            self.field_screen
+                .report(format!("Could not lock the session — {error:#}"), now_ms);
+            return;
+        }
+        self.paint_lock();
+    }
+
+    /// Give the compositor's lock back. The only thing that unlocks the session.
+    fn release_lock(&mut self) {
+        if let Some(bridge) = &mut self.bridge
+            && let Err(error) = bridge.unlock()
+        {
+            tracing::warn!(%error, "releasing the session lock");
+        }
+    }
+
+    /// Draw the lock screen onto every lock surface.
+    ///
+    /// The bridge is moved out for the duration because painting needs this app's text cache and
+    /// raster kernel at the same time as the bridge's surfaces, and they are all fields of the
+    /// same struct.
+    fn paint_lock(&mut self) {
+        let Some(mut bridge) = self.bridge.take() else {
+            return;
+        };
+        let user = std::env::var("USER").unwrap_or_else(|_| "Locked".to_owned());
+        let clock = local_clock_label(std::time::SystemTime::now());
+        let result = bridge.paint_lock(|width, height| {
+            let mut buffer = pixelkit_raster::WindowBuffer::new(width, height);
+            {
+                let mut ui = Ui::new(
+                    Painter::new(&mut buffer),
+                    &mut self.text,
+                    &mut self.lock_input,
+                    self.theme,
+                    pixelkit_shell::Scale::ONE,
+                    &mut self.kernel,
+                );
+                let area = Rect::new(0, 0, width as i32, height as i32);
+                self.lock_screen.draw(&mut ui, area, &user, &clock);
+            }
+            self.lock_input.end_frame();
+            buffer.pixels
+        });
+        if let Err(error) = result {
+            tracing::warn!(%error, "painting the lock screen");
+        }
+        self.bridge = Some(bridge);
+    }
+
+    /// Feed the lock surfaces' keys to the lock screen, and act on what it asks for.
+    ///
+    /// Returns whether anything changed, so the caller repaints only when it did — a lock screen
+    /// redrawn on every wake is a lock screen burning a core all night.
+    fn drain_lock_keys(&mut self) -> bool {
+        use crate::session_lock::LockKey;
+
+        let Some(bridge) = &mut self.bridge else {
+            return false;
+        };
+        if !bridge.lock_engaged() {
+            return false;
+        }
+        if bridge.lock_finished() {
+            // The compositor refused the lock or ended it; there is nothing to hold up.
+            tracing::warn!("the session lock finished without being granted; tearing it down");
+            self.release_lock();
+            return false;
+        }
+        let keys = bridge.take_lock_keys();
+        let needs_paint = bridge.lock_needs_paint();
+        if keys.is_empty() && !needs_paint {
+            return false;
+        }
+        let mut request = None;
+        for key in keys {
+            match key {
+                LockKey::Text(character) => self.lock_screen.typed(character),
+                LockKey::Backspace => self.lock_screen.backspace(),
+                LockKey::Escape => self.lock_screen.clear(),
+                LockKey::Enter => request = self.lock_screen.submit().or(request),
+            }
+        }
+        if let Some(crate::surface::lock_screen::LockRequest::Authenticate(password)) = request {
+            self.spawn_unlock(password);
+        }
+        true
+    }
+
+    /// Ask `lege-unlock` whether this password is the person's.
+    ///
+    /// A separate process on purpose: PAM wants to be linked into something small and
+    /// short-lived, and the shell is neither. The password goes over its stdin — never an
+    /// argument, which would put it in `/proc/<pid>/cmdline` for every process on the machine to
+    /// read — and the helper answers with its exit status alone.
+    fn spawn_unlock(&self, password: String) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result = crate::unlock::authenticate(password).await;
+            let _ = tx.send(DataUpdate::Unlock(result));
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// The output's logical width, taken from the Home surface — which the compositor sizes to
+    /// the whole output, so it is the one thing in this process that knows how wide the screen is.
+    /// The bar needs it because the compositor no longer forces a zone-holding surface to the
+    /// output width: whatever this surface asks for is what it gets.
+    fn output_width(&self) -> i32 {
+        self.home.as_ref().map_or(800, |home| {
+            home.window
+                .inner_size()
+                .to_logical::<f64>(home.window.scale_factor())
+                .width as i32
+        })
+    }
+
     /// Create the bottom bar once the compositor connection is up, and drop it while a window is
     /// fullscreen (`Layer::ShellOverlay` would cover the video). Both claims are declared before
     /// the first commit maps the surface, so the compositor never sees it as an app window.
@@ -2018,7 +2257,7 @@ impl ShellApp {
         let fullscreen = toplevels.iter().any(|t| t.fullscreen && !t.shelved);
         if fullscreen {
             self.bar = None;
-            self.bar_row_shown = false;
+            self.bar_wanted = (0, 0);
             return;
         }
         if self.bar.is_some() {
@@ -2027,13 +2266,19 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        let width = self.home.as_ref().map_or(800.0, |home| {
-            home.window
-                .inner_size()
-                .to_logical::<f64>(home.window.scale_factor())
-                .width
-        });
-        let height = f64::from(crate::surface::bar_screen::BAR_HEIGHT);
+        // The bar opens at the size it wants rather than at the output's width and then shrinking:
+        // a full-width band for one frame is exactly the thing the chips exist to avoid.
+        let activated = toplevels
+            .iter()
+            .find(|t| t.activated)
+            .map(|t| (t.window_id, t.maximized));
+        let wanted = crate::surface::bar_screen::wanted_size(
+            &crate::taskbar::entries(toplevels),
+            activated,
+            false,
+            self.output_width(),
+        );
+        let (width, height) = (f64::from(wanted.0), f64::from(wanted.1));
         let window = match event_loop.create_window(
             Window::default_attributes()
                 .with_title("Bar")
@@ -2060,7 +2305,7 @@ impl ShellApp {
             Ok(hosted) => {
                 hosted.request_redraw();
                 self.bar = Some(hosted);
-                self.bar_row_shown = false;
+                self.bar_wanted = wanted;
             }
             Err(error) => tracing::warn!(%error, "presenting the bar"),
         }
@@ -2116,26 +2361,23 @@ impl ShellApp {
         };
         bar.input.end_frame();
         bar.present();
-        // The row wants room above the bar: ask for a taller surface while it is open. The
-        // exclusive zone is unchanged, so nothing reflows (the compositor treats the zone as a
-        // floor on the surface's thickness).
-        let row_shown = self.bar_screen.row_open();
-        if row_shown != self.bar_row_shown {
-            self.bar_row_shown = row_shown;
-            let height = crate::surface::bar_screen::BAR_HEIGHT
-                + if row_shown {
-                    crate::surface::bar_screen::ROW_BAND
-                } else {
-                    0
-                };
-            let width = bar
-                .window
-                .inner_size()
-                .to_logical::<f64>(bar.window.scale_factor())
-                .width;
-            let _ = bar
-                .window
-                .request_inner_size(LogicalSize::new(width, f64::from(height)));
+        // The surface is only ever as big as the chips need, and grows to the whole width for a
+        // maximized window's controls or an open row. The exclusive zone is unchanged either way,
+        // so neither reflows anything (the compositor reserves BAR_HEIGHT along the whole bottom
+        // edge whatever this surface's own extent is).
+        let wanted = crate::surface::bar_screen::wanted_size(
+            &entries,
+            activated,
+            self.bar_screen.row_open(),
+            self.output_width(),
+        );
+        if wanted != self.bar_wanted {
+            self.bar_wanted = wanted;
+            if let Some(bar) = &self.bar {
+                let _ = bar
+                    .window
+                    .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
+            }
         }
         for action in actions {
             use crate::surface::bar_screen::BarAction;
@@ -2210,11 +2452,11 @@ impl ShellApp {
             &mut self.kernel,
         );
         ui.painter
-            .fill_rounded_rect(area, ui.px(8), crate::surface::design::SHELL);
+            .fill_rounded_rect(area, ui.px(8), crate::surface::design::shell_fill());
         ui.painter.stroke_rect(
             area,
             ui.scale.hairline(),
-            crate::surface::design::EDGE_STRONG,
+            crate::surface::design::edge_strong(),
         );
         let inner = area.inset(ui.px(12));
         let (title, body) = inner.split_top(ui.px(22));
@@ -2222,14 +2464,14 @@ impl ShellApp {
             title,
             &row.app,
             crate::surface::design::measurement_style(&ui),
-            crate::surface::design::TEXT,
+            crate::surface::design::text(),
             pixelkit_text::Align::Left,
         );
         ui.label_styled(
             body,
             &row.summary,
             crate::surface::design::state_style(&ui),
-            crate::surface::design::TEXT_DIM,
+            crate::surface::design::text_dim(),
             pixelkit_text::Align::Left,
         );
         drop(ui);
@@ -2426,6 +2668,46 @@ impl ShellApp {
                     {
                         return;
                     }
+                }
+                let _ = proxy_wake.send_event(Wake);
+            }
+        });
+    }
+
+    /// Listen for `Lifecycle1.LockRequested` and lock when it arrives.
+    ///
+    /// A raw match rule rather than a generated proxy signal: `lege-client`'s `LifecycleProxy`
+    /// declares the methods only, and the shell has no business growing its own copy of that
+    /// interface. The rule names the interface and the member, so nothing else on the bus can
+    /// lock this session by accident.
+    fn spawn_lock_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let rule = match zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .interface("org.legeos.Session.Lifecycle1")
+                .and_then(|builder| builder.member("LockRequested"))
+            {
+                Ok(builder) => builder.build(),
+                Err(error) => {
+                    tracing::warn!(%error, "building the LockRequested match rule");
+                    return;
+                }
+            };
+            let Ok(mut stream) =
+                zbus::MessageStream::for_match_rule(rule, &connection, Some(4)).await
+            else {
+                tracing::debug!("no session bus to watch for LockRequested");
+                return;
+            };
+            while stream.next().await.is_some() {
+                if tx.send(DataUpdate::LockRequested).is_err() {
+                    return;
                 }
                 let _ = proxy_wake.send_event(Wake);
             }
@@ -2632,7 +2914,7 @@ impl ShellApp {
                 let Some(path) = request.paths.first().cloned() else {
                     return;
                 };
-                let Some(terminal) = self.terminal_provider.clone() else {
+                let Some(terminal) = self.providers.get(&ProviderRole::Terminal).cloned() else {
                     self.field_screen.report(
                         "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
                         now_ms,
@@ -2911,7 +3193,7 @@ impl ShellApp {
     /// with nothing typed opens it on that index rather than pretending to narrow it.
     fn search_everywhere(&mut self, query: Option<String>) {
         let now_ms = self.started.elapsed().as_millis() as u64;
-        let Some(provider) = self.file_search_provider.clone() else {
+        let Some(provider) = self.providers.get(&ProviderRole::FileSearch).cloned() else {
             self.field_screen.report(
                 "No search application is selected — choose one in Settings ▸ Providers".to_owned(),
                 now_ms,
@@ -3024,6 +3306,47 @@ impl ShellApp {
                 Err(error) => tracing::warn!(%error, "Launcher1 unavailable"),
             }
         });
+    }
+}
+
+/// What a project row asks of `Projects1`. Two requests, never one with a mode flag: the whole
+/// point is that entering a project and restoring its workspace are different things.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectRequest {
+    /// `Projects1.SetCurrent`: select the context. Launches nothing.
+    SetCurrent,
+    /// `Projects1.Open`: launch the applications the project remembers.
+    Open,
+}
+
+/// Which `Projects1` request a project row makes, if it makes one at all.
+///
+/// Pure, and the reason this is a function rather than two arms inside a spawn: mapping Enter
+/// onto `Open` would open eight windows at somebody who asked to change context, and that is a
+/// mistake nothing downstream can catch.
+fn project_request(id: &str) -> Option<ProjectRequest> {
+    match id {
+        "project.enter" => Some(ProjectRequest::SetCurrent),
+        "project.restore" => Some(ProjectRequest::Open),
+        _ => None,
+    }
+}
+
+/// Which provider role a project tool row resolves, and what that program is handed.
+///
+/// Pure, and separate from the launch, because the argument form is the part that differs per
+/// tool and the part a test can check: a terminal takes `--directory <root>` (kitty's spelling,
+/// the one the drop-down chord already uses), and a file manager and an editor both take the
+/// path itself, which is what every one of them has accepted for thirty years.
+fn tool_launch(id: &str, root: &str) -> Option<(ProviderRole, Vec<String>)> {
+    match id {
+        "project.open-terminal" => Some((
+            ProviderRole::Terminal,
+            vec!["--directory".to_owned(), root.to_owned()],
+        )),
+        "project.open-files" => Some((ProviderRole::FileManager, vec![root.to_owned()])),
+        "project.open-editor" => Some((ProviderRole::CodeEditor, vec![root.to_owned()])),
+        _ => None,
     }
 }
 
@@ -3355,6 +3678,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.spawn_field_watch();
         self.spawn_notifications_watch();
         self.spawn_providers_watch();
+        self.spawn_lock_watch();
         if let Some(home) = &self.home {
             home.request_redraw();
         }
@@ -3482,6 +3806,12 @@ impl ApplicationHandler<Wake> for ShellApp {
         {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
             self.bridge = None;
+        }
+        // The lock screen has no winit window, so nothing else would ever redraw it: its keys
+        // arrive on the bridge's own queue and its frames are committed straight to the
+        // compositor.
+        if self.drain_lock_keys() {
+            self.paint_lock();
         }
         // Answered here rather than on the next paint: the terminal chord is a keypress a person
         // is waiting on, and Home is only redrawn when something asks it to be.
@@ -3716,5 +4046,72 @@ mod tests {
     fn information_row_clock_has_stable_local_date_and_time_formatting() {
         assert_eq!(format_clock_fields(1, 24, 7, 8, 5), "MON 24 AUG 08:05");
         assert_eq!(format_clock_fields(99, 1, 99, 0, 0), "--- 01 --- 00:00");
+    }
+
+    /// A tool row resolves a provider role, never a copied path, and hands that program the
+    /// project's real root in the form it takes. Getting the argument wrong opens the editor on
+    /// the person's home directory, which looks like it worked.
+    #[test]
+    fn each_project_tool_resolves_its_role_and_opens_at_the_root() {
+        assert_eq!(
+            tool_launch("project.open-terminal", "/home/dk/src/legeos"),
+            Some((
+                ProviderRole::Terminal,
+                vec!["--directory".to_owned(), "/home/dk/src/legeos".to_owned()]
+            ))
+        );
+        assert_eq!(
+            tool_launch("project.open-files", "/home/dk/src/legeos"),
+            Some((
+                ProviderRole::FileManager,
+                vec!["/home/dk/src/legeos".to_owned()]
+            ))
+        );
+        assert_eq!(
+            tool_launch("project.open-editor", "/home/dk/src/legeos"),
+            Some((
+                ProviderRole::CodeEditor,
+                vec!["/home/dk/src/legeos".to_owned()]
+            ))
+        );
+        // Entering and restoring are not tools: they are requests to the service, and routing
+        // one of them through a launcher would start an application nobody asked for.
+        assert_eq!(tool_launch("project.enter", "/x"), None);
+        assert_eq!(tool_launch("project.restore", "/x"), None);
+        assert_eq!(tool_launch("window.close", "/x"), None);
+    }
+
+    /// The separation the whole deliverable exists for: Enter selects the context and launches
+    /// nothing, Restore launches what the project remembers. Mapping one onto the other opens
+    /// eight windows at somebody who asked to change what they are working on.
+    #[test]
+    fn set_current_launches_nothing_and_open_launches_only_remembered_apps() {
+        assert_eq!(
+            project_request("project.enter"),
+            Some(ProjectRequest::SetCurrent),
+            "Enter must reach SetCurrent, which the service documents as launching nothing"
+        );
+        assert_eq!(
+            project_request("project.restore"),
+            Some(ProjectRequest::Open),
+            "Restore must reach Open, the only request that launches remembered applications"
+        );
+        // A tool row is not a project request: routing one through Projects1 would either change
+        // the current project as a side effect of opening a terminal, or restore a workspace.
+        for tool in [
+            "project.open-terminal",
+            "project.open-files",
+            "project.open-editor",
+        ] {
+            assert_eq!(project_request(tool), None, "{tool} reached Projects1");
+            assert!(tool_launch(tool, "/x").is_some(), "{tool} launches nothing");
+        }
+        // And the two are disjoint, so no row can be both.
+        for row in ["project.enter", "project.restore"] {
+            assert!(
+                tool_launch(row, "/x").is_none(),
+                "{row} also launches a tool"
+            );
+        }
     }
 }

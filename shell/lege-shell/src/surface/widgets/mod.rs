@@ -322,12 +322,12 @@ pub fn draw_region_strip(
         // control went — but it is visibly inert and does not respond to hover or to a click.
         let refused = refused.iter().any(|id| id == declaration.id);
         let (fill, ink) = match (refused, armed, declaration.confirm) {
-            (true, _, _) => (design::SHELL_LOW, design::TEXT_DIM),
-            (false, true, _) => (design::DANGER, 0x00ff_ffff),
-            (false, false, true) if hovered => (design::DANGER_SOFT, design::DANGER),
-            (false, false, _) if hovered => (design::ACCENT_SOFT, design::ACCENT),
-            (false, false, true) => (design::SHELL_LOW, design::DANGER),
-            (false, false, false) => (design::SHELL_LOW, design::TEXT),
+            (true, _, _) => (design::shell_low(), design::text_dim()),
+            (false, true, _) => (design::danger(), design::strong_ink()),
+            (false, false, true) if hovered => (design::danger_soft(), design::danger()),
+            (false, false, _) if hovered => (design::accent_soft(), design::accent()),
+            (false, false, true) => (design::shell_low(), design::danger()),
+            (false, false, false) => (design::shell_low(), design::text()),
         };
         ui.painter
             .fill_rounded_rect(rect, ui.px(design::CHIP_RADIUS), fill);
@@ -364,12 +364,12 @@ fn draw_snapshot(
         return;
     };
     match snapshot {
-        None => ui.label(headline_band, "…", design::TEXT_FAINT, Align::Left),
+        None => ui.label(headline_band, "…", design::text_faint(), Align::Left),
         Some(snapshot) => {
             let colour = if snapshot.available {
-                design::TEXT
+                design::text()
             } else {
-                design::TEXT_DIM
+                design::text_dim()
             };
             ui.label_styled(
                 headline_band,
@@ -393,7 +393,7 @@ fn draw_snapshot(
                         band,
                         line,
                         design::state_style(ui),
-                        design::TEXT_DIM,
+                        design::text_dim(),
                         Align::Left,
                     );
                 }
