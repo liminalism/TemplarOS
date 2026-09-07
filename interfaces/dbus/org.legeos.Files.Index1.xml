@@ -44,7 +44,8 @@
     </method>
 
     <!-- A sealed LEGEIDX1 bulk snapshot: a consistent, streamed picture of selected roots,
-         consumable without SQLite. -->
+         consumable without SQLite. The manifest's `snapshot_seq` is the change-log position the
+         snapshot is consistent with: pass it to ChangesSince to continue without a gap. -->
     <method name="OpenSnapshot">
       <arg name="request_json" type="s" direction="in"/>
       <arg name="snapshot" type="h" direction="out"/>

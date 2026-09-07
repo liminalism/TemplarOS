@@ -10,15 +10,15 @@
      This lives in lege-hostd and not in the per-user lege-filed because BTRFS_IOC_SEND requires
      CAP_SYS_ADMIN, and a per-user daemon does not get capabilities (ADR-0001, ADR-0003).
 
-     UNADOPTED. Nothing calls this by default; it exists to be measured (docs/measurements/).
-     Handing a written stream to the per-user daemon is an open question — see the DeltaStream
-     doc in services/lege-hostd/src/index_checkpoint.rs.
+     lege-filed calls DeltaOpen when a downtime repair finds a btrfs root and a checkpoint it
+     still holds; anything else falls back to a recursive reconcile. See
+     services/lege-filed/src/delta_catchup.rs.
 
      Every argument is JSON on purpose (interfaces/README.md): a filter or a field can be added
      later without a signature change, which is what the frozen-signature rule requires.
 
-     polkit: org.legeos.host.index-checkpoint on Create/Delta/Discard. List is an unauthenticated
-     read, like Storage1's Usage. -->
+     polkit: org.legeos.host.index-checkpoint on Create/Delta/DeltaOpen/Discard. List is an
+     unauthenticated read, like Storage1's Usage. -->
 <node>
   <interface name="org.legeos.Host.IndexCheckpoint1">
     <!-- CheckpointRequest JSON in ({"subvolume": "/home"}; empty means the configured default),
@@ -41,6 +41,21 @@
          addresses nothing that exists. -->
     <method name="Delta">
       <arg name="request_json" type="s" direction="in"/>
+      <arg name="delta_json" type="s" direction="out"/>
+    </method>
+    <!-- The same delta, handed over as a descriptor instead of a path. Same DeltaRequest JSON in;
+         out is the open stream plus the DeltaStream JSON that describes it (its `path` is the
+         name the file *had*).
+
+         hostd writes the stream, opens it, and unlinks it before returning, so the bytes reach
+         exactly one caller and no path survives the call for anyone else to read. A metadata
+         delta names every path under @home, which is why the written file is 0600 root-owned and
+         why Delta's path form is not something an unprivileged consumer can use. This is the
+         pattern org.legeos.Files.Index1.OpenSnapshot already uses on the session bus; only the
+         bus is new. -->
+    <method name="DeltaOpen">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
       <arg name="delta_json" type="s" direction="out"/>
     </method>
     <!-- Drop a checkpoint once its delta has been applied. -->
