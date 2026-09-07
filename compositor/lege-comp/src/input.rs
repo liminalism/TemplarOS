@@ -23,7 +23,7 @@ use smithay::{
         Seat, SeatHandler, SeatState,
         keyboard::FilterResult,
         pointer::{
-            AxisFrame, ButtonEvent, CursorImageStatus, Focus, GestureHoldBeginEvent,
+            AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
             GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
             GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
             GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent,
@@ -56,7 +56,15 @@ impl<B: Backend + 'static> SeatHandler for LegeCompState<B> {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
-        self.cursor_status = image;
+        // While the compositor is showing a resize cursor of its own, a client's choice is
+        // remembered rather than displayed: it is what the pointer goes back to on the way out,
+        // and letting it win here would flicker the perimeter cursor away on every frame a
+        // client re-sets its cursor.
+        if let Some(saved) = self.cursor_before_perimeter.as_mut() {
+            *saved = image;
+        } else {
+            self.cursor_status = image;
+        }
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
@@ -395,6 +403,11 @@ fn start_gesture<B: Backend + 'static>(
         }
         _ => Vec::new(),
     };
+    // Latched for the whole gesture: the pointer routinely leaves the perimeter mid-resize (that
+    // is what growing a window *is*), and the shape must not go with it.
+    if let Gesture::Resize { edges } = gesture {
+        state.show_compositor_cursor(edges.cursor());
+    }
     let grab = WindowGestureGrab {
         start_data,
         window_id,
@@ -560,6 +573,9 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
                     }
                 }
             }
+            // Whatever the gesture was, the pointer goes back to the client's cursor; the next
+            // motion event re-derives the perimeter shape if it is still over one.
+            data.show_compositor_cursor(None);
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
@@ -833,6 +849,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             },
         );
         pointer.frame(self);
+        self.update_perimeter_cursor(to_lege_point(position));
     }
 
     /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
@@ -882,6 +899,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             },
         );
         pointer.frame(self);
+        self.update_perimeter_cursor(to_lege_point(pos));
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) {
@@ -962,8 +980,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
     /// takes its zone before the one beneath sees the press — the invisible border belongs to
     /// the window on top.
     fn press_target_at(&self, pos: LegePoint) -> PressTarget {
-        let candidates: Vec<PressCandidate> = self
-            .window_service
+        press_target_at(&self.press_candidates(), pos)
+    }
+
+    /// Every visible window as the hit-test sees it, top first. Shared by the press path and the
+    /// motion path, so what the cursor promises and what a press then does cannot disagree.
+    fn press_candidates(&self) -> Vec<PressCandidate> {
+        self.window_service
             .stacking_order()
             .into_iter()
             .filter(|window_id| self.window_service.is_visible(*window_id))
@@ -984,8 +1007,57 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     },
                 })
             })
-            .collect();
-        press_target_at(&candidates, pos)
+            .collect()
+    }
+
+    /// Show the resize a press here would start, and put the client's cursor back on the way out.
+    ///
+    /// Called from both motion paths (relative on udev, absolute on winit) rather than one, and
+    /// never while a gesture is running — `start_gesture` has already latched the shape for the
+    /// duration of the drag, and the pointer leaving the perimeter mid-resize must not take it
+    /// away. Locked sessions show nothing of the windows behind the lock surface, cursor included.
+    fn update_perimeter_cursor(&mut self, pos: LegePoint) {
+        if self.session_lock.locked || self.pointer_gesture_active() {
+            return;
+        }
+        let shape = match press_target_at(&self.press_candidates(), pos) {
+            PressTarget::Affordance(_, Affordance::Edge(edges)) => edges.cursor(),
+            _ => None,
+        };
+        self.show_compositor_cursor(shape);
+    }
+
+    /// Show `shape` (a `cursor-spec` name) as the compositor's own cursor, or `None` to give the
+    /// pointer back to whatever the client had. Idempotent: showing the shape already on screen
+    /// changes nothing, so this is safe to call on every motion event.
+    fn show_compositor_cursor(&mut self, shape: Option<&'static str>) {
+        match shape {
+            Some(name) => {
+                // `lege_window` names the shape the way `cursor-spec` does, so the enum comes
+                // back out of the name rather than the geometry crate depending on `cursor-icon`
+                // (`xtask deps-check` keeps it free of everything but geometry).
+                let icon = name.parse().unwrap_or(CursorIcon::Default);
+                let named = CursorImageStatus::Named(icon);
+                if self.cursor_before_perimeter.is_none() {
+                    self.cursor_before_perimeter =
+                        Some(std::mem::replace(&mut self.cursor_status, named));
+                } else {
+                    self.cursor_status = named;
+                }
+            }
+            None => {
+                if let Some(saved) = self.cursor_before_perimeter.take() {
+                    self.cursor_status = saved;
+                }
+            }
+        }
+    }
+
+    /// Whether a compositor-run pointer gesture (a move or a resize) is in progress.
+    fn pointer_gesture_active(&self) -> bool {
+        self.seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed())
     }
 
     fn handle_press_for_focus_or_drag(
@@ -1218,6 +1290,62 @@ mod tests {
             maximized: false,
             strip: Some(lege_window::tag_strip(geometry)),
         }
+    }
+
+    /// Eight points around one window's perimeter, two per side, and the four cursor names they
+    /// promise. What the pointer shows and what a press then starts come from the same
+    /// hit-test, so they cannot disagree.
+    #[test]
+    fn the_perimeter_promises_the_resize_a_press_would_start() {
+        let window = framed(1, Rect::new(100, 100, 400, 300));
+        let frame = window.geometry;
+        let candidates = [window];
+        let shape = |x, y| match press_target_at(&candidates, at(x, y)) {
+            PressTarget::Affordance(_, Affordance::Edge(edges)) => edges.cursor(),
+            _ => None,
+        };
+        let (mid_x, mid_y) = (frame.x + frame.width / 2, frame.y + frame.height / 2);
+
+        assert_eq!(
+            shape(frame.x - 2, mid_y - 1),
+            Some("nwse-resize"),
+            "left, upper"
+        );
+        assert_eq!(
+            shape(frame.x - 2, mid_y),
+            Some("nesw-resize"),
+            "left, lower"
+        );
+        assert_eq!(
+            shape(frame.right() + 1, mid_y - 1),
+            Some("nesw-resize"),
+            "right, upper"
+        );
+        assert_eq!(
+            shape(frame.right() + 1, mid_y),
+            Some("nwse-resize"),
+            "right, lower"
+        );
+        assert_eq!(
+            shape(mid_x - 1, frame.y - 2),
+            Some("nwse-resize"),
+            "top, left"
+        );
+        assert_eq!(shape(mid_x, frame.y - 2), Some("nesw-resize"), "top, right");
+        assert_eq!(
+            shape(mid_x - 1, frame.bottom() + 1),
+            Some("nesw-resize"),
+            "bottom, left"
+        );
+        assert_eq!(
+            shape(mid_x, frame.bottom() + 1),
+            Some("nwse-resize"),
+            "bottom, right"
+        );
+
+        // Inside the window and far outside it are the client's and nobody's: no promise either way.
+        assert_eq!(shape(mid_x, mid_y), None);
+        assert_eq!(shape(frame.x - 40, mid_y), None);
     }
 
     /// The fault the user reported as "the windows fight for focus": pressing a window's title

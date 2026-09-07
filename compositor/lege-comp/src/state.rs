@@ -140,6 +140,16 @@ pub struct LegeCompState<B: Backend + 'static> {
     pub seat: Seat<Self>,
     pub seat_name: String,
     pub cursor_status: CursorImageStatus,
+    /// The cursor the client owned before the pointer entered a window's resize perimeter (or
+    /// before a resize gesture began), put back when it leaves. `Some` is exactly "the compositor
+    /// is currently showing a cursor of its own"; while it is, `SeatHandler::cursor_image` writes
+    /// here instead of over the live status, so a client setting its cursor under the perimeter
+    /// is not lost and is not shown either.
+    ///
+    /// ponytail: one saved status for the whole seat, not one per surface. There is one pointer,
+    /// so the only way to need more is a second seat — add a map keyed by seat if that ever
+    /// happens.
+    pub cursor_before_perimeter: Option<CursorImageStatus>,
     /// The bare-Super gesture: Super-down reveals Home immediately, holding keeps it up as a
     /// momentary surface, a short tap latches the toggle, and a chord key cancels the gesture.
     pub super_tap: crate::keybindings::SuperTapTracker,
@@ -288,6 +298,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             seat,
             seat_name: seat_name.to_owned(),
             cursor_status: CursorImageStatus::default_named(),
+            cursor_before_perimeter: None,
             super_tap: crate::keybindings::SuperTapTracker::default(),
             pending_super_reveal: None,
 
