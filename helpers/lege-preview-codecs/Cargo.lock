@@ -453,6 +453,7 @@ dependencies = [
 name = "jp2lam"
 version = "0.3.0"
 dependencies = [
+ "jpxl-perceptual",
  "memmap2",
  "rayon",
  "tempfile",
@@ -492,6 +493,10 @@ dependencies = [
  "jpxl-bitstream",
  "jpxl-core",
 ]
+
+[[package]]
+name = "jpxl-perceptual"
+version = "0.3.0"
 
 [[package]]
 name = "lebe"
