@@ -194,4 +194,20 @@ mod tests {
         assert!(protocol.contains("let client = crate::space_sync::client_area(state, window_id)"));
         assert!(protocol.contains("pending.size = Some((client.width, client.height).into())"));
     }
+
+    /// The other half of the bar-flicker fix: `WindowService::on_outputs_changed` hands back
+    /// client windows only, so the one topology entry point must re-place shell surfaces itself
+    /// or a bar stops following its edge across a hotplug.
+    #[test]
+    fn a_topology_change_re_places_every_shell_surface_claim() {
+        let backend = include_str!("backend/mod.rs");
+        assert!(
+            backend.contains("let repaired = state.window_service.on_outputs_changed(outputs)")
+        );
+        assert!(backend.contains("crate::protocols_shell::reapply_surface_claims(state)"));
+        // One path, not two: changing a zone goes through `recompute_outputs` like every other
+        // topology change rather than re-placing its own surface behind its back.
+        let protocol = include_str!("protocols_shell.rs");
+        assert!(protocol.contains("crate::backend::recompute_outputs(state);\n}"));
+    }
 }

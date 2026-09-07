@@ -52,6 +52,10 @@ pub fn recompute_outputs<B: Backend + 'static>(state: &mut LegeCompState<B>) {
     for (window_id, rect) in &repaired {
         crate::space_sync::apply_resized_geometry(state, *window_id, *rect, false);
     }
+    // What repair was wrongly standing in for on a hotplug: `on_outputs_changed` returns client
+    // windows only, so a shell surface follows its edge by being re-placed, not by being nudged
+    // until its tag strip is reachable — which for a surface holding its own zone it never is.
+    crate::protocols_shell::reapply_surface_claims(state);
     crate::space_sync::sync_after_change(state);
 }
 

@@ -303,8 +303,9 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
             ),
         );
     }
+    // `recompute_outputs` re-places every claiming surface, this one included — a zone changing
+    // and a monitor moving are the same event, so they must not have two different repair paths.
     crate::backend::recompute_outputs(state);
-    apply_surface_claims_if_mapped(state, surface);
 }
 
 /// Apply the trusted shell's claims once the corresponding xdg-toplevel exists in
@@ -361,29 +362,72 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     };
     let exclusive = exclusive_claim.map(|(_, claim)| claim);
     let geometry = shell_surface_placement(layer, exclusive, &output, requested);
+    // Placement is idempotent, and applying an unchanged one has to be too. A shell surface
+    // commits on every frame it draws, and `xdg_shell::adopt_client_size` routes any commit whose
+    // size differs from where the surface sits straight back here — including a size the
+    // placement will never grant, because it floors the thickness at the zone and clamps the
+    // extent to the output. Re-configuring a client with a size it has already refused, once per
+    // frame, is an infinite round trip; so is re-configuring every claiming surface on every
+    // topology change (`reapply_surface_claims`) when none of them moved.
+    let moved = state
+        .window_service
+        .window(window_id)
+        .is_none_or(|record| record.geometry != geometry);
     state.window_service.set_geometry(window_id, geometry);
 
-    if let Some(window) = state.windows.element_of(window_id)
-        && let Some(toplevel) = window.toplevel()
-    {
-        let client = crate::space_sync::client_area(state, window_id);
-        toplevel.with_pending_state(|pending| {
-            pending.size = Some((client.width, client.height).into());
-        });
-        if toplevel.is_initial_configure_sent() {
-            toplevel.send_configure();
+    if moved {
+        if let Some(window) = state.windows.element_of(window_id)
+            && let Some(toplevel) = window.toplevel()
+        {
+            let client = crate::space_sync::client_area(state, window_id);
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some((client.width, client.height).into());
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
         }
+        tracing::info!(
+            ?window_id,
+            ?layer,
+            ?geometry,
+            output = %output.name,
+            "trusted-shell surface claim applied"
+        );
+        crate::space_sync::sync_after_change(state);
     }
-    tracing::info!(
-        ?window_id,
-        ?layer,
-        ?geometry,
-        output = %output.name,
-        "trusted-shell surface claim applied"
-    );
-    crate::space_sync::sync_after_change(state);
+    // Outside the guard: a shell that restarts and maps its Home Surface at exactly the geometry
+    // it will be placed at still has to be given the keyboard.
     if layer == Layer::HomeSurface {
         crate::input::focus_home_if_needed(state, surface);
+    }
+}
+
+/// Re-place every surface with a live layer or exclusive-zone claim against the topology as it
+/// now stands. Called from `backend::recompute_outputs`, which is the one entry point for a
+/// topology change (COMPOSITOR.md): an output resized, unplugged or rescaled moves where a bar's
+/// edge *is*, and a shell surface's position comes from `shell_surface_placement` alone —
+/// `WindowService::on_outputs_changed` deliberately does not repair one, because a surface
+/// holding a zone can never satisfy the usable area its own zone creates.
+///
+/// No recursion: nothing on the `apply_surface_claims` path calls `recompute_outputs`.
+pub fn reapply_surface_claims<B: Backend + 'static>(state: &mut LegeCompState<B>) {
+    let claimed: HashSet<ObjectId> = state
+        .shell_protocol
+        .layer_surfaces
+        .keys()
+        .chain(state.shell_protocol.exclusive_zones.keys())
+        .cloned()
+        .collect();
+    for object_id in claimed {
+        let surface = state
+            .windows
+            .window_id_for(&object_id)
+            .and_then(|window_id| state.windows.surface_for(window_id))
+            .cloned();
+        if let Some(surface) = surface {
+            apply_surface_claims_if_mapped(state, &surface);
+        }
     }
 }
 
