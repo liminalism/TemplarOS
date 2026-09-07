@@ -1,0 +1,69 @@
+{
+  "fixture_entries": 100000,
+  "initial_index": {
+    "entries": 100001,
+    "elapsed_ms": 1145.474675,
+    "entries_per_sec": 87300.92614225627,
+    "detail": "complete=true"
+  },
+  "initial_index_2m": {
+    "entries": 2000001,
+    "elapsed_ms": 31884.308582999998,
+    "entries_per_sec": 62726.81105170196,
+    "detail": "complete=true"
+  },
+  "downtime_reconcile": {
+    "entries": 4000,
+    "elapsed_ms": 1941.7553910000001,
+    "entries_per_sec": 2059.9917057214957,
+    "detail": "walked 100001 entries, complete=true"
+  },
+  "watch_arm": {
+    "entries": 20001,
+    "elapsed_ms": 197.32211999999998,
+    "entries_per_sec": 101362.17875623879
+  },
+  "watch_arm_refused": 0,
+  "touch": {
+    "entries": 10000,
+    "elapsed_ms": 1142.739615,
+    "entries_per_sec": 8750.899915200716,
+    "detail": "10000 mutations applied"
+  },
+  "rename": {
+    "entries": 10000,
+    "elapsed_ms": 995.9574660000001,
+    "entries_per_sec": 10040.589424127074,
+    "detail": "10251 mutations applied"
+  },
+  "delete": {
+    "entries": 10000,
+    "elapsed_ms": 829.703526,
+    "entries_per_sec": 12052.497894290014,
+    "detail": "10251 mutations applied"
+  },
+  "build_burst": {
+    "entries": 10000,
+    "elapsed_ms": 1220.3840340000002,
+    "entries_per_sec": 8194.141943354856,
+    "detail": "20003 mutations applied"
+  },
+  "clean_burst": {
+    "entries": 10000,
+    "elapsed_ms": 814.084504,
+    "entries_per_sec": 12283.737070126077,
+    "detail": "10002 mutations applied"
+  },
+  "search": {
+    "samples": 200,
+    "p50_ms": 0.24963299999999997,
+    "p95_ms": 0.299888,
+    "max_ms": 0.490215
+  },
+  "snapshot": {
+    "payload_bytes": 12227089,
+    "entry_count": 90152,
+    "elapsed_ms": 102.77201099999999
+  },
+  "db_bytes": 226191104
+}
