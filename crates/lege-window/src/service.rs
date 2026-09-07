@@ -322,21 +322,36 @@ impl<I: IdentityCache> WindowService<I> {
         }
     }
 
-    /// Outputs changed (hotplug, scale, resume). Every window is re-validated except the one
-    /// currently being dragged or resized: repairing it here would fight the user's pointer and
-    /// be overwritten by the very next `update_drag`/`update_resize` anyway, so that invariant is
-    /// instead enforced once, in `finish_drag`/`finish_resize`. The returned list is what must be
-    /// re-configured on the clients.
+    /// Outputs changed (hotplug, scale, resume). Every *client* window is re-validated except the
+    /// one currently being dragged or resized: repairing it here would fight the user's pointer
+    /// and be overwritten by the very next `update_drag`/`update_resize` anyway, so that
+    /// invariant is instead enforced once, in `finish_drag`/`finish_resize`. The returned list is
+    /// what must be re-configured on the clients.
+    ///
+    /// Shell surfaces are never repaired. Repair measures a window's tag strip against
+    /// [`Output::usable`], and a surface holding an exclusive zone is the thing that *creates*
+    /// that usable area: a bar on `Exclusive{Bottom, 48}` has its own strip below `usable()` by
+    /// construction, is judged unrecoverable, and is pushed a further zone-height off its edge —
+    /// where the next `apply_surface_claims` puts it straight back. Two writers, alternating,
+    /// which is exactly the flicker. A shell surface's placement is
+    /// [`geometry::shell_surface_placement`]'s job and the compositor re-runs it on every
+    /// topology change (`backend::recompute_outputs`); recovery is a client-window property.
     pub fn on_outputs_changed(&mut self, outputs: Vec<Output>) -> Vec<(WindowId, Rect)> {
         self.outputs = outputs;
         let dragging = self.drag.map(|drag| drag.window_id);
         let resizing = self.resize.map(|resize| resize.window_id);
 
+        // Ids first: `is_client_window` reads the layer stack, which `values_mut` would have
+        // borrowed away. `windows` is a `HashMap`, so this changes no ordering guarantee.
+        let ids: Vec<WindowId> = self.windows.keys().copied().collect();
         let mut changed = Vec::new();
-        for window in self.windows.values_mut() {
-            if Some(window.id) == dragging || Some(window.id) == resizing {
+        for id in ids {
+            if Some(id) == dragging || Some(id) == resizing || !self.is_client_window(id) {
                 continue;
             }
+            let Some(window) = self.windows.get_mut(&id) else {
+                continue;
+            };
             let repaired = if window.maximized {
                 // A maximized window is not floating: it fills whichever output is now closest
                 // to where it was, rather than being nudged until its band is visible.
@@ -346,7 +361,7 @@ impl<I: IdentityCache> WindowService<I> {
             };
             if repaired != window.geometry {
                 window.geometry = repaired;
-                changed.push((window.id, repaired));
+                changed.push((id, repaired));
             }
         }
         changed
@@ -1450,6 +1465,78 @@ mod tests {
         assert!(!service.begin_resize(id, Point { x: 0, y: 0 }, crate::ResizeEdges::BOTTOM_RIGHT));
     }
 
+    /// The output every bar test below runs on: 1920×1080 with `Exclusive{Bottom, 48}` claimed,
+    /// so `usable()` ends at 1032 and every window's tag strip below that line is "unreachable".
+    fn output_with_a_bottom_bar(size: i32) -> Output {
+        let screen = outputs()[0].logical;
+        Output::new("eDP-1", screen, 1000).with_work_area(crate::geometry::work_area_for(
+            screen,
+            &[crate::geometry::Exclusive {
+                edge: crate::geometry::Edge::Bottom,
+                size,
+            }],
+        ))
+    }
+
+    /// A shell surface mapped by the trusted shell and placed exactly where
+    /// `shell_surface_placement` would put it — no repair in between.
+    fn shell_surface(
+        service: &mut WindowService<FakeCache>,
+        layer: Layer,
+        geometry: Rect,
+    ) -> WindowId {
+        let id = service.on_toplevel_mapped(
+            2,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            String::new(),
+            geometry,
+        );
+        service
+            .set_layer(id, layer, ClientKind::TrustedShell)
+            .expect("the trusted shell may claim its own layer");
+        service.set_geometry(id, geometry);
+        id
+    }
+
+    /// The Home Surface fills its output, so its tag strip sits under any bottom bar and
+    /// `is_recoverable` is false for it by construction. Repairing it anyway lifted Home by the
+    /// bar's height, which `apply_surface_claims` then undid — the flicker. Recovery is a
+    /// client-window property; a shell surface is placed, never repaired.
+    #[test]
+    fn a_bottom_zone_does_not_repair_the_home_surface() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let full = outputs()[0].logical;
+        let home = shell_surface(&mut service, Layer::HomeSurface, full);
+
+        let changed = service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
+
+        assert!(
+            !changed.iter().any(|(id, _)| *id == home),
+            "Home was repaired: {changed:?}"
+        );
+        assert_eq!(service.window(home).unwrap().geometry, full);
+    }
+
+    /// The bar holds the very zone that makes its own strip unreachable, so a repair pushed it a
+    /// second bar-height off its edge (1032 → 984) and the next claim put it back at 1032.
+    #[test]
+    fn a_bar_holding_its_own_zone_is_not_pushed_off_its_edge() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let placed = Rect::new(0, 1080 - 48, 1920, 48);
+        let bar = shell_surface(&mut service, Layer::ShellOverlay, placed);
+
+        // Twice: a repair loop is only visible once the second pass has something stale to chew.
+        for _ in 0..2 {
+            let changed = service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
+            assert!(
+                !changed.iter().any(|(id, _)| *id == bar),
+                "the bar was repaired: {changed:?}"
+            );
+        }
+        assert_eq!(service.window(bar).unwrap().geometry, placed);
+    }
+
     /// A maximized window draws no tags while a bar holds its output's bottom edge — its
     /// controls are the bar's — and draws them again the moment the zone is gone.
     #[test]
@@ -1458,16 +1545,7 @@ mod tests {
         assert!(service.has_frame(id));
         service.set_maximized(id, true);
         assert!(service.has_frame(id), "no zone: the tags stay");
-        let screen = outputs()[0].logical;
-        let with_bar =
-            Output::new("eDP-1", screen, 1000).with_work_area(crate::geometry::work_area_for(
-                screen,
-                &[crate::geometry::Exclusive {
-                    edge: crate::geometry::Edge::Bottom,
-                    size: 48,
-                }],
-            ));
-        service.on_outputs_changed(vec![with_bar]);
+        service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
         assert!(!service.has_frame(id), "the bar holds the controls");
         assert_eq!(
             service.client_area(id),
@@ -1948,6 +2026,30 @@ mod tests {
             prop_assert!(crate::is_recoverable(restored, service.outputs()));
             prop_assert_eq!(restored.width, window.width);
             prop_assert_eq!(restored.height, window.height);
+        }
+
+        /// Whatever the topology does, a topology change hands back client windows and only
+        /// client windows. A shell surface in that list is the bar flicker: its placement comes
+        /// from `shell_surface_placement`, and a repair fighting that placement is two writers
+        /// on one rectangle.
+        #[test]
+        fn a_topology_change_returns_client_windows_only(
+            first in crate::test_support::arb_topology(),
+            second in crate::test_support::arb_topology(),
+            window in arb_window(),
+        ) {
+            let mut service = WindowService::new(FakeCache::default(), first.clone());
+            service.on_toplevel_mapped(1, ClientKind::Application, WindowClaims::default(), String::new(), window);
+            let full = first.first().map_or(Rect::new(0, 0, 1920, 1080), |output| output.logical);
+            shell_surface(&mut service, Layer::HomeSurface, full);
+            shell_surface(&mut service, Layer::ShellOverlay, Rect::new(full.x, full.bottom() - 48, full.width, 48));
+            shell_surface(&mut service, Layer::Notification, Rect::new(full.x, full.y, 300, 80));
+
+            for topology in [second, first] {
+                for (id, _) in service.on_outputs_changed(topology) {
+                    prop_assert!(service.is_client_window(id), "{id:?} is a shell surface");
+                }
+            }
         }
 
         /// A reveal is a view: whatever sequence of reveals, shelves and activations happens, a
