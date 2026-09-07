@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use lege_types::unit;
 use std::sync::Arc;
-use zbus::fdo;
+use zbus::{fdo, object_server::SignalEmitter};
 
 /// What this interface needs from logind.
 #[async_trait]
@@ -232,16 +232,22 @@ impl LifecycleApi {
         self.logind.suspend().await.map_err(failed)
     }
 
-    /// Declared, not implemented. The compositor owns the lock screen (ADR-0010) and implements
-    /// `ext-session-lock-v1` fully, but nothing drives it: sessiond would have to become a
-    /// Wayland lock-manager client first. Refusing plainly is better than a method that returns
-    /// success and leaves the screen unlocked.
-    async fn lock(&self) -> fdo::Result<()> {
-        Err(fdo::Error::NotSupported(
-            "locking needs a lock-manager client for the compositor's ext-session-lock-v1; \
-             see interfaces/dbus/org.legeos.Session.Lifecycle1.xml"
-                .to_owned(),
-        ))
+    /// Ask for the session to be locked.
+    ///
+    /// This daemon does not lock the screen itself and is not going to: the lock screen is
+    /// compositor-owned (ADR-0010) and `ext-session-lock-v1` can only be driven by a Wayland
+    /// client, which sessiond deliberately is not. So this emits [`LockRequested`], and
+    /// `lege-shell` — which already holds the compositor's trusted-shell connection — is what
+    /// calls `lock()` on the protocol.
+    ///
+    /// Returning `Ok` here means the request went out, not that the screen is covered. That is
+    /// honest in a way the old `NotSupported` was not, and it is the only thing this process is
+    /// in a position to promise.
+    async fn lock(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<()> {
+        emitter
+            .lock_requested()
+            .await
+            .map_err(|error| fdo::Error::Failed(format!("emitting LockRequested: {error}")))
     }
 
     async fn can_reboot(&self) -> fdo::Result<String> {
@@ -255,6 +261,10 @@ impl LifecycleApi {
     async fn can_suspend(&self) -> fdo::Result<String> {
         self.logind.can(Action::Suspend).await.map_err(failed)
     }
+
+    /// Somebody asked for the session to be locked. The trusted shell drives the protocol.
+    #[zbus(signal)]
+    async fn lock_requested(signal_emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -390,12 +400,24 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn lock_refuses_plainly_instead_of_reporting_a_success_it_did_not_achieve() {
-        let error = api(Arc::new(FakeLogind::default()))
-            .lock()
-            .await
-            .unwrap_err();
-        assert!(matches!(error, fdo::Error::NotSupported(_)), "{error:?}");
+    /// `Lock` used to refuse: nothing drove the compositor's protocol, so reporting success
+    /// would have been a lie. It now emits `LockRequested` and the trusted shell does the
+    /// locking — which means the interface has a signal, and this checks the interface declares
+    /// it rather than calling `lock()`, whose signal emitter needs a real bus connection.
+    #[test]
+    fn lock_asks_for_a_lock_through_a_signal_rather_than_refusing() {
+        let xml = include_str!("../../../../interfaces/dbus/org.legeos.Session.Lifecycle1.xml");
+        assert!(
+            xml.contains(r#"<signal name="LockRequested"/>"#),
+            "the interface no longer declares the signal Lock emits"
+        );
+        assert!(
+            !xml.contains("NotSupported"),
+            "the interface still documents Lock as refusing"
+        );
+        // The implementation emits it; a `NotSupported` left behind would mean the two halves
+        // disagree about what calling Lock does.
+        let source = include_str!("lifecycle.rs");
+        assert!(source.contains("emitter\n            .lock_requested()"));
     }
 }

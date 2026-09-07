@@ -247,6 +247,7 @@
       "methods": {
         "Create": "(s)->(s)",
         "Delta": "(s)->(s)",
+        "DeltaOpen": "(s)->(hs)",
         "Discard": "(s)->()",
         "List": "()->(s)"
       },
@@ -388,7 +389,9 @@
         "Reboot": "()->()",
         "Suspend": "()->()"
       },
-      "signals": {},
+      "signals": {
+        "LockRequested": "()"
+      },
       "properties": {}
     },
     "org.legeos.Settings1": {

@@ -30,15 +30,23 @@
 
     <!-- Lock the session.
 
-         The compositor already implements ext-session-lock-v1 in full
-         (compositor/lege-comp/src/session_lock.rs) and ADR-0010 makes the lock screen
-         compositor-owned, "one provider by construction". What does not exist yet is anything
-         that drives it: no client ever calls lock(), so there is no lock surface to show.
+         ADR-0010 makes the lock screen compositor-owned: lege-comp implements
+         ext-session-lock-v1 in full (compositor/lege-comp/src/session_lock.rs), and only a
+         Wayland client can drive it. sessiond is deliberately not that client — it speaks no
+         Wayland at all — so this method does not lock the screen itself. It emits
+         LockRequested, and lege-shell, which already holds the compositor's trusted-shell
+         connection, is what calls lock() on the protocol.
 
-         This method is declared so the interface shape, the CLI verb and the widget region are
-         settled, and it currently fails with NotSupported rather than pretending. Making it real
-         means giving sessiond a Wayland lock-manager client, which is its own piece of work. -->
+         This is why Lock returns as soon as the request is out rather than once the screen is
+         covered: the caller has asked for a lock, and the surface appears a frame or two later.
+         A caller that needs to know the session is locked watches the compositor, not this. -->
     <method name="Lock"/>
+
+    <!-- Somebody asked for the session to be locked (Lock, or `lege session lock`).
+
+         The trusted shell listens for this and drives ext-session-lock-v1. Additive in
+         Lifecycle1 version 1; a client that does not know this signal is unaffected. -->
+    <signal name="LockRequested"/>
 
     <!-- "yes" | "no" | "na" | "challenge", straight from logind. -->
     <method name="CanReboot">
