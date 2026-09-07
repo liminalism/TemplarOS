@@ -199,7 +199,8 @@ mcopy -i "$efi_img" "$work/efi-grub.cfg" ::/EFI/BOOT/grub.cfg
 mkdir -p "$tree/EFI/BOOT"
 cp "$tree/efi/BOOTX64.EFI" "$tree/efi/grubx64.efi" "$tree/efi/mmx64.efi" "$tree/EFI/BOOT/"
 cp "$work/efi-grub.cfg" "$tree/EFI/BOOT/grub.cfg"
-rm -rf "$tree/efi"
+# The hook's efi/ stays where it is so a rerun after a failed xorriso finds its inputs; xorriso
+# leaves it out of the medium (-m below).
 
 # --- 4. The ISO ----------------------------------------------------------------------------------
 echo "4. xorriso → $iso"
@@ -210,7 +211,7 @@ xorriso -as mkisofs -r -V LEGEOS_LIVE -J -joliet-long -l -iso-level 3 \
     -o "$iso" -partition_offset 16 \
     -append_partition 2 0xef "$efi_img" -appended_part_as_gpt \
     -eltorito-alt-boot -e --interval:appended_partition_2:all:: -no-emul-boot \
-    "$tree" 2>&1 | grep -v '^xorriso : UPDATE' | tail -3
+    -m "$tree/efi" "$tree" 2>&1 | grep -v '^xorriso : UPDATE' | tail -3
 [ -s "$iso" ] || die "xorriso produced no ISO"
 ( cd "$out" && sha256sum "$(basename "$iso")" > "$(basename "$iso").sha256" )
 cp "$tree/legeos/TIERS.manifest" "$out/legeos-$set_id.TIERS.manifest"
