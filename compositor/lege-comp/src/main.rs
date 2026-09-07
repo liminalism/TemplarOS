@@ -195,6 +195,36 @@ mod tests {
         assert!(protocol.contains("pending.size = Some((client.width, client.height).into())"));
     }
 
+    /// The bar's 80/48 oscillation: two separate faults, both of which have to stay fixed.
+    ///
+    /// The compositor configured a 48px bar to be 80px tall (a tag strip added to a surface that
+    /// has no frame), and then adopted every catch-up commit as a new choice, so the client and
+    /// the compositor chased each other at frame rate. Comparing the placement to the current
+    /// geometry cannot detect this — the placement really does alternate — so the ack check is
+    /// load-bearing, not belt-and-braces. Asserted at the call sites because both need a live
+    /// client to exercise; the behavioural check is a nested run (`RUNBOOK-lane-1.md` A1).
+    #[test]
+    fn a_shell_placed_surface_is_neither_framed_nor_chased() {
+        let mapping = include_str!("xdg_shell.rs");
+        // (a) A surface the shell placed itself is requested at its bare committed size.
+        assert!(mapping.contains(
+            "let requested = if crate::protocols_shell::has_surface_claim(self, surface) {"
+        ));
+        // (b) Both branches of adopt_client_size consult the same acknowledgement check, so
+        // neither can be relaxed on its own.
+        assert_eq!(
+            mapping.matches("has_acked_last_configure(surface)").count(),
+            2,
+            "the zone branch and the ordinary branch both consult it"
+        );
+        assert!(mapping.contains("fn has_acked_last_configure(surface: &WlSurface) -> bool"));
+        // The zone branch's own condition, verbatim: a committed size is adopted only when it
+        // differs *and* the client has acknowledged what it was last sent.
+        assert!(mapping.contains(
+            "if (committed.w, committed.h) != (geometry.width, geometry.height)\n                && has_acked_last_configure(surface)"
+        ));
+    }
+
     /// K2, the compositor half of the session lock. The three guards that make `locked` mean
     /// locked: nothing behind the lock surface can be pointed at, typed into or dragged. Asserted
     /// at the call sites because the branches themselves need a live display to exercise — the

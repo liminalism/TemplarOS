@@ -307,12 +307,17 @@ impl<B: Backend + 'static> LegeCompState<B> {
         // whole of what will be on screen. The geometry's own location is the window's offset inside its
         // surface (a client-side shadow margin), not a position — an xdg client cannot ask for
         // one — and would otherwise read as a placed window that skips centring.
-        let requested = lege_window::frame_around(lege_window::Rect::new(
-            0,
-            0,
-            geometry.size.w,
-            geometry.size.h,
-        ));
+        //
+        // Except for a surface the trusted shell placed itself: it has no frame
+        // (`WindowService::has_frame`), so adding a tag strip to what it asked for made its very
+        // first configure one strip too tall — a 48px bar was placed 80px tall and told to be 80,
+        // and every catch-up commit afterwards chased that number.
+        let committed = lege_window::Rect::new(0, 0, geometry.size.w, geometry.size.h);
+        let requested = if crate::protocols_shell::has_surface_claim(self, surface) {
+            committed
+        } else {
+            lege_window::frame_around(committed)
+        };
 
         let window_id = self.window_service.on_toplevel_mapped(
             peer_pid,
@@ -353,6 +358,31 @@ impl<B: Backend + 'static> LegeCompState<B> {
     }
 }
 
+/// Whether the client has acknowledged the last size the compositor sent it.
+///
+/// The one tell that separates "this client wants a different size" from "this client has not
+/// caught up yet": a commit made before the ack still carries the size of the configure before
+/// the one in flight. Adopting that is an endless round trip, one per frame, because every reply
+/// the compositor sends produces another stale commit. Shared by both branches of
+/// [`LegeCompState::adopt_client_size`] so neither can be tightened without the other.
+fn has_acked_last_configure(surface: &WlSurface) -> bool {
+    with_states(surface, |states| {
+        let attributes = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .expect("xdg toplevel surfaces always carry XdgToplevelSurfaceData")
+            .lock()
+            .unwrap();
+        let sent = attributes.current_server_state().size;
+        let acked = attributes
+            .last_acked
+            .as_ref()
+            .and_then(|configure| configure.state.size);
+        // Nothing sent yet is nothing to catch up with.
+        sent.is_none() || acked == sent
+    })
+}
+
 impl<B: Backend + 'static> LegeCompState<B> {
     /// A mapped client committed a size of its own choosing — a terminal restoring its saved
     /// size, an application growing for a new document — so the frame follows it: the record's
@@ -372,17 +402,26 @@ impl<B: Backend + 'static> LegeCompState<B> {
         };
         let (maximized, fullscreen, geometry) =
             (record.maximized, record.fullscreen, record.geometry);
-        // A shell surface holding an exclusive zone chooses its own thickness (the zone is a
-        // floor, `shell_surface_placement`): a committed size other than the one it has is
-        // re-placed at the same edge with that size. One round trip — the placement of the
-        // committed size is the committed size, so it does not configure again.
+        // A shell surface holding an exclusive zone chooses its own thickness and its own extent
+        // along the edge (the zone is a floor, `shell_surface_placement`): a committed size other
+        // than the one it has is re-placed at the same edge with that size.
+        //
+        // Only once it has acknowledged the last size it was sent, exactly as the ordinary path
+        // below requires. A commit that arrives before that ack still carries the *previous*
+        // configure's size, so adopting it re-places the surface at a size the client is already
+        // on its way out of, configures it back, and takes the next stale commit the same way —
+        // the two chase each other at frame rate, forever. That is what the bar's 80/48
+        // oscillation was, and no amount of comparing the placement to the geometry can see it:
+        // the placement genuinely does alternate.
         if self
             .shell_protocol
             .exclusive_zones
             .contains_key(&surface.id())
         {
             let committed = window.geometry().size;
-            if (committed.w, committed.h) != (geometry.width, geometry.height) {
+            if (committed.w, committed.h) != (geometry.width, geometry.height)
+                && has_acked_last_configure(surface)
+            {
                 let requested =
                     lege_window::Rect::new(geometry.x, geometry.y, committed.w, committed.h);
                 crate::protocols_shell::apply_surface_claims(self, surface, window_id, requested);
@@ -401,21 +440,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
         if (committed.w, committed.h) == (client.width, client.height) {
             return;
         }
-        let caught_up = with_states(surface, |states| {
-            let attributes = states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .expect("xdg toplevel surfaces always carry XdgToplevelSurfaceData")
-                .lock()
-                .unwrap();
-            let sent = attributes.current_server_state().size;
-            let acked = attributes
-                .last_acked
-                .as_ref()
-                .and_then(|configure| configure.state.size);
-            sent.is_none() || acked == sent
-        });
-        if !caught_up {
+        if !has_acked_last_configure(surface) {
             return;
         }
         let frame = lege_window::frame_around(lege_window::Rect::new(

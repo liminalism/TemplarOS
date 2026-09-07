@@ -403,6 +403,22 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     }
 }
 
+/// Whether the trusted shell placed this surface itself — a live `set_layer_surface` or
+/// `set_exclusive_zone` claim. The one definition of "this surface has no frame of its own", so
+/// the map path (`xdg_shell::handle_toplevel_commit`, which must not add a tag strip to what such
+/// a surface asked for) and the claim path here cannot drift apart about which surfaces those are.
+pub fn has_surface_claim<B: Backend + 'static>(
+    state: &LegeCompState<B>,
+    surface: &WlSurface,
+) -> bool {
+    let object_id = surface.id();
+    state.shell_protocol.layer_surfaces.contains_key(&object_id)
+        || state
+            .shell_protocol
+            .exclusive_zones
+            .contains_key(&object_id)
+}
+
 /// Re-place every surface with a live layer or exclusive-zone claim against the topology as it
 /// now stands. Called from `backend::recompute_outputs`, which is the one entry point for a
 /// topology change (COMPOSITOR.md): an output resized, unplugged or rescaled moves where a bar's
