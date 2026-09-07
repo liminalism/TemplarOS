@@ -50,7 +50,8 @@ commands
              read-only, send, delete). This is the fact that decides whether the delta backend
              can live in the per-user daemon or must go through lege-hostd.
   status     show what exists right now.
-  measure    build the Lane E harness as the invoking user, then run it against the fixture.
+  measure    build the Lane E harness as the invoking user, run it against the fixture, and
+             report what holding a retained checkpoint costs on disk.
   teardown   unmount, detach the loop device, and (with --remove-image) delete the image.
 
 options
@@ -385,7 +386,46 @@ for line in sys.stdin:
     "$binary" --ignored --nocapture --test-threads=1
 
   say ""
+  checkpoint_cost
+
+  say ""
   say "Done. Any report written under docs/measurements/ is owned by $OWNER."
+}
+
+# What holding a checkpoint costs.
+#
+# The delta backend keeps one read-only snapshot of @home between repairs, and a read-only
+# snapshot pins every extent it references — so "your disk does not free space while the index is
+# dormant" is a user-visible consequence and needs a number, not an assurance. `filesystem du -s`
+# gives the exclusive bytes (referenced by this subvolume and nothing else, so discarding it frees
+# exactly them); `filesystem usage` either side of the discard is the independent check that the
+# space actually came back.
+checkpoint_cost() {
+  local checkpoint="$MOUNT/@snapshots/index-cost-probe"
+
+  say "Retained checkpoint disk cost:"
+  if ! btrfs subvolume snapshot -r "$MOUNT/@home" "$checkpoint" >/dev/null 2>&1; then
+    step "NOT EXECUTED: could not snapshot $MOUNT/@home"
+    return 0
+  fi
+  # A snapshot taken a moment ago shares every extent with the live subvolume, so its exclusive
+  # figure is near zero and says nothing. What the index actually holds is a checkpoint that has
+  # been retained across a working session, so this is measured after the harness above has
+  # written, moved and deleted its way through the fixture.
+  step "before discard:"
+  btrfs filesystem usage -T "$MOUNT" 2>/dev/null | sed 's/^/      /' || true
+  step "exclusive bytes pinned by the checkpoint:"
+  btrfs filesystem du -s --raw "$checkpoint" 2>/dev/null | sed 's/^/      /' \
+    || step "  (btrfs filesystem du is unavailable on this kernel)"
+
+  btrfs subvolume delete "$checkpoint" >/dev/null 2>&1 || true
+  # The delete is queued; the cleaner thread frees the extents.
+  btrfs filesystem sync "$MOUNT" >/dev/null 2>&1 || true
+  step "after discard:"
+  btrfs filesystem usage -T "$MOUNT" 2>/dev/null | sed 's/^/      /' || true
+  say ""
+  step "copy the exclusive figure into the \"Retained checkpoint disk cost\" table in"
+  step "docs/measurements/btrfs-delta-measured.md"
 }
 
 cmd_teardown() {
