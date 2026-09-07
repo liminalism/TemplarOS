@@ -3699,7 +3699,7 @@ record legeos.work.host-update-transaction/1 : work {
 
 record legeos.work.iso-hardware-safety/1 : work {
     title "The installation medium does not strand its owner — hardware inventory, seeds that cover it, a live preflight, rescue boot entries and the first ISO build"
-    state active
+    state superseded
     scope [
         path "cli/lege/src/doctor/**",
         path "distro/iso/**",
@@ -3765,6 +3765,80 @@ record legeos.work.iso-hardware-safety/1 : work {
     }
     implements [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
     part_of [ @legeos.work.self-hosting-legeos ]
+}
+
+record legeos.work.iso-hardware-safety/2 : work {
+    title "The installation medium does not strand its owner — hardware inventory, seeds that cover it, a live preflight, rescue boot entries and the first ISO build"
+    state active
+    scope [
+        path "cli/lege/src/doctor/**",
+        path "distro/iso/**",
+        path "distro/seeds/selection.toml",
+        path "docs/measurements/hardware-inventory-*",
+        path "installer/provision.sh",
+        path "scripts/hardware-closure.sh",
+        path "scripts/hardware-inventory.sh",
+        path "tests/integration/iso-qemu.sh"
+    ]
+    intent """
+        Answer "will the ISO leave me without video or networking" before a USB stick is written, not after. Four parts: an inventory of the reference laptop joined to the package that provides each module and each firmware file on the base the medium is built from; the seeds carrying the hardware packages that only a Recommends would otherwise pull in; a live preflight (lege doctor --preflight) that the medium runs at boot and that legeos-install refuses to write over; and two rescue boot entries on the medium for the two ways a machine fails to reach a session.
+        """
+    note """
+        Lane 3 of campaign 2, integrated at 9b9ac2b (e066091, 8644461, 914acf7, db617e4), then the coordinator's build fixes d4aa736, a2abc6e, 5c3c531, 31b1a73. Found on the first build: a set published from the Ubuntu 25.10 host cannot install in resolute (legeos-comp depends on libdisplay-info2; resolute ships 3), so native packages are built in a resolute chroot by scripts/build-in-resolute.sh (archive-l3); the live rootfs drops legeos-nvidia-open (its postinst runs update-initramfs in an unshared chroot). The first ISO (4.0 GB) was built unprivileged and booted to the live login under Secure-Boot OVMF; the medium's preflight in QEMU fails only preflight-render-node (bochs-drm). Every command check is verified; laptop-boots-the-medium is the user's gate (RUNBOOK-L3.md).
+        """
+    acceptance {
+        check installer-refuses-a-failed-preflight {
+            statement """
+                legeos-install writes nothing when the medium's preflight report contains a failure, unless --ignore-preflight is passed.
+                """
+            method command
+            command "PREFLIGHT_REPORT=<a report with a fail line> installer/provision.sh --image /tmp/t.img --apply"
+            verified_by [ @legeos.evidence.installer-refuses-failed-preflight-20260907/1 ]
+        }
+        check inventory-and-closure {
+            statement """
+                The reference laptop's loaded modules and the firmware they use are joined to the resolute package that provides each, and no firmware in use is unprovided.
+                """
+            method command
+            command "scripts/hardware-inventory.sh docs/measurements/hardware-inventory-dk-82y3-20260907.json && scripts/hardware-closure.sh --inventory docs/measurements/hardware-inventory-dk-82y3-20260907.json"
+            verified_by [ @legeos.evidence.hardware-inventory-closure-rerun-20260907/1 ]
+        }
+        check iso-builds-and-boots {
+            statement """
+                distro/iso/build.sh produces an ISO from a resolute-built set, and tests/integration/iso-qemu.sh boots it under Secure-Boot OVMF and reads a passing preflight network line off the serial console.
+                """
+            method command
+            command "distro/iso/build.sh --work /var/tmp/legeos-build/@build --out /var/tmp/legeos-build/@build && tests/integration/iso-qemu.sh"
+            verified_by [
+                @legeos.evidence.first-iso-built-and-booted-under-secure-boot-20260907/1
+            ]
+        }
+        check laptop-boots-the-medium {
+            statement """
+                The owner boots the written USB stick on the reference laptop with Secure Boot on, and the preflight report on the live session shows every line passing (or names exactly what did not).
+                """
+            method manual
+        }
+        check preflight-is-honest {
+            statement """
+                The live preflight passes a working machine, fails a machine with no bound driver and no input, calls a radio whose firmware did not load a failure rather than a skip, and skips a machine with no Wi-Fi at all — all against fixture trees, never the host.
+                """
+            method command
+            command "cargo test -p lege preflight"
+            verified_by [ @legeos.evidence.preflight-fixture-tests-20260907/1 ]
+        }
+        check seeds-regenerate {
+            statement """
+                The hardware layer's additions generate cleanly and name only packages that exist in the declared base.
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.campaign2-merged-gate-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
+    part_of [ @legeos.work.self-hosting-legeos ]
+    supersedes [ @legeos.work.iso-hardware-safety/1 ]
 }
 
 record legeos.work.logical-app-and-variant-identity/1 : work {

@@ -732,6 +732,17 @@ record legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 : papercut
     created_at 2026-09-03
 }
 
+record legeos.papercut.on-the-qemu-boot-of-the-first-iso-the-live/1 : papercut {
+    title "On the QEMU boot of the first ISO the live preflight fails…"
+    state verified
+    statement """
+        On the QEMU boot of the first ISO the live preflight fails preflight-render-node (bochs-drm has no /dev/dri/renderD*), so legeos-install would refuse a VM install without --ignore-preflight; a virtio-gpu device in provision-qemu.sh/iso-qemu.sh, or treating a missing render node as a warning, would keep the VM route honest.
+        """
+    observed_at git:31b1a737b4748f675498539a68de3595ec46097f
+    author "claude"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.on-this-host-var-lib-legeos-devrepo-has-current/1 : papercut {
     title "On this host /var/lib/legeos/devrepo has current/previous/pool but no…"
     state verified
@@ -1110,6 +1121,17 @@ record legeos.papercut.the-lege-field-integration-proptest-reported/1 : papercut
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.the-live-medium-s-getty-banner-reads-ubuntu-26/1 : papercut {
+    title "The live medium's getty banner reads \"Ubuntu 26.04.1 LTS legeos-live\"…"
+    state verified
+    statement """
+        The live medium's getty banner reads "Ubuntu 26.04.1 LTS legeos-live" because /etc/issue comes from base-files while only os-release is replaced; distro/iso/live/customize.sh should write /etc/issue from distro/branding too.
+        """
+    observed_at git:31b1a737b4748f675498539a68de3595ec46097f
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.the-m2-acceptance-command-lists-six-xtask/1 : papercut {

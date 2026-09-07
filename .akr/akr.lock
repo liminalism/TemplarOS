@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:cb00e57212c98618e468bf185774bbc843237f772172ea1a2ce4a11e3b10aad6"
+    source_graph "sha256:4240729172afed602fc5c04b393cb5f7a284cac9f3b91540400c45132132521a"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:e23aff577bd0fdd8432b7ed5c57fea5b673aa94019820b00280414f3c6160053"
-    records 232
+    hash "sha256:9aa058ab0e7108cbb64020e3f58d4089eab0e25f5d88c1129ce8cb7f4a71e1dd"
+    records 233
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:31055bc041929432c7ab53d6644e4a5a43f6658c7dedf13dde021663cbdc5f02"
-    records 122
+    hash "sha256:650f297b8f4475b37c380759d2b3b4fdc5a3941a4c857de121b52e713d061e1b"
+    records 124
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:e8b5eb090a8e316f165027ddad00a6d77aee40ca259f241b8cc926b77be7b214"
-    records 99
+    hash "sha256:969cbb480850656b0ac84ef6ca5ed1c9cd4d824bca23bdb954921003d32c78df"
+    records 100
 }
 
 resolution @legeos.assessment.home-vision-review-20260905/1 {
@@ -2116,6 +2116,18 @@ resolution @legeos.work.iso-hardware-safety/1 {
     hash "sha256:5510fc8c2a043e21c83345a0a59a6e5f82bb5980f46ab45e720c789320588456"
 }
 
+resolution @legeos.work.iso-hardware-safety/2 {
+    slot implements
+    to @legeos.decision.base-ubuntu-2604-kernel-70/1
+    hash "sha256:33370ec38c33b3d6d33c098b64d55c9cc02df1c9b3e66a507551fab9c24b6d45"
+}
+
+resolution @legeos.work.iso-hardware-safety/2 {
+    slot part_of
+    to @legeos.work.self-hosting-legeos/1
+    hash "sha256:5510fc8c2a043e21c83345a0a59a6e5f82bb5980f46ab45e720c789320588456"
+}
+
 resolution @legeos.work.logical-app-and-variant-identity/1 {
     slot implements
     to @legeos.decision.representation-ladder-is-the-organizing-principle/1
@@ -3221,6 +3233,11 @@ seal @legeos.evidence.file-video-preview-three-percent-20260824/1 {
 seal @legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 {
     state verified
     hash "sha256:7983065b90182f2b4cac7604b810e43d5ec0eeb4f7ad8b077e42fb79e8032afa"
+}
+
+seal @legeos.evidence.first-iso-built-and-booted-under-secure-boot-20260907/1 {
+    state verified
+    hash "sha256:21ca700bf426e4f3cbbdcfb7da443262fbfefe58ee3b5bb39569d40cc2fa7870"
 }
 
 seal @legeos.evidence.grub-entries-carry-deployment-id-20260903/1 {
@@ -4628,6 +4645,11 @@ seal @legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 {
     hash "sha256:2f5637b28b8e9ac13854b0d3b57fedfc084802a7d6d18f749b466cd6ec5af40a"
 }
 
+seal @legeos.papercut.on-the-qemu-boot-of-the-first-iso-the-live/1 {
+    state verified
+    hash "sha256:0b82da928b7c62d9de5eead8f2a406c461b0d694c94e1f16e94df7f25dd839bf"
+}
+
 seal @legeos.papercut.on-this-host-var-lib-legeos-devrepo-has-current/1 {
     state verified
     hash "sha256:b8dfb0f4140b6745599cbe996f438e30cc166f71345b4a0e328b4ee5cbf383db"
@@ -4796,6 +4818,11 @@ seal @legeos.papercut.the-installed-legeos-set-on-the-development/1 {
 seal @legeos.papercut.the-lege-field-integration-proptest-reported/1 {
     state verified
     hash "sha256:23d4ee8e6f27726f1d39426d6e96bc8c52fe016eb0c5e531c9c6b9a6aff149b4"
+}
+
+seal @legeos.papercut.the-live-medium-s-getty-banner-reads-ubuntu-26/1 {
+    state verified
+    hash "sha256:7cc443d17707e042d1932ea632eaf20149e078a13698419a114bae30b243452d"
 }
 
 seal @legeos.papercut.the-m2-acceptance-command-lists-six-xtask/1 {
@@ -5284,8 +5311,13 @@ seal @legeos.work.host-update-transaction/1 {
 }
 
 seal @legeos.work.iso-hardware-safety/1 {
+    state superseded
+    hash "sha256:5e6650d7671027f6678d74c5533f67931bb309e42f031231f4068d310998f0b7"
+}
+
+seal @legeos.work.iso-hardware-safety/2 {
     state active
-    hash "sha256:89d23930359e03b926be1fa24196f101cab46167c23e8360c1189ca2e2c43d17"
+    hash "sha256:1f1a33d18128926be88b1a2f5d74784ee4414412f1bd5184bdc6d30d12f44819"
 }
 
 seal @legeos.work.logical-app-and-variant-identity/1 {

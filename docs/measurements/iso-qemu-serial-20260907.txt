@@ -1,0 +1,11 @@
+      a command-line.                                                                         [05;:0H *LegeOS 0.1.0~dev1788777276+ged81cb9.dirty — live session                                     
+legeos-live secure-boot: 1
+pass         preflight-drm        1 DRM device(s) with a driver — card0 (bochs-drm, connected: Virtual-1)
+fail         preflight-render-node no render node under /dev/dri — hardware acceleration is unavailable; the session may fall back to software rendering
+pass         preflight-network    1 network interface(s) with a driver — enp0s2 (virtio_net)
+pass         preflight-network-manager NetworkManager is running — running:disconnected
+skipped      preflight-wifi       no Wi-Fi device on this machine — nothing under /sys/class/ieee80211
+skipped      preflight-audio      no /proc/asound: ALSA is not loaded here
+pass         preflight-input      4 input device(s) — Power Button, AT Translated Set 2 keyboard, VirtualPS/2 VMware VMMouse, VirtualPS/2 VMware VMMouse
+failed: preflight-render-node
+legeos-live login: 

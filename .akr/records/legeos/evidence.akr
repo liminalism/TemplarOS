@@ -726,6 +726,19 @@ record legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 : ev
         """
 }
 
+record legeos.evidence.first-iso-built-and-booted-under-secure-boot-20260907/1 : evidence {
+    title "Unprivileged build.sh run end to end (mmdebstrap unshare from resolute snapshot 20260905T011226Z plus the chroot-built set, 15 native / 1506 inherited, 4.0 GB ISO; transcript docs/measurements/iso-build-20260907.txt); iso-qemu.sh OK under Secure-Boot OVMF with KVM: shim → GRUB → kernel, live login reached, SecureBoot efivar 1, preflight network pass. The medium's preflight in QEMU fails only preflight-render-node (bochs-drm has no render node)."
+    state verified
+    result pass
+    method command
+    observed_at git:31b1a737b4748f675498539a68de3595ec46097f
+    command "distro/iso/build.sh --archive /var/tmp/legeos-build/@build/archive-l3 --work /var/tmp/legeos-build/@build --out /var/tmp/legeos-build/@build && LEGE_ISO=/var/tmp/legeos-build/@build/legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso tests/integration/iso-qemu.sh"
+    artifact "docs/measurements/iso-qemu-serial-20260907.txt"
+    summary """
+        Unprivileged build.sh run end to end (mmdebstrap unshare from resolute snapshot 20260905T011226Z plus the chroot-built set, 15 native / 1506 inherited, 4.0 GB ISO; transcript docs/measurements/iso-build-20260907.txt); iso-qemu.sh OK under Secure-Boot OVMF with KVM: shim → GRUB → kernel, live login reached, SecureBoot efivar 1, preflight network pass. The medium's preflight in QEMU fails only preflight-render-node (bochs-drm has no render node).
+        """
+}
+
 record legeos.evidence.grub-entries-carry-deployment-id-20260903/1 : evidence {
     title "GRUB entries carry the deployment id"
     state verified
