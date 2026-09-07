@@ -50,6 +50,11 @@
 
         `size` of 0 releases a previously reserved zone. Reservations are per surface, so a
         surface that is destroyed releases its own automatically.
+
+        The reservation is a floor on the surface's thickness, not its size: the surface is
+        anchored to its edge and spans the output along it, and may commit a size thicker than
+        it reserves — a bar opening a row above itself grows over the windows beside it without
+        moving them, because the work area follows the zone and not the surface.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>

@@ -15,6 +15,12 @@
     <!-- DirectoryListing JSON contains directory, optional parent, entries, truncated and limit.
          Each entry contains path, name, kind (directory|file|other), is_symlink, hidden,
          size_bytes and mtime_ms. `limit` is clamped by the service to 500. -->
+    <!-- Bookmarks are shared by every Files client and included in Roots with bookmark: keys.
+         Removal is allowed even when a bookmarked volume is offline. -->
+    <method name="SetBookmark">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="bookmarked" type="b" direction="in"/>
+    </method>
     <method name="ListDirectory">
       <arg name="directory" type="s" direction="in"/>
       <arg name="show_hidden" type="b" direction="in"/>

@@ -97,7 +97,8 @@
         "CreateDirectory": "(ss)->(s)",
         "Inspect": "(s)->(s)",
         "ListDirectory": "(sbu)->(s)",
-        "Roots": "()->(s)"
+        "Roots": "()->(s)",
+        "SetBookmark": "(sb)->()"
       },
       "signals": {},
       "properties": {}
@@ -204,6 +205,7 @@
         "Apply": "(ss)->(t)",
         "Get": "(sqq)->(s)",
         "GetRevision": "(s)->(t)",
+        "PlaceFolder": "(ss)->(t)",
         "Reset": "(sqq)->(s)",
         "Undo": "(s)->(s)"
       },

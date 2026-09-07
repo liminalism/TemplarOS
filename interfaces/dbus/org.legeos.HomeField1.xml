@@ -38,6 +38,15 @@
       <arg name="rows" type="q" direction="in"/>
       <arg name="document_json" type="s" direction="out"/>
     </method>
+    <!-- Place `path` on `output`'s field as a folder object at the first free cell, exactly as
+         the shell would; returns the revision (unchanged when that folder is already there). The
+         route a client without the shell's grid knowledge — a Files window — uses to add a folder
+         to Home. -->
+    <method name="PlaceFolder">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="path" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
     <method name="GetRevision">
       <arg name="output" type="s" direction="in"/>
       <arg name="revision" type="t" direction="out"/>
