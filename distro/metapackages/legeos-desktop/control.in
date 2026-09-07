@@ -4,15 +4,16 @@ Architecture: all
 Depends: legeos-session, legeos-sessiond, legeos-resourced, legeos-filed, legeos-hostd,
  legeos-boot-health, legeos-shell, legeos-comp, legeos-portal, legeos-cli, legeos-greeter,
  greetd, xdg-desktop-portal, xdg-desktop-portal-gtk, xwayland, polkitd, dbus-broker,
- legeos-settings, lege-files, kitty, flatpak, fonts-noto, fonts-noto-color-emoji,
- xdg-utils, shared-mime-info, desktop-file-utils, gnome-keyring, linux-firmware,
- network-manager, upower, power-profiles-daemon, fwupd, udisks2, mesa-vulkan-drivers,
- libgl1-mesa-dri, vulkan-tools, libvulkan1, libva2, libva-drm2, libva-wayland2,
- libva-x11-2, va-driver-all, intel-media-va-driver, vainfo, mesa-utils, mesa-utils-bin,
- pipewire, pipewire-pulse, pipewire-alsa, wireplumber, gstreamer1.0-plugins-base,
- gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav,
- gstreamer1.0-pipewire, mpv, fcitx5, fcitx5-config-qt, orca, at-spi2-core,
- speech-dispatcher, bluez, ${misc:Depends}
+ legeos-settings, pcmanfm-qt, qt6-wayland, kitty, flatpak, fonts-noto,
+ fonts-noto-color-emoji, xdg-utils, shared-mime-info, desktop-file-utils, gnome-keyring,
+ linux-firmware, linux-modules-iwlwifi-generic, network-manager, wpasupplicant,
+ firmware-sof-signed, alsa-ucm-conf, thermald, upower, power-profiles-daemon, fwupd,
+ udisks2, mesa-vulkan-drivers, libgl1-mesa-dri, vulkan-tools, libvulkan1, libva2,
+ libva-drm2, libva-wayland2, libva-x11-2, va-driver-all, intel-media-va-driver, vainfo,
+ mesa-utils, mesa-utils-bin, pipewire, pipewire-pulse, pipewire-alsa, wireplumber,
+ gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad,
+ gstreamer1.0-libav, gstreamer1.0-pipewire, mpv, fcitx5, fcitx5-config-qt, orca,
+ at-spi2-core, speech-dispatcher, bluez, ${misc:Depends}
 Recommends: legeos-nm-tray, legeos-kernel
 Conflicts: snapd, apport, whoopsie, ubuntu-report
 Description: LegeOS desktop (metapackage)

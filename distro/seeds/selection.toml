@@ -149,9 +149,29 @@ name = "linux-firmware"
 reason = "Wi-Fi, GPU and audio firmware blobs the reference laptop needs to come up"
 
 [[layer.package]]
+name = "linux-modules-iwlwifi-generic"
+reason = "Ubuntu 26.04 splits the Intel Wi-Fi modules out of linux-modules; the most common laptop radio, and a machine that boots the medium without it has no network at all (the reference machine is Realtek, which stays in linux-modules)"
+
+[[layer.package]]
 name = "network-manager"
 reason = "the network provider the shell's status surface and portals talk to"
 role = "network-manager"
+
+[[layer.package]]
+name = "wpasupplicant"
+reason = "the WPA supplicant NetworkManager drives; NetworkManager only Recommends it, so a --no-install-recommends build would come up with no Wi-Fi authentication"
+
+[[layer.package]]
+name = "firmware-sof-signed"
+reason = "SOF DSP firmware for Intel laptop audio; only a Recommends pulls it in, and the machines that need it are silent without it"
+
+[[layer.package]]
+name = "alsa-ucm-conf"
+reason = "the ALSA use-case configuration that maps a laptop's speakers, headphone jack and mics; also Recommends-only, and without it audio routing is guesswork"
+
+[[layer.package]]
+name = "thermald"
+reason = "Intel thermal management; a Recommends of linux-image-generic, and the reference laptop is a 13th-gen Intel that throttles badly without it"
 
 [[layer.package]]
 name = "upower"
@@ -334,9 +354,13 @@ name = "legeos-settings"
 reason = "the settings surface for the policy legeos-sessiond owns"
 
 [[layer.package]]
-name = "lege-files"
-reason = "the file manager the shell's file surfaces and the Files context menu drive"
+name = "pcmanfm-qt"
+reason = "the FileManager provider role's default (lege-session-core/src/providers.rs's DEFAULT_FILE_MANAGER); LegeOS's own Files is too rudimentary to be the session's file manager, so the composition ships a complete one and integrates it through filed (docs/architecture/files.md)"
 role = "file-manager"
+
+[[layer.package]]
+name = "qt6-wayland"
+reason = "the Qt 6 Wayland platform plugin pcmanfm-qt needs; without it a Qt application in this session falls back to xcb or refuses to start"
 
 [[layer.package]]
 name = "kitty"
