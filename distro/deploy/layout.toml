@@ -43,6 +43,28 @@ mount_options = "compress=zstd:1"
 # (services/lege-hostd/src/updates.rs). It is authoritative: the declaration follows the engine.
 subvolumes = ["/@", "/@home", "/@var", "/@snapshots", "/@deployments"]
 
+# --- An optional independent data role ---------------------------------------------------------
+
+# A second filesystem that is not the OS and is never assumed expendable
+# (@legeos.decision.independent-storage-roles). Absent from every machine provisioned so far; the
+# provisioner creates it only when `--data PART` names one, and `--reuse` never formats it.
+#
+# It is a *role*, not a mount of convenience: it has its own indexing policy (lege-filed registers
+# it as a second root with its own RootPolicy, so its freshness and its search visibility are
+# independent of @home's), its own preservation policy, and its own identity in
+# /etc/legeos/install.toml. Nothing in the boot path depends on it — a machine that loses its data
+# disk still boots.
+[data]
+type = "linux-generic"
+format = "btrfs"
+label = "legeos-data"
+mount = "/data"
+mount_options = "compress=zstd:1"
+# Reuse what is there. `format` in this field is the explicit, destructive opt-in: the current
+# --esp/--root mode's rewriting of type codes and formatting of both partitions is what the
+# decision calls "not preservation", and this role does not repeat it.
+policy = "reuse"
+
 # There is no separate /boot partition. Kernels and initramfs images live on the ESP inside the
 # deployment's own directory, so Ubuntu's initramfs post-update hooks cannot rewrite a
 # deployment's boot files. /boot is a directory on @, and /boot/grub holds GRUB's own files.
