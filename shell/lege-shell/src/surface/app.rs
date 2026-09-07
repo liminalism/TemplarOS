@@ -1263,14 +1263,23 @@ impl ShellApp {
             self.field_requested = true;
             self.spawn_field_fetch(cols, rows);
         }
+        // One apply for the whole refresh, in the order it was applied locally.
+        //
+        // These used to be two `spawn_field_apply` calls, and `spawn_field_apply` is
+        // fire-and-forget: two independent tasks on two D-Bus calls, with no ordering between
+        // them. The resize has to land first — the merge's placements were chosen against the
+        // new grid — and when it did not, the daemon refused the batch, the shell kept the state
+        // it had already applied to itself, and the two documents were diverged for the rest of
+        // the session (visible as a run of `HomeField1.Apply refused` in the journal, because
+        // every later sweep then names a tile the daemon never took). One batch is ordered, and
+        // is taken or refused whole.
+        let mut sending = Vec::new();
         if (cols, rows) != (self.field.cols, self.field.rows) {
             let op = FieldOp::SetGrid { cols, rows };
             match lege_field::apply(&self.field, &op) {
                 Ok((next, _)) => {
                     self.field = next;
-                    if self.field_synced == Some(true) {
-                        self.spawn_field_apply(op);
-                    }
+                    sending.push(op);
                 }
                 Err(error) => tracing::warn!(%error, "resizing the field grid"),
             }
@@ -1279,13 +1288,13 @@ impl ShellApp {
             toplevels,
             projects: &self.projects,
         };
-        let mut merged = field_model::merge(&mut self.field, &live);
-        merged.extend(field_model::merge_desktop_folder(
+        sending.extend(field_model::merge(&mut self.field, &live));
+        sending.extend(field_model::merge_desktop_folder(
             &mut self.field,
             crate::drawers::standard_paths::desktop_dir().as_deref(),
         ));
-        if !merged.is_empty() && self.field_synced == Some(true) {
-            self.spawn_field_apply(FieldOp::Batch { ops: merged });
+        if !sending.is_empty() && self.field_synced == Some(true) {
+            self.spawn_field_apply(FieldOp::Batch { ops: sending });
         }
         field_model::refresh_titles(&mut self.field, &live);
         let keys: Vec<String> = toplevels
@@ -2468,6 +2477,9 @@ impl ShellApp {
             hosted.scale,
             &mut self.kernel,
         );
+        // Every pixel first: this surface has no alpha either, and a rounded fill leaves the
+        // four corners holding whatever the buffer had (see `field_screen::draw`).
+        ui.painter.clear(crate::surface::design::shell_fill());
         ui.painter
             .fill_rounded_rect(area, ui.px(8), crate::surface::design::shell_fill());
         ui.painter.stroke_rect(

@@ -716,7 +716,9 @@ pub async fn apply_field_op(output: &str, op: &FieldOp) -> Option<u64> {
     match proxy.apply(output, &json).await {
         Ok(revision) => Some(revision),
         Err(error) => {
-            tracing::warn!(%error, "HomeField1.Apply refused");
+            // Name the op. A bare "refused" says the two documents have diverged but not over
+            // what, and the shell keeps a state the daemon never took either way.
+            tracing::warn!(%error, op = op.label(), body = %json, "HomeField1.Apply refused");
             None
         }
     }
