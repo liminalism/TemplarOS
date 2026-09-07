@@ -52,9 +52,18 @@
         surface that is destroyed releases its own automatically.
 
         The reservation is a floor on the surface's thickness, not its size: the surface is
-        anchored to its edge and spans the output along it, and may commit a size thicker than
-        it reserves — a bar opening a row above itself grows over the windows beside it without
-        moving them, because the work area follows the zone and not the surface.
+        anchored to its edge and may commit a size thicker than it reserves — a bar opening a row
+        above itself grows over the windows beside it without moving them, because the work area
+        follows the zone and not the surface.
+
+        Along its edge the surface keeps its own committed extent, clamped to the output and
+        anchored at the edge's start (the left end for `top`/`bottom`, the top end for
+        `left`/`right`). A strip narrower than the screen is a strip narrower than the screen: it
+        reserves the same thickness whether it is showing two chips or a full row of them, so
+        growing and shrinking it never reflows a single window. The compositor does not stretch a
+        surface to fill its edge, and a surface is therefore never told how wide the output is by
+        being configured to it — a shell that wants the full edge asks for it, from a size it
+        already knows.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>
