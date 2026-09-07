@@ -408,6 +408,21 @@ impl crate::Index {
         ))
     }
 
+    /// The highest sequence the change log has issued, or 0 when nothing has been recorded.
+    ///
+    /// A consumer never has to call this: [`crate::snapshot::SnapshotManifest::snapshot_seq`]
+    /// carries it, taken inside the same call that wrote the frame. It is public because that is
+    /// where it is read from, and because a diagnostic wants to be able to ask.
+    pub fn latest_change_seq(&self) -> Result<u64> {
+        self.with_read(|connection| {
+            Ok(connection
+                .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map(|seq| seq as u64)?)
+        })
+    }
+
     /// A bounded page of the change log after `seq`.
     ///
     /// Below the retained floor the answer is [`IndexError::SnapshotRequired`], not a partial

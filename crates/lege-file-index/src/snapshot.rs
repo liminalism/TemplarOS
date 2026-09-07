@@ -90,6 +90,20 @@ pub struct SnapshotManifest {
     pub roots: Vec<SnapshotRoot>,
     /// How the descriptor was produced, so a client knows whether it is truly sealed.
     pub sealed: bool,
+    /// The change-log position this frame is consistent with: pass it straight to
+    /// [`crate::Index::changes_since`] and the first change received is the first one the frame
+    /// does not already contain.
+    ///
+    /// Without it a consumer has to *ask* for its position after taking the snapshot, and
+    /// anything committed between the two calls lands in neither — the read/subscribe race
+    /// `@legeos.decision.event-driven-service-authorities` exists to rule out. `changes_since(0)`
+    /// is not a substitute: once the bounded log has been pruned, sequence 0 is below the
+    /// retained floor and the answer is `SnapshotRequired` rather than a position.
+    ///
+    /// Serde-defaulted, so a manifest written before this field existed reads as 0 — which is
+    /// what such a consumer was already assuming.
+    #[serde(default)]
+    pub snapshot_seq: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +127,11 @@ impl crate::Index {
         request: &SnapshotRequest,
     ) -> Result<SnapshotManifest> {
         let generation = self.generation()?;
+        // Read before the rows, not after: a change committed while the frame is being written
+        // must land in the stream a consumer replays, never be skipped as "already in the frame".
+        // An over-count is a change replayed; an under-count is a change lost, and every mutation
+        // is idempotent.
+        let snapshot_seq = self.latest_change_seq()?;
         let all = self.roots()?;
         let selected: Vec<_> = all
             .into_iter()
@@ -183,6 +202,7 @@ impl crate::Index {
                 })
                 .collect(),
             sealed: false,
+            snapshot_seq,
         })
     }
 
