@@ -48,6 +48,18 @@ record legeos.evidence.application-lane-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.archive-verification-checks-rerun-20260907/1 : evidence {
+    title "D2 archive-verify and one-version-authority checks rerun at cd2e862"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "cargo test -q -p lege repo && cargo test -q -p lege-build && just deb-plan"
+    summary """
+        Rerun after the record's 2026-09-07 note change: `lege repo` tests, lege-build tests and `just deb-plan` (dry run, nothing built) all pass at cd2e862.
+        """
+}
+
 record legeos.evidence.arrangements-fullscreen-clean-20260831/1 : evidence {
     title "Fullscreen stays clean: no arrangement chrome outside Home, fullscreen windows never arranged"
     state verified
@@ -69,6 +81,19 @@ record legeos.evidence.astra-consolidation-advice-20260907/1 : evidence {
         Advisor result rs-2c84e80bdacd confirmed the seven-phase plan and identified three source-level corrections: existing-partition mode still formats both partitions, DRM named cursors still render as the arrow, and Index1 ChangesSince uses event sequence rather than generation. No tests or live operations were run.
         """
     author "GitHub Uploader"
+}
+
+record legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 : evidence {
+    title "Bar ground, pcmanfm-qt role and composition — targeted tests and repository gates"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "cargo test -p lege-shell -p lege-session-core -p lege-sessiond -p lege-filed -p lege && cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging && cargo run -q -p xtask -- check-assets && cargo run -q -p xtask -- tree-check && cargo clippy -p lege-shell -p lege-session-core -p lege-filed -p lege --all-targets"
+    artifact ".agent/scratch/pre-iso-2/bar.png"
+    summary """
+        Bar ground and the pcmanfm-qt role: 787 tests green across the five crates (7 bar_screen, incl. the new every_pixel_of_the_surface_is_painted; the new file-manager derivation, project_id_for and bookmarks-export tests), seeds --check, check-packaging, check-assets and tree-check all green, clippy pedantic clean. The rendered bar is bar.png / bar@2x.png beside this artefact.
+        """
 }
 
 record legeos.evidence.bar-placed-once-nested-20260907/1 : evidence {
@@ -118,6 +143,30 @@ record legeos.evidence.btrfs-delta-transport-and-backend-20260907/1 : evidence {
     command "cargo test -p lege-hostd -p lege-file-index -p lege-filed && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-proxies"
     summary """
         DeltaOpen hands the stream over as a descriptor and unlinks it; lege-filed answers a downtime repair from the delta, with a cap, and reconciles on every doubt
+        """
+}
+
+record legeos.evidence.campaign2-merged-gate-20260907/1 : evidence {
+    title "Full gate on the merged campaign-2 tree at 9b9ac2b: fmt, clippy pedantic, 1920 tests passed 0 failed, MSRV, seeds --check, check-packaging, check-interfaces, check-assets, check-actions all green."
+    state verified
+    result pass
+    method command
+    observed_at git:9b9ac2ba8e92f24a19d9a7674c9d62640e4d0084
+    command "just check"
+    summary """
+        Full gate on the merged campaign-2 tree at 9b9ac2b: fmt, clippy pedantic, 1920 tests passed 0 failed, MSRV, seeds --check, check-packaging, check-interfaces, check-assets, check-actions all green.
+        """
+}
+
+record legeos.evidence.capture-globals-stay-shell-only/1 : evidence {
+    title "lege-comp is green and the output capture source is trusted-shell only"
+    state verified
+    result pass
+    method command
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    command "cargo test -p lege-comp"
+    summary """
+        113 passed, 0 failed — the over-the-socket registry test now asserts all three capture globals are invisible to an ordinary client and visible on the trusted-shell socket.
         """
 }
 
@@ -475,6 +524,19 @@ record legeos.evidence.fanotify-against-inotify-20260904/1 : evidence {
         """
 }
 
+record legeos.evidence.field-stays-above-the-bar-strip-20260907/1 : evidence {
+    title "The field stays above the bar's strip, and a chip's letter is never a slash"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "cargo test -p lege-shell the_field_paints_nothing_in_the_bar_strip && cargo test -p lege-shell a_chip_takes_its_letter_from_the_application_and_never_from_punctuation && cargo test -p lege-shell"
+    artifact ".agent/scratch/pre-iso-2/bar.png"
+    summary """
+        Home paints nothing in the bar's 48-pixel strip, and a chip's letter never comes from punctuation. Measured from Lane 1's nested screenshot: three boxes at y 752-782, x 463-725/732-994/1001-1262, each the bottom 31 pixels of a widget tile (body fill, region strip, bottom edge) — tiles placed a row below the document's own grid, which lege_field::cell_rect extrapolates instead of clamping. The new test fails without the clamp with `Rect { x: 196, y: 789, w: 355, h: 155 } in Rect { x: 10, y: 62, w: 1180, h: 728 }`, and 354 lege-shell tests pass with it.
+        """
+}
+
 record legeos.evidence.file-copy-path-20260824/1 : evidence {
     title "Copy Path action tests pass"
     state verified
@@ -822,6 +884,32 @@ record legeos.evidence.hardware-input-journal-diagnosis-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.hardware-inventory-and-closure-20260907/1 : evidence {
+    title "The reference laptop's firmware and modules are all provided by the declared base"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "scripts/hardware-inventory.sh docs/measurements/hardware-inventory-dk-82y3-20260907.json && scripts/hardware-closure.sh --inventory docs/measurements/hardware-inventory-dk-82y3-20260907.json"
+    artifact "docs/measurements/hardware-inventory-dk-82y3-20260907.md"
+    summary """
+        251 loaded modules and the 9 firmware files this laptop actually loaded, joined to resolute packages: 0 firmware in use unprovided, 3 modules unprovided and all three explained (two renames and a DKMS module). journalctl -k answered; dmesg is restricted on this host.
+        """
+}
+
+record legeos.evidence.hardware-inventory-closure-rerun-20260907/1 : evidence {
+    title "Coordinator rerun on the reference laptop: 251 modules, 131 declared firmware files; 0 loaded firmware unprovided, 3 modules unprovided (two 7.0 renames, one DKMS) against resolute snapshot 20260905T011226Z."
+    state verified
+    result pass
+    method command
+    observed_at git:9b9ac2ba8e92f24a19d9a7674c9d62640e4d0084
+    command "scripts/hardware-inventory.sh OUT.json && scripts/hardware-closure.sh --inventory OUT.json"
+    artifact "docs/measurements/hardware-inventory-dk-82y3-20260907.md"
+    summary """
+        Coordinator rerun on the reference laptop: 251 modules, 131 declared firmware files; 0 loaded firmware unprovided, 3 modules unprovided (two 7.0 renames, one DKMS) against resolute snapshot 20260905T011226Z.
+        """
+}
+
 record legeos.evidence.hardware-probe-tests-20260903/1 : evidence {
     title "The probe module, the four-outcome report and the boot-health delegation are green: 9 + 36 + 23 + 4 tests pass"
     state verified
@@ -855,6 +943,18 @@ record legeos.evidence.home-chips-projects-appearance-lock-20260907/1 : evidence
     command "cargo test -p lege-shell -p lege-types -p lege-session-core -p lege-settings -p lege-files && cargo clippy -p lege-shell -p lege-types -p lege-session-core -p lege-settings -p lege-files --all-targets -- -D warnings && cargo run -q -p xtask -- check-actions && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-packaging"
     summary """
         Lane 2 pre-ISO slice green: 350 lege-shell, 31 lege-types, 48 lege-session-core, 70 lege-settings, 34 lege-files tests pass; clippy pedantic -D warnings clean; check-actions 61 declared actions with every chord routed, check-interfaces/-signatures/-proxies/-packaging all pass after the Lifecycle1.LockRequested baseline re-freeze.
+        """
+}
+
+record legeos.evidence.home-clears-the-bar-strip-20260907/1 : evidence {
+    title "Home clears its whole buffer, so the bar's strip keeps nothing from a taller frame"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "cargo test -p lege-shell the_bar_strip_never_keeps_pixels_from_a_taller_frame && cargo test -p lege-shell"
+    summary """
+        The row of widget controls in the bar's strip was stale pixels, not a stray placement. Home's buffer is never cleared between frames and FieldScreen::draw filled only `area`; `app.rs::redraw_home` insets by BAR_HEIGHT only while `self.bar.is_some()`, and the bar is created after the bridge connects, so the first frames run the full height of the output and lay tiles down to it — after which nothing ever wrote to the last 48 rows again. `ui.painter.clear` replaces the partial fill. The new test draws one taller frame then one inset frame into the same buffer and fails without the fix with 24606 stale pixels, the first at (377, 800) in 0x00d5dae0 — the tile edge colour measured at the box borders in Lane 1's screenshot. 355 lege-shell tests pass.
         """
 }
 
@@ -1384,6 +1484,18 @@ record legeos.evidence.home-review-visual-20260905/1 : evidence {
         """
 }
 
+record legeos.evidence.home-visibility-predicate-table/1 : evidence {
+    title "lege-window is green on the new Home visibility predicate"
+    state verified
+    result pass
+    method command
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    command "cargo test -p lege-window"
+    summary """
+        133 passed, 0 failed — including the new Home predicate table and the second-output case, and the reveal test updated to the new rule.
+        """
+}
+
 record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
     title "Launcher widget: manifest fields, icon resolution, app search, widget, and live search bar — workspace gates green"
     state verified
@@ -1486,6 +1598,30 @@ record legeos.evidence.installed-home-visible-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence {
+    title "With a report containing 'fail preflight-network', --apply dies naming the line before any write or the root check; with --ignore-preflight it proceeds to the root requirement."
+    state verified
+    result pass
+    method command
+    observed_at git:9b9ac2ba8e92f24a19d9a7674c9d62640e4d0084
+    command "PREFLIGHT_REPORT=<report with a fail line> installer/provision.sh --image /tmp/t.img --apply --user dk"
+    summary """
+        With a report containing 'fail preflight-network', --apply dies naming the line before any write or the root check; with --ignore-preflight it proceeds to the root requirement.
+        """
+}
+
+record legeos.evidence.lane-1-crates-clean/1 : evidence {
+    title "All three touched crates are clean under pedantic clippy, and the interface gates pass"
+    state verified
+    result pass
+    method command
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    command "cargo test -p lege-shell && cargo clippy -p lege-window -p lege-comp -p lege-shell --all-targets"
+    summary """
+        lege-shell 352 + 11 passed, 0 failed; pedantic clippy clean on all three crates; xtask tree-check, check-interfaces and check-interface-signatures all pass.
+        """
+}
+
 record legeos.evidence.layout-declaration-matches-repart-20260903/1 : evidence {
     title "The layout declaration matches repart and hostd"
     state verified
@@ -1520,6 +1656,18 @@ record legeos.evidence.lege-treemap-lifted-and-pure/1 : evidence {
     command "cargo test -p lege-treemap && cargo xtask deps-check"
     summary """
         crates/lege-treemap (tree arena, squarified layout, category palette, CPU cushion rasterizer, bounded std scanner) passes its 11 tests — byte-proportional areas at top level and nested, file count as tie-breaker only, cushions shade, scan limits hold — with zero dependencies; deps-check guards it.
+        """
+}
+
+record legeos.evidence.live-preflight-fixture-tests-20260907/1 : evidence {
+    title "The live preflight is honest on fixture roots and passes on the reference laptop"
+    state verified
+    result pass
+    method command
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "cargo test -p lege preflight"
+    summary """
+        Four fixture-tree tests pass: a laptop-shaped root passes every question with exit 0 and names card2 (i915, connected: eDP-2); a root with nothing bound fails DRM, network and input with exit 1; a radio with no registered phy is a failure (exit 2) rather than a skip; a machine with no Wi-Fi at all skips. The nmcli probe reports not-executed against any root that is not /. Run live on the reference laptop, all seven lines pass.
         """
 }
 
@@ -1799,6 +1947,17 @@ record legeos.evidence.native-lubuntu-validation-20260907/1 : evidence {
         """
 }
 
+record legeos.evidence.nested-home-visibility-and-screenshot/1 : evidence {
+    title "The nested session shows Home mapped at start and unmapped only under a maximized window"
+    state verified
+    result pass
+    method observation
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    summary """
+        Nested lege-comp (winit) + lege-shell: the log reads "Home surface mapped revealed=false" at start, no unmap when a floating kitty opens, "Home surface unmapped: a fullscreen or maximized window covers its output" when a maximized kitty opens, and "Home surface mapped revealed=false" when it closes; lege-shell --screenshot wrote a correctly oriented PNG in each state, with zero warnings or errors in the compositor log.
+        """
+}
+
 record legeos.evidence.nested-session-journey-20260904/1 : evidence {
     title "The nested-session journey passes end to end for the first time"
     state verified
@@ -1896,6 +2055,18 @@ record legeos.evidence.package-selection-generated-and-checked/1 : evidence {
         """
 }
 
+record legeos.evidence.pcmanfm-qt-under-lege-comp-20260907/1 : evidence {
+    title "pcmanfm-qt maps as an ordinary LegeOS toplevel with no QT_QPA_PLATFORM"
+    state verified
+    result pass
+    method observation
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    command "env -u DISPLAY -u QT_QPA_PLATFORM WAYLAND_DISPLAY=legeos-nested pcmanfm-qt /tmp"
+    summary """
+        pcmanfm-qt 2.2.0 opens a folder window on the nested lege-comp with no QT_QPA_PLATFORM set: its own log says qt.qpa.wayland and QComposeInputContext, and the compositor logs `toplevel mapped window_id=WindowId(5) requested=2554x1599 geometry=1280x752 layer=Some(Normal) recoverable=true` — server-side decoration, LegeOS chrome, clamped to the output minus the bar. Qt 6 selects the Wayland plugin on its own, so the session needs no environment change.
+        """
+}
+
 record legeos.evidence.perimeter-resize-latched-edges-20260907/1 : evidence {
     title "Latched edges, anchored opposites and protocol resize after the perimeter change"
     state verified
@@ -1942,6 +2113,18 @@ record legeos.evidence.pre-iso-integrated-gate-20260907/1 : evidence {
     artifact ".agent/scratch/pre-iso/gate/just-check-93a4103.log"
     summary """
         The integrated pre-ISO tree (all three lanes: 11 compositor/window commits, 15 services/index/distro commits, 7 shell/Home/Files commits plus the ping-pong fix) passes fmt, clippy pedantic, 1906 workspace tests with 0 failures and 10 ignored, MSRV, and all xtask checks (tree, deps, interfaces, signatures, proxies, packaging, assets, actions).
+        """
+}
+
+record legeos.evidence.preflight-fixture-tests-20260907/1 : evidence {
+    title "4 preflight tests pass against fixture trees: a working machine passes, no driver/no input fails, a radio without firmware fails, no Wi-Fi skips."
+    state verified
+    result pass
+    method command
+    observed_at git:9b9ac2ba8e92f24a19d9a7674c9d62640e4d0084
+    command "cargo test -q -p lege preflight"
+    summary """
+        4 preflight tests pass against fixture trees: a working machine passes, no driver/no input fails, a radio without firmware fails, no Wi-Fi skips.
         """
 }
 

@@ -49,6 +49,17 @@ record legeos.papercut.a-campaign-lane-could-not-reach-its-peers-no/1 : papercut
     created_at 2026-09-03
 }
 
+record legeos.papercut.a-failed-mmdebstrap-in-distro-iso-build-sh/1 : papercut {
+    title "A failed mmdebstrap in distro/iso/build.sh still left a zero-byte…"
+    state verified
+    statement """
+        A failed mmdebstrap in distro/iso/build.sh still left a zero-byte casper/filesystem.squashfs (mksquashfs is the second half of the pipeline), and the next run's "skip the bootstrap if the squashfs exists" check trusted it — so the retry reported "the customize hook left no casper/vmlinuz" instead of rebuilding. Fixed by removing the partial squashfs when the pipeline fails.
+        """
+    observed_at git:0417055634d59fb6c8306840a016ffd44d85f027
+    author "claude"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.a-multi-file-patch-for-browse1-failed/1 : papercut {
     title "A multi-file patch for Browse1 failed atomically because two hunks for…"
     state verified
@@ -366,6 +377,17 @@ record legeos.papercut.deploy-pinned-the-image-metapackages/1 : papercut {
         """
     observed_at git:9855da2f2647f2baa7473b2dda60b20dd702a046
     about "cli/lege/src/dev/install.rs"
+}
+
+record legeos.papercut.distro-iso-build-sh-s-customize-hook-runs/1 : papercut {
+    title "distro/iso/build.sh's customize hook runs inside mmdebstrap's user…"
+    state verified
+    statement """
+        distro/iso/build.sh's customize hook runs inside mmdebstrap's user namespace, where the calling user's uid is not mapped: the ISO tree it must drop the kernel, initramfs and signed EFI binaries into looked owned by nobody and even the namespace's root could not write to it, failing with a bare "mkdir: Permission denied" 25 minutes into a bootstrap. Fixed by creating the tree's directories up front and chmod 0777 on them.
+        """
+    observed_at git:0417055634d59fb6c8306840a016ffd44d85f027
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : papercut {
@@ -775,6 +797,17 @@ record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
     observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.scripts-nested-session-sh-refuses-to-start/1 : papercut {
+    title "scripts/nested-session.sh refuses to start whenever…"
+    state verified
+    statement """
+        scripts/nested-session.sh refuses to start whenever lege-comp.service/lege-sessiond.service are active, which is exactly the situation the lane rules said to validate compositor changes in — so the sanctioned validation path is unusable from inside a live LegeOS session. Starting lege-comp --backend winit plus lege-shell --surface by hand worked and claims no bus name; a `--no-daemons` mode (compositor + shell only, skipping the bus-claiming daemons and therefore the refusal) would make the documented path work.
+        """
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.scripts-nested-session-sh-start-on-the-xorg/1 : papercut {

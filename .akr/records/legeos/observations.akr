@@ -549,6 +549,23 @@ record legeos.observation.shelved-tiles-have-no-route-back/2 : observation {
     supersedes [ @legeos.observation.shelved-tiles-have-no-route-back/1 ]
 }
 
+record legeos.observation.the-hardware-packages-that-matter-most-arrive-only-through-recommends/1 : observation {
+    title "Four packages a laptop needs for sound and Wi-Fi authentication reach the image only through a Recommends"
+    state verified
+    scope [ path "distro/iso/build.sh", path "distro/seeds/selection.toml" ]
+    statement """
+        The pinned closure's own no-recommends experiment lists firmware-sof-signed, wpasupplicant, alsa-ucm-conf and thermald among the 415 packages that disappear if Recommends are ever turned off: NetworkManager only Recommends wpasupplicant and wireless-regdb, and thermald is a Recommends of linux-image-generic. By contrast intel-microcode, amd64-microcode, wireless-regdb and every linux-firmware-* subpackage are hard Depends of linux-image-generic and need no declaration. The four Recommends-only names are now declared in the hardware layer with reasons; the hard-depended ones deliberately are not. distro/iso/build.sh sets Apt::Install-Recommends true, so today's medium gets them either way — the seed lines are what survives a policy change.
+        """
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    method observation
+    watches [
+        "distro/seeds/selection.toml",
+        "distro/seeds/closures/*.json",
+        "distro/iso/build.sh"
+    ]
+    derived_from [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
+}
+
 record legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists/1 : observation {
     title "compose.sh already writes the mkosi drop-in that points the image at a named build set"
     state verified
@@ -559,6 +576,19 @@ record legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists
     method observation
     watches [ "distro/image/compose.sh", "distro/image/mkosi.conf.d/**" ]
     derived_from [ @legeos.decision.build-set-id-is-the-version-authority ]
+}
+
+record legeos.observation.the-nvidia-lrm-cannot-be-installed-in-an-unshared-bootstrap-chroot/1 : observation {
+    title "nvidia-kernel-common's postinst fails inside an unshared bootstrap chroot, so the live medium carries no NVIDIA driver"
+    state verified
+    scope [ path "distro/iso/build.sh", path "installer/provision.sh" ]
+    statement """
+        Bootstrapping the medium with legeos-nvidia-open in the include list fails the whole apt transaction: nvidia-kernel-common-580's postinst runs update-initramfs before initramfs-tools has been configured, and with no kernel version of its own it falls back to `uname -r` — the BUILD HOST's 6.17.0-41-generic — producing "/usr/sbin/mkinitramfs: .: cannot open /etc/initramfs-tools/initramfs.conf" and taking eleven NVIDIA packages down with it. distro/iso/build.sh therefore no longer includes legeos-nvidia-open: the live session runs on whatever KMS driver the kernel binds (the Intel iGPU on the reference laptop), and the NVIDIA LRM is installed into the target by installer/provision.sh, where there is a real /boot and a configured initramfs. The same failure mode is a risk for the provisioner's own `apt-get install legeos-kernel legeos-nvidia-open` in its chroot; P3.3 in QEMU is where that gets tested.
+        """
+    observed_at git:ed81cb99ed494cf979d7435d6671596e1888a818
+    method observation
+    watches [ "distro/iso/build.sh", "installer/provision.sh" ]
+    derived_from [ @legeos.decision.live-iso-runs-the-provisioner ]
 }
 
 record legeos.observation.the-provisioner-wrote-no-fstab-at-all/1 : observation {
@@ -663,6 +693,23 @@ record legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migra
         "tests/integration/nested-session.sh",
         "services/lege-filed/src/main.rs"
     ]
+}
+
+record legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/1 : observation {
+    title "Ubuntu 26.04 has no linux-modules-extra; it splits linux-firmware per vendor and lifts some drivers into linux-modules-<name>-generic packages of their own"
+    state verified
+    scope [ path "distro/seeds/selection.toml", path "docs/measurements/hardware-inventory-*" ]
+    statement """
+        Checked against the pinned snapshot's file->package index (https://snapshot.ubuntu.com/ubuntu/20260905T011226Z/dists/resolute/Contents-amd64.gz): resolute ships ONE linux-modules-<ver>-generic — there is no linux-modules-extra-generic to seed, and every module the reference laptop loads (rtw89_8852ce, i915, btusb, btrtl, snd-hda-intel, snd-hda-scodec-cs35l41, cs-dsp, nvme) is in it. What 26.04 does instead is lift particular drivers OUT into their own flavour-tracking packages — linux-modules-iwlwifi-generic (Intel Wi-Fi), and linux-main-modules-{ipu6,ipu7,zfs,usbio,evdi,v4l2loopback,doca-ofed}-<ver>-generic — none of which linux-image-generic depends on. linux-firmware is likewise now a metapackage over linux-firmware-{realtek,intel-graphics,intel-misc,misc,nvidia-graphics,...}, all pulled by hard Depends. Consequences for the medium: an Intel-Wi-Fi laptop has no radio unless linux-modules-iwlwifi-generic is declared (it now is), and the reference laptop's own firmware — rtw89/rtw8852c_fw-2.bin and rtl_bt/* in linux-firmware-realtek, i915/adlp_* in linux-firmware-intel-graphics, the cirrus/cs35l41 speaker-amp blobs in linux-firmware-misc, regulatory.db in wireless-regdb — is all provided, with zero firmware in use unprovided. Three loaded modules have no resolute package and none is a hardware gap: blake2b_generic and polyval_clmulni were renamed (blake2b, libpolyval), lenovo_wmi_capdata01 became lenovo-wmi-capdata, and legion_laptop is an out-of-tree DKMS module on the development host.
+        """
+    observed_at git:cd2e8621d21088d8517c9bf7d4e342066aac4120
+    method command
+    watches [
+        "distro/seeds/selection.toml",
+        "distro/base.toml",
+        "docs/measurements/hardware-inventory-*"
+    ]
+    derived_from [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
 }
 
 record legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1 : observation {

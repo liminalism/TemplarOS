@@ -338,7 +338,7 @@ record legeos.work.bottom-bar-taskbar/2 : work {
 
 record legeos.work.bottom-bar-taskbar/3 : work {
     title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/src/backend/mod.rs",
         path "compositor/lege-comp/src/xdg_shell.rs",
@@ -404,6 +404,303 @@ record legeos.work.bottom-bar-taskbar/3 : work {
     supersedes [ @legeos.work.bottom-bar-taskbar/2 ]
 }
 
+record legeos.work.bottom-bar-taskbar/4 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state superseded
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by both paint and hit-test). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). The compositor edits need a logout; the bar itself is hot-swappable.
+
+        **2026-09-07, revised to the user's own decision:** "I do not want there to be a taskbar visible if there is nothing to show on it. Should just be tabs for the time/date/network status, like the tabs for windows. It can become a full row when there is something more to show."
+
+        The bar is now a strip of chips — CHIP_H = lege_window::geometry::TAG_HEIGHT, on the compositor's own name-tag colours (design::TAG_FILL / TAG_INK, copied per contract K3, not shared — the shell does not link the compositor) — and the surface is exactly as wide as the chips are. There is no full-width shell ground at rest. Two things claim the width: a maximized window's controls, which belong at the right-hand end of the screen rather than beside the clock, and an open hover row, which needs somewhere to open into. `bar_screen::wanted_size(entries, activated, row_open, full_width)` is the single pure answer to which of those is true, and app.rs sizes the surface to it.
+
+        This rests on the K1 zone contract: the compositor no longer stretches a zone-holding surface to the output, so it also never configures the bar to the output width. The shell supplies that number from Home's own configured logical width — Home is Layer::HomeSurface with no zone, so it is still placed at the full output, and it is in the same process. The exclusive zone stays BAR_HEIGHT along the whole bottom edge whatever the surface's own extent is, so toggling between chips and full width moves no window.
+
+        Also fixed here, found while sizing the field: Home's inset subtracted a *logical* BAR_HEIGHT from a *physical* buffer height (app.rs redraw_home), so on a scaled output the field painted into the strip the bar covers.
+
+        **2026-09-07, second revision — the user reported "the bottom left is a mess", and this is what it was.** The paragraph above that said "the narrow surface is what makes dropping the ground safe" was wrong, and the reasoning inverted. `softbuffer`'s Wayland backend attaches a `wl_shm::Format::Xrgb8888` buffer (softbuffer 0.4.8, `src/backends/wayland/buffer.rs:102,142`): **this surface has no alpha channel and can never be transparent.** `HostedWindow::prepare` never clears the buffer either. A strip that painted only its chips was therefore an opaque *black* rectangle 280x48 in the bottom-left corner of the screen, growing to 336/392/564 as windows opened, with the chips sitting on it — and full width, black, whenever a row opened or a window was maximized. Narrow does not mean invisible; it only meant the black block was small.
+
+        `BarScreen::draw` now fills its whole extent with `design::ground()` — Home's own ground colour — before anything else, and `every_pixel_of_the_surface_is_painted` fails if any state ever leaves a pixel unwritten again. That is visually identical to transparency today, because nothing but Home is ever behind the bar: the compositor reserves BAR_HEIGHT along the bottom edge so no client reaches it, Home is placed at the full output, and Home paints a flat `ui.theme.background`.
+
+        **Deferred, with its trigger and its route, so nobody re-derives it:** real per-pixel transparency needs an `Argb8888` surface instead of softbuffer's `Xrgb8888`. The cheap route is *not* a bridge-owned surface with wl_pointer routing — winit already owns the bar's `wl_surface` and already delivers its pointer events. It is: an alpha-preserving variant of `previews::ShmBuffer::write` (~10 lines, the existing `Argb8888` path `session_lock::paint` already uses), a bridge `attach_argb` reaching the surface through the raw window handle the way `set_layer` does (~70 lines with a cached buffer and `set_buffer_scale`), and skipping `HostedWindow::present` for the bar (~20 lines), plus tests — about 150 lines. **The trigger is a wallpaper or any non-flat Home ground.** `shell.wallpaper.enabled` is in the settings schema (`lege-session-core/src/settings.rs:136`) and nothing implements it; the day something does, the opaque ground stops matching what is behind it and this becomes required. Note also that pixelkit colours are `0x00RRGGBB` with no alpha, so alpha would have to be reconstructed by keying on the ground colour — which leaves antialiased chip edges opaque and ground-coloured.
+
+        One thing deliberately *not* changed: `wanted_size` stays computed after the paint in `redraw_bar`. `WindowEvent::Resized` already re-requests a redraw, so the one frame in which a chip is clipped by an out-of-date surface size self-corrects; moving the call before the paint would compute `row_open()` from the previous frame, and a row opened by the hover deadline would then get no room until some later redraw.
+        """
+    acceptance {
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [
+                @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1,
+                @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1,
+                @legeos.evidence.home-chips-projects-appearance-lock-20260907/1
+            ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: with nothing open the bottom of the screen shows only the network and clock chips, not a band across the screen and not a black block in the corner; each open application is one chip, groups first; hovering an application with two windows opens a row above the bar; a maximized window's park/maximize/close sit at the bar's right and act.
+                """
+            method manual
+        }
+        check no-bar-with-nothing-on-it {
+            statement """
+                The bar is the chip strip's own width normally, and the full output width only for a maximized window's controls or an open hover row; wanted_size is pure and the host sizes the surface to it.
+                """
+            method command
+            command "cargo test -p lege-shell wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check the-bar-is-not-a-black-block {
+            statement """
+                The bar surface writes every one of its own pixels in every state, so a surface that cannot be transparent (softbuffer attaches Xrgb8888) never shows as black behind the chips; the resting strip is chips on Home's own ground.
+                """
+            method command
+            command "cargo test -p lege-shell every_pixel_of_the_surface_is_painted"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.bottom-bar-taskbar/3 ]
+}
+
+record legeos.work.bottom-bar-taskbar/5 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state superseded
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by both paint and hit-test). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). The compositor edits need a logout; the bar itself is hot-swappable.
+
+        **2026-09-07, revised to the user's own decision:** "I do not want there to be a taskbar visible if there is nothing to show on it. Should just be tabs for the time/date/network status, like the tabs for windows. It can become a full row when there is something more to show."
+
+        The bar is now a strip of chips — CHIP_H = lege_window::geometry::TAG_HEIGHT, on the compositor's own name-tag colours (design::TAG_FILL / TAG_INK, copied per contract K3, not shared — the shell does not link the compositor) — and the surface is exactly as wide as the chips are. There is no full-width shell ground at rest. Two things claim the width: a maximized window's controls, which belong at the right-hand end of the screen rather than beside the clock, and an open hover row, which needs somewhere to open into. `bar_screen::wanted_size(entries, activated, row_open, full_width)` is the single pure answer to which of those is true, and app.rs sizes the surface to it.
+
+        This rests on the K1 zone contract: the compositor no longer stretches a zone-holding surface to the output, so it also never configures the bar to the output width. The shell supplies that number from Home's own configured logical width — Home is Layer::HomeSurface with no zone, so it is still placed at the full output, and it is in the same process. The exclusive zone stays BAR_HEIGHT along the whole bottom edge whatever the surface's own extent is, so toggling between chips and full width moves no window.
+
+        Also fixed here, found while sizing the field: Home's inset subtracted a *logical* BAR_HEIGHT from a *physical* buffer height (app.rs redraw_home), so on a scaled output the field painted into the strip the bar covers.
+
+        **2026-09-07, second revision — the user reported "the bottom left is a mess". It was two things, and both are fixed here.**
+
+        *One: the bar surface was a black block.* The paragraph above that said "the narrow surface is what makes dropping the ground safe" was wrong, and the reasoning inverted. `softbuffer`'s Wayland backend attaches a `wl_shm::Format::Xrgb8888` buffer (softbuffer 0.4.8, `src/backends/wayland/buffer.rs:102,142`): **this surface has no alpha channel and can never be transparent.** `HostedWindow::prepare` never clears the buffer either. A strip that painted only its chips was therefore an opaque *black* rectangle 280x48 in the bottom-left corner of the screen, growing to 336/392/564 as windows opened, with the chips sitting on it — and full width, black, whenever a row opened or a window was maximized. Narrow does not mean invisible; it only meant the black block was small. `BarScreen::draw` now fills its whole extent with `design::ground()` — Home's own ground colour — before anything else, and `every_pixel_of_the_surface_is_painted` fails if any state ever leaves a pixel unwritten again. That is visually identical to transparency today, because nothing but Home is ever behind the bar: the compositor reserves BAR_HEIGHT along the bottom edge so no client reaches it, Home is placed at the full output, and Home paints a flat `ui.theme.background`.
+
+        *Two: Home painted a second row of widget controls inside the bar's strip.* Measured off Lane 1's nested screenshot rather than guessed: three boxes at y 752-782 (the output is 800 tall and the field ends at 752), x 463-725, 732-994 and 1001-1262, each of them the bottom 31 pixels of a widget tile — eight rows of `shell_fill`, then the `shell_low` region strip carrying Lock/Log out, Clear and Open, then the tile's bottom edge stroke. They were tiles placed a row below the document's own grid, and `lege_field::cell_rect` **extrapolates rather than clamping**: `edge()` is linear in the cell index with no bound at `count`, so a placement at `row == rows` is handed a rectangle one row below `bounds`, which is exactly the bar's strip. `FieldScreen::tile_rect` now passes every rectangle through `nudge_inside`, which shoves it back inside `self.bounds` at full size; paint and pointer both go through that one function, so the rectangle a person aims at and the rectangle that reacts move together.
+
+        That is a clamp at the paint, not a repair: the document should never hold a placement outside its own grid, which belongs to `lege_field`'s reflow (`set_grid` → `find_placement`) and not to this crate. Marked `ponytail:` in the code.
+
+        *Also:* a chip with no icon took its letter from the first character of the entry's label, and a one-window entry is labelled with its window title — so a kitty sitting in a directory put a chip reading "/" on the bar. `chip_initial` takes the application's own short name first and falls back to the first *alphanumeric* character of the title.
+
+        **Deferred, with its trigger and its route, so nobody re-derives it:** real per-pixel transparency needs an `Argb8888` surface instead of softbuffer's `Xrgb8888`. The cheap route is *not* a bridge-owned surface with wl_pointer routing — winit already owns the bar's `wl_surface` and already delivers its pointer events. It is: an alpha-preserving variant of `previews::ShmBuffer::write` (~10 lines, the existing `Argb8888` path `session_lock::paint` already uses), a bridge `attach_argb` reaching the surface through the raw window handle the way `set_layer` does (~70 lines with a cached buffer and `set_buffer_scale`), and skipping `HostedWindow::present` for the bar (~20 lines), plus tests — about 150 lines. **The trigger is a wallpaper or any non-flat Home ground.** `shell.wallpaper.enabled` is in the settings schema (`lege-session-core/src/settings.rs:136`) and nothing implements it; the day something does, the opaque ground stops matching what is behind it and this becomes required. Note also that pixelkit colours are `0x00RRGGBB` with no alpha, so alpha would have to be reconstructed by keying on the ground colour — which leaves antialiased chip edges opaque and ground-coloured.
+
+        One thing deliberately *not* changed: `wanted_size` stays computed after the paint in `redraw_bar`. `WindowEvent::Resized` already re-requests a redraw, so the one frame in which a chip is clipped by an out-of-date surface size self-corrects; moving the call before the paint would compute `row_open()` from the previous frame, and a row opened by the hover deadline would then get no room until some later redraw.
+        """
+    acceptance {
+        check a-chip-never-wears-punctuation {
+            statement """
+                A chip with no icon takes its letter from the application's own name, falling back to the first alphanumeric character of the title — never the leading slash of a path.
+                """
+            method command
+            command "cargo test -p lege-shell a_chip_takes_its_letter_from_the_application_and_never_from_punctuation"
+            verified_by [ @legeos.evidence.field-stays-above-the-bar-strip-20260907/1 ]
+        }
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [
+                @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1,
+                @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1,
+                @legeos.evidence.home-chips-projects-appearance-lock-20260907/1
+            ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: with nothing open the bottom of the screen shows only the network and clock chips, not a band across the screen, not a black block in the corner and no second row of tile controls beside them; each open application is one chip, groups first; hovering an application with two windows opens a row above the bar; a maximized window's park/maximize/close sit at the bar's right and act.
+                """
+            method manual
+        }
+        check no-bar-with-nothing-on-it {
+            statement """
+                The bar is the chip strip's own width normally, and the full output width only for a maximized window's controls or an open hover row; wanted_size is pure and the host sizes the surface to it.
+                """
+            method command
+            command "cargo test -p lege-shell wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check the-bar-is-not-a-black-block {
+            statement """
+                The bar surface writes every one of its own pixels in every state, so a surface that cannot be transparent (softbuffer attaches Xrgb8888) never shows as black behind the chips; the resting strip is chips on Home's own ground.
+                """
+            method command
+            command "cargo test -p lege-shell every_pixel_of_the_surface_is_painted"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+        check the-strip-holds-only-the-bar {
+            statement """
+                Home paints nothing in the bottom BAR_HEIGHT of the output: a tile placed outside the document's own grid is drawn back inside the field rather than one row below it, where cell_rect's extrapolation put it.
+                """
+            method command
+            command "cargo test -p lege-shell the_field_paints_nothing_in_the_bar_strip"
+            verified_by [ @legeos.evidence.field-stays-above-the-bar-strip-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.bottom-bar-taskbar/4 ]
+}
+
+record legeos.work.bottom-bar-taskbar/6 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state active
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by both paint and hit-test). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). The compositor edits need a logout; the bar itself is hot-swappable.
+
+        **2026-09-07, revised to the user's own decision:** "I do not want there to be a taskbar visible if there is nothing to show on it. Should just be tabs for the time/date/network status, like the tabs for windows. It can become a full row when there is something more to show."
+
+        The bar is now a strip of chips — CHIP_H = lege_window::geometry::TAG_HEIGHT, on the compositor's own name-tag colours (design::TAG_FILL / TAG_INK, copied per contract K3, not shared — the shell does not link the compositor) — and the surface is exactly as wide as the chips are. There is no full-width shell ground at rest. Two things claim the width: a maximized window's controls, which belong at the right-hand end of the screen rather than beside the clock, and an open hover row, which needs somewhere to open into. `bar_screen::wanted_size(entries, activated, row_open, full_width)` is the single pure answer to which of those is true, and app.rs sizes the surface to it.
+
+        This rests on the K1 zone contract: the compositor no longer stretches a zone-holding surface to the output, so it also never configures the bar to the output width. The shell supplies that number from Home's own configured logical width — Home is Layer::HomeSurface with no zone, so it is still placed at the full output, and it is in the same process. The exclusive zone stays BAR_HEIGHT along the whole bottom edge whatever the surface's own extent is, so toggling between chips and full width moves no window.
+
+        Also fixed here, found while sizing the field: Home's inset subtracted a *logical* BAR_HEIGHT from a *physical* buffer height (app.rs redraw_home), so on a scaled output the field painted into the strip the bar covers.
+
+        **2026-09-07, second revision — the user reported "the bottom left is a mess". It was one failure in two places, and both are fixed here: a surface that paints only part of itself keeps whatever was there before, because nothing clears these buffers (`HostedWindow::prepare` deliberately does not) and softbuffer's Wayland backend attaches `wl_shm::Format::Xrgb8888`, so there is no alpha to fall back on either.**
+
+        *One: the bar surface was a black block.* The paragraph above that said "the narrow surface is what makes dropping the ground safe" was wrong, and the reasoning inverted (softbuffer 0.4.8, `src/backends/wayland/buffer.rs:102,142`). A strip that painted only its chips was an opaque *black* rectangle 280x48 in the bottom-left corner, growing to 336/392/564 as windows opened — and full width, black, whenever a row opened or a window was maximized. Narrow does not mean invisible; it only meant the block was small. `BarScreen::draw` now fills its whole extent with `design::ground()` — Home's own ground colour — before anything else, and `every_pixel_of_the_surface_is_painted` fails if any state leaves a pixel unwritten again. That is visually identical to transparency today, because nothing but Home is ever behind the bar.
+
+        *Two: a row of widget controls sat inside the bar's strip, under the clock.* Measured off Lane 1's nested screenshot: three boxes at y 752-782 on an 800-tall output whose field ends at 752, each the bottom of a widget tile — body fill, then the `shell_low` region strip carrying Lock/Log out, Clear and Open, then the tile's bottom edge stroke. **They were stale pixels, not a stray placement.** `app.rs::redraw_home` insets the drawn area by BAR_HEIGHT only while `self.bar.is_some()`, and the bar is created after the bridge connects; the shell therefore draws several frames at the full height of the output, with tiles laid out down to the bottom edge. `FieldScreen::draw` then filled only `area`, Home's buffer is never cleared and its size never changes — so from the frame the bar appeared, nothing ever wrote to those last 48 rows again and they kept the bottoms of the taller frame's tiles for the rest of the session. `ui.painter.clear(ui.theme.background)` replaces the partial fill. The test draws one taller frame and then one inset frame into the same buffer; without the fix it reports 24606 stale pixels, the first at (377, 800) in `0x00d5dae0` — the tile edge colour measured at the box borders in the screenshot.
+
+        The document was never at fault, which is worth writing down because it is the obvious suspect: every `FieldOp` that places a tile goes through `FieldDocument::is_free`, which checks `Placement::fits`; `set_grid` reflows its misfits and leaves an unplaceable one unplaced; and `find_placement`, `nearest_free` and `yielded_placement` are all bounded by the grid. Replaying the real stored layout (29x17 with the five default tiles) through `SetGrid` to a 14x8 grid leaves every placement fitting. `FieldScreen::tile_rect` still passes every rectangle through `nudge_inside` as a **defence**, because `lege_field::cell_rect` extrapolates rather than clamping — `edge()` is linear in the cell index with no bound at `count` — so an out-of-grid placement, if one ever appeared, would be drawn on top of the bar.
+
+        *Also fixed here, found while tracing the `HomeField1.Apply refused: no such tile` warnings in the live journal:* `refresh_field` sent the grid resize and the merge as **two** fire-and-forget `spawn_field_apply` calls, two independent tasks on two D-Bus calls with no ordering between them. The resize has to land first — the merge's placements were chosen against the new grid — and when it did not, the daemon refused the batch while the shell kept the state it had already applied to itself, diverging the two documents for the rest of the session; every later sweep then names a tile the daemon never took, which is the run of warnings. It is now one ordered `Batch`, taken or refused whole, and the warn site names the op and its body.
+
+        *Also:* a chip with no icon took its letter from the first character of the entry's label, and a one-window entry is labelled with its window title — so a kitty sitting in a directory put a chip reading "/" on the bar. `chip_initial` takes the application's own short name first and falls back to the first *alphanumeric* character of the title. And `redraw_toast` filled a rounded rect over its whole surface, leaving four black corners for the same reason; it clears first now.
+
+        **Deferred, with its trigger and its route, so nobody re-derives it:** real per-pixel transparency needs an `Argb8888` surface instead of softbuffer's `Xrgb8888`. The cheap route is *not* a bridge-owned surface with wl_pointer routing — winit already owns the bar's `wl_surface` and already delivers its pointer events. It is: an alpha-preserving variant of `previews::ShmBuffer::write` (~10 lines, the existing `Argb8888` path `session_lock::paint` already uses), a bridge `attach_argb` reaching the surface through the raw window handle the way `set_layer` does (~70 lines with a cached buffer and `set_buffer_scale`), and skipping `HostedWindow::present` for the bar (~20 lines), plus tests — about 150 lines. **The trigger is a wallpaper or any non-flat Home ground.** `shell.wallpaper.enabled` is in the settings schema (`lege-session-core/src/settings.rs:136`) and nothing implements it; the day something does, the opaque ground stops matching what is behind it and this becomes required. Note also that pixelkit colours are `0x00RRGGBB` with no alpha, so alpha would have to be reconstructed by keying on the ground colour — which leaves antialiased chip edges opaque and ground-coloured.
+
+        One thing deliberately *not* changed: `wanted_size` stays computed after the paint in `redraw_bar`. `WindowEvent::Resized` already re-requests a redraw, so the one frame in which a chip is clipped by an out-of-date surface size self-corrects; moving the call before the paint would compute `row_open()` from the previous frame, and a row opened by the hover deadline would then get no room until some later redraw.
+        """
+    acceptance {
+        check a-chip-never-wears-punctuation {
+            statement """
+                A chip with no icon takes its letter from the application's own name, falling back to the first alphanumeric character of the title — never the leading slash of a path.
+                """
+            method command
+            command "cargo test -p lege-shell a_chip_takes_its_letter_from_the_application_and_never_from_punctuation"
+            verified_by [ @legeos.evidence.field-stays-above-the-bar-strip-20260907/1 ]
+        }
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [
+                @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1,
+                @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1,
+                @legeos.evidence.home-chips-projects-appearance-lock-20260907/1
+            ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: with nothing open the bottom of the screen shows only the network and clock chips, not a band across the screen, not a black block in the corner and no second row of tile controls beside them; each open application is one chip, groups first; hovering an application with two windows opens a row above the bar; a maximized window's park/maximize/close sit at the bar's right and act. The journal shows no run of `HomeField1.Apply refused`.
+                """
+            method manual
+        }
+        check no-bar-with-nothing-on-it {
+            statement """
+                The bar is the chip strip's own width normally, and the full output width only for a maximized window's controls or an open hover row; wanted_size is pure and the host sizes the surface to it.
+                """
+            method command
+            command "cargo test -p lege-shell wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check off-grid-tiles-stay-in-the-field {
+            statement """
+                A placement outside the document's own grid is drawn back inside the field rather than one row below it, where cell_rect's extrapolation would put it.
+                """
+            method command
+            command "cargo test -p lege-shell a_tile_placed_off_the_grid_is_drawn_back_inside_the_field"
+            verified_by [
+                @legeos.evidence.field-stays-above-the-bar-strip-20260907/1,
+                @legeos.evidence.home-clears-the-bar-strip-20260907/1
+            ]
+        }
+        check the-bar-is-not-a-black-block {
+            statement """
+                The bar surface writes every one of its own pixels in every state, so a surface that cannot be transparent (softbuffer attaches Xrgb8888) never shows as black behind the chips; the resting strip is chips on Home's own ground.
+                """
+            method command
+            command "cargo test -p lege-shell every_pixel_of_the_surface_is_painted"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+        check the-strip-holds-only-the-bar {
+            statement """
+                Home clears its whole buffer, so the bottom BAR_HEIGHT keeps nothing from the taller frames the shell draws before the bar exists.
+                """
+            method command
+            command "cargo test -p lege-shell the_bar_strip_never_keeps_pixels_from_a_taller_frame"
+            verified_by [ @legeos.evidence.home-clears-the-bar-strip-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.bottom-bar-taskbar/5 ]
+}
+
 record legeos.work.build-set-archive-verification/1 : work {
     title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
     state completed
@@ -434,6 +731,7 @@ record legeos.work.build-set-archive-verification/1 : work {
             method command
             command "cargo test -p lege repo"
             verified_by [
+                @legeos.evidence.archive-verification-checks-rerun-20260907/1,
                 @legeos.evidence.de01-integrated-gate-20260904,
                 @legeos.evidence.de01-integrated-gate-20260904/1
             ]
@@ -456,6 +754,7 @@ record legeos.work.build-set-archive-verification/1 : work {
             method command
             command "cargo test -p lege-build && just deb-plan"
             verified_by [
+                @legeos.evidence.archive-verification-checks-rerun-20260907/1,
                 @legeos.evidence.de01-integrated-gate-20260904,
                 @legeos.evidence.de01-version-authority-20260904,
                 @legeos.evidence.de01-version-authority-20260904/1
@@ -3092,6 +3391,65 @@ record legeos.work.home-surface-usability-next/1 : work {
     part_of [ @legeos.work.home-field ]
 }
 
+record legeos.work.home-visible-and-output-screenshot/1 : work {
+    title "Lane 1 — Home visible unless covered, and a whole-output screenshot the trusted shell can take"
+    state active
+    scope [
+        path "compositor/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/src/main.rs",
+        path "shell/lege-shell/src/screenshot.rs"
+    ]
+    intent """
+        Fix the black screen at login (Home hidden unless revealed) and give the project a way to see its own desktop: an `ext-image-capture-source-v1` output source filtered to the trusted shell, plus `lege-shell --screenshot PATH.png`.
+        """
+    note """
+        A `lege-comp` integration test that a maximized toplevel unmaps Home was deliberately not written. The crate has no harness that can build a `LegeCompState` with mapped surfaces — every test module in it is pure, and `Space` mapping needs real `wl_surface`s from a real client — so the fixture would cost far more than the fact is worth, given `WindowService::is_visible` owns that decision exclusively and `space_sync` consults nothing else. The predicate table test in `lege-window` is the authority; the nested-session run (compositor log plus screenshots) is the end-to-end evidence. Coordinator accepted this deferral on 2026-09-07.
+        """
+    acceptance {
+        check capture-globals-are-shell-only {
+            statement """
+                A client on the ordinary Wayland socket is not offered the output, toplevel or copy-capture globals, and a client on the trusted-shell socket is.
+                """
+            method command
+            command "cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.capture-globals-stay-shell-only ]
+        }
+        check crates-green {
+            statement """
+                lege-window, lege-comp and lege-shell build clean under pedantic clippy, their tests pass, and the interface gates are unchanged.
+                """
+            method command
+            command "cargo test -p lege-shell && cargo clippy -p lege-window -p lege-comp -p lege-shell --all-targets"
+            verified_by [ @legeos.evidence.lane-1-crates-clean ]
+        }
+        check home-predicate-table {
+            statement """
+                lege-window proves Home is visible with no windows and with a floating window, hidden by a maximized or fullscreen client, unaffected by a shelved one or by a maximized window on another output, and always visible during a reveal.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.home-visibility-predicate-table ]
+        }
+        check installed-session-logs-in-to-home {
+            statement """
+                After a logout and log back in, the installed LegeOS session shows the Home Field immediately, with no Super press, and hides it only when a window is maximized or fullscreen.
+                """
+            method manual
+        }
+        check nested-session-behaviour {
+            statement """
+                In a nested session the compositor log shows the Home surface mapped at start with no reveal, still mapped with a floating window, unmapped only while a maximized client is up, and mapped again when it closes; lege-shell --screenshot writes a correctly oriented PNG of each of those three states.
+                """
+            method observation
+            verified_by [ @legeos.evidence.nested-home-visibility-and-screenshot ]
+        }
+    }
+    implements [ @legeos.decision.home-surface-visible-unless-covered ]
+    part_of [ @legeos.work.files-windows-bookmarks-home-objects-20260907 ]
+}
+
 record legeos.work.home-widget-foundations/1 : work {
     title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
     state superseded
@@ -3339,6 +3697,76 @@ record legeos.work.host-update-transaction/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.iso-hardware-safety/1 : work {
+    title "The installation medium does not strand its owner — hardware inventory, seeds that cover it, a live preflight, rescue boot entries and the first ISO build"
+    state active
+    scope [
+        path "cli/lege/src/doctor/**",
+        path "distro/iso/**",
+        path "distro/seeds/selection.toml",
+        path "docs/measurements/hardware-inventory-*",
+        path "installer/provision.sh",
+        path "scripts/hardware-closure.sh",
+        path "scripts/hardware-inventory.sh",
+        path "tests/integration/iso-qemu.sh"
+    ]
+    intent """
+        Answer "will the ISO leave me without video or networking" before a USB stick is written, not after. Four parts: an inventory of the reference laptop joined to the package that provides each module and each firmware file on the base the medium is built from; the seeds carrying the hardware packages that only a Recommends would otherwise pull in; a live preflight (lege doctor --preflight) that the medium runs at boot and that legeos-install refuses to write over; and two rescue boot entries on the medium for the two ways a machine fails to reach a session.
+        """
+    note """
+        Lane 3 of campaign 2, integrated at 9b9ac2b (commits e066091, 8644461, 914acf7, db617e4). The closure route is one fetch of the pinned snapshot's Contents-amd64.gz, cached; the check itself is offline. Found on the first build attempt: a set published from the Ubuntu 25.10 host cannot install in resolute (legeos-comp depends on libdisplay-info2; resolute ships 3), so native packages are built in a resolute chroot by scripts/build-in-resolute.sh; the live rootfs drops legeos-nvidia-open (its postinst runs update-initramfs in an unshared chroot and fails the transaction). The unprivileged ISO build with the resolute-built set was in progress when the lane was stopped; its outcome is recorded on the iso-builds-and-boots check. laptop-boots-the-medium is the user's gate (RUNBOOK-L3.md).
+        """
+    acceptance {
+        check installer-refuses-a-failed-preflight {
+            statement """
+                legeos-install writes nothing when the medium's preflight report contains a failure, unless --ignore-preflight is passed.
+                """
+            method command
+            command "PREFLIGHT_REPORT=<a report with a fail line> installer/provision.sh --image /tmp/t.img --apply"
+            verified_by [ @legeos.evidence.installer-refuses-failed-preflight-20260907/1 ]
+        }
+        check inventory-and-closure {
+            statement """
+                The reference laptop's loaded modules and the firmware they use are joined to the resolute package that provides each, and no firmware in use is unprovided.
+                """
+            method command
+            command "scripts/hardware-inventory.sh docs/measurements/hardware-inventory-dk-82y3-20260907.json && scripts/hardware-closure.sh --inventory docs/measurements/hardware-inventory-dk-82y3-20260907.json"
+            verified_by [ @legeos.evidence.hardware-inventory-closure-rerun-20260907/1 ]
+        }
+        check iso-builds-and-boots {
+            statement """
+                distro/iso/build.sh produces an ISO from a resolute-built set, and tests/integration/iso-qemu.sh boots it under Secure-Boot OVMF and reads a passing preflight network line off the serial console.
+                """
+            method command
+            command "distro/iso/build.sh --work /var/tmp/legeos-build/@build --out /var/tmp/legeos-build && tests/integration/iso-qemu.sh"
+        }
+        check laptop-boots-the-medium {
+            statement """
+                The owner boots the written USB stick on the reference laptop with Secure Boot on, and the preflight report on the live session shows every line passing (or names exactly what did not).
+                """
+            method manual
+        }
+        check preflight-is-honest {
+            statement """
+                The live preflight passes a working machine, fails a machine with no bound driver and no input, calls a radio whose firmware did not load a failure rather than a skip, and skips a machine with no Wi-Fi at all — all against fixture trees, never the host.
+                """
+            method command
+            command "cargo test -p lege preflight"
+            verified_by [ @legeos.evidence.preflight-fixture-tests-20260907/1 ]
+        }
+        check seeds-regenerate {
+            statement """
+                The hardware layer's additions generate cleanly and name only packages that exist in the declared base.
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.campaign2-merged-gate-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
+    part_of [ @legeos.work.self-hosting-legeos ]
+}
+
 record legeos.work.logical-app-and-variant-identity/1 : work {
     title "WS5 — logical app + variant identity: provenance, trust tiers, variant-keyed rights"
     state completed
@@ -3393,6 +3821,73 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
     }
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.pcmanfm-qt-integration/1 : work {
+    title "pcmanfm-qt as the file manager: the role, the composition, and the three routes into filed"
+    state active
+    scope [
+        path "cli/lege/**",
+        path "crates/lege-session-core/src/providers.rs",
+        path "debian/legeos-cli.install",
+        path "distro/app-manifests/**",
+        path "distro/deploy/components.toml",
+        path "distro/seeds/selection.toml",
+        path "docs/architecture/files.md",
+        path "services/lege-filed/src/bookmarks.rs",
+        path "shell/lege-shell/src/surface/app.rs"
+    ]
+    intent """
+        Make `pcmanfm-qt` the session's file manager and take `lege-files` out of the composition. `ProviderRole::FileManager` becomes a derived capability off `Categories=FileManager` (`lege-session-core/src/providers.rs`), pcmanfm-qt at priority 100; `distro/app-manifests/org.legeos.Files.json` is deleted, so nothing claims the role or `inode/directory` on Files' behalf and no shipped manifest names an uninstalled executable. `FieldAction::OpenInFiles` stops hardcoding `org.legeos.Files` and resolves the role through the providers map (`app.rs::open_in_file_manager`), reusing the "Settings ▸ Providers" sentence every unfilled role uses. Seeds swap `lege-files` for `pcmanfm-qt` plus `qt6-wayland`; the `files` component stays in `distro/deploy/components.toml` because that matrix is the build set, not the image. Integration: two DES-EMA custom actions shipped by `legeos-cli` over two new CLI subcommands (`lege home place`, `lege project create-here`), and a one-way bookmarks export from filed to `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`.
+        """
+    note """
+        Two things the packet asked for turned out not to need doing. `session/lege-session` needs no `QT_QPA_PLATFORM`: pcmanfm-qt was launched against the nested compositor with the variable unset and Qt selected the Wayland plugin itself (`qt.qpa.wayland` in its own log; `lege_comp::xdg_shell toplevel mapped window_id=WindowId(5) layer=Some(Normal)` in the compositor's). And filed's `Trash1` already follows the freedesktop Trash specification on exactly the directories libfm-qt uses, so Home's Trash and pcmanfm-qt's are the same trash with no code written.
+
+        "Search here" is deferred rather than shipped: FSearch has no option to scope a search to a folder (`app.rs::search_everywhere` already says so), and pcmanfm-qt has its own Find. A menu entry that silently searched everywhere would be a lie.
+
+        `legeos.work.standalone-file-manager` is `completed`, not live, so there was nothing to supersede; this record cites it through the decision's `derived_from` instead.
+        """
+    acceptance {
+        check composition {
+            statement """
+                The seeds and the legeos-desktop metapackage name pcmanfm-qt and qt6-wayland and no longer name lege-files, and every generated file matches the selection.
+                """
+            method command
+            command "cargo run -q -p xtask -- seeds --check && cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+        check filed-routes {
+            statement """
+                The two CLI subcommands the custom actions call exist and are tested, and a bookmark mutation rewrites the GTK bookmarks file libfm-qt reads.
+                """
+            method command
+            command "cargo test -p lege create_here && cargo test -p lege-filed bookmarks"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: opening a folder from Home opens a pcmanfm-qt window with LegeOS chrome; "Add to Home" in its context menu puts that folder on the Home Field as a tile; "Create project here" makes a project named for the folder; a folder bookmarked in Home appears in pcmanfm-qt's Places.
+                """
+            method manual
+        }
+        check role-and-launch {
+            statement """
+                The FileManager role is derived from Categories=FileManager with pcmanfm-qt at priority 100, and nothing in the shell names an application to open a folder.
+                """
+            method command
+            command "cargo test -p lege-session-core providers && cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 ]
+        }
+        check runs-under-lege-comp {
+            statement """
+                pcmanfm-qt opens a folder window on lege-comp with LegeOS chrome and no QT_QPA_PLATFORM in its environment.
+                """
+            method observation
+            verified_by [ @legeos.evidence.pcmanfm-qt-under-lege-comp-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.pcmanfm-qt-is-the-file-manager ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.project-semantic-service/1 : work {
