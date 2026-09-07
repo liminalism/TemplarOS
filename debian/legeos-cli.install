@@ -1,1 +1,2 @@
 target/release/lege usr/bin/
+cli/lege/actions/*.desktop usr/share/file-manager/actions/

@@ -9,6 +9,47 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
 
+/// A project id derived from a folder, for `lege project create-here` — the route pcmanfm-qt's
+/// "Create project here" takes, where nobody is around to type an id.
+///
+/// Lowercase, `[a-z0-9-]` only, runs collapsed, ends trimmed. `taken` is every id that already
+/// exists; a collision takes the next free `-2`, `-3`, because `Projects1.Create` saves over an
+/// existing id without asking and losing somebody's project to a same-named folder is not an
+/// acceptable way to find that out.
+pub fn project_id_for(root: &std::path::Path, taken: &[String]) -> String {
+    let base: String = root
+        .file_name()
+        .unwrap_or(root.as_os_str())
+        .to_string_lossy()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let stem =
+        base.split('-')
+            .filter(|part| !part.is_empty())
+            .fold(String::new(), |mut out, part| {
+                if !out.is_empty() {
+                    out.push('-');
+                }
+                out.push_str(part);
+                out
+            });
+    let stem = if stem.is_empty() {
+        "project".to_owned()
+    } else {
+        stem
+    };
+    if !taken.contains(&stem) {
+        return stem;
+    }
+    // At most `taken.len()` of these candidates can be in use, so the range always has a free one.
+    (2..=taken.len() + 2)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|candidate| !taken.contains(candidate))
+        .expect("more candidates than there are existing ids")
+}
+
 /// What `lege project` needs from `org.legeos.Projects1`.
 #[async_trait]
 pub trait ProjectsClient {
@@ -367,6 +408,33 @@ mod tests {
         assert!(
             error.contains("You can set:") && error.contains("importance"),
             "the refusal has to say what is possible instead: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod create_here_tests {
+    use super::project_id_for;
+    use std::path::Path;
+
+    #[test]
+    fn a_folder_name_becomes_a_slug_and_a_collision_takes_the_next_free_suffix() {
+        assert_eq!(
+            project_id_for(Path::new("/home/dk/src/LegeOS"), &[]),
+            "legeos"
+        );
+        assert_eq!(
+            project_id_for(Path::new("/home/dk/My Notes (2026)!"), &[]),
+            "my-notes-2026"
+        );
+        // Nothing usable in the name at all, and the filesystem root, still produce an id.
+        assert_eq!(project_id_for(Path::new("/tmp/___"), &[]), "project");
+        assert_eq!(project_id_for(Path::new("/"), &[]), "project");
+        // A taken id never overwrites: Projects1.Create saves over one without asking.
+        let taken = vec!["legeos".to_owned(), "legeos-2".to_owned()];
+        assert_eq!(
+            project_id_for(Path::new("/home/dk/src/legeos"), &taken),
+            "legeos-3"
         );
     }
 }
