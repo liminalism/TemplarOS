@@ -50,19 +50,20 @@ struct Handle {
     identifier: Option<String>,
 }
 
-/// The shm buffer one session captures into.
+/// An shm buffer shared with the compositor: a pool file, the `wl_buffer` over it, and its
+/// dimensions. Captures read it (`read`); the lock screen writes it (`write`).
 #[derive(Debug)]
-struct ShmBuffer {
+pub(crate) struct ShmBuffer {
     file: File,
     pool: WlShmPool,
-    buffer: WlBuffer,
-    width: u32,
-    height: u32,
+    pub(crate) buffer: WlBuffer,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     stride: u32,
 }
 
 impl ShmBuffer {
-    fn destroy(&self) {
+    pub(crate) fn destroy(&self) {
         self.buffer.destroy();
         self.pool.destroy();
     }
@@ -70,6 +71,25 @@ impl ShmBuffer {
     /// Read the buffer back as a bitmap: the compositor wrote `Argb8888`, little-endian, which
     /// is `0xAARRGGBB` per `u32` — pixelkit's own packing — with alpha forced opaque, since a
     /// window preview is a thumbnail, not a compositing source.
+    /// Fill the pool with `pixels`, which are pixelkit's `0x00RRGGBB` — written out as
+    /// `Argb8888` little-endian (`0xAARRGGBB` per `u32`) with alpha forced opaque, because a
+    /// lock screen that lets the desktop show through is not a lock screen.
+    pub(crate) fn write(&self, pixels: &[u32]) -> Result<()> {
+        use std::os::unix::fs::FileExt as _;
+        let mut row = vec![0u8; self.stride as usize];
+        for y in 0..self.height {
+            let start = (y * self.width) as usize;
+            for x in 0..self.width as usize {
+                let pixel = pixels.get(start + x).copied().unwrap_or(0) | 0xff00_0000;
+                row[x * 4..x * 4 + 4].copy_from_slice(&pixel.to_le_bytes());
+            }
+            self.file
+                .write_all_at(&row, u64::from(y) * u64::from(self.stride))
+                .context("writing a lock-screen row")?;
+        }
+        Ok(())
+    }
+
     fn read(&self) -> Result<Bitmap> {
         let mut row = vec![0u8; self.stride as usize];
         let mut pixels = Vec::with_capacity((self.width * self.height) as usize);
@@ -133,6 +153,12 @@ pub struct PreviewState {
 }
 
 impl PreviewState {
+    /// The `wl_shm` this connection bound, shared with the lock screen: one binding of a global
+    /// is enough, and a second would be two objects for one thing.
+    pub(crate) fn shm(&self) -> Option<&WlShm> {
+        self.shm.as_ref()
+    }
+
     /// Bind whichever of the four globals `interface` is, if it is one of them.
     pub fn bind_global(
         &mut self,
@@ -282,7 +308,7 @@ impl PreviewState {
     }
 }
 
-fn allocate(
+pub(crate) fn allocate(
     shm: &WlShm,
     width: u32,
     height: u32,

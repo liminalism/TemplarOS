@@ -290,6 +290,8 @@ pub struct BridgeState {
     generation: u64,
     /// Window previews over the standard capture protocols (`crate::previews`).
     pub(crate) previews: crate::previews::PreviewState,
+    /// `ext-session-lock-v1` (`crate::session_lock`): what actually locks the session.
+    pub(crate) session_lock: crate::session_lock::SessionLockState,
     /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
     /// well as a privileged one, and this is the normal half.
     pub(crate) data: DataDeviceBridge,
@@ -357,6 +359,9 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
             } else {
                 state
                     .previews
+                    .bind_global(registry, name, &interface, version, qh);
+                state
+                    .session_lock
                     .bind_global(registry, name, &interface, version, qh);
             }
         }
@@ -437,13 +442,16 @@ impl Dispatch<WlKeyboard, ()> for BridgeState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
+        match &event {
             wl_keyboard::Event::Enter { serial, .. }
             | wl_keyboard::Event::Leave { serial, .. }
             | wl_keyboard::Event::Key { serial, .. }
-            | wl_keyboard::Event::Modifiers { serial, .. } => state.data.serials.record(serial),
+            | wl_keyboard::Event::Modifiers { serial, .. } => state.data.serials.record(*serial),
             _ => {}
         }
+        // The same keyboard is where the password arrives: while locked the compositor focuses
+        // the lock surface, and this connection's keyboard is the one that sees it.
+        crate::session_lock::keyboard_event(state, &event);
     }
 }
 
@@ -1250,6 +1258,64 @@ impl ShellBridge {
     /// Whether the compositor offered the capture globals on this connection.
     pub fn previews_available(&self) -> bool {
         self.state.previews.available()
+    }
+
+    /// Whether this connection can lock the session at all (`crate::session_lock`).
+    pub fn lock_available(&self) -> bool {
+        self.state.session_lock.available()
+    }
+
+    /// Whether a lock is up.
+    pub fn lock_engaged(&self) -> bool {
+        self.state.session_lock.engaged()
+    }
+
+    /// Whether the compositor confirmed it, or finished it without granting it.
+    pub fn lock_locked(&self) -> bool {
+        self.state.session_lock.locked()
+    }
+
+    pub fn lock_finished(&self) -> bool {
+        self.state.session_lock.finished()
+    }
+
+    /// Whether a lock surface changed size since the last paint.
+    pub fn lock_needs_paint(&self) -> bool {
+        self.state.session_lock.dirty
+    }
+
+    /// Lock the session: one surface per output, then paint them.
+    pub fn lock(&mut self) -> Result<()> {
+        let qh = self.queue.handle();
+        self.state.session_lock.lock(&qh)?;
+        self.connection.flush().context("flushing the session lock")
+    }
+
+    /// Paint every lock surface with `render`, which fills `width * height` pixels in pixelkit's
+    /// `0x00RRGGBB` for one surface.
+    pub fn paint_lock(&mut self, render: impl FnMut(u32, u32) -> Vec<u32>) -> Result<()> {
+        let qh = self.queue.handle();
+        let shm = self
+            .state
+            .previews
+            .shm()
+            .cloned()
+            .ok_or_else(|| anyhow!("the compositor offers no wl_shm on this connection"))?;
+        self.state.session_lock.paint(&shm, &qh, render)?;
+        self.connection
+            .flush()
+            .context("flushing the lock screen's frames")
+    }
+
+    /// Unlock and tear the surfaces down. Only this clears the compositor's lock.
+    pub fn unlock(&mut self) -> Result<()> {
+        self.state.session_lock.unlock();
+        self.connection.flush().context("flushing the unlock")
+    }
+
+    /// The keys the lock surfaces received since the last call.
+    pub fn take_lock_keys(&mut self) -> Vec<crate::session_lock::LockKey> {
+        self.state.session_lock.take_keys()
     }
 
     /// The foreign-toplevel identifier for `window_id`, once the compositor has relayed it —

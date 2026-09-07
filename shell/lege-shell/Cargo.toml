@@ -16,6 +16,15 @@ path = "src/lib.rs"
 name = "lege-shell"
 path = "src/main.rs"
 
+# The lock screen's authenticator. A separate binary rather than a separate crate: it is the
+# shell's own package that ships it, `cargo deb -p lege-shell` builds every bin of the crate, and
+# a workspace member of its own would need a `Package:` stanza in debian/control and a row in
+# distro/deploy/components.toml for a program that is one file. It is a separate *process*
+# because PAM loads arbitrary modules into whatever calls it, and that must not be the shell.
+[[bin]]
+name = "lege-unlock"
+path = "src/bin/lege-unlock.rs"
+
 [dependencies]
 lege-build = { workspace = true }
 lege-types = { workspace = true }
@@ -88,6 +97,13 @@ tempfile = { workspace = true }
 # icon that needs a font shaper or an embedded JPEG to draw is not a case worth linking a font
 # database into a restartable shell for, and without them this is a geometry rasterizer.
 resvg = { version = "0.45", default-features = false }
+# The lock screen decodes its own keys (src/session_lock.rs): a lock surface is not a winit
+# window, so winit's keyboard translation is not available to it. Already in the lock file — the
+# compositor's Smithay pulls the same version — so this is a new edge, not a new dependency.
+xkbcommon = "0.9"
+# PAM, for `lege-unlock` only (src/bin/lege-unlock.rs). `pam-client` wraps libpam's own
+# conversation contract rather than reimplementing it; the shell binary never calls it.
+pam-client = "0.5"
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-scanner = "0.31"
@@ -105,6 +121,10 @@ priority = "optional"
 depends = "$auto, legeos-sessiond, legeos-filed, wl-clipboard"
 assets = [
     ["target/release/lege-shell", "usr/bin/lege-shell", "755"],
+    # The lock screen's authenticator, and the PAM service that configures it. Not in
+    # /usr/bin: it is called by the shell, never by a person.
+    ["target/release/lege-unlock", "usr/libexec/lege-unlock", "755"],
+    ["assets/pam/lege-unlock", "etc/pam.d/lege-unlock", "644"],
     # kitty reads $XDG_CONFIG_DIRS before the person's own $XDG_CONFIG_HOME, so this is a
     # default the shell ships rather than a policy it imposes: ~/.config/kitty wins over
     # every line in it. It lives with the shell because it is the shell's palette

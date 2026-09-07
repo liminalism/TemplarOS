@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: LegeOS contributors <dev@legeos.org>
 Rules-Requires-Root: no
-Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, just
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, just, libpam0g-dev, libclang-dev
 Standards-Version: 4.7.0
 Homepage: https://legeos.org
 Vcs-Git: https://github.com/legeos/legeos.git
