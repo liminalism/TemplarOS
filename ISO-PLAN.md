@@ -124,21 +124,44 @@ so the first boot already has `current` = the set it was installed from and `leg
 converges. No network is needed to install; network is needed for the Ubuntu base unless P0.3 also
 caches a pool (optional; see P0.3).
 
-## Status (2026-09-05, evening)
+## Status (2026-09-07, evening)
 
-Done in the tree, gates green: P0.3 (closure resolved against resolute, three names fixed, snapshot
-pinned, tiers in the report), P1.1 (metapackages built into the set), P1.2 (provisioner shipped by
-`legeos-cli` as `legeos-install`), P1.3, P1.4 (`live` layer), P2.1–P2.3 (`--free-space`, `--esp
---root`, `--archive`, `--no-nvram` + appended firmware entry, chroot binds), P2.4's plan half
-(fixture disk in `provision-qemu.sh`), P3.1 (`distro/iso/build.sh`, `just iso`), P3.2/P3.3's harness
-(`tests/integration/iso-qemu.sh`, NOT EXECUTED until an ISO exists). Ledger: two decisions proposed,
-`@legeos.work.self-hosting-legeos` revised.
+Since the 2026-09-05 entry (P0.3, P1.1–P1.4, P2.1–P2.4's plan half, P3.1 and P3.2/P3.3's harness in
+the tree, gates green, nothing executed) the medium has been **built for the first time**, and the
+attempt found what the plan could not:
 
-Not run anywhere yet: an ISO build, the OVMF boot, an `--apply`. Waiting on: the btrfs build
-volume (P0.2, the commands were given), a published set with the metapackages (`just deb` then
-`sudo lege dev repo publish`), the nm-tray-2 push (P0.5), and P0.4 — which is blocked harder than
-the plan said: `../pixelkit` has **no git remote at all**, `../bpg-rs` is 5 commits ahead of origin
-and `../Lege-ecosystem` 41, so nothing can be pinned until those are pushed.
+- **Native packages have to be built in resolute.** The first bootstrap refused the set published
+  from this host: `legeos-comp : Depends: libdisplay-info2 (>= 0.2.0) but it is not installable` —
+  resolute ships `libdisplay-info3`. A package built on Ubuntu 25.10 carries 25.10's shared-library
+  dependencies, so `scripts/build-in-resolute.sh` (mmdebstrap chroot, unprivileged, no root) is now
+  the route to a set the medium can install, and P1's exit condition means a set built *there*.
+  That script needed `libclang-dev` and `libpam0g-dev` as well: the shell's PAM binding runs bindgen
+  at build time, which a developer host happens to have and a fresh chroot does not.
+- **Hardware safety, ahead of P4.** `scripts/hardware-inventory.sh` records what the reference
+  laptop loads; `scripts/hardware-closure.sh` joins that to the package providing each module and
+  firmware file, against the pinned snapshot's `Contents-amd64.gz` (one fetch, then offline).
+  Result in `docs/measurements/hardware-inventory-dk-82y3-20260907.md`: **no firmware in use is
+  unprovided**, and the three loaded modules with no resolute package are two renames and one
+  out-of-tree DKMS module. 26.04 has no `linux-modules-extra`; it splits `linux-firmware` per
+  vendor and lifts Intel Wi-Fi into `linux-modules-iwlwifi-generic`, which the `hardware` layer now
+  declares along with the four packages (`firmware-sof-signed`, `alsa-ucm-conf`, `wpasupplicant`,
+  `thermald`) that only a Recommends would otherwise pull in.
+- **§3/P3 gains a preflight and two rescue entries.** `lege doctor --preflight` answers, from
+  `/sys` and `/proc` alone, whether there is a DRM device with a driver, a render node, a network
+  interface with a driver, a registered radio, a sound card and input devices;
+  `legeos-preflight.service` runs it once on the live medium, leaves the report at
+  `/run/legeos/preflight.txt` and prints it to the console, and `legeos-install` refuses to write
+  when that report contains a failure (`--ignore-preflight` overrides). The medium's GRUB menu now
+  carries **safe graphics (no NVIDIA)** — which blacklists the NVIDIA stack rather than passing
+  `nomodeset`, since `nomodeset` would disable the Intel modesetting the session needs — and
+  **text console (no session)** (`systemd.unit=multi-user.target nomodeset`).
+  `tests/integration/iso-qemu.sh` now also asserts a passing `preflight-network` line.
+
+Still not run anywhere: the OVMF boot of a finished ISO, an `--apply` onto real hardware, and P4 in
+full. Still waiting on: the nm-tray-2 push (P0.5) and P0.4 — `../pixelkit` has no git remote at
+all, `../bpg-rs` is 5 commits ahead of origin and `../Lege-ecosystem` 41, so nothing can be pinned
+until those are pushed. P0.2's build volume is not needed as stated: `/var/tmp` on the root
+filesystem has the room, and `/mnt/Samsung980_1TB` stays out of it because it is NTFS.
 
 ## 4. Phases
 
