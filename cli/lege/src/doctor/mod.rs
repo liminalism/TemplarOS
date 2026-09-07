@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub mod checks;
 pub mod hardware;
+pub mod preflight;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

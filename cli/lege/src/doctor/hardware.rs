@@ -195,9 +195,21 @@ pub fn findings(context: &Context, options: &HardwareOptions) -> Vec<Finding> {
         return findings;
     }
 
+    // The live preflight comes first: on the installation medium it is the section that decides
+    // whether anything should be written to a disk at all, and `lege doctor --preflight` runs it
+    // on its own (main.rs) so an image check failing on a live medium cannot block an install.
+    let preflight = super::preflight::findings(context);
+    let preflight_ids: Vec<&'static str> = preflight.iter().map(|f| f.id).collect();
+    findings.extend(
+        preflight
+            .into_iter()
+            .filter(|f| options.check.as_deref().is_none_or(|id| id == f.id)),
+    );
+
     findings.extend(probe_findings(context, options.check.as_deref()));
 
     let mut known = BTreeSet::from(["gpu-mode"]);
+    known.extend(preflight_ids);
     known.extend(PROBES.iter().map(|spec| spec.id));
     let mut matched = 0usize;
     for embedded in CASES {

@@ -18,9 +18,9 @@ use lege::{
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
     FilesActionsProxy, FilesIndexProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy,
-    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HostDeploymentsProxy, HostDriversProxy,
-    HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy, PowerProxy,
-    ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
+    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HostDeploymentsProxy,
+    HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy,
+    PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
 use std::{
@@ -114,6 +114,14 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// The Home Field.
+    Home {
+        #[command(subcommand)]
+        command: HomeCommand,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+
     /// Project sessions.
     Project {
         #[command(subcommand)]
@@ -156,6 +164,10 @@ enum Command {
         /// Include hardware-matrix checks.
         #[arg(long)]
         hardware: bool,
+        /// Only the live preflight: can this machine run a session at all. What the installation
+        /// medium runs before an install, so an image check cannot block one.
+        #[arg(long, conflicts_with_all = ["hardware", "check", "profile"])]
+        preflight: bool,
         /// Select one hardware case or built-in check (for example `gpu-mode`).
         #[arg(long, requires = "hardware")]
         check: Option<String>,
@@ -487,6 +499,19 @@ enum SettingsCommand {
     },
 }
 
+/// `lege home` — the Home Field from the command line. One subcommand today, because one is what
+/// pcmanfm-qt's "Add to Home" needs; the rest of the field is `lege-shell --print field`.
+#[derive(Debug, Subcommand)]
+enum HomeCommand {
+    /// Place a folder on the Home Field as an object (`HomeField1.PlaceFolder`).
+    Place {
+        path: PathBuf,
+        /// The output whose field to place it on.
+        #[arg(long, default_value = "primary")]
+        output: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
     /// Every project and whether it is open (the default).
@@ -495,6 +520,11 @@ enum ProjectCommand {
         project_id: String,
         name: String,
         root: String,
+    },
+    /// Create a project rooted at a folder, deriving its id and name from the folder itself —
+    /// what pcmanfm-qt's "Create project here" runs, where nobody is around to type an id.
+    CreateHere {
+        path: PathBuf,
     },
     Open {
         project_id: String,
@@ -560,6 +590,30 @@ async fn main() -> Result<()> {
 }
 
 /// Print `value` as pretty JSON when `json`, otherwise the already-rendered `human` text.
+/// The folder a `%f` argument names, or a readable sentence saying why it is not one.
+fn folder_argument(path: &Path) -> Result<PathBuf> {
+    let root = std::fs::canonicalize(path)
+        .with_context(|| format!("{} does not exist", path.display()))?;
+    anyhow::ensure!(root.is_dir(), "{} is not a folder", root.display());
+    Ok(root)
+}
+
+async fn home_command(command: HomeCommand, json: bool) -> Result<()> {
+    let HomeCommand::Place { path, output } = command;
+    let root = folder_argument(&path)?;
+    let connection = bus::session().await?;
+    let proxy = HomeFieldProxy::new(&connection).await?;
+    let revision = proxy
+        .place_folder(&output, &root.to_string_lossy())
+        .await
+        .context("placing the folder on the Home Field")?;
+    emit(
+        json,
+        &serde_json::json!({"placed": root, "output": output, "revision": revision}),
+        &format!("placed {} on Home", root.display()),
+    )
+}
+
 fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(value)?);
@@ -607,6 +661,58 @@ fn run_dev(command: Option<DevCommand>, repo: PathBuf, root: &Path, json: bool) 
     }
 }
 
+/// `lege doctor` — the integration checks, and the exit code a caller acts on.
+///
+/// `--preflight` runs only the live hardware preflight, so that an image check with no answer on a
+/// live medium (a build set that is not installed there, say) cannot make the medium refuse to
+/// install itself.
+fn doctor_command(
+    root: PathBuf,
+    hardware: bool,
+    preflight: bool,
+    check: Option<String>,
+    profile: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let context = doctor::Context {
+        root,
+        hardware: hardware || preflight,
+    };
+    let findings = if preflight {
+        doctor::preflight::findings(&context)
+    } else {
+        doctor::run_all_with_hardware(
+            &context,
+            &doctor::hardware::HardwareOptions { check, profile },
+        )
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        let mut abbreviated = false;
+        for finding in &findings {
+            let detail = doctor::abbreviate(&finding.detail);
+            abbreviated |= detail != finding.detail;
+            println!(
+                "{:<12} {:<20} {}{}",
+                finding.outcome.label(),
+                finding.id,
+                finding.summary,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {detail}")
+                }
+            );
+        }
+        println!("\n{}", doctor::summarise(&findings));
+        if abbreviated {
+            println!("(detail shortened; `lege doctor --json` prints it in full)");
+        }
+    }
+    std::process::exit(doctor::exit_code(&findings));
+}
+
 async fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Dev {
@@ -624,41 +730,11 @@ async fn run() -> Result<()> {
         Command::Doctor {
             root,
             hardware,
+            preflight,
             check,
             profile,
             json,
-        } => {
-            let context = doctor::Context { root, hardware };
-            let findings = doctor::run_all_with_hardware(
-                &context,
-                &doctor::hardware::HardwareOptions { check, profile },
-            );
-            if json {
-                println!("{}", serde_json::to_string_pretty(&findings)?);
-            } else {
-                let mut abbreviated = false;
-                for finding in &findings {
-                    let detail = doctor::abbreviate(&finding.detail);
-                    abbreviated |= detail != finding.detail;
-                    println!(
-                        "{:<12} {:<20} {}{}",
-                        finding.outcome.label(),
-                        finding.id,
-                        finding.summary,
-                        if detail.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" — {detail}")
-                        }
-                    );
-                }
-                println!("\n{}", doctor::summarise(&findings));
-                if abbreviated {
-                    println!("(detail shortened; `lege doctor --json` prints it in full)");
-                }
-            }
-            std::process::exit(doctor::exit_code(&findings));
-        }
+        } => doctor_command(root, hardware, preflight, check, profile, json),
         Command::App { command, json } => app(command, json).await,
         Command::Open {
             target,
@@ -692,6 +768,7 @@ async fn run() -> Result<()> {
         Command::Settings { command, json } => {
             settings_command(command.unwrap_or(SettingsCommand::List), json).await
         }
+        Command::Home { command, json } => home_command(command, json).await,
         Command::Project { command, json } => {
             project_command(command.unwrap_or(ProjectCommand::List), json).await
         }
@@ -1552,6 +1629,26 @@ async fn project_command(command: ProjectCommand, json: bool) -> Result<()> {
                 json,
                 &serde_json::json!({"created": project_id}),
                 &format!("created project {project_id}"),
+            )
+        }
+        ProjectCommand::CreateHere { path } => {
+            let root = folder_argument(&path)?;
+            let taken: Vec<String> = project::ProjectsClient::list(&proxy)
+                .await?
+                .into_iter()
+                .map(|(id, ..)| id)
+                .collect();
+            let project_id = project::project_id_for(&root, &taken);
+            let name = root.file_name().map_or_else(
+                || root.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            project::ProjectsClient::create(&proxy, &project_id, &name, &root.to_string_lossy())
+                .await?;
+            emit(
+                json,
+                &serde_json::json!({"created": project_id, "root": root}),
+                &format!("created project {project_id} at {}", root.display()),
             )
         }
         ProjectCommand::Open { project_id } => {
