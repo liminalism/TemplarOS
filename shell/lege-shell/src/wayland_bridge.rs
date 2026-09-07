@@ -285,6 +285,9 @@ pub struct BridgeState {
     /// window exists. Counted rather than flagged: two quick presses are two launches asked for,
     /// and a flag would silently drop the second.
     terminal_requests: u32,
+    /// Bumped on every toplevel or reveal event, so a host can redraw when the window list
+    /// changed and only then, instead of on a timer.
+    generation: u64,
     /// Window previews over the standard capture protocols (`crate::previews`).
     pub(crate) previews: crate::previews::PreviewState,
     /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
@@ -595,6 +598,7 @@ impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
         match event {
             lege_shell_manager_v1::Event::HomeRevealed { revealed } => {
                 state.home_revealed = revealed != 0;
+                state.generation = state.generation.wrapping_add(1);
             }
             // The chord was pressed with no terminal window to toggle, so the launch is ours:
             // the compositor cannot start an application, and identity comes from the cgroup of
@@ -620,6 +624,7 @@ impl Dispatch<LegeShellToplevelListV1, ()> for BridgeState {
     ) {
         let lege_shell_toplevel_list_v1::Event::Toplevel { id } = event;
         state.toplevels.insert(id.id(), TrackedToplevel::new(id));
+        state.generation = state.generation.wrapping_add(1);
     }
 
     fn event_created_child(opcode: u16, qh: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
@@ -643,6 +648,7 @@ impl Dispatch<LegeShellToplevelV1, ()> for BridgeState {
     ) {
         // Handled before looking the object up: once closed, there is nothing left to update,
         // and holding a `get_mut` borrow across this arm would fight the removal below it.
+        state.generation = state.generation.wrapping_add(1);
         if matches!(event, lege_shell_toplevel_v1::Event::Closed) {
             state.toplevels.remove(&proxy.id());
             return;
@@ -1213,6 +1219,11 @@ impl ShellBridge {
     }
 
     /// Whether a "go home" reveal is in effect, as last reported by the compositor.
+    /// A counter that moves whenever the toplevel list or the reveal state changed.
+    pub fn generation(&self) -> u64 {
+        self.state.generation
+    }
+
     pub fn home_revealed(&self) -> bool {
         self.state.home_revealed
     }

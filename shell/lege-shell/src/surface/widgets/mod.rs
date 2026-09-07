@@ -12,7 +12,7 @@
 //!    in from a service (`legeos.constraint.services-not-indicators`). Nothing here talks to
 //!    D-Bus, so every widget is testable against a plain buffer.
 //! 2. **A refresh must never move a tile.** Snapshots change content only, which by the field's
-//!    own rule moves nothing (`docs/homefield.md`, "Do not let reflow destroy memory"; the
+//!    own rule moves nothing (`@legeos.decision.home-field-stable-bounded-semantic-grammar`; the
 //!    `content_changes_move_nothing` property).
 //! 3. **Regions are declared, not coded.** A [`WidgetRegion`] names an action from
 //!    [`lege_types::action::MANIFEST`], so the same declaration that gives an action its label,

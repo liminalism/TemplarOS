@@ -7,6 +7,7 @@
 //! `crate::wayland_bridge` for how it still reaches the compositor's private protocol from there.
 
 pub mod app;
+pub mod bar_screen;
 pub mod context_menu;
 pub mod design;
 pub mod field_screen;

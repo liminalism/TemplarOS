@@ -106,7 +106,6 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         icons: &empty_icons,
         home: None,
     };
-    let clock_label = crate::surface::app::clock_label_now();
     let data = FieldData {
         notifications: &[],
         field: &field,
@@ -120,7 +119,6 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         folder_listings: &empty_folder_listings,
         connected: false,
         home_revealed: false,
-        network_control_available: false,
         apps: &apps,
         apps_available,
         widgets: &widgets,
@@ -129,7 +127,6 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         actions: lege_types::action::MANIFEST,
         file_search: None,
         recents: &[],
-        clock_label: &clock_label,
         reduced_motion: true,
         now_ms: 0,
     };
@@ -153,7 +150,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 }
 
 /// `WindowBuffer` is 0xAARRGGBB in native order; PNG wants RGBA bytes.
-fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
+pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
     let mut rgba = Vec::with_capacity(buffer.pixels.len() * 4);
     for pixel in &buffer.pixels {
         rgba.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8, 0xff]);
@@ -409,7 +406,6 @@ mod tests {
             folder_listings: &HashMap::new(),
             connected: true,
             home_revealed: true,
-            network_control_available: false,
             apps: &apps,
             apps_available: true,
             widgets: &widgets,
@@ -418,7 +414,6 @@ mod tests {
             actions: lege_types::action::MANIFEST,
             file_search: None,
             recents: &recents,
-            clock_label: "Thu 27 Aug 10:15",
             reduced_motion: true,
             now_ms: 0,
         };
@@ -497,7 +492,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x5da6_419a_f863_3548,
+            hash, 0xdecb_56a2_222e_636f,
             "review the Home Field pixels before updating this baseline"
         );
     }

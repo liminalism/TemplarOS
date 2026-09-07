@@ -20,7 +20,7 @@ pub mod window_shelf;
 ///
 /// The Home Field draws tiles at whatever size they have been given, and a drawer used to receive
 /// only its listing — so a tile too short for the list showed the first line or two of it, clipped
-/// mid-path. `docs/homefield.md` asks for the opposite: "when a tile becomes too small for one
+/// mid-path. `@legeos.decision.home-field-stable-bounded-semantic-grammar` requires the opposite: when a tile becomes too small for one
 /// view, it chooses a simpler view rather than merely shrinking text and controls", with a file
 /// tray's compact state being its name and count. The system widgets already worked this way
 /// through `WidgetSnapshot`; drawers had no equivalent, so they could not climb the same ladder.

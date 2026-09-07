@@ -118,6 +118,11 @@ enum DataUpdate {
     Field(FieldDocument),
     /// `HomeField1` is not reachable: the field stays in-session.
     FieldUnavailable,
+    /// `HomeField1.Changed` fired: some client (this shell included) changed the document.
+    FieldChanged,
+    /// The document re-read after a change. Only what is new is taken from it, so an op this
+    /// shell applied a moment ago and has not yet heard back about is never undone by the read.
+    FieldRemote(FieldDocument),
     SearchResults {
         scope: Scope,
         query: String,
@@ -370,6 +375,14 @@ struct ShellApp {
         crate::surface::widgets::notifications::NotificationRow,
         Instant,
     )>,
+    /// The bottom bar (`crate::surface::bar_screen`): a `Layer::ShellOverlay` surface with a
+    /// bottom exclusive zone, absent only while a window is fullscreen.
+    bar: Option<HostedWindow>,
+    bar_screen: crate::surface::bar_screen::BarScreen,
+    /// Whether the bar surface was last sized to show its hover row.
+    bar_row_shown: bool,
+    /// The bridge generation the bar and Home were last drawn for.
+    bridge_generation: u64,
     /// The newest notification id a toast has been shown for, so re-fetches do not re-toast.
     /// `None` until the first fetch: whatever was already active at startup is old news and
     /// only sets the watermark.
@@ -450,6 +463,10 @@ impl ShellApp {
             notification_rows: Vec::new(),
             pending_toast: None,
             toast: None,
+            bar: None,
+            bar_screen: crate::surface::bar_screen::BarScreen::default(),
+            bar_row_shown: false,
+            bridge_generation: 0,
             last_toasted_id: None,
             browser_pending: None,
             browser_error: None,
@@ -588,6 +605,63 @@ impl ShellApp {
             };
             let _ = tx.send(update);
             let _ = proxy.send_event(Wake);
+        });
+    }
+
+    fn spawn_field_fetch_remote(&self, cols: u16, rows: u16) {
+        let tx = self.data_tx.clone();
+        let proxy = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            if let Some(doc) = crate::data::fetch_field(OUTPUT, cols, rows).await {
+                let _ = tx.send(DataUpdate::FieldRemote(doc));
+                let _ = proxy.send_event(Wake);
+            }
+        });
+    }
+
+    /// Take the tiles another client placed (a Files window's "Add to Home") exactly where the
+    /// daemon put them. Nothing already here is moved or removed.
+    fn adopt_remote_tiles(&mut self, remote: &FieldDocument) {
+        for (id, located) in &remote.located {
+            if self.field.tile(*id).is_some() {
+                continue;
+            }
+            let Some(tile) = remote.tile(*id) else {
+                continue;
+            };
+            let op = FieldOp::AddTile {
+                tile: tile.clone(),
+                at: Some(*located),
+                container: None,
+            };
+            match lege_field::apply(&self.field, &op) {
+                Ok((next, _)) => self.field = next,
+                Err(error) => tracing::warn!(%error, "adopting a tile placed elsewhere"),
+            }
+        }
+    }
+
+    /// Re-read the field when `HomeField1.Changed` says another client wrote to it.
+    fn spawn_field_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = lege_client::proxies::HomeFieldProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            while changed.next().await.is_some() {
+                if tx.send(DataUpdate::FieldChanged).is_err() {
+                    return;
+                }
+                let _ = proxy_wake.send_event(Wake);
+            }
         });
     }
 
@@ -835,27 +909,6 @@ impl ShellApp {
         });
     }
 
-    /// Place a folder window for `path` on the field, or do nothing when one is already there —
-    /// the tile id is derived from the path, so "already there" is exact rather than a guess.
-    fn open_folder_window(&mut self, path: &std::path::Path) {
-        let ops = field_model::open_folder_ops(&self.field, path);
-        if ops.is_empty() {
-            return;
-        }
-        for op in ops {
-            match lege_field::apply(&self.field, &op) {
-                Ok((next, _)) => {
-                    self.field = next;
-                    if self.field_synced == Some(true) {
-                        self.spawn_field_apply(op);
-                    }
-                }
-                Err(error) => tracing::warn!(%error, "opening a folder window"),
-            }
-        }
-        self.spawn_folder_browse(path.to_path_buf());
-    }
-
     fn spawn_open_file(&mut self, path: PathBuf) {
         self.browser_status = Some(format!("Opening {}…", path.display()));
         let tx = self.data_tx.clone();
@@ -1019,6 +1072,12 @@ impl ShellApp {
                         self.field_synced = Some(false);
                     }
                 }
+                DataUpdate::FieldChanged => {
+                    if self.field_synced == Some(true) {
+                        self.spawn_field_fetch_remote(self.field.cols, self.field.rows);
+                    }
+                }
+                DataUpdate::FieldRemote(doc) => self.adopt_remote_tiles(&doc),
                 DataUpdate::SearchResults {
                     scope,
                     query,
@@ -1217,7 +1276,7 @@ impl ShellApp {
         }
     }
 
-    /// The preview policy (`docs/homefield.md`, "Resource and security implications"): `Off`
+    /// The preview policy (`@legeos.decision.home-field-stable-bounded-semantic-grammar`): `Off`
     /// asks for nothing; `Static` asks once per window, and again when it is parked; `Live`
     /// asks at the preview rate for every session tile. Arrived previews are filed under the
     /// tile's own identifier. The compositor's own floor of four frames a second per window
@@ -1323,16 +1382,27 @@ impl ShellApp {
             .window
             .inner_size()
             .to_logical::<f64>(home.window.scale_factor());
-        self.refresh_field(logical.width as i32, logical.height as i32, &toplevels);
-        let network_control_available = network_control_app(&self.apps).is_some();
-        let clock_label = local_clock_label(std::time::SystemTime::now());
+        // The bar covers the bottom strip of the output, on Home too; the field ends above it.
+        let bar_inset = if self.bar.is_some() {
+            crate::surface::bar_screen::BAR_HEIGHT
+        } else {
+            0
+        };
+        self.refresh_field(
+            logical.width as i32,
+            logical.height as i32 - bar_inset,
+            &toplevels,
+        );
         self.flush_search();
 
         let Some(home) = &mut self.home else { return };
         if !home.prepare() {
             return;
         }
-        let (width, height) = (home.buffer.width as i32, home.buffer.height as i32);
+        let (width, height) = (
+            home.buffer.width as i32,
+            home.buffer.height as i32 - bar_inset,
+        );
         // A search result is shown only while it still answers the question on screen: the same
         // scope and the same query. The staleness guard is the one it always was, keyed on the
         // scope now that a drawer is not a thing.
@@ -1402,7 +1472,6 @@ impl ShellApp {
             folder_listings: &self.folder_listings,
             connected: self.bridge.is_some(),
             home_revealed,
-            network_control_available,
             apps: &self.apps,
             apps_available: self.apps_available,
             widgets: &self.widgets,
@@ -1411,7 +1480,6 @@ impl ShellApp {
             actions: lege_types::action::MANIFEST,
             file_search,
             recents: &recents,
-            clock_label: &clock_label,
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
         };
@@ -1430,6 +1498,9 @@ impl ShellApp {
         };
         home.input.end_frame();
         home.present();
+        if let Some(bar) = &self.bar {
+            bar.request_redraw();
+        }
 
         for action in actions {
             self.perform(action);
@@ -1500,7 +1571,9 @@ impl ShellApp {
                 show_hidden,
             } => self.spawn_browse(location, show_hidden),
             FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path),
-            FieldAction::OpenFolderWindow(path) => self.open_folder_window(&path),
+            FieldAction::OpenFolderWindow(path) => {
+                self.perform(FieldAction::OpenInFiles(path));
+            }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => match "org.legeos.Files".parse::<AppId>() {
                 Ok(app_id) => {
@@ -1931,6 +2004,189 @@ impl ShellApp {
                 self.toast = Some((hosted, row, Instant::now()));
             }
             Err(error) => tracing::warn!(%error, "presenting the notification toast"),
+        }
+    }
+
+    /// Create the bottom bar once the compositor connection is up, and drop it while a window is
+    /// fullscreen (`Layer::ShellOverlay` would cover the video). Both claims are declared before
+    /// the first commit maps the surface, so the compositor never sees it as an app window.
+    fn ensure_bar(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        toplevels: &[lege_window::ShellToplevel],
+    ) {
+        let fullscreen = toplevels.iter().any(|t| t.fullscreen && !t.shelved);
+        if fullscreen {
+            self.bar = None;
+            self.bar_row_shown = false;
+            return;
+        }
+        if self.bar.is_some() {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        let width = self.home.as_ref().map_or(800.0, |home| {
+            home.window
+                .inner_size()
+                .to_logical::<f64>(home.window.scale_factor())
+                .width
+        });
+        let height = f64::from(crate::surface::bar_screen::BAR_HEIGHT);
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Bar")
+                .with_decorations(false)
+                .with_inner_size(LogicalSize::new(width, height)),
+        ) {
+            Ok(window) => std::sync::Arc::new(window),
+            Err(error) => {
+                tracing::warn!(%error, "creating the bar window");
+                return;
+            }
+        };
+        if let Err(error) = bridge.set_layer(&window, lege_window::Layer::ShellOverlay) {
+            tracing::warn!(%error, "declaring the bar onto Layer::ShellOverlay");
+        }
+        if let Err(error) = bridge.set_exclusive_zone(
+            &window,
+            lege_window::geometry::Edge::Bottom,
+            crate::surface::bar_screen::BAR_HEIGHT as u32,
+        ) {
+            tracing::warn!(%error, "reserving the bar's exclusive zone");
+        }
+        match HostedWindow::new(window) {
+            Ok(hosted) => {
+                hosted.request_redraw();
+                self.bar = Some(hosted);
+                self.bar_row_shown = false;
+            }
+            Err(error) => tracing::warn!(%error, "presenting the bar"),
+        }
+    }
+
+    /// Paint the bar and act on what was clicked. The window list is the bridge's; the entries
+    /// are computed fresh each frame (`crate::taskbar::entries`), which is a few dozen windows at
+    /// most.
+    fn redraw_bar(&mut self) {
+        let toplevels = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default();
+        let entries = crate::taskbar::entries(&toplevels);
+        let keys: Vec<String> = entries.iter().filter_map(|e| e.app_id.clone()).collect();
+        for key in keys {
+            self.ensure_icon(&key);
+        }
+        let activated = toplevels
+            .iter()
+            .find(|t| t.activated)
+            .map(|t| (t.window_id, t.maximized));
+        let network_control_available = network_control_app(&self.apps).is_some();
+        let clock_label = local_clock_label(std::time::SystemTime::now());
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let Some(bar) = &mut self.bar else {
+            return;
+        };
+        if !bar.prepare() {
+            return;
+        }
+        let area =
+            pixelkit_raster::Rect::new(0, 0, bar.buffer.width as i32, bar.buffer.height as i32);
+        let data = crate::surface::bar_screen::BarData {
+            entries: &entries,
+            icons: &self.icons,
+            clock_label: &clock_label,
+            network_control_available,
+            activated,
+            now_ms,
+        };
+        let actions = {
+            let mut ui = Ui::new(
+                Painter::new(&mut bar.buffer),
+                &mut self.text,
+                &mut bar.input,
+                self.theme,
+                bar.scale,
+                &mut self.kernel,
+            );
+            self.bar_screen.draw(&mut ui, area, &data)
+        };
+        bar.input.end_frame();
+        bar.present();
+        // The row wants room above the bar: ask for a taller surface while it is open. The
+        // exclusive zone is unchanged, so nothing reflows (the compositor treats the zone as a
+        // floor on the surface's thickness).
+        let row_shown = self.bar_screen.row_open();
+        if row_shown != self.bar_row_shown {
+            self.bar_row_shown = row_shown;
+            let height = crate::surface::bar_screen::BAR_HEIGHT
+                + if row_shown {
+                    crate::surface::bar_screen::ROW_BAND
+                } else {
+                    0
+                };
+            let width = bar
+                .window
+                .inner_size()
+                .to_logical::<f64>(bar.window.scale_factor())
+                .width;
+            let _ = bar
+                .window
+                .request_inner_size(LogicalSize::new(width, f64::from(height)));
+        }
+        for action in actions {
+            use crate::surface::bar_screen::BarAction;
+            match action {
+                BarAction::Activate(window) => self.perform(FieldAction::Activate(window)),
+                BarAction::Window { id, window } => {
+                    self.perform(FieldAction::RunWindowAction { id, window });
+                }
+                BarAction::Field(action) => self.perform(action),
+                BarAction::SetMaximized(window, maximized) => {
+                    self.bridge_call("set_maximized", |bridge| {
+                        bridge.set_maximized(window, maximized)
+                    });
+                }
+            }
+        }
+    }
+
+    /// The bar's window events: pointer and redraw only — the bar never reads the keyboard.
+    fn bar_event(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::RedrawRequested => self.redraw_bar(),
+            WindowEvent::CloseRequested => self.bar = None,
+            _ => {
+                let Some(bar) = &mut self.bar else {
+                    return;
+                };
+                match event {
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                            bar.scale = pixelkit_shell::Scale::new(*scale_factor);
+                        }
+                        bar.request_redraw();
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        bar.input.cursor_moved(position.x as f32, position.y as f32);
+                        bar.request_redraw();
+                    }
+                    WindowEvent::CursorLeft { .. } => {
+                        bar.input.cursor_left();
+                        bar.request_redraw();
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        if let Some(button) = translate_button(*button) {
+                            bar.input.mouse(button, *state == ElementState::Pressed);
+                            bar.request_redraw();
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -3096,6 +3352,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         };
         self.spawn_refresh_loop();
         self.spawn_trash_watch();
+        self.spawn_field_watch();
         self.spawn_notifications_watch();
         self.spawn_providers_watch();
         if let Some(home) = &self.home {
@@ -3138,6 +3395,14 @@ impl ApplicationHandler<Wake> for ShellApp {
                 }
                 _ => {}
             }
+            return;
+        }
+        let is_bar = self
+            .bar
+            .as_ref()
+            .is_some_and(|bar| bar.window.id() == window_id);
+        if is_bar {
+            self.bar_event(&event);
             return;
         }
         let is_home = self
@@ -3227,6 +3492,24 @@ impl ApplicationHandler<Wake> for ShellApp {
         }
         self.drain_updates();
         self.ensure_toast(event_loop);
+        let toplevels = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default();
+        self.ensure_bar(event_loop, &toplevels);
+        // The window list moved: Home's session tiles and the bar both show it, so both redraw
+        // now rather than on the next slow sweep.
+        let generation = self.bridge.as_ref().map_or(0, ShellBridge::generation);
+        if generation != self.bridge_generation {
+            self.bridge_generation = generation;
+            if let Some(home) = &self.home {
+                home.request_redraw();
+            }
+            if let Some(bar) = &self.bar {
+                bar.request_redraw();
+            }
+        }
         if self
             .toast
             .as_ref()
@@ -3247,7 +3530,8 @@ impl ApplicationHandler<Wake> for ShellApp {
             home.request_redraw();
         }
         // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
-        // ghost follows the pointer and a throw's velocity is sampled evenly.
+        // ghost follows the pointer and a throw's velocity is sampled evenly. Otherwise the next
+        // wake is the earliest of the toast's lifetime and the bar's hover timers.
         if self.field_screen.animating() {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
@@ -3255,11 +3539,30 @@ impl ApplicationHandler<Wake> for ShellApp {
             if let Some(home) = &self.home {
                 home.request_redraw();
             }
-        } else if let Some((_, _, shown)) = &self.toast {
-            let deadline = *shown + Self::TOAST_LIFETIME;
-            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline.max(Instant::now())));
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        let toast_deadline = self
+            .toast
+            .as_ref()
+            .map(|(_, _, shown)| *shown + Self::TOAST_LIFETIME);
+        let bar_deadline = self.bar.as_ref().and_then(|bar| {
+            let entries = crate::taskbar::entries(&toplevels);
+            let deadline_ms = self.bar_screen.next_deadline_ms(&entries)?;
+            let deadline = self.started + Duration::from_millis(deadline_ms);
+            if deadline <= Instant::now() {
+                bar.request_redraw();
+            }
+            Some(deadline)
+        });
+        let deadline = match (toast_deadline, bar_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match deadline {
+            Some(deadline) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline.max(Instant::now())));
+            }
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
