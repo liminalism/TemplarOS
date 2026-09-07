@@ -37,10 +37,16 @@ timeout "$timeout" qemu-system-x86_64 \
 [ -s "$serial" ] || fail "no serial output at all from $iso"
 grep -qi 'Security Violation\|Verification failed\|MokManager' "$serial" \
     && fail "the firmware refused something in the chain (see: $(grep -i 'Security Violation\|Verification failed\|MokManager' "$serial" | head -1))"
-grep -q 'boot=casper' "$serial" || fail "the kernel never started (no casper command line on the console)"
-grep -qi 'Secure boot enabled' "$serial" || fail "the kernel did not report Secure Boot enabled"
-grep -q 'Reached target .*Graphical Interface\|Started .*greetd\|legeos-live login:' "$serial" \
-    || fail "userspace did not reach the session (last lines: $(tail -3 "$serial" | tr '\n' '|'))"
+# The medium boots with `quiet`, which keeps the kernel's own "Command line:" and "Secure boot
+# enabled" lines off the console; legeos-preflight.service prints the command line, the firmware's
+# SecureBoot variable and the report to ttyS0 itself (/usr/lib/legeos/live-report, written by
+# distro/iso/live/customize.sh). The getty banner proves userspace came up regardless.
+grep -q 'legeos-live login:' "$serial" \
+    || fail "userspace did not reach a login (last lines: $(tail -3 "$serial" | tr '\n' '|'))"
+grep -q 'legeos-live cmdline: .*boot=casper' "$serial" \
+    || fail "the live report never printed the casper command line (legeos-preflight.service did not run?)"
+grep -q 'legeos-live secure-boot: 1' "$serial" \
+    || fail "the firmware did not report Secure Boot enforcing ($(grep 'legeos-live secure-boot' "$serial" | head -1))"
 
 # The medium's own hardware preflight, read off the console it printed to (legeos-preflight.service
 # in distro/iso/live/customize.sh). QEMU gives the guest a virtio-net device, so `preflight-network`

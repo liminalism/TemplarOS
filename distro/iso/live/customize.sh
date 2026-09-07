@@ -66,13 +66,35 @@ Type=oneshot
 RemainAfterExit=yes
 StandardOutput=journal+console
 StandardError=journal+console
-ExecStart=/bin/sh -c 'mkdir -p /run/legeos; lege doctor --preflight > /run/legeos/preflight.txt 2>&1 || true; cat /run/legeos/preflight.txt'
+ExecStart=/bin/sh -c 'mkdir -p /run/legeos; lege doctor --preflight > /run/legeos/preflight.txt 2>&1 || true; cat /run/legeos/preflight.txt; /usr/lib/legeos/live-report'
 
 [Install]
 WantedBy=multi-user.target
 CONF
 ln -sf ../../../../usr/lib/systemd/system/legeos-preflight.service \
     "$rootfs/etc/systemd/system/multi-user.target.wants/legeos-preflight.service"
+# The same report, plus the kernel command line and the firmware's Secure Boot byte, onto the
+# serial port when there is one. `quiet` keeps the kernel's own "Command line:" and "Secure boot
+# enabled" lines off the console, and journal+console goes to /dev/console, which is tty0 on the
+# medium — so tests/integration/iso-qemu.sh reads this, not the kernel log. A laptop has no ttyS0
+# and this prints nothing.
+mkdir -p "$rootfs/usr/lib/legeos"
+cat > "$rootfs/usr/lib/legeos/live-report" <<'REPORT'
+#!/bin/sh
+# LIVE MEDIUM ONLY — written by distro/iso/live/customize.sh.
+[ -c /dev/ttyS0 ] || exit 0
+{
+    printf 'legeos-live cmdline: %s\n' "$(cat /proc/cmdline)"
+    sb=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+    if [ -r "$sb" ]; then
+        printf 'legeos-live secure-boot: %s\n' "$(od -An -tu1 -j4 -N1 "$sb" | tr -d ' ')"
+    else
+        printf 'legeos-live secure-boot: no-efivar\n'
+    fi
+    cat /run/legeos/preflight.txt
+} > /dev/ttyS0 2>/dev/null || true
+REPORT
+chmod 0755 "$rootfs/usr/lib/legeos/live-report"
 
 # The live initramfs: casper's hooks go in when initramfs-tools runs with casper installed.
 chroot "$rootfs" update-initramfs -u -k all
