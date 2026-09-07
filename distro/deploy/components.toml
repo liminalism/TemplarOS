@@ -220,6 +220,10 @@ activation = "relaunch"
 depends_on = ["sessiond"]
 summary = "Settings application"
 
+# Built and packaged, but no longer part of the desktop composition: pcmanfm-qt is the file
+# manager (docs/architecture/files.md). It stays a component because this matrix is the build
+# set — what `cargo xtask build-set` builds and what debian/control ships — not the image
+# seeds, which are `distro/seeds/selection.toml` and no longer name it.
 [[component]]
 name = "files"
 crate = "lege-files"
@@ -227,7 +231,7 @@ package = "lege-files"
 scope = "none"
 activation = "relaunch"
 depends_on = ["sessiond", "filed"]
-summary = "standalone file manager"
+summary = "standalone file manager, out of the default composition"
 
 [[component]]
 name = "portal"
