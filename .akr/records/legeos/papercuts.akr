@@ -200,6 +200,17 @@ record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
     created_at 2026-09-02
 }
 
+record legeos.papercut.all-three-pre-iso-lanes-were-told-to-keep-a/1 : papercut {
+    title "All three pre-ISO lanes were told to keep a running COMMITS.md in…"
+    state verified
+    statement """
+        All three pre-ISO lanes were told to keep a running COMMITS.md in ".agent/scratch/pre-iso/", but that is one shared directory and the filename is not lane-scoped, so Lane 1's file silently overwrote Lane 2's. Lane-scoped names (lane-2-COMMITS.md) fix it; the lane rules should name the file per lane.
+        """
+    observed_at git:3f796cf218ad2416629d9c5f793b1bf483e91505
+    author "claude"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 : papercut {
     title "Building the metapackages with dpkg-deb from a staging tree under…"
     state verified
@@ -502,6 +513,30 @@ record legeos.papercut.just-msrv-fails-on-this-machine-at-any-commit/1 : papercu
     created_at 2026-08-31
 }
 
+record legeos.papercut.knowledge-complete-refuses-a-check-whose/1 : papercut {
+    title "`knowledge.complete` refuses a check whose evidence is an observation…"
+    state verified
+    statement """
+        `knowledge.complete` refuses a check whose evidence is an observation record rather than an evidence record with `result: pass`, but the error only says "does not record `result pass`" — it took a retry to work out that the fix was to author an evidence record, not to point the check at the observation that states the fact. A line in the help like "cite an evidence record; an observation cannot satisfy a check" would have saved the round trip.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    about "akr"
+    author "claude"
+    created_at 2026-09-07
+}
+
+record legeos.papercut.knowledge-context-on-legeos-work-home-surface/1 : papercut {
+    title "knowledge.context on legeos.work.home-surface-usability-next returns a…"
+    state verified
+    statement """
+        knowledge.context on legeos.work.home-surface-usability-next returns a ~24k-token bundle against a 4k hard limit, so the first call always truncates and the suggested continuation (budget_tokens: 2000) drops most of it. Reading the nine named records with knowledge.get worked; a goal with this many descendants may need paths to narrow it more aggressively by default.
+        """
+    observed_at git:3f796cf218ad2416629d9c5f793b1bf483e91505
+    about "akr"
+    author "claude"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.knowledge-evidence-add-many-returned-wrote/1 : papercut {
     title "knowledge.evidence_add_many returned wrote:false because an observed_at…"
     state verified
@@ -548,6 +583,30 @@ record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     about "akr"
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.knowledge-revise-rejects-state-accepted-for-a/1 : papercut {
+    title "`knowledge.revise` rejects `state: \"accepted\"` for a decision with…"
+    state verified
+    statement """
+        `knowledge.revise` rejects `state: "accepted"` for a decision with "accepted is not a lifecycle state", but the tool schema does not list the valid states and the error does not name them either — `akr explain decision` does (proposed, active, rejected, superseded, withdrawn). Putting the lifecycle in the rejection message would make the retry unnecessary.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    about "akr"
+    author "claude"
+    created_at 2026-09-07
+}
+
+record legeos.papercut.knowledge-revise-replaces-the-whole-sources/1 : papercut {
+    title "knowledge.revise replaces the whole `sources` block, and re-supplying a…"
+    state verified
+    statement """
+        knowledge.revise replaces the whole `sources` block, and re-supplying a citation with only kind/document/byte-range silently drops its `role`, `use` and `excerpt_hash`. For a source finalized with `--retain cited` (availability cited-only), losing excerpt_hash turns a valid citation into an AKR-S022 error, because retention is keyed on the hash and not on the byte range that is still present and unchanged. Worse, if the record was `proposed` the revise edits that revision in place, so the damage lands on rev 1 and cannot be undone by another revise (base_rev must equal the head, which is now rev 2) — it takes a git restore of the record file. Suggestion: either carry forward a citation's retained-fragment identity when a revise re-supplies the same document and byte range, or refuse the write with the same S022 message rather than accepting it and reporting the error only at the next validate.
+        """
+    observed_at git:ea6c300016980fc83964d05cae0a9cf0e5417014
+    about "akr"
+    author "claude-opus-5"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.knowledge-validate-resolved-the-shared-parent/1 : papercut {
@@ -718,6 +777,17 @@ record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
     created_at 2026-09-03
 }
 
+record legeos.papercut.scripts-nested-session-sh-start-on-the-xorg/1 : papercut {
+    title "scripts/nested-session.sh start on the Xorg development host fails with…"
+    state verified
+    statement """
+        scripts/nested-session.sh start on the Xorg development host fails with "line 94: WAYLAND_DISPLAY: unbound variable" because start_comp assumes a Wayland host to nest into, although lege-comp's winit backend nests into X11 fine when started by hand with DISPLAY=:0 and WAYLAND_DISPLAY unset. The script should accept an X11 host (keep DISPLAY when there is no WAYLAND_DISPLAY) or say so in one line instead of a bash trace.
+        """
+    observed_at git:243057df8a6c633bf6851c5c935eb0380317438c
+    author "claude"
+    created_at 2026-09-07
+}
+
 record legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 : papercut {
     title "scripts/nested-session.sh stop leaves lege-sessiond and lege-filed…"
     state verified
@@ -727,6 +797,17 @@ record legeos.papercut.scripts-nested-session-sh-stop-leaves-lege/1 : papercut {
     observed_at git:d8479737e5a64fbb0e943c838ef39087650371ba
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.scripts-nested-session-sh-stop-left-lege/1 : papercut {
+    title "scripts/nested-session.sh stop left lege-sessiond and lege-filed…"
+    state verified
+    statement """
+        scripts/nested-session.sh stop left lege-sessiond and lege-filed running twice in this campaign (both times after the compositor had been started by hand into the script's pid/log paths): stop reported "nested session stopped" but the pidfiles for sessiond and filed were gone, so the daemons — pointed at the nested session.db, not the live session — had to be found with pgrep and killed by PID. stop should kill by the recorded PIDs and fall back to matching the nested --state-db argument.
+        """
+    observed_at git:93a4103a4dcf7625883abbe57f0e569a98d0ed10
+    author "claude"
+    created_at 2026-09-07
 }
 
 record legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 : papercut {
@@ -1254,4 +1335,15 @@ record legeos.papercut.xtask-interface-baseline-prints-froze-170/1 : papercut {
     observed_at git:392bd0d8a20b8ad0b43311cfde9ad58543c942a6
     author "claude"
     created_at 2026-09-02
+}
+
+record legeos.papercut.xtask-interface-baseline-regenerates-interfaces/1 : papercut {
+    title "`xtask interface-baseline` regenerates interfaces/baseline.json…"
+    state verified
+    statement """
+        `xtask interface-baseline` regenerates interfaces/baseline.json wholesale, so with two lanes adding D-Bus members concurrently, whichever lane freezes last captures both lanes' additions in one write — the file then cannot be committed with a single lane's path list. A per-member merge, or a check that names which interfaces changed since the last freeze, would let concurrent additions land independently.
+        """
+    observed_at git:3f796cf218ad2416629d9c5f793b1bf483e91505
+    author "claude"
+    created_at 2026-09-07
 }

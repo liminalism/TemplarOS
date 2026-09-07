@@ -49,6 +49,21 @@ record legeos.observation.a-send-stream-names-paths-relative-to-the-subvolume-no
     derived_from [ @legeos.work.adaptive-index-maintenance ]
 }
 
+record legeos.observation.a-snapshot-did-not-say-which-change-position-it-was-consistent-with/1 : observation {
+    title "A consumer had no way to learn the change-log position its snapshot was taken at"
+    state verified
+    statement """
+        `SnapshotManifest` carried no sequence, so a consumer synchronising a subscription had to call `changes_since(0, 1)` after taking the snapshot and read `next_seq` — two calls, with everything committed between them landing in neither the frame nor the stream. That is exactly the read/subscribe race @legeos.decision.event-driven-service-authorities forbids. Worse, the workaround does not survive its own success: once the bounded change log has been pruned, sequence 0 is below the retained floor and `changes_since(0, …)` answers `SnapshotRequired` rather than a position, so a consumer that fell behind could not resnapshot its way back either. Found by writing the contract as one consumer-shaped sequence (`crates/lege-file-index/tests/consumer_contract.rs`) rather than as separate unit tests, each of which passed. Fixed by `SnapshotManifest.snapshot_seq`, read inside `write_snapshot` before the rows and serde-defaulted so no signature changes.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    method command
+    watches [
+        "crates/lege-file-index/src/snapshot.rs",
+        "interfaces/dbus/org.legeos.Files.Index1.xml"
+    ]
+    derived_from [ @legeos.decision.event-driven-service-authorities ]
+}
+
 record legeos.observation.agent-smoke-test-emptied-a-real-volume-trash/1 : observation {
     title "A Trash1 smoke test run against the real session bus emptied the user's actual volume trash"
     state verified
@@ -405,6 +420,18 @@ record legeos.observation.index-change-signals-never-fire/1 : observation {
     derived_from [ @legeos.work.file-index-maintenance ]
 }
 
+record legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types/1 : observation {
+    title "The index consumer library links rusqlite transitively, so a dependency check cannot stand in for the no-shared-store rule"
+    state verified
+    statement """
+        `cargo tree -p lege-client -i rusqlite` succeeds: lege-client depends on lege-file-index, which depends on rusqlite. The link is real but it is a *linkage*, not a store access — `crates/lege-client/src/tree_source.rs` uses only the crate's `model`, `query` and `snapshot` types, and no consumer path opens a database. Separating those types from the store means feature-gating rusqlite out of lege-file-index and editing `crates/lege-client/Cargo.toml`, `cli/lege/Cargo.toml`, `crates/lege-fanotify/Cargo.toml` and `tools/xtask/Cargo.toml`, which this campaign did not do. So the `file-index-contract` acceptance check is satisfied by `crates/lege-file-index/tests/consumer_contract.rs` — which drives every read through snapshot and `changes_since` and never through `Index::open` — and not by a dependency-graph command that would have to be reported as failing when it passes.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    method command
+    watches [ "crates/lege-client/Cargo.toml", "crates/lege-file-index/Cargo.toml" ]
+    derived_from [ @legeos.decision.event-driven-service-authorities ]
+}
+
 record legeos.observation.openuri-is-the-frontends-portal/1 : observation {
     title "There is no OpenURI backend interface to implement: the portal frontend owns OpenURI, and launches the handler outside LegeOS identity"
     state verified
@@ -520,6 +547,30 @@ record legeos.observation.shelved-tiles-have-no-route-back/2 : observation {
     depends_on [ @legeos.work.home-shelf-and-representation-ladder ]
     derived_from [ @legeos.evidence.home-field-reshape-across-resolutions-20260831 ]
     supersedes [ @legeos.observation.shelved-tiles-have-no-route-back/1 ]
+}
+
+record legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists/1 : observation {
+    title "compose.sh already writes the mkosi drop-in that points the image at a named build set"
+    state verified
+    statement """
+        `distro/image/compose.sh:22` writes `distro/image/mkosi.conf.d/40-local-archive.conf` from `$LEGEOS_BUILD_SET`, falling back to the archive's `current` marker and writing no drop-in at all when neither exists — which is the documented mkosi drop-in D2's `image-drop-in` check asks for. It cannot be exercised here: mkosi is not installed on this host, so `just image summary` is NOT EXECUTED (@legeos.evidence.de01-image-summary-mkosi-absent-20260904), and the check's own wording allows exactly that — 'or the drop-in is documented as not exercised because mkosi is absent'.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    method observation
+    watches [ "distro/image/compose.sh", "distro/image/mkosi.conf.d/**" ]
+    derived_from [ @legeos.decision.build-set-id-is-the-version-authority ]
+}
+
+record legeos.observation.the-provisioner-wrote-no-fstab-at-all/1 : observation {
+    title "A provisioned machine had no /etc/fstab, and its boot identity was a label every LegeOS disk shares"
+    state verified
+    statement """
+        `installer/provision.sh` never wrote `/etc/fstab`: the word does not appear anywhere under `installer/`, `distro/` or `session/`. The mounts it makes are for the chroot and were never recorded, so a provisioned machine had nothing telling it how to mount @home, @var, @snapshots, @deployments or the ESP on its own. Separately, boot identity was `root=LABEL=legeos-root`, hardcoded in `boot_entries.rs:43` and `deploy.rs:128` — the same string on every LegeOS disk, so a machine with two attached mounts whichever the kernel enumerated first. This was scoped as a label-to-UUID migration; it was a missing step plus a migration.
+        """
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    method observation
+    watches [ "installer/provision.sh", "services/lege-hostd/src/boot_entries.rs" ]
+    derived_from [ @legeos.decision.independent-storage-roles ]
 }
 
 record legeos.observation.this-machines-partition-table-cannot-hold-legeos-as-it-stands/1 : observation {

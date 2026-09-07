@@ -71,6 +71,19 @@ record legeos.evidence.astra-consolidation-advice-20260907/1 : evidence {
     author "GitHub Uploader"
 }
 
+record legeos.evidence.bar-placed-once-nested-20260907/1 : evidence {
+    title "The bar is placed once in a nested session, and a shell restart re-places it once"
+    state verified
+    result pass
+    method observation
+    observed_at git:93a4103a4dcf7625883abbe57f0e569a98d0ed10
+    command "env -u WAYLAND_DISPLAY DISPLAY=:0 RUST_LOG=lege_comp=info target/debug/lege-comp --backend winit --socket-name legeos-nested; scripts/nested-session.sh start; scripts/nested-session.sh shell"
+    artifact ".agent/scratch/pre-iso/gate/nested-comp-fixed-coordinator.log"
+    summary """
+        Nested session on the X11 dev host: the bar (280x48, Layer::ShellOverlay) is placed exactly once at y=H-48 and never re-placed over 20 s; Home maps at the full output and is never repaired; a shell hot-swap re-places each new surface exactly once at the same geometry. Before 93a4103 (nested-comp-pingpong-243057d.log) the bar alternated 48/80 tall at ~60 claims per second.
+        """
+}
+
 record legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 : evidence {
     title "Bottom bar, window tags and Home app groups: full gate green"
     state verified
@@ -93,6 +106,18 @@ record legeos.evidence.btrfs-delta-correctness-gate-passes/1 : evidence {
     artifact "docs/measurements/btrfs-delta-measured.md"
     summary """
         Run by the user as root against the loopback Btrfs fixture on 2026-09-04. All five harness tests pass in 352 s. The gate is that an index carried forward only by decoded btrfs send --no-data streams equals an index built from nothing against the final tree, compared field for field on path, kind, size, alloc, mtime, ctime, mode, hidden, dev, inode and nlink; a third arm carried forward by today's reconcile is compared too, as a check on the harness itself. It holds across 24 scenario/tree-size rows (1,540 / 15,339 / 153,327 entries; nothing at all, 100 new files, an hour of desktop use, a 5,000-file build burst, a whole-directory rename, a mass delete, one 1 GiB file, truncate-chmod-rewrite-in-place). The edge-case round trip covering hard links, symlinks, a whole-directory rename, a rename cycle and a move onto an occupied path reports planned_paths 10, mutations 11, creates 3, removes 1, moves 5, touches 2 — exactly what the in-tree test encoder predicted before the fixture confirmed it. An interrupted delta is refused rather than half-applied at all 64 truncated prefixes of a 7,360-byte stream. This was the fifth run: four earlier ones failed, each on a real bug (@legeos.observation.a-send-stream-names-paths-relative-to-the-subvolume-not-the-index-root, @legeos.observation.a-directory-whose-contents-changed-kept-a-stale-modification-time).
+        """
+}
+
+record legeos.evidence.btrfs-delta-transport-and-backend-20260907/1 : evidence {
+    title "The btrfs delta transport and the filed backend, tested end to end without btrfs"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo test -p lege-hostd -p lege-file-index -p lege-filed && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-proxies"
+    summary """
+        DeltaOpen hands the stream over as a descriptor and unlinks it; lege-filed answers a downtime repair from the delta, with a cap, and reconciles on every doubt
         """
 }
 
@@ -193,6 +218,30 @@ record legeos.evidence.daily-driver-matrix-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.daily-driver-matrix-classified-20260907/1 : evidence {
+    title "Every daily-driver row is classified in the table's own vocabulary"
+    state verified
+    result pass
+    method observation
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    artifact "docs/planning/daily-driver-matrix.md"
+    summary """
+        All nine rows carry automated, manual or blocked with their package or provider need, and none claims hardware evidence. Row 9 (camera and microphone) moved from "deferred" to "blocked": the table's own vocabulary reserves blocked for a missing implementation, which is the true state — deferred described the decision not to build one, not whether it could be exercised.
+        """
+}
+
+record legeos.evidence.de01-convergence-and-protect-20260907/1 : evidence {
+    title "The convergence report and the protection floor, on the development host"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo test -p lege-resourced protect && cargo run -q -p lege -- dev deploy --dry-run && cargo run -q -p lege -- dev status"
+    summary """
+        protect.rs never lowers an existing memory.low and covers sessiond and filed; the deploy dry run ends with a per-component activation report, a schema-compatibility verdict and the previous set named for rollback, and dev status agrees with it. Both reports are honest about what is not recorded on a non-LegeOS host: running set, root snapshot, booted and known-good deployment all print "(not recorded)".
+        """
+}
+
 record legeos.evidence.de01-deploy-dry-run-20260904/1 : evidence {
     title "The deploy dry run names the snapshot and every set and deployment identity"
     state verified
@@ -266,6 +315,18 @@ record legeos.evidence.de01-package-closure-unavailable-20260904/1 : evidence {
     command "cargo run -q -p xtask -- seeds closure"
     summary """
         The closure command ran and reported resolution "unavailable": this development host is Ubuntu 25.10 and carries no Ubuntu archive index at all (apt answers only from /var/lib/dpkg/status and the local LegeOS devrepo), so no package name could be resolved against Ubuntu 26.04. The declaration side is complete — 94 direct packages, fourteen exclusive provider roles all filled and none duplicated — but transitive closure, installed size, recommends and the missing list are empty because nothing was asked, not because nothing is missing.
+        """
+}
+
+record legeos.evidence.de01-replay-and-signature-gates-20260907/1 : evidence {
+    title "Replay fidelity and the frozen-signature gate, after the governor loop and the interface change"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo test -p lege-resourced replay && cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        The eight checked-in traces replay identically through this build, including the two added for pressure-triggered wakeups; check-interface-signatures reports 188 shipped members across 34 interfaces all unchanged after the additive DeltaOpen was frozen.
         """
 }
 
@@ -785,6 +846,18 @@ record legeos.evidence.hardware-qualification-report-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.home-chips-projects-appearance-lock-20260907/1 : evidence {
+    title "Lane 2 targeted tests and repository gates after the chips, project-actions, appearance and session-lock work"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo test -p lege-shell -p lege-types -p lege-session-core -p lege-settings -p lege-files && cargo clippy -p lege-shell -p lege-types -p lege-session-core -p lege-settings -p lege-files --all-targets -- -D warnings && cargo run -q -p xtask -- check-actions && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-packaging"
+    summary """
+        Lane 2 pre-ISO slice green: 350 lege-shell, 31 lege-types, 48 lege-session-core, 70 lege-settings, 34 lege-files tests pass; clippy pedantic -D warnings clean; check-actions 61 declared actions with every chord routed, check-interfaces/-signatures/-proxies/-packaging all pass after the Lifecycle1.LockRequested baseline re-freeze.
+        """
+}
+
 record legeos.evidence.home-field-clippy-20260823/1 : evidence {
     title "Changed runtime crates pass strict Clippy"
     state verified
@@ -1187,6 +1260,18 @@ record legeos.evidence.home-folders-and-panes-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.home-light-and-dark-render-20260907/1 : evidence {
+    title "The Home Field rendered in the light and dark palettes, reviewed before the baseline hash was updated"
+    state verified
+    result pass
+    method observation
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo run -p lege-shell -- --render /tmp/home-light.png --size 1000x700"
+    summary """
+        Home rendered headless at 1000x700 in both palettes and reviewed side by side. Light is visually unchanged from HEAD; the only pixel delta is the Home plate's label ink moving from 0x00f2_f4f6 to the palette's strong_ink (0x00ff_ffff on light), which is why the offscreen baseline hash changed. Dark renders legibly throughout after four surviving hardcoded whites (a preview well, a project child chip, ink on the accent, and that label) became the well_fill and strong_ink roles.
+        """
+}
+
 record legeos.evidence.home-material-roles-20260831/1 : evidence {
     title "Material roles reviewed in the enlarged visual baseline; hash updated after review"
     state verified
@@ -1311,6 +1396,19 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 : evidence {
+    title "Idle daemon wakeups could not be measured on this host"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "scripts/idle-wakeups.sh 60"
+    artifact "docs/measurements/idle-daemons-20260907.json"
+    summary """
+        NOT EXECUTED: no LegeOS daemon is running on this development host, so the script found nothing to watch. A run that measured nothing is not a run that measured zero; the script itself was verified against a live process.
+        """
+}
+
 record legeos.evidence.idle-index-wakeups-eliminated-20260904/1 : evidence {
     title "The idle index watcher went from 121 wakeups per minute to none, measured against a binary built from the pre-fix commit"
     state verified
@@ -1324,6 +1422,18 @@ record legeos.evidence.idle-index-wakeups-eliminated-20260904/1 : evidence {
         Over a 60 second settled idle window with one armed fixture root, the pre-fix binary (built from a git worktree at the parent of commit 6522e10, so this is a true before/after rather than a recollection) recorded 121 timeslices and 120 voluntary context switches; after the fix both are 0. read_bytes, syscw and wchar were already 0 on this workload in both builds, so the gain is wakeups and the roots-table write per tick, not read I/O. Measured from /proc/<tid>/schedstat and /proc/<pid>/status for the lege-index-watcher thread. The harness had to be an xtask subcommand rather than a benches/ target, because watch::guard panics on any real watch root when the executable path contains a deps component, which is true of every cargo bench and integration-test binary; this was verified directly rather than assumed. Four defects in the harness itself were found and fixed during the run: a wrong schedstat field index, per-task versus per-process voluntary_ctxt_switches, a pid-matching bug against a leaked process, and the sandbox-specific discovery that File::set_modified raises no inotify event here while touch(1) does.
         """
     derived_from [ @legeos.work.adaptive-index-maintenance ]
+}
+
+record legeos.evidence.image-drop-in-exists-unexercised-20260907/1 : evidence {
+    title "The mkosi drop-in for a named build set exists and is documented as not exercised"
+    state verified
+    result pass
+    method observation
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    artifact "distro/image/compose.sh"
+    summary """
+        compose.sh:22 writes mkosi.conf.d/40-local-archive.conf from $LEGEOS_BUILD_SET or the archive's current marker, and writes no drop-in when neither exists. It has never been executed: mkosi is absent from this host, which is the alternative the check's own wording allows.
+        """
 }
 
 record legeos.evidence.image-summary-mkosi-absent-20260903/1 : evidence {
@@ -1349,6 +1459,19 @@ record legeos.evidence.index-bench-harness/1 : evidence {
     artifact "docs/measurements/workloads-100k.json"
     summary """
         index-bench harness (tools/xtask/src/index_bench.rs) runs dirs/workloads/idle/idle-compare against real fixtures and a real lege-filed; produced the 2026-09-04 baseline.
+        """
+}
+
+record legeos.evidence.index-scale-two-million-20260907/1 : evidence {
+    title "The index is complete at two million entries, and warm search stays under a millisecond"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo run -q -p xtask --release -- index-bench workloads --allow-two-million && cargo test -p lege-file-index --release"
+    artifact "docs/measurements/workloads-2m-20260907.json"
+    summary """
+        A two-million-entry fixture indexed to 2,000,001 entries with complete=true in 31.9s (62,727 entries/s) — complete, not capped. Warm search over the 100k tree is p50 0.25ms, p95 0.30ms, max 0.49ms across 200 samples; a bulk snapshot is 12.2 MB for 90,152 entries in 103ms, so transfer stays bounded. Non-UTF-8 path round trips pass in the release build alongside them.
         """
 }
 
@@ -1665,6 +1788,17 @@ record legeos.evidence.metapackages-build-with-dpkg-deb-20260905/1 : evidence {
         """
 }
 
+record legeos.evidence.native-lubuntu-validation-20260907/1 : evidence {
+    title "All pre-ISO campaign evidence is native Lubuntu; WSL is never cited"
+    state verified
+    result pass
+    method observation
+    observed_at git:93a4103a4dcf7625883abbe57f0e569a98d0ed10
+    summary """
+        Every evidence record the design-consolidation roadmap's phases cite (the perimeter geometry and latched-edge tests, the chips/projects/appearance/lock gates, the btrfs transport and backend, the service inventory and pressure wakeups, the provisioning plan and identity, the nested-session bar placement, and the integrated just check) was produced on the native Lubuntu development host (Ubuntu 25.10, Xorg :0, kernel 6.17); no record cites WSL. Hardware, deployment and installed-session evidence remains user-run per the campaign runbook.
+        """
+}
+
 record legeos.evidence.nested-session-journey-20260904/1 : evidence {
     title "The nested-session journey passes end to end for the first time"
     state verified
@@ -1762,6 +1896,30 @@ record legeos.evidence.package-selection-generated-and-checked/1 : evidence {
         """
 }
 
+record legeos.evidence.perimeter-resize-latched-edges-20260907/1 : evidence {
+    title "Latched edges, anchored opposites and protocol resize after the perimeter change"
+    state verified
+    result pass
+    method command
+    observed_at git:ea6c300016980fc83964d05cae0a9cf0e5417014
+    command "cargo test -p lege-window -p lege-comp"
+    summary """
+        131 lege-window tests and 111 lege-comp tests passed. The perimeter proptest asserts resize_rect never inverts, never falls below MIN_WINDOW_WIDTH/MIN_WINDOW_HEIGHT and leaves every undragged edge in place; begin_resize latching is unchanged in ResizeState; xdg_shell's a_client_requested_resize_keeps_the_edges_the_protocol_named asserts xdg_toplevel.resize(Left/Right/Top/Bottom) still yields single-axis edges and resize(none) still yields the empty set.
+        """
+}
+
+record legeos.evidence.perimeter-two-axis-resize-geometry-20260907/1 : evidence {
+    title "lege-window geometry suite after side-half perimeter selection"
+    state verified
+    result pass
+    method command
+    observed_at git:ea6c300016980fc83964d05cae0a9cf0e5417014
+    command "cargo test -p lege-window"
+    summary """
+        131 tests passed. every_side_half_takes_that_half_s_corner covers the eight halves, the four corners and the non-hits over a normal frame, a MIN_WINDOW_WIDTH x MIN_WINDOW_HEIGHT frame and a negative-origin frame; the proptest every_perimeter_point_selects_exactly_one_edge_per_axis asserts one horizontal and one vertical edge for any frame and any perimeter point; every_pair_of_resize_edges_names_its_cursor covers all sixteen edge combinations.
+        """
+}
+
 record legeos.evidence.portal-model-tests-20260903/1 : evidence {
     title "The portal's FileChooser and AppChooser models are testable without a compositor, and pass"
     state verified
@@ -1771,6 +1929,19 @@ record legeos.evidence.portal-model-tests-20260903/1 : evidence {
     command "cargo test -p xdg-desktop-portal-lege"
     summary """
         23 portal tests pass with no display: the 20 that existed plus three model-level ones covering the full directory listing, the request's filters, and the LegeOS default handler being recognised in the frontend's own spelling of a choice.
+        """
+}
+
+record legeos.evidence.pre-iso-integrated-gate-20260907/1 : evidence {
+    title "Pre-ISO campaign integrated gate green at 93a4103"
+    state verified
+    result pass
+    method command
+    observed_at git:93a4103a4dcf7625883abbe57f0e569a98d0ed10
+    command "just check"
+    artifact ".agent/scratch/pre-iso/gate/just-check-93a4103.log"
+    summary """
+        The integrated pre-ISO tree (all three lanes: 11 compositor/window commits, 15 services/index/distro commits, 7 shell/Home/Files commits plus the ping-pong fix) passes fmt, clippy pedantic, 1906 workspace tests with 0 failures and 10 ignored, MSRV, and all xtask checks (tree, deps, interfaces, signatures, proxies, packaging, assets, actions).
         """
 }
 
@@ -1826,6 +1997,18 @@ record legeos.evidence.provision-qemu-not-executed-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.provision-qemu-plan-and-refusals-20260907/1 : evidence {
+    title "The provisioning plan and its refusals, checked without root; the QEMU boot not executed"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "tests/integration/provision-qemu.sh"
+    summary """
+        Steps 1 and 2 ran and passed as an ordinary user: the plan matches the layout declaration and bakes in no credentials, the free-space plan on a laptop-shaped sparse disk adds two partitions and keeps three, every destructive target is refused, and --apply refuses to start without privileges. Step 3 reported NOT EXECUTED: there is no image to boot, because mkosi is absent from this host. A boot under QEMU and any --apply remain user gates in RUNBOOK-L3.md.
+        """
+}
+
 record legeos.evidence.provisioner-free-space-plan-20260905/1 : evidence {
     title "The provisioner plans two new partitions in a disk's free tail and keeps the rest"
     state verified
@@ -1835,6 +2018,18 @@ record legeos.evidence.provisioner-free-space-plan-20260905/1 : evidence {
     command "tests/integration/provision-qemu.sh"
     summary """
         On a fixture disk shaped like the laptop (16 MiB reserved, 6 GiB NTFS-typed, 100 MiB ESP, free tail) `provision.sh --free-space` plans partitions 4 (ESP, 1G) and 5 (root, rest), names the three it keeps, changes nothing, and refuses a free block that is a hole rather than the tail; the destructive-target refusals and the root-only --apply still hold.
+        """
+}
+
+record legeos.evidence.provisioning-plan-and-uuid-identity-20260907/1 : evidence {
+    title "One reviewed provisioning plan, drift refused, and filesystem identity by UUID"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "just provision-test && cargo test -p lege-hostd && cargo test -p lege-filed two_roots"
+    summary """
+        The dry run records all 67 operations it printed and writes nothing else; apply refuses a plan the machine no longer matches; fstab and install.toml carry identity by UUID with the label as the fallback; two roots keep independent freshness and scoped search
         """
 }
 
@@ -1895,6 +2090,18 @@ record legeos.evidence.rust-1-97-baseline-20260831/1 : evidence {
     command "just check"
     summary """
         Formatting, warnings-denied workspace Clippy, all workspace tests, Rust 1.97 MSRV check, tree/dependency checks, interfaces, proxies, packaging, assets and action routes passed after aligning Cargo, Clippy, CI and local recipes to Rust 1.97.
+        """
+}
+
+record legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1 : evidence {
+    title "The service inventory is checked by the build, and the governor loop is event-driven"
+    state verified
+    result pass
+    method command
+    observed_at git:eb00239b41cfcb615f01b34bdb2903ed16f4f51f
+    command "cargo run -q -p xtask -- check-packaging && cargo test -p xtask && cargo test -p lege-resourced && cargo test -p lege-file-index --test consumer_contract"
+    summary """
+        Seven services declare authority, lifetime, recovery, deadlines and eight timer exceptions, checked against session/units; the governor waits on the delegated cgroup's memory.pressure and the six existing replay fixtures still decide identically
         """
 }
 

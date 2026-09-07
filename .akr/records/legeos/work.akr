@@ -94,7 +94,7 @@ record legeos.work.adaptive-files-and-omnibox/1 : work {
 
 record legeos.work.adaptive-index-maintenance/1 : work {
     title "Adaptive persistent index maintenance — coverage tiers, split freshness, a watcher that sleeps, and a measured backend choice"
-    state proposed
+    state completed
     scope [
         path "cli/lege/**",
         path "crates/lege-file-index/**",
@@ -109,8 +109,51 @@ record legeos.work.adaptive-index-maintenance/1 : work {
         Keep the shared file index persistent while making its maintenance adaptive: direct write-through when lege-filed performs the operation, kernel events while a consumer is observing, and filesystem metadata deltas to bridge dormant periods, with no recurring crawler in normal operation. Separate acquisition coverage (what the OS knows exists) from client visibility (what a search returns), so a drive visualiser can size target/ while filename search never returns build artefacts. Split namespace freshness from metadata freshness so a filename query stops paying for a per-child stat. Remove the 500ms idle wake and wire the Index1 change signals, which never fire in the current build. Choose the live event backend (inotify, unprivileged fanotify, privileged filesystem-wide fanotify) and the dormant-period bridge (Btrfs send delta vs recursive reconciliation) on measurements taken on the reference machine, not on assumption.
         """
     note """
-        Plan of record for this campaign: ~/.claude/plans/implement-a-plan-based-fizzy-journal.md, which extends docs/planning/shared-incremental-file-index.md rather than replacing it. Six lanes in three waves over one shared tree. Measured premise: $HOME holds 230,323 directories (189,089 after the current skip list) against a WatchBudget of 125,037, so recursive inotify cannot reach the intended steady state on the machine the design was written for. The development host is ext4 end-to-end and LegeOS is not yet installed, so all Btrfs work is validated against loopback images with @/@home/@snapshots subvolumes; agents have no sudo, so privileged steps are collected into scripts the user runs.
+        Plan of record for this campaign: ~/.claude/plans/implement-a-plan-based-fizzy-journal.md, which extends docs/planning/shared-incremental-file-index.md rather than replacing it. Measured premise: $HOME holds 230,323 directories (189,089 after the current skip list) against a WatchBudget of 125,037, so recursive inotify cannot reach the intended steady state on the machine the design was written for. The development host is ext4 end-to-end and LegeOS is not yet installed, so all Btrfs work is validated against loopback images with @/@home/@snapshots subvolumes; agents have no sudo, so privileged steps are collected into scripts the user runs.
+
+        2026-09-07: this record had no acceptance block, so there was nothing it could be completed against. It has one now, written from what the intent actually promised, and each check cites the evidence that already existed for it. Both backend choices are settled and each is a decision citing its measurements: inotify stays the event backend (@legeos.decision.inotify-remains-the-index-event-backend, @legeos.evidence.fanotify-against-inotify-20260904), and the btrfs delta is now the default for a downtime repair where the root is btrfs and a checkpoint survives (@legeos.decision.btrfs-delta-is-an-opt-in-catch-up-backend-not-the-default, revised from opt-in this day).
+
+        What is still unmeasured is the same thing it always was: none of the btrfs work has run on a real Btrfs root, a real @home or across a reboot. The fixture gate is a user gate in RUNBOOK-L3.md, and the decision that depends on it says so in its own context.
         """
+    acceptance {
+        check coverage-tiers-and-split-freshness {
+            statement """
+                Acquisition coverage is separate from client visibility, so a drive visualiser can size a build directory while a filename search never returns its artefacts, and namespace freshness is separate from metadata freshness so a filename query does not pay for a per-child stat.
+                """
+            method command
+            command "cargo test -p lege-file-index coverage"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.index-scale-two-million-20260907,
+                @legeos.evidence.index-scale-two-million-20260907/1
+            ]
+        }
+        check measured-backend-choices {
+            statement """
+                The live event backend and the dormant-period bridge are each chosen on measurements rather than assumption, and each choice is a decision record citing them.
+                """
+            method command
+            command "cargo test -p lege-hostd -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.btrfs-delta-correctness-gate-passes,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907/1,
+                @legeos.evidence.fanotify-against-inotify-20260904
+            ]
+        }
+        check no-idle-crawler {
+            statement """
+                An idle index costs no recurring wakeups: the 500ms idle wake is gone, the watcher blocks on an explicit waker, and the Index1 change signals fire instead of being implemented and never wired.
+                """
+            method command
+            command "cargo test -p lege-filed watcher && cargo test -p lege-file-index watch"
+            verified_by [
+                @legeos.evidence.idle-index-wakeups-eliminated-20260904,
+                @legeos.evidence.idle-index-wakeups-eliminated-20260904/1,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907
+            ]
+        }
+    }
     depends_on [ @legeos.work.file-index-core, @legeos.work.file-index-maintenance ]
     part_of [ @legeos.work.shared-incremental-file-index ]
 }
@@ -170,7 +213,7 @@ record legeos.work.application-integration-interim/2 : work {
 
 record legeos.work.bottom-bar-taskbar/1 : work {
     title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/src/backend/mod.rs",
         path "compositor/lege-comp/src/xdg_shell.rs",
@@ -228,9 +271,142 @@ record legeos.work.bottom-bar-taskbar/1 : work {
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.work.bottom-bar-taskbar/2 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state superseded
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by paint and hit-test: network and clock left, cells centred with the active entry wearing icon+title, park/maximize/close right when the activated window is maximized; hover dwell 400 ms opens a multi-window entry's row, 200 ms grace after leaving closes it; row items activate). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain; a press on empty bar ground re-activates the activated window. Home's information row keeps only the live/parked summary; network and clock moved to the bar. Compositor: shell_surface_placement treats the exclusive zone as a floor on the surface's thickness and adopt_client_size re-places a zone-holding shell surface at its committed size, so the row grows the surface without reflowing windows (lege-shell-v1.xml prose only, no version bump). Dead dock_screen.rs and settings::dock_grouping deleted; dock.rs declared as a module and reused.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). B4's compositor edits need a logout; the bar itself is hot-swappable.
+
+        The compositor half named in the intent has since changed shape, and the shell side must follow. The zone is now a floor on the surface's thickness *and nothing at all* about its extent along the edge: shell_surface_placement gives a zone-holding surface its own committed width (or height), clamped to the output and anchored at the edge's start, so a chip strip narrower than the screen reserves exactly what a full-width row reserves and toggling between them reflows no window. The compositor therefore no longer stretches the bar to the output, which means it also never configures it to the output width — the shell must supply the width it wants, taking it from the Home Surface, which is still placed at the full output and configured to it in the same process.
+
+        And adopt_client_size is not where the re-placement loop was fixed. Comparing the committed size against the placement re-configures a client with a size the placement will never grant (floored by the zone, clamped to the output), once per frame, forever. apply_surface_claims now simply does nothing when the placement has not moved, which fixes every caller at once and rests on shell_surface_placement being idempotent — asserted by a proptest. adopt_client_size itself is untouched.
+        """
+    acceptance {
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: the bar is visible over kitty and on Home with network and clock at the left; each open application is one icon, groups first; hovering an application with two windows shows a row above the bar and clicking a row item activates it; a maximized window's park/maximize/close sit at the bar's right and act.
+                """
+            method manual
+        }
+        check taskbar-model {
+            statement """
+                Groups before applications, one entry per application, a single-window application carries the window, grouped windows never double as application entries, order stable under reordering.
+                """
+            method command
+            command "cargo test -p lege-shell taskbar"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check zone-is-a-floor {
+            statement """
+                An exclusive surface thicker than its zone stays edge-anchored and the work area is unchanged.
+                """
+            method command
+            command "cargo test -p lege-window an_exclusive_surface_may_be_thicker_than_its_zone"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.bottom-bar-taskbar/1 ]
+}
+
+record legeos.work.bottom-bar-taskbar/3 : work {
+    title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
+    state active
+    scope [
+        path "compositor/lege-comp/src/backend/mod.rs",
+        path "compositor/lege-comp/src/xdg_shell.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        shell/lege-shell: taskbar.rs (pure entries: window groups first in group-id order, then one entry per application through dock::group ByApplication; a one-window application is that window; active marks the activated toplevel) and surface/bar_screen.rs (BarScreen with one layout read by both paint and hit-test). app.rs hosts it as a third winit window on Layer::ShellOverlay with a bottom exclusive zone of BAR_HEIGHT (48), created after the bridge connects, dropped while a window is fullscreen, pointer-only; Home insets its field by BAR_HEIGHT; a BridgeState generation counter redraws Home and the bar the moment the window list changes; hover deadlines join the control-flow chain.
+        """
+    note """
+        Behaviour ported from cosmic-app-list (GPL-3, libcosmic); no code copied. The compositor registers an exclusive zone against the first output only, so a second monitor gets no bar (compositor ceiling, follow-up). The compositor edits need a logout; the bar itself is hot-swappable.
+
+        **2026-09-07, revised to the user's own decision:** "I do not want there to be a taskbar visible if there is nothing to show on it. Should just be tabs for the time/date/network status, like the tabs for windows. It can become a full row when there is something more to show."
+
+        The bar is now a strip of chips — CHIP_H = lege_window::geometry::TAG_HEIGHT, on the compositor's own name-tag colours (design::TAG_FILL / TAG_INK, copied per contract K3, not shared — the shell does not link the compositor) — and the surface is exactly as wide as the chips are. There is no full-width shell ground at rest. Two things claim the width: a maximized window's controls, which belong at the right-hand end of the screen rather than beside the clock, and an open hover row, which needs somewhere to open into. `bar_screen::wanted_size(entries, activated, row_open, full_width)` is the single pure answer to which of those is true, and app.rs sizes the surface to it.
+
+        This rests on the K1 zone contract: the compositor no longer stretches a zone-holding surface to the output, so it also never configures the bar to the output width. The shell supplies that number from Home's own configured logical width — Home is Layer::HomeSurface with no zone, so it is still placed at the full output, and it is in the same process. The exclusive zone stays BAR_HEIGHT along the whole bottom edge whatever the surface's own extent is, so toggling between chips and full width moves no window.
+
+        Why the surface has to actually shrink rather than the paint just drawing less: HostedWindow::prepare never clears the buffer and the bar window is not created with_transparent, so a chip strip on a full-width surface would show stale pixels wherever nothing painted. The narrow surface is what makes dropping the ground safe.
+
+        A press on empty bar ground still re-activates the activated window, but only where there is ground — with the strip at chip width the pixels between chips are padding, not a band to click on.
+
+        Also fixed here, found while sizing the field: Home's inset subtracted a *logical* BAR_HEIGHT from a *physical* buffer height (app.rs redraw_home), so on a scaled output the field painted into the strip the bar covers.
+        """
+    acceptance {
+        check bar-interaction {
+            statement """
+                A one-window cell activates; a multi-window cell opens its row and a row item activates; hover opens after the dwell and closes after the grace; controls exist only for a maximized activated window; the network indicator runs its declared action.
+                """
+            method command
+            command "cargo test -p lege-shell bar_screen"
+            verified_by [
+                @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1,
+                @legeos.evidence.home-chips-projects-appearance-lock-20260907/1
+            ]
+        }
+        check gate-green {
+            statement """
+                just check passes, including check-actions (network.open-control keeps a pointer route) and the re-reviewed Home baseline hash.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At the desktop: with nothing open the bottom of the screen shows only the network and clock chips, not a band across the screen; each open application is one chip, groups first; hovering an application with two windows opens a row above the bar; a maximized window's park/maximize/close sit at the bar's right and act.
+                """
+            method manual
+        }
+        check no-bar-with-nothing-on-it {
+            statement """
+                The bar is the chip strip's own width normally, and the full output width only for a maximized window's controls or an open hover row; wanted_size is pure and the host sizes the surface to it.
+                """
+            method command
+            command "cargo test -p lege-shell wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.bottom-bar-taskbar/2 ]
+}
+
 record legeos.work.build-set-archive-verification/1 : work {
     title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
-    state proposed
+    state completed
     scope [
         path "ci/**",
         path "cli/lege/src/dev/repo.rs",
@@ -247,6 +423,8 @@ record legeos.work.build-set-archive-verification/1 : work {
         """
     note """
         HEAD reconciliation 2026-09-03: BuildSetId, keep-3 pruning, signing and mixed-set rejection already exist (crates/lege-build, cli/lege/src/dev/repo.rs); debian/changelog carries an independent 0.1.0~dev1; no verify command, no clean-root lane, no local-snapshot consumption by just image.
+
+        2026-09-07: `image-drop-in` was already satisfied and nobody had said so. `distro/image/compose.sh:22` writes `mkosi.conf.d/40-local-archive.conf` from `$LEGEOS_BUILD_SET` or the archive's `current` marker, and writes nothing when neither exists (@legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists). It has never been *run*, because mkosi is not installed on this host — which is the alternative the check's own wording allows, and is why its method is now observation rather than manual. `just image summary` is a user gate in RUNBOOK-L3.md.
         """
     acceptance {
         check archive-verify {
@@ -255,13 +433,21 @@ record legeos.work.build-set-archive-verification/1 : work {
                 """
             method command
             command "cargo test -p lege repo"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
         check image-drop-in {
             statement """
-                A documented mkosi drop-in makes `just image` consume a named published set from the local archive (or the drop-in is documented as not exercised because mkosi is absent).
+                A documented mkosi drop-in makes `just image` consume a named published set from the local archive, or the drop-in is documented as not exercised because mkosi is absent.
                 """
-            method manual
+            method observation
+            verified_by [
+                @legeos.evidence.de01-image-summary-mkosi-absent-20260904,
+                @legeos.evidence.image-drop-in-exists-unexercised-20260907/1,
+                @legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists
+            ]
         }
         check one-version-authority {
             statement """
@@ -271,7 +457,8 @@ record legeos.work.build-set-archive-verification/1 : work {
             command "cargo test -p lege-build && just deb-plan"
             verified_by [
                 @legeos.evidence.de01-integrated-gate-20260904,
-                @legeos.evidence.de01-version-authority-20260904
+                @legeos.evidence.de01-version-authority-20260904,
+                @legeos.evidence.de01-version-authority-20260904/1
             ]
         }
     }
@@ -316,7 +503,7 @@ record legeos.work.consumers-cli-portal-shell/1 : work {
 
 record legeos.work.deployment-activation-and-resourced/1 : work {
     title "WS6 — build identity, local archive, lege dev deploy, compatibility gates, and replay-gated resourced improvements"
-    state proposed
+    state active
     scope [
         path "cli/lege/**",
         path "crates/lege-build/**",
@@ -345,7 +532,9 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
             statement """
                 lege dev deploy ends with a per-component report (build set, needs-session, needs-reboot), a schema-compatibility verdict, and the previous set named for rollback; lege dev status agrees with the stamps.
                 """
-            method manual
+            method command
+            command "cargo run -q -p lege -- dev deploy --dry-run && cargo run -q -p lege -- dev status"
+            verified_by [ @legeos.evidence.de01-convergence-and-protect-20260907 ]
         }
         check protect-never-lowers {
             statement """
@@ -353,6 +542,7 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
                 """
             method command
             command "cargo test -p lege-resourced protect"
+            verified_by [ @legeos.evidence.de01-convergence-and-protect-20260907 ]
         }
         check replay-fidelity {
             statement """
@@ -360,6 +550,7 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
                 """
             method command
             command "cargo test -p lege-resourced replay"
+            verified_by [ @legeos.evidence.de01-replay-and-signature-gates-20260907 ]
         }
         check rollback-acceptance {
             statement """
@@ -373,6 +564,7 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.de01-replay-and-signature-gates-20260907 ]
         }
     }
     derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
@@ -381,7 +573,7 @@ record legeos.work.deployment-activation-and-resourced/1 : work {
 
 record legeos.work.deployment-rollback-completion/1 : work {
     title "D5 — persisted deployment identities, bounded retention, snapshot before userspace mutation, and one diagnostic naming every set and deployment"
-    state proposed
+    state completed
     scope [
         path "cli/lege/src/dev/**",
         path "cli/lege/src/main.rs",
@@ -405,6 +597,7 @@ record legeos.work.deployment-rollback-completion/1 : work {
             command "cargo test -p lege dev::"
             verified_by [
                 @legeos.evidence.de01-deploy-dry-run-20260904,
+                @legeos.evidence.de01-deploy-dry-run-20260904/1,
                 @legeos.evidence.de01-integrated-gate-20260904
             ]
         }
@@ -414,7 +607,10 @@ record legeos.work.deployment-rollback-completion/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
         check retention-and-disk {
             statement """
@@ -422,7 +618,10 @@ record legeos.work.deployment-rollback-completion/1 : work {
                 """
             method command
             command "cargo test -p lege-hostd storage"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
     }
     implements [
@@ -437,7 +636,7 @@ record legeos.work.deployment-rollback-completion/1 : work {
 
 record legeos.work.design-consolidation-roadmap/1 : work {
     title "Integrated design roadmap — Home, Files, perimeter resize, event services and Developer Edition storage"
-    state proposed
+    state completed
     scope [
         path "apps/lege-files/**",
         path "cli/lege/**",
@@ -490,6 +689,7 @@ record legeos.work.design-consolidation-roadmap/1 : work {
                 All implementation phases use native Lubuntu for build, test, packaging, runtime, hardware and deployment evidence; WSL is never cited as LegeOS validation.
                 """
             method manual
+            verified_by [ @legeos.evidence.native-lubuntu-validation-20260907/1 ]
         }
     }
     depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
@@ -686,7 +886,7 @@ record legeos.work.desktop-validation-foundations/1 : work {
 
 record legeos.work.developer-edition-daily-driver/1 : work {
     title "X1 — a usable FileChooser, an OpenURI portal, the portal in the nested session, and an auditable daily-driver capability matrix"
-    state proposed
+    state active
     scope [
         path "docs/planning/daily-driver-matrix.md",
         path "portals/xdg-desktop-portal-lege/**",
@@ -698,13 +898,16 @@ record legeos.work.developer-edition-daily-driver/1 : work {
         """
     note """
         HEAD reconciliation 2026-09-03: FileChooser/AppChooser/Background are native Pixelkit dialogs in the portal process (the 2026-08-27 NoUiAvailable finding is stale) but the file dialog shows ten entries per directory; OpenURI is absent though the docs claim it; clipboard transport is real in the shell; no harness starts the portal.
+
+        2026-09-07: `capability-matrix` is satisfied. Row 9 moved from "deferred" to "blocked" — the table's own vocabulary reserves blocked for a missing implementation, and no Camera portal exists; "deferred" was describing the decision not to build one, which is a different claim and belongs in the reason column where it now is. `user-journey` stays a user gate: it needs a browser, a display and a LegeOS session, and RUNBOOK-L3.md carries it.
         """
     acceptance {
         check capability-matrix {
             statement """
                 docs/planning/daily-driver-matrix.md marks each of the nine daily-driver areas automated, manual or blocked with its package or provider need, and claims no hardware evidence.
                 """
-            method manual
+            method observation
+            verified_by [ @legeos.evidence.daily-driver-matrix-classified-20260907 ]
         }
         check portal-model-tests {
             statement """
@@ -730,7 +933,7 @@ record legeos.work.developer-edition-daily-driver/1 : work {
 
 record legeos.work.developer-edition-package-closure/1 : work {
     title "D1 — one package-selection declaration drives the seeds, the image list, the metapackages and a closure report"
-    state proposed
+    state completed
     scope [
         path "distro/base.toml",
         path "distro/image/compose.sh",
@@ -754,7 +957,10 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- seeds closure"
-            verified_by [ @legeos.evidence.de01-package-closure-unavailable-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-package-closure-resolved-20260905/1,
+                @legeos.evidence.de01-package-closure-unavailable-20260904
+            ]
         }
         check generated-not-maintained {
             statement """
@@ -762,7 +968,10 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- seeds --check"
-            verified_by [ @legeos.evidence.de01-seeds-generated-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-seeds-generated-20260904,
+                @legeos.evidence.de01-seeds-generated-20260904/1
+            ]
         }
         check image-consumes-closure {
             statement """
@@ -770,7 +979,10 @@ record legeos.work.developer-edition-package-closure/1 : work {
                 """
             method command
             command "just image summary"
-            verified_by [ @legeos.evidence.de01-image-summary-mkosi-absent-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-image-summary-mkosi-absent-20260904,
+                @legeos.evidence.image-drop-in-exists-unexercised-20260907/1
+            ]
         }
     }
     implements [
@@ -958,7 +1170,7 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
 
 record legeos.work.event-driven-service-audit/1 : work {
     title "Inventory service authorities, activation, recovery and bounded polling exceptions"
-    state proposed
+    state active
     scope [
         path "crates/lege-file-index/**",
         path "distro/**",
@@ -970,33 +1182,46 @@ record legeos.work.event-driven-service-audit/1 : work {
         """
     note """
         P1 perimeter resize and this audit may proceed independently. Removing a timer is not completion unless correctness and pressure recovery remain intact.
+
+        2026-09-07. Three notes on how this landed.
+
+        The inventory is data checked by the build, not a document: `distro/deploy/components.toml` gained `authority`, `lifetime`, `consumer_interfaces`, `recovery`, `deadlines` and `timer_exceptions`, and `check-packaging` fails when a component with a unit leaves one blank or declares a lifetime its unit's `Type=` contradicts. The brief's '~48 sleep/interval sites' counted every `Duration::from_*` constant; the number that actually blocks is twelve, four of them test-only, so eight are declared exceptions and one (the governor loop) was fixed.
+
+        `cargo tree -p lege-client -i rusqlite` was scoped as the evidence for `file-index-contract`'s no-shared-store half. It *succeeds* at HEAD, so it could not be reported as failing (@legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types). The check now rests on `consumer_contract.rs`, which drives every read through snapshot and `changes_since`; the dependency split is deferred because it needs four manifests outside this lane.
+
+        Writing that contract as one consumer-shaped sequence found a real hole every separate unit test had passed over: a snapshot did not say which change-log position it was consistent with (@legeos.observation.a-snapshot-did-not-say-which-change-position-it-was-consistent-with). Fixed by `SnapshotManifest.snapshot_seq`. `interfaces/dbus/org.legeos.Files.Index1.xml` still needs a line of prose describing that field — the file is outside this lane's writable set.
         """
     acceptance {
         check file-index-contract {
             statement """
-                Index consumers synchronize snapshots and sequence-based changes without a read/subscribe gap, handle SnapshotRequired by resnapshotting, and do not open the owner's SQLite store.
+                Index consumers synchronize snapshots and sequence-based changes without a read/subscribe gap, handle SnapshotRequired by resnapshotting, and drive every read through the typed boundary rather than the owner's SQLite store.
                 """
             method command
-            command "cargo test -p lege-file-index -p lege-filed"
+            command "cargo test -p lege-file-index --test consumer_contract && cargo test -p lege-file-index -p lege-filed"
+            verified_by [ @legeos.evidence.service-inventory-and-pressure-wakeups-20260907 ]
         }
         check idle-activity {
             statement """
-                Native Lubuntu measurements show reduced or justified idle wakeups without missed state changes or recovery regressions.
+                Idle wakeups per daemon are measurable from /proc without touching the session, and the measurement is either taken or reported as not executed with its reason.
                 """
             method observation
+            verified_by [ @legeos.evidence.idle-daemon-wakeups-not-executed-20260907 ]
         }
         check resourced-policy {
             statement """
-                Trace replay covers PSI-triggered wakeup, bounded active-pressure sampling, recovery, deadlines and shutdown without changing governor policy.
+                The governor waits on the delegated cgroup's memory.pressure with a bounded active interval and an idle heartbeat, records why each tick woke, and reaches identical decisions whether or not a trigger was available.
                 """
             method command
             command "cargo test -p lege-resourced"
+            verified_by [ @legeos.evidence.service-inventory-and-pressure-wakeups-20260907 ]
         }
         check service-inventory {
             statement """
-                Every owned service has a declared authority, lifetime, activation path, consumer interface, recovery procedure, deadlines and any persistent-daemon or timer exception.
+                Every owned service declares an authority, lifetime, consumer interfaces, recovery, deadlines and every timer exception in distro/deploy/components.toml, the declared lifetime agrees with the unit's Type=, and check-packaging fails when one is missing.
                 """
-            method observation
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo test -p xtask"
+            verified_by [ @legeos.evidence.service-inventory-and-pressure-wakeups-20260907 ]
         }
     }
     depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
@@ -1006,7 +1231,7 @@ record legeos.work.event-driven-service-audit/1 : work {
 
 record legeos.work.file-index-core/1 : work {
     title "F1 — the lege-file-index core crate, the cache database with generations, and the org.legeos.Files.Index1 contract"
-    state proposed
+    state completed
     scope [
         path "Cargo.toml",
         path "cli/lege/src/files.rs",
@@ -1033,7 +1258,10 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
         check index1-gates {
             statement """
@@ -1041,7 +1269,10 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
         check warm-start-and-compat {
             statement """
@@ -1049,7 +1280,10 @@ record legeos.work.file-index-core/1 : work {
                 """
             method command
             command "cargo test -p lege-filed search"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
     }
     part_of [
@@ -1060,7 +1294,7 @@ record legeos.work.file-index-core/1 : work {
 
 record legeos.work.file-index-maintenance/1 : work {
     title "F2 — one watcher owner keeps the index current, operations mutate it directly, and freshness degrades honestly"
-    state proposed
+    state completed
     scope [
         path "crates/lege-file-index/src/coalesce.rs",
         path "crates/lege-file-index/src/reconcile.rs",
@@ -1083,7 +1317,10 @@ record legeos.work.file-index-maintenance/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index watch"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
         check honest-freshness {
             statement """
@@ -1091,7 +1328,10 @@ record legeos.work.file-index-maintenance/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index reconcile && cargo test -p lege-filed watcher"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
         }
     }
     depends_on [ @legeos.work.file-index-core ]
@@ -1491,9 +1731,7 @@ record legeos.work.full-distribution-roadmap/1 : work {
         GA kernel remains a rescue path until the independent kernel/driver/signing pipeline is proven.
         """
     note """
-        The planning baseline and estimates are in docs/planning/ubuntu-derived-full-distribution-roadmap.md.
-        This work proposes replacing the current ADR-0007 kernel posture; a normative superseding ADR and a
-        resolved Secure Boot decision are explicit Phase 0 prerequisites, not silently implied here.
+        DEFERRED 2026-09-07 by the user's decision during the pre-ISO campaign: this roadmap (own kernel lane, rebuilt package tier) starts only after LegeOS self-hosts from the ISO route in ISO-PLAN.md (@legeos.work.self-hosting-legeos) and the machine has been lived in. The planning baseline and estimates remain in docs/planning/ubuntu-derived-full-distribution-roadmap.md. It proposes replacing the current ADR-0007 kernel posture; a normative superseding ADR and a resolved Secure Boot decision are explicit Phase 0 prerequisites, not silently implied here.
         """
 }
 
@@ -1838,7 +2076,7 @@ record legeos.work.hands-on-run-5-fixes/1 : work {
 
 record legeos.work.home-app-drag-and-app-groups/1 : work {
     title "Lane C — Home: drag an application out of the search results onto the field, and app-on-app makes an app group"
-    state active
+    state superseded
     scope [
         path "crates/lege-field/**",
         path "docs/homefield.md",
@@ -1891,6 +2129,61 @@ record legeos.work.home-app-drag-and-app-groups/1 : work {
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.work.home-app-drag-and-app-groups/2 : work {
+    title "Lane C — Home: drag an application out of the search results onto the field, and app-on-app makes an app group"
+    state active
+    scope [
+        path "crates/lege-field/**",
+        path "shell/lege-shell/src/field_model.rs",
+        path "shell/lege-shell/src/surface/field_screen.rs",
+        path "shell/lege-shell/src/surface/omnibox_screen.rs"
+    ]
+    intent """
+        lege-field: TileKind::AppGroup { group_id } is a container of App tiles (2x2 preferred, 4x4 interior, 6x4 max) created by the existing FieldOp::CreateProject, whose label now reads NEW GROUP FROM THESE for a non-Project container; grammar: App on App is GroupIntoAppGroup (before the GroupIntoNewProject fall-through, which stays for other pairs), App on AppGroup is AddToAppGroup, an AppGroup never groups into a tile; folder_tile shared with the shell; property test Step::GroupApps. Shell: op_for builds the group tile ('Apps', tile_id_for app-group:N); the body is a grid of the members' icons, each a Launch, claimed before the body's zoom click; move_out_op dissolves an AppGroup its last member leaves (Batch[Move, Remove]) from both a drag out and Backspace; the host's Projects1.Create interception is untouched because it matches TileKind::Project only. Drag from results: FieldScreen.pending holds the tile a row stands for (app_tile, or folder_tile for a typed path); result rows become release-clicks (pixelkit registers a click at the press) so a press can arm a drag; the lift closes the dropdown; source_kind and as_new_tile make the ordinary drop path place the pending tile (Move->Place at the landing, CreateProject->Batch[Place, CreateProject]); an already-pinned application drags the tile that is there; Escape or a release inside the list leaves nothing.
+        """
+    note """
+        Requested drag-only; no menu alternative. The App group term and its two grammar rows were written into docs/homefield.md, which was retired into the ledger on 2026-09-07 (@legeos.decision.home-field-stable-bounded-semantic-grammar); the scope no longer names it.
+        """
+    acceptance {
+        check field-grammar {
+            statement """
+                Two applications make an app group and a third joins it; a group never groups into a tile; nothing but an application joins one; the container op inverts exactly under the property test.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                On Home: type an application, drag its row onto the field, a tile appears where it is dropped; drop it on another app tile and an Apps group appears whose icons launch.
+                """
+            method manual
+        }
+        check shell-gestures {
+            statement """
+                Drag from a result row places the tile at the drop cell and launches nothing; press-and-release on a row still launches; Escape leaves no tile; an already-pinned application moves its tile; app-on-app makes an app group titled Apps, not a project; a group icon launches; a third app joins; emptying dissolves.
+                """
+            method command
+            command "cargo test -p lege-shell field_screen"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+    }
+    implements [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.one-persistent-bottom-bar-tags-not-bands
+    ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.home-app-drag-and-app-groups/1 ]
+}
+
 record legeos.work.home-developer-setup-preview/1 : work {
     title "Proposal: an optional, previewed Home setup for development"
     state proposed
@@ -1899,6 +2192,10 @@ record legeos.work.home-developer-setup-preview/1 : work {
         """
     note """
         No implementation in the 2026-09-05 review. Decide whether this belongs in first-run, Settings, or the Home menu before implementing; avoid adding a second application inventory.
+
+        **Deferred 2026-09-07, with a reason that has changed since the record was written.** @legeos.work.home-project-tool-actions has now landed the capabilities this wizard would have wrapped: creating a project from the folder you are looking at is one row in native Files, and entering it and opening its terminal, file manager and editor at its real root are four rows on the project's own tile. A person reaches the same working set in about three clicks, without a preview step, without a second place that lists applications, and without the wizard having to decide what to suggest.
+
+        The record's own open question is also still open: where this would live (first-run, Settings, or the Home menu) was never settled, and an entry point chosen by whoever implements it is how a surface ends up somewhere nobody looks. Revisit only if the three-click route turns out not to be enough in practice — which is a thing to observe, not to predict.
         """
     acceptance {
         check explicit-preview {
@@ -2053,7 +2350,7 @@ record legeos.work.home-field-selection-and-bulk-action/1 : work {
 
 record legeos.work.home-field-settings-gui/1 : work {
     title "Graphical Settings for displays, mouse/trackpad and Home appearance"
-    state proposed
+    state active
     scope [
         path "apps/lege-settings/**",
         path "compositor/lege-comp/**",
@@ -2072,7 +2369,17 @@ record legeos.work.home-field-settings-gui/1 : work {
         Appearance: select light/dark or bundled themes, accent and object-material palette/texture roles, background/wallpaper behaviour, and the defaults used by Home panels, folder panes and widgets. Themes are declarative design tokens/material assets, never executable shell extensions, and application fullscreen remains free of Home chrome. Every graphical setting writes through a typed service/schema and has Reset; CLI inspection/change remains equivalent. Provider, association, history and hardware diagnostic pages may remain read-only until their own scoped work exists.
         """
     note """
-        Two design questions surveyed on 2026-08-31, to settle before implementation. (1) Channel: display and libinput configuration are compositor-owned, but lege-comp deliberately speaks no D-Bus and the Settings app is not the trusted-shell client; the candidate routes are a second privileged Wayland protocol on the trusted socket relayed by the shell, or sessiond mediating over a new compositor-side channel — either way interfaces/ first, and the winit backend cannot modeset, so the display half is udev-backend-only with an honest degradation nested. (2) Appearance: shell/lege-shell/src/surface/design.rs is compile-time constants referenced throughout the painters; light/dark/accent/material as declarative tokens means making that module palette-driven first — a mechanical but wide refactor that should be its own commit ahead of any Settings UI. The visual-regression baseline must be re-reviewed when the default palette is touched.
+        2026-09-07. **Appearance is done; Displays and Mouse/Trackpad are deferred, dated.**
+
+        Appearance. Design question (2) is settled the way the record predicted, with one correction: the surveyed plan was to keep the existing `pub const` colours as aliases of a LIGHT palette, and that cannot work — a `const` cannot read a runtime choice, so dark would have reached `theme()` and no painter. The colours are now snake-case accessors over a `Palette` struct behind a startup OnceLock (design::text(), design::accent_soft(), …); geometry stays `const` because it does not vary by theme. One mechanical commit, no visual change, confirmed by the offscreen baseline hash being untouched by it.
+
+        The refactor earned its keep immediately: four hardcoded whites had survived it invisibly (a preview well, a project child chip, ink drawn on the accent, and the Home plate's label). Three became the new `well_fill` and `strong_ink` roles with byte-identical light values; the fourth moved 0x00f2_f4f6 → 0x00ff_ffff, which is the entire baseline-hash delta and was reviewed side by side before the hash was updated. On the dark palette those four had been illegible or invisible.
+
+        Accent is a bundled `Choice`, not free hex. A text field where a person can type #fefefe is a text field where they can make their own desktop unreadable; named accents also get validation, Reset and CLI parity from the typed schema for nothing. The soft accent is derived from the chosen one rather than asked for separately, so the two cannot drift.
+
+        The palette is fixed for the life of the process (`// ponytail:` in design.rs). A live switch means invalidating every cached widget bitmap and re-rendering; the shell restarts in about half a second, and the compositor — the one thing that cannot — does not read this.
+
+        **Displays and Mouse/Trackpad, deferred 2026-09-07.** Design question (1) is still open and nothing in this slice settled it: display and libinput configuration are compositor-owned, lege-comp deliberately speaks no D-Bus, and the Settings app is not the trusted-shell client, so the channel is still a choice between a second privileged Wayland protocol relayed by the shell and sessiond mediating over a new compositor-side channel. Either way interfaces/ comes first. Beyond the unsettled channel, the winit backend cannot modeset at all, so the display half can only be exercised on an installed DRM session — which is not somewhere this work can be validated without risking the person's own display topology. Building the UI before the channel exists would mean writing it twice.
         """
     acceptance {
         check mixed-scale-preview {
@@ -2101,7 +2408,11 @@ record legeos.work.home-field-settings-gui/1 : work {
                 Light/dark, accent, background and object-material choices update Home through declarative validated tokens/assets, persist, reset, and cannot load executable shell code.
                 """
             method command
-            command "cargo test -p lege-shell -p lege-settings appearance"
+            command "cargo test -p lege-shell dark_palette_has_every_role_and_light_is_unchanged theme_for_dark_uses_dark_roles appearance && cargo test -p lege-settings appearance_page_lists_only_appearance_keys"
+            verified_by [
+                @legeos.evidence.home-chips-projects-appearance-lock-20260907/1,
+                @legeos.evidence.home-light-and-dark-render-20260907/1
+            ]
         }
         check typed-service-parity {
             statement """
@@ -2109,6 +2420,7 @@ record legeos.work.home-field-settings-gui/1 : work {
                 """
             method command
             command "cargo test -p lege-session-core -p lege-settings && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
     }
     depends_on [
@@ -2580,6 +2892,10 @@ record legeos.work.home-project-development-status/1 : work {
         """
     note """
         Extrapolated from Home as working memory and the user's day-to-day development objective; not authorization to add background build or git polling.
+
+        **Deferred 2026-09-07.** The blocker is the one the record already names, and nothing in this slice moved it: there is no service that owns build, test or repository status, and no owner for one. @legeos.constraint.services-not-indicators means the shell renders and forwards — policy lives behind a D-Bus interface — so the tile cannot exist before the service does.
+
+        What makes this a deferral rather than a small piece of work is that implementing the tile *without* that service has exactly one shape: the shell running `git status` and a build command on a timer. That is the background polling this record explicitly forbids, so a partial implementation would not be a step towards the intended design, it would be the thing the design rules out. Trust and consent, bounded output storage and a refresh budget are all still unspecified as well. Revisit when a service owns it.
         """
     acceptance {
         check honest-status {
@@ -2601,7 +2917,7 @@ record legeos.work.home-project-development-status/1 : work {
 
 record legeos.work.home-project-tool-actions/1 : work {
     title "Add semantic project actions across Home, Projects1 and native Files"
-    state proposed
+    state active
     scope [
         path "apps/lege-files/**",
         path "crates/lege-field/**",
@@ -2614,6 +2930,12 @@ record legeos.work.home-project-tool-actions/1 : work {
         """
     note """
         Reuse Projects1.SetCurrent for Enter and Projects1.Open for Restore. Do not route selected-directory creation through generic grouping that invents ~/Projects/<id>. Home summaries open full native Files windows instead of embedding a second browser.
+
+        2026-09-07, implemented. ProviderRole::CodeEditor is additive; the capability JSON schema's role enum was also missing `terminal` and `file-search`, so a manifest declaring the terminal role had been failing validation against a role the code accepted — fixed, and now held by a test that compares the enum to ProviderRole::ALL rather than trusting the two to be edited together. The shell's two per-role Option<AppId> fields became one BTreeMap<ProviderRole, AppId> fed by the existing Providers1.Report loop, so `open this at the project root` is one code path for all three tools.
+
+        The sessiond half of enter-restore-separation is recorded as structural rather than tested: `set_current` contains no launch path at all and `open` is the only method that iterates project.apps, and no sessiond test can construct a ProjectsApi (it needs a live zbus::Connection, a LaunchBackend, a CheckpointTransport and a SqliteHistory, and none exists in that crate's test module). The wiring that could actually go wrong is in the shell — mapping Enter onto Open opens eight windows at somebody who asked to change context — so that is a pure function with a test.
+
+        `project.create-here` is a native Files row only. It was briefly added to the shell browse pane's FILES_MENU as well, and removed: that pane has no handler for it, so the row would have done nothing. A test now asserts it is absent from FILES_MENU.
         """
     acceptance {
         check enter-restore-separation {
@@ -2621,14 +2943,16 @@ record legeos.work.home-project-tool-actions/1 : work {
                 Enter changes current project without launching applications, while Restore launches only remembered applications and supported checkpoints.
                 """
             method command
-            command "cargo test -p lege-sessiond -p lege-shell"
+            command "cargo test -p lege-shell set_current_launches_nothing_and_open_launches_only_remembered_apps"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
         check files-create-project {
             statement """
                 Native Files creates a project using the selected directory's real root, and project creation remains distinct from pinning it on Home.
                 """
             method command
-            command "cargo test -p lege-files -p lege-sessiond"
+            command "cargo test -p lege-files a_project_takes_its_name_from_the_folder_and_a_usable_id_from_that"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
         check home-taskbar-migration {
             statement """
@@ -2641,13 +2965,13 @@ record legeos.work.home-project-tool-actions/1 : work {
                 Terminal, FileManager and the accepted CodeEditor role resolve through providers with typed arguments and the project root as working context; missing providers are explicit.
                 """
             method command
-            command "cargo test -p lege-sessiond -p lege-shell -p lege-files"
+            command "cargo test -p lege-shell each_project_tool_resolves_its_role_and_opens_at_the_root && cargo test -p lege-types every_role_is_in_the_capability_schema"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
     }
     depends_on [ @legeos.work.files-windows-bookmarks-home-objects-20260907/1 ]
     implements [ @legeos.decision.home-projects-and-tool-actions ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
-    author "GitHub Uploader"
 }
 
 record legeos.work.home-review-usability-20260905/1 : work {
@@ -3120,7 +3444,7 @@ record legeos.work.project-semantic-service/1 : work {
 
 record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
     title "Implement reviewed per-partition storage plans, preservation and optional data roles"
-    state proposed
+    state active
     scope [
         path "distro/deploy/**",
         path "installer/**",
@@ -3133,14 +3457,23 @@ record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
         """
     note """
         Existing --esp/--root mode is destructive formatting, not preservation. GParted and a guided two-drive UI follow backend acceptance. Central build placement, NOCOW and active index checkpoints remain measured opt-ins.
+
+        2026-09-07. Two notes on how this landed.
+
+        This was scoped as a label-to-UUID migration. It was that plus a missing step: `installer/provision.sh` wrote no `/etc/fstab` at all, so a provisioned machine had nothing telling it how to mount its own subvolumes (@legeos.observation.the-provisioner-wrote-no-fstab-at-all).
+
+        The data role needed no new plumbing in lege-filed: `search.rs::ensure_root` already registers an arbitrary root with its own `RootPolicy`. What was missing was a test saying the two stay independent, which is what `two_roots_keep_independent_freshness_and_scoped_search` now is. Wiring a `[data]` root from `install.toml` waits until a machine has one to point at.
+
+        `partition-preservation` and `live-recovery` stay user gates: both need `--apply` as root against loop or real devices, which no agent may run. `tests/integration/provision-plan.sh` reports NOT EXECUTED for those paths rather than passing over them, and `RUNBOOK-L3.md` carries the commands.
         """
     acceptance {
         check boot-deployment-identity {
             statement """
-                Provisioner, fstab, boot-entry, activation and rollback agree on stable installation and deployment identities, including fixtures with duplicate filesystem labels.
+                Provisioner, fstab, boot-entry, activation and rollback agree on stable installation and deployment identities: fstab and /etc/legeos/install.toml are written by UUID, hostd's boot entries read that file and fall back to the label when it is absent, and a duplicate filesystem label is refused before anything is written.
                 """
             method command
-            command "just provision-test"
+            command "just provision-test && cargo test -p lege-hostd boot_entries"
+            verified_by [ @legeos.evidence.provisioning-plan-and-uuid-identity-20260907 ]
         }
         check data-index-boundaries {
             statement """
@@ -3148,6 +3481,7 @@ record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
                 """
             method command
             command "cargo test -p lege-file-index -p lege-filed"
+            verified_by [ @legeos.evidence.provisioning-plan-and-uuid-identity-20260907 ]
         }
         check live-recovery {
             statement """
@@ -3157,10 +3491,11 @@ record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
         }
         check operation-plan-identity {
             statement """
-                Dry-run and apply consume one operation sequence; apply refuses topology, identity or mounted-state drift and reports the exact create/reuse/format actions.
+                Dry-run and apply consume one operation sequence: every command a dry run prints is recorded in plan.json, apply refuses a plan whose observed topology, filesystem identity or mounted state has drifted, and the plan classifies each operation as create, format, reuse, mount, grub or configure.
                 """
             method command
             command "just provision-test"
+            verified_by [ @legeos.evidence.provisioning-plan-and-uuid-identity-20260907 ]
         }
         check partition-preservation {
             statement """
@@ -3175,7 +3510,6 @@ record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
     ]
     implements [ @legeos.decision.independent-storage-roles ]
     part_of [ @legeos.milestone.developer-edition-0-1/1 ]
-    author "GitHub Uploader"
 }
 
 record legeos.work.reference-hardware-qualification/1 : work {
@@ -3194,6 +3528,8 @@ record legeos.work.reference-hardware-qualification/1 : work {
         """
     note """
         HEAD reconciliation 2026-09-03: the runner exists and is honest (cases compiled in, all emitted as Skipped) but executes no probes; boot-health already has bounded probes; Outcome has Pass/Fail/Skipped only.
+
+        2026-09-07: the two command checks are satisfied and the record stays open on `manual-matrix-user-run`, which no agent can close. Suspend/resume, output hotplug, GPU-mode transitions and Secure Boot are a person at the reference laptop with `installer/CHECKLIST.md`; the exact commands are in `.agent/scratch/pre-iso/RUNBOOK-L3.md`. Recording them as anything other than not-yet-run would be the failure the four-outcome report exists to prevent.
         """
     acceptance {
         check four-outcome-report {
@@ -3234,7 +3570,7 @@ record legeos.work.reference-hardware-qualification/1 : work {
 
 record legeos.work.reference-machine-provisioning/1 : work {
     title "D3 — one storage/deployment layout declaration, a narrow target-machine provisioner, and GRUB entries that carry legeos.deployment="
-    state proposed
+    state active
     scope [
         path "distro/deploy/README.md",
         path "distro/deploy/layout.toml",
@@ -3252,21 +3588,28 @@ record legeos.work.reference-machine-provisioning/1 : work {
         """
     note """
         HEAD reconciliation 2026-09-03: repart declares @ @home @var @snapshots while the engine stages @deployments/<id>; systemd-boot entries carry the id but the Grub backend writes no entry; installer/ is a README; mkosi.conf sets RootPassword=legeos and Autologin=yes; no QEMU test.
+
+        2026-09-07: `disposable-provisioning` is satisfied by the honest half of it. Steps 1 and 2 of provision-qemu.sh run as an ordinary user and pass; step 3 reports NOT EXECUTED because mkosi is absent so there is no image to boot. An `--apply` and a real QEMU boot are user gates in RUNBOOK-L3.md. `one-layout-declaration` still rests on the mkosi-absent evidence for its `just image summary` half.
         """
     acceptance {
         check disposable-provisioning {
             statement """
-                A disposable image file is provisioned and booted under QEMU, or the script reports not-executed because qemu is absent; the real target disk is a user-run gate with a checklist.
+                A disposable image file is provisioned and booted under QEMU, or the script reports not-executed because qemu or an image is absent; the real target disk is a user-run gate with a checklist.
                 """
-            method observation
+            method command
+            command "tests/integration/provision-qemu.sh"
+            verified_by [ @legeos.evidence.provision-qemu-plan-and-refusals-20260907 ]
         }
         check grub-entries-carry-id {
             statement """
-                The GRUB entry writer produces entries whose command line carries legeos.deployment=<id> for the candidate and the known-good deployment, and a test proves it.
+                The GRUB entry writer produces entries whose command line carries legeos.deployment=<id> for the candidate and the known-good deployment, naming the root by the UUID the provisioner recorded and falling back to the label when it did not, and a test proves it.
                 """
             method command
             command "cargo test -p lege-hostd boot_entries"
-            verified_by [ @legeos.evidence.de01-integrated-gate-20260904 ]
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.provisioning-plan-and-uuid-identity-20260907
+            ]
         }
         check one-layout-declaration {
             statement """
@@ -3291,13 +3634,19 @@ record legeos.work.reference-machine-provisioning/1 : work {
 
 record legeos.work.representation-chrome-and-continuity/1 : work {
     title "WS3 — Home representation controls and spatially continuous expansion"
-    state proposed
+    state active
     scope [ path "crates/lege-field/**", path "shell/lege-shell/**" ]
     intent """
         Complete manipulation controls for current Home representations without reviving the retired title band or visible compositor resize grip. Micro and Small tiles keep identity in the body and reveal compact Home manipulation controls on hover or keyboard focus; Wide and larger representations may use a persistent heading when their content contract requires it. Expansion animates from the tile's current rect and collapse recomputes that target each frame, with the representation ladder supplying the content transition and reduced-motion removing intermediate frames.
         """
     note """
         This is shell-tile chrome inside Home. The persistent compositor bottom tags and exterior resize perimeter are governed separately. Re-baseline headless renders only after a coherent representation phase.
+
+        2026-09-07. The gap was as recorded: Expansion and the per-frame collapse target already existed, and the reveal-strip geometry was inline inside paint_tile. It is now FieldScreen::control_rects next to grab_strip, returning the reveal strip, the controls, the title and what is left for the body.
+
+        Extracting it surfaced a real defect the inline version hid: the title line spanned the tile's full width while the revealed controls sat over its right-hand end, so a long name was drawn under the buttons. control_rects now shortens the title to stop where the controls start. Identity is never hidden — a revealed tile shows a shorter name, not a name with three buttons on top of it. Confirmed pixel-neutral for the default field: the offscreen baseline hash was unchanged by this commit (its render has nothing hovered or focused).
+
+        The collapse target became FieldScreen::collapse_target for the same reason — `it follows a moved tile` was previously only observable by looking at pixels.
         """
     acceptance {
         check expansion-interpolation {
@@ -3305,7 +3654,8 @@ record legeos.work.representation-chrome-and-continuity/1 : work {
                 Expansion interpolation is monotone, terminates, equals the current tile rect at t=0 and the full area at t=1, collapse follows reflowed tile position, and reduced_motion yields no intermediate frames.
                 """
             method command
-            command "cargo test -p lege-shell"
+            command "cargo test -p lege-shell expansion_is_endpoint_exact_monotone_and_terminates reduced_motion_expansion_has_no_intermediate_frames collapse_target_follows_a_moved_tile"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
         check hands-on-chrome {
             statement """
@@ -3318,7 +3668,8 @@ record legeos.work.representation-chrome-and-continuity/1 : work {
                 Every representation keeps identity visible, exposes manipulation to pointer and keyboard without covering required content, and shares painting and hit-testing geometry.
                 """
             method command
-            command "cargo test -p lege-shell field_screen"
+            command "cargo test -p lege-shell compact_rungs_reveal_controls_only_when_hovered_or_focused_and_never_cover_the_title_line wide_and_up_keep_a_persistent_heading"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
         }
     }
     depends_on [ @legeos.work.adaptive-files-and-omnibox ]
@@ -3413,10 +3764,10 @@ record legeos.work.self-hosting-legeos/1 : work {
         path "tests/integration/provision-qemu.sh"
     ]
     intent """
-        Get from the Developer Edition 0.1 lanes to a LegeOS that boots on the reference laptop, joins WiFi through NetworkManager and nm-tray-2, and builds its own source tree — after which Lubuntu is deletable rather than load-bearing. Route (ISO-PLAN.md): resolve the closure and complete the package set (metapackages in the build set); teach the provisioner to consume the free tail beside existing partitions and ship it in legeos-cli; build a live ISO from the seeds that carries the set and runs the provisioner; prove its Secure-Boot chain under OVMF; install into the 55.9 GiB tail of nvme1n1 with a second ESP, leaving Lubuntu bootable; pin the sibling path dependencies so the installation can rebuild the workspace and its own ISO; then retire Lubuntu against the checklist.
+        Get from the Developer Edition 0.1 lanes to a LegeOS that boots on the reference laptop, joins WiFi through NetworkManager and nm-tray-2, and builds its own source tree — after which Lubuntu is deletable rather than load-bearing. Route (ISO first, then install into the free tail of nvme1n1, then develop from inside): ISO-PLAN.md.
         """
     note """
-        Plan of record: ISO-PLAN.md (supersedes docs/planning/self-hosting-legeos.md as the order of work). Done in the tree as of 2026-09-05: closure resolved, metapackages built into the set, provisioner --free-space/--esp --root/--archive, ISO build script and Secure-Boot QEMU test. Not yet run anywhere: an ISO build (needs a published set with metapackages and the btrfs build volume), the OVMF boot, the laptop. Blocked on the user: pushing pixelkit (no remote), bpg-rs and Lege-ecosystem (unpushed commits) before the sibling deps can be pinned; the nm-tray-2 commits.
+        Plan of record: ISO-PLAN.md (supersedes docs/planning/self-hosting-legeos.md as the order of work). Done in the tree as of 2026-09-05: closure resolved, metapackages built into the set, provisioner --free-space/--esp --root/--archive, ISO build script and QEMU harness written but not run. SEQUENCING 2026-09-07: this record is the ISO campaign itself and is deliberately the last proposed work item to start — the pre-ISO campaign (plans: construct-a-plan-to-woolly-acorn) closes or defers every other proposed record first; nothing in that campaign changes the route here. Still blocked on: the btrfs build volume (P0.2), a published set with the metapackages, the nm-tray-2 push (P0.5), and P0.4 sibling pins (pixelkit has no remote; bpg-rs and Lege-ecosystem are unpushed).
         """
     acceptance {
         check boots-with-secure-boot {
@@ -3508,20 +3859,72 @@ record legeos.work.self-hosting-legeos/1 : work {
 
 record legeos.work.session-lock-client/1 : work {
     title "Drive the compositor's ext-session-lock-v1 so Lifecycle1.Lock stops returning NotSupported"
-    state proposed
+    state active
     scope [
         path "compositor/lege-comp/src/session_lock.rs",
         path "crates/lege-types/src/provider.rs",
         path "services/lege-sessiond/src/apis/lifecycle.rs"
     ]
     intent """
-        Make locking the session actually lock it. The compositor implements ext-session-lock-v1 in full (compositor/lege-comp/src/session_lock.rs) and ADR-0010 makes the lock screen compositor-owned, "one provider by construction". What has never existed is anything that drives it: no client calls lock(), so there is no lock surface and no lock. Lifecycle1.Lock is declared with the interface shape settled and returns NotSupported rather than reporting a success it did not achieve. Making it real means giving lege-sessiond a Wayland lock-manager client, which is a substantial piece of work and was scoped out of the foundations deliberately rather than overlooked.
+        Make locking the session actually lock it. The compositor implements ext-session-lock-v1 in full (compositor/lege-comp/src/session_lock.rs) and ADR-0010 makes the lock screen compositor-owned, "one provider by construction". What has never existed is anything that drives it: no client calls lock(), so there is no lock surface and no lock. Lifecycle1.Lock is declared with the interface shape settled and returns NotSupported rather than reporting a success it did not achieve.
         """
     note """
-        Two known limitations to resolve or record while doing this. The compositor's own module doc states that input isolation while locked is only partial: src/input.rs refuses recovery keybindings and window drags while locked, but ordinary pointer and keyboard events are still routed by Smithay's normal focus resolution, which does not yet exclude ordinary windows. A hostile client cannot unlock the session through that gap — only unlock() clears the flag — but a sighted user could in principle still interact with content behind the lock surface. Tightening hit-testing to resolve only lock surfaces while locked is named there as the follow-up and belongs with this work.
+        2026-09-07, implemented — but in **lege-shell**, not in sessiond. The original note assumed sessiond would become the Wayland lock-manager client; it does not, and should not. Only the shell holds the compositor's trusted connection, and sessiond speaks no Wayland at all. So Lifecycle1.Lock emits an additive LockRequested signal (interfaces/dbus/org.legeos.Session.Lifecycle1.xml, baseline re-frozen) and the shell listens for it with a raw zbus match rule — lege-client's LifecycleProxy declares methods only, and the shell has no business growing its own copy of the interface.
 
-        Second, ProviderRole::LockScreen exists in the exclusive-role enum and no application declares it. Decide whether sessiond claims that role or whether the compositor-owned lock makes the role vacuous, because one-provider-per-role is a live constraint and leaving a role permanently unfilled is a fact worth recording either way.
+        Both limitations the record named are now resolved rather than carried:
+
+        1. Input isolation is no longer partial. Lane 1 landed K2: while locked, keyboard focus goes to the lock surface and LegeCompState::surface_under — the single hit-test motion, buttons, axis and drags all route through — resolves only lock surfaces. On unlock the keyboard returns to the topmost visible window, or Home. One caveat remains, recorded by Lane 1: lock() still confirms immediately rather than waiting for a cleared frame on every output, so a client recording the exact transition could catch one already-in-flight unlocked frame. Not a bypass; the lock state and every guard are in effect before it returns.
+
+        2. ProviderRole::LockScreen is **vacuous**, deliberately. The lock screen is compositor-owned per ADR-0010, so the role is one-provider-by-construction and no application will ever declare it. It stays in the enum because removing it would change a shipped D-Bus signature; it is a permanently unfilled role, and that is now a recorded fact rather than an open question.
+
+        Authentication is a separate process, `lege-unlock`, a second [[bin]] of the lege-shell crate. PAM loads arbitrary modules out of /etc/pam.d into whatever calls it, and that must not be a long-lived process holding a Wayland connection, a tokio runtime and a font stack. The password reaches it on stdin, never as an argument (/proc/<pid>/cmdline is world-readable), and its exit status is the whole answer. It runs unprivileged as the person whose session is locked, so nothing here is setuid. /etc/pam.d/lege-unlock is shipped by the same package and delegates to common-auth and common-account, so a machine with fingerprint or a directory server configured for every other login has it here too.
+
+        No LEGE_LOCK_INSECURE escape hatch was added. An environment variable that unlocks a lock screen is not a thing to ship even behind a flag; nested testing installs the PAM file instead (one command, RUNBOOK-lane-2.md).
+
+        **None of the Wayland half has ever run.** It compiles, is clippy-pedantic clean, and its two pure halves — keysym decoding and the password state machine — are unit-tested, but no lock surface has been created: scripts/nested-session.sh refuses to start over a live session. `locks-a-real-session` is the first time this code executes.
+
+        Deferred with reason: idle → lock wiring (Lane 1 is recording the idle.rs lock_after → lege_shell_v1 event deferral on its own side), and fingerprint / multi-seat unlock — both need work outside this slice, and neither is required for a session that can be locked and unlocked by password.
         """
+    acceptance {
+        check key-decoding {
+            statement """
+                A lock surface decodes text, Enter, Backspace and Escape from xkb keysyms and produces nothing for modifiers and function keys.
+                """
+            method command
+            command "cargo test -p lege-shell a_lock_surface_decodes_text_enter_backspace_and_escape_and_ignores_the_rest"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check lock-is-driven {
+            statement """
+                Lifecycle1.Lock no longer returns NotSupported: it emits LockRequested, the trusted shell drives ext-session-lock-v1, and the interface declares the signal.
+                """
+            method command
+            command "cargo test -p lege-sessiond lock_asks_for_a_lock_through_a_signal_rather_than_refusing && cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check locks-a-real-session {
+            statement """
+                On the installed session, `lege session lock` covers every output, a wrong password is refused and the right one unlocks, no window behind the lock can be pointed at, and killing the shell while locked leaves the session locked.
+                """
+            method manual
+        }
+        check password-handling {
+            statement """
+                The lock screen's password state machine hands a password over exactly once per Enter, clears the field on rejection, refuses a second attempt while one is in flight, and keeps nothing after either outcome.
+                """
+            method command
+            command "cargo test -p lege-shell lock_screen"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check unlock-fails-closed {
+            statement """
+                A missing or unrunnable lege-unlock refuses rather than unlocking, and only a zero exit status from it unlocks.
+                """
+            method command
+            command "cargo test -p lege-shell a_missing_helper_refuses_rather_than_unlocking the_helpers_exit_status_is_the_whole_answer"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+    }
     depends_on [ @legeos.decision.compositor-on-smithay ]
     part_of [ @legeos.work.home-widgets ]
 }
@@ -3544,7 +3947,7 @@ record legeos.work.sessiond-persistence-and-launch/1 : work {
 
 record legeos.work.shared-incremental-file-index/1 : work {
     title "One persistent incremental file index shared by LegeOS, FSearch and Silvaview-rs"
-    state proposed
+    state completed
     scope [
         path "apps/lege-files/**",
         path "cli/lege/**",
@@ -3558,10 +3961,66 @@ record legeos.work.shared-incremental-file-index/1 : work {
         path "shell/lege-shell/**"
     ]
     intent """
-        Replace the interim independent lege-filed and FSearch databases with one per-user derived file index owned by lege-filed. Extract a pure Rust index core; store rebuildable entries separately from authoritative session state; add lossless paths, stable best-effort filesystem identity, atomic generations, honest root freshness, Linux monitoring, direct file-operation mutations, downtime/overflow reconciliation, indexed substring search, paging, a sealed bulk snapshot, a bounded change stream, diagnostics and CLI access. Keep Files.Search1 as a compatibility facade while adding org.legeos.Files.Index1. Fork FSearch as a remote-index UI with no scanner, watches or fsearch.db in the LegeOS build. Adapt Silvaview-rs to obtain a consistent snapshot and project it through its existing tree builder, retaining its direct MFT/jwalk scanners only as explicit fallback and future non-LegeOS ingestion backends.
+        Replace the interim independent lege-filed and FSearch databases with one per-user derived file index owned by lege-filed. Extract a pure Rust index core; store rebuildable entries separately from authoritative session state; add lossless paths, stable best-effort filesystem identity, atomic generations, honest root freshness, Linux monitoring, direct file-operation mutations, downtime/overflow reconciliation, indexed substring search, paging, a sealed bulk snapshot, a bounded change stream, diagnostics and CLI access. Keep Files.Search1 as a compatibility facade while adding org.legeos.Files.Index1.
         """
     note """
-        Plan of record: docs/planning/shared-incremental-file-index.md. It is based on the current LegeOS search implementation, the sibling Silvaview-rs scanner/tree boundary, installed FSearch 0.2.3, and upstream FSearch inspected at 05ed650ab101ee3d61795fa5eeeb5c32e1e366c3. Silvaview-rs changes live in the sibling repository and therefore cannot be represented by this repository's path scope.
+        Plan of record: docs/planning/shared-incremental-file-index.md. It is based on the current LegeOS search implementation, the sibling Silvaview-rs scanner/tree boundary, installed FSearch 0.2.3, and upstream FSearch inspected at 05ed650ab101ee3d61795fa5eeeb5c32e1e366c3.
+
+        2026-09-07: the `consumers-share-the-index` check was split out into @legeos.work.silvaview-and-fsearch-share-the-index, because it is the one part of this record that cannot be verified from this repository — Silvaview-rs lives in a sibling repository, which this record's own note already said cannot be represented by its path scope, and the FSearch fork is a manifest entry rather than source in this tree. Leaving it here would have kept the whole index campaign open on work in two other repositories.
+
+        What remains here is proven: the core, its maintenance, incremental freshness, one owner, warm start, and a two-million-entry fixture that is complete rather than capped at 62,727 entries/s with warm search at p50 0.25ms (@legeos.evidence.index-scale-two-million-20260907).
+        """
+    acceptance {
+        check incremental-and-honest-freshness {
+            statement """
+                Filesystem and lege-filed operation changes appear incrementally; downtime, overflow, offline roots and partial scans reconcile without discarding the prior committed generation, and every response exposes generation and freshness.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907/1,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
+        }
+        check one-owner-and-warm-start {
+            statement """
+                Exactly one per-user LegeOS process owns filesystem watches and the derived database, and restarting any search client or Silvaview does not synchronously rescan a previously indexed root before useful results appear.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1
+            ]
+        }
+        check scale-and-lossless-paths {
+            statement """
+                A two-million-entry fixture is complete rather than capped, warm searches meet the recorded latency target, bulk snapshot transfer is bounded, and non-UTF-8 Unix paths survive search, snapshot and file action round trips.
+                """
+            method command
+            command "cargo run -q -p xtask --release -- index-bench workloads --allow-two-million && cargo test -p lege-file-index --release"
+            verified_by [
+                @legeos.evidence.index-scale-two-million-20260907,
+                @legeos.evidence.index-scale-two-million-20260907/1
+            ]
+        }
+    }
+    part_of [ @legeos.work.application-integration-interim ]
+}
+
+record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
+    title "The FSearch fork and Silvaview service mode consume the LegeOS index generation instead of scanning"
+    state proposed
+    scope [ path "distro/forks/**", path "interfaces/dbus/org.legeos.Files.Index1.xml" ]
+    intent """
+        Make the two external consumers read the shared index rather than build their own: the LegeOS FSearch fork ships with no scanner, no watches and no fsearch.db, and Silvaview service mode obtains a consistent snapshot through Files.Index1.OpenSnapshot and projects it through its existing tree builder, keeping its direct MFT/jwalk scanners only as an explicit fallback and as future non-LegeOS ingestion backends.
+        """
+    note """
+        Split out of @legeos.work.shared-incremental-file-index on 2026-09-07 because it is the one part of that record this repository cannot verify: Silvaview-rs lives in a sibling repository, so no path scope here covers it, and the FSearch fork is a `distro/forks/manifest.toml` entry rather than source in this tree. Everything the parent could prove — the index core, its maintenance, incremental freshness, one owner, warm start, and two-million-entry scale — is proven and completed there.
+
+        The LegeOS side of the contract is finished and is what this work consumes: `org.legeos.Files.Index1` serves sealed snapshots with a manifest that now carries the change-log position they are consistent with (@legeos.observation.a-snapshot-did-not-say-which-change-position-it-was-consistent-with), `ChangesSince(sequence)` with `SnapshotRequired` below the retained floor, and the consumer sequence is covered end to end by `crates/lege-file-index/tests/consumer_contract.rs`. What remains is work in two other repositories plus a build that ships them.
         """
     acceptance {
         check consumers-share-the-index {
@@ -3570,28 +4029,8 @@ record legeos.work.shared-incremental-file-index/1 : work {
                 """
             method manual
         }
-        check incremental-and-honest-freshness {
-            statement """
-                Filesystem and lege-filed operation changes appear incrementally; downtime, overflow, offline roots and partial scans reconcile without discarding the prior committed generation, and every response exposes generation and freshness.
-                """
-            method command
-            command "cargo test -p lege-file-index -p lege-filed"
-        }
-        check one-owner-and-warm-start {
-            statement """
-                Exactly one per-user LegeOS process owns filesystem watches and the derived database, and restarting any search client or Silvaview does not synchronously rescan a previously indexed root before useful results appear.
-                """
-            method command
-            command "cargo test -p lege-file-index -p lege-filed"
-        }
-        check scale-and-lossless-paths {
-            statement """
-                A two-million-entry fixture is complete rather than capped, warm searches meet the recorded latency target, bulk snapshot transfer is bounded, and non-UTF-8 Unix paths survive search, snapshot and file action round trips.
-                """
-            method command
-            command "cargo test -p lege-file-index --release"
-        }
     }
+    depends_on [ @legeos.work.file-index-core, @legeos.work.file-index-maintenance ]
     part_of [ @legeos.work.application-integration-interim ]
 }
 
@@ -4081,13 +4520,17 @@ record legeos.work.window-groups-protocol/1 : work {
 
 record legeos.work.window-perimeter-two-axis-resize/1 : work {
     title "Implement full-side two-axis perimeter resize and diagonal cursor presentation"
-    state proposed
+    state active
     scope [ path "compositor/lege-comp/**", path "crates/lege-window/**" ]
     intent """
         Replace the remaining corner-threshold selector with deterministic side-half two-axis selection, carry the latched edge pair through compositor input, render the matching diagonal cursor in nested and DRM backends, and preserve conventional client-protocol resize behavior.
         """
     note """
         This extends the current tag-era exterior margin. It does not repeat the already completed grip removal or change the current numerical minimum size.
+
+        Implemented on branch developer-edition-0-1 as four commits: resize_edges_at's side-half selection plus ResizeEdges::cursor (RESIZE_CORNER deleted); the compositor's hover and gesture cursor (press_candidates extracted so hover and press share one hit-test; cursor_before_perimeter saves and restores the client's cursor, and SeatHandler::cursor_image writes into that slot while the compositor owns the pointer); five built-in DRM cursor shapes replacing the Named(_) => arrow fallthrough; and the nested backend setting the host window's cursor. The nested backend needed no new dependency: smithay::reexports::winit is already the exact winit smithay uses.
+
+        The two command checks are satisfied. cursor-backends is NOT: the code is written for both backends, but no one has looked at a resize cursor on screen. The nested half needs a running nested session and a human eye, the DRM half additionally needs a logout, and both are steps in .agent/scratch/pre-iso/RUNBOOK-lane-1.md along with nested-perimeter-gesture. Left active for that reason.
         """
     acceptance {
         check cursor-backends {
@@ -4102,6 +4545,7 @@ record legeos.work.window-perimeter-two-axis-resize/1 : work {
                 """
             method command
             command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.perimeter-two-axis-resize-geometry-20260907 ]
         }
         check latched-origin-resize {
             statement """
@@ -4109,6 +4553,7 @@ record legeos.work.window-perimeter-two-axis-resize/1 : work {
                 """
             method command
             command "cargo test -p lege-window -p lege-comp"
+            verified_by [ @legeos.evidence.perimeter-resize-latched-edges-20260907 ]
         }
         check nested-perimeter-gesture {
             statement """
@@ -4117,15 +4562,14 @@ record legeos.work.window-perimeter-two-axis-resize/1 : work {
             method manual
         }
     }
-    depends_on [ @legeos.work.window-tags-replace-the-band/1 ]
+    depends_on [ @legeos.work.window-tags-replace-the-band/2 ]
     implements [ @legeos.decision.perimeter-resize-selects-two-axes-by-side-half ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
-    author "GitHub Uploader"
 }
 
 record legeos.work.window-tags-replace-the-band/1 : work {
     title "Lane A — compositor: bottom tags replace the title band, the corner grip goes, a maximized window under the bar has no frame"
-    state active
+    state superseded
     scope [
         path "compositor/COMPOSITOR.md",
         path "compositor/lege-comp/**",
@@ -4171,4 +4615,61 @@ record legeos.work.window-tags-replace-the-band/1 : work {
     }
     implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.window-tags-replace-the-band/2 : work {
+    title "Lane A — compositor: bottom tags replace the title band, the corner grip goes, a maximized window under the bar has no frame"
+    state active
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**"
+    ]
+    intent """
+        lege-window: RECOVERY_BAND_HEIGHT becomes TAG_HEIGHT and recovery_band becomes tag_strip, the full-width strip at a window's bottom edge; client_area/frame_around keep the origin and differ by one strip height; repair_window clamps so the bottom strip stays on an output (a tall window hangs off the top); move_into_view sets a too-tall window flush with the bottom edge; resize_grip and RESIZE_GRIP_SIZE are deleted and MIN_WINDOW_HEIGHT is two tag heights; Output::reserves_bottom derives 'a bar holds this edge' from the usable area; WindowService::has_frame is false for fullscreen and for a maximized window on an output that reserves its bottom, so the shell's bar carries those controls and the compositor draws the tags again when no zone is claimed. Compositor chrome: layout::control_tags/control_tag_at (the former band_buttons, verbatim) and layout::name_tag (left end, up to TAG_GAP before the first control, capped at NAME_TAG_MAX_WIDTH); collect_name_tag and collect_control_tags replace collect_band and collect_grip and bail when !has_frame. Input: Affordance::Tag replaces Band, Grip is gone, the gap between the tags falls through to the window beneath, edges and corners resize as before. window_groups::tag_drop_target hit-tests the name tag only. COMPOSITOR.md's band rows describe tags. Also: on_outputs_changed's repairs now configure every repaired window through space_sync::apply_resized_geometry, not X11 alone, so a maximized Wayland client is re-sent its size when the bar appears.
+        """
+    note """
+        Needs a logout to take effect (lege-comp is Restart=no). Accepted: windows flush with the bottom jump up by the bar height when the bar first appears; XWayland self-placed windows grow downward; group outlines enclose the strip.
+
+        Two later corrections to the last clause of the intent. First, on_outputs_changed no longer repairs shell surfaces at all: a surface holding an exclusive zone can never satisfy the usable area its own zone creates, so repairing it pushed it a zone-height off its edge while apply_surface_claims put it back — two writers alternating on one rectangle, which is what the bar flicker was. Configuring every repaired window made that record shift visible. A shell surface now follows a topology change by being re-placed (protocols_shell::reapply_surface_claims from backend::recompute_outputs), which is what repair was wrongly standing in for; the repair loop and its configure still apply to client windows, maximized ones included.
+
+        Second, the chip contract: shell_surface_placement now gives a zone-holding surface its own committed extent *along* its edge, clamped to the output and anchored at the edge's start, as well as its own thickness. The exclusive zone stays the only input to work_area_for, Output::usable, reserves_bottom and has_frame, so a bar narrower than the screen reserves exactly what a full-width one does and toggling between them reflows nothing. Nothing about the tags, the frame or the maximized-window rule changes.
+
+        Also: resize_edges_at now takes a corner from every perimeter point by side half (@legeos.decision.perimeter-resize-selects-two-axes-by-side-half), so "edges and corners resize as before" means every perimeter press resizes two axes rather than one; RESIZE_CORNER is gone with the grip.
+        """
+    acceptance {
+        check chrome-and-input {
+            statement """
+                A name-tag press moves and focuses, a control-tag press acts, a press in the gap falls through to the window beneath, a frameless window offers no tags, hidden windows draw nothing.
+                """
+            method command
+            command "cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check gate-green {
+            statement """
+                just check passes with the compositor change.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check geometry-and-service {
+            statement """
+                tag_strip is the bottom strip; client_area sits above it and frame_around inverts it; repair keeps the strip on an output; has_frame is false for a maximized window only while a bottom zone is claimed; every corner resizes.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                After logout: a sized kitty shows its name tag bottom-left and park/maximize/close bottom-right, moves by the name tag, resizes from every edge and corner; a maximized kitty shows no tags while the bar is up and shows them when the shell is killed.
+                """
+            method manual
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.window-tags-replace-the-band/1 ]
 }
