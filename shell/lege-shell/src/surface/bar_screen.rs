@@ -136,6 +136,31 @@ pub fn wanted_size(
     ((2 * CHIP_PAD + chips - CHIP_GAP).min(full_width), height)
 }
 
+/// The letter a chip wears when the application has no icon.
+///
+/// The application's own name first, and the window title only as a fallback: a one-window entry
+/// is labelled with its title, and a terminal's title is a path — so taking the first character
+/// of it put a chip reading "/" on the bar. Only a letter or a digit is ever an initial;
+/// punctuation is skipped wherever it comes from.
+fn chip_initial(entry: &Entry) -> String {
+    let name = entry
+        .app_id
+        .as_deref()
+        .and_then(|id| id.parse::<lege_types::AppId>().ok())
+        .map(|id| crate::field_model::short_name(&id));
+    name.as_deref()
+        .and_then(first_letter)
+        .or_else(|| first_letter(&entry.label))
+        .map_or_else(
+            || "?".to_owned(),
+            |letter| letter.to_uppercase().to_string(),
+        )
+}
+
+fn first_letter(text: &str) -> Option<char> {
+    text.chars().find(|letter| letter.is_alphanumeric())
+}
+
 /// One chip's ground: the compositor's tag, rounded the way every other small shell object is.
 fn chip(ui: &mut Ui<'_>, rect: Rect, fill: u32) {
     if rect.w <= 0 || rect.h <= 0 {
@@ -391,13 +416,7 @@ impl BarScreen {
                 let mark = if entry.accent.is_some() {
                     entry.windows.len().to_string()
                 } else {
-                    entry
-                        .label
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string()
+                    chip_initial(entry)
                 };
                 ui.label(icon, &mark, ink, Align::Centre);
             }
@@ -846,5 +865,45 @@ mod tests {
                 "network.open-control"
             ))]
         );
+    }
+}
+
+#[cfg(test)]
+mod initial_tests {
+    use super::{chip_initial, first_letter};
+    use crate::taskbar::Entry;
+    use lege_window::WindowId;
+
+    fn entry(app_id: Option<&str>, label: &str) -> Entry {
+        Entry {
+            key: label.to_owned(),
+            label: label.to_owned(),
+            accent: None,
+            app_id: app_id.map(ToOwned::to_owned),
+            windows: vec![(WindowId(1), label.to_owned())],
+            active: false,
+        }
+    }
+
+    /// A terminal's title is a path, and a path starts with a slash. The chip must never wear one.
+    #[test]
+    fn a_chip_takes_its_letter_from_the_application_and_never_from_punctuation() {
+        assert_eq!(
+            chip_initial(&entry(
+                Some("desktop-import.kitty.desktop"),
+                "/mnt/Samsung980_1TB/Rust-projects"
+            )),
+            "K"
+        );
+        // No launcher identity at all: the title is all there is, so skip to its first letter.
+        assert_eq!(
+            chip_initial(&entry(None, "/mnt/Samsung980_1TB/Rust-projects")),
+            "M"
+        );
+        assert_eq!(chip_initial(&entry(None, "~/notes")), "N");
+        assert_eq!(chip_initial(&entry(Some("org.legeos.Settings"), "…")), "S");
+        // Nothing usable anywhere still produces a mark rather than an empty plate.
+        assert_eq!(chip_initial(&entry(None, "///")), "?");
+        assert_eq!(first_letter("/// 7up"), Some('7'));
     }
 }

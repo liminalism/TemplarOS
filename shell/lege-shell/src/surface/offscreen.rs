@@ -171,12 +171,16 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
             ],
             active: true,
         },
+        // A terminal whose title is a path: the case that put a chip reading "/" on the bar.
         crate::taskbar::Entry {
-            key: "org.example.Editor".to_owned(),
-            label: "Editor".to_owned(),
+            key: "desktop-import.kitty.desktop".to_owned(),
+            label: "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
             accent: None,
-            app_id: Some("org.example.Editor".to_owned()),
-            windows: vec![(lege_window::WindowId(3), "draft.md".to_owned())],
+            app_id: Some("desktop-import.kitty.desktop".to_owned()),
+            windows: vec![(
+                lege_window::WindowId(3),
+                "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
+            )],
             active: false,
         },
         crate::taskbar::Entry {
