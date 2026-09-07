@@ -457,12 +457,20 @@ pub fn frame_around(client: Rect) -> Rect {
 /// corner resizes; there is no separate grip.
 pub const RESIZE_MARGIN: i32 = 8;
 
-/// How far along an edge from a corner a press still grabs the corner as well.
-pub const RESIZE_CORNER: i32 = 24;
-
 /// Which edges a press at `point`, just outside `frame`, grabs — `None` for a point inside the
-/// frame (that is the band's, the grip's or the client's) or further than [`RESIZE_MARGIN`]
-/// from it. Within [`RESIZE_CORNER`] of a corner, both of the corner's edges.
+/// frame (that is the tags' or the client's) or further than [`RESIZE_MARGIN`] from it.
+///
+/// **Every point on the perimeter takes a corner**: one horizontal edge and one vertical edge,
+/// chosen by which half of the side was pressed. Touch the left side above its midpoint and you
+/// get the top-left corner; below it, bottom-left. There is no middle third that resizes one axis
+/// only, because there is no way to see where such a band would end — the previous rule (both
+/// edges within a fixed distance of a corner, one edge otherwise) meant the same press produced a
+/// different gesture on a small window than on a large one. A halfway rule is the one rule a
+/// person can predict without being told it.
+///
+/// Exact midpoints go to `right`/`bottom`, so every perimeter point yields exactly one horizontal
+/// and one vertical edge and none is ambiguous. Single-axis resize is still reachable — it is
+/// what `xdg_toplevel.resize` asks for, and that path does not come through here.
 pub fn resize_edges_at(frame: Rect, point: Point) -> Option<ResizeEdges> {
     let inside = point.x >= frame.x
         && point.x < frame.right()
@@ -484,13 +492,19 @@ pub fn resize_edges_at(frame: Rect, point: Point) -> Option<ResizeEdges> {
         top: point.y < frame.y,
         bottom: point.y >= frame.bottom(),
     };
-    if edges.left || edges.right {
-        edges.top |= point.y < frame.y.saturating_add(RESIZE_CORNER);
-        edges.bottom |= point.y >= frame.bottom().saturating_sub(RESIZE_CORNER);
+    // Measured from the frame's own origin, so a window at a negative coordinate splits at its
+    // own middle rather than at zero. A corner press already sits in the half its own edges name,
+    // so these two never contradict the flags above.
+    let (on_a_side, on_an_end) = (edges.left || edges.right, edges.top || edges.bottom);
+    if on_a_side {
+        let past_middle = point.y >= frame.y.saturating_add(frame.height / 2);
+        edges.top |= !past_middle;
+        edges.bottom |= past_middle;
     }
-    if edges.top || edges.bottom {
-        edges.left |= point.x < frame.x.saturating_add(RESIZE_CORNER);
-        edges.right |= point.x >= frame.right().saturating_sub(RESIZE_CORNER);
+    if on_an_end {
+        let past_middle = point.x >= frame.x.saturating_add(frame.width / 2);
+        edges.left |= !past_middle;
+        edges.right |= past_middle;
     }
     (!edges.is_empty()).then_some(edges)
 }
@@ -507,7 +521,7 @@ pub struct ResizeEdges {
 }
 
 impl ResizeEdges {
-    /// The corner the compositor's own grip drives.
+    /// The bottom-right corner, named because it is the one a great many tests reach for.
     pub const BOTTOM_RIGHT: ResizeEdges = ResizeEdges {
         left: false,
         right: true,
@@ -519,6 +533,29 @@ impl ResizeEdges {
     /// a resize that could not change anything.
     pub fn is_empty(self) -> bool {
         !(self.left || self.right || self.top || self.bottom)
+    }
+
+    /// The cursor shape this pair of edges asks for, by its `cursor-spec` name — what the
+    /// compositor hands to `CursorImageStatus::Named` and to the nested backend's host window.
+    ///
+    /// `None` only for edges that name no axis, which is what `xdg_toplevel.resize(none)`
+    /// produces; [`resize_edges_at`] always names one edge per axis, so every point on a
+    /// window's perimeter has a cursor. Total over all sixteen flag combinations, including the
+    /// four that cannot occur (both edges of one axis): those simply have no shape to show.
+    pub fn cursor(self) -> Option<&'static str> {
+        match (self.left != self.right, self.top != self.bottom) {
+            // A corner: the diagonal runs north-west/south-east when the two edges are on the
+            // same side of the window (left-with-top, right-with-bottom), north-east/south-west
+            // when they are opposite.
+            (true, true) => Some(if self.left == self.top {
+                "nwse-resize"
+            } else {
+                "nesw-resize"
+            }),
+            (true, false) => Some("ew-resize"),
+            (false, true) => Some("ns-resize"),
+            (false, false) => None,
+        }
     }
 }
 
@@ -1534,73 +1571,151 @@ mod tests {
         assert_eq!(client_area(Rect::new(0, 0, 0, 0)).width, 1);
     }
 
+    /// Eight side halves, four midpoints, three frames: every press on the perimeter takes the
+    /// corner of the half it landed in, and nothing inside the frame is a resize.
     #[test]
-    fn edges_are_grabbed_just_outside_the_frame_and_nowhere_inside_it() {
-        let frame = Rect::new(100, 100, 400, 300);
-        let at = |x, y| resize_edges_at(frame, Point { x, y });
-        // Inside is the client's, the band's or the grip's.
-        assert_eq!(at(300, 250), None);
-        assert_eq!(at(100, 100), None);
-        assert_eq!(at(499, 399), None);
-        // Just outside each edge, away from the corners.
-        assert_eq!(
-            at(96, 250),
+    fn every_side_half_takes_that_half_s_corner() {
+        let corner = |left, right, top, bottom| {
             Some(ResizeEdges {
-                left: true,
-                ..ResizeEdges::default()
+                left,
+                right,
+                top,
+                bottom,
             })
+        };
+        let (top_left, top_right) = (
+            corner(true, false, true, false),
+            corner(false, true, true, false),
+        );
+        let (bottom_left, bottom_right) = (
+            corner(true, false, false, true),
+            corner(false, true, false, true),
+        );
+
+        // A normal window, one at the minimum size (where the halves are two tag-heights apart),
+        // and one at a negative origin (the split is the frame's own middle, never zero).
+        for frame in [
+            Rect::new(100, 100, 400, 300),
+            Rect::new(0, 0, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+            Rect::new(-300, -200, 200, 120),
+        ] {
+            let at = |x, y| resize_edges_at(frame, Point { x, y });
+            let (mid_x, mid_y) = (frame.x + frame.width / 2, frame.y + frame.height / 2);
+            let (before_x, before_y) = (mid_x - 1, mid_y - 1);
+            let (outside_left, outside_right) = (frame.x - 1, frame.right());
+            let (outside_top, outside_bottom) = (frame.y - 1, frame.bottom());
+
+            // The two halves of each of the four sides.
+            assert_eq!(
+                at(outside_left, before_y),
+                top_left,
+                "left side, upper half of {frame:?}"
+            );
+            assert_eq!(
+                at(outside_left, mid_y),
+                bottom_left,
+                "left side, lower half of {frame:?}"
+            );
+            assert_eq!(
+                at(outside_right, before_y),
+                top_right,
+                "right side, upper half of {frame:?}"
+            );
+            assert_eq!(
+                at(outside_right, mid_y),
+                bottom_right,
+                "right side, lower half of {frame:?}"
+            );
+            assert_eq!(
+                at(before_x, outside_top),
+                top_left,
+                "top side, left half of {frame:?}"
+            );
+            assert_eq!(
+                at(mid_x, outside_top),
+                top_right,
+                "top side, right half of {frame:?}"
+            );
+            assert_eq!(
+                at(before_x, outside_bottom),
+                bottom_left,
+                "bottom side, left half of {frame:?}"
+            );
+            assert_eq!(
+                at(mid_x, outside_bottom),
+                bottom_right,
+                "bottom side, right half of {frame:?}"
+            );
+
+            // The four corners still name themselves, reached diagonally.
+            assert_eq!(at(outside_left, outside_top), top_left);
+            assert_eq!(at(outside_right, outside_top), top_right);
+            assert_eq!(at(outside_left, outside_bottom), bottom_left);
+            assert_eq!(at(outside_right, outside_bottom), bottom_right);
+
+            // Inside is the client's and the tags', and far outside is nobody's.
+            assert_eq!(at(mid_x, mid_y), None);
+            assert_eq!(at(frame.x, frame.y), None);
+            assert_eq!(at(frame.right() - 1, frame.bottom() - 1), None);
+            assert_eq!(at(frame.x - RESIZE_MARGIN - 1, mid_y), None);
+            assert_eq!(at(mid_x, frame.bottom() + RESIZE_MARGIN), None);
+        }
+    }
+
+    /// All sixteen combinations, so the four impossible ones (both edges of one axis) are known
+    /// to be harmless rather than merely unreached.
+    #[test]
+    fn every_pair_of_resize_edges_names_its_cursor() {
+        let edges = |left, right, top, bottom| ResizeEdges {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        assert_eq!(
+            edges(true, false, true, false).cursor(),
+            Some("nwse-resize")
         );
         assert_eq!(
-            at(503, 250),
-            Some(ResizeEdges {
-                right: true,
-                ..ResizeEdges::default()
-            })
+            edges(false, true, false, true).cursor(),
+            Some("nwse-resize")
         );
         assert_eq!(
-            at(300, 405),
-            Some(ResizeEdges {
-                bottom: true,
-                ..ResizeEdges::default()
-            })
+            edges(false, true, true, false).cursor(),
+            Some("nesw-resize")
         );
         assert_eq!(
-            at(300, 95),
-            Some(ResizeEdges {
-                top: true,
-                ..ResizeEdges::default()
-            })
+            edges(true, false, false, true).cursor(),
+            Some("nesw-resize")
         );
-        // Every corner, reached from either of its edges — there is no separate grip.
-        assert_eq!(at(503, 390), Some(ResizeEdges::BOTTOM_RIGHT));
-        assert_eq!(at(490, 403), Some(ResizeEdges::BOTTOM_RIGHT));
-        assert_eq!(
-            at(97, 403),
-            Some(ResizeEdges {
-                left: true,
-                bottom: true,
-                ..ResizeEdges::default()
-            })
+        assert_eq!(edges(true, false, false, false).cursor(), Some("ew-resize"));
+        assert_eq!(edges(false, true, false, false).cursor(), Some("ew-resize"));
+        assert_eq!(edges(false, false, true, false).cursor(), Some("ns-resize"));
+        assert_eq!(edges(false, false, false, true).cursor(), Some("ns-resize"));
+        assert_eq!(ResizeEdges::default().cursor(), None);
+
+        // A degenerate axis (neither edge, or both) simply contributes no direction: only the
+        // four pairs degenerate on *both* axes have nothing left to show.
+        let unnameable: Vec<ResizeEdges> = (0u8..16)
+            .map(|bits| edges(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0))
+            .filter(|edges| edges.cursor().is_none())
+            .collect();
+        assert_eq!(unnameable.len(), 4, "{unnameable:?}");
+        assert!(
+            unnameable
+                .iter()
+                .all(|edges| edges.left == edges.right && edges.top == edges.bottom)
         );
-        assert_eq!(
-            at(503, 110),
-            Some(ResizeEdges {
-                right: true,
-                top: true,
-                ..ResizeEdges::default()
-            })
-        );
-        assert_eq!(
-            at(95, 105),
-            Some(ResizeEdges {
-                left: true,
-                top: true,
-                ..ResizeEdges::default()
-            })
-        );
-        // Too far away is nothing at all.
-        assert_eq!(at(80, 250), None);
-        assert_eq!(at(300, 420), None);
+
+        // Every point the perimeter can return has one, which is what the compositor relies on.
+        let frame = Rect::new(40, 40, 300, 200);
+        for (x, y) in [(39, 60), (340, 60), (60, 39), (60, 240)] {
+            assert!(
+                resize_edges_at(frame, Point { x, y })
+                    .and_then(ResizeEdges::cursor)
+                    .is_some()
+            );
+        }
     }
 
     #[test]
@@ -1759,6 +1874,43 @@ mod tests {
                 },
                 "the extent moved the surface across its own edge"
             );
+        }
+
+        /// Every point on the perimeter is a corner: exactly one horizontal edge and exactly one
+        /// vertical edge, for any frame at any coordinate. No point is ambiguous, none is a
+        /// single-axis resize, and none is empty — which is what makes `cursor_for` total over
+        /// what this can return.
+        #[test]
+        fn every_perimeter_point_selects_exactly_one_edge_per_axis(
+            frame in arb_window(),
+            offset in -20000i32..20000,
+            margin in 0i32..RESIZE_MARGIN,
+            side in 0u8..4,
+        ) {
+            let point = match side {
+                0 => Point { x: frame.x - 1 - margin, y: frame.y + offset.rem_euclid(frame.height.max(1)) },
+                1 => Point { x: frame.right() + margin, y: frame.y + offset.rem_euclid(frame.height.max(1)) },
+                2 => Point { x: frame.x + offset.rem_euclid(frame.width.max(1)), y: frame.y - 1 - margin },
+                _ => Point { x: frame.x + offset.rem_euclid(frame.width.max(1)), y: frame.bottom() + margin },
+            };
+            let edges = resize_edges_at(frame, point).expect("a point beside a side is that side's");
+            prop_assert!(edges.left != edges.right, "{edges:?} names no single horizontal edge");
+            prop_assert!(edges.top != edges.bottom, "{edges:?} names no single vertical edge");
+
+            // Whatever is dragged from there, the rectangle never inverts and never goes below
+            // the minima — the property that makes shrinking a window undoable by pointer.
+            for (dx, dy) in [(0, 0), (-100_000, -100_000), (100_000, 100_000), (-7, 9)] {
+                let resized = resize_rect(frame, edges, dx, dy);
+                prop_assert!(resized.width >= MIN_WINDOW_WIDTH, "{resized:?} is narrower than the minimum");
+                prop_assert!(resized.height >= MIN_WINDOW_HEIGHT, "{resized:?} is shorter than the minimum");
+                // The edges not being dragged stay put.
+                if !edges.left {
+                    prop_assert_eq!(resized.x, frame.x);
+                }
+                if !edges.top {
+                    prop_assert_eq!(resized.y, frame.y);
+                }
+            }
         }
 
         /// A window that is already recoverable is never moved.

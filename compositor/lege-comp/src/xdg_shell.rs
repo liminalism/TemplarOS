@@ -729,3 +729,37 @@ impl<B: Backend + 'static> XdgActivationHandler for LegeCompState<B> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as Wire;
+
+    /// A client asking for a resize means what the protocol says it means. The compositor's own
+    /// perimeter turns every press into a corner (`lege_window::resize_edges_at`), but that rule
+    /// belongs to the compositor's affordance and must not leak into `xdg_toplevel.resize`: a
+    /// client that asks to drag one edge gets one edge.
+    #[test]
+    fn a_client_requested_resize_keeps_the_edges_the_protocol_named() {
+        for (wire, expected) in [
+            (Wire::Left, (true, false, false, false)),
+            (Wire::Right, (false, true, false, false)),
+            (Wire::Top, (false, false, true, false)),
+            (Wire::Bottom, (false, false, false, true)),
+        ] {
+            let edges = super::resize_edges(wire);
+            assert_eq!(
+                (edges.left, edges.right, edges.top, edges.bottom),
+                expected,
+                "{wire:?} was widened to a corner"
+            );
+        }
+        // A corner request is still a corner, and `none` still asks for nothing —
+        // `WindowService::begin_resize` refuses the empty set.
+        let corner = super::resize_edges(Wire::BottomLeft);
+        assert_eq!(
+            (corner.left, corner.right, corner.top, corner.bottom),
+            (true, false, false, true)
+        );
+        assert!(super::resize_edges(Wire::None).is_empty());
+    }
+}
