@@ -459,6 +459,79 @@ mod tests {
     }
 
     #[test]
+    fn two_roots_keep_independent_freshness_and_scoped_search() {
+        // The data role (`distro/deploy/layout.toml [data]`,
+        // @legeos.decision.independent-storage-roles) is a second filesystem that is not the OS
+        // and is never assumed expendable. The index has to hold it as a root of its own: a data
+        // disk that goes stale must not drag `$HOME` down with it, and a search bounded to one
+        // must not spill rows from the other.
+        //
+        // No new plumbing was needed for this — `ensure_root` already registers an arbitrary root
+        // with its own policy. What was missing was anything saying so, which is what fails if
+        // the two ever start sharing state.
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("household budget.ods"), b"home").unwrap();
+        std::fs::write(data.path().join("archive budget.ods"), b"data").unwrap();
+
+        let index = Index::new(Store::in_memory().unwrap());
+        index.index_root(home.path()).unwrap();
+        let home_alone = index
+            .root_status(home.path())
+            .unwrap()
+            .expect("home")
+            .entry_count;
+        index.index_root(data.path()).unwrap();
+
+        let mut roots = index.roots().unwrap();
+        roots.sort();
+        let mut expected = vec![home.path().to_path_buf(), data.path().to_path_buf()];
+        expected.sort();
+        assert_eq!(roots, expected, "both roots are registered independently");
+
+        // Freshness is per root: each has its own committed generation and its own state.
+        let home_status = index.root_status(home.path()).unwrap().expect("home");
+        let data_status = index.root_status(data.path()).unwrap().expect("data");
+        assert_ne!(
+            home_status.root, data_status.root,
+            "the two roots share one row, so one going stale would take the other with it"
+        );
+        assert_eq!(
+            home_status.entry_count, home_alone,
+            "indexing the data root changed the home root's own count, so the two share rows"
+        );
+        assert!(data_status.entry_count > 0, "the data root indexed nothing");
+
+        // Search is scoped: the same query bounded to one root returns only that root's row.
+        let both = index.search("budget", &[], 10).unwrap();
+        assert_eq!(both.len(), 2, "unscoped, both roots answer");
+
+        let only_home = index
+            .search("budget", &[home.path().to_path_buf()], 10)
+            .unwrap();
+        assert_eq!(only_home.len(), 1);
+        assert_eq!(file_name(&only_home[0].entry.path), "household budget.ods");
+
+        let only_data = index
+            .search("budget", &[data.path().to_path_buf()], 10)
+            .unwrap();
+        assert_eq!(only_data.len(), 1);
+        assert_eq!(file_name(&only_data[0].entry.path), "archive budget.ods");
+
+        // And forgetting one leaves the other exactly as it was: a data disk that is unplugged
+        // does not cost the home root its index.
+        index.forget_root(data.path()).unwrap();
+        assert_eq!(index.roots().unwrap(), vec![home.path().to_path_buf()]);
+        assert_eq!(
+            index
+                .search("budget", &[home.path().to_path_buf()], 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn callers_can_detect_an_existing_root_without_reindexing_it() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("kept.txt"), b"old").unwrap();
