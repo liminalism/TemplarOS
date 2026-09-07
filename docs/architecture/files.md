@@ -125,3 +125,47 @@ same answer.
 The standalone manager's visible Copy path button requests the `as-shown` form and sends that text
 to the compositor clipboard with `wl-copy`; `wl-clipboard` is therefore a runtime dependency, not
 an optional development convenience.
+
+## pcmanfm-qt is the file manager
+
+The session's file manager is `pcmanfm-qt` (libfm-qt, Qt 6), not `lege-files`. `lege-files` was
+built as a client of the interfaces above, and as a client it works; as a file manager it is too
+rudimentary to be the one a person has to use. It stays a workspace member and a buildable
+`.deb` — it exercises `Browse1`, `Operations1`, `Previews1` and `Actions1` against a real UI —
+but it is no longer in `distro/seeds/selection.toml`, in `legeos-desktop`, or the default for the
+`file-manager` role.
+
+`ProviderRole::FileManager` is derived the way `Terminal` is: from `Categories=FileManager` in the
+installed entry, at priority 100 when the executable is `pcmanfm-qt` and 50 otherwise
+(`lege-session-core/src/providers.rs`). Nothing in the shell names an application: Home's folder
+tiles, "Open folder window", the browse pane's door and `project.open-files` all resolve the role.
+`inode/directory` is `pcmanfm-qt.desktop`'s own `MimeType=`, so the association broker seeds it
+with no curated manifest. pcmanfm-qt must never be started with `--desktop`: Home is the desktop.
+
+Qt 6 selects the Wayland platform plugin on its own when `WAYLAND_DISPLAY` is set and
+`qt6-wayland` is installed — verified against the nested compositor, `qt.qpa.wayland` with no
+`QT_QPA_PLATFORM` in the environment — and the compositor forces server-side xdg-decoration, so a
+pcmanfm-qt window wears LegeOS chrome like any other.
+
+### What integrates, and what cannot
+
+There is no plugin API in libfm-qt, so integration is exactly what a file manager offers a
+distribution from outside:
+
+- **Custom actions** (DES-EMA, `/usr/share/file-manager/actions/*.desktop`, shipped by
+  `legeos-cli`): "Add to Home" runs `lege home place %f` over `HomeField1.PlaceFolder`, and
+  "Create project here" runs `lege project create-here %f` over `Projects1.Create` with the id
+  derived from the folder name. This is the whole of the outbound route.
+- **Bookmarks**: filed is the authority. Every `Files.Bookmarks` mutation rewrites
+  `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`, which is the file libfm-qt's Places sidebar reads. One
+  way, deliberately: importing it would make two writers of one list with no answer to which is
+  right.
+- **Trash**: nothing to do. `lege-filed`'s `Trash1` already implements the freedesktop Trash
+  specification on the same directories libfm-qt uses — `$XDG_DATA_HOME/Trash`, the administrator
+  `$topdir/.Trash/$uid` when it passes the sticky/non-symlink gate, and `$topdir/.Trash-$uid`
+  otherwise — so Home's Trash drawer and pcmanfm-qt's Trash are the same trash.
+- **Recents**: not integrated. pcmanfm-qt writes `recently-used.xbel`; `Files.Recents1` keeps its
+  own answer in the state store and does not read xbel. Deferred, not planned: the two answer
+  different questions ("what did I open" against "where was I last working").
+- **Search**: cannot integrate. pcmanfm-qt's Find is its own, and there is no route by which it
+  could ask `Files.Search1`. Home's search and FSearch remain the indexed answer.
