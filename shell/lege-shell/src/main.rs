@@ -46,9 +46,24 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     render: Option<PathBuf>,
 
+    /// Draw the bottom bar to a PNG at scale 1 and scale 2 and exit — the same paint the session
+    /// runs, in a surface the size the host asks for. Writes PATH and PATH with `@2x` before the
+    /// extension.
+    #[arg(long, value_name = "PATH")]
+    render_bar: Option<PathBuf>,
+
     /// Size for `--render`, as WIDTHxHEIGHT in logical pixels.
     #[arg(long, value_name = "WxH", default_value = "1600x1000")]
     size: String,
+
+    /// Capture the whole screen to a PNG and exit.
+    ///
+    /// The only way to see this desktop from outside it: the compositor's capture globals are
+    /// visible on the trusted-shell socket alone, so `grim`, `xdotool` and every other screenshot
+    /// tool cannot reach them. Opens its own short-lived connection and does not disturb the
+    /// running shell.
+    #[arg(long, value_name = "PATH")]
+    screenshot: Option<PathBuf>,
 
     /// Open the graphical Home Surface. Needs a Wayland compositor; for the private
     /// `lege_shell_v1` protocol (live Window Shelf, Home reveal and layer placement)
@@ -73,10 +88,29 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(path) = &cli.render_bar {
+        lege_shell::surface::design::set_palette(lege_shell::settings::load_appearance().await);
+        let at_2x = path.with_extension("");
+        let at_2x = PathBuf::from(format!(
+            "{}@2x.{}",
+            at_2x.display(),
+            path.extension().unwrap_or_default().to_string_lossy()
+        ));
+        lege_shell::surface::offscreen::render_bar(path, 1.0)?;
+        lege_shell::surface::offscreen::render_bar(&at_2x, 2.0)?;
+        println!("{}\n{}", path.display(), at_2x.display());
+        return Ok(());
+    }
+
     if let Some(path) = &cli.render {
         let (width, height) = parse_size(&cli.size)?;
         lege_shell::surface::design::set_palette(lege_shell::settings::load_appearance().await);
         lege_shell::surface::offscreen::render_field(path, width, height).await?;
+        println!("{}", path.display());
+        return Ok(());
+    }
+    if let Some(path) = &cli.screenshot {
+        lege_shell::screenshot::capture(path)?;
         println!("{}", path.display());
         return Ok(());
     }

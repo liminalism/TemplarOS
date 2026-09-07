@@ -35,6 +35,7 @@ pub mod pressure;
 pub mod previews;
 pub mod protocol;
 pub mod recents;
+pub mod screenshot;
 pub mod session_lock;
 pub mod settings;
 pub mod surface;
