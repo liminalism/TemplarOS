@@ -1208,6 +1208,24 @@ impl<B: Backend + 'static> LegeCompState<B> {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        // While the session is locked, the lock surface for the output under the pointer is the
+        // only thing that can be pointed at. Fixed here rather than at each caller because this
+        // is the one hit-test every pointer path routes through — motion, buttons, axis and drag
+        // alike — so one guard is both the smaller diff and the only way a later caller cannot
+        // forget it. `src/session_lock.rs`'s module doc named this as the outstanding half of
+        // input isolation: refusing recovery keybindings and window drags stopped the two ways
+        // this crate reached another window's chrome, but Smithay's ordinary focus resolution
+        // still handed clicks to whatever was behind the lock screen.
+        if self.session_lock.locked {
+            let output = self.space.outputs().find(|output| {
+                self.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.to_f64().contains(pos))
+            })?;
+            let origin = self.space.output_geometry(output)?.loc.to_f64();
+            let surface = self.session_lock.surfaces.get(&output.name())?;
+            return Some((surface.wl_surface().clone(), origin));
+        }
         self.space
             .element_under(pos)
             .and_then(|(window, location)| {

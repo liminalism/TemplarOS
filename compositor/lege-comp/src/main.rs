@@ -195,6 +195,42 @@ mod tests {
         assert!(protocol.contains("pending.size = Some((client.width, client.height).into())"));
     }
 
+    /// K2, the compositor half of the session lock. The three guards that make `locked` mean
+    /// locked: nothing behind the lock surface can be pointed at, typed into or dragged. Asserted
+    /// at the call sites because the branches themselves need a live display to exercise — the
+    /// behaviour is checked by hand in `RUNBOOK-lane-1.md`.
+    #[test]
+    fn nothing_behind_the_lock_surface_can_be_reached() {
+        let input = include_str!("input.rs");
+        // The one hit-test every pointer path routes through resolves lock surfaces only.
+        let hit_test = input
+            .find("pub fn surface_under(")
+            .expect("the shared hit-test exists");
+        let guard = input[hit_test..]
+            .find("if self.session_lock.locked {")
+            .expect("the shared hit-test is gated on the lock");
+        let fallthrough = input[hit_test..]
+            .find("self.space\n            .element_under(pos)")
+            .expect("the ordinary path is still there");
+        assert!(
+            guard < fallthrough,
+            "windows are resolved before the lock is consulted"
+        );
+        // Presses and recovery keybindings were already refused; the cursor is too.
+        assert!(input.contains("if self.session_lock.locked {\n            return;\n        }"));
+        assert!(input.contains("if self.session_lock.locked || self.pointer_gesture_active()"));
+
+        let lock = include_str!("session_lock.rs");
+        assert!(
+            lock.contains("keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial())"),
+            "a lock surface takes the keyboard when it appears"
+        );
+        assert!(
+            lock.contains("crate::input::refocus_after_reveal(self, !any_left)"),
+            "unlocking hands the keyboard back rather than leaving it on a dead surface"
+        );
+    }
+
     /// The other half of the bar-flicker fix: `WindowService::on_outputs_changed` hands back
     /// client windows only, so the one topology entry point must re-place shell surfaces itself
     /// or a bar stops following its edge across a hotplug.
