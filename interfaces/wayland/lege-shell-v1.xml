@@ -187,7 +187,14 @@
       <entry name="notification" value="4"/>
       <entry name="app_on_top" value="5"/>
       <entry name="normal" value="6"/>
-      <entry name="home_surface" value="7"/>
+      <entry name="home_surface" value="7">
+        <description summary="the bottom layer: the Home Field itself">
+          Visible by default, because it is the desktop. The compositor hides it only while a
+          visible fullscreen or maximized client window covers the same output, and shows it
+          regardless while a `reveal_home` reveal is in effect. The shell does not decide this
+          and need not track it: it draws its Home surface once and leaves it mapped.
+        </description>
+      </entry>
     </enum>
   </interface>
 

@@ -46,6 +46,11 @@ must call. The seven properties it must uphold are:
    and chrome consult, so a hidden window neither renders, takes clicks nor paints a band. "Go home"
    (`WindowCommand::RevealHome`) hides client windows the same way, as a view flag that changes no
    window record and ends on activation, a new window, any recovery action or the shell disconnecting.
+   The **Home surface** is the other side of that predicate: it is the bottom layer and is visible by
+   default, hidden only while a visible fullscreen or maximized client window covers its output
+   (`WindowService::home_is_covered`, per output) and shown regardless during a reveal. It used to be
+   hidden unless revealed, which made a fresh login a black screen until the user pressed Super; the
+   accepted cost of the current rule is that a translucent client window blends with Home.
 
 Property tests for the geometry live in `crates/lege-window`, not here — the policy is testable without a
 compositor, and that is the point of the split.

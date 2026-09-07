@@ -509,10 +509,17 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Whether the compositor should render and hit-test `window_id` at all: not shelved, and
-    /// not a client window hidden behind a "go home" reveal. Shell surfaces (`Layer::HomeSurface`
-    /// and the overlay layers) are never hidden by a reveal — they are what it reveals. The one
-    /// predicate `space_sync`, the hit-test and the chrome all consult, so the three cannot
-    /// disagree about what is on screen. Unknown windows are not visible.
+    /// not a client window hidden behind a "go home" reveal. The overlay layers are never hidden
+    /// by a reveal — they are what it reveals. The one predicate `space_sync`, the hit-test and
+    /// the chrome all consult, so the three cannot disagree about what is on screen. Unknown
+    /// windows are not visible.
+    ///
+    /// `Layer::HomeSurface` is the bottom layer and is *visible by default*
+    /// ([`Self::home_is_covered`]): it hides only while a visible fullscreen or maximized client
+    /// window covers its output, or is shown regardless while a reveal is in effect. Home used to
+    /// be hidden unless revealed, which is what made a fresh login a black screen until the user
+    /// pressed Super. The accepted consequence is that a translucent client window now blends
+    /// with Home rather than with the clear colour.
     pub fn is_visible(&self, window_id: WindowId) -> bool {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
@@ -521,7 +528,7 @@ impl<I: IdentityCache> WindowService<I> {
             return false;
         }
         if self.layer_of(window_id) == Some(Layer::HomeSurface) {
-            return self.home_revealed;
+            return self.home_revealed || !self.home_is_covered(window.geometry);
         }
         if self.home_revealed {
             return !matches!(
@@ -530,6 +537,31 @@ impl<I: IdentityCache> WindowService<I> {
             );
         }
         true
+    }
+
+    /// Whether a visible fullscreen or maximized client window covers the output the Home
+    /// surface at `home` is on — the one thing that hides Home.
+    ///
+    /// "Covers" is per output rather than per rectangle: a maximized window fills its output's
+    /// *usable* area, which is the output minus whatever the bar reserved, so an intersection
+    /// test against Home's rectangle would answer "not quite" for exactly the case this is for.
+    /// Which output each is on comes from [`choose_target_output`] on the two geometries, because
+    /// a `WindowRecord` does not carry an output; with no outputs at all there is one screen by
+    /// definition and the question does not arise.
+    ///
+    /// A shelved window never counts (it is off the screen), and neither does a shell surface —
+    /// only `Layer::Normal`/`Layer::AppOnTop` can cover Home.
+    fn home_is_covered(&self, home: Rect) -> bool {
+        let home_output = (!self.outputs.is_empty())
+            .then(|| choose_target_output(home, &self.outputs).name.as_str());
+        self.windows.values().any(|window| {
+            (window.maximized || window.fullscreen)
+                && !window.shelved
+                && self.is_client_window(window.id)
+                && home_output.is_none_or(|name| {
+                    choose_target_output(window.geometry, &self.outputs).name == name
+                })
+        })
     }
 
     /// Whether a "go home" reveal is in effect (`WindowCommand::RevealHome`).
@@ -1940,13 +1972,100 @@ mod tests {
         assert!(service.is_visible(fresh));
         assert!(service.is_visible(app));
         assert!(
-            !service.is_visible(home),
-            "Home cannot blend through client transparency"
+            service.is_visible(home),
+            "no window here is maximized or fullscreen, so Home stays the backdrop"
         );
         service.set_home_revealed(true);
         assert!(service.is_visible(home));
         service.set_home_revealed(false);
+        assert!(service.is_visible(home));
+    }
+
+    /// Home is the bottom layer and is on screen unless something actually covers it. The whole
+    /// table, because the previous rule — hidden unless revealed — is what made a fresh login a
+    /// black screen the user had to press Super to escape.
+    #[test]
+    fn home_is_visible_unless_a_maximized_or_fullscreen_window_covers_its_output() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let home = shell_surface(
+            &mut service,
+            Layer::HomeSurface,
+            Rect::new(0, 0, 1920, 1080),
+        );
+        assert!(
+            service.is_visible(home),
+            "an empty desktop is the Home Field"
+        );
+
+        let app = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(10, 10, 400, 300),
+        );
+        assert!(service.is_visible(home), "a floating window covers nothing");
+
+        service.set_maximized(app, true);
+        assert!(!service.is_visible(home), "a maximized window covers Home");
+
+        service.set_maximized(app, false);
+        assert!(service.is_visible(home));
+
+        service.set_fullscreen(app, true);
+        assert!(!service.is_visible(home), "a fullscreen window covers Home");
+
+        // Shelved is off the screen, so it covers nothing however it is sized.
+        service.shelve(app);
+        assert!(
+            service.is_visible(home),
+            "a shelved window is not on the screen to cover anything"
+        );
+        service.unshelve(app);
         assert!(!service.is_visible(home));
+
+        // A reveal shows Home regardless — that is what a reveal is for.
+        service.set_home_revealed(true);
+        assert!(service.is_visible(home));
+        service.set_home_revealed(false);
+        assert!(!service.is_visible(home));
+
+        // The shell's own bar is not a client window and never covers Home, whatever it claims.
+        service.set_fullscreen(app, false);
+        let bar = shell_surface(
+            &mut service,
+            Layer::ShellOverlay,
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service.set_maximized(bar, true);
+        assert!(service.is_visible(home));
+    }
+
+    /// Per output: a maximized window on the second screen leaves the first screen's Home alone.
+    #[test]
+    fn a_maximized_window_on_another_output_does_not_cover_home() {
+        let outputs = vec![
+            Output::new("primary", Rect::new(0, 0, 1920, 1080), 1000),
+            Output::new("second", Rect::new(1920, 0, 1920, 1080), 1000),
+        ];
+        let mut service = WindowService::new(FakeCache::default(), outputs);
+        let home = shell_surface(
+            &mut service,
+            Layer::HomeSurface,
+            Rect::new(0, 0, 1920, 1080),
+        );
+        let app = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(1930, 10, 400, 300),
+        );
+        service.set_maximized(app, true);
+        assert!(
+            service.is_visible(home),
+            "a window filling the second screen must not blank the first"
+        );
     }
 
     #[test]
