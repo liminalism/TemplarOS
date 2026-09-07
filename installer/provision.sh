@@ -67,6 +67,12 @@ username=""
 apply=0
 i_mean_it=0
 step_no=0
+data_arg=""
+format_data=0
+reuse=0
+plan_out=""
+plan_in=""
+
 
 die() { printf 'provision: %s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*"; }
@@ -94,6 +100,14 @@ usage: provision.sh --image PATH [--apply] [options]
   --nvidia PACKAGE    the NVIDIA metapackage variant (default: $LEGEOS_NVIDIA).
   --set ID            install a specific LegeOS build set instead of the `current` marker.
   --layout PATH       an alternative layout declaration (testing).
+  --data PART         an independent data filesystem (layout [data]). Reused, never formatted,
+                      unless --format-data says otherwise.
+  --format-data       make a new filesystem on --data. The explicit, destructive opt-in.
+  --reuse             preserve every filesystem that already exists: no mkfs on the ESP or the
+                      root, and no GPT type code rewritten. Refuses if a required one is absent.
+  --plan-out PATH     write the reviewed operation sequence here (default: alongside the target).
+  --plan PATH         with --apply: run *this* reviewed plan. The machine is observed again first
+                      and any drift in topology, filesystem identity or mounted state is refused.
   --help              this text.
 USAGE
 }
@@ -113,6 +127,11 @@ while [ $# -gt 0 ]; do
         --nvidia) LEGEOS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
         --set) DEVREPO_MARKER="${2:?--set needs an id}"; shift 2 ;;
         --layout) layout="${2:?--layout needs a path}"; shift 2 ;;
+        --data) data_arg="${2:?--data needs a partition}"; shift 2 ;;
+        --format-data) format_data=1; shift ;;
+        --reuse) reuse=1; shift ;;
+        --plan-out) plan_out="${2:?--plan-out needs a path}"; shift 2 ;;
+        --plan) plan_in="${2:?--plan needs a path}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; die "unknown argument $1" ;;
     esac
@@ -146,6 +165,10 @@ CMDLINE_TEMPLATE="$(layout_value deployment.cmdline template)"
 GRUB_ENTRIES="$(layout_value boot.grub entries_file)"
 GRUB_STUB="$(layout_value boot.grub stub)"
 GRUB_DEFAULT_MODE="$(layout_value boot.grub default)"
+DATA_FORMAT="$(layout_value data format)"
+DATA_LABEL="$(layout_value data label)"
+DATA_MOUNT="$(layout_value data mount)"
+DATA_MOUNT_OPTIONS="$(layout_value data mount_options)"
 for required in ESP_FORMAT ESP_LABEL ROOT_FORMAT ROOT_LABEL SUBVOLUMES CMDLINE_TEMPLATE; do
     [ -n "${!required}" ] || die "$layout does not declare $required"
 done
@@ -196,6 +219,40 @@ case "$target_kind" in
         [ "$esp_arg" != "$root_arg" ] || die "--esp and --root name the same partition"
         ;;
 esac
+if [ -n "$data_arg" ]; then
+    [ -n "$DATA_LABEL" ] || die "$layout declares no [data] role, so --data has nothing to mean"
+    [ -b "$data_arg" ] || [ -f "$data_arg" ] || die "$data_arg is neither a block device nor a file"
+    findmnt -S "$data_arg" >/dev/null 2>&1 && die "$data_arg is mounted. Refusing to touch a filesystem that is in use."
+    for other in "$esp_arg" "$root_arg"; do
+        [ -n "$other" ] && [ "$data_arg" = "$other" ] && die "--data names the same partition as --esp or --root"
+    done
+fi
+[ "$format_data" = 1 ] && [ -z "$data_arg" ] && die "--format-data without --data formats nothing"
+if [ "$reuse" = 1 ]; then
+    [ "$target_kind" = partitions ] \
+        || die "--reuse preserves filesystems that already exist, so it goes with --esp/--root; \
+--image, --device and --free-space create them"
+    [ "$format_data" = 1 ] && die "--reuse and --format-data contradict each other"
+fi
+
+# Two filesystems with the same label are two filesystems the boot path cannot tell apart, and
+# `root=LABEL=legeos-root` would mount whichever the kernel saw first. Identity in fstab and in
+# the boot entry is by UUID for exactly this reason, but a duplicate label is still a machine
+# nobody should walk away from believing is fine.
+duplicate_label() { # label
+    [ -n "$1" ] || return 1
+    command -v blkid >/dev/null 2>&1 || return 1
+    [ "$(blkid -o device -t "LABEL=$1" 2>/dev/null | wc -l)" -gt 1 ]
+}
+for pair in "ESP:$ESP_LABEL" "root:$ROOT_LABEL" "data:$DATA_LABEL"; do
+    role="${pair%%:*}"; label="${pair#*:}"
+    if duplicate_label "$label"; then
+        die "more than one filesystem on this machine is already labelled $label (the $role role).
+     Two filesystems with one label are two the boot path cannot tell apart. Relabel or
+     disconnect one before provisioning."
+    fi
+done
+
 real_disk=0
 case "$target_kind" in
     device) real_disk=1 ;;
@@ -205,13 +262,99 @@ if [ "$real_disk" = 1 ] && [ "${LEGEOS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; then
     die "writing to a real disk also needs LEGEOS_PROVISION_ALLOW_DEVICE=1 in the environment.
      That second switch exists so a copied-and-pasted command line cannot reach a disk on its own."
 fi
-if [ "$apply" = 1 ] && [ "$(id -u)" != 0 ]; then
-    die "--apply needs root (loop devices, mkfs, mount, chroot). Run it in a disposable VM or with sudo, never on a machine you are using."
+# The privilege check is deliberately *not* here, above the plan comparison: a stale plan is a
+# stale plan whoever is running it, and being told "needs root" when the real problem is that the
+# disk has changed underneath the review sends a person to sudo instead of to a re-read. It runs
+# just below, still before anything destructive.
+
+# --- The reviewed operation plan -----------------------------------------------------------------
+#
+# One sequence, walked identically whether it is being printed or performed: `run` is the single
+# gate, so an operation that a dry run did not record is an operation an apply cannot perform.
+# Every call is appended to plan.json as it goes past, with the step it belongs to and the exact
+# argv — the thing a person reviews, and the thing `--apply --plan` re-runs.
+#
+# The `observed` block is the state the plan was made against: the partition table, the filesystem
+# identities and what is mounted. `--apply --plan` observes the machine again and refuses on any
+# difference, because a plan reviewed against one disk must not be applied to another, and a
+# partition that has been mounted since is a partition somebody is using.
+
+plan_out="${plan_out:-}"
+if [ -z "$plan_out" ]; then
+    case "$target_kind" in
+        image) plan_out="$target.plan.json" ;;
+        *) plan_out="${TMPDIR:-/tmp}/legeos-provision-plan.json" ;;
+    esac
 fi
+plan_ops=""
+
+# JSON string escaping for a shell that has no json library. Backslash first, then quote.
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# What this machine looks like right now, as sorted `key=value` lines. Sorted so the comparison is
+# about content and never about the order two tools happened to list things in.
+observe() {
+    {
+        # Topology: the partition table of every disk this run names.
+        for device in "$target" "$esp_arg" "$root_arg" "$data_arg"; do
+            [ -n "$device" ] || continue
+            [ -e "$device" ] || { printf 'topology:%s=absent\n' "$device"; continue; }
+            local disk="$device"
+            if [ -b "$device" ] && [ -n "$(lsblk -no PKNAME "$device" 2>/dev/null)" ]; then
+                disk="/dev/$(lsblk -no PKNAME "$device")"
+            fi
+            printf 'topology:%s=%s\n' "$disk" \
+                "$(sgdisk -p "$disk" 2>/dev/null | sed -n 's/^ *\([0-9]\+\) *\([0-9]\+\) *\([0-9]\+\).*/\1:\2:\3/p' | tr '\n' ',')"
+        done
+        # Identity: the UUID and label of every filesystem this run names.
+        for part in "$esp_arg" "$root_arg" "$data_arg"; do
+            [ -n "$part" ] || continue
+            printf 'identity:%s=%s/%s/%s\n' "$part" \
+                "$(blkid -s UUID -o value "$part" 2>/dev/null)" \
+                "$(blkid -s LABEL -o value "$part" 2>/dev/null)" \
+                "$(blkid -s TYPE -o value "$part" 2>/dev/null)"
+            printf 'mounted:%s=%s\n' "$part" \
+                "$(findmnt -no TARGET -S "$part" 2>/dev/null | tr '\n' ',')"
+        done
+    } | LC_ALL=C sort
+}
 
 # --- Plan / apply --------------------------------------------------------------------------------
-step() { step_no=$((step_no + 1)); printf '\n%2d. %s\n' "$step_no" "$*"; }
+step() { step_no=$((step_no + 1)); printf '\n%2d. %s\n' "$step_no" "$*"; current_step="$*"; }
+current_step="start"
+# What kind of thing an operation is, worked out from the command itself rather than restated at
+# every call site — so a step added later is classified without anyone having to remember to.
+# `create`, `format` and `reuse` are the three the review is actually about: they are the ones
+# that decide whether an existing filesystem survives.
+classify() {
+    case "$1" in
+        sgdisk|truncate|losetup|partx) printf 'create' ;;
+        mkfs.*) printf 'format' ;;
+        mount|umount) printf 'mount' ;;
+        grub-install|update-grub|efibootmgr) printf 'grub' ;;
+        __reuse__) printf 'reuse' ;;
+        *) printf 'configure' ;;
+    esac
+}
+
+# Record a filesystem this run deliberately leaves alone. It performs nothing — that is the point
+# — but a plan that shows only the things it *does* cannot be reviewed for what it preserves.
+reused() { # part role type
+    record __reuse__ "$1" "$2" "$3"
+}
+record() { # argv...
+    local op argv="" program="$1"
+    # `in_target` runs everything through `chroot <mnt>`, so the command that decides what kind of
+    # operation this is sits two words in. Classifying `chroot` itself would file every step
+    # performed inside the target under one meaningless heading.
+    [ "$program" = chroot ] && program="${3:-chroot}"
+    op="$(classify "$program")"
+    for word in "$@"; do argv="$argv$([ -n "$argv" ] && printf ', ')\"$(json_escape "$word")\""; done
+    plan_ops="$plan_ops$([ -n "$plan_ops" ] && printf ',')
+    {\"step\": $step_no, \"description\": \"$(json_escape "$current_step")\", \"op\": \"$op\", \"target\": \"$(json_escape "$target")\", \"argv\": [$argv]}"
+}
 run() {
+    record "$@"
     if [ "$apply" = 1 ]; then
         "$@"
     else
@@ -219,6 +362,51 @@ run() {
     fi
 }
 in_target() { run chroot "$mnt" "$@"; }
+
+write_plan() {
+    {
+        printf '{\n  \"version\": 1,\n'
+        printf '  \"target\": \"%s\",\n  \"target_kind\": \"%s\",\n' "$(json_escape "$target")" "$target_kind"
+        printf '  \"deployment\": \"%s\",\n  \"cmdline\": \"%s\",\n' "$deployment_id" "$(json_escape "$cmdline")"
+        printf '  \"reuse\": %s,\n  \"format_data\": %s,\n' \
+            "$([ "$reuse" = 1 ] && echo true || echo false)" \
+            "$([ "$format_data" = 1 ] && echo true || echo false)"
+        printf '  \"observed\": ['
+        local first=1
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            [ $first -eq 1 ] || printf ','
+            first=0
+            printf '\n    \"%s\"' "$(json_escape "$line")"
+        done <<< "$observed"
+        printf '\n  ],\n'
+        printf '  \"operations\": [%s\n  ]\n}\n' "$plan_ops"
+    } > "$plan_out"
+}
+
+observed="$(observe)"
+
+# `--apply --plan` is the only path that mutates something a person has already reviewed. Observe
+# the machine again and refuse on any difference: a plan made against one disk must not be applied
+# to another, and a partition mounted since the review is a partition somebody is using.
+if [ -n "$plan_in" ]; then
+    [ "$apply" = 1 ] || die "--plan is for --apply; a dry run makes a plan rather than consuming one"
+    [ -f "$plan_in" ] || die "no plan at $plan_in"
+    reviewed="$(sed -n '/"observed": \[/,/\]/p' "$plan_in" | sed -n 's/^ *"\(.*\)",\?$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+    if [ "$reviewed" != "$observed" ]; then
+        printf 'provision: the machine is not what this plan was reviewed against.\n\n' >&2
+        diff <(printf '%s\n' "$reviewed") <(printf '%s\n' "$observed") \
+            | sed 's/^/    /' >&2 || true
+        die "refusing to apply. Re-run the dry run, read the new plan, and apply that one."
+    fi
+    note "the machine still matches the plan reviewed in $plan_in"
+fi
+
+# Everything above this line reads. Everything below it can write, so this is where privilege is
+# required — after the plan has been checked and before the first `run` can perform anything.
+if [ "$apply" = 1 ] && [ "$(id -u)" != 0 ]; then
+    die "--apply needs root (loop devices, mkfs, mount, chroot). Run it in a disposable VM or with sudo, never on a machine you are using."
+fi
 
 mnt="${LEGEOS_PROVISION_MOUNT:-/mnt/legeos-provision}"
 
@@ -294,16 +482,49 @@ free-space)
     fi
     ;;
 partitions)
-    step "Use the existing partitions $esp_arg (ESP) and $root_arg (root); the partition table is not touched"
     esp_part="$esp_arg"; root_part="$root_arg"
-    run sgdisk --typecode="$(lsblk -no PARTN "$esp_arg" 2>/dev/null || echo N):ef00" "/dev/$(lsblk -no PKNAME "$esp_arg" 2>/dev/null || echo DISK)"
-    run sgdisk --typecode="$(lsblk -no PARTN "$root_arg" 2>/dev/null || echo N):8304" "/dev/$(lsblk -no PKNAME "$root_arg" 2>/dev/null || echo DISK)"
+    if [ "$reuse" = 1 ]; then
+        # Preservation means preservation. The type code is metadata another operating system may
+        # depend on, and rewriting it is a change to the disk however harmless it looks — which is
+        # why @legeos.decision.independent-storage-roles says the current mode "is not
+        # preservation".
+        step "Preserve the existing partitions $esp_arg (ESP) and $root_arg (root): no type code is rewritten and no filesystem is made"
+        for pair in "ESP:$esp_arg:vfat" "root:$root_arg:btrfs"; do
+            role="${pair%%:*}"; rest="${pair#*:}"; part="${rest%%:*}"; want="${rest##*:}"
+            found="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+            [ -n "$found" ] || die "--reuse needs an existing filesystem on $part for the $role role, and there is none. Drop --reuse to make one."
+            [ "$found" = "$want" ] || die "$part holds a $found filesystem; the $role role needs $want. Drop --reuse to reformat it, deliberately."
+            reused "$part" "$role" "$found"
+            note "  $role: reusing the $found filesystem already on $part"
+        done
+    else
+        step "Use the existing partitions $esp_arg (ESP) and $root_arg (root); the partition table is not touched"
+        run sgdisk --typecode="$(lsblk -no PARTN "$esp_arg" 2>/dev/null || echo N):ef00" "/dev/$(lsblk -no PKNAME "$esp_arg" 2>/dev/null || echo DISK)"
+        run sgdisk --typecode="$(lsblk -no PARTN "$root_arg" 2>/dev/null || echo N):8304" "/dev/$(lsblk -no PKNAME "$root_arg" 2>/dev/null || echo DISK)"
+    fi
     ;;
 esac
 
-step "Make filesystems"
-run mkfs.vfat -F32 -n "$ESP_LABEL" "$esp_part"
-run mkfs.btrfs -f -L "$ROOT_LABEL" "$root_part"
+if [ "$reuse" = 1 ]; then
+    note "--reuse: no mkfs runs. The subvolume creation below is additive and leaves existing ones alone."
+else
+    step "Make filesystems"
+    run mkfs.vfat -F32 -n "$ESP_LABEL" "$esp_part"
+    run mkfs.btrfs -f -L "$ROOT_LABEL" "$root_part"
+fi
+
+if [ -n "$data_arg" ]; then
+    if [ "$format_data" = 1 ]; then
+        step "Make the data filesystem on $data_arg ($DATA_FORMAT, label $DATA_LABEL) — you asked for this with --format-data"
+        run "mkfs.$DATA_FORMAT" -f -L "$DATA_LABEL" "$data_arg"
+    else
+        step "Reuse the data filesystem on $data_arg; it is never assumed expendable"
+        found="$(blkid -s TYPE -o value "$data_arg" 2>/dev/null || true)"
+        [ -n "$found" ] || die "$data_arg holds no filesystem. Add --format-data to make one, deliberately."
+        reused "$data_arg" data "$found"
+        note "  reusing the $found filesystem already on $data_arg (--format-data would replace it)"
+    fi
+fi
 
 step "Create the declared subvolumes: $SUBVOLUMES"
 run mount "$root_part" "$mnt"
@@ -328,6 +549,76 @@ for subvol in $SUBVOLUMES; do
 done
 run mkdir -p "$mnt$ESP_MOUNT"
 run mount "$esp_part" "$mnt$ESP_MOUNT"
+if [ -n "$data_arg" ]; then
+    run mkdir -p "$mnt$DATA_MOUNT"
+    run mount ${DATA_MOUNT_OPTIONS:+-o "$DATA_MOUNT_OPTIONS"} "$data_arg" "$mnt$DATA_MOUNT"
+fi
+
+# --- Identity: /etc/fstab and /etc/legeos/install.toml, both by UUID ----------------------------
+#
+# Two things were missing here and they are the same thing. There was no /etc/fstab at all — the
+# mounts above are made for the chroot and were never written down, so a provisioned machine had
+# nothing telling it how to mount @home, @var or the ESP on its own. And identity was by label:
+# `root=LABEL=legeos-root` is the same string on every LegeOS disk, so a machine with two of them
+# attached mounts whichever the kernel enumerated first.
+#
+# A UUID is per filesystem and is minted by mkfs, so it cannot collide. install.toml is where
+# lege-hostd reads it back (`boot_entries.rs`), and it falls back to the label when the file is
+# absent — which is every machine provisioned before this and every mkosi image.
+step "Filesystem identity: /etc/fstab and /etc/legeos/install.toml, both by UUID"
+# `|| true` throughout: in a dry run the partitions do not exist yet, and blkid failing to read a
+# device that has not been created is the expected case, not an error.
+uuid_of() { blkid -s UUID -o value "$1" 2>/dev/null || true; }
+root_uuid="$(uuid_of "$root_part")"
+esp_partuuid="$(blkid -s PARTUUID -o value "$esp_part" 2>/dev/null || true)"
+data_uuid=""
+[ -n "$data_arg" ] && data_uuid="$(uuid_of "$data_arg")" || true
+if [ "$apply" = 1 ]; then
+    [ -n "$root_uuid" ] || die "the root filesystem has no UUID; blkid could not read $root_part"
+fi
+note "root=UUID=${root_uuid:-<read at apply>}  esp PARTUUID=${esp_partuuid:-<read at apply>}"
+note "writing $mnt/etc/fstab"
+if [ "$apply" = 1 ]; then
+    mkdir -p "$mnt/etc"
+    {
+        printf '# GENERATED by installer/provision.sh. Identity is by UUID, never by label:\n'
+        printf '# every LegeOS root carries the same label, and a machine with two of them\n'
+        printf '# attached would mount whichever the kernel saw first.\n'
+        printf 'UUID=%s  /  %s  %s,subvol=@  0 1\n' "$root_uuid" "$ROOT_FORMAT" "$(layout_value root mount_options)"
+        for subvol in $SUBVOLUMES; do
+            case "$subvol" in
+                /@) continue ;;
+                /@home) dir=/home ;;
+                /@var) dir=/var ;;
+                /@snapshots) dir=/.snapshots ;;
+                /@deployments) dir=/.deployments ;;
+                *) dir="/${subvol#/@}" ;;
+            esac
+            printf 'UUID=%s  %s  %s  %s,subvol=%s  0 0\n' \
+                "$root_uuid" "$dir" "$ROOT_FORMAT" "$(layout_value root mount_options)" "${subvol#/}"
+        done
+        printf 'PARTUUID=%s  %s  vfat  umask=0077  0 2\n' "$esp_partuuid" "$ESP_MOUNT"
+        [ -n "$data_uuid" ] && printf 'UUID=%s  %s  %s  %s  0 2\n' \
+            "$data_uuid" "$DATA_MOUNT" "$DATA_FORMAT" "${DATA_MOUNT_OPTIONS:-defaults}"
+    } > "$mnt/etc/fstab"
+fi
+note "writing $mnt/etc/legeos/install.toml — what lege-hostd reads to build a boot entry"
+if [ "$apply" = 1 ]; then
+    mkdir -p "$mnt/etc/legeos"
+    {
+        printf '# GENERATED by installer/provision.sh. Read by services/lege-hostd/src/boot_entries.rs;\n'
+        printf '# absent means fall back to LABEL=%s, which is what every earlier install has.\n' "$ROOT_LABEL"
+        printf 'root_uuid = "%s"\n' "$root_uuid"
+        printf 'esp_partuuid = "%s"\n' "$esp_partuuid"
+        [ -n "$data_uuid" ] && printf 'data_uuid = "%s"\n' "$data_uuid"
+    } > "$mnt/etc/legeos/install.toml"
+fi
+# The command line follows the same identity. Everything downstream — the GRUB entry seeded below
+# and every one lege-hostd writes after it — reads it from install.toml.
+if [ -n "$root_uuid" ]; then
+    cmdline="${cmdline/root=LABEL=$ROOT_LABEL/root=UUID=$root_uuid}"
+    note "boot command line: $cmdline"
+fi
 
 step "Lend the target the host's /dev, /proc, /sys and DNS for the chroot steps"
 for dir in dev dev/pts proc sys sys/firmware/efi/efivars; do
@@ -494,7 +785,13 @@ if [ "$apply" = 1 ]; then
     if [ -n "$loop" ]; then
         run losetup -d "$loop"
     fi
+    write_plan
     printf '\nprovisioned %s as deployment %s\n' "$target" "$deployment_id"
+    printf 'the sequence that was performed: %s\n' "$plan_out"
 else
+    write_plan
     printf '\nplan only — %s was not touched. Add --apply to run it.\n' "$target"
+    printf 'reviewed sequence written to %s\n' "$plan_out"
+    printf 'apply exactly this one with: %s --apply --plan %s <the same target arguments>\n' \
+        "$0" "$plan_out"
 fi

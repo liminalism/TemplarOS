@@ -602,6 +602,7 @@ mod tests {
             commands: Arc::new(FakeCommandRunner::default()),
             state_dir: dir.join("grub"),
             boot_root: dir.join("boot"),
+            sysroot: dir.to_path_buf(),
         });
         config
     }

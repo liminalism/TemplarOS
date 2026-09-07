@@ -124,6 +124,14 @@ impl BootManager for SystemdBoot {
         // after the fact — the question `HostdState::reconcile_boot` has to answer to decide
         // whether a staged candidate ever booted. Nothing else on the command line carries it:
         // the root filesystem label is the same for every deployment by construction.
+        //
+        // The label rather than the UUID `boot_entries::RootSpec` prefers, deliberately: this
+        // backend is selected only when systemd-boot's loader is present, which on every machine
+        // we produce means an mkosi image. Those are built by `systemd-repart` and carry no
+        // `/etc/legeos/install.toml`, so reading one would find nothing and fall back to exactly
+        // this string. If a *provisioned* machine ever runs systemd-boot, this needs the same
+        // `RootSpec::read(&self.sysroot)` the GRUB backend does, and `SystemdBoot` needs a
+        // `sysroot` to read it from.
         let mut body = format!(
             "title LegeOS ({id})\nlinux /EFI/legeos/{id}/vmlinuz\ninitrd /EFI/legeos/{id}/initrd.img\noptions root=LABEL=legeos-root rw legeos.deployment={id}\n",
             id = candidate.id,
@@ -171,6 +179,9 @@ pub struct Grub {
     /// The boot directory (`/boot`), where the generated entries file lives. Parameterized so
     /// tests never write to the developer's real one.
     pub boot_root: PathBuf,
+    /// The system root (`/`), where `etc/legeos/install.toml` records this installation's
+    /// filesystem identity. Parameterized for the same reason as `boot_root`.
+    pub sysroot: PathBuf,
 }
 
 impl Grub {
@@ -453,6 +464,7 @@ pub fn detect_backend(
             commands,
             state_dir,
             boot_root: root.join("boot"),
+            sysroot: root.to_path_buf(),
         })
     }
 }
@@ -546,6 +558,7 @@ mod tests {
             commands: commands.clone(),
             state_dir: dir.path().to_path_buf(),
             boot_root: dir.path().join("boot"),
+            sysroot: dir.path().to_path_buf(),
         };
         backend.stage_candidate(&deployment("cand1"), 3).unwrap();
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 3)));
@@ -567,6 +580,7 @@ mod tests {
             commands: commands.clone(),
             state_dir: dir.path().to_path_buf(),
             boot_root: dir.path().join("boot"),
+            sysroot: dir.path().to_path_buf(),
         };
         backend.stage_candidate(&deployment("cand1"), 1).unwrap();
         backend.rollback(&deployment("prev1")).unwrap();
