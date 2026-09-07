@@ -6,7 +6,7 @@
   "required": ["role"],
   "additionalProperties": false,
   "properties": {
-    "role": { "enum": ["network-status-ui", "notification-server", "file-chooser", "file-manager", "lock-screen", "association-broker", "clipboard-manager", "power-manager", "screenshot-service", "input-method", "portal-backend", "greeter"] },
+    "role": { "enum": ["network-status-ui", "notification-server", "file-chooser", "file-manager", "lock-screen", "association-broker", "clipboard-manager", "power-manager", "screenshot-service", "input-method", "portal-backend", "greeter", "terminal", "file-search", "code-editor"] },
     "priority": { "type": "integer", "minimum": 0, "default": 50, "description": "Distribution defaults use 100, third parties 50" }
   }
 }

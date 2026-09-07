@@ -29,11 +29,15 @@ pub enum ProviderRole {
     /// the folder you are looking at; this is where "search everywhere" goes. It is launched
     /// and nothing more: LegeOS neither reads nor feeds whatever index it keeps.
     FileSearch,
+    /// The editor a project opens in. Like [`Self::Terminal`] and [`Self::FileManager`], this is
+    /// a role rather than a path copied into every project's manifest: "open this project in the
+    /// editor" has to keep meaning something after the person changes which editor they use.
+    CodeEditor,
 }
 
 impl ProviderRole {
     /// Every role, in a stable order (used by `lege doctor` and the settings UI).
-    pub const ALL: [ProviderRole; 14] = [
+    pub const ALL: [ProviderRole; 15] = [
         Self::NetworkStatusUi,
         Self::NotificationServer,
         Self::FileChooser,
@@ -48,6 +52,7 @@ impl ProviderRole {
         Self::Greeter,
         Self::Terminal,
         Self::FileSearch,
+        Self::CodeEditor,
     ];
 
     /// Kebab-case name as used in manifests and on the CLI.
@@ -67,6 +72,7 @@ impl ProviderRole {
             Self::Greeter => "greeter",
             Self::Terminal => "terminal",
             Self::FileSearch => "file-search",
+            Self::CodeEditor => "code-editor",
         }
     }
 }
@@ -85,4 +91,48 @@ pub struct ProviderCapability {
     /// Higher wins when the user has not chosen; distribution defaults use 100, third parties 50.
     #[serde(default)]
     pub priority: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `interfaces/` is the source of truth, and a role declared in Rust but missing from the
+    /// capability schema is a manifest that fails validation for a role the code accepts. That
+    /// had already happened to `terminal` and `file-search` before this test existed, so the
+    /// two lists are compared rather than trusted to be edited together.
+    #[test]
+    fn every_role_is_in_the_capability_schema() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../interfaces/schemas/provider-capability.schema.json"
+        ))
+        .expect("the capability schema is valid JSON");
+        let declared: Vec<&str> = schema["properties"]["role"]["enum"]
+            .as_array()
+            .expect("the role property declares an enum")
+            .iter()
+            .map(|value| value.as_str().expect("a role is a string"))
+            .collect();
+        let ours: Vec<&str> = ProviderRole::ALL.iter().map(|role| role.as_str()).collect();
+        for role in &ours {
+            assert!(declared.contains(role), "{role} is missing from the schema");
+        }
+        for role in &declared {
+            assert!(
+                ours.contains(role),
+                "{role} is in the schema but not in ALL"
+            );
+        }
+    }
+
+    #[test]
+    fn a_capability_round_trips_through_its_kebab_case_name() {
+        let json = r#"{"role":"code-editor","priority":100}"#;
+        let capability: ProviderCapability = serde_json::from_str(json).expect("parses");
+        assert_eq!(capability.role, ProviderRole::CodeEditor);
+        assert_eq!(
+            serde_json::to_string(&capability).expect("serialises"),
+            json
+        );
+    }
 }
