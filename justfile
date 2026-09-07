@@ -54,6 +54,11 @@ index-bench:
     cargo run -q -p xtask -- index-bench dirs
     cargo run -q -p xtask -- index-bench workloads
 
+# The provisioner: reviewed plan on sparse files, then the layout and refusal smoke
+provision-test:
+    tests/integration/provision-plan.sh
+    tests/integration/provision-qemu.sh
+
 # Stage-1 packages via cargo-deb (target/debian/)
 preview-codecs:
     ./scripts/build-preview-codecs.sh
