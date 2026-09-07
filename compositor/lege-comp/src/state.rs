@@ -95,6 +95,20 @@ pub trait Backend: Sized {
     {
         let _ = (state, blanked);
     }
+
+    /// Draw a frame on every output now, whether or not anything is damaged.
+    ///
+    /// A screen capture is answered by the next render pass (`src/screencopy.rs`), and a still
+    /// desktop has no next render pass: nothing is damaged, so there is no page flip in flight to
+    /// drive one. Without this, a screenshot of a screen that is not moving waits forever — which
+    /// is most screenshots. The default does nothing, which is correct for a backend whose frames
+    /// are driven by something other than damage.
+    fn request_redraw(state: &mut LegeCompState<Self>)
+    where
+        Self: 'static,
+    {
+        let _ = state;
+    }
 }
 
 /// Everything the render-thread loop owns. Generic over `B` so the same state (and every handler
@@ -197,6 +211,11 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// nothing in `WindowService` remembers a window's previous activation: activation is a flag,
     /// and the previous holder of it is gone by the time anything could ask.
     pub previous_focus: Option<lege_window::WindowId>,
+    /// Whether the Home surface was on screen the last time `space_sync` looked, so a change of
+    /// that answer can be logged once instead of every frame. Diagnostic only, and it exists
+    /// because the black-screen-at-login fault was invisible: the units started, the journal said
+    /// nothing, and the only account of what went wrong was a screen that did not change.
+    pub home_mapped: Option<bool>,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
@@ -320,6 +339,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             switcher: None,
             drop_target: None,
             previous_focus: None,
+            home_mapped: None,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
         })

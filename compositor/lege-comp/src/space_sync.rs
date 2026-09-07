@@ -143,6 +143,34 @@ pub fn on_window_destroyed<B: Backend + 'static>(
     sync_after_change(state);
 }
 
+/// Say once, when it changes, whether the Home surface is on screen and why — the fact the
+/// black-screen-at-login fault turned on, and the one thing a session log had nothing to say
+/// about. `Home surface is not mapped` with no reveal and no covering window is the bug;
+/// `not mapped (covered)` while a maximized window is up is the design.
+fn log_home_visibility<B: Backend + 'static>(state: &mut LegeCompState<B>) {
+    let home = state
+        .window_service
+        .stacking_order()
+        .into_iter()
+        .find(|id| state.window_service.layer_of(*id) == Some(lege_window::Layer::HomeSurface));
+    let mapped = home.map(|id| state.window_service.is_visible(id));
+    if mapped == state.home_mapped {
+        return;
+    }
+    state.home_mapped = mapped;
+    match mapped {
+        Some(true) => tracing::info!(
+            revealed = state.window_service.home_revealed(),
+            "Home surface mapped"
+        ),
+        Some(false) => tracing::info!(
+            revealed = state.window_service.home_revealed(),
+            "Home surface unmapped: a fullscreen or maximized window covers its output"
+        ),
+        None => tracing::info!("no Home surface: the shell has not placed one"),
+    }
+}
+
 /// Re-mirror every live window's geometry, visibility and stacking order into `Space`, re-enrich
 /// the governor, and broadcast a fresh sanitized snapshot to the shell and our own toplevel
 /// protocol objects. Idempotent and cheap enough to call after any `WindowService`-mutating
@@ -174,6 +202,8 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut LegeCompState<B>) {
             state.space.unmap_elem(&window);
         }
     }
+
+    log_home_visibility(state);
 
     for record in state.window_service.windows() {
         if let Some(instance_id) = record.identity.instance_id {

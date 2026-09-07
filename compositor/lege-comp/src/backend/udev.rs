@@ -152,6 +152,25 @@ impl Backend for UdevBackendData {
     /// cadence is page-flip completion and a dark output has no flips in flight to carry it (the
     /// same reason `schedule_retry` exists for a damage-free frame). Blanking is not attempted
     /// while the session is paused for a VT switch: the CRTC is not ours to touch then.
+    /// Every CRTC redraws on the next idle turn — the same wake `set_blanked` uses to light an
+    /// output that has no flips in flight.
+    fn request_redraw(state: &mut State) {
+        if state.backend_data.paused {
+            return;
+        }
+        let surfaces: Vec<(DrmNode, crtc::Handle)> = state
+            .backend_data
+            .devices
+            .iter()
+            .flat_map(|(node, device)| device.surfaces.keys().map(move |crtc| (*node, *crtc)))
+            .collect();
+        for (node, crtc) in surfaces {
+            state
+                .loop_handle
+                .insert_idle(move |state| render_surface(state, node, crtc));
+        }
+    }
+
     fn set_blanked(state: &mut State, blanked: bool) {
         if state.backend_data.paused {
             return;
@@ -878,6 +897,8 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         &state.windows,
         &state.clock,
         renderer,
+        output,
+        &elements,
     );
 
     let Some(surface) = device.surfaces.get_mut(&crtc) else {

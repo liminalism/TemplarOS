@@ -185,6 +185,22 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                             } else {
                                 [0.05, 0.05, 0.07, 1.0]
                             };
+                            // Captures queued since the last frame, with the renderer this pass
+                            // is about to use and the very elements it is about to draw
+                            // (`src/screencopy.rs`'s module doc). *Before* the output's own
+                            // render, exactly as the udev backend does it and for a reason that
+                            // is not cosmetic: a capture binds an offscreen framebuffer, and
+                            // draining afterwards left the winit surface's framebuffer unbound
+                            // under `submit`, which lost the EGL context and stopped the
+                            // compositor drawing for good. `render_output` below rebinds.
+                            crate::screencopy::drain_pending(
+                                &mut state.screencopy,
+                                &state.windows,
+                                &state.clock,
+                                renderer,
+                                &output_for_loop,
+                                &elements,
+                            );
                             match damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
@@ -192,17 +208,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                                 &elements,
                                 clear,
                             ) {
-                                Ok(result) => {
-                                    // Previews queued since the last frame, with the renderer
-                                    // this pass just used (`src/screencopy.rs`'s module doc).
-                                    crate::screencopy::drain_pending(
-                                        &mut state.screencopy,
-                                        &state.windows,
-                                        &state.clock,
-                                        renderer,
-                                    );
-                                    result.damage.is_some()
-                                }
+                                Ok(result) => result.damage.is_some(),
                                 Err(error) => {
                                     tracing::warn!(%error, "render_output failed");
                                     false

@@ -102,7 +102,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     );
     println!(
         "  shell-only globals:   ext_foreign_toplevel_image_capture_source_manager_v1, \
-         ext_image_copy_capture_manager_v1"
+         ext_output_image_capture_source_manager_v1, ext_image_copy_capture_manager_v1"
     );
 
     if let Some(command) = session_command {
@@ -122,6 +122,18 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
+
+    /// Globals that exist only for the trusted shell: `lege_shell_v1` can shelve, activate and
+    /// place surfaces in privileged layers, `lege_recovery_v1` drives the pressure overlay, and
+    /// the three capture globals read other applications' pixels — the output one reads the whole
+    /// screen. A global an ordinary client cannot see is one it cannot attempt to bind.
+    const TRUSTED_ONLY: [&str; 5] = [
+        "lege_shell_manager_v1",
+        "lege_recovery_manager_v1",
+        "ext_output_image_capture_source_manager_v1",
+        "ext_foreign_toplevel_image_capture_source_manager_v1",
+        "ext_image_copy_capture_manager_v1",
+    ];
 
     /// Collects the registry's `global` events — the compositor's advertised protocol set, as a
     /// client actually sees it on the wire.
@@ -256,12 +268,9 @@ mod tests {
             );
         }
 
-        // The security boundary, from the outside. `lege_shell_v1` can shelve windows, activate
-        // them and declare surfaces into privileged layers; `lege_recovery_v1` drives the
-        // pressure overlay. Both are gated by `can_view` on having connected over the private
-        // socket, so an ordinary client must not even learn they exist — a global it cannot see
-        // is one it cannot attempt to bind.
-        for private in ["lege_shell_manager_v1", "lege_recovery_manager_v1"] {
+        // The security boundary, from the outside: everything in `TRUSTED_ONLY` is gated by
+        // `can_view` on having connected over the private socket.
+        for private in TRUSTED_ONLY {
             assert!(
                 !advertised.iter().any(|name| name == private),
                 "{private} was advertised to an ordinary client; the trusted-shell gate is open"
@@ -273,7 +282,7 @@ mod tests {
         // `create_private_globals` entirely would still pass the assertions above.
         let shell = connect(&shell_socket_name);
         let shell_advertised = registry_of(&shell);
-        for private in ["lege_shell_manager_v1", "lege_recovery_manager_v1"] {
+        for private in TRUSTED_ONLY {
             assert!(
                 shell_advertised.iter().any(|name| name == private),
                 "the trusted shell did not see {private}; it saw: {shell_advertised:?}"
