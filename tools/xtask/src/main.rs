@@ -481,7 +481,32 @@ fn components(root: &Path, field: &str) -> Result<()> {
             "crate" => component.crate_name.clone(),
             "unit" => component.unit.clone().unwrap_or_default(),
             "activation" => format!("{:?}", component.activation),
-            other => bail!("unknown --field {other:?} (name, package, crate, unit, activation)"),
+            "authority" => component.authority.clone(),
+            "lifetime" => component
+                .lifetime
+                .map(|lifetime| format!("{lifetime:?}"))
+                .unwrap_or_default(),
+            "consumer_interfaces" => component.consumer_interfaces.join(" "),
+            "recovery" => component.recovery.clone(),
+            "deadlines" => component.deadlines.clone(),
+            // One line per exception rather than one per component: this is the field a person
+            // reads to answer "what still polls, and why", and a component with three of them
+            // has three answers.
+            "timer_exceptions" => component
+                .timer_exceptions
+                .iter()
+                .map(|exception| {
+                    format!(
+                        "{}\t{}\t{}\t{}",
+                        component.name, exception.site, exception.interval, exception.reason
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            other => bail!(
+                "unknown --field {other:?} (name, package, crate, unit, activation, authority, \
+                 lifetime, consumer_interfaces, recovery, deadlines, timer_exceptions)"
+            ),
         };
         if !value.is_empty() {
             println!("{value}");
@@ -969,6 +994,7 @@ fn check_packaging(root: &Path) -> Result<()> {
         &deb_depends,
         &deb_name_to_crate,
     ));
+    problems.extend(service_inventory_problems(&matrix, &unit_types(root)?));
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
@@ -1000,10 +1026,17 @@ fn check_packaging(root: &Path) -> Result<()> {
         "check-packaging: {} debian/control package(s) all have matching crate metadata; \
          {} component matrix row(s) agree with them; \
          {} unit ExecStart binary/ies all installed by a package; \
+         {} service(s) declare an authority, lifetime, recovery, deadline and every timer \
+         exception; \
          {} seed(s) and {} metapackage(s) name only packages that exist",
         control_packages.len(),
         matrix.components.len(),
         units.len(),
+        matrix
+            .components
+            .iter()
+            .filter(|component| component.unit.is_some())
+            .count(),
         seeds.len(),
         metapackages.len()
     );
@@ -1500,6 +1533,107 @@ fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String
         .collect()
 }
 
+/// Every service names its authority, its lifetime, its recovery and its deadlines, and its
+/// declared lifetime is the one its unit actually has.
+///
+/// `@legeos.decision.event-driven-service-authorities` requires that "each persistent daemon and
+/// polling exception records its authority, lifetime, activation, recovery, deadline and
+/// justification". A hand-written inventory document goes stale the first time a unit changes;
+/// this is the same statement made where the build can check it.
+///
+/// The lifetime check runs in both directions on purpose. `Type=dbus` with any other declared
+/// lifetime means the inventory is describing a daemon that is not the one shipping;
+/// `dbus-activated` over a `Type=simple` unit means a consumer that expects activation on demand
+/// will find nothing answering the name.
+fn service_inventory_problems(
+    matrix: &lege_build::components::Matrix,
+    unit_types: &BTreeMap<String, String>,
+) -> Vec<String> {
+    use lege_build::components::Lifetime;
+
+    let mut problems = Vec::new();
+    for component in &matrix.components {
+        let Some(unit) = &component.unit else {
+            continue;
+        };
+        let name = &component.name;
+        for (field, value) in [
+            ("authority", &component.authority),
+            ("recovery", &component.recovery),
+            ("deadlines", &component.deadlines),
+        ] {
+            if value.trim().is_empty() {
+                problems.push(format!(
+                    "{name}: has the unit {unit} but declares no {field}; every service records \
+                     one (@legeos.decision.event-driven-service-authorities)"
+                ));
+            }
+        }
+        let Some(lifetime) = component.lifetime else {
+            problems.push(format!(
+                "{name}: has the unit {unit} but declares no lifetime (dbus-activated, \
+                 session-bound or oneshot)"
+            ));
+            continue;
+        };
+        let Some(unit_type) = unit_types.get(unit) else {
+            problems.push(format!("{name}: {unit} declares no Type="));
+            continue;
+        };
+        let expected = match unit_type.as_str() {
+            "dbus" => Lifetime::DbusActivated,
+            "oneshot" => Lifetime::Oneshot,
+            _ => Lifetime::SessionBound,
+        };
+        if lifetime != expected {
+            problems.push(format!(
+                "{name}: the matrix says lifetime = {lifetime:?}, but {unit} is Type={unit_type}, \
+                 which is {expected:?}"
+            ));
+        }
+    }
+    problems
+}
+
+/// `Type=` for every unit under `session/units/`. A unit with no `Type=` is `simple`, which is
+/// what systemd itself assumes.
+fn unit_types(root: &Path) -> Result<BTreeMap<String, String>> {
+    let mut types = BTreeMap::new();
+    let mut stack = vec![root.join("session/units")];
+    while let Some(dir) = stack.pop() {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("service") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_owned();
+            let kind = text
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("Type="))
+                .unwrap_or("simple")
+                .trim()
+                .to_owned();
+            types.insert(name, kind);
+        }
+    }
+    Ok(types)
+}
+
 /// `(unit file name, ExecStart binary)` for every unit under `session/units/`.
 fn unit_exec_starts(root: &Path) -> Result<Vec<(String, String)>> {
     let mut units = Vec::new();
@@ -1818,7 +1952,7 @@ mod extraction_tests {
         declared_actions, dependency_drift, manifest_executable_is_provided,
         metapackage_dependency_problems, packaging_problems, parse_control_depends,
         parse_control_packages, parse_depends_list, seed_problems, server_interface_names,
-        unlicensed_assets, unshipped_unit_binaries,
+        service_inventory_problems, unlicensed_assets, unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -2045,6 +2179,86 @@ mod extraction_tests {
             .iter()
             .map(|(deb, krate)| ((*deb).to_owned(), (*krate).to_owned()))
             .collect()
+    }
+
+    fn service_row(
+        lifetime: Option<lege_build::components::Lifetime>,
+    ) -> lege_build::components::Component {
+        lege_build::components::Component {
+            name: "filed".to_owned(),
+            crate_name: "lege-filed".to_owned(),
+            package: "legeos-filed".to_owned(),
+            stamp: None,
+            unit: Some("lege-filed.service".to_owned()),
+            scope: lege_build::components::Scope::User,
+            activation: lege_build::components::Activation::Manual,
+            depends_on: Vec::new(),
+            summary: "file service".to_owned(),
+            authority: "the per-user file index".to_owned(),
+            lifetime,
+            consumer_interfaces: vec!["org.legeos.Files.Index1".to_owned()],
+            recovery: "SnapshotRequired, then resnapshot".to_owned(),
+            deadlines: "answered from the last committed generation".to_owned(),
+            timer_exceptions: Vec::new(),
+        }
+    }
+
+    fn matrix_of(
+        components: Vec<lege_build::components::Component>,
+    ) -> lege_build::components::Matrix {
+        lege_build::components::Matrix {
+            version: 1,
+            components,
+        }
+    }
+
+    #[test]
+    fn a_service_that_declares_no_authority_is_a_packaging_failure() {
+        // The whole point of putting the inventory here rather than in a document: a service that
+        // stops describing itself fails the build instead of going quietly stale.
+        let mut row = service_row(Some(lege_build::components::Lifetime::DbusActivated));
+        row.authority.clear();
+        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
+            .into_iter()
+            .collect();
+        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("declares no authority"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_declared_lifetime_that_the_unit_contradicts_is_a_packaging_failure() {
+        let row = service_row(Some(lege_build::components::Lifetime::SessionBound));
+        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
+            .into_iter()
+            .collect();
+        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("Type=dbus"), "{problems:?}");
+
+        // ...and the same mistake the other way round: a unit systemd starts with the session,
+        // declared as something a consumer can activate on demand.
+        let row = service_row(Some(lege_build::components::Lifetime::DbusActivated));
+        let types = [("lege-filed.service".to_owned(), "simple".to_owned())]
+            .into_iter()
+            .collect();
+        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("SessionBound"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_component_with_no_unit_owes_no_inventory() {
+        // A CLI or a data-only package has no process, no authority and nothing to recover.
+        let mut row = service_row(None);
+        row.unit = None;
+        row.authority.clear();
+        row.recovery.clear();
+        row.deadlines.clear();
+        assert!(service_inventory_problems(&matrix_of(vec![row]), &BTreeMap::new()).is_empty());
     }
 
     #[test]

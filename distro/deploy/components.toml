@@ -22,6 +22,26 @@
 # every proxy the shell holds; those rows stay manual until the composed-session restart test
 # exists (roadmap track B4). Shipping them as `restart` today would make the tool confidently
 # break a live desktop.
+#
+# The service audit's fields (@legeos.decision.event-driven-service-authorities: "each persistent
+# daemon and polling exception records its authority, lifetime, activation, recovery, deadline
+# and justification"). `cargo run -q -p xtask -- check-packaging` fails when a component with a
+# unit leaves one blank, and `cargo run -q -p xtask -- components --field timer_exceptions`
+# renders them.
+#
+# authority     — the state domain this component is the single authoritative owner of.
+# lifetime      — dbus-activated | session-bound | oneshot. Checked against the unit's `Type=`:
+#                 `Type=dbus` and `dbus-activated` mean each other, in both directions.
+# consumer_interfaces — the typed boundary consumers read that state through. Never the private
+#                 store: a consumer that opens the owner's SQLite is the thing the decision
+#                 forbids.
+# recovery      — what a consumer does when continuity is lost, and what the component does on
+#                 restart.
+# deadlines     — the bounded response times it commits to.
+# timer_exceptions — every timer or blocking sleep left in it, with the reason an event cannot
+#                 replace it. Timers are allowed for temporal conditions, backoff, bounded active
+#                 episodes and reconciliation; an unlisted wait is a bug. Test-only sleeps are
+#                 not listed — they are not in the shipped path.
 
 version = 1
 
@@ -35,6 +55,23 @@ scope = "user"
 activation = "manual"
 depends_on = []
 summary = "session policy daemon — identity, launching, associations, history, settings"
+authority = "session policy: identity, launching, associations, providers, history, notifications, settings, projects, power, location — one state database, one crash unit (ADR-0001)"
+lifetime = "session-bound"
+consumer_interfaces = [
+    "org.legeos.AppIdentity1", "org.legeos.Launcher1", "org.legeos.Associations1",
+    "org.legeos.Providers1", "org.legeos.History1", "org.legeos.Notifications1",
+    "org.legeos.Settings1", "org.legeos.Projects1", "org.legeos.Lifecycle1",
+]
+recovery = "clients reconnect to the bus name and re-read; every interface answers a full current state, so there is no history to replay and nothing to resnapshot"
+deadlines = "a launch is acknowledged before the process is spawned; a settings write is durable before it returns"
+timer_exceptions = [
+    { site = "main.rs:644", interval = "500ms x30", reason = "backoff waiting for the compositor's Wayland socket to accept a connection; there is no event for a socket that does not exist yet, and the loop gives up after 15s rather than waiting forever" },
+    { site = "main.rs:663", interval = "WatchdogSec/2", reason = "the service manager's watchdog ping is a timer by definition — systemd kills the unit if it stops arriving" },
+    { site = "apis/notifications.rs:128", interval = "until expires_ms", reason = "a notification's expiry is a temporal condition: the thing being waited for is the passage of time itself" },
+    { site = "background/crash_ingest.rs:162", interval = "configured", reason = "reconciliation against systemd-coredump's journal, which offers no subscription; bounded and idempotent" },
+    { site = "background/notification_provider.rs:78", interval = "configured", reason = "reconciles which provider should hold org.freedesktop.Notifications; a settings change has no signal a background task can await today" },
+]
+
 
 [[component]]
 name = "resourced"
@@ -46,6 +83,15 @@ scope = "user"
 activation = "restart"
 depends_on = []
 summary = "resource governor"
+authority = "memory pressure policy: which instance is reclaimed, and what protection every session-critical unit keeps"
+lifetime = "session-bound"
+consumer_interfaces = ["org.legeos.Resources1"]
+recovery = "stateless across restarts by design (ADR-0002): the governor re-reads cgroups and PSI on its first tick and owes no consumer any history"
+deadlines = "a pressure trigger is acted on within one tick; the loop touches no SQLite, no fsync and no D-Bus (ADR-0002)"
+timer_exceptions = [
+    { site = "daemon.rs:580", interval = "60s idle heartbeat, `interval` under pressure", reason = "a bounded active episode: PSI triggers the wakeup, and the sampling interval applies only while pressure is being tracked. The idle heartbeat re-reads cgroup membership, which has no event." },
+]
+
 
 [[component]]
 name = "filed"
@@ -57,6 +103,18 @@ scope = "user"
 activation = "manual"
 depends_on = []
 summary = "file service"
+authority = "the per-user file index and every filesystem watch in the session; transactional file operations and their journals"
+lifetime = "dbus-activated"
+consumer_interfaces = [
+    "org.legeos.Files.Index1", "org.legeos.Files.Browse1", "org.legeos.Files.Search1",
+    "org.legeos.Files.Volumes1", "org.legeos.Files.Previews1",
+]
+recovery = "generation identifies a committed view and a sequence identifies change-log position; ChangesSince(seq) below the retained floor answers SnapshotRequired and the consumer resnapshots through OpenSnapshot. Consumers never open the SQLite store."
+deadlines = "a query is answered from the last committed generation without waiting for a scan; no client start triggers a synchronous walk"
+timer_exceptions = [
+    { site = "preview.rs:501", interval = "10ms", reason = "reaping a bounded preview child against its own deadline; the wait ends when the process does, and the poll only exists because the deadline has to be enforced against a child that hangs" },
+]
+
 
 [[component]]
 name = "hostd"
@@ -68,6 +126,19 @@ scope = "system"
 activation = "restart"
 depends_on = []
 summary = "privileged system-bus surface"
+authority = "the privileged system surface (ADR-0003): updates, deployments, driver authorisation, storage reserve, hardware profile, boot entries and index checkpoints"
+lifetime = "dbus-activated"
+consumer_interfaces = [
+    "org.legeos.Host.Updates1", "org.legeos.Host.Deployments1", "org.legeos.Host.Drivers1",
+    "org.legeos.Host.Storage1", "org.legeos.Host.Hardware1", "org.legeos.Host.Session1",
+    "org.legeos.Host.IndexCheckpoint1",
+]
+recovery = "every transaction is journalled and resumable: a restart mid-pipeline reads the journal and continues or classifies the failure. Deployment identities persist across restarts."
+deadlines = "every mutating method checks polkit before doing anything; long work is journalled and polled rather than held open on the bus"
+timer_exceptions = [
+    { site = "cmd.rs:64", interval = "50ms", reason = "enforcing the wall-clock timeout on an external command (apt, grub-reboot) so a hung tool cannot wedge a transaction; the wait ends when the child does" },
+]
+
 
 [[component]]
 name = "boot-health"
@@ -78,6 +149,13 @@ scope = "system"
 activation = "needs-reboot"
 depends_on = []
 summary = "boot health probe; only ever runs at boot"
+authority = "the boot assessment that promotes or rolls back the booted deployment"
+lifetime = "oneshot"
+consumer_interfaces = []
+recovery = "runs again at the next boot; it holds no state a consumer subscribes to"
+deadlines = "every probe is bounded and a hung one is reported as failed rather than waited on"
+timer_exceptions = []
+
 
 [[component]]
 name = "session"
@@ -98,6 +176,13 @@ scope = "user"
 activation = "needs-session"
 depends_on = []
 summary = "compositor — Restart=no by design, so a new one means a new session"
+authority = "surface composition, input routing and z-order (compositor/COMPOSITOR.md); lege-window is the sole visibility authority"
+lifetime = "session-bound"
+consumer_interfaces = ["lege_shell_v1"]
+recovery = "none: Restart=no by design. A crash disconnects every client, so there is nothing to restart into — the compositor-drawn recovery band and a fresh session are the recovery path."
+deadlines = "one frame; the render thread takes no lock a service can hold"
+timer_exceptions = []
+
 
 [[component]]
 name = "greeter"
@@ -118,6 +203,13 @@ scope = "user"
 activation = "restart"
 depends_on = ["sessiond", "filed", "comp"]
 summary = "Home Field, panel and the rest of the restartable surface"
+authority = "none — it is a view. Home Field layout is persisted through sessiond."
+lifetime = "session-bound"
+consumer_interfaces = []
+recovery = "restartable in about half a second; it re-reads every service it draws from on start"
+deadlines = "restart is not allowed to outlive the compositor's recovery band"
+timer_exceptions = []
+
 
 [[component]]
 name = "settings"

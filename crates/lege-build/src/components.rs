@@ -60,6 +60,39 @@ pub enum Scope {
     None,
 }
 
+/// How long a component's process is expected to live, and what starts it.
+///
+/// The distinction the service audit turns on: a `dbus-activated` unit exists because a consumer
+/// asked for its bus name, a `session-bound` one is started by the session target and lives as
+/// long as the session, and a `oneshot` one runs to completion and exits. `None` for anything
+/// with no process of its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lifetime {
+    /// Started by systemd when a peer calls its bus name (`Type=dbus`).
+    DbusActivated,
+    /// Started with the session target; exits with it.
+    SessionBound,
+    /// Runs once and exits.
+    Oneshot,
+}
+
+/// A timer or a blocking sleep that survives the event-driven audit, and why.
+///
+/// `@legeos.decision.event-driven-service-authorities` allows timers for temporal conditions,
+/// backoff, bounded active episodes and reconciliation — but "each persistent daemon and polling
+/// exception records its authority, lifetime, activation, recovery, deadline and justification",
+/// which is what this row is. An unlisted wait is a bug, not a judgement call.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimerException {
+    /// `file.rs:line`-shaped, so it can be found and so a move shows up as a stale entry.
+    pub site: String,
+    /// What it waits, in the units the code uses ("60s", "50ms", "until the child exits").
+    pub interval: String,
+    /// Why an event cannot replace it.
+    pub reason: String,
+}
+
 /// One row of the matrix.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Component {
@@ -81,6 +114,26 @@ pub struct Component {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub summary: String,
+    /// The state domain this component is the single authoritative owner of. Empty for a
+    /// component that owns none — a CLI, an application, a data-only package.
+    #[serde(default)]
+    pub authority: String,
+    /// What starts it and how long it lives. `None` when it has no process of its own.
+    #[serde(default)]
+    pub lifetime: Option<Lifetime>,
+    /// The typed boundary consumers read its state through. Never its private store.
+    #[serde(default)]
+    pub consumer_interfaces: Vec<String>,
+    /// What a consumer does when it loses continuity, and what the component itself does on
+    /// restart. Empty for a component nothing subscribes to.
+    #[serde(default)]
+    pub recovery: String,
+    /// Bounded response times this component commits to, in prose.
+    #[serde(default)]
+    pub deadlines: String,
+    /// Every timer or blocking sleep in it, each with its justification.
+    #[serde(default)]
+    pub timer_exceptions: Vec<TimerException>,
 }
 
 /// The whole matrix.
