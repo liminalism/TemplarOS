@@ -99,6 +99,12 @@ if [ -s "$squashfs" ]; then
     echo "1. $squashfs exists; skipping the bootstrap"
 else
     echo "1. mmdebstrap $codename ($mode) → $squashfs"
+    # What the hook copies out is owned by the namespace's subordinate root; a file left here from
+    # an earlier run, or one the host user re-created (an extracted kernel, say), cannot be
+    # overwritten from inside the namespace. The directories are world-writable, so the host user
+    # can always remove them first.
+    rm -f "$tree"/casper/vmlinuz "$tree"/casper/initrd "$tree"/casper/filesystem.manifest \
+        "$tree"/efi/* "$tree"/legeos/kernel
     # Pin the set so a pool holding three sets yields this one, not the newest.
     pref="$work/legeos-set.pref"
     printf 'Package: legeos-* lege-files\nPin: version %s\nPin-Priority: 1001\n' "$set_id" > "$pref"
