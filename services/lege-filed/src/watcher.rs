@@ -92,9 +92,23 @@ impl Drop for WatcherHandle {
 ///
 /// Called after the bus name is claimed: the daemon answers queries from the last committed
 /// generation immediately, and the watcher catches up behind it.
-pub fn spawn(index: Index, roots: WatcherRoots) -> std::io::Result<WatcherHandle> {
+pub fn spawn(
+    index: Index,
+    roots: WatcherRoots,
+    delta: Option<DeltaSetup>,
+) -> std::io::Result<WatcherHandle> {
     let source = InotifySource::open()?;
-    Ok(spawn_with_source(index, roots, source))
+    Ok(spawn_with_source(index, roots, source, delta))
+}
+
+/// What the watcher needs to reach `org.legeos.Host.IndexCheckpoint1`, carried rather than
+/// connected: the connection has to be made *on the watcher's own thread*, because it goes
+/// through `Handle::block_on` and doing that on the reactor thread deadlocks.
+#[derive(Clone, Debug)]
+pub struct DeltaSetup {
+    pub handle: tokio::runtime::Handle,
+    /// Where the baseline checkpoint id is remembered across restarts.
+    pub state_path: std::path::PathBuf,
 }
 
 /// The same loop over any event source, so the deterministic tests drive the real code.
@@ -102,6 +116,7 @@ pub fn spawn_with_source<S: EventSource + 'static>(
     index: Index,
     roots: WatcherRoots,
     source: S,
+    delta: Option<DeltaSetup>,
 ) -> WatcherHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
@@ -111,6 +126,15 @@ pub fn spawn_with_source<S: EventSource + 'static>(
         .name("lege-index-watcher".to_owned())
         .spawn(move || {
             let mut loop_ = WatchLoop::new(index, source);
+            if let Some(setup) = delta
+                && let Some(checkpoints) =
+                    crate::delta_catchup::HostCheckpoints::connect(&setup.handle)
+            {
+                loop_.attach_delta(crate::delta_catchup::DeltaCatchUp::new(
+                    Arc::new(checkpoints),
+                    setup.state_path,
+                ));
+            }
             loop_.attach_commands(inbox);
             loop_.start(&roots);
             loop_.run(&thread_stop);
@@ -141,6 +165,10 @@ pub struct WatchLoop<S: EventSource> {
     /// The source is gone. Not a lost event: a lost stream. Latched, because polling a dead
     /// source returns instantly and an unbounded wait that returns instantly is a spin.
     dead: bool,
+    /// The btrfs metadata delta, when there is a privileged daemon to ask. `None` on the ext4
+    /// development host, in every test, and in a nested session — and `None` means "reconcile",
+    /// which is what every root did before this existed.
+    delta: Option<crate::delta_catchup::DeltaCatchUp>,
 }
 
 impl<S: EventSource> WatchLoop<S> {
@@ -165,7 +193,13 @@ impl<S: EventSource> WatchLoop<S> {
             commands: None,
             published: None,
             dead: false,
+            delta: None,
         }
+    }
+
+    /// Give the loop a delta backend to try before it walks a tree.
+    pub fn attach_delta(&mut self, delta: crate::delta_catchup::DeltaCatchUp) {
+        self.delta = Some(delta);
     }
 
     /// Where consumer leases arrive from the D-Bus tasks.
@@ -400,6 +434,13 @@ impl<S: EventSource> WatchLoop<S> {
     /// Run one repair to completion. It holds no lock a query needs: the previous generation
     /// answers throughout, and only the final commit swaps it.
     pub fn repair(&mut self, root: RootId, scope: ScanScope, trigger: &Trigger) {
+        // Downtime is the one trigger a delta answers: it asks "what happened while nobody was
+        // looking", which is exactly the question two snapshots answer cheaply. Overflow,
+        // ambiguity and a policy change are about what the index *believes*, not about a window
+        // of missed time, and none of them is fixed by replaying a difference.
+        if *trigger == Trigger::Downtime && scope == ScanScope::Root && self.catch_up(root) {
+            return;
+        }
         let Ok(policy) = self.index.root_policy(root) else {
             return;
         };
@@ -421,6 +462,75 @@ impl<S: EventSource> WatchLoop<S> {
             }
             Err(error) => tracing::warn!(root = root.0, %error, "reconciliation failed"),
         }
+    }
+
+    /// Try to answer a downtime repair from a btrfs metadata delta. `true` when the root is
+    /// current again and the walk is not needed.
+    ///
+    /// Everything that can go wrong here is a `false` and a reconcile, which is what this branch
+    /// did before the backend existed; the recursive path is never removed, only skipped.
+    fn catch_up(&mut self, root: RootId) -> bool {
+        let Some(delta) = self.delta.as_ref() else {
+            return false;
+        };
+        let Ok(status) = self.index.root_status(root) else {
+            return false;
+        };
+        let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+            return false;
+        };
+        let Some(caught_up) = delta.try_catch_up(&self.index, &status, &mounts) else {
+            return false;
+        };
+
+        // ponytail: a directory that arrived from outside the indexed region is one row and the
+        // stream never named its children, so the delta alone would leave the subtree missing
+        // while the root claimed to be current. Walking instead is correct, and it is the case
+        // the measurements liked least anyway (the build-shaped burst was the one scenario a
+        // crawl won). Upgrade path: arm each path and queue a `ScanScope::Subtree` repair, and
+        // keep the root `CatchingUp` until they drain.
+        if !caught_up.rescan.is_empty() {
+            tracing::info!(
+                root = root.0,
+                directories = caught_up.rescan.len(),
+                "the delta moved whole directories in; walking instead"
+            );
+            return false;
+        }
+
+        let mutations = caught_up.batch.mutations.len();
+        if self.index.begin_catch_up(root).is_err() {
+            return false;
+        }
+        let applied = match self.index.apply(caught_up.batch.clone()) {
+            Ok(applied) => applied,
+            Err(error) => {
+                // The batch is all-or-nothing, so a failure here leaves the previous generation
+                // exactly as it was — and the checkpoint it was taken against is still held,
+                // because nothing is retired until `committed`.
+                tracing::warn!(root = root.0, %error, "the delta did not apply; reconciling");
+                return false;
+            }
+        };
+        delta.committed(&caught_up);
+
+        // `finish_catch_up` reaches `current` only if the last commit covered the whole root. A
+        // delta cannot repair an incomplete generation — it describes a difference, not a tree —
+        // so a root that was already incomplete stays honestly stale and gets walked next time.
+        let Ok(status) = self.index.finish_catch_up(root) else {
+            return false;
+        };
+
+        tracing::info!(
+            root = root.0,
+            generation = %applied.generation,
+            mutations,
+            stream_bytes = caught_up.stream.bytes,
+            send_ms = caught_up.stream.duration_ms,
+            state = status.state.as_str(),
+            "caught up from a btrfs delta instead of walking the tree"
+        );
+        status.state == lege_file_index::RootState::Current
     }
 
     /// A pass that ran out of watches did not see the whole tree, whatever it committed.
@@ -982,7 +1092,7 @@ mod tests {
     fn stop_interrupts_an_unbounded_wait() {
         let dir = tempfile::tempdir().unwrap();
         let index = Index::open(&dir.path().join("index.sqlite3"), IndexConfig::default()).unwrap();
-        let mut handle = spawn(index, WatcherRoots::default()).expect("a watcher");
+        let mut handle = spawn(index, WatcherRoots::default(), None).expect("a watcher");
         // Let the loop reach its blocking wait: with no roots there is nothing at all to do.
         std::thread::sleep(Duration::from_millis(100));
 

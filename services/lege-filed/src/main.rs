@@ -235,8 +235,17 @@ async fn main() -> Result<()> {
     // and a root that already has a committed generation is served from it immediately (the
     // warm-start policy) rather than rescanned synchronously.
     let watcher_plan = classify_roots(&core)?;
-    let watcher_handle =
-        lege_filed::watcher::spawn(core, watcher_plan).context("starting the index watcher")?;
+    // The btrfs delta backend, when there is a privileged daemon to ask. `$STATE_DIRECTORY` is
+    // set by the unit; without it there is nowhere durable to remember the baseline checkpoint,
+    // so the backend is simply not offered and every repair walks the tree as it always has.
+    let delta = std::env::var_os("STATE_DIRECTORY").map(|dir| lege_filed::watcher::DeltaSetup {
+        handle: tokio::runtime::Handle::current(),
+        state_path: std::path::PathBuf::from(dir)
+            .join("legeos")
+            .join("delta-checkpoint.json"),
+    });
+    let watcher_handle = lege_filed::watcher::spawn(core, watcher_plan, delta)
+        .context("starting the index watcher")?;
     observer::register(watcher_handle.control());
     tokio::spawn(watch_for_departing_consumers(connection.clone()));
 

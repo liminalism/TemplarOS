@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 lege-build = { workspace = true }
+lege-client = { workspace = true }
 lege-types = { workspace = true }
 lege-state = { workspace = true }
 lege-file-index = { workspace = true }

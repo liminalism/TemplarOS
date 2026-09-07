@@ -56,14 +56,25 @@
   <!-- Read-only @home checkpoints and the btrfs metadata delta between two of them, so the file
        index can bridge a dormant period without re-walking the tree. Snapshotting and
        BTRFS_IOC_SEND both need CAP_SYS_ADMIN, which is why this is a host action at all.
-       Unadopted: nothing in the running system calls it yet. -->
+
+       allow_active is `yes`, and it is the only action here that is. The caller is lege-filed,
+       a daemon in the user's own session: it has no polkit agent, nothing would ever answer a
+       prompt, and a repair that silently never happens is worse than one that does. What is
+       being authorised is bounded to match: a read-only snapshot of the user's own @home, a
+       metadata-only send between two of them, and a discard of one by an id that must be a
+       single safe path segment (`index_checkpoint::is_safe_id`). No file contents are read and
+       nothing outside the configured subvolume is reachable.
+
+       ponytail: one action for every local user. On a machine with a second user, scope the ids
+       per uid — hostd already knows the caller's uid from the bus — so one session cannot
+       discard another's checkpoint. Not built while the reference machine has one account. -->
   <action id="org.legeos.host.index-checkpoint">
     <description>Take, compare or drop a file-index checkpoint of the home subvolume</description>
     <message>Authentication is required to snapshot the home subvolume</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>yes</allow_active>
     </defaults>
   </action>
 

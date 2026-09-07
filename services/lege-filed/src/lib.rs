@@ -16,6 +16,7 @@ pub mod actions;
 pub mod bookmarks;
 pub mod browse;
 pub mod dbus;
+pub mod delta_catchup;
 pub mod execute;
 pub mod index_host;
 pub mod journal;
