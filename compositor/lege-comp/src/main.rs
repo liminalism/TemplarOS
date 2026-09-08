@@ -246,8 +246,12 @@ mod tests {
             guard < fallthrough,
             "windows are resolved before the lock is consulted"
         );
-        // Presses and recovery keybindings were already refused; the cursor is too.
-        assert!(input.contains("if self.session_lock.locked {\n            return;\n        }"));
+        // Presses and recovery keybindings were already refused; the cursor is too. The press
+        // path's guard returns `false` — "the compositor did not take this press" — rather than
+        // bare, so match the head of the branch rather than the whole of it.
+        assert!(
+            input.contains("if self.session_lock.locked {\n            return false;\n        }")
+        );
         assert!(input.contains("if self.session_lock.locked || self.pointer_gesture_active()"));
 
         let lock = include_str!("session_lock.rs");

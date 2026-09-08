@@ -148,10 +148,20 @@ Three regions divide the bottom edge of an output, and never two of them claim o
 
 The left-hand square is Home's whatever is on the screen: the bar carries no Home chip, so it is
 the only pointer route there, and a window filling the screen is when it is needed most. The one
-state-dependent part is that while the chrome is already showing, *neither* corner asks for
-anything — the strip is under the pointer and the strip is what is being reached for; without that,
+state-dependent part is that while the chrome is already showing, *none* of the three asks for
+anything — the strip is under the pointer and the strip is what is being reached for. Without that,
 moving onto the window's name tag, which lands in the left-hand square, would reveal Home out from
-under the click.
+under the click, and resting on the close tag long enough to aim at it would open the switcher
+underneath it (the strip is `TAG_HEIGHT` tall and the peek band is its bottom ten pixels).
+
+Two things follow from the strip being drawn *over* the client rather than beside it, and both are
+new with maximized windows joining this rule. The gap between the two tags belongs to that window
+(`PressCandidate::strip_over_client`) rather than falling through to whatever is behind, or every
+click along the bottom row of the front window would raise the one underneath. And a press the
+compositor takes is not also the client's: `input::on_pointer_button` swallows the press *and its
+release* for every affordance (`LegeCompState::swallowing_press`), because the tags that act and
+return — close, park, unmaximize, pin — install no grab, and the surface with pointer focus under
+that strip is the window's own client.
 
 `WindowService::covering_chrome` is the whole of the state, filtered on read so a window that stops
 covering the screen stops showing chrome by that fact alone. `chrome::collect_window_chrome` draws

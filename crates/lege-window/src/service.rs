@@ -343,7 +343,9 @@ impl<I: IdentityCache> WindowService<I> {
                 repair_window(restore, outputs)
             };
         }
-        Some(window.geometry)
+        let geometry = window.geometry;
+        self.forget_stale_covering_chrome();
+        Some(geometry)
     }
 
     pub fn set_modal(&mut self, window_id: WindowId, modal: bool) {
@@ -459,7 +461,9 @@ impl<I: IdentityCache> WindowService<I> {
             let restore = window.restore_geometry.take().unwrap_or(window.geometry);
             window.geometry = repair_window(restore, outputs);
         }
-        Some(window.geometry)
+        let geometry = window.geometry;
+        self.forget_stale_covering_chrome();
+        Some(geometry)
     }
 
     /// The windows an arrangement preset applies to: mapped client windows that are neither
@@ -798,6 +802,7 @@ impl<I: IdentityCache> WindowService<I> {
         window.shelved = true;
         window.shelf_rank = Some(rank);
         window.activated = false;
+        self.forget_stale_covering_chrome();
         true
     }
 
@@ -953,12 +958,24 @@ impl<I: IdentityCache> WindowService<I> {
     /// Show or hide one screen-filling window's chrome (`None` hides it). Returns whether
     /// anything changed, so the compositor re-renders only when it must.
     ///
-    /// Filtered on read rather than cleaned up on every state change: a window that stops
-    /// covering the screen, or stops existing, stops showing chrome by that fact alone.
+    /// Filtered on read *and* dropped on the state change, which is not belt and braces: the
+    /// filter alone made the slot un-clearable. A window leaving fullscreen or maximized reads
+    /// back as `None`, so the compositor's "the pointer left the chrome" branch never runs and
+    /// never clears the slot — and the window filling the screen again brought the strip straight
+    /// back with no dwell ever asked for.
     pub fn set_covering_chrome(&mut self, window_id: Option<WindowId>) -> bool {
         let changed = self.covering_chrome != window_id;
         self.covering_chrome = window_id;
         changed
+    }
+
+    /// Drop the chrome slot if the window holding it no longer covers the screen. Called from
+    /// every path that can change that: [`Self::set_maximized`], [`Self::set_fullscreen`] and
+    /// [`Self::shelve`].
+    fn forget_stale_covering_chrome(&mut self) {
+        if self.covering_chrome().is_none() {
+            self.covering_chrome = None;
+        }
     }
 
     /// Whether `window_id` is pinned above the other client windows.
@@ -1863,6 +1880,45 @@ mod tests {
         assert!(
             service.has_frame(id),
             "a parked window covers nothing, so it keeps its own tags"
+        );
+    }
+
+    /// The chrome slot is dropped the moment its window stops filling the screen. Filtering it on
+    /// read alone made it un-clearable: the compositor's "the pointer has left the chrome" branch
+    /// is gated on the slot reading back as `Some`, so a window that unmaximized while showing
+    /// its chrome left the slot set, and the next maximize brought the strip straight back with
+    /// no dwell ever asked for, both corners suspended with it.
+    #[test]
+    fn chrome_does_not_survive_the_window_leaving_the_state_that_earned_it() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+
+        service.set_maximized(id, true);
+        assert!(service.set_covering_chrome(Some(id)));
+        service.set_maximized(id, false);
+        assert_eq!(service.covering_chrome(), None);
+        // The slot itself, not merely the filter: setting it again has to *change* something,
+        // which it cannot if the stale id is still sitting there.
+        assert!(
+            service.set_covering_chrome(Some(id)),
+            "unmaximizing left the stale window in the slot"
+        );
+        service.set_covering_chrome(None);
+
+        service.set_fullscreen(id, true);
+        service.set_covering_chrome(Some(id));
+        service.set_fullscreen(id, false);
+        assert!(
+            service.set_covering_chrome(Some(id)),
+            "leaving fullscreen left the stale window in the slot"
+        );
+        service.set_covering_chrome(None);
+
+        service.set_maximized(id, true);
+        service.set_covering_chrome(Some(id));
+        service.shelve(id);
+        assert!(
+            service.set_covering_chrome(Some(id)),
+            "parking left the stale window in the slot"
         );
     }
 

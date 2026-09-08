@@ -212,8 +212,13 @@ struct PressCandidate {
     is_client: bool,
     has_frame: bool,
     maximized: bool,
-    /// The tag strip along the bottom edge, when the window wears one (`has_frame`).
+    /// The tag strip along the bottom edge, when the window wears one (`has_frame`) or is being
+    /// shown one over itself (`covering_chrome`).
     strip: Option<lege_window::Rect>,
+    /// Whether that strip is drawn *over* the window's own pixels rather than below them — true
+    /// for a screen-filling window's chrome, false for an ordinary window's frame, where the
+    /// strip is compositor-owned screen the client does not occupy.
+    strip_over_client: bool,
 }
 
 /// What a pointer press at a point is asking for.
@@ -247,8 +252,14 @@ fn press_target_at(candidates: &[PressCandidate], pos: LegePoint) -> PressTarget
                 if rect_contains(layout::name_tag(strip), pos) {
                     return PressTarget::Affordance(candidate.window_id, Affordance::Tag);
                 }
-                // The gap between the two tags: no pixels of this window are there, so the press
-                // belongs to whatever is behind it.
+                // The gap between the two tags. On a framed window no pixels of it are there, so
+                // the press belongs to whatever is behind. On a screen-filling window the strip
+                // is drawn over the window's own client area, and falling through would raise
+                // the window *underneath* on every click along the bottom row of the one in
+                // front.
+                if candidate.strip_over_client {
+                    return PressTarget::Window(candidate.window_id);
+                }
                 continue;
             }
             return PressTarget::Window(candidate.window_id);
@@ -503,6 +514,13 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
         handle.motion(data, None, event);
 
         let pointer = to_lege_point(event.location);
+        // Below the click threshold a name-tag press is still a candidate click, and a click must
+        // not nudge the window three pixels on its way to pinning it. `update_drag` works from
+        // the recorded drag origin, so the first motion past the threshold applies the whole
+        // displacement and nothing is lost by not applying the ones before it.
+        if self.pins_on_click && is_click(self.pressed_at, pointer) {
+            return;
+        }
         match self.gesture {
             Gesture::Move => {
                 if let Some((_, geometry)) = data.window_service.update_drag(pointer) {
@@ -973,7 +991,19 @@ impl<B: Backend + 'static> LegeCompState<B> {
             // A click means the user is doing something else — the fallback switcher HUD
             // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
             self.switcher = None;
-            self.handle_press_for_focus_or_drag(pointer.current_location(), serial, button);
+            self.swallowing_press =
+                self.handle_press_for_focus_or_drag(pointer.current_location(), serial, button);
+        }
+        // A press the compositor took is not also the client's. Where a grab was installed this
+        // makes no difference (the grab has `Focus::Clear`), but a tag that acts and returns —
+        // close, park, unmaximize, pin — installs none, and under a screen-filling window's chrome
+        // the surface with pointer focus is that window's own client, right there under the strip.
+        // The release goes with the press: half a click is worse than none.
+        if self.swallowing_press {
+            if ButtonState::Released == button_state {
+                self.swallowing_press = false;
+            }
+            return;
         }
 
         pointer.button(
@@ -1042,22 +1072,22 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .filter(|window_id| self.window_service.is_visible(*window_id))
             .filter_map(|window_id| {
                 let record = self.window_service.window(window_id)?;
+                let framed = self.window_service.has_frame(window_id);
+                let chrome_shown = self.window_service.covering_chrome() == Some(window_id);
                 Some(PressCandidate {
                     window_id,
                     geometry: record.geometry,
                     is_client: self.window_service.is_client_window(window_id),
-                    has_frame: self.window_service.has_frame(window_id)
-                        || self.window_service.covering_chrome() == Some(window_id),
+                    has_frame: framed || chrome_shown,
                     maximized: record.maximized,
-                    strip: if self.window_service.has_frame(window_id)
-                        || self.window_service.covering_chrome() == Some(window_id)
-                    {
-                        self.window_service
-                            .recovery_affordance(window_id)
-                            .map(|affordance| affordance.strip)
-                    } else {
-                        None
-                    },
+                    strip: (framed || chrome_shown)
+                        .then(|| {
+                            self.window_service
+                                .recovery_affordance(window_id)
+                                .map(|affordance| affordance.strip)
+                        })
+                        .flatten(),
+                    strip_over_client: !framed && chrome_shown,
                 })
             })
             .collect()
@@ -1231,6 +1261,10 @@ impl<B: Backend + 'static> LegeCompState<B> {
         // The topmost one, because that is the one whose chrome the corner would be over.
         let covering = self.window_service.stacking_order().into_iter().find(|id| {
             self.window_service.is_client_window(*id)
+                // Visible, not merely covering: a reveal hides every client window, so with Home
+                // in front there is nothing over the corner to show chrome for and nothing over
+                // the edge for the switcher to come out from under.
+                && self.window_service.is_visible(*id)
                 && self.window_service.window(*id).is_some_and(|window| {
                     window.covers_screen() && window.geometry.intersection_area(output.logical) > 0
                 })
@@ -1260,7 +1294,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
             // costs a re-sync and a refocus for a state that has not changed.
             return (!self.window_service.home_revealed()).then_some(DwellIntent::HomeCorner);
         }
-        if !in_peek_band(output.logical, pos)
+        // The strip a covering window's chrome puts on screen is `TAG_HEIGHT` tall and the peek
+        // band is its bottom ten pixels, so without this, resting on the close tag long enough to
+        // aim at it opens the switcher underneath the thing being aimed at.
+        if self.window_service.covering_chrome().is_some()
+            || !in_peek_band(output.logical, pos)
             || self.window_service.peek_output() == Some(output.name.as_str())
         {
             return None;
@@ -1358,14 +1396,16 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .is_some_and(|pointer| pointer.is_grabbed())
     }
 
+    /// Returns whether the press was the compositor's own — one of the affordances on a window's
+    /// tag strip — and must therefore not also be delivered to a client.
     fn handle_press_for_focus_or_drag(
         &mut self,
         location: Point<f64, Logical>,
         serial: Serial,
         button: u32,
-    ) {
+    ) -> bool {
         if self.session_lock.locked {
-            return;
+            return false;
         }
         let pos = to_lege_point(location);
         let target = self.press_target_at(pos);
@@ -1405,11 +1445,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
             let gesture = match affordance {
                 Affordance::Button(ControlTag::Close) => {
                     crate::backend::close_window(self, window_id);
-                    return;
+                    return true;
                 }
                 Affordance::Button(ControlTag::Park) => {
                     park_window(self, window_id);
-                    return;
+                    return true;
                 }
                 Affordance::Button(ControlTag::Maximize) => {
                     // The middle tag is the way back out of whichever way this window filled the
@@ -1422,14 +1462,14 @@ impl<B: Backend + 'static> LegeCompState<B> {
                         .is_some_and(|window| window.fullscreen);
                     if fullscreen {
                         crate::xdg_shell::apply_fullscreen(self, window_id, false);
-                        return;
+                        return true;
                     }
                     let maximized = self
                         .window_service
                         .window(window_id)
                         .is_some_and(|window| window.maximized);
                     crate::xdg_shell::apply_maximized(self, window_id, !maximized);
-                    return;
+                    return true;
                 }
                 // A covering window's name tag names it and pins it, and nothing else. Dragging
                 // it would move a window whose geometry is the output off the output, which
@@ -1438,7 +1478,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 // must not start.
                 Affordance::Tag if self.window_service.covering_chrome() == Some(window_id) => {
                     self.toggle_always_on_top(window_id);
-                    return;
+                    return true;
                 }
                 Affordance::Tag => Gesture::Move,
                 Affordance::Edge(edges) => Gesture::Resize { edges },
@@ -1451,13 +1491,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 gesture,
                 GestureOrigin::CompositorAffordance,
             );
-            return;
+            return true;
         }
 
         if target != PressTarget::Nothing {
             // A window owned the point and has already been focused above; the press itself goes
             // on to the client through `PointerHandle::button`.
-            return;
+            return false;
         }
 
         // Nothing `WindowService` knows owns this point. That is not the same as nothing being
@@ -1470,7 +1510,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .map(|(w, l)| (w.clone(), l))
         {
             let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
-                return;
+                return false;
             };
             if let Some(window_id) = self.windows.window_id_for(&surface.id()) {
                 if self.window_service.is_client_window(window_id) {
@@ -1482,6 +1522,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
         } else if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
         }
+        false
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
@@ -1879,6 +1920,21 @@ mod tests {
             has_frame: true,
             maximized: false,
             strip: Some(lege_window::tag_strip(geometry)),
+            strip_over_client: false,
+        }
+    }
+
+    /// A window filling the output with its own chrome shown over it: no frame, so the strip is
+    /// its own client area rather than compositor-owned screen beside it.
+    fn covering(raw: u64, output: Rect) -> PressCandidate {
+        PressCandidate {
+            window_id: WindowId(raw),
+            geometry: output,
+            is_client: true,
+            has_frame: true,
+            maximized: true,
+            strip: Some(lege_window::tag_strip(output)),
+            strip_over_client: true,
         }
     }
 
@@ -1986,6 +2042,33 @@ mod tests {
         assert_eq!(target, PressTarget::Window(WindowId(1)));
     }
 
+    /// The gap between a covering window's two tags is the window's own pixels, not a hole
+    /// through to whatever is behind it. Without this, every click along the bottom row of the
+    /// front window raised the one underneath.
+    #[test]
+    fn the_gap_between_a_covering_windows_tags_still_belongs_to_that_window() {
+        let output = Rect::new(0, 0, 1920, 1080);
+        let front = covering(1, output);
+        let behind = covering(2, output);
+        let strip = lege_window::tag_strip(output);
+        let middle = at(output.width / 2, strip.y + strip.height / 2);
+        assert!(layout::control_tag_at(strip, middle).is_none());
+        assert!(!rect_contains(layout::name_tag(strip), middle));
+        assert_eq!(
+            press_target_at(&[front, behind], middle),
+            PressTarget::Window(WindowId(1))
+        );
+
+        // A framed window's strip really is a hole: nothing of it is drawn there.
+        let over = framed(3, Rect::new(0, 0, 1920, 1000));
+        let hole = lege_window::tag_strip(over.geometry);
+        let gap = at(over.geometry.width / 2, hole.y + hole.height / 2);
+        assert_eq!(
+            press_target_at(&[over, behind], gap),
+            PressTarget::Window(WindowId(2))
+        );
+    }
+
     /// A press that never moves is a click; one that leaves the slop is the drag it always was.
     /// This is the whole of "clicking the name tag pins the window, dragging still drags it".
     #[test]
@@ -2085,6 +2168,7 @@ mod tests {
             has_frame: false,
             maximized: false,
             strip: None,
+            strip_over_client: false,
         };
         let target = press_target_at(&[home], at(400, 400));
         assert_eq!(target, PressTarget::Window(WindowId(9)));

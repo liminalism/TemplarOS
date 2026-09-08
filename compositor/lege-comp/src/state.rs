@@ -235,6 +235,15 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// callback reschedules itself (`TimeoutAction::ToDuration`) when the pointer settled again
     /// mid-flight, rather than a fresh source per motion event of a sweep.
     pub dwell_timer_pending: bool,
+    /// Set while a press on one of the compositor's own affordances is being swallowed, so its
+    /// release is swallowed with it (`input::on_pointer_button`).
+    ///
+    /// A tag press is the compositor's, not the client's, and the two tag presses that install no
+    /// grab — close, park, unmaximize, pin — would otherwise be forwarded to whatever surface has
+    /// pointer focus. Under a screen-filling window's chrome that surface is the window's own
+    /// client, drawn right there under the strip, so clicking "close" also clicks the terminal's
+    /// last line.
+    pub swallowing_press: bool,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
@@ -363,6 +372,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             home_mapped: None,
             dwell: None,
             dwell_timer_pending: false,
+            swallowing_press: false,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
         })
