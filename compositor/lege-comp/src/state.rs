@@ -216,6 +216,10 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// because the black-screen-at-login fault was invisible: the units started, the journal said
     /// nothing, and the only account of what went wrong was a screen that did not change.
     pub home_mapped: Option<bool>,
+    /// The output whose bottom edge the pointer is currently resting on, waiting out the peek
+    /// dwell (`input::update_bar_peek`). Not the peek itself — that is `WindowService`'s
+    /// `peek_output`; this is only what a pending timer is about to check.
+    pub peek_armed: Option<String>,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
@@ -340,6 +344,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
             drop_target: None,
             previous_focus: None,
             home_mapped: None,
+            peek_armed: None,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
         })

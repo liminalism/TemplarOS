@@ -64,6 +64,18 @@
         surface to fill its edge, and a surface is therefore never told how wide the output is by
         being configured to it — a shell that wants the full edge asks for it, from a size it
         already knows.
+
+        A shell surface holding a zone should stay mapped while a window is fullscreen rather than
+        destroying itself to get out of the way. The compositor already handles it: a visible
+        fullscreen client window sorts above `overlay` and `notification` on its own output (never
+        above `system_modal`, and never above the lock or recovery surfaces the core owns), so the
+        surface is simply covered. Destroying it instead releases the zone, which reflows every
+        maximized window on that output twice — once on the way in and once on the way out. When
+        the pointer rests on that output's bottom edge for a moment, the compositor suspends the
+        exception and the surface is drawn over the fullscreen window again for as long as the
+        pointer stays on the reserved strip. No request is involved and no event is sent: the
+        surface keeps painting exactly as it always does, and its frame callbacks continue while it
+        is covered.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>
