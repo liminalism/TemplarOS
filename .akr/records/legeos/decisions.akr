@@ -839,7 +839,7 @@ record legeos.decision.one-persistent-bottom-bar-tags-not-bands/5 : decision {
 
 record legeos.decision.one-persistent-bottom-bar-tags-not-bands/6 : decision {
     title "The bar is a switcher of icons, not a row of window buttons: no Home chip, no titles, and a reveal that needs a resting pointer"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/**",
         path "crates/lege-window/**",
@@ -870,6 +870,80 @@ record legeos.decision.one-persistent-bottom-bar-tags-not-bands/6 : decision {
     ]
     implements [ @legeos.constraint.services-not-indicators ]
     supersedes [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/5 ]
+}
+
+record legeos.decision.one-persistent-bottom-bar-tags-not-bands/7 : decision {
+    title "The bar is a switcher of icons, not a row of window buttons: no Home chip, no titles, a hover row of window previews, and a reveal that needs a resting pointer"
+    state superseded
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    topic bottom-bar
+    decision """
+        A single shell-drawn bottom bar, a content-width island at the bottom-left: the taskbar at the left (LegeOS window groups first, one entry each in the group accent; then one entry per open application, parked windows included and dimmed; a multi-window entry wears a count; hovering an entry after a dwell opens a row above the bar showing its windows, a grace period closes it, a click activates), then the machine cluster at the island's right end (account chip wearing the account's name, clock, network indicator, Settings; each does one named thing on one click, dimmed and inert when its thing is not installed; charge, volume and backlight are the first line of the account popover).
+
+        Every taskbar entry is one square cell wearing its application's icon, active or not. It never widens and it never prints a window title: the window wears its own name on its own tag, so a copy of that name on the bar is the duplicate inventory this desktop's redundancy rule forbids, and a row of labelled window buttons is the one thing that makes a desktop read as Windows. Names live on the hover row, beside the application's other windows.
+
+        The hover row is a strip of the windows themselves, not a list of their names: each item is a capture of that window over the standard capture protocols (the same cache Home's session tiles read, keyed by `field_model::session_identifier`) with its title under it, and the application's icon in its place until the first frame arrives or when previews are turned off. The row is the only thing that asks for a capture while a window covers Home, and it asks only for the windows it is showing and only while it is open. An item is 132 logical pixels wide where the name-only item was 220, because the surface is a content-width island and the row shares its width rather than the screen's; the band is 104 tall rather than 40, which is what a picture needs and is spent only while the pointer rests on a chip.
+
+        There is no Home chip. A Home button at the bottom-left reads as a Start menu, and Home is already what is behind everything: `home.reveal` keeps Super and the Field's own context menu, and the bar belongs to the machine, not to Home.
+
+        The bar reserves NO exclusive zone: it claims set_exclusive_zone(bottom, 0), which keeps it bottom-anchored and reserves nothing, so windows use the whole output and a maximized window wears its own tags (its controls are never duplicated on the bar). Presence is by what is under it: over Home, or with no unshelved non-fullscreen window meeting its strip, it is visible at full height; when a window is under its strip it collapses to a thin hint (a ^ on the bar's ground at the very bottom of the output). A pointer that comes to REST on the hint reveals the whole bar; being merely present on the strip does not, because a pointer crossing the bottom edge on its way elsewhere was opening the bar at inopportune times. The pointer leaving collapses it again after the same short dwell, closing any open row or popover. Window management remains on the window's tag and in the switcher; a separate popup manager is deferred (see @legeos.work.window-manager-popup-and-functional-edge-tabs).
+        """
+    context """
+        The user's hands-on runs showed a mouse-only user had no persistent route between windows because Home is momentary and Alt+Tab is keyboard. A reserved row wastes space; an unreserved row overlays the window. The user's answer (2026-09-08, from their cosmic fork) is presence by need: visible where nothing is under it, a hint and a mouseover elsewhere, and a hide as easy as the reveal.
+
+        After deploying rev 5 the user's verdict was that the bar "looks the same ... except with more text in the buttons", "is not supposed to look windowsesqe", "has a redundant home button" and "popups up at inopportune times". Rev 6 answers those three: the 220-pixel active cell with the window's title, the 80-pixel Home chip, and a 120 ms dwell that any low pointer satisfied. The reference is the user's own cosmic-applets fork (local/dock-window-grouping: "drop taskbar mode, leave the hover switcher as the only window UI"), packed under .agent/scratch/packs/. The machine cluster keeps its labels: those are functional information about the machine, not a duplicate of anything, and stripping them would be the generic minimalism the user rejects.
+        """
+    consequences """
+        Compositor: unchanged from rev 5. Shell: HOME_WIDTH and ACTIVE_WIDTH are gone with the chip and the title they sized; every cell is CELL wide; HINT_OPEN_MS rises from 120 ms to 350 ms and the dwell restarts whenever the pointer moves more than HINT_REST_SLOP. The taskbar reclaims about 300 pixels. Reaching Home by pointer while a window covers the screen is now only the Field's context menu, which the covering window hides — Super is the practical route, and a non-Windows pointer route (a hot corner, or a gesture) is open. Needs no logout: the shell hot-swaps.
+        """
+    derived_from [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.window-groups-are-explicit-and-compositor-owned
+    ]
+    implements [ @legeos.constraint.services-not-indicators ]
+    supersedes [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/6 ]
+}
+
+record legeos.decision.one-persistent-bottom-bar-tags-not-bands/8 : decision {
+    title "The bar is a switcher of icons, not a row of window buttons: no Home chip, no titles, a hover row of window previews, and a reveal that needs a resting pointer"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    topic bottom-bar
+    decision """
+        A single shell-drawn bottom bar, a content-width island at the bottom-left: the taskbar at the left (LegeOS window groups first, one entry each in the group accent; then one entry per open application, parked windows included and dimmed; a multi-window entry wears a count; hovering an entry after a dwell opens a row above the bar showing its windows, a grace period closes it, a click activates), then the machine cluster at the island's right end (account chip wearing the account's name, clock, network indicator, Settings; each does one named thing on one click, dimmed and inert when its thing is not installed; charge, volume and backlight are the first line of the account popover).
+
+        Every taskbar entry is one square cell wearing its application's icon, active or not. It never widens and it never prints a window title: the window wears its own name on its own tag, so a copy of that name on the bar is the duplicate inventory this desktop's redundancy rule forbids, and a row of labelled window buttons is the one thing that makes a desktop read as Windows. Names live on the hover row, beside the application's other windows.
+
+        The hover row is a strip of the windows themselves, not a list of their names: each item is a capture of that window over the standard capture protocols (the same cache Home's session tiles read, keyed by `field_model::session_identifier`) with its title under it, and the application's icon in its place until the first frame arrives or when previews are turned off. The row is the only thing that asks for a capture while a window covers Home, and it asks only for the windows it is showing and only while it is open. An item is 132 logical pixels wide where the name-only item was 220, because the surface is a content-width island and the row shares its width rather than the screen's; the band is 104 tall rather than 40, which is what a picture needs and is spent only while the pointer rests on a chip.
+
+        There is no Home chip. A Home button at the bottom-left reads as a Start menu, and Home is already what is behind everything: `home.reveal` keeps Super and the Field's own context menu, and the bar belongs to the machine, not to Home.
+
+        The bar reserves NO exclusive zone: it claims set_exclusive_zone(bottom, 0), which keeps it bottom-anchored and reserves nothing, so windows use the whole output and a maximized window wears its own tags (its controls are never duplicated on the bar). Presence is by what is under it: over Home, or with no unshelved non-fullscreen window meeting its strip, it is visible at full height; when a window is under its strip it collapses to a thin hint (a ^ on the bar's ground at the very bottom of the output). A pointer that comes to REST on the hint reveals the whole bar; being merely present on the strip does not, because a pointer crossing the bottom edge on its way elsewhere was opening the bar at inopportune times. The pointer leaving collapses it again after the same short dwell, closing any open row or popover. In fullscreen it is absent: a visible fullscreen window stacks above the shell overlay on its output, there is no bottom-edge peek, and Alt+Tab is the switch route. Window management remains on the window's tag and in the switcher; a separate popup manager is deferred (see @legeos.work.window-manager-popup-and-functional-edge-tabs).
+        """
+    context """
+        The user's hands-on runs showed a mouse-only user had no persistent route between windows because Home is momentary and Alt+Tab is keyboard. A reserved row wastes space; an unreserved row overlays the window. The user's answer (2026-09-08, from their cosmic fork) is presence by need: visible where nothing is under it, a hint and a mouseover elsewhere, and a hide as easy as the reveal.
+
+        After deploying rev 5 the user's verdict was that the bar "looks the same ... except with more text in the buttons", "is not supposed to look windowsesqe", "has a redundant home button" and "popups up at inopportune times". Rev 6 answers those three: the 220-pixel active cell with the window's title, the 80-pixel Home chip, and a 120 ms dwell that any low pointer satisfied. The reference is the user's own cosmic-applets fork (local/dock-window-grouping: "drop taskbar mode, leave the hover switcher as the only window UI"), packed under .agent/scratch/packs/. The machine cluster keeps its labels: those are functional information about the machine, not a duplicate of anything, and stripping them would be the generic minimalism the user rejects.
+        """
+    consequences """
+        Compositor: unchanged from rev 5. Shell: HOME_WIDTH and ACTIVE_WIDTH are gone with the chip and the title they sized; every cell is CELL wide; HINT_OPEN_MS rises from 120 ms to 350 ms and the dwell restarts whenever the pointer moves more than HINT_REST_SLOP. The taskbar reclaims about 300 pixels. Reaching Home by pointer while a window covers the screen is now only the Field's context menu, which the covering window hides — Super is the practical route, and a non-Windows pointer route (a hot corner, or a gesture) is open. Needs no logout: the shell hot-swaps.
+        """
+    derived_from [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.window-groups-are-explicit-and-compositor-owned
+    ]
+    implements [ @legeos.constraint.services-not-indicators ]
+    supersedes [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/7 ]
 }
 
 record legeos.decision.one-privileged-host-daemon/1 : decision {

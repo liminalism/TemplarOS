@@ -5155,6 +5155,46 @@ record legeos.work.pcmanfm-qt-integration/1 : work {
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
+record legeos.work.pixelkit-should-carry-alpha-so-a-surface-can-be-a-shape/1 : work {
+    title "pixelkit should carry alpha, so a shell surface can be a shape without painting it twice"
+    state proposed
+    scope [
+        path "shell/lege-shell/src/previews.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "shell/lege-shell/src/surface/bar_screen.rs"
+    ]
+    intent """
+        Upstream work in the sibling `pixelkit` repository (`../pixelkit`, which has its own `.akr`), recorded here because LegeOS is the consumer that needs it and is currently paying for its absence.
+
+        `pixelkit_raster::WindowBuffer` is `Vec<u32>` holding `0x00RRGGBB`, and `Painter::blend` takes alpha as a *weight* — `blend_channels(destination, source, alpha)` mixes colour channels and stores nothing in the top byte. There is no way to ask the painter what a pixel's coverage was, so a surface that wants to be a shape rather than a rectangle cannot get its alpha channel out of the toolkit that drew it.
+
+        What LegeOS does instead, today: it renders the shape a second time, white on black, through the same `fill_rounded_rect_aa` primitive, and reads the low byte of that second buffer as coverage (`ShellApp::redraw_bar`, `BarScreen::opaque_shapes`, `ShmBuffer::write_masked`). It works and it is anti-aliased, but it is two rasterisations for one frame, it obliges every drawing surface to declare its solid shapes separately from painting them, and the two can drift apart — the comment on `opaque` says as much.
+
+        What is wanted upstream: an alpha channel the painter maintains. Either `WindowBuffer` becomes premultiplied `0xAARRGGBB` throughout with `blend_channels` composing coverage rather than discarding it, or a `CoverageBuffer` is written alongside the colour one by the same primitives. The first is the honest one and the larger change; the second is closer to what LegeOS hand-rolls now and would let it delete the second pass without changing pixelkit's colour semantics.
+        """
+    note """
+        Raised by the user on 2026-09-08 after the floating-island work: "we also need to improve pixelkit for alpha apparently". Not scheduled. LegeOS's mask pass is the workaround and stays until this lands; the `ponytail:` note in `bar_screen`'s module doc and the `opaque` field's doc are the two places that point at it.
+
+        The sibling repositories are unpinned path dependencies (`@legeos.papercut.the-workspace-stopped-building-entirely-because`), so a pixelkit change lands in LegeOS the moment it is committed next door — with no version to hold it back. Pinning is owed before either of these moves.
+        """
+    acceptance {
+        check no-visual-change {
+            statement """
+                The island's rendered pixels are unchanged across the switch: same rounded corners, same anti-aliasing, same premultiplied edges over the desktop.
+                """
+            method manual
+        }
+        check one-rasterisation {
+            statement """
+                The shell gets a frame's coverage from the painter that drew it, and `BarScreen::opaque_shapes`, the second mask pass in `redraw_bar` and the `bar_mask` buffer are all deleted.
+                """
+            method command
+            command "cargo test -p lege-shell bar"
+        }
+    }
+    derived_from [ @legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908 ]
+}
+
 record legeos.work.project-semantic-service/1 : work {
     title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
     state completed
@@ -6078,6 +6118,56 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
     derived_from [ @legeos.work.home-input-and-refinement ]
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908/1 : work {
+    title "The island floats: an Argb8888 buffer on the bar's surface, its alpha from a coverage mask, with the opaque present as the fallback"
+    state proposed
+    scope [
+        path "shell/lege-shell/src/previews.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "shell/lege-shell/src/surface/bar_screen.rs",
+        path "shell/lege-shell/src/surface/window.rs",
+        path "shell/lege-shell/src/wayland_bridge.rs"
+    ]
+    intent """
+        The user asked for "a collection of icons floating", not a bar. The island is content-width since this morning, but it is still an opaque square plate: the bar is a winit window over softbuffer, which attaches an `Xrgb8888` buffer, so every pixel the frame does not write is black and nothing can be rounded or gapped.
+
+        Attach an `Argb8888` wl_shm buffer to winit's own `wl_surface` instead, through the bridge — winit keeps the xdg role and all the input, and only the pixels come from us. This is the upgrade the draw code's own `ponytail:` note names.
+        """
+    note """
+        Two findings that shaped this.
+
+        **A bare `wl_surface` will not do.** `lege_shell_v1.set_layer_surface` only tags a surface with a layer (`protocols_shell.rs`: `layer_surfaces: HashMap<ObjectId, (WlSurface, Layer)>`); it grants no role, and its own XML says a window's layer is otherwise set "through xdg-shell, not this request". So the shell's overlay surfaces are xdg toplevels that the compositor treats specially, and creating a role-less surface on the bridge's connection would never map. Painting winit's existing surface sidesteps that entirely.
+
+        **pixelkit cannot produce alpha.** `pixelkit_raster::WindowBuffer` holds `0x00RRGGBB`; `blend_channels` uses alpha as a weight and stores none. So the alpha channel has to be built beside the colour buffer: render the island's shapes a second time, white on black, with the same `fill_rounded_rect_aa` primitive, and take a channel of that as the coverage — which also gets anti-aliased corners rather than jagged ones.
+
+        **It cannot be validated here.** The nested session refuses while the user is logged in, so nothing about the attach path can be exercised. It is therefore built as a fallback: if anything in the ARGB present fails, the frame falls back to softbuffer's opaque present, which is exactly today's behaviour. The worst case is the bar we already have.
+        """
+    acceptance {
+        check fallback-is-today {
+            statement """
+                A failure anywhere in the ARGB present falls back to the opaque softbuffer present, so a bar that cannot float is still a bar.
+                """
+            method command
+            command "cargo test -p lege-shell bar"
+        }
+        check floats-on-hardware {
+            statement """
+                After deployment: the island's corners are rounded, the desktop shows through beside and between its chips, and the chips do not leave a black plate behind them.
+                """
+            method manual
+        }
+        check mask-is-the-shape {
+            statement """
+                The coverage mask is opaque exactly where the island, an open hover row and an open account popover are, and transparent everywhere else, at every presence and every scale.
+                """
+            method command
+            command "cargo test -p lege-shell bar"
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {

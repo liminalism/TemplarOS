@@ -156,6 +156,25 @@ record legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 : evidence {
         """
 }
 
+record legeos.evidence.bar-hover-row-previews-20260908/1 : evidence {
+    title "The bar's hover row renders a window's capture with its title, falls back to the icon without one, and fits the island at 132 px an item"
+    state verified
+    scope [
+        path "shell/lege-shell/src/surface/bar_screen.rs",
+        path "shell/lege-shell/src/surface/offscreen.rs",
+        path "shell/lege-shell/src/taskbar.rs"
+    ]
+    result pass
+    method command
+    observed_at git:1d0340c20684f0854f32379c63762310c58bdc2e
+    command "cargo test -p lege-shell"
+    artifact "docs/measurements/bar-20260908f/bar-row.png"
+    summary """
+        390 tests pass (379 lib, 11 integration, 0 skipped). New: a_row_item_shows_its_window_preview_and_falls_back_without_one (the window with a capture shows its pixels; the one without shows its own painted fallback, not an empty box and not the other window's picture), the_open_row_fits_inside_the_island (every row rect inside island_width for 2- and 5-window entries, and the row never widens the surface), previews_are_asked_for_only_while_a_row_is_open (BarScreen::preview_wants is empty with no row, is exactly the open entry's windows while one is up, and is empty again after HOVER_CLOSE_MS). The row's item pitch went 220 -> 132 logical px and its band 40 -> 104: a three-window row is 396 px wide where it was 660, inside an island_width(3) of 716. The three existing bar-presence baseline hashes are unchanged, which is the check that nothing outside the row moved; a fourth case, bar-row, was hashed only after the dumped PNGs were read by eye.
+        """
+    derived_from [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+}
+
 record legeos.evidence.bar-lane-2-check-actions/1 : evidence {
     title "23 CLI verbs all reach a subcommand; 71 actions named by a surface are all declared; 19 actions with a chord all have a pointer route (3 exempt). The account popover's RunAction literals are what the scanner counts for the session and machine actions."
     state verified
@@ -2848,6 +2867,18 @@ record legeos.evidence.taskbar-free-home-visual-20260824/1 : evidence {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     summary """
         An isolated 2560x1600 nested capture showed one full-size Home surface, the six standard drawer widgets, a top information row with clock/network/live counts, no bottom taskbar, and no repeated 'desktop' tiles; runtime logs mapped exactly one HomeSurface and no ShellOverlay.
+        """
+}
+
+record legeos.evidence.the-bar-s-coverage-is-its-chips/1 : evidence {
+    title "The shapes the bar records as solid are one rounded rect per chip and per open row item, plus the account popover's frame — never a plate spanning the island, and the hint tab covers its whole surface. No shape spans the island's width, so the surface is transparent between and around the chips. 376 shell tests pass."
+    state verified
+    result pass
+    method command
+    observed_at git:1d0340c20684f0854f32379c63762310c58bdc2e
+    command "cargo test -p lege-shell bar"
+    summary """
+        The shapes the bar records as solid are one rounded rect per chip and per open row item, plus the account popover's frame — never a plate spanning the island, and the hint tab covers its whole surface. No shape spans the island's width, so the surface is transparent between and around the chips. 376 shell tests pass.
         """
 }
 
