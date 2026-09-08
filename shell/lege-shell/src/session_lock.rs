@@ -244,6 +244,13 @@ impl SessionLockState {
         Ok(())
     }
 
+    /// The bound `wl_compositor`, for anyone on this connection who needs to make a region or a
+    /// surface of their own. Bound here because the lock screen was the first thing that needed
+    /// it; it is not the lock's private property.
+    pub(crate) fn compositor(&self) -> Option<&WlCompositor> {
+        self.compositor.as_ref()
+    }
+
     /// Paint every configured lock surface with `render`, which is handed the surface's size and
     /// fills a buffer of `width * height` pixels in pixelkit's `0x00RRGGBB`.
     ///
@@ -468,6 +475,19 @@ impl Dispatch<WlCompositor, ()> for BridgeState {
         _state: &mut Self,
         _proxy: &WlCompositor,
         _event: <WlCompositor as wayland_client::Proxy>::Event,
+        (): &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// `wl_region` has no events at all; it exists only so a surface can be handed a shape.
+impl Dispatch<wayland_client::protocol::wl_region::WlRegion, ()> for BridgeState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wayland_client::protocol::wl_region::WlRegion,
+        _event: <wayland_client::protocol::wl_region::WlRegion as wayland_client::Proxy>::Event,
         (): &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,

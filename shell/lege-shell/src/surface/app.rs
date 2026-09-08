@@ -186,17 +186,25 @@ fn previews_covered(home_revealed: bool, toplevels: &[lege_window::ShellToplevel
 /// A shelved (parked) window is not on screen, so it covers nothing.
 fn bar_covered(
     home_revealed: bool,
+    centred: bool,
     toplevels: &[lege_window::ShellToplevel],
     output: lege_window::Rect,
 ) -> bool {
-    // The island's own rectangle, not the width of the output: it is only as wide as its chips
-    // and it is centred along the bottom edge (`ensure_bar` asks for `Alignment::Centre`), so a
-    // window over either side of the screen is not over the bar and must not collapse it.
+    // The island's own rectangle, not the width of the output: it is only as wide as its chips,
+    // so a window over the rest of the screen is not over the bar and must not collapse it.
+    // Where it is depends on whether the compositor took `Alignment::Centre` — a session older
+    // than the request has it at the start of its edge, and asking about the middle of the screen
+    // there is wrong in both directions at once.
     // Fullscreen is the exception below — that covers everything.
     let island = crate::surface::bar_screen::island_width(crate::taskbar::entries(toplevels).len())
         .min(output.width);
     let strip = lege_window::Rect::new(
-        output.x + (output.width - island) / 2,
+        output.x
+            + if centred {
+                (output.width - island) / 2
+            } else {
+                0
+            },
         output.bottom() - crate::surface::bar_screen::BAR_HEIGHT,
         island,
         crate::surface::bar_screen::BAR_HEIGHT,
@@ -358,6 +366,15 @@ struct ShellApp {
     /// desktop, white where the island is. `bar_screen` records the shapes; this is where they
     /// become the alpha channel the compositor blends with.
     bar_mask: WindowBuffer,
+    /// Whether the compositor accepted `set_edge_alignment`, and the island is therefore centred
+    /// along the bottom edge rather than sitting at the start of it.
+    ///
+    /// A compositor older than the request is not an error and not a bug — it is the session the
+    /// user is in until they log out — but the island is then at x=0, and "is anything covering
+    /// the bar?" has to look for it there. Assuming centred for a session that is not would
+    /// collapse the switcher for windows nowhere near it and leave it up under windows on top of
+    /// it, which is the visible half of the same mistake.
+    bar_centred: bool,
     theme: Theme,
 
     field_screen: FieldScreen,
@@ -506,6 +523,7 @@ impl ShellApp {
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
             bar_mask: WindowBuffer::new(0, 0),
+            bar_centred: false,
             theme: design::theme(),
             field_screen: FieldScreen::default(),
             field: FieldDocument::new(OUTPUT, 16, 8),
@@ -2513,6 +2531,11 @@ impl ShellApp {
             Window::default_attributes()
                 .with_title("Bar")
                 .with_decorations(false)
+                // Declared, not merely implied by `present_masked`'s `set_opaque_region(None)`:
+                // winit re-sets a full opaque region from its own `resize` on every configure, and
+                // relying on which of the two lands last is relying on an ordering nothing
+                // promises. This is the one line that makes the surface transparent by contract.
+                .with_transparent(true)
                 .with_inner_size(LogicalSize::new(width, height)),
         ) {
             Ok(window) => std::sync::Arc::new(window),
@@ -2541,13 +2564,17 @@ impl ShellApp {
         // compositor suppresses the hot corner while a shell overlay is under the pointer, and the
         // island's collapsed hint tab is 72×6 at exactly that corner, so an island left at the
         // start of its edge would sit on the corner and stop it firing at all.
-        if let Err(error) = bridge.set_edge_alignment(
+        self.bar_centred = match bridge.set_edge_alignment(
             &window,
             lege_window::geometry::Edge::Bottom,
             lege_window::geometry::Alignment::Centre,
         ) {
-            tracing::warn!(%error, "centring the bar on the bottom edge");
-        }
+            Ok(centred) => centred,
+            Err(error) => {
+                tracing::warn!(%error, "centring the bar on the bottom edge");
+                false
+            }
+        };
         match HostedWindow::new(window) {
             Ok(hosted) => {
                 hosted.request_redraw();
@@ -2588,6 +2615,7 @@ impl ShellApp {
         let (output_width, output_height) = self.output_size();
         let covered = bar_covered(
             home_revealed,
+            self.bar_centred,
             &toplevels,
             lege_window::Rect::new(0, 0, output_width, output_height),
         );
@@ -2650,12 +2678,22 @@ impl ShellApp {
                 );
             }
         }
+        // The same shapes again, as plain rectangles: the compositor's input region takes no
+        // radius, so a chip's four corner pixels stay clickable. Four pixels of slack on a target
+        // that is already rounded is not worth a region per arc.
+        let regions: Vec<(i32, i32, i32, i32)> = self
+            .bar_screen
+            .opaque_shapes()
+            .iter()
+            .map(|(rect, _)| (rect.x, rect.y, rect.w, rect.h))
+            .collect();
         let presented = floated
             && self.bridge.as_mut().is_some_and(|bridge| {
                 match bridge.present_masked(
                     &bar.window,
                     &bar.buffer.pixels,
                     &self.bar_mask.pixels,
+                    &regions,
                     bar.buffer.width,
                     bar.buffer.height,
                 ) {
@@ -4350,6 +4388,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         let (output_width, output_height) = self.output_size();
         let bar_covered = bar_covered(
             self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
+            self.bar_centred,
             &toplevels,
             lege_window::Rect::new(0, 0, output_width, output_height),
         );
@@ -4433,27 +4472,52 @@ mod tests {
         let output = lege_window::Rect::new(0, 0, 1920, 1080);
 
         assert!(
-            !bar_covered(false, &[], output),
+            !bar_covered(false, true, &[], output),
             "a bare desktop covers nothing"
         );
         // A maximized window fills the output now that nothing is reserved, strip included.
-        assert!(bar_covered(false, &[window(1, false, true, false)], output));
+        assert!(bar_covered(
+            false,
+            true,
+            &[window(1, false, true, false)],
+            output
+        ));
         // Fullscreen counts however Home is behaving: the compositor stacks a visible fullscreen
         // window above `Layer::ShellOverlay`, so the bar can only get out of its way.
-        assert!(bar_covered(true, &[window(1, true, false, false)], output));
+        assert!(bar_covered(
+            true,
+            true,
+            &[window(1, true, false, false)],
+            output
+        ));
         // Parked is not on screen, so it covers nothing.
-        assert!(!bar_covered(false, &[window(1, false, true, true)], output));
+        assert!(!bar_covered(
+            false,
+            true,
+            &[window(1, false, true, true)],
+            output
+        ));
         // Home revealed: the compositor lifted Home over the windows, so the bar has Home to
         // paint on and the switcher is simply visible.
-        assert!(!bar_covered(true, &[window(1, false, true, false)], output));
+        assert!(!bar_covered(
+            true,
+            true,
+            &[window(1, false, true, false)],
+            output
+        ));
 
         // A window that stops above the strip leaves the bar alone; one pixel into it covers it.
         let mut above = window(2, false, false, false);
         above.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT);
-        assert!(!bar_covered(false, std::slice::from_ref(&above), output));
+        assert!(!bar_covered(
+            false,
+            true,
+            std::slice::from_ref(&above),
+            output
+        ));
         let mut into = above;
         into.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT + 1);
-        assert!(bar_covered(false, &[into], output));
+        assert!(bar_covered(false, true, &[into], output));
 
         // The island is centred and only as wide as its chips, so a window along the bottom of
         // either *side* of the screen is not over it. This is what the full-width bar could not
@@ -4462,10 +4526,31 @@ mod tests {
         let left_of_it = (1920 - island) / 2;
         let mut beside = window(3, false, false, false);
         beside.geometry = lege_window::Rect::new(0, 0, left_of_it - 1, 1080);
-        assert!(!bar_covered(false, std::slice::from_ref(&beside), output));
+        assert!(!bar_covered(
+            false,
+            true,
+            std::slice::from_ref(&beside),
+            output
+        ));
         let mut over_it = beside;
         over_it.geometry = lege_window::Rect::new(0, 0, left_of_it + 1, 1080);
-        assert!(bar_covered(false, &[over_it], output));
+        assert!(bar_covered(false, true, &[over_it], output));
+
+        // And on a compositor too old to centre it, the island is at the start of its edge — so
+        // the window that covered a centred island covers nothing, and one at x=0 covers it. This
+        // is the session the user is in until they log out, and getting it backwards would
+        // collapse the switcher for windows nowhere near it.
+        let mut at_the_start = window(4, false, false, false);
+        at_the_start.geometry = lege_window::Rect::new(0, 0, island - 1, 1080);
+        assert!(bar_covered(
+            false,
+            false,
+            std::slice::from_ref(&at_the_start),
+            output
+        ));
+        let mut middle = at_the_start;
+        middle.geometry = lege_window::Rect::new(left_of_it, 0, island, 1080);
+        assert!(!bar_covered(false, false, &[middle], output));
     }
 
     #[test]

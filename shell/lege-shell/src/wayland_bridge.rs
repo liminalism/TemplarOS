@@ -879,21 +879,26 @@ impl ShellBridge {
     /// Silently does nothing against a compositor too old to have the request — which is the
     /// running one until the user logs out. The surface then sits at the start of its edge, which
     /// is where it sat before any of this, so an un-centred island is the worst of it.
+    /// Returns whether the compositor was actually told. `false` means it is too old to have the
+    /// request, so the surface stays at the start of its edge and the caller has to reason about
+    /// it sitting there — the shell's own "is anything covering the bar?" depends on knowing
+    /// which of the two happened.
     pub fn set_edge_alignment(
         &self,
         window: &winit::window::Window,
         edge: Edge,
         alignment: Alignment,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if self.manager.version() < ALIGNMENT_SINCE {
-            return Ok(());
+            return Ok(false);
         }
         let surface = self.wrap_surface(window)?;
         self.manager
             .set_edge_alignment(&surface, wire_edge(edge), wire_alignment(alignment));
         self.connection
             .flush()
-            .context("flushing set_edge_alignment")
+            .context("flushing set_edge_alignment")?;
+        Ok(true)
     }
 
     /// Process whatever has already arrived on this connection's own event queue, without
@@ -1394,6 +1399,7 @@ impl ShellBridge {
         window: &winit::window::Window,
         colour: &[u32],
         coverage: &[u32],
+        shapes: &[(i32, i32, i32, i32)],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -1430,6 +1436,19 @@ impl ShellBridge {
         let buffer = self.masked.as_ref().expect("allocated above");
         buffer.write_masked(colour, coverage)?;
         surface.set_opaque_region(None);
+        // And the input region is the shapes, for the same reason the alpha is. Without it the
+        // surface's whole rectangle takes the pointer: a click on the desktop *between* two chips
+        // would be swallowed by a bar that is not there, and the compositor would read the pointer
+        // as being on the shell's own chrome — which is what suppresses the hot corner and holds a
+        // fullscreen peek open.
+        if let Some(compositor) = self.state.session_lock.compositor() {
+            let region = compositor.create_region(&qh, ());
+            for (x, y, width, height) in shapes {
+                region.add(*x, *y, *width, *height);
+            }
+            surface.set_input_region(Some(&region));
+            region.destroy();
+        }
         surface.attach(Some(&buffer.buffer), 0, 0);
         surface.damage_buffer(0, 0, width as i32, height as i32);
         surface.commit();

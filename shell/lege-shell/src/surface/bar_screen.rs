@@ -303,7 +303,7 @@ pub fn wanted_size(
     if presence == Presence::Hint {
         // Hint-sized: the row and the popover are closed with the collapse, so there is never a
         // band to make room for here, and the tab is only as wide as a chevron needs.
-        return (HINT_WIDTH.min(full_width.max(1)), HINT_HEIGHT);
+        return (HINT_WIDTH.min(widest(full_width)), HINT_HEIGHT);
     }
     let band = match (row_open, account_open) {
         (_, true) => popover_band(),
@@ -311,10 +311,28 @@ pub fn wanted_size(
         (false, false) => 0,
     };
     (
-        island_width(entries).min(full_width.max(1)),
+        island_width(entries).min(widest(full_width)),
         BAR_HEIGHT + band,
     )
 }
+
+/// The widest an island may be on an output of `full_width`: everything but the two bottom
+/// corners.
+///
+/// The corners are not the bar's. The compositor's bottom-left corner square is the pointer route
+/// to Home, and it is suppressed while a shell overlay is under the pointer — so an island allowed
+/// to grow to the full width of the output would sit on that square and silently stop Home being
+/// reachable by pointer at all, at somewhere around fifteen open applications on a 1280-pixel
+/// screen. A centred island that runs out of room crowds its chips instead, which is visible.
+fn widest(full_width: i32) -> i32 {
+    (full_width - 2 * CORNER_CLEARANCE).max(1)
+}
+
+/// How much of each end of the bottom edge the island leaves alone, in logical pixels. The
+/// compositor's own `HOME_CORNER`, which is not a number this crate can import — a mismatch costs
+/// clearance, never correctness: too large and the island is narrower than it could be, too small
+/// and the corner stops answering.
+const CORNER_CLEARANCE: i32 = 8;
 
 /// How wide the island is: its two margins, one square per entry, the gap that separates the
 /// switcher from the machine, and the cluster.
@@ -773,7 +791,10 @@ impl BarScreen {
         // The account popover first, for the same reason the row is early: it floats over what is
         // above the bar and must claim its clicks before anything underneath can.
         if let Some((frame, rows)) = &layout.popover {
-            self.opaque.push((*frame, ui.px(design::CHIP_RADIUS)));
+            // `design::shell` fills at TILE_RADIUS, not CHIP_RADIUS. Recording the smaller one
+            // leaves the coverage solid where the paint has already curved away — four dark ears
+            // on every corner, of the shadow behind it.
+            self.opaque.push((*frame, ui.px(design::TILE_RADIUS)));
             design::shell(
                 ui,
                 *frame,
@@ -855,7 +876,8 @@ impl BarScreen {
             && let Some(entry) = data.entries.get(index)
         {
             for (rect, window) in layout.row.iter().zip(&entry.windows) {
-                self.opaque.push((*rect, ui.px(design::CHIP_RADIUS)));
+                // `design::shell` again: the tile's own radius, or its corners keep the shadow.
+                self.opaque.push((*rect, ui.px(design::TILE_RADIUS)));
                 let parked = entry.is_parked(window.id);
                 let hovered = ui.input.hovering(*rect);
                 design::shell(
@@ -1645,10 +1667,19 @@ mod tests {
             (empty, BAR_HEIGHT + popover_band())
         );
         assert!(popover_band() > ROW_BAND);
-        // An output narrower than the island clamps to the output, and a width of nothing is
+        // An output narrower than the island clamps to the output *less its two corners*, which
+        // belong to the compositor's hot corner rather than to the bar; a width of nothing is
         // still a surface.
-        assert_eq!(wanted_size(open, false, false, 0, 200), (200, BAR_HEIGHT));
+        assert_eq!(
+            wanted_size(open, false, false, 0, 200),
+            (200 - 2 * CORNER_CLEARANCE, BAR_HEIGHT)
+        );
         assert_eq!(wanted_size(open, false, false, 0, 0), (1, BAR_HEIGHT));
+        // However many applications are open, the island never reaches either corner.
+        assert!(
+            wanted_size(open, false, false, 200, 1280).0 <= 1280 - 2 * CORNER_CLEARANCE,
+            "an island that spans the output would sit on the corner and silence it"
+        );
         // Revealed is the island, in full; the hint is a tab, band or no band.
         assert_eq!(
             wanted_size(Presence::Revealed, true, false, 0, W),
