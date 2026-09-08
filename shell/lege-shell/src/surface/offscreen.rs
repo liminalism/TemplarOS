@@ -258,6 +258,7 @@ pub(super) fn bar_frame(
         // a baseline that changes every minute is not one.
         activated: Some(lege_window::WindowId(1)),
         covered: presence != Presence::Open,
+        peeked: false,
         home_revealed: false,
         now_ms: 0,
     };

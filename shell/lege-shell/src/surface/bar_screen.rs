@@ -176,10 +176,17 @@ pub struct BarData<'a> {
     pub previews: &'a HashMap<String, Bitmap>,
     /// The activated window: what a press on the bar's own ground gives the keyboard back to.
     pub activated: Option<WindowId>,
-    /// Whether something covers the bottom `BAR_HEIGHT` strip of this output, so the bar has to
-    /// collapse to its hint rather than paint over a window. The host decides it
-    /// (`app::bar_covered`): unshelved toplevels, `home_revealed`, and the output's rect.
+    /// Whether a window fills the screen, so the bar has to collapse to its hint rather than
+    /// paint over it (`app::bar_covered`).
     pub covered: bool,
+    /// Whether the compositor says the pointer is resting on that output's bottom edge
+    /// (`lege_shell_manager_v1.bar_peeked`). One more way into the same reveal the hint's own
+    /// dwell opens — and the only one that works under a window filling the screen, where the
+    /// pointer never reaches this surface to be seen arriving. It comes *in* to `revealed` rather
+    /// than round the side of `covered`, so the way out is the one grace period either way: a
+    /// peek ended by a one-pixel overshoot would otherwise collapse the island instantly, while
+    /// the same island reached from the hint takes `HINT_CLOSE_MS` to go.
+    pub peeked: bool,
     /// Whether a "go home" reveal is in effect, so the Home chip can show that it is.
     pub home_revealed: bool,
     pub now_ms: u64,
@@ -441,6 +448,14 @@ impl BarScreen {
             self.hint_since = None;
             self.away_since = None;
             return Presence::Open;
+        }
+        // The compositor's own dwell, arriving as an event. It opens the bar exactly as the
+        // hint's dwell does — same flag, same way out — rather than as a state of its own.
+        if data.peeked {
+            self.revealed = true;
+            self.hint_since = None;
+            self.away_since = None;
+            return Presence::Revealed;
         }
         let inside = ui.input.cursor().is_some_and(|(x, y)| area.contains(x, y));
         if self.revealed {
@@ -931,6 +946,7 @@ mod tests {
         input: Input,
         /// What the host would say about the bottom strip this frame (`app::bar_covered`).
         covered: bool,
+        peeked: bool,
         now: u64,
         width: i32,
         height: i32,
@@ -948,6 +964,7 @@ mod tests {
                 buffer: WindowBuffer::new(W as u32, tallest() as u32),
                 input: Input::new(),
                 covered: false,
+                peeked: false,
                 now: 0,
                 width: W,
                 height: BAR_HEIGHT,
@@ -1001,6 +1018,7 @@ mod tests {
                 previews: &self.previews,
                 activated,
                 covered: self.covered,
+                peeked: self.peeked,
                 home_revealed: false,
                 now_ms: self.now,
             };
@@ -1044,6 +1062,7 @@ mod tests {
                 previews: &self.previews,
                 activated,
                 covered: self.covered,
+                peeked: self.peeked,
                 home_revealed: false,
                 now_ms: self.now,
             };
@@ -1652,6 +1671,37 @@ mod tests {
         h.frame();
         assert_eq!(h.screen.presence(false), Presence::Open);
         h.covered = true;
+        h.frame();
+        assert_eq!(h.screen.presence(true), Presence::Hint);
+    }
+
+    /// The compositor's own dwell arrives as `bar_peeked` and opens the bar the same way the
+    /// hint's dwell does — and, crucially, leaves the same way: through the grace period, not by
+    /// snapping shut the instant the peek ends.
+    ///
+    /// Under a window filling the screen this is the only reveal that can happen at all. The
+    /// pointer never reaches this surface to be seen arriving, and the hint tab it would have to
+    /// arrive on is 72×6.
+    #[test]
+    fn a_peek_opens_the_bar_and_leaves_it_through_the_same_grace_period() {
+        let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, false)]);
+        h.covered = true;
+        h.frame();
+        assert_eq!(h.screen.presence(true), Presence::Hint);
+
+        // No dwell of the shell's own, no pointer on the surface: the event alone opens it.
+        h.peeked = true;
+        h.frame();
+        assert_eq!(h.screen.presence(true), Presence::Revealed);
+        assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT));
+
+        // The peek ends with the pointer off the surface. The bar does not vanish under it: the
+        // same grace the hint's reveal has runs first.
+        h.peeked = false;
+        h.input.cursor_left();
+        h.frame();
+        assert_eq!(h.screen.presence(true), Presence::Revealed);
+        h.now += HINT_CLOSE_MS;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Hint);
     }
