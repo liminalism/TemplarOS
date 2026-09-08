@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:7ac9f8851cbe1895f451de9452ae258c8a2c5f6a7842682dc0f1e25421cc72e0"
+    source_graph "sha256:4f1a9194f594a598430f36a088bee482f7c554166b13ea498e9db831c9bfa162"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:dc2551cfee7197bf84bc54f53f33a4886aa7076a079d3f7b28466439823e7db9"
-    records 273
+    hash "sha256:d55c901331752d61c4b3a9ec0d8ae517c294f558f390b0e1be90c4d67b0b5cb0"
+    records 274
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:4fdeb9b38a8fa3c68e95eebe946af75d4a249bf8028deadd6ec02b343aca45a0"
-    records 121
+    hash "sha256:8b811e8dfffe5c9f52b1fd902efe7edb887aa739ab1a0b15049ff61bf97178ff"
+    records 122
 }
 
 resolution @legeos.assessment.home-vision-review-20260905/1 {
@@ -3256,6 +3256,24 @@ resolution @legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-2026
     hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
 }
 
+resolution @legeos.work.the-bottom-edge-belongs-to-the-window-20260908/1 {
+    slot depends_on
+    to @legeos.work.window-manager-popup-and-functional-edge-tabs/1
+    hash "sha256:2fb2adf0867d390f25c06e3878bb91bc6074c6d5050d89a58311ad560eb979c0"
+}
+
+resolution @legeos.work.the-bottom-edge-belongs-to-the-window-20260908/1 {
+    slot part_of
+    to @legeos.milestone.developer-edition-0-1/1
+    hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
+}
+
+resolution @legeos.work.the-bottom-edge-belongs-to-the-window-20260908/1 {
+    slot supported_by
+    to @legeos.evidence.the-bottom-edge-reviewed-and-its-seven-findings/1
+    hash "sha256:9fe90ecb6dc5beab24352ecf0f27f86cc0d3a3acd3714e41d5783138c8db490e"
+}
+
 resolution @legeos.work.trash-that-can-be-seen-and-emptied/1 {
     slot derived_from
     to @legeos.assessment.home-field-usability-gaps-20260831/1
@@ -4912,6 +4930,11 @@ seal @legeos.evidence.taskbar-free-home-visual-20260824/1 {
 seal @legeos.evidence.the-bar-s-coverage-is-its-chips/1 {
     state verified
     hash "sha256:1ebdb35d7475924817eae3b87eac62a0836b979e54259436b2418c9064fa7026"
+}
+
+seal @legeos.evidence.the-bottom-edge-reviewed-and-its-seven-findings/1 {
+    state verified
+    hash "sha256:9fe90ecb6dc5beab24352ecf0f27f86cc0d3a3acd3714e41d5783138c8db490e"
 }
 
 seal @legeos.evidence.the-cluster-split-reviewed-and-its-eight-findings/1 {

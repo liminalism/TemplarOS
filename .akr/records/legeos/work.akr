@@ -6195,6 +6195,79 @@ record legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908/
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
+record legeos.work.the-bottom-edge-belongs-to-the-window-20260908/1 : work {
+    title "A window that fills the screen owns the bottom edge: no tag strip, chrome on a dwell, the cluster gone, the switcher on a peek, and a tag that pins"
+    state proposed
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/lege-comp/src/**",
+        path "crates/lege-window/src/**",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/src/**"
+    ]
+    intent """
+        The user reported that a screen-filling window stops short of the bottom of the display, leaving a black row that its own tag and controls sit in, with the shell's four machine chips drawn on top of the controls; that the switcher felt like click-to-appear rather than hover-to-appear; and that clicking a name tag should pin the window and draw its name in italic. Their "full screen" is a maximized window and the black row is that window's compositor-drawn tag strip, which `client_area` subtracts from the bottom of its geometry.
+
+        One predicate carries the change: `WindowRecord::covers_screen()` = unshelved and (fullscreen or maximized), justified by the bar reserving a zone of 0 so a maximized window's work area is the whole output. `has_frame` is false for such a window, so the black row is gone; its name tag and controls are shown over it on a dwell in the bottom-right corner (`covering_chrome`, generalised from `fullscreen_chrome`); the shell's machine cluster is not drawn while one is up; and the switcher waits under it until the pointer rests on the bottom edge.
+
+        That last one needed a protocol addition. `outranks_overlay` stays fullscreen-only on purpose — promoting a maximized window over `ShellOverlay` would put the launcher, the switcher and every context menu behind the window the user is working in — so the peek could no longer be a pure stacking change: `lege_shell_manager_v1.bar_peeked` (version 7) tells the shell the edge was asked for. It enters the shell's own reveal (`BarData::peeked`) rather than bypassing `covered`, so one gesture has one way out; and the machine cluster comes back on it, so those four readings are not unreachable for as long as anything is maximized.
+
+        Three regions divide the bottom edge, each meaning one thing: the left square is Home whatever is on screen, the right square is the covering window's chrome, the band between is the peek. While that chrome is showing none of the three asks for anything — the strip is under the pointer and the strip is what is being reached for.
+
+        A click on a name tag pins the window above the others; a press that moves is the drag it always was. A pin is a sort key that borrows the `AppOnTop` slot in `stack_key` without assigning the layer, so `layer_of` still reads a pinned window as the ordinary window it is. A pinned name is drawn in a separately discovered italic face, because `pixelkit-text` has no synthetic oblique.
+
+        The strip being drawn *over* the client rather than beside it is what the whole review turned on: the gap between the tags belongs to that window rather than falling through, and a press the compositor takes is not also delivered to the client underneath.
+        """
+    note """
+        Landed at 38b16d5 in eight commits from 5c685b2. Reviewed by a Fable advisor (@legeos.evidence.the-bottom-edge-reviewed-and-its-seven-findings): seven findings, all fixed, plus two judgement calls taken from the same review. One judgement call was deliberately left literal and flagged to the user: every click on a name tag pins or unpins, including the click made only to focus a window. Nothing here was validated with a pointer — scripts/nested-session.sh refuses while the installed session is running, and the compositor half needs a logout.
+        """
+    acceptance {
+        check gate-green {
+            statement """
+                The whole gate passes at the merged head.
+                """
+            method command
+            command "just check"
+        }
+        check hands-on-bottom-edge {
+            statement """
+                On the installed session after a logout: a maximized window reaches the bottom of the display with no black row and no chips over it; resting in the bottom-right corner shows its tag and controls over it; resting on the bottom edge brings the switcher up; the bottom-left corner still goes Home.
+                """
+            method manual
+        }
+        check hands-on-pin {
+            statement """
+                On the installed session: clicking a window's name tag pins it above the others and draws its name in italic; clicking again unpins it; dragging the tag still moves the window.
+                """
+            method manual
+        }
+        check no-black-row {
+            statement """
+                A window filling the screen wears no frame at any bar zone, and a parked one gets its tags back.
+                """
+            method command
+            command "cargo test -p lege-window a_window_that_fills_the_screen_has_no_frame"
+        }
+        check pin-sorts-without-changing-layer {
+            statement """
+                A pinned window sorts above the others and still reports Layer::Normal.
+                """
+            method command
+            command "cargo test -p lege-window a_pinned_window_sorts_above_the_others_without_changing_layer"
+        }
+        check switcher-waits-and-returns {
+            statement """
+                The switcher is covered by a filling window, uncovered by the peek and by a reveal, and untouched by an ordinary floating window.
+                """
+            method command
+            command "cargo test -p lege-shell the_switcher_hides_under_a_window_that_fills_the_screen_and_comes_back_on_a_peek"
+        }
+    }
+    depends_on [ @legeos.work.window-manager-popup-and-functional-edge-tabs ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supported_by [ @legeos.evidence.the-bottom-edge-reviewed-and-its-seven-findings ]
+}
+
 record legeos.work.trash-that-can-be-seen-and-emptied/1 : work {
     title "Files.Trash1 — see what is in the trash, put an item back, and empty it"
     state completed
