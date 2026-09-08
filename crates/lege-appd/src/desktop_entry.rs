@@ -537,9 +537,59 @@ pub struct DerivedManifest {
 /// must still import, because a MIME association may resolve to it and the launcher must still
 /// be able to start it — it is only the offered-in-a-list step that honours the flag.
 ///
+/// `OnlyShowIn` / `NotShowIn` fold into that same flag ([`hidden_from_desktop`]): an entry meant
+/// for another desktop imports like any other and is simply not offered here.
+///
 /// `source` says where the file was found. It is taken here rather than reconstructed later
 /// because this call is the one moment the origin is actually known; anything derived afterwards
 /// from the manifest alone would be a guess, and provenance that guesses is worse than none.
+/// Whether `entry` asks not to be shown on a desktop named by `current`.
+///
+/// `OnlyShowIn` and `NotShowIn` were parsed and thrown away, which is how `pcmanfm-qt`'s file
+/// manager became unreachable: `/etc/xdg/autostart/lxqt-desktop.desktop` is `OnlyShowIn=LXQt` and
+/// runs `pcmanfm-qt --desktop`, and being the oldest variant of that executable it won the
+/// default-variant election ([`crate::variants::default_rank`], which sorts on `no_display`
+/// first). The launcher's only row for it was therefore named "Desktop" and painted a desktop
+/// instead of opening a window. Honouring the two keys demotes it and the real entry wins.
+///
+/// The match is case-sensitive per the spec, and `NotShowIn` is checked first because an entry
+/// naming both means the exclusion.
+pub fn hidden_from_desktop(entry: &DesktopEntry, current: &[String]) -> bool {
+    let names = |list: &[String]| list.iter().any(|name| current.iter().any(|here| here == name));
+    if !entry.not_show_in.is_empty() && names(&entry.not_show_in) {
+        return true;
+    }
+    !entry.only_show_in.is_empty() && !names(&entry.only_show_in)
+}
+
+/// The desktop names this session answers to, from `XDG_CURRENT_DESKTOP` (colon-separated).
+///
+/// From the environment rather than a constant so appd behaves like whatever session it is
+/// actually running in — a nested session under another desktop hides that desktop's entries, not
+/// LegeOS's. `distro/policy/environment.d/60-legeos.conf` sets `XDG_CURRENT_DESKTOP=LegeOS`, which
+/// is also the fallback: unset, this is a LegeOS session that lost its environment, and importing
+/// every other desktop's autostart entries is the worse of the two failures.
+fn current_desktops() -> Vec<String> {
+    desktops_from(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref())
+}
+
+/// [`current_desktops`] without the environment, so the parsing and the fallback are testable in
+/// a crate that forbids the `unsafe` block `set_var` now needs.
+fn desktops_from(value: Option<&str>) -> Vec<String> {
+    let names: Vec<String> = value
+        .unwrap_or_default()
+        .split(':')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if names.is_empty() {
+        vec!["LegeOS".to_owned()]
+    } else {
+        names
+    }
+}
+
 pub fn derive_manifest(
     entry: &DesktopEntry,
     desktop_id: &str,
@@ -604,7 +654,7 @@ pub fn derive_manifest(
         icon: entry.icon.clone(),
         categories: entry.categories.iter().cloned().collect(),
         keywords: entry.keywords.iter().cloned().collect(),
-        no_display: entry.no_display,
+        no_display: entry.no_display || hidden_from_desktop(entry, &current_desktops()),
         provenance: Some(provenance_of(
             entry,
             desktop_id,
@@ -793,6 +843,36 @@ Icon=lege-viewer
         assert_eq!(id.as_str(), "desktop-import.firefox.desktop");
         assert_eq!(id, derive_app_id("firefox.desktop"));
         assert_ne!(id, derive_app_id("firefox-esr.desktop"));
+    }
+
+    /// The real entry this was written for: `/etc/xdg/autostart/lxqt-desktop.desktop` runs
+    /// `pcmanfm-qt --desktop`, is `OnlyShowIn=LXQt`, and — being the oldest variant of that
+    /// executable — used to be elected the face of PCManFM-Qt on a LegeOS session. The launcher's
+    /// only row for it was called "Desktop" and painted a desktop instead of opening a window.
+    #[test]
+    fn an_entry_for_another_desktop_is_not_displayed_here() {
+        let mut lxqt = parse(VIEWER).unwrap();
+        lxqt.only_show_in = vec!["LXQt".to_owned()];
+        let legeos = ["LegeOS".to_owned()];
+        assert!(hidden_from_desktop(&lxqt, &legeos));
+        assert!(!hidden_from_desktop(&lxqt, &["LXQt".to_owned()]));
+
+        // NotShowIn is the same rule from the other side, and an entry naming both is excluded.
+        let mut not_here = parse(VIEWER).unwrap();
+        not_here.not_show_in = vec!["LegeOS".to_owned()];
+        assert!(hidden_from_desktop(&not_here, &legeos));
+        not_here.only_show_in = vec!["LegeOS".to_owned()];
+        assert!(hidden_from_desktop(&not_here, &legeos));
+
+        // An entry naming no desktop shows everywhere, which is nearly every entry there is.
+        assert!(!hidden_from_desktop(&parse(VIEWER).unwrap(), &legeos));
+
+        // `XDG_CURRENT_DESKTOP` is colon-separated, and an unset or empty one is read as LegeOS
+        // rather than as "every desktop": a session that lost its environment hides other
+        // desktops' entries instead of importing all of them as displayable.
+        assert_eq!(desktops_from(Some("LegeOS:wlroots")), ["LegeOS", "wlroots"]);
+        assert_eq!(desktops_from(None), ["LegeOS"]);
+        assert_eq!(desktops_from(Some("  ")), ["LegeOS"]);
     }
 
     #[test]
