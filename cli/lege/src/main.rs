@@ -18,9 +18,9 @@ use lege::{
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
     FilesActionsProxy, FilesIndexProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy,
-    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HomeGardenProxy, HostDeploymentsProxy,
-    HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy,
-    PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
+    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HomeGardenProxy,
+    HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy,
+    LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
 };
 use lege_types::ProviderRole;
 use std::{
@@ -567,20 +567,34 @@ enum GardenCommand {
     /// Every place the ledger knows, with its stage and relevance (the default).
     Contexts,
     /// Why a folder is (or is not) on Home: its evidence, stage and last tending reason.
-    Why { path: PathBuf },
+    Why {
+        path: PathBuf,
+    },
     /// Run a tending moment now and print the report.
     Tend {
         #[arg(long, default_value = "primary")]
         output: String,
     },
-    Pin { path: PathBuf },
-    Unpin { path: PathBuf },
+    Pin {
+        path: PathBuf,
+    },
+    Unpin {
+        path: PathBuf,
+    },
     /// Pin, and freeze at the tile's current size.
-    Keep { path: PathBuf },
-    Hide { path: PathBuf },
-    Unhide { path: PathBuf },
+    Keep {
+        path: PathBuf,
+    },
+    Hide {
+        path: PathBuf,
+    },
+    Unhide {
+        path: PathBuf,
+    },
     /// Drop a place's record; fresh activity may grow it again.
-    Forget { path: PathBuf },
+    Forget {
+        path: PathBuf,
+    },
     /// Drop every unpinned place.
     Clear,
     /// The Garden Clock: sessions and unlocked hours so far.
@@ -726,7 +740,9 @@ async fn garden_manage(
 ) -> Result<()> {
     let path_of = |path: &Path| path.to_string_lossy().into_owned();
     match command {
-        GardenCommand::Pin { path } | GardenCommand::Unpin { path } | GardenCommand::Keep { path } => {
+        GardenCommand::Pin { path }
+        | GardenCommand::Unpin { path }
+        | GardenCommand::Keep { path } => {
             let root = folder_argument(&path)?;
             proxy.pin(&path_of(&root), pinned).await?;
             emit(
@@ -755,7 +771,11 @@ async fn garden_manage(
         }
         GardenCommand::Clear => {
             proxy.forget_all().await?;
-            emit(json, &serde_json::json!({"cleared": true}), "forgot every unpinned place")
+            emit(
+                json,
+                &serde_json::json!({"cleared": true}),
+                "forgot every unpinned place",
+            )
         }
         GardenCommand::Clock => {
             let clock: serde_json::Value = serde_json::from_str(&proxy.clock().await?)?;

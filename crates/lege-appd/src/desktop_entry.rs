@@ -555,7 +555,10 @@ pub struct DerivedManifest {
 /// The match is case-sensitive per the spec, and `NotShowIn` is checked first because an entry
 /// naming both means the exclusion.
 pub fn hidden_from_desktop(entry: &DesktopEntry, current: &[String]) -> bool {
-    let names = |list: &[String]| list.iter().any(|name| current.iter().any(|here| here == name));
+    let names = |list: &[String]| {
+        list.iter()
+            .any(|name| current.iter().any(|here| here == name))
+    };
     if !entry.not_show_in.is_empty() && names(&entry.not_show_in) {
         return true;
     }

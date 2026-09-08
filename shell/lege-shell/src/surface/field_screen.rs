@@ -3729,7 +3729,12 @@ impl FieldScreen {
                 + (f32::from(u8::try_from(ui.px(6)).unwrap_or(6)) * row.weight) as i32)
                 .max(1);
             ui.painter.fill_rect(
-                Rect::new(trunk.x, area.y + (line - thickness) / 2, ui.px(6), thickness),
+                Rect::new(
+                    trunk.x,
+                    area.y + (line - thickness) / 2,
+                    ui.px(6),
+                    thickness,
+                ),
                 if row.is_dir {
                     design::accent()
                 } else {
