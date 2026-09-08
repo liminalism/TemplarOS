@@ -474,6 +474,14 @@ struct ShellApp {
     /// The bottom bar (`crate::surface::bar_screen`): a `Layer::ShellOverlay` surface with a
     /// bottom exclusive zone, absent only while a window is fullscreen.
     bar: Option<HostedWindow>,
+    /// The machine cluster's own surface, at the bottom-right corner. Separate from the bar
+    /// because it answers a different question and behaves differently: the island is a switcher
+    /// that collapses under a window and comes back on a dwell, and this is what the machine is
+    /// doing, which stays where it is until a fullscreen window makes it irrelevant.
+    cluster: Option<HostedWindow>,
+    cluster_screen: crate::surface::cluster_screen::ClusterScreen,
+    cluster_mask: WindowBuffer,
+    cluster_wanted: (i32, i32),
     bar_screen: crate::surface::bar_screen::BarScreen,
     /// The size the bar surface was last asked for (`bar_screen::wanted_size`). The compositor
     /// never configures this surface's width, so the shell is the only thing that knows it.
@@ -569,6 +577,10 @@ impl ShellApp {
             bar: None,
             bar_screen: crate::surface::bar_screen::BarScreen::default(),
             bar_wanted: (0, 0),
+            cluster: None,
+            cluster_screen: crate::surface::cluster_screen::ClusterScreen::default(),
+            cluster_mask: WindowBuffer::new(0, 0),
+            cluster_wanted: (0, 0),
             bridge_generation: 0,
             last_toasted_id: None,
             browser_pending: None,
@@ -2266,12 +2278,34 @@ impl ShellApp {
     /// No special case, no `Command::new`: identity comes from the cgroup the broker puts the
     /// process in, so a shell that started its own child would be launching an application the
     /// session cannot then identify, park or associate with anything.
-    fn spawn_settings(&self) {
-        match SETTINGS_APP_ID.parse::<AppId>() {
-            Ok(app_id) => self.spawn_launch(app_id),
+    /// Open Settings — or, if it is already open, go to the copy that is.
+    ///
+    /// Settings is one place, not a document: a second window of it is a second set of the same
+    /// switches, and pressing the chip twice was opening one. So the running window wins. This is
+    /// deliberately not a general rule — a second terminal or a second file window is a normal
+    /// thing to want — which is why it lives here rather than in the launcher.
+    fn spawn_settings(&mut self) {
+        let Ok(app_id) = SETTINGS_APP_ID.parse::<AppId>() else {
             // Unreachable: the id is a constant. Logged rather than unwrapped, because a panic in
             // the shell is a lost session and this is a button.
-            Err(error) => tracing::error!(%error, "the Settings app id is not a valid AppId"),
+            tracing::error!("the Settings app id is not a valid AppId");
+            return;
+        };
+        let open = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|window| window.canonical_app_id.as_ref() == Some(&app_id));
+        match open {
+            Some(window) => {
+                if window.shelved {
+                    self.perform(FieldAction::Restore(window.window_id));
+                }
+                self.perform(FieldAction::Activate(window.window_id));
+            }
+            None => self.spawn_launch(app_id),
         }
     }
 
@@ -2521,7 +2555,7 @@ impl ShellApp {
         };
         let wanted = crate::surface::bar_screen::wanted_size(
             crate::surface::bar_screen::Presence::Open,
-            false,
+            None,
             false,
             crate::taskbar::entries(toplevels).len(),
             self.output_width(),
@@ -2723,8 +2757,8 @@ impl ShellApp {
         // all of it, so no size this surface takes reflows anything.
         let wanted = crate::surface::bar_screen::wanted_size(
             self.bar_screen.presence(covered),
-            self.bar_screen.row_open(),
-            self.bar_screen.account_open,
+            self.bar_screen.row_windows(&entries),
+            self.bar_screen.tooltip_open(now_ms),
             entries.len(),
             output_width,
         );
@@ -2744,6 +2778,217 @@ impl ShellApp {
                     self.perform(FieldAction::RunWindowAction { id, window });
                 }
                 BarAction::Field(action) => self.perform(action),
+            }
+        }
+    }
+
+    /// Create, resize or destroy the cluster's surface.
+    ///
+    /// Destroyed outright while any window is fullscreen — the user's rule, and the honest way to
+    /// say it: not hidden, not collapsed to a hint, not there. Rebuilt when the fullscreen window
+    /// goes. Its zone is 0 like the island's, so neither creating nor destroying it moves a window.
+    fn ensure_cluster(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        toplevels: &[lege_window::ShellToplevel],
+    ) {
+        let wanted_gone = toplevels
+            .iter()
+            .any(|window| window.fullscreen && !window.shelved);
+        if wanted_gone {
+            self.cluster = None;
+            self.cluster_wanted = (0, 0);
+            return;
+        }
+        if self.cluster.is_some() {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        let wanted = crate::surface::cluster_screen::wanted_size(false, self.output_width());
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Cluster")
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1))),
+        ) {
+            Ok(window) => std::sync::Arc::new(window),
+            Err(error) => {
+                tracing::warn!(%error, "creating the cluster window");
+                return;
+            }
+        };
+        if let Err(error) = bridge.set_layer(&window, lege_window::Layer::ShellOverlay) {
+            tracing::warn!(%error, "declaring the cluster onto Layer::ShellOverlay");
+        }
+        if let Err(error) =
+            bridge.set_exclusive_zone(&window, lege_window::geometry::Edge::Bottom, 0)
+        {
+            tracing::warn!(%error, "anchoring the cluster to the bottom edge");
+        }
+        // The *end* of the edge, where the island asks for the middle of it.
+        if let Err(error) = bridge.set_edge_alignment(
+            &window,
+            lege_window::geometry::Edge::Bottom,
+            lege_window::geometry::Alignment::End,
+        ) {
+            tracing::warn!(%error, "anchoring the cluster to the right-hand end");
+        }
+        match HostedWindow::new(window) {
+            Ok(hosted) => {
+                self.cluster = Some(hosted);
+                self.cluster_wanted = wanted;
+            }
+            Err(error) => tracing::warn!(%error, "hosting the cluster window"),
+        }
+    }
+
+    /// Paint the cluster and act on what it returns.
+    #[allow(clippy::too_many_lines)]
+    fn redraw_cluster(&mut self) {
+        let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
+        let calendar_available = calendar_app(&self.apps).is_some();
+        let account_label = std::env::var("USER")
+            .ok()
+            .filter(|user| !user.is_empty())
+            .unwrap_or_else(account_uid_label);
+        let clock_label = local_clock_label(std::time::SystemTime::now());
+        let Some(cluster) = &mut self.cluster else {
+            return;
+        };
+        if !cluster.prepare() {
+            return;
+        }
+        let area = Rect::new(
+            0,
+            0,
+            cluster.buffer.width as i32,
+            cluster.buffer.height as i32,
+        );
+        let data = crate::surface::cluster_screen::ClusterData {
+            clock_label: &clock_label,
+            network_control_available,
+            calendar_available,
+            account_label: &account_label,
+            machine: &self.machine,
+        };
+        let actions = {
+            let mut ui = Ui::new(
+                Painter::new(&mut cluster.buffer),
+                &mut self.text,
+                &mut cluster.input,
+                self.theme,
+                cluster.scale,
+                &mut self.kernel,
+            );
+            self.cluster_screen.draw(&mut ui, area, &data)
+        };
+        cluster.input.end_frame();
+        if self.cluster_mask.width != cluster.buffer.width
+            || self.cluster_mask.height != cluster.buffer.height
+        {
+            self.cluster_mask = WindowBuffer::new(cluster.buffer.width, cluster.buffer.height);
+        }
+        let shapes = self.cluster_screen.opaque_shapes();
+        let floated = !shapes.is_empty();
+        if floated {
+            let mut painter = Painter::new(&mut self.cluster_mask);
+            painter.fill_rect(Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
+            for (rect, radius) in shapes {
+                painter.fill_rounded_rect_aa(
+                    &mut self.kernel,
+                    *rect,
+                    *radius as f32,
+                    MASK_SOLID,
+                    u8::MAX,
+                );
+            }
+        }
+        let regions: Vec<(i32, i32, i32, i32)> = self
+            .cluster_screen
+            .opaque_shapes()
+            .iter()
+            .map(|(rect, _)| (rect.x, rect.y, rect.w, rect.h))
+            .collect();
+        let presented = floated && self.bridge.as_mut().is_some_and(|bridge| {
+            match bridge.present_masked(
+                &cluster.window,
+                &cluster.buffer.pixels,
+                &self.cluster_mask.pixels,
+                &regions,
+                cluster.buffer.width,
+                cluster.buffer.height,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::debug!(%error, "the cluster could not float; presenting it opaque");
+                    false
+                }
+            }
+        });
+        if !presented {
+            cluster.present();
+        }
+        let wanted = crate::surface::cluster_screen::wanted_size(
+            self.cluster_screen.account_open(),
+            self.output_width(),
+        );
+        if wanted != self.cluster_wanted {
+            self.cluster_wanted = wanted;
+            if let Some(cluster) = &self.cluster {
+                let _ = cluster
+                    .window
+                    .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
+            }
+        }
+        for action in actions {
+            use crate::surface::bar_screen::BarAction;
+            match action {
+                BarAction::Activate(window) => self.perform(FieldAction::Activate(window)),
+                BarAction::Window { id, window } => {
+                    self.perform(FieldAction::RunWindowAction { id, window });
+                }
+                BarAction::Field(action) => self.perform(action),
+            }
+        }
+    }
+
+    /// The cluster's window events: pointer and redraw, exactly as the bar's.
+    fn cluster_event(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::RedrawRequested => self.redraw_cluster(),
+            WindowEvent::CloseRequested => self.cluster = None,
+            _ => {
+                let Some(cluster) = &mut self.cluster else {
+                    return;
+                };
+                match event {
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                            cluster.scale = pixelkit_shell::Scale::new(*scale_factor);
+                        }
+                        cluster.request_redraw();
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        cluster
+                            .input
+                            .cursor_moved(position.x as f32, position.y as f32);
+                        cluster.request_redraw();
+                    }
+                    WindowEvent::CursorLeft { .. } => {
+                        cluster.input.cursor_left();
+                        cluster.request_redraw();
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        if let Some(button) = translate_button(*button) {
+                            cluster.input.mouse(button, *state == ElementState::Pressed);
+                            cluster.request_redraw();
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -4192,6 +4437,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -4219,6 +4465,14 @@ impl ApplicationHandler<Wake> for ShellApp {
                 }
                 _ => {}
             }
+            return;
+        }
+        let is_cluster = self
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.window.id() == window_id);
+        if is_cluster {
+            self.cluster_event(&event);
             return;
         }
         let is_bar = self
@@ -4328,6 +4582,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
         self.ensure_bar(event_loop, &toplevels);
+        self.ensure_cluster(event_loop, &toplevels);
         // The window list moved: Home's session tiles and the bar both show it, so both redraw
         // now rather than on the next slow sweep.
         let generation = self.bridge.as_ref().map_or(0, ShellBridge::generation);
@@ -4394,7 +4649,11 @@ impl ApplicationHandler<Wake> for ShellApp {
         );
         let bar_deadline = self.bar.as_ref().and_then(|bar| {
             let entries = crate::taskbar::entries(&toplevels);
-            let deadline_ms = self.bar_screen.next_deadline_ms(&entries, bar_covered)?;
+            let deadline_ms = self.bar_screen.next_deadline_ms(
+                &entries,
+                bar_covered,
+                self.started.elapsed().as_millis() as u64,
+            )?;
             let deadline = self.started + Duration::from_millis(deadline_ms);
             if deadline <= Instant::now() {
                 bar.request_redraw();
@@ -4508,7 +4767,7 @@ mod tests {
 
         // A window that stops above the strip leaves the bar alone; one pixel into it covers it.
         let mut above = window(2, false, false, false);
-        above.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT);
+        above.geometry = lege_window::Rect::new(0, 0, 1920, 1080 - BAR_HEIGHT);
         assert!(!bar_covered(
             false,
             true,
@@ -4516,7 +4775,7 @@ mod tests {
             output
         ));
         let mut into = above;
-        into.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT + 1);
+        into.geometry = lege_window::Rect::new(0, 0, 1920, 1080 - BAR_HEIGHT + 1);
         assert!(bar_covered(false, true, &[into], output));
 
         // The island is centred and only as wide as its chips, so a window along the bottom of
@@ -4525,7 +4784,7 @@ mod tests {
         let island = crate::surface::bar_screen::island_width(1);
         let left_of_it = (1920 - island) / 2;
         let mut beside = window(3, false, false, false);
-        beside.geometry = lege_window::Rect::new(0, 0, left_of_it - 1, 1080);
+        beside.geometry = lege_window::Rect::new(0, 0, left_of_it, 1080);
         assert!(!bar_covered(
             false,
             true,

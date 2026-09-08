@@ -229,7 +229,13 @@ pub(super) fn bar_frame(
             active: false,
         },
     ];
-    let logical = wanted_size(presence, open_row, false, entries.len(), 2560);
+    let logical = wanted_size(
+        presence,
+        open_row.then(|| entries[0].windows.len()),
+        false,
+        entries.len(),
+        2560,
+    );
     let scale = Scale::new(scale);
     let (width, height) = (scale.px(logical.0) as u32, scale.px(logical.1) as u32);
 
@@ -302,7 +308,7 @@ pub(super) fn bar_frame(
         }
         Presence::Hint => {}
         Presence::Revealed => {
-            let hint = wanted_size(Presence::Hint, false, false, entries.len(), 2560);
+            let hint = wanted_size(Presence::Hint, None, false, entries.len(), 2560);
             let mut first = WindowBuffer::new(width, scale.px(hint.1) as u32);
             input.cursor_moved(width as f32 / 2.0, scale.px(hint.1) as f32 - 1.0);
             paint(&mut first, &mut input, &data);
@@ -726,10 +732,10 @@ mod tests {
 
         let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
         for (presence, open_row, name, expected) in [
-            (Presence::Open, false, "open", 0x2fe0_0b05_2398_f2b4_u64),
+            (Presence::Open, false, "open", 0xfc19_5fb8_f4de_5ae0u64),
             (Presence::Hint, false, "hint", 0x090f_a0c5_682c_df95),
-            (Presence::Revealed, false, "revealed", 0x4dbb_4a1a_07a5_150b),
-            (Presence::Open, true, "row", 0x9b8a_843f_7411_1075),
+            (Presence::Revealed, false, "revealed", 0xe1e8_7ec6_b7a2_cf8a),
+            (Presence::Open, true, "row", 0xb317_5ea3_89e7_832a),
         ] {
             let buffer = bar_frame(presence, open_row, 1.0);
             if let Some(dir) = &dump {

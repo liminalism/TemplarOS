@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod bar_screen;
+pub mod cluster_screen;
 pub mod context_menu;
 pub mod design;
 pub mod field_screen;
