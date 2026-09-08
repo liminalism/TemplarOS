@@ -199,6 +199,54 @@ pub fn apply_maximized<B: Backend + 'static>(
     crate::space_sync::sync_after_change(state);
 }
 
+/// `xdg_toplevel.set_fullscreen` / `unset_fullscreen`, from either shell and from the recovery
+/// chord: [`lege_window::WindowService::set_fullscreen`] decides the rectangle (the whole output,
+/// bar's zone included), and this configures the client with it.
+///
+/// The size is the point. Before this, fullscreen only flipped a flag and sent a bare configure,
+/// so the client kept whatever size it already had and "fullscreen" was a window that had merely
+/// lost its frame. The state bit is sent whatever the service decided, so a client repeating a
+/// request it is already in still gets its acknowledgement.
+pub fn apply_fullscreen<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    window_id: WindowId,
+    fullscreen: bool,
+) {
+    if state.window_service.window(window_id).is_none() {
+        return;
+    }
+    state.window_service.set_fullscreen(window_id, fullscreen);
+    if !fullscreen {
+        // Nothing is covering the bar any more, so a peek left over from the way out would
+        // otherwise still be in effect the next time something went fullscreen.
+        state.window_service.set_peek_output(None);
+    }
+    let client = crate::space_sync::client_area(state, window_id);
+    if let Some(window) = crate::space_sync::element_for_window(state, window_id) {
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|pending| {
+                use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                if fullscreen {
+                    pending.states.set(State::Fullscreen);
+                } else {
+                    pending.states.unset(State::Fullscreen);
+                }
+                pending.size = Some((client.width, client.height).into());
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+        } else if let Some(x11) = window.x11_surface() {
+            let _ = x11.set_fullscreen(fullscreen);
+            let _ = x11.configure(Some(smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((client.x, client.y)),
+                smithay::utils::Size::from((client.width, client.height)),
+            )));
+        }
+    }
+    crate::space_sync::sync_after_change(state);
+}
+
 /// `xdg_toplevel.resize_edge` in this repository's own vocabulary
 /// ([`lege_window::ResizeEdges`]). The protocol enum is a set of corner names rather than flags,
 /// so this is a table and not arithmetic; anything unrecognised (the enum is `non_exhaustive`,
@@ -557,32 +605,14 @@ impl<B: Backend + 'static> XdgShellHandler for LegeCompState<B> {
         surface: ToplevelSurface,
         _output: Option<wl_output::WlOutput>,
     ) {
-        surface.with_pending_state(|state| {
-            state
-                .states
-                .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
-        });
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
-        }
         if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
-            self.window_service.set_fullscreen(window_id, true);
-            crate::space_sync::sync_after_change(self);
+            apply_fullscreen(self, window_id, true);
         }
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        surface.with_pending_state(|state| {
-            state
-                .states
-                .unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
-        });
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
-        }
         if let Some(window_id) = self.windows.window_id_for(&surface.wl_surface().id()) {
-            self.window_service.set_fullscreen(window_id, false);
-            crate::space_sync::sync_after_change(self);
+            apply_fullscreen(self, window_id, false);
         }
     }
 

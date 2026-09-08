@@ -122,11 +122,15 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
             lege_shell_manager_v1::Request::EscapeFullscreenOrModal { toplevel } => {
                 let window_id =
                     toplevel.and_then(|resource| window_id_for_toplevel(state, &resource));
-                if state
+                if let Ok(lege_window::CommandEffect::Escaped { action }) = state
                     .window_service
                     .handle_command(WindowCommand::EscapeFullscreenOrModal { window_id }, ctx)
-                    .is_ok()
                 {
+                    // Same as the recovery chord's branch: the geometry is restored, the client
+                    // still needs the size and the cleared fullscreen bit.
+                    if let lege_window::EscapeAction::ExitedFullscreen { window_id } = action {
+                        crate::xdg_shell::apply_fullscreen(state, window_id, false);
+                    }
                     crate::space_sync::sync_after_change(state);
                 }
             }

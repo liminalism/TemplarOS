@@ -237,18 +237,16 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        let _ = window.set_fullscreen(true);
+        // Through the same path a Wayland client takes: `apply_fullscreen` sets the X11 property
+        // *and* configures the surface to the output's rectangle, which is what was missing.
         if let Some(window_id) = self.window_id_of(&window) {
-            self.window_service.set_fullscreen(window_id, true);
-            crate::space_sync::sync_after_change(self);
+            crate::xdg_shell::apply_fullscreen(self, window_id, true);
         }
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        let _ = window.set_fullscreen(false);
         if let Some(window_id) = self.window_id_of(&window) {
-            self.window_service.set_fullscreen(window_id, false);
-            crate::space_sync::sync_after_change(self);
+            crate::xdg_shell::apply_fullscreen(self, window_id, false);
         }
     }
 

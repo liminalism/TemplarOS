@@ -361,6 +361,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     )
                 {
                     tracing::debug!(?action, "recovery: escaped fullscreen/modal");
+                    // The service has already restored the geometry; the client still has to be
+                    // told the size and have its fullscreen bit cleared, or it keeps painting a
+                    // whole screen into a window-sized rectangle. Idempotent: the state flip
+                    // itself is already done.
+                    if let lege_window::EscapeAction::ExitedFullscreen { window_id } = action {
+                        crate::xdg_shell::apply_fullscreen(self, window_id, false);
+                    }
                     crate::space_sync::sync_after_change(self);
                 }
             }
