@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 /// is built once at compositor startup and reused every frame.
 pub struct ChromeFonts {
     pub face: FaceId,
+    /// The italic/oblique companion of [`Self::face`], used for a pinned window's name
+    /// (`WindowService::is_always_on_top`). Falls back to `face` itself when the machine has no
+    /// italic `.ttf` anywhere it looked: an always-on-top window that reads upright is a missing
+    /// cue, and a compositor that refuses to draw is a missing desktop.
+    pub italic: FaceId,
     pub cache: TextCache,
 }
 
@@ -31,8 +36,8 @@ impl ChromeFonts {
     /// [`discover`](Self::discover), but searching only `roots` — the seam this module's tests use
     /// instead of depending on whatever fonts (if any) the host actually has installed.
     fn discover_under(roots: &[PathBuf]) -> Option<ChromeFonts> {
-        let bytes = discover_font_bytes(roots)?;
-        Self::from_bytes(bytes)
+        let bytes = discover_font_bytes(roots, PREFERRED_NAMES, false)?;
+        Self::from_bytes(bytes, discover_font_bytes(roots, ITALIC_NAMES, true))
     }
 
     /// `Face::from_bytes` requires `&'static [u8]` because a [`FontSet`] full of [`Face`]s is
@@ -41,16 +46,20 @@ impl ChromeFonts {
     /// leaked by [`discover_font_bytes`] (which had to leak it anyway just to validate it parses),
     /// so this re-parses rather than re-leaking — one extra cheap parse at startup instead of a
     /// second permanent allocation for the same font.
-    fn from_bytes(bytes: &'static [u8]) -> Option<ChromeFonts> {
+    fn from_bytes(bytes: &'static [u8], italic: Option<&'static [u8]>) -> Option<ChromeFonts> {
         let face = Face::from_bytes(bytes)?;
         let leaked_face: &'static Face = Box::leak(Box::new(face));
 
         let mut set = FontSet::new();
         let face_id = set.add(leaked_face);
+        let italic_id = italic
+            .and_then(Face::from_bytes)
+            .map_or(face_id, |face| set.add(Box::leak(Box::new(face))));
         let leaked_set: &'static FontSet = Box::leak(Box::new(set));
 
         Some(ChromeFonts {
             face: face_id,
+            italic: italic_id,
             cache: TextCache::new(leaked_set),
         })
     }
@@ -86,6 +95,18 @@ const PREFERRED_NAMES: &[&str] = &[
     "opensans-regular.ttf",
     "ubuntu-regular.ttf",
     "arial.ttf",
+];
+
+/// The italic/oblique companions of [`PREFERRED_NAMES`], in the same order and matched the same
+/// way. Not finding one is normal and not an error — see [`ChromeFonts::italic`].
+const ITALIC_NAMES: &[&str] = &[
+    "dejavusans-oblique.ttf",
+    "notosans-italic.ttf",
+    "liberationsans-italic.ttf",
+    "cantarell-italic.ttf",
+    "opensans-italic.ttf",
+    "ubuntu-italic.ttf",
+    "ariali.ttf",
 ];
 
 /// How many directory entries a discovery pass will look at in total before giving up — bounds
@@ -135,15 +156,15 @@ fn walk(root: &Path, budget: &mut usize) -> Vec<PathBuf> {
 
 /// Lower a candidate path to its preference rank: index into [`PREFERRED_NAMES`] if its filename
 /// matches (case-insensitively), else `PREFERRED_NAMES.len()` (tried last, in discovery order).
-fn preference_rank(path: &Path) -> usize {
+fn preference_rank(path: &Path, names: &[&str]) -> usize {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return PREFERRED_NAMES.len();
+        return names.len();
     };
     let lower = name.to_ascii_lowercase();
-    PREFERRED_NAMES
+    names
         .iter()
         .position(|candidate| *candidate == lower)
-        .unwrap_or(PREFERRED_NAMES.len())
+        .unwrap_or(names.len())
 }
 
 fn is_ttf(path: &Path) -> bool {
@@ -163,14 +184,24 @@ fn is_ttf(path: &Path) -> bool {
 /// leaked too rather than freed. In practice this almost never triggers more than once — the
 /// first `PREFERRED_NAMES` hit on a real system is a real, working font — and it is bounded by
 /// [`SCAN_BUDGET`] in the pathological case where nothing under `roots` parses at all.
-fn discover_font_bytes(roots: &[PathBuf]) -> Option<&'static [u8]> {
+fn discover_font_bytes(
+    roots: &[PathBuf],
+    names: &[&str],
+    named_only: bool,
+) -> Option<&'static [u8]> {
     let mut budget = SCAN_BUDGET;
     let mut candidates: Vec<PathBuf> = roots
         .iter()
         .flat_map(|root| walk(root, &mut budget))
         .filter(|path| is_ttf(path))
         .collect();
-    candidates.sort_by_key(|path| preference_rank(path));
+    // `named_only` is the italic pass. The regular pass falls back to any `.ttf` that parses,
+    // because a desktop with no text at all is worse than a desktop in an odd font; an italic
+    // fallback to some arbitrary upright face would be no cue and a wasted leak.
+    if named_only {
+        candidates.retain(|path| preference_rank(path, names) < names.len());
+    }
+    candidates.sort_by_key(|path| preference_rank(path, names));
 
     candidates.into_iter().find_map(|path| {
         let bytes = std::fs::read(&path).ok()?;
@@ -231,7 +262,7 @@ mod tests {
         // ever reaching `Face::from_bytes`, not merely fail to parse.
         touch(&dir.path().join("Foo.otf"), b"whatever");
         touch(&dir.path().join("Foo.ttc"), b"whatever");
-        assert!(discover_font_bytes(&[dir.path().to_path_buf()]).is_none());
+        assert!(discover_font_bytes(&[dir.path().to_path_buf()], PREFERRED_NAMES, false).is_none());
     }
 
     #[test]
@@ -239,12 +270,34 @@ mod tests {
         let root = PathBuf::from("/usr/share/fonts/truetype/dejavu");
         let preferred = root.join("DejaVuSans.ttf");
         let other = root.join("SomeOtherFont.ttf");
-        assert!(preference_rank(&preferred) < preference_rank(&other));
+        assert!(
+            preference_rank(&preferred, PREFERRED_NAMES) < preference_rank(&other, PREFERRED_NAMES)
+        );
         // Case does not matter.
         assert_eq!(
-            preference_rank(&root.join("DEJAVUSANS.TTF")),
-            preference_rank(&preferred)
+            preference_rank(&root.join("DEJAVUSANS.TTF"), PREFERRED_NAMES),
+            preference_rank(&preferred, PREFERRED_NAMES)
         );
+        // The italic pass is the same rule against its own list, and an upright face never
+        // qualifies for it: a missing italic is a missing cue, never an upright fallback that
+        // silently says "pinned" about every window.
+        assert!(
+            preference_rank(&root.join("DejaVuSans-Oblique.ttf"), ITALIC_NAMES)
+                < ITALIC_NAMES.len()
+        );
+        assert_eq!(
+            preference_rank(&preferred, ITALIC_NAMES),
+            ITALIC_NAMES.len(),
+            "the regular face is not a candidate for italic"
+        );
+    }
+
+    /// A machine with no italic font anywhere is a normal machine, and it gets a compositor that
+    /// draws — the pinned name simply reads upright.
+    #[test]
+    fn an_italic_pass_that_finds_nothing_falls_back_to_the_regular_face() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_font_bytes(&[dir.path().to_path_buf()], ITALIC_NAMES, true).is_none());
     }
 
     #[test]

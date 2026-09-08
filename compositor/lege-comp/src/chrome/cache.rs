@@ -38,6 +38,10 @@ pub struct WidgetKey {
     pub secondary: String,
     pub background: u32,
     pub variant: u32,
+    /// Anything else about the widget that is a boolean — one bit per state. A window's name tag
+    /// uses bit 0 for "pinned", which changes the face it is drawn in and nothing else, so
+    /// without this the upright bitmap would stay cached across the toggle.
+    pub flags: u32,
 }
 
 impl WidgetKey {
@@ -47,6 +51,7 @@ impl WidgetKey {
             secondary: String::new(),
             background,
             variant: 0,
+            flags: 0,
         }
     }
 
@@ -59,6 +64,12 @@ impl WidgetKey {
     #[must_use]
     pub const fn with_variant(mut self, variant: u32) -> Self {
         self.variant = variant;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
         self
     }
 }

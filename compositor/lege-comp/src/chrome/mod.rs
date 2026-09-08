@@ -292,13 +292,12 @@ pub fn collect_window_chrome(
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
     renderer: &mut GlesRenderer,
 ) {
-    // A fullscreen window wears no frame, but it can be *asked* for one: resting the pointer in
-    // either bottom corner shows its name tag at the left and its controls at the right, drawn
-    // over the window rather than beside it. Its geometry is the whole output, so the strip
-    // `recovery_affordance` already computes lands exactly on the bottom edge of the screen —
-    // which is where the user asked for them, and why this needs no geometry of its own.
-    if window_service.has_frame(window_id) || window_service.fullscreen_chrome() == Some(window_id)
-    {
+    // A window filling the screen wears no frame, but it can be *asked* for one: resting the
+    // pointer in either bottom corner shows its name tag at the left and its controls at the
+    // right, drawn over the window rather than beside it. Its geometry is the whole output, so
+    // the strip `recovery_affordance` already computes lands exactly on the bottom edge of the
+    // screen — which is where the user asked for them, and why this needs no geometry of its own.
+    if window_service.has_frame(window_id) || window_service.covering_chrome() == Some(window_id) {
         collect_name_tag(
             chrome,
             window_service,
@@ -655,16 +654,23 @@ fn collect_name_tag(
         .group_of(window_id)
         .and_then(|group| window_service.group_record(group))
         .map(|record| (record.accent, record.display_name().to_owned()));
+    // Pinned above the other windows: its name is drawn in italic, so the state is legible from
+    // the tag itself rather than from watching what the stacking order does.
+    let pinned = window_service.is_always_on_top(window_id);
     let key = WidgetKey::new(window.title.clone(), background)
         .with_secondary(group.clone().map(|(_, name)| name).unwrap_or_default())
-        .with_variant(group.as_ref().map_or(0, |(accent, _)| *accent));
+        .with_variant(group.as_ref().map_or(0, |(accent, _)| *accent))
+        .with_flags(u32::from(pinned));
     let title = window.title.clone();
     let location = to_physical(
         band,
         Point::from((output_rect.x, output_rect.y)),
         output_scale,
     );
-    let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
+    let fonts = chrome
+        .fonts
+        .as_mut()
+        .map(|f| (&mut f.cache, if pinned { f.italic } else { f.face }));
     let widget = chrome.name_tags.entry(window_id).or_default();
     if let Some(element) = widget.ensure(
         key,
