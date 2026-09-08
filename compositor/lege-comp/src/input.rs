@@ -311,7 +311,7 @@ fn park_window<B: Backend + 'static>(state: &mut LegeCompState<B>, window_id: Wi
 /// means no implicit grab exists yet at that moment, so demanding one silently disabled both
 /// affordances. Their start data is synthesized here instead: the press is the compositor's own
 /// observation, there is no client claim to validate.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GestureOrigin {
     ClientRequest,
     CompositorAffordance,
@@ -412,10 +412,16 @@ fn start_gesture<B: Backend + 'static>(
         state.show_compositor_cursor(edges.cursor());
     }
     let grab = WindowGestureGrab {
+        pressed_at: to_lege_point(start_data.location),
         start_data,
         window_id,
         gesture,
         followers,
+        // A press on a name tag that never moves is a click, and a click on a name tag pins the
+        // window. Only from the tag: `xdg_toplevel.move` is a client asking to be dragged, and a
+        // client-side title bar that happens to receive a bare click must not pin anything.
+        pins_on_click: origin == GestureOrigin::CompositorAffordance
+            && matches!(gesture, Gesture::Move),
     };
     pointer.set_grab(state, grab, serial, Focus::Clear);
 }
@@ -465,6 +471,10 @@ pub struct WindowGestureGrab<B: Backend + 'static> {
     start_data: PointerGrabStartData<LegeCompState<B>>,
     window_id: WindowId,
     gesture: Gesture,
+    /// Where the press landed, so the release can tell a click from a drag.
+    pressed_at: LegePoint,
+    /// Whether a release that never left [`CLICK_SLOP`] of [`Self::pressed_at`] pins the window.
+    pins_on_click: bool,
     /// The other members of the dragged window's group, with their offsets from it: a band drag
     /// moves the whole group. Empty for a resize, for an ungrouped window and for a `Shift`-held
     /// drag, which moves that member alone.
@@ -546,6 +556,19 @@ impl<B: Backend + 'static> PointerGrab<LegeCompState<B>> for WindowGestureGrab<B
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
+            // A name tag that was pressed and let go without moving is a click, and a click on a
+            // name tag pins the window above the others. Checked before the drag is finished, so
+            // "did it move" is asked of the pointer rather than of a geometry that a repair may
+            // have changed for reasons of its own.
+            let released_at = to_lege_point(handle.current_location());
+            if self.pins_on_click && is_click(self.pressed_at, released_at) {
+                data.window_service.finish_drag();
+                data.drop_target = None;
+                data.toggle_always_on_top(self.window_id);
+                data.show_compositor_cursor(None);
+                handle.unset_grab(self, data, event.serial, event.time, true);
+                return;
+            }
             match self.gesture {
                 Gesture::Move => {
                     if let Some((_, geometry)) = data.window_service.finish_drag() {
@@ -1024,10 +1047,10 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     geometry: record.geometry,
                     is_client: self.window_service.is_client_window(window_id),
                     has_frame: self.window_service.has_frame(window_id)
-                        || self.window_service.fullscreen_chrome() == Some(window_id),
+                        || self.window_service.covering_chrome() == Some(window_id),
                     maximized: record.maximized,
                     strip: if self.window_service.has_frame(window_id)
-                        || self.window_service.fullscreen_chrome() == Some(window_id)
+                        || self.window_service.covering_chrome() == Some(window_id)
                     {
                         self.window_service
                             .recovery_affordance(window_id)
@@ -1058,8 +1081,9 @@ impl<B: Backend + 'static> LegeCompState<B> {
     }
 
     /// A dwell at the bottom of the screen: the bottom-left corner is Home
-    /// ([`DwellIntent::HomeCorner`]), and the rest of the bottom edge peeks the shell's bar out
-    /// from under a fullscreen window ([`DwellIntent::BarPeek`]).
+    /// ([`DwellIntent::HomeCorner`]), either corner of a window filling the screen is that
+    /// window's own chrome ([`DwellIntent::CoveringChrome`]), and the edge between them asks for
+    /// the shell's bar ([`DwellIntent::BarPeek`]).
     ///
     /// Both have to be the compositor's rule rather than the shell's: whatever is under the
     /// pointer owns it, so under a maximized or fullscreen window the shell never learns the
@@ -1087,13 +1111,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 crate::space_sync::sync_after_change(self);
             }
         }
-        // A fullscreen window's own chrome goes the same way, and holds for the same reason: the
+        // A covering window's own chrome goes the same way, and holds for the same reason: the
         // strip it just showed has to be reachable, so the pointer is allowed anywhere on it.
-        if let Some(shown) = self.window_service.fullscreen_chrome()
-            && !self.holding_fullscreen_chrome(shown, pos)
+        if let Some(shown) = self.window_service.covering_chrome()
+            && !self.holding_covering_chrome(shown, pos)
         {
             self.dwell = None;
-            if self.window_service.set_fullscreen_chrome(None) {
+            if self.window_service.set_covering_chrome(None) {
                 crate::space_sync::sync_after_change(self);
             }
         }
@@ -1169,8 +1193,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::space_sync::sync_after_change(self);
                 }
             }
-            DwellIntent::FullscreenChrome(window_id) => {
-                if self.window_service.set_fullscreen_chrome(Some(window_id)) {
+            DwellIntent::CoveringChrome(window_id) => {
+                if self.window_service.set_covering_chrome(Some(window_id)) {
                     crate::space_sync::sync_after_change(self);
                 }
             }
@@ -1180,29 +1204,37 @@ impl<B: Backend + 'static> LegeCompState<B> {
 
     /// What a dwell at `pos` would be about, if anything.
     ///
-    /// The corner and the peek band are disjoint by construction (`in_peek_band` excludes the
-    /// corner square), so there is never a precedence question between them: each region has one
-    /// rule. The corner is Home from anywhere, a fullscreen window included — the bar has no Home
-    /// chip, so with a window covering the screen this is the only pointer route there.
+    /// The three regions are disjoint by construction (`in_peek_band` excludes both corner
+    /// squares), so there is never a precedence question between them: each region has one rule.
+    ///
+    /// - the bottom-left square is **Home**, whatever is on the screen. The bar has no Home chip,
+    ///   so this is the only pointer route there, and a window filling the screen is exactly when
+    ///   it is needed most — giving the corner to the window would leave Home reachable only from
+    ///   the keyboard for as long as anything was maximized, which is most of the time.
+    /// - the bottom-right square is a screen-filling window's **own chrome**, shown over it. One
+    ///   dwell shows the whole strip, tag included, because it *is* one strip.
+    /// - the edge between them asks for the shell's bar back.
+    ///
+    /// The one state-dependent part: while that chrome is already showing, neither corner asks
+    /// for anything. The strip is under the pointer and the strip is what is being reached for —
+    /// without this, moving onto the window's name tag, which lands in the left-hand square,
+    /// would reveal Home out from under the click.
     fn dwell_intent_at(&self, pos: LegePoint) -> Option<DwellIntent> {
         let output = self
             .window_service
             .outputs()
             .iter()
             .find(|output| rect_contains(output.logical, pos))?;
-        // What is fullscreen on this output, if anything. It changes what both corners mean: a
-        // window filling the screen has no frame to reach for and the shell's bar carries no copy
-        // of its controls, so while one is up the corners belong to *it* rather than to Home.
-        let fullscreen = self
-            .window_service
-            .windows()
-            .find(|window| {
-                window.fullscreen
-                    && !window.shelved
-                    && self.window_service.is_client_window(window.id)
-                    && window.geometry.intersection_area(output.logical) > 0
-            })
-            .map(|window| window.id);
+        // What is filling this output, if anything — maximized or fullscreen alike
+        // (`WindowRecord::covers_screen`). Such a window has no frame to reach for and the shell's
+        // bar carries no copy of its controls, so the right-hand square is the only route to them.
+        // The topmost one, because that is the one whose chrome the corner would be over.
+        let covering = self.window_service.stacking_order().into_iter().find(|id| {
+            self.window_service.is_client_window(*id)
+                && self.window_service.window(*id).is_some_and(|window| {
+                    window.covers_screen() && window.geometry.intersection_area(output.logical) > 0
+                })
+        });
 
         if in_home_corner(output.logical, pos) || in_controls_corner(output.logical, pos) {
             // Not while the shell's own chrome is under the pointer: whatever it is showing there
@@ -1212,32 +1244,48 @@ impl<B: Backend + 'static> LegeCompState<B> {
             if self.over_shell_overlay(pos) {
                 return None;
             }
-            if let Some(window_id) = fullscreen {
-                // The user's rule: "close/maximize/minimize should appear on hover in the bottom
-                // right, over the full screen window, not adjacent to it. same for the tag in the
-                // bottom left." One dwell shows both — they are one strip, and a person reaching
-                // for either has asked to see the window's own chrome.
-                return (self.window_service.fullscreen_chrome() != Some(window_id))
-                    .then_some(DwellIntent::FullscreenChrome(window_id));
+            // Already showing: the strip is the thing under the pointer, and neither corner is
+            // asking for anything else while it is.
+            if self.window_service.covering_chrome().is_some() {
+                return None;
+            }
+            // The user's rule: "close/maximize/minimize should appear on hover in the bottom
+            // right, over the full screen window, not adjacent to it. same for the tag in the
+            // bottom left." One dwell shows both — they are one strip.
+            if in_controls_corner(output.logical, pos) {
+                return covering.map(DwellIntent::CoveringChrome);
             }
             // Nothing to ask for if Home is already showing. Without this, a pointer resting in
             // the corner re-fires the reveal on every twitch inside the rest slop, and each one
             // costs a re-sync and a refocus for a state that has not changed.
-            return (!self.window_service.home_revealed() && in_home_corner(output.logical, pos))
-                .then_some(DwellIntent::HomeCorner);
+            return (!self.window_service.home_revealed()).then_some(DwellIntent::HomeCorner);
         }
         if !in_peek_band(output.logical, pos)
             || self.window_service.peek_output() == Some(output.name.as_str())
         {
             return None;
         }
-        fullscreen.map(|_| DwellIntent::BarPeek(output.name.clone()))
+        covering.map(|_| DwellIntent::BarPeek(output.name.clone()))
     }
 
-    /// Whether a fullscreen window's chrome should stay shown: the pointer is still in one of the
+    /// Pin or unpin a window on a click of its name tag, and put the new answer on screen: the
+    /// stacking order changes, and the tag draws the window's name in italic while it holds.
+    ///
+    /// The user's rule, and the reason it is the tag rather than a fourth control: the tag is
+    /// already the thing you take hold of to say "this window, here", and there is nothing else
+    /// a bare click on it could have meant.
+    fn toggle_always_on_top(&mut self, window_id: WindowId) {
+        if !self.window_service.is_client_window(window_id) {
+            return;
+        }
+        self.window_service.toggle_always_on_top(window_id);
+        crate::space_sync::sync_after_change(self);
+    }
+
+    /// Whether a covering window's chrome should stay shown: the pointer is still in one of the
     /// corners that opened it, or anywhere on the strip it put there. Without the strip, moving on
     /// to the close button would be moving off the thing that summoned it.
-    fn holding_fullscreen_chrome(&self, window_id: WindowId, pos: LegePoint) -> bool {
+    fn holding_covering_chrome(&self, window_id: WindowId, pos: LegePoint) -> bool {
         let Some(window) = self.window_service.window(window_id) else {
             return false;
         };
@@ -1364,11 +1412,15 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     return;
                 }
                 Affordance::Button(ControlTag::Maximize) => {
-                    // On a fullscreen window's own chrome the middle tag leaves fullscreen. It
-                    // used to maximize instead: the client was configured to the maximized
-                    // rectangle while `fullscreen` stayed true, which is a window that is both
-                    // and neither.
-                    if self.window_service.fullscreen_chrome() == Some(window_id) {
+                    // The middle tag is the way back out of whichever way this window filled the
+                    // screen. Fullscreen first: maximizing instead configured the client to the
+                    // maximized rectangle while `fullscreen` stayed true, which is a window that
+                    // is both and neither.
+                    let fullscreen = self
+                        .window_service
+                        .window(window_id)
+                        .is_some_and(|window| window.fullscreen);
+                    if fullscreen {
                         crate::xdg_shell::apply_fullscreen(self, window_id, false);
                         return;
                     }
@@ -1379,10 +1431,13 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::xdg_shell::apply_maximized(self, window_id, !maximized);
                     return;
                 }
-                // A fullscreen window's name tag names it and nothing else. Dragging it would
-                // move a window whose geometry is the output off the output, which COMPOSITOR.md
-                // says is never repaired — and there is nowhere for it to go anyway.
-                Affordance::Tag if self.window_service.fullscreen_chrome() == Some(window_id) => {
+                // A covering window's name tag names it and pins it, and nothing else. Dragging
+                // it would move a window whose geometry is the output off the output, which
+                // COMPOSITOR.md says is never repaired — and there is nowhere for it to go
+                // anyway — so the click is taken here rather than at the end of a gesture that
+                // must not start.
+                Affordance::Tag if self.window_service.covering_chrome() == Some(window_id) => {
+                    self.toggle_always_on_top(window_id);
                     return;
                 }
                 Affordance::Tag => Gesture::Move,
@@ -1574,18 +1629,31 @@ const DWELL_MS: u64 = 350;
 /// anything.
 const DWELL_REST_SLOP: i32 = 4;
 
+/// How far the pointer may travel between a name tag's press and its release and still count as a
+/// click rather than a drag, in logical pixels. Not zero: a hand holding a button down moves, and
+/// a pin that only happened when the pointer was perfectly still would read as unreliable rather
+/// than as strict.
+const CLICK_SLOP: i32 = 3;
+
+/// Whether a press at `pressed` released at `released` was a click rather than a drag.
+fn is_click(pressed: LegePoint, released: LegePoint) -> bool {
+    (released.x - pressed.x).abs() <= CLICK_SLOP && (released.y - pressed.y).abs() <= CLICK_SLOP
+}
+
 /// What the pointer resting at the bottom of the screen is asking for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DwellIntent {
     /// The bottom-left corner: reveal the Home Surface.
     HomeCorner,
-    /// The rest of the bottom edge of a named output carrying a fullscreen window: raise the
-    /// shell's overlay over it.
+    /// The rest of the bottom edge of a named output carrying a window that fills the screen:
+    /// raise the shell's overlay over it (fullscreen, which outranks it) and tell the shell the
+    /// edge has been asked for (`bar_peeked`, either way). The shell cannot see this for itself —
+    /// whatever is under the pointer owns it — so it is the compositor that has to notice.
     BarPeek(String),
-    /// Either bottom corner of a fullscreen window: show that window's own name tag and controls
-    /// over it. A fullscreen window has no frame to reach for and the shell's bar carries no copy
-    /// of its controls, so without this there is no pointer route to closing it at all.
-    FullscreenChrome(WindowId),
+    /// Either bottom corner of a window that fills the screen: show that window's own name tag
+    /// and controls over it. Such a window has no frame to reach for and the shell's bar carries
+    /// no copy of its controls, so without this there is no pointer route to closing it at all.
+    CoveringChrome(WindowId),
 }
 
 /// A dwell in progress: what it is for, where the pointer settled, and when it settled there.
@@ -1916,6 +1984,17 @@ mod tests {
         window.strip = None;
         let target = press_target_at(&[window], at(1590, 928));
         assert_eq!(target, PressTarget::Window(WindowId(1)));
+    }
+
+    /// A press that never moves is a click; one that leaves the slop is the drag it always was.
+    /// This is the whole of "clicking the name tag pins the window, dragging still drags it".
+    #[test]
+    fn a_name_tag_press_that_never_moves_is_a_click() {
+        let pressed = at(400, 928);
+        assert!(is_click(pressed, pressed));
+        assert!(is_click(pressed, at(400 + CLICK_SLOP, 928 - CLICK_SLOP)));
+        assert!(!is_click(pressed, at(400 + CLICK_SLOP + 1, 928)));
+        assert!(!is_click(pressed, at(400, 928 + CLICK_SLOP + 1)));
     }
 
     /// The same for the client area — the ordinary click-to-focus case — and for the resize

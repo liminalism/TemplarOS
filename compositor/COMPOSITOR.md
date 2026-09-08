@@ -19,13 +19,18 @@ must call. The seven properties it must uphold are:
    the group stripe; grab to move, drop target for grouping — `chrome::layout::name_tag`) and contiguous
    **control tags** at its right (park, maximize, close — `chrome::layout::control_tags`); the surface is
    mapped at, and configured to, `WindowService::client_area` — the one place the strip is subtracted.
-   A fullscreen window, every shell surface, and a **maximized window on an output whose bottom edge a
-   shell surface actually reserves** (`Output::reserves_bottom`; that shell's bar carries its controls)
-   have no frame (`WindowService::has_frame`); the moment nothing is reserved there, the tags come back.
-   A zone of size 0 reserves nothing, so a bar that claims `Exclusive{Bottom, 0}` — the current shell,
-   which draws over Home rather than beside it — leaves every maximized window whole and wearing its own
-   tags. There is no corner grip: resize is the margin ring outside every edge and corner.
+   Every shell surface, and every client window **filling its output** — maximized or fullscreen
+   (`WindowRecord::covers_screen`) — has no frame (`WindowService::has_frame`). The frame is a strip
+   *below* the client area, so on a window filling the screen it is a black row across the bottom of
+   the display, permanently, in exchange for chrome nobody asked to see; such a window shows its tag
+   and its controls over itself on a dwell instead ("A screen-filling window's own chrome", below).
+   There is no corner grip: resize is the margin ring outside every edge and corner.
 3. **Identity** — `lege-comp-integration::DbusIdentityCache`; sanitized identity into the toplevel-info path.
+   A **click on a name tag pins the window** (`WindowService::toggle_always_on_top`) and its name is
+   then drawn in italic; a press that moves is the drag it always was (`input::CLICK_SLOP` separates
+   the two on release). A pin is a sort key, not a layer: the window stays on `Layer::Normal` and is
+   *ordered* as if it were on `AppOnTop`, so `layer_of` — and everything written in terms of it —
+   reads a pinned window as the ordinary window it is.
 4. **Typed layers** (`lege_window::Layer`) replacing arbitrary always-on-top; `LayerStack` is the sole
    z-order authority — the compositor's own scene-graph stacking must be driven from `WindowService::stacking_order`,
    never maintained independently. A **window group is one thing to stack**: activating any member raises
@@ -58,9 +63,12 @@ must call. The seven properties it must uphold are:
    `Notification` — otherwise the bar would draw over every fullscreen video, since `ShellOverlay` is
    above `Normal` by design — and never above `SystemModal`, `Recovery` or `SecureLock`. The `Layer`
    discriminants are untouched; the exception is a sort key, and suspending it for one output
-   (`set_peek_output`) is the whole of the bottom-edge peek. Because `stacking_order` is the
-   single z-order authority, the render order, the hit-test mirror and the shell's snapshot all follow
-   it.
+   (`set_peek_output`) is half of the bottom-edge peek — the other half is `bar_peeked`, which tells
+   the shell the edge was asked for at all. Fullscreen only, deliberately: promoting a *maximized*
+   window over `ShellOverlay` too would put the launcher, the switcher and every context menu behind
+   the window the user is working in, which is the common case rather than the rare one. Because
+   `stacking_order` is the single z-order authority, the render order, the hit-test mirror and the
+   shell's snapshot all follow it.
 
 Property tests for the geometry live in `crates/lege-window`, not here — the policy is testable without a
 compositor, and that is the point of the split.
@@ -86,8 +94,8 @@ over in-memory state, and every `lege-comp-integration` type hands work to a bac
 | `xdg_toplevel` decoration negotiation completes (`zxdg_toplevel_decoration_v1` / lack of it) | Answer `ServerSide` — the frame is the compositor's — unless the client insists on `ClientSide`; `WindowService::set_decoration` either way. `ClientSide`/`Borderless` gets the compositor-painted recovery tab colour (`WindowService::recovery_affordance`), still below the client, so a client that draws its own title bar keeps it and gains the compositor's tags underneath |
 | A mapped client commits a size other than the one it was last given, having acknowledged that one (`ToplevelSurface::with_committed_state`) | The frame follows: `WindowService::set_geometry(frame_around(committed size at the current client position))`. Never mid-resize, never for a maximized or fullscreen window — a commit that still carries the older size is the client catching up, not choosing |
 | `xdg_toplevel.set_fullscreen` / `unset_fullscreen`, and the compositor's own modal-dialog tracking (`xdg_dialog_v1`, or transient-for heuristics for XWayland) | `xdg_shell::apply_fullscreen` (both shells, and the escape route) → `WindowService::set_fullscreen`, which gives the window the output's **`logical`** rectangle — not `usable()`: genuinely full screen means over the bar's exclusive zone, not politely beside it — and remembers the geometry to come back to in a slot of its own (`fullscreen_restore`, never `restore_geometry`, so maximize-then-fullscreen restores both correctly). That size is then configured onto the client; a fullscreen window that is only a cleared flag is a window that has merely lost its frame. `on_outputs_changed` re-derives it from the nearest output and never *repairs* it: `is_recoverable` measures a tag strip against `usable()` and a fullscreen window has no strip, so repairing it is exactly what would pull it off the full output. Its recovery route is the escape chord, which restores through the same slot. `set_modal` is unchanged |
-| Pointer comes to *rest* (`input::DWELL_REST_SLOP`) within `input::PEEK_BAND` of the bottom edge of an output that has a visible fullscreen client window, for `input::DWELL_MS` (`input::update_dwell`) | `WindowService::set_peek_output(Some(output))`, then `space_sync::sync_after_change`. The peek must be the compositor's rule: while a window is fullscreen it is the topmost surface there, so it receives the pointer and the shell never learns the edge was reached. Nothing about the bar surface changes — it stays mapped and keeps its zone, so neither the peek nor the fullscreen entry reflows a maximized window — only `stacking_order` does. Ends (`set_peek_output(None)`) at once, with no dwell, when the pointer is neither in the band nor on a visible `ShellOverlay` surface (`input::holding_peek` — the zone is 0, so the strip the shell *reserves* is nothing to hold on to), or when the window leaves fullscreen. `DWELL_MS` and `DWELL_REST_SLOP` are the shell's own `bar_screen::HINT_OPEN_MS`/`HINT_REST_SLOP`, so the two reveals are one gesture |
-| Pointer comes to rest for `input::DWELL_MS` in the `input::HOME_CORNER` square at an output's bottom-left (`input::update_dwell`) | `LegeCompState::reveal_home(RevealHome::Show)` — the same route as `Super+H`, so the scatter and switcher are torn down, the `Space` mirror follows and the keyboard moves somewhere visible. The corner is the pointer route to Home now that the bar carries no Home chip, so it holds under a maximized *and* a fullscreen window: it is disjoint from the peek band by construction (`in_peek_band` excludes it), never a precedence rule. Suppressed while the session is locked, while a pointer button is held (smithay's `ClickGrab` makes `is_grabbed` true for the whole press, so a window thrown at the corner is not a request for Home), and while a visible `ShellOverlay` surface is under the pointer — which is why the shell's island asks to be centred (`set_edge_alignment`) rather than sitting at the start of its edge, on top of this square. Leaving the corner does **not** hide Home again: revealing is a deliberate act and `set_home_revealed`'s own rules end it |
+| Pointer comes to *rest* (`input::DWELL_REST_SLOP`) within `input::PEEK_BAND` of the bottom edge of an output that has a visible client window filling it, for `input::DWELL_MS` (`input::update_dwell`) | `WindowService::set_peek_output(Some(output))`, then `space_sync::sync_after_change`, which sends `lege_shell_manager_v1.bar_peeked`. The peek must be the compositor's rule: a window filling the screen owns the pointer there, so the shell never learns the edge was reached — which is why the *event* matters as much as the stacking. Nothing about the bar surface changes — it stays mapped and keeps its zone, so neither the peek nor the fullscreen entry reflows a window — only `stacking_order` does, and only for a fullscreen window. Ends (`set_peek_output(None)`) at once, with no dwell, when the pointer is neither in the band nor on a visible `ShellOverlay` surface (`input::holding_peek` — the zone is 0, so the strip the shell *reserves* is nothing to hold on to), or when the window enters or leaves fullscreen or maximized |
+| Pointer comes to rest for `input::DWELL_MS` in the `input::HOME_CORNER` square at an output's bottom-left (`input::update_dwell`) | `LegeCompState::reveal_home(RevealHome::Show)` — the same route as `Super+H`, so the scatter and switcher are torn down, the `Space` mirror follows and the keyboard moves somewhere visible. The corner is the pointer route to Home now that the bar carries no Home chip, so it holds under a maximized *and* a fullscreen window: it is disjoint from the peek band and from the controls' corner by construction, never a precedence rule. Suspended only while a screen-filling window is already showing its own chrome, whose name tag lands in this square. Suppressed while the session is locked, while a pointer button is held (smithay's `ClickGrab` makes `is_grabbed` true for the whole press, so a window thrown at the corner is not a request for Home), and while a visible `ShellOverlay` surface is under the pointer — which is why the shell's island asks to be centred (`set_edge_alignment`) rather than sitting at the start of its edge, on top of this square. Leaving the corner does **not** hide Home again: revealing is a deliberate act and `set_home_revealed`'s own rules end it |
 | Toplevel destroyed (surface unmapped, client disconnects) | `WindowService::on_toplevel_destroyed`; `DbusIdentityCache::forget(peer_pid)` once no other live window shares that PID; if that was the instance's last window, `GovernorNotifier::forget_instance` |
 | `lege_shell_v1.set_exclusive_zone` from the shell | Recompute that output's work area with `lege_window::work_area_for` over every live zone, set it with `Output::with_work_area`, and feed the whole topology back through `on_outputs_changed` — the same single entry point, so a dock appearing and a monitor being unplugged are the same kind of event and cannot diverge. Release the surface's zone when it is destroyed — and **only** then: a claim of size 0 is a live claim that anchors the surface to its edge and reserves nothing, so shrinking a bar to a hint must not unplace it. Never validate the claim yourself: `Output::usable` already refuses one that would swallow the output or leave no room for a window's tag strip. A bottom zone also takes that output's maximized windows' frames away (`WindowService::has_frame`): their controls are the shell's bar's, and the compositor draws their tags again the moment nothing is reserved there (a size-0 claim, or no claim at all). The zone is a floor on the surface's thickness and *nothing at all* about its extent along the edge: `shell_surface_placement` anchors the surface flush to its edge at the claim's `Alignment` along it — `Start` unless `set_edge_alignment` said otherwise, which is placement and never reservation — and gives it its own committed width (or height), clamped to the output. A chip strip narrower than the screen therefore reserves exactly what a full-width row reserves, and growing one into the other reflows nothing — the same reason the thickness is a floor. It also means the compositor never configures a shell surface to the output's extent, so a shell that wants the full edge supplies that number itself |
 | `lege_shell_v1.set_edge_alignment` from the shell (`since=6`) | Record it against the surface and, if it already holds a claim on that edge, put it on the claim and re-place through `recompute_outputs` — the same one entry point a zone change takes. The two requests are unordered, so an alignment for an edge the surface has not claimed yet is kept until a claim on that edge arrives; one for an edge it never claims is never applied. `Start` is what a surface that never sends it gets, which is what every surface did before this request existed. Alignment moves a surface *along* its edge and changes no reservation, so a centred island reflows nothing on the way — and centring it is what clears the bottom-left corner the hot corner owns |
@@ -117,27 +125,38 @@ over in-memory state, and every `lege-comp-integration` type hands work to a bac
 tab) are created by the compositor core calling `WindowService::set_layer(id, layer, ClientKind::CompositorCore)`
 directly — no protocol request exists for them, by design (`interfaces/wayland/lege-recovery-v1.xml`).
 
-## A fullscreen window's own chrome
+## A screen-filling window's own chrome
 
-A fullscreen window wears no frame: its geometry is the whole output and the client owns every
-pixel of it. That left it with no pointer route to its own controls at all — the island carries no
-copy of them, and there is no strip beside the window to reach for.
+A window filling its output — maximized or fullscreen (`WindowRecord::covers_screen`) — wears no
+frame: the client owns every pixel of it, bottom edge included. That leaves it with no pointer
+route to its own controls at all: the island carries no copy of them, and there is no strip beside
+the window to reach for.
 
-Both of its bottom corners now belong to it. Resting the pointer in either one shows that window's
-name tag and control tags *over* it, on the strip its own geometry already puts along the bottom
-edge of the screen: the tag at the left, close/maximize/minimize at the right. The strip stays
-while the pointer is on it or on either corner, and goes when the pointer leaves — the same
-asymmetry every other reveal on this desktop has.
+Both of its bottom corners belong to it. Resting the pointer in either one shows that window's name
+tag and control tags *over* it, on the strip its own geometry already puts along the bottom edge of
+the screen: the tag at the left, close/maximize/minimize at the right. The strip stays while the
+pointer is on it or on either corner, and goes when the pointer leaves — the same asymmetry every
+other reveal on this desktop has.
 
 Three regions divide the bottom edge of an output, and never two of them claim one point:
 
-| Region | With a fullscreen window | Without one |
+| Region | With a screen-filling window | Without one |
 |---|---|---|
-| bottom-left square | that window's chrome | reveal Home |
+| bottom-left square | reveal Home | reveal Home |
 | bottom-right square | that window's chrome | nothing |
-| the edge between them | raise the shell's overlay (the switcher) | nothing |
+| the edge between them | peek: raise the shell's overlay, and send `bar_peeked` | nothing |
 
-`WindowService::fullscreen_chrome` is the whole of the state, filtered on read so a window that
-stops being fullscreen stops showing chrome by that fact alone. `chrome::collect_window_chrome`
-draws it, and `press_candidates` makes the same strip hit-testable, so a click on the close tag
-reaches the window rather than the client underneath.
+The left-hand square is Home's whatever is on the screen: the bar carries no Home chip, so it is
+the only pointer route there, and a window filling the screen is when it is needed most. The one
+state-dependent part is that while the chrome is already showing, *neither* corner asks for
+anything — the strip is under the pointer and the strip is what is being reached for; without that,
+moving onto the window's name tag, which lands in the left-hand square, would reveal Home out from
+under the click.
+
+`WindowService::covering_chrome` is the whole of the state, filtered on read so a window that stops
+covering the screen stops showing chrome by that fact alone. `chrome::collect_window_chrome` draws
+it, and `press_candidates` makes the same strip hit-testable, so a click on the close tag reaches
+the window rather than the client underneath. On this strip the middle control leaves whichever
+state the window is in — fullscreen first, then maximized — and the name tag pins rather than
+drags: dragging a window whose geometry *is* the output would move it off the output, which is
+never repaired.

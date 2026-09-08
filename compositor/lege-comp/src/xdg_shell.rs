@@ -171,6 +171,10 @@ pub fn apply_maximized<B: Backend + 'static>(
     else {
         return;
     };
+    // Either direction ends a peek, for the same reason fullscreen does: a maximized window
+    // covers the bottom edge too, and a peek that outlives the window that was under it would
+    // have the next one open already uncovered, with no dwell ever asked for.
+    state.window_service.set_peek_output(None);
     let client = crate::space_sync::client_area(state, window_id);
     if let Some(window) = crate::space_sync::element_for_window(state, window_id) {
         if let Some(toplevel) = window.toplevel() {
