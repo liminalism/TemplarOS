@@ -1,6 +1,43 @@
 akr 0.1
 project legeos
 
+record legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle/1 : decision {
+    title "A Place's rung is a drawn structure inside its allocation, not a box with more text in it"
+    state proposed
+    scope [
+        path "crates/lege-field/**",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/design.rs",
+        path "shell/lege-shell/src/surface/field_screen.rs"
+    ]
+    topic homegarden-form
+    decision """
+        The layout engine keeps allocating rectangles; what is drawn inside one is not a card. A Place renders the structure its own use has earned, and the whitespace inside its allocation is part of that form:
+
+        - development/research → a branch structure: the root, the descendants that actually mattered, drawn as a tree with the heavier branches weightier;
+        - media → a horizontal shelf;
+        - document-heavy work → a loose folio/stack;
+        - a plain folder → stays a plain simple form.
+
+        The visual grammar is five dimensions and no more: **position = memory, size = relevance, shape = mode of use, material = identity, colour = state**. Enough to be rich; few enough not to become decorative noise.
+
+        Scale differences are aggressive once blooms exist. A lightly relevant place is a line — `[ Downloads · 2 new ]` — while a context that has dominated several sessions may take about a quarter of the usable field and expose its actual branch or shelf structure. "Same rectangle with more text" is not a representation stage. The test is whether a person can glance at Home from two metres and see which places currently matter.
+
+        The field has garden zones without hard sections: no `Projects`/`Recent`/`System` headings, only weak spatial tendencies. New grown objects land in one broad open landing region so first growth is not scattered across the canvas; manually placed objects keep their coordinates forever; a grown object regrows near where it last landed.
+
+        The substrate stays very quiet: a slightly warmer, mineral off-white, no aggressive darkening or decoration. Material texture appears only on established Places, never on the field. State colour stays scarce — neutral almost everywhere, with amber/red/grey carrying genuinely exceptional meaning.
+        """
+    context """
+        Outside review of the Homegarden plan, 2026-09-08, brought by the user. The plan described Small/Wide/Large as progressively richer rectangles, which is the same failure the bottom bar had: more text in a bigger box is not a different representation. The reviewer's alternative keeps rectangular allocation for the layout engine — so `lege_field`'s ops, inverses and reflow are untouched — and changes only what is painted inside one. This also settles the geometry axis the earlier plan deferred: shape carries mode of use, so Wide-vs-Tall stops being a separate problem.
+
+        The branch body already exists in a first form (`shell/lege-shell/src/garden.rs::branch_rows`, drawn by `paint_branches` at the Large rung), so this is the direction that work was already pointing; what is new is the shelf and folio forms, the landing region, the aggressive scale range and the quiet substrate.
+        """
+    consequences """
+        Not yet built. It supersedes nothing: `@legeos.decision.homegarden-activity-grown-places` keeps every rule about how a Place is earned, aged and positioned, and this record only governs what one looks like. The Wide-vs-Tall geometry axis that homegarden.md lists as deliberately absent is now answered by `shape = mode of use` rather than by a `Representation::for_span` rewrite. Needs: a mode classifier per context (development / media / documents / plain), a shelf and a folio renderer beside the existing branch renderer, a landing region in the tender, a wider stage range, and a substrate colour change in `design`. The blooms this depends on for the small end (`2 new`) are still unbuilt.
+        """
+    derived_from [ @legeos.decision.homegarden-activity-grown-places ]
+}
+
 record legeos.decision.agplv3-own-code/1 : decision {
     title "D13/ADR-0013 — own code is AGPL-3.0-only; lege-comp stays GPL-3.0-only (§13 combination); Silvaview-rs relicensed identically"
     state active

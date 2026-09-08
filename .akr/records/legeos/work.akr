@@ -4777,6 +4777,65 @@ record legeos.work.host-update-transaction/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 : work {
+    title "The bottom-left corner is Home, fullscreen gets the switcher back on a dwell, and the island stops sitting in the corner"
+    state proposed
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/lege-comp/src/input.rs",
+        path "compositor/lege-comp/src/protocols_shell.rs",
+        path "compositor/lege-comp/src/state.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "crates/lege-window/src/service.rs",
+        path "interfaces/wayland/lege-shell-v1.xml",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "shell/lege-shell/src/wayland_bridge.rs"
+    ]
+    intent """
+        Three things the user asked for on 2026-09-08 that the shell cannot do alone, because while a window owns the pointer the shell never learns where the pointer is.
+
+        1. A bottom-left hot corner reveals Home. "I would prefer a bottom left hot corner for showing the home screen, not a button" — this replaces the Home chip removed in @legeos.decision.one-persistent-bottom-bar-tags-not-bands/6, whose only surviving pointer route is the Field's own context menu, which a covering window hides.
+
+        2. Fullscreen auto show/hide. "auto show/hide in full screen, and always there on the home screen itself." This reverses rev 5's deletion of the bottom-edge peek: a visible fullscreen window sorts above the shell overlay, so the compositor has to raise the overlay on a dwell. The deleted machinery is recoverable verbatim from commit 0b6d8fc (update_bar_peek / finish_bar_peek / peek_output_at / in_peek_band, WindowService::{peek_output,set_peek_output,is_peeking}).
+
+        3. The island moves off the corner. The island now sits at the bottom-left because a zero-size zone claim anchors a surface at the start of its edge, which is exactly where the hot corner has to be — the two would fight over the same pixels. The fix is an additive alignment on the shell protocol (start / centre / end along the anchored edge) so the island can be centred the way the user's cosmic dock is, with the corner left to Home.
+        """
+    note """
+        One dwell mechanism, two intents, both hung off the single place the compositor already sees the pointer in global logical coordinates (`update_perimeter_cursor`'s call sites in both motion paths). Item 3 adds a Wayland request, so the interface version bumps and the baseline is re-frozen; items 1 and 2 need no protocol change. All three need a logout: lege-comp is Restart=no.
+        """
+    acceptance {
+        check corner-and-island-do-not-fight {
+            statement """
+                On hardware after a logout: the hot corner reveals Home without revealing the island, and reaching the island does not reveal Home.
+                """
+            method manual
+        }
+        check fullscreen-reveal {
+            statement """
+                A dwell on the bottom edge of an output carrying a visible fullscreen window raises the shell overlay above it, and leaving the edge lowers it again; nothing reflows either way because no zone changes.
+                """
+            method command
+            command "cargo test -p lege-comp -p lege-window"
+        }
+        check hot-corner {
+            statement """
+                Resting the pointer in the bottom-left corner reveals Home, from a bare desktop and from under a maximized window alike; sweeping through the corner does not.
+                """
+            method command
+            command "cargo test -p lege-comp -p lege-window"
+        }
+        check island-placement {
+            statement """
+                A bottom-anchored shell surface can ask to be centred along its edge; the zero-size claim still reserves nothing, and check-interfaces, check-interface-signatures and the re-frozen baseline all pass.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures"
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.iso-hardware-safety/1 : work {
     title "The installation medium does not strand its owner — hardware inventory, seeds that cover it, a live preflight, rescue boot entries and the first ISO build"
     state superseded

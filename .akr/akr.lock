@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:8f7a937499514c8a4cd6da27d3e74c2c4f3b0deff1fefcc1337841568f57427e"
+    source_graph "sha256:3dfa96ea0d65187d39460e62c76c2cec47c61d9ef71fd332135242562c640ef0"
 }
 
 source ".akr/project.akr" {
@@ -24,8 +24,8 @@ source ".akr/records/legeos/constraints.akr" {
 }
 
 source ".akr/records/legeos/decisions.akr" {
-    hash "sha256:7d45e5c74e562f4739c0a25cd054967fd1a18ad5a1ab52276d4d5a2f89f63ea2"
-    records 43
+    hash "sha256:6b31eeb54c8d0100694e49cbd2c2e99352f95fb17e2c33050c50bf3349cbdbfe"
+    records 44
 }
 
 source ".akr/records/legeos/evidence.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:c3374dc17aec691d4a3a551059720312d4f1e78286f838ed57cc95c9af95329e"
-    records 117
+    hash "sha256:19fefc6b2c1c64e92c48072720a66fb3d9f97c09a249ae1d722626243df42499"
+    records 118
 }
 
 resolution @legeos.assessment.home-vision-review-20260905/1 {
@@ -98,6 +98,12 @@ resolution @legeos.assessment.homegarden-usability-review-20260908/1 {
     slot supported_by
     to @legeos.evidence.homegarden-usability-review-20260908/1
     hash "sha256:7e589cb72798ce54b51f9e9ff0d483273c115cc36877e7ac1d36a33b3b660f3a"
+}
+
+resolution @legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle/1 {
+    slot derived_from
+    to @legeos.decision.homegarden-activity-grown-places/1
+    hash "sha256:aa93ea7e548a8db379712a1fc03e7cca9bcff9607b0e13a49a0a7d7bd186cc55"
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -2696,6 +2702,18 @@ resolution @legeos.work.host-update-transaction/1 {
     slot part_of
     to @legeos.milestone.m1-session-runtime/1
     hash "sha256:590f00030286e8c6e3fdd6cab172d3189b0ded3fed5cedd3d2d590c8560f1a92"
+}
+
+resolution @legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 {
+    slot implements
+    to @legeos.decision.one-persistent-bottom-bar-tags-not-bands/6
+    hash "sha256:a4ef8f533d5bccecd7c6b53804fa0ef45fb3b6a41fce84a5600f6a0f4a12e2f9"
+}
+
+resolution @legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 {
+    slot part_of
+    to @legeos.milestone.developer-edition-0-1/1
+    hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
 }
 
 resolution @legeos.work.iso-hardware-safety/1 {
