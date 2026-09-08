@@ -432,10 +432,17 @@ fn shift_held<B: Backend + 'static>(state: &LegeCompState<B>) -> bool {
         .is_some_and(|keyboard| keyboard.modifier_state().shift)
 }
 
+/// The pointer's position as a logical pixel *index*, which is what every rectangle here is in.
+///
+/// Floored, not rounded. Smithay's pointer is `f64` and an output's last row is `y` in
+/// `[1079.0, 1080.0)`; rounding sends the top half of that row to 1080, which is outside the
+/// output, so a pointer resting on the very bottom edge found no output at all and armed no
+/// dwell — the one place a person is most likely to put it. Flooring keeps the last row on the
+/// screen it is on, and matches how a rectangle's `bottom()` is already exclusive.
 fn to_lege_point(point: Point<f64, Logical>) -> LegePoint {
     LegePoint {
-        x: point.x.round() as i32,
-        y: point.y.round() as i32,
+        x: point.x.floor() as i32,
+        y: point.y.floor() as i32,
     }
 }
 
@@ -1483,7 +1490,14 @@ fn rect_contains(rect: lege_window::Rect, point: LegePoint) -> bool {
 const HOME_CORNER: i32 = 8;
 /// How close to an output's bottom edge the pointer must come to *start* a peek, in logical
 /// pixels. Same knob, same reasoning.
-const PEEK_BAND: i32 = 4;
+///
+/// Wider than the corner because of what it has to be crossed *to*: the peek raises the shell's
+/// collapsed hint tab, which is six logical pixels tall, and leaving the band ends the peek at
+/// once. A four-pixel band meant the pointer had to travel to a six-pixel target while never
+/// leaving a four-pixel one — natural with a mouse pushed into the bottom of the screen, not with
+/// a touchpad. It is the tab's height plus the rest slop, so reaching the thing that appeared can
+/// never dismiss it.
+const PEEK_BAND: i32 = 10;
 /// How long the pointer must rest before either dwell fires.
 ///
 /// The same number as the shell's own reveal (`lege_shell::surface::bar_screen::HINT_OPEN_MS`),
@@ -1581,15 +1595,19 @@ mod tests {
     #[test]
     fn the_corner_and_the_peek_band_divide_the_bottom_edge_between_them() {
         let screen = Rect::new(0, 0, 1920, 1080);
+        // The band is taller than the corner square (it has to be crossed to reach a six-pixel
+        // tab), so the two pixels directly above the square are band, not nothing. That is
+        // deliberate and still disjoint: only one of the two ever answers for a given point.
         for (x, y, corner, band) in [
             (0, 1079, true, false),    // the true corner
             (7, 1072, true, false),    // the far edge of the square
             (8, 1079, false, true),    // one pixel past it, along the bottom
-            (0, 1071, false, false),   // one pixel above it
+            (0, 1071, false, true),    // directly above the square, inside the band
+            (0, 1069, false, false),   // and one pixel above the band
             (7, 1079, true, false),    // inside the square, on the bottom row
             (960, 1079, false, true),  // the middle of the edge
             (1919, 1076, false, true), // the other end of it
-            (960, 1075, false, false), // above the band
+            (960, 1069, false, false), // above the band
             (960, 1080, false, false), // off the output
         ] {
             assert_eq!(
