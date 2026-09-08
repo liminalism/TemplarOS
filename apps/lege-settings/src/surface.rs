@@ -19,13 +19,20 @@ use std::sync::{Arc, Mutex, mpsc};
 
 const HOME_PREFIX: &str = "shell.home-field.";
 const APPEARANCE_PREFIX: &str = "shell.appearance.";
+const GARDEN_PREFIX: &str = "shell.home-garden.";
+/// The one `shell.home-garden.*` key the typed key form cannot draw: a list of directory names
+/// does not fit a 184-pixel control rectangle, so the Homegarden page gives it a section.
+const GARDEN_IGNORE_KEY: &str = "shell.home-garden.ignore";
 /// `System` is second because it is the page the Home Field's Settings widget opens into: the
 /// widget reports the battery, the volume and the brightness, and this is where they can be set
 /// outright. The rest keep the order they have had, so a person who learned where a tab is does
 /// not have to learn it again.
 /// Appearance is last rather than beside Home Field for the same reason: it is new, and moving
 /// six tabs to make room for it would cost every person who already knows where History is.
-const PAGE_NAMES: [&str; 9] = [
+/// Homegarden is appended rather than placed beside Home Field for the same reason Appearance
+/// was: it is new, and moving nine tabs to make room for it would cost every person who already
+/// knows where History is.
+const PAGE_NAMES: [&str; 10] = [
     "Home Field",
     "System",
     "Providers",
@@ -35,6 +42,7 @@ const PAGE_NAMES: [&str; 9] = [
     "History",
     "Hardware",
     "Appearance",
+    "Homegarden",
 ];
 /// The index of each page that draws controls rather than rendered text.
 const HOME_PAGE: usize = 0;
@@ -44,6 +52,7 @@ const ASSOCIATIONS_PAGE: usize = 3;
 const BACKGROUND_PAGE: usize = 4;
 const HISTORY_PAGE: usize = 6;
 const APPEARANCE_PAGE: usize = 8;
+const GARDEN_PAGE: usize = 9;
 /// How far one press of a stepper moves a level: the same five points `lege status louder` and
 /// the Home Field's own controls use, so no two surfaces disagree about what one step means.
 const STEP_PERCENT: i32 = 5;
@@ -66,6 +75,15 @@ enum Command {
     History(HistoryCommand),
     Providers(ProvidersCommand),
     Associations(AssociationsCommand),
+    Garden(GardenCommand),
+}
+
+/// One change to Home's garden that is not a typed setting, or a plain re-read.
+#[derive(Clone, Debug)]
+enum GardenCommand {
+    Refresh,
+    /// Put one hidden place back on Home (`HomeGarden1.Hide(path, false)`).
+    Unhide(String),
 }
 
 /// One change to which application opens a MIME type, or a plain re-read.
@@ -162,6 +180,10 @@ enum ResultMessage {
         choices: Vec<MimeChoice>,
         message: Option<String>,
     },
+    Garden {
+        hidden: Vec<String>,
+        message: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -194,6 +216,7 @@ impl Backend {
                         Command::Associations(associations) => {
                             runtime.block_on(run_associations_command(associations))
                         }
+                        Command::Garden(garden) => runtime.block_on(run_garden_command(garden)),
                         Command::Set { .. } | Command::Reset { .. } => {
                             runtime.block_on(run_setting_command(command))
                         }
@@ -211,6 +234,33 @@ impl Backend {
     }
 }
 
+/// One change to Home's garden, then a re-read: `Contexts` is the only account of what is hidden,
+/// so a page that unhid a place without re-reading would keep offering to unhide it.
+async fn run_garden_command(command: GardenCommand) -> ResultMessage {
+    let message = match run_garden(&command).await {
+        Ok(message) => message,
+        Err(error) => Some(format!("Could not reach the garden — {error}")),
+    };
+    let hidden = match zbus::Connection::session().await {
+        Ok(connection) => crate::garden::fetch_hidden(&connection)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    ResultMessage::Garden { hidden, message }
+}
+
+async fn run_garden(command: &GardenCommand) -> Result<Option<String>> {
+    let connection = zbus::Connection::session().await.context("session bus")?;
+    match command {
+        GardenCommand::Refresh => Ok(None),
+        GardenCommand::Unhide(path) => {
+            crate::garden::unhide(&connection, path).await?;
+            Ok(Some(format!("{path} can grow on Home again")))
+        }
+    }
+}
+
 /// One `Settings1` write, as a result the page can show.
 async fn run_setting_command(command: Command) -> ResultMessage {
     let key = match &command {
@@ -219,7 +269,8 @@ async fn run_setting_command(command: Command) -> ResultMessage {
         | Command::Background(_)
         | Command::History(_)
         | Command::Providers(_)
-        | Command::Associations(_) => unreachable!("dispatched by the caller"),
+        | Command::Associations(_)
+        | Command::Garden(_) => unreachable!("dispatched by the caller"),
     };
     let result = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
@@ -234,7 +285,8 @@ async fn run_setting_command(command: Command) -> ResultMessage {
             | Command::Background(_)
             | Command::History(_)
             | Command::Providers(_)
-            | Command::Associations(_) => unreachable!("dispatched by the caller"),
+            | Command::Associations(_)
+            | Command::Garden(_) => unreachable!("dispatched by the caller"),
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -484,6 +536,14 @@ struct SettingsApp {
     /// `shell.appearance.*`, kept apart from the Home Field's keys so each page lists only its
     /// own — a page that shows a key it is not about is a page a person has to read twice.
     appearance: Vec<SettingRow>,
+    /// `shell.home-garden.*`, same rule.
+    garden: Vec<SettingRow>,
+    /// The places `HomeGarden1` is holding hidden, so a person can put one back.
+    hidden_places: Vec<String>,
+    /// What is typed into the Homegarden page's "add an ignored directory" field. It is the only
+    /// text field in this application, so it is always the thing with focus while that page is on
+    /// screen and there is no focus state to keep.
+    ignore_draft: pixelkit_ui::TextFieldState,
     system: crate::system::SystemState,
     background: Vec<BackgroundEntry>,
     history: Vec<Event>,
@@ -514,18 +574,18 @@ struct SettingsApp {
 impl SettingsApp {
     /// The rows one page of typed keys is editing.
     fn rows_for(&self, page: usize) -> &[SettingRow] {
-        if page == APPEARANCE_PAGE {
-            &self.appearance
-        } else {
-            &self.home
+        match page {
+            APPEARANCE_PAGE => &self.appearance,
+            GARDEN_PAGE => &self.garden,
+            _ => &self.home,
         }
     }
 
     fn rows_for_mut(&mut self, page: usize) -> &mut Vec<SettingRow> {
-        if page == APPEARANCE_PAGE {
-            &mut self.appearance
-        } else {
-            &mut self.home
+        match page {
+            APPEARANCE_PAGE => &mut self.appearance,
+            GARDEN_PAGE => &mut self.garden,
+            _ => &mut self.home,
         }
     }
 
@@ -584,6 +644,12 @@ impl SettingsApp {
                         self.status = message;
                     }
                 }
+                ResultMessage::Garden { hidden, message } => {
+                    self.hidden_places = hidden;
+                    if let Some(message) = message {
+                        self.status = message;
+                    }
+                }
             }
         }
     }
@@ -601,6 +667,7 @@ impl SettingsApp {
             ASSOCIATIONS_PAGE => Command::Associations(AssociationsCommand::Refresh),
             BACKGROUND_PAGE => Command::Background(BackgroundCommand::Refresh),
             HISTORY_PAGE => Command::History(HistoryCommand::Refresh),
+            GARDEN_PAGE => Command::Garden(GardenCommand::Refresh),
             _ => return,
         };
         let _ = self.backend.commands.send(command);
@@ -625,59 +692,167 @@ impl SettingsApp {
         let heights = vec![ui.px(88); rows.len()];
         let mut wanted: Option<(usize, Option<SettingValue>)> = None;
         let mut scroll = self.scroll[page];
-        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
-            let row_area = Rect::new(rect.x, rect.y, rect.w, ui.px(78));
-            ui.painter
-                .fill_rounded_rect(row_area, ui.px(6), ui.theme.panel);
-            ui.painter
-                .stroke_rect(row_area, ui.scale.hairline(), ui.theme.panel_edge);
-            let name = rows[index]
-                .spec
-                .key
-                .strip_prefix(prefix)
-                .unwrap_or(&rows[index].spec.key)
-                .replace(['-', '.'], " ");
-            ui.label(
-                Rect::new(
-                    row_area.x + ui.px(12),
-                    row_area.y + ui.px(7),
-                    row_area.w - ui.px(220),
-                    ui.px(24),
-                ),
-                &name,
-                ui.theme.text,
-                Align::Left,
-            );
-            ui.label(
-                Rect::new(
-                    row_area.x + ui.px(12),
-                    row_area.y + ui.px(33),
-                    row_area.w - ui.px(220),
-                    ui.px(34),
-                ),
-                &rows[index].spec.description,
-                ui.theme.text_dim,
-                Align::Left,
-            );
-            let controls = Rect::new(
-                row_area.right() - ui.px(196),
-                row_area.y + ui.px(20),
-                ui.px(184),
-                ui.px(38),
-            );
-            let reset = Rect::new(controls.x - ui.px(66), controls.y, ui.px(58), controls.h);
-            if ui.button(reset, "Reset") {
-                wanted = Some((index, None));
-            }
-            if let Some(value) = home_control(ui, &rows[index], controls) {
-                wanted = Some((index, Some(value)));
-            }
-        });
+        ui.scroll_list(
+            &mut scroll,
+            area,
+            &heights,
+            |ui, index, rect| match key_form_row(ui, &rows[index], rect, prefix) {
+                Some(KeyEdit::Set(value)) => wanted = Some((index, Some(value))),
+                Some(KeyEdit::Reset) => wanted = Some((index, None)),
+                None => {}
+            },
+        );
         self.scroll[page] = scroll;
         match wanted {
             Some((index, Some(value))) => self.change(page, index, value),
             Some((index, None)) => self.reset(page, index),
             None => {}
+        }
+    }
+
+    /// The Homegarden page: the switch behind Home's grown places, the directories activity in
+    /// which never grows one, and the places a person has hidden.
+    ///
+    /// One scrolling list rather than three stacked panes: the ignore list and the hidden places
+    /// are both as long as a person has made them, and a page with three independently-scrolling
+    /// regions is a page where the thing you are looking for is off the bottom of one of them.
+    #[allow(clippy::too_many_lines)]
+    fn draw_garden(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        let rows = self.garden.clone();
+        let ignore_index = rows
+            .iter()
+            .position(|row| row.spec.key == GARDEN_IGNORE_KEY);
+        let ignored: Vec<String> = ignore_index
+            .and_then(|index| match &rows[index].value {
+                SettingValue::StrList(list) => Some(list.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let hidden = self.hidden_places.clone();
+
+        // The page's rows, in order, with the heights the list scrolls over.
+        let mut plan: Vec<GardenRow> = (0..rows.len())
+            .filter(|index| Some(*index) != ignore_index)
+            .map(GardenRow::Key)
+            .collect();
+        if ignore_index.is_some() {
+            plan.push(GardenRow::Heading("Never grow a place here"));
+            plan.extend((0..ignored.len()).map(GardenRow::Ignored));
+            plan.push(GardenRow::AddIgnored);
+        }
+        plan.push(GardenRow::Heading("Hidden places"));
+        if hidden.is_empty() {
+            plan.push(GardenRow::NothingHidden);
+        } else {
+            plan.extend(hidden.iter().cloned().map(GardenRow::Hidden));
+        }
+        let heights: Vec<i32> = plan
+            .iter()
+            .map(|row| match row {
+                GardenRow::Key(_) => ui.px(88),
+                GardenRow::NothingHidden => ui.px(32),
+                GardenRow::Heading(_)
+                | GardenRow::Ignored(_)
+                | GardenRow::AddIgnored
+                | GardenRow::Hidden(_) => ui.px(44),
+            })
+            .collect();
+
+        let mut wanted: Option<GardenAction> = None;
+        let mut scroll = self.scroll[GARDEN_PAGE];
+        let draft = &mut self.ignore_draft;
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            match &plan[index] {
+                GardenRow::Key(key) => {
+                    wanted = match key_form_row(ui, &rows[*key], rect, GARDEN_PREFIX) {
+                        Some(KeyEdit::Set(value)) => Some(GardenAction::Set(*key, value)),
+                        Some(KeyEdit::Reset) => Some(GardenAction::Reset(*key)),
+                        None => wanted.take(),
+                    };
+                }
+                GardenRow::Heading(title) => {
+                    ui.label(
+                        Rect::new(rect.x, rect.y + ui.px(14), rect.w, ui.px(24)),
+                        title,
+                        ui.theme.text,
+                        Align::Left,
+                    );
+                }
+                GardenRow::NothingHidden => {
+                    ui.label(
+                        Rect::new(rect.x, rect.y, rect.w, ui.px(24)),
+                        "Nothing is hidden. Hiding a place from its tile puts it here.",
+                        ui.theme.text_dim,
+                        Align::Left,
+                    );
+                }
+                GardenRow::Ignored(entry) => {
+                    let row = list_row(ui, rect, &ignored[*entry]);
+                    if ui.button(row, "Remove") {
+                        wanted = Some(GardenAction::RemoveIgnored(*entry));
+                    }
+                }
+                GardenRow::AddIgnored => {
+                    let button = Rect::new(
+                        rect.right() - ui.px(84),
+                        rect.y + ui.px(2),
+                        ui.px(84),
+                        ui.px(34),
+                    );
+                    let field = Rect::new(
+                        rect.x,
+                        button.y,
+                        (button.x - rect.x - ui.px(8)).max(ui.px(80)),
+                        button.h,
+                    );
+                    ui.text_field(
+                        draft,
+                        field,
+                        "a directory name, or an absolute path",
+                        true,
+                        false,
+                    );
+                    if ui.button(button, "Add") && !draft.text().trim().is_empty() {
+                        wanted = Some(GardenAction::AddIgnored(draft.text().trim().to_owned()));
+                    }
+                }
+                GardenRow::Hidden(path) => {
+                    let row = list_row(ui, rect, path);
+                    if ui.button(row, "Unhide") {
+                        wanted = Some(GardenAction::Unhide(path.clone()));
+                    }
+                }
+            }
+        });
+        self.scroll[GARDEN_PAGE] = scroll;
+
+        let Some(action) = wanted else { return };
+        match action {
+            GardenAction::Set(index, value) => self.change(GARDEN_PAGE, index, value),
+            GardenAction::Reset(index) => self.reset(GARDEN_PAGE, index),
+            GardenAction::AddIgnored(entry) => {
+                let Some(index) = ignore_index else { return };
+                let mut list = ignored;
+                if !list.contains(&entry) {
+                    list.push(entry);
+                    list.sort();
+                }
+                self.ignore_draft.clear();
+                self.change(GARDEN_PAGE, index, SettingValue::StrList(list));
+            }
+            GardenAction::RemoveIgnored(entry) => {
+                let Some(index) = ignore_index else { return };
+                let mut list = ignored;
+                list.remove(entry);
+                self.change(GARDEN_PAGE, index, SettingValue::StrList(list));
+            }
+            GardenAction::Unhide(path) => {
+                self.status = format!("Unhiding {path}…");
+                let _ = self
+                    .backend
+                    .commands
+                    .send(Command::Garden(GardenCommand::Unhide(path)));
+            }
         }
     }
 
@@ -1161,6 +1336,113 @@ fn approval_colours(theme: Theme, approval: crate::background::Approval) -> (u32
 /// A free function rather than a method because it is drawn from inside a scroll list's row
 /// closure, which already holds the page mutably; it reports the value a person asked for and
 /// the page applies it once the list is done.
+/// One row of a typed-key form: the name, the sentence under it, its control and a Reset.
+///
+/// `None` is a frame in which nothing was clicked. Shared by the Home Field, Appearance and
+/// Homegarden pages so all three read the same, and so a fourth page costs a call rather than a
+/// copy.
+fn key_form_row(ui: &mut Ui<'_>, row: &SettingRow, rect: Rect, prefix: &str) -> Option<KeyEdit> {
+    let row_area = Rect::new(rect.x, rect.y, rect.w, ui.px(78));
+    ui.painter
+        .fill_rounded_rect(row_area, ui.px(6), ui.theme.panel);
+    ui.painter
+        .stroke_rect(row_area, ui.scale.hairline(), ui.theme.panel_edge);
+    let name = row
+        .spec
+        .key
+        .strip_prefix(prefix)
+        .unwrap_or(&row.spec.key)
+        .replace(['-', '.'], " ");
+    ui.label(
+        Rect::new(
+            row_area.x + ui.px(12),
+            row_area.y + ui.px(7),
+            row_area.w - ui.px(220),
+            ui.px(24),
+        ),
+        &name,
+        ui.theme.text,
+        Align::Left,
+    );
+    ui.label(
+        Rect::new(
+            row_area.x + ui.px(12),
+            row_area.y + ui.px(33),
+            row_area.w - ui.px(220),
+            ui.px(34),
+        ),
+        &row.spec.description,
+        ui.theme.text_dim,
+        Align::Left,
+    );
+    let controls = Rect::new(
+        row_area.right() - ui.px(196),
+        row_area.y + ui.px(20),
+        ui.px(184),
+        ui.px(38),
+    );
+    let reset = Rect::new(controls.x - ui.px(66), controls.y, ui.px(58), controls.h);
+    if ui.button(reset, "Reset") {
+        return Some(KeyEdit::Reset);
+    }
+    home_control(ui, row, controls).map(KeyEdit::Set)
+}
+
+/// What a click on one typed-key row asked for.
+#[derive(Clone, Debug)]
+enum KeyEdit {
+    Set(SettingValue),
+    Reset,
+}
+
+/// One row of a plain list of paths: the path, and the rectangle its single button gets.
+fn list_row(ui: &mut Ui<'_>, rect: Rect, path: &str) -> Rect {
+    let row = Rect::new(rect.x, rect.y, rect.w, ui.px(36));
+    ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
+    ui.painter
+        .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
+    let button = Rect::new(
+        row.right() - ui.px(88),
+        row.y + ui.px(3),
+        ui.px(80),
+        ui.px(30),
+    );
+    ui.label(
+        Rect::new(
+            row.x + ui.px(12),
+            row.y,
+            (button.x - row.x - ui.px(20)).max(0),
+            row.h,
+        ),
+        path,
+        ui.theme.text,
+        Align::Left,
+    );
+    button
+}
+
+/// One row of the Homegarden page. The page is three sections in one scrolling list, so a row is
+/// a typed key, a heading, or an entry in one of the two lists.
+#[derive(Clone, Debug)]
+enum GardenRow {
+    Key(usize),
+    Heading(&'static str),
+    Ignored(usize),
+    AddIgnored,
+    Hidden(String),
+    NothingHidden,
+}
+
+/// What a frame's input asked of the Homegarden page.
+#[derive(Clone, Debug)]
+enum GardenAction {
+    Set(usize, SettingValue),
+    Reset(usize),
+    AddIgnored(String),
+    RemoveIgnored(usize),
+    Unhide(String),
+}
+
 fn home_control(ui: &mut Ui<'_>, row: &SettingRow, controls: Rect) -> Option<SettingValue> {
     match row.value.clone() {
         SettingValue::Bool(mut enabled) => {
@@ -1440,6 +1722,7 @@ impl PixelApp for SettingsApp {
                 BACKGROUND_PAGE => self.draw_background(&mut ui, content),
                 HISTORY_PAGE => self.draw_history(&mut ui, content),
                 APPEARANCE_PAGE => self.draw_appearance(&mut ui, content),
+                GARDEN_PAGE => self.draw_garden(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
             // Last, so nothing the page drew afterwards covers the open list.
@@ -1520,28 +1803,33 @@ fn fonts() -> &'static FontSet {
 
 /// Which page of typed controls a schema key belongs on, or `None` for a key no page shows.
 ///
-/// The two prefixes are disjoint by construction, and this is where that is stated once: a key
-/// appearing on both pages, or on neither, is a control a person either sees twice or cannot
-/// find at all.
+/// The three prefixes are disjoint by construction, and this is where that is stated once: a key
+/// appearing on two pages, or on none, is a control a person either sees twice or cannot find at
+/// all. `shell.home-garden.*` used to fall through to `None`, which is why Home's default-on
+/// automation had no graphical settings at all.
 fn page_for(key: &str) -> Option<usize> {
     if key.starts_with(HOME_PREFIX) {
         Some(HOME_PAGE)
     } else if key.starts_with(APPEARANCE_PREFIX) {
         Some(APPEARANCE_PAGE)
+    } else if key.starts_with(GARDEN_PREFIX) {
+        Some(GARDEN_PAGE)
     } else {
         None
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn load() -> Result<SettingsApp> {
     let connection = zbus::Connection::session().await.context("session bus")?;
     let proxy = SettingsProxy::new(&connection).await?;
     let values: std::collections::HashMap<_, _> = proxy.list().await?.into_iter().collect();
-    let (mut home, mut appearance) = (Vec::new(), Vec::new());
+    let (mut home, mut appearance, mut garden) = (Vec::new(), Vec::new(), Vec::new());
     for json in proxy.schema_details().await? {
         let spec: SettingSpec = serde_json::from_str(&json)?;
         let list = match page_for(&spec.key) {
             Some(APPEARANCE_PAGE) => &mut appearance,
+            Some(GARDEN_PAGE) => &mut garden,
             Some(_) => &mut home,
             None => continue,
         };
@@ -1552,7 +1840,7 @@ async fn load() -> Result<SettingsApp> {
             .unwrap_or_else(|| spec.default.clone());
         list.push(SettingRow { spec, value });
     }
-    for list in [&mut home, &mut appearance] {
+    for list in [&mut home, &mut appearance, &mut garden] {
         list.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
     }
 
@@ -1575,6 +1863,7 @@ async fn load() -> Result<SettingsApp> {
             .lines()
             .map(str::to_owned)
             .collect(),
+        Vec::new(),
         Vec::new(),
     ];
     // The System page's first reading, taken here with the rest so the page is populated the
@@ -1618,9 +1907,18 @@ async fn load() -> Result<SettingsApp> {
         Err(_) => Vec::new(),
     };
 
+    // The garden may not be running (`shell.home-garden.enabled` off, or an older sessiond);
+    // an empty list of hidden places is then the truth, not a failure.
+    let hidden_places = crate::garden::fetch_hidden(&connection)
+        .await
+        .unwrap_or_default();
+
     Ok(SettingsApp {
         home,
         appearance,
+        garden,
+        hidden_places,
+        ignore_draft: pixelkit_ui::TextFieldState::new(),
         system,
         background,
         history,
@@ -1663,10 +1961,12 @@ mod tests {
         let schema = lege_session_core::settings::baseline_schema();
         let mut appearance = Vec::new();
         let mut home = Vec::new();
+        let mut garden = Vec::new();
         for key in schema.specs.keys() {
             match page_for(key) {
                 Some(APPEARANCE_PAGE) => appearance.push(key.as_str()),
                 Some(HOME_PAGE) => home.push(key.as_str()),
+                Some(GARDEN_PAGE) => garden.push(key.as_str()),
                 Some(other) => panic!("{key} claims page {other}, which draws no key form"),
                 None => {}
             }
@@ -1682,9 +1982,38 @@ mod tests {
         }
         // Every key either page shows has to be a real schema key with a default, or its Reset
         // has nothing to reset to.
-        for key in appearance.iter().chain(&home) {
+        for key in appearance.iter().chain(&home).chain(&garden) {
             assert!(schema.specs.contains_key(*key));
         }
+    }
+
+    /// Finding 6 of the Homegarden usability review: "Settings excludes every `shell.home-garden.*`
+    /// key". Every one of them now reaches the Homegarden page, and the one the key form cannot
+    /// draw is the one that page gives a section of its own.
+    #[test]
+    fn every_home_garden_key_reaches_the_homegarden_page() {
+        let schema = lege_session_core::settings::baseline_schema();
+        let garden: Vec<&str> = schema
+            .specs
+            .keys()
+            .filter(|key| key.starts_with(GARDEN_PREFIX))
+            .map(String::as_str)
+            .collect();
+        assert!(!garden.is_empty(), "the schema has no garden keys");
+        for key in &garden {
+            assert_eq!(page_for(key), Some(GARDEN_PAGE), "{key} has no page");
+        }
+        assert!(
+            garden.contains(&GARDEN_IGNORE_KEY),
+            "the ignore list the page draws by hand is not a schema key"
+        );
+        assert!(
+            matches!(
+                schema.specs[GARDEN_IGNORE_KEY].default,
+                SettingValue::StrList(_)
+            ),
+            "the ignore section assumes a string list"
+        );
     }
 
     /// The tab list and the page indices are two halves of one thing; a page index past the end
@@ -1699,9 +2028,11 @@ mod tests {
             BACKGROUND_PAGE,
             HISTORY_PAGE,
             APPEARANCE_PAGE,
+            GARDEN_PAGE,
         ] {
             assert!(page < PAGE_NAMES.len(), "page {page} has no tab");
         }
         assert_eq!(PAGE_NAMES[APPEARANCE_PAGE], "Appearance");
+        assert_eq!(PAGE_NAMES[GARDEN_PAGE], "Homegarden");
     }
 }

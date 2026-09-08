@@ -11,6 +11,7 @@
 
 mod associations;
 mod background;
+mod garden;
 mod hardware;
 mod history;
 mod names;
