@@ -122,14 +122,6 @@ impl Output {
             _ => self.logical,
         }
     }
-
-    /// Whether a shell surface holds this output's bottom edge — a bar. A maximized window on
-    /// such an output has no frame of its own: its controls live in the bar
-    /// (`WindowService::has_frame`). Derived from the usable area rather than recorded, so a
-    /// refused claim ([`Output::usable`]) reserves nothing here either.
-    pub fn reserves_bottom(&self) -> bool {
-        self.usable().bottom() < self.logical.bottom()
-    }
 }
 
 /// Which side of an output a shell surface reserves space against.
@@ -1259,8 +1251,8 @@ mod tests {
 
     /// A zone of size 0 is a live claim that reserves nothing: it still anchors the surface to
     /// its edge, at every height the surface may commit, while `usable()` stays the whole output
-    /// and `reserves_bottom()` is false — so a maximized window fills the screen and keeps its
-    /// own tags. This is the bar collapsed to a hint.
+    /// stays the whole output — so a maximized window fills the screen. This is the bar
+    /// collapsed to a hint.
     #[test]
     fn a_zero_zone_anchors_the_surface_and_reserves_nothing() {
         let screen = Rect::new(0, 0, 1920, 1080);
@@ -1270,7 +1262,6 @@ mod tests {
 
         assert_eq!(work_area_for(screen, &[zero]), screen);
         assert_eq!(output.usable(), screen);
-        assert!(!output.reserves_bottom());
 
         // Whatever height it commits — a 6px hint, a 48px row, an open hover row — its bottom is
         // the output's bottom and its left end is the output's left end.
@@ -1412,10 +1403,6 @@ mod tests {
             hanging,
             "the strip is on screen"
         );
-        let output = Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)
-            .with_work_area(Rect::new(0, 0, 1920, 1032));
-        assert!(output.reserves_bottom());
-        assert!(!Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000).reserves_bottom());
     }
 
     #[test]

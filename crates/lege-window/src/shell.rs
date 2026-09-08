@@ -38,6 +38,18 @@ pub struct ShellToplevel {
     pub group: Option<GroupInfo>,
 }
 
+impl ShellToplevel {
+    /// Whether this window is filling its output — the shell's half of
+    /// [`crate::WindowRecord::covers_screen`], and the one predicate behind every "there is a
+    /// window over the bottom edge" rule the shell has: the machine cluster is not drawn at all
+    /// while one is up, the switcher collapses to its hint until the pointer asks for the edge,
+    /// and Home's window previews stop because nothing of Home can be seen.
+    #[must_use]
+    pub fn covers_screen(&self) -> bool {
+        !self.shelved && (self.fullscreen || self.maximized)
+    }
+}
+
 /// How the dock groups windows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

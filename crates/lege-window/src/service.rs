@@ -98,6 +98,27 @@ pub struct WindowRecord {
     /// The window group this window belongs to, if any (`crate::group`). Membership lives here,
     /// on the window, so no window can be in two groups.
     pub group: Option<GroupId>,
+    /// Pinned above the other client windows by its owner — a click on its name tag
+    /// ([`WindowService::toggle_always_on_top`]). Not a layer of its own: the window stays on
+    /// [`Layer::Normal`] and is *sorted* as if it were on [`Layer::AppOnTop`]
+    /// ([`WindowService::stack_key`]), the same shape as the fullscreen exception, so nothing
+    /// about layer authorization or `layer_of` changes for a pin.
+    pub always_on_top: bool,
+}
+
+impl WindowRecord {
+    /// Whether this window is filling its output — maximized or fullscreen, and on screen to do
+    /// it. The one predicate behind every "there is a window over the bottom edge" rule: the
+    /// window wears no frame ([`WindowService::has_frame`]), its own tag and controls are shown
+    /// on a dwell in the corners instead, and the shell's machine cluster is not there at all.
+    ///
+    /// Maximized counts because the bar reserves nothing (a zone of 0), so a maximized window's
+    /// work area *is* the whole output: "maximized" and "fullscreen" differ in what the client
+    /// was told, not in how much of the screen is left over.
+    #[must_use]
+    pub fn covers_screen(&self) -> bool {
+        !self.shelved && (self.fullscreen || self.maximized)
+    }
 }
 
 /// Why one command was refused by the compositor before it could touch [`WindowService`] state.
@@ -152,15 +173,17 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
-    /// The fullscreen window whose own chrome is currently shown over it
-    /// (`set_fullscreen_chrome`). A fullscreen window wears no frame — its geometry is the whole
+    /// The screen-filling window whose own chrome is currently shown over it
+    /// (`set_covering_chrome`). Such a window wears no frame — its geometry is the whole
     /// output and the client owns every pixel — so its name tag and controls are drawn *over* it,
     /// on the strip its geometry already puts along the output's bottom edge, and only while the
     /// pointer has asked for them.
-    fullscreen_chrome: Option<WindowId>,
-    /// The output whose overlay surfaces are currently peeked out from under a fullscreen
-    /// window (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
-    /// suspended on that output and the bar draws over the fullscreen window again.
+    covering_chrome: Option<WindowId>,
+    /// The output whose bottom edge the pointer is currently resting on, under a window that
+    /// fills it (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
+    /// suspended on that output — and the compositor tells the shell either way
+    /// (`lege_shell_manager_v1.bar_peeked`), because under a *maximized* window there is no
+    /// exception to suspend and the event is the whole of the reveal.
     peek_output: Option<String>,
     /// Every live window group. Ordered so that iteration — the switcher's group list, the
     /// snapshot — is deterministic rather than hash-ordered.
@@ -182,7 +205,7 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
             arrangement_baseline: None,
-            fullscreen_chrome: None,
+            covering_chrome: None,
             peek_output: None,
             groups: BTreeMap::new(),
             next_group_id: 1,
@@ -255,6 +278,7 @@ impl<I: IdentityCache> WindowService<I> {
                 maximized: false,
                 restore_geometry: None,
                 fullscreen_restore: None,
+                always_on_top: false,
                 group: None,
             },
         );
@@ -730,26 +754,22 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Whether `window_id` wears the compositor's frame — the tag strip drawn below its client
-    /// area rather than over it. Every client window does, with two exceptions. A fullscreen
-    /// window is the client's whole output by definition. A maximized window on an output whose
-    /// bottom edge a shell surface holds (`Output::reserves_bottom`, the shell's bar) draws no
-    /// tags: its controls are the bar's. The moment no such zone is claimed — the shell is dead,
-    /// or never claimed one — the tags come back, so controls never vanish.
+    /// area rather than over it. Every client window does except one that covers the screen
+    /// ([`WindowRecord::covers_screen`]).
+    ///
+    /// A frame *below* the client area is a strip of screen the window does not get. On a window
+    /// filling the output that is a black row across the bottom of the display, permanently, in
+    /// exchange for chrome nobody asked to see — which is not what filling the screen means. Such
+    /// a window has no frame at all; resting the pointer in either bottom corner shows its name
+    /// tag and its controls *over* it instead ([`Self::covering_chrome`]), and the controls are
+    /// therefore never out of reach.
     pub fn has_frame(&self, window_id: WindowId) -> bool {
         if !self.is_client_window(window_id) {
             return false;
         }
-        let Some(window) = self.windows.get(&window_id) else {
-            return false;
-        };
-        if window.fullscreen {
-            return false;
-        }
-        if window.maximized && !self.outputs.is_empty() {
-            return !crate::geometry::choose_target_output(window.geometry, &self.outputs)
-                .reserves_bottom();
-        }
-        true
+        self.windows
+            .get(&window_id)
+            .is_some_and(|window| !window.covers_screen())
     }
 
     /// The rectangle `window_id`'s client surface occupies: above the tags for a framed window
@@ -854,7 +874,10 @@ impl<I: IdentityCache> WindowService<I> {
     /// all read it.
     pub fn stacking_order(&self) -> Vec<WindowId> {
         let mut order = self.layers.order();
-        if !order.iter().any(|id| self.outranks_overlay(*id)) {
+        if !order
+            .iter()
+            .any(|id| self.outranks_overlay(*id) || self.is_always_on_top(*id))
+        {
             return order;
         }
         // A stable second pass: only a promoted window's key differs, so everything else keeps
@@ -873,6 +896,12 @@ impl<I: IdentityCache> WindowService<I> {
         };
         let layer = if self.outranks_overlay(window_id) {
             i32::from(Layer::ShellOverlay as u8) * 2 - 1
+        } else if self.is_always_on_top(window_id) {
+            // Sorted onto `AppOnTop` — the layer that exists for exactly this — without being
+            // *assigned* to it. `layer_of` therefore still answers `Normal` for a pinned window,
+            // so every rule written in terms of layers (`home_is_covered`, `may_request_layer`,
+            // the shell's snapshot) reads a pinned window as the ordinary window it is.
+            i32::from((position.layer as u8).min(Layer::AppOnTop as u8)) * 2
         } else {
             i32::from(position.layer as u8) * 2
         };
@@ -880,8 +909,13 @@ impl<I: IdentityCache> WindowService<I> {
         (-layer, position.rank)
     }
 
-    /// Whether `window_id` is the one kind of window that reorders the layer stack: a visible
+    /// Whether `window_id` is the one kind of window that outranks the shell's overlay: a visible
     /// fullscreen client window whose output is not being peeked.
+    ///
+    /// Fullscreen only, deliberately — not [`WindowRecord::covers_screen`]. A maximized window
+    /// covers the bottom edge in every way that matters to the *shell*, but promoting it over
+    /// `ShellOverlay` would put the launcher, the switcher and every context menu behind the
+    /// window the user is working in, which is the common case rather than the rare one.
     fn outranks_overlay(&self, window_id: WindowId) -> bool {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
@@ -906,22 +940,47 @@ impl<I: IdentityCache> WindowService<I> {
             || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
     }
 
-    /// The fullscreen window showing its own chrome, if any.
+    /// The screen-filling window showing its own chrome, if any.
     #[must_use]
-    pub fn fullscreen_chrome(&self) -> Option<WindowId> {
-        self.fullscreen_chrome
-            .filter(|id| self.windows.get(id).is_some_and(|window| window.fullscreen))
+    pub fn covering_chrome(&self) -> Option<WindowId> {
+        self.covering_chrome.filter(|id| {
+            self.windows
+                .get(id)
+                .is_some_and(WindowRecord::covers_screen)
+        })
     }
 
-    /// Show or hide one fullscreen window's chrome (`None` hides it). Returns whether anything
-    /// changed, so the compositor re-renders only when it must.
+    /// Show or hide one screen-filling window's chrome (`None` hides it). Returns whether
+    /// anything changed, so the compositor re-renders only when it must.
     ///
-    /// Filtered on read rather than cleaned up on every state change: a window that stops being
-    /// fullscreen, or stops existing, stops showing chrome by that fact alone.
-    pub fn set_fullscreen_chrome(&mut self, window_id: Option<WindowId>) -> bool {
-        let changed = self.fullscreen_chrome != window_id;
-        self.fullscreen_chrome = window_id;
+    /// Filtered on read rather than cleaned up on every state change: a window that stops
+    /// covering the screen, or stops existing, stops showing chrome by that fact alone.
+    pub fn set_covering_chrome(&mut self, window_id: Option<WindowId>) -> bool {
+        let changed = self.covering_chrome != window_id;
+        self.covering_chrome = window_id;
         changed
+    }
+
+    /// Whether `window_id` is pinned above the other client windows.
+    #[must_use]
+    pub fn is_always_on_top(&self, window_id: WindowId) -> bool {
+        self.windows
+            .get(&window_id)
+            .is_some_and(|window| window.always_on_top)
+    }
+
+    /// Pin or unpin `window_id`, returning its new state. Client windows only — a shell surface
+    /// already sits on the layer its trust bought it, and nothing about a pin should be able to
+    /// move it.
+    pub fn toggle_always_on_top(&mut self, window_id: WindowId) -> bool {
+        if !self.is_client_window(window_id) {
+            return false;
+        }
+        let Some(window) = self.windows.get_mut(&window_id) else {
+            return false;
+        };
+        window.always_on_top = !window.always_on_top;
+        window.always_on_top
     }
 
     /// The output whose overlay surfaces are peeked out from under a fullscreen window, if any.
@@ -1764,47 +1823,22 @@ mod tests {
         assert_eq!(service.window(bar).unwrap().geometry, placed);
     }
 
-    /// A maximized window draws no tags while a bar holds its output's bottom edge — its
-    /// controls are the bar's — and draws them again the moment the zone is gone.
+    /// A window that fills the screen wears no frame, whichever way it got there and whatever
+    /// the bar happens to be reserving. The frame is a strip *below* the client area, so on a
+    /// window filling the output it is a black row across the bottom of the display; the tag and
+    /// the controls are shown over the window on a dwell instead (`covering_chrome`).
     #[test]
-    fn a_maximized_window_has_no_frame_only_while_a_bottom_zone_is_claimed() {
+    fn a_window_that_fills_the_screen_has_no_frame() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        let screen = outputs()[0].logical;
         assert!(service.has_frame(id));
+
         service.set_maximized(id, true);
-        assert!(service.has_frame(id), "no zone: the tags stay");
-        service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
-        assert!(!service.has_frame(id), "the bar holds the controls");
+        assert!(!service.has_frame(id), "maximized: no black row");
         assert_eq!(
             service.client_area(id),
             service.window(id).map(|window| window.geometry),
             "no frame: the client is the whole maximized geometry"
-        );
-        service.on_outputs_changed(outputs());
-        assert!(
-            service.has_frame(id),
-            "the zone is released: the tags come back"
-        );
-        service.set_maximized(id, false);
-        assert!(service.has_frame(id));
-        service.set_fullscreen(id, true);
-        assert!(!service.has_frame(id), "fullscreen never has a frame");
-    }
-
-    /// A bar that claims `Exclusive{Bottom, 0}` — collapsed to a hint — reserves nothing, so the
-    /// maximized window under it fills the whole output and wears its own tags again. Same claim,
-    /// same surface, different size: the only thing the size decides is the reservation.
-    #[test]
-    fn a_zero_bottom_zone_leaves_a_maximized_window_whole_and_framed() {
-        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
-        let screen = outputs()[0].logical;
-        service.set_maximized(id, true);
-
-        service.on_outputs_changed(vec![output_with_a_bottom_bar(0)]);
-        assert!(!service.outputs()[0].reserves_bottom());
-        assert_eq!(service.outputs()[0].usable(), screen);
-        assert!(
-            service.has_frame(id),
-            "a zone reserving nothing takes no controls away"
         );
         assert_eq!(
             service.window(id).unwrap().geometry,
@@ -1812,9 +1846,57 @@ mod tests {
             "maximized fills the whole output when nothing is reserved"
         );
 
-        // And the same output with a real reservation still takes the tags back.
-        service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
-        assert!(!service.has_frame(id));
+        // The bar's zone decides nothing about the frame any more, at either size.
+        for zone in [0, 48] {
+            service.on_outputs_changed(vec![output_with_a_bottom_bar(zone)]);
+            assert!(!service.has_frame(id), "zone {zone}");
+        }
+        service.on_outputs_changed(outputs());
+
+        service.set_maximized(id, false);
+        assert!(service.has_frame(id), "a floating window wears its tags");
+        service.set_fullscreen(id, true);
+        assert!(!service.has_frame(id), "fullscreen never has a frame");
+        service.set_fullscreen(id, false);
+        service.set_maximized(id, true);
+        service.shelve(id);
+        assert!(
+            service.has_frame(id),
+            "a parked window covers nothing, so it keeps its own tags"
+        );
+    }
+
+    /// A pin sorts a window as if it were on `AppOnTop` without moving it there: `layer_of` still
+    /// answers `Normal`, so nothing written in terms of layers changes for a pinned window.
+    #[test]
+    fn a_pinned_window_sorts_above_the_others_without_changing_layer() {
+        let (mut service, lower) = one_window(Rect::new(100, 100, 400, 300));
+        let upper = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(200, 200, 400, 300),
+        );
+        assert_eq!(
+            service.stacking_order().first().copied(),
+            Some(upper),
+            "the newer window is on top to start with"
+        );
+
+        assert!(service.toggle_always_on_top(lower));
+        assert_eq!(service.layer_of(lower), Some(Layer::Normal));
+        assert_eq!(service.stacking_order().first().copied(), Some(lower));
+
+        service.activate(upper);
+        assert_eq!(
+            service.stacking_order().first().copied(),
+            Some(lower),
+            "raising another window does not get past a pin"
+        );
+
+        assert!(!service.toggle_always_on_top(lower));
+        assert_eq!(service.stacking_order().first().copied(), Some(upper));
     }
 
     #[test]
