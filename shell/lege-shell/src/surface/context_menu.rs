@@ -962,26 +962,6 @@ mod tests {
             in_window_group: true,
             ..window.clone()
         };
-        // A Place: "Pin here" or "Unpin", never both, and "Keep" only until it is kept.
-        let place = MenuTarget {
-            tile: Some(TileId(3)),
-            place: Some(std::path::PathBuf::from("/home/dk/src/legeos")),
-            ..MenuTarget::default()
-        };
-        let ids = |t: &MenuTarget| -> Vec<&str> { t.rows().iter().map(|r| r.action).collect() };
-        assert!(ids(&place).contains(&"garden.pin") && !ids(&place).contains(&"garden.unpin"));
-        assert!(ids(&place).contains(&"garden.keep"));
-        let pinned = MenuTarget {
-            place_pinned: true,
-            ..place.clone()
-        };
-        assert!(ids(&pinned).contains(&"garden.unpin") && !ids(&pinned).contains(&"garden.pin"));
-        let kept = MenuTarget {
-            place_pinned: true,
-            place_kept: true,
-            ..place.clone()
-        };
-        assert!(!ids(&kept).contains(&"garden.keep"));
         // A project's tile: the five project rows, and nothing about a window it does not have.
         let project = MenuTarget {
             tile: Some(TileId(7)),
@@ -1069,6 +1049,30 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn a_place_offers_pin_or_unpin_by_its_state_and_keep_only_until_kept() {
+        // A Place: "Pin here" or "Unpin", never both, and "Keep" only until it is kept.
+        let place = MenuTarget {
+            tile: Some(TileId(3)),
+            place: Some(std::path::PathBuf::from("/home/dk/src/legeos")),
+            ..MenuTarget::default()
+        };
+        let ids = |t: &MenuTarget| -> Vec<&str> { t.rows().iter().map(|r| r.action).collect() };
+        assert!(ids(&place).contains(&"garden.pin") && !ids(&place).contains(&"garden.unpin"));
+        assert!(ids(&place).contains(&"garden.keep"));
+        let pinned = MenuTarget {
+            place_pinned: true,
+            ..place.clone()
+        };
+        assert!(ids(&pinned).contains(&"garden.unpin") && !ids(&pinned).contains(&"garden.pin"));
+        let kept = MenuTarget {
+            place_pinned: true,
+            place_kept: true,
+            ..place.clone()
+        };
+        assert!(!ids(&kept).contains(&"garden.keep"));
+    }
     #[test]
     fn opening_over_a_target_with_no_rows_opens_nothing() {
         // Every target offers the field rows today, so this is exercised through an empty table
