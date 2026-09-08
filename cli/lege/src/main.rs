@@ -2044,3 +2044,109 @@ async fn power_command(command: PowerCommand, json: bool) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// The verb the shipped prompt hook calls. Its shape is a contract with a shell script
+    /// that no compiler checks, so the parse is asserted here rather than discovered on a
+    /// desktop where the hook silently records nothing.
+    #[test]
+    fn garden_observe_parses_the_shape_the_prompt_hook_sends() {
+        let cli = Cli::parse_from([
+            "lege",
+            "garden",
+            "observe",
+            "terminal-entered",
+            "/home/dk/src",
+            "--role",
+            "terminal",
+        ]);
+        let Command::Garden { command, .. } = cli.command else {
+            panic!("not the garden subcommand")
+        };
+        let GardenCommand::Observe {
+            kind,
+            path,
+            app_id,
+            role,
+        } = command.expect("a garden subcommand")
+        else {
+            panic!("not the observe verb")
+        };
+        assert_eq!(kind, "terminal-entered");
+        assert_eq!(path, PathBuf::from("/home/dk/src"));
+        assert!(app_id.is_empty());
+        assert_eq!(role, "terminal");
+    }
+
+    /// The prompt hook itself: it must speak only when the working directory actually changed,
+    /// and it must leave every shell that is not an interactive LegeOS Bash alone. A `lege` on
+    /// PATH that only records its arguments is what makes this observable without a session.
+    #[test]
+    fn garden_s_prompt_hook_speaks_once_per_directory_and_stays_quiet_elsewhere() {
+        let hook = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../session/profile.d/60-legeos-garden.sh"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("lege");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$TRACE_FILE\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let trace = tmp.path().join("trace");
+
+        let run = |desktop: &str, args: &[&str]| {
+            std::process::Command::new("bash")
+                .args(args)
+                .env("TRACE_FILE", &trace)
+                .env("XDG_CURRENT_DESKTOP", desktop)
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        tmp.path().display(),
+                        std::env::var("PATH").unwrap()
+                    ),
+                )
+                .current_dir(tmp.path())
+                // The two negative cases fail loudly on purpose; their noise is not a result.
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+        };
+        let script = format!(
+            ". {hook}; __legeos_garden_prompt; __legeos_garden_prompt; cd /; __legeos_garden_prompt"
+        );
+
+        // Not a LegeOS session: the hook is not even defined, so calling it fails.
+        assert!(!run("GNOME", &["--noprofile", "--norc", "-i", "-c", &script]).success());
+        assert!(!trace.exists() || std::fs::read_to_string(&trace).unwrap().is_empty());
+
+        // A non-interactive shell is left alone for the same reason.
+        assert!(!run("LegeOS", &["--noprofile", "--norc", "-c", &script]).success());
+
+        // Interactive and LegeOS: one line per directory, and the repeat says nothing.
+        assert!(run("LegeOS", &["--noprofile", "--norc", "-i", "-c", &script]).success());
+        let lines: Vec<String> = std::fs::read_to_string(&trace)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "garden observe terminal-entered {} --role terminal",
+                    tmp.path().canonicalize().unwrap().display()
+                ),
+                "garden observe terminal-entered / --role terminal".to_owned(),
+            ]
+        );
+    }
+}
