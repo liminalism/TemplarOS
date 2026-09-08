@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="5">
+  <interface name="lege_shell_manager_v1" version="6">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -61,7 +61,8 @@
 
         Along its edge the surface keeps its own committed extent, clamped to the output and
         anchored at the edge's start (the left end for `top`/`bottom`, the top end for
-        `left`/`right`). A strip narrower than the screen is a strip narrower than the screen: it
+        `left`/`right`) unless it asks otherwise with `set_edge_alignment`. A strip narrower than
+        the screen is a strip narrower than the screen: it
         reserves the same thickness whether it is showing two chips or a full row of them, so
         growing and shrinking it never reflows a single window. The compositor does not stretch a
         surface to fill its edge, and a surface is therefore never told how wide the output is by
@@ -75,10 +76,15 @@
         surface is simply covered. Destroying it instead releases the zone, which reflows every
         maximized window on that output twice — once on the way in and once on the way out.
 
-        That exception is unconditional: fullscreen is uninterrupted. Nothing of the surface shows
-        over a fullscreen window and no pointer gesture reveals it — the switch route there is the
-        compositor's own Alt+Tab. No request is involved and no event is sent: the surface keeps
-        painting exactly as it always does, and its frame callbacks continue while it is covered.
+        That exception is suspended for as long as the pointer asks for it. When the pointer comes
+        to *rest* on that output's bottom edge — outside the bottom-left corner square, which is
+        the compositor's route to the Home Surface and is never this — the surface is drawn over
+        the fullscreen window again, and stays there while the pointer is either still on that edge
+        or anywhere on the surface itself. No request is involved and no event is sent: the surface
+        keeps painting exactly as it always does, its frame callbacks continue while it is covered,
+        and nothing about its size, its zone or the work area changes on the way in or out. A
+        surface that has collapsed itself to a hint is therefore the thing the pointer finds there,
+        and reaching it is what its own reveal responds to.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>
@@ -175,6 +181,28 @@
       </description>
       <arg name="app_id" type="string" summary="canonical application id, or empty for none"/>
     </request>
+    <request name="set_edge_alignment" since="6">
+      <description summary="where along its edge an anchored shell surface sits">
+        `set_exclusive_zone` decides which edge a surface is anchored to and how much of the
+        output it reserves; it says nothing about where along that edge the surface sits, and the
+        compositor's own answer is the edge's start. This request is how a shell says otherwise:
+        `start`, `centre` or `end` of `edge`.
+
+        This is placement, never reservation. The alignment moves the surface along its edge and
+        changes nothing about the work area — a centred strip reserves exactly what the same strip
+        reserves at the start, and a zone of 0 still reserves nothing wherever it sits. Moving a
+        surface from one alignment to another therefore reflows no window, for the same reason
+        that growing it along its edge does not.
+
+        The alignment applies only to a live `set_exclusive_zone` claim on the same `edge`. A
+        surface that never sends this request, or that sends it for an edge it does not claim, is
+        anchored at the start — which is what every surface did before this request existed. Like
+        a zone, an alignment is per surface and is released when the surface is destroyed.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="edge" type="uint" enum="edge"/>
+      <arg name="alignment" type="uint" enum="alignment"/>
+    </request>
     <event name="terminal_requested" since="5">
       <description summary="the terminal chord was pressed and no terminal window exists">
         The shell answers by launching the `terminal` provider. Sent at most once per press.
@@ -192,6 +220,16 @@
       <entry name="bottom" value="1"/>
       <entry name="left" value="2"/>
       <entry name="right" value="3"/>
+    </enum>
+    <!-- Mirrors `lege_window::geometry::Alignment`'s discriminants exactly. -->
+    <enum name="alignment" since="6">
+      <entry name="start" value="0">
+        <description summary="the left end of a top/bottom edge, the top end of a left/right one">
+          The default, and what every surface got before `set_edge_alignment` existed.
+        </description>
+      </entry>
+      <entry name="centre" value="1"/>
+      <entry name="end" value="2"/>
     </enum>
     <!-- Mirrors `lege_window::Layer`'s discriminants exactly (`interfaces/wayland/README.md`). -->
     <enum name="layer">
