@@ -399,6 +399,8 @@ mod homegarden {
         fn describe(&self, path: &str) -> zbus::Result<String>;
 
         fn pin(&self, path: &str, pinned: bool) -> zbus::Result<()>;
+        /// Pin, and freeze the tile at its current size.
+        fn keep(&self, path: &str) -> zbus::Result<()>;
         fn hide(&self, path: &str, hidden: bool) -> zbus::Result<()>;
         fn forget(&self, path: &str) -> zbus::Result<()>;
         fn forget_all(&self) -> zbus::Result<()>;

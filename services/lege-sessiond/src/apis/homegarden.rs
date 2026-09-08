@@ -189,15 +189,24 @@ impl HomeGardenApi {
             return Ok(TendReport::default());
         };
         // The user's hand since last time: a moved tile updates its landing; a resized tile
-        // becomes user-sized and the tender stops resizing it.
+        // becomes user-sized and the tender stops resizing it; a tile the tender never placed —
+        // a folder the user put on Home by hand, or one that was there before the garden was —
+        // is the user's outright: pinned and kept, so it is neither resized nor removed by
+        // recession. Only what the garden grew is the garden's to prune.
         for context in &mut inner.ledger.contexts {
             if let Some(located) = doc.location(garden_tile_id(&context.root)) {
                 context.landing = Some(located.placement.cell);
-                if context
-                    .tended_span
-                    .is_some_and(|span| span != located.placement.span)
-                {
-                    context.user_span = Some(located.placement.span);
+                match context.tended_span {
+                    Some(span) if span != located.placement.span => {
+                        context.user_span = Some(located.placement.span);
+                    }
+                    Some(_) => {}
+                    None if !context.hidden => {
+                        context.pinned = true;
+                        context.user_span = Some(located.placement.span);
+                        context.tended_span = Some(located.placement.span);
+                    }
+                    None => {}
                 }
             }
         }
@@ -257,6 +266,41 @@ impl HomeGardenApi {
         }
         self.persist(&inner);
         Ok(report)
+    }
+
+    /// Where `root`'s tile is placed, on every output that has it.
+    fn tile_locations(&self, root: &Path) -> Vec<(String, lege_field::Located)> {
+        let id = garden_tile_id(root);
+        let outputs = homefield::outputs(&self.store).unwrap_or_default();
+        outputs
+            .into_iter()
+            .filter_map(|output| {
+                let doc = homefield::load(&self.store, &output).ok().flatten()?;
+                doc.location(id).map(|located| (output, located))
+            })
+            .collect()
+    }
+
+    /// Take `root`'s tile off every Home it is on — the user said hide or remove, and a tile
+    /// that stays is a control that did not do what it said. One undoable `HomeField1` change
+    /// per output, announced so every view redraws.
+    async fn remove_tile_everywhere(&self, root: &Path, verb: &str) {
+        let id = garden_tile_id(root);
+        for (output, _) in self.tile_locations(root) {
+            match homefield::apply_op(&self.store, &output, &lege_field::FieldOp::Remove { id }) {
+                Ok(next) => {
+                    self.record(format!(
+                        "Home on {output}: {} {verb}.",
+                        root.file_name()
+                            .map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned())
+                    ));
+                    self.announce_field_change(&output, next.revision).await;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, root = %root.display(), output, "removing a place's tile");
+                }
+            }
+        }
     }
 
     fn record(&self, message: String) {
@@ -353,6 +397,7 @@ fn context_json(
         "roles": context.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
         "tree": context.tree,
         "pinned": context.pinned,
+        "kept": context.user_span.is_some(),
         "hidden": context.hidden,
         "landing": context.landing,
         "user_span": context.user_span,
@@ -361,6 +406,10 @@ fn context_json(
         "why": context.last_reason,
         "tile": garden_tile_id(&context.root).0,
     })
+}
+
+fn not_a_place(path: &Path) -> fdo::Error {
+    fdo::Error::InvalidArgs(format!("{} is not a place", path.display()))
 }
 
 fn parse_path(path: &str) -> fdo::Result<PathBuf> {
@@ -443,10 +492,28 @@ impl HomeGardenApi {
         let path = parse_path(path)?;
         let mut inner = self.inner.lock().expect("garden lock");
         if !inner.ledger.set_pinned(&path, pinned) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "{} is not a place",
-                path.display()
-            )));
+            return Err(not_a_place(&path));
+        }
+        self.persist(&inner);
+        Ok(())
+    }
+
+    async fn keep(&self, path: &str) -> fdo::Result<()> {
+        let path = parse_path(path)?;
+        // The size to keep is the tile's, wherever it is; a place with no tile yet is pinned, and
+        // the first tending sizes it.
+        let span = self
+            .tile_locations(&path)
+            .into_iter()
+            .next()
+            .map(|(_, located)| located.placement.span);
+        let mut inner = self.inner.lock().expect("garden lock");
+        let known = match span {
+            Some(span) => inner.ledger.keep(&path, span),
+            None => inner.ledger.set_pinned(&path, true),
+        };
+        if !known {
+            return Err(not_a_place(&path));
         }
         self.persist(&inner);
         Ok(())
@@ -454,22 +521,27 @@ impl HomeGardenApi {
 
     async fn hide(&self, path: &str, hidden: bool) -> fdo::Result<()> {
         let path = parse_path(path)?;
-        let mut inner = self.inner.lock().expect("garden lock");
-        if !inner.ledger.set_hidden(&path, hidden) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "{} is not a place",
-                path.display()
-            )));
+        {
+            let mut inner = self.inner.lock().expect("garden lock");
+            if !inner.ledger.set_hidden(&path, hidden) {
+                return Err(not_a_place(&path));
+            }
+            self.persist(&inner);
         }
-        self.persist(&inner);
+        if hidden {
+            self.remove_tile_everywhere(&path, "hidden").await;
+        }
         Ok(())
     }
 
     async fn forget(&self, path: &str) -> fdo::Result<()> {
         let path = parse_path(path)?;
-        let mut inner = self.inner.lock().expect("garden lock");
-        inner.ledger.forget(&path);
-        self.persist(&inner);
+        {
+            let mut inner = self.inner.lock().expect("garden lock");
+            inner.ledger.forget(&path);
+            self.persist(&inner);
+        }
+        self.remove_tile_everywhere(&path, "removed").await;
         Ok(())
     }
 

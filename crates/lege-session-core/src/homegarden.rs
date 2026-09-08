@@ -839,12 +839,42 @@ impl Ledger {
         changes
     }
 
+    /// Pin: never removed by recession, never recedes; may still grow. Unpinning also lets go
+    /// of a kept size, so "Unpin" is the one way back to a place the garden tends freely.
     pub fn set_pinned(&mut self, root: &Path, pinned: bool) -> bool {
-        self.context_mut(root).map(|c| c.pinned = pinned).is_some()
+        self.context_mut(root)
+            .map(|c| {
+                c.pinned = pinned;
+                if !pinned {
+                    c.user_span = None;
+                }
+            })
+            .is_some()
     }
 
+    /// Keep: pinned, and frozen at `span` — the tender never resizes it again.
+    pub fn keep(&mut self, root: &Path, span: Span) -> bool {
+        self.context_mut(root)
+            .map(|c| {
+                c.pinned = true;
+                c.user_span = Some(span);
+            })
+            .is_some()
+    }
+
+    /// Hide: the tile leaves Home at the next tending moment and the place never grows while
+    /// hidden. Hiding is the user's explicit word, so it outranks a pin: a hidden place is
+    /// unpinned, and unhiding gives the garden back an ordinary, tendable place.
     pub fn set_hidden(&mut self, root: &Path, hidden: bool) -> bool {
-        self.context_mut(root).map(|c| c.hidden = hidden).is_some()
+        self.context_mut(root)
+            .map(|c| {
+                c.hidden = hidden;
+                if hidden {
+                    c.pinned = false;
+                    c.user_span = None;
+                }
+            })
+            .is_some()
     }
 
     pub fn forget(&mut self, root: &Path) -> bool {
@@ -1268,6 +1298,37 @@ mod tests {
         assert!(ledger.tend(now, &config).is_empty());
         // And nothing happens without a tending moment in between: a machine that is off ages
         // nothing, because `now` never advanced.
+    }
+
+    #[test]
+    fn keep_freezes_the_size_hide_outranks_a_pin_and_unpin_lets_go_of_both() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        let root = Path::new("/home/dk/src/legeos");
+        ledger.observe(
+            &event(
+                "/home/dk/src/legeos",
+                ActivityKind::LaunchedHere,
+                None,
+                at(1, 1.0),
+            ),
+            &probe,
+            &config,
+        );
+        assert!(ledger.keep(root, Span::new(3, 3)));
+        let context = ledger.context(root).unwrap();
+        assert!(context.pinned);
+        assert_eq!(context.user_span, Some(Span::new(3, 3)));
+        assert!(ledger.set_hidden(root, true));
+        let context = ledger.context(root).unwrap();
+        assert!(context.hidden && !context.pinned && context.user_span.is_none());
+        assert!(ledger.set_hidden(root, false));
+        assert!(ledger.keep(root, Span::new(2, 2)));
+        assert!(ledger.set_pinned(root, false));
+        let context = ledger.context(root).unwrap();
+        assert!(!context.pinned && context.user_span.is_none());
+        assert!(!ledger.keep(Path::new("/nowhere"), Span::new(2, 2)));
     }
 
     #[test]

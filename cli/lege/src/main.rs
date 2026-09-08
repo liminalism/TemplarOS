@@ -740,9 +740,16 @@ async fn garden_manage(
 ) -> Result<()> {
     let path_of = |path: &Path| path.to_string_lossy().into_owned();
     match command {
-        GardenCommand::Pin { path }
-        | GardenCommand::Unpin { path }
-        | GardenCommand::Keep { path } => {
+        GardenCommand::Keep { path } => {
+            let root = folder_argument(&path)?;
+            proxy.keep(&path_of(&root)).await?;
+            emit(
+                json,
+                &serde_json::json!({"root": root, "pinned": true, "kept": true}),
+                &format!("{} kept at its size and place", root.display()),
+            )
+        }
+        GardenCommand::Pin { path } | GardenCommand::Unpin { path } => {
             let root = folder_argument(&path)?;
             proxy.pin(&path_of(&root), pinned).await?;
             emit(

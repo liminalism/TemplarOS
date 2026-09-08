@@ -46,6 +46,20 @@ pub fn load_stored(store: &Store, output: &str) -> Result<Stored> {
     })
 }
 
+/// Every output that has a stored document, so a change that is about a tile rather than a
+/// display (a garden place hidden or forgotten) can reach each field it is on.
+pub fn outputs(store: &Store) -> Result<Vec<String>> {
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT output FROM homefield ORDER BY output")
+        .context("listing home field outputs")?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .context("listing home field outputs")?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .context("listing home field outputs")
+}
+
 /// The stored document for `output`, if any and if this build can read it.
 pub fn load(store: &Store, output: &str) -> Result<Option<FieldDocument>> {
     Ok(match load_stored(store, output)? {

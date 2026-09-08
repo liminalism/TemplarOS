@@ -18,7 +18,7 @@ user's.
 | The ledger | `crates/lege-session-core/src/homegarden.rs` | Pure. `HomeActivity` in, `HomeContext` records with score, buckets, roles, an activity tree and a stage; root attribution behind `RootProbe`; the ignore list; the Garden Clock. |
 | The tender | `crates/lege-field/src/garden.rs` | Pure. `tend(document, contexts, corner)` → `Place` / `Resize` / `Remove`, each with a reason. Never `Move`. Property-tested in `tests/field.rs`. |
 | The host | `services/lege-sessiond/src/apis/homegarden.rs` | `org.legeos.HomeGarden1`. Persists the ledger (one JSON row, `home_garden`), applies each tending as one `HomeField1` batch (undoable, in `History1`), subscribes to the session edges and the launch channel. |
-| The view | `shell/lege-shell/src/garden.rs`, `surface/field_screen.rs::paint_place` | The shell tends at session start and on every Home reveal, and draws a grown Folder tile by rung. It owns no garden state. |
+| The view | `shell/lege-shell/src/garden.rs`, `surface/field_screen.rs::paint_place` | The shell tends at session start and on every Home reveal, draws a grown Folder tile by rung, and takes every change the daemon makes (`field_model::reconcile_remote`: adopt, resize, remove). It owns no garden state. |
 | The verbs | `crates/lege-types/src/action.rs` (`place.*`, `garden.*`) | One declaration → context menu, cheat sheet, `lege garden`. |
 | The levers | `shell.home-garden.*` in `crates/lege-session-core/src/settings.rs` | `enabled`, `half-life-hours`, `half-life-sessions`, `max-contexts`, `home-corner`, `ignore`. |
 
@@ -70,19 +70,33 @@ Place; the walk stops beneath it and is capped at eight ancestors. Only `stat`-c
 | Tile | 3×2 | ≥ 8, 2 sessions | 6 sessions and 15 hours, < 4 |
 | Expanded | 4×3 | ≥ 20, 3 sessions, 2 kinds/roles | 3 sessions and 6 hours, < 10 |
 
-One step per tending moment: a place recedes visibly, never vanishes. Pinned never recedes;
-hidden never grows.
+One step per tending moment: a place recedes visibly, never vanishes. Pinned never recedes and
+is never removed by recession, but may grow; **kept** is pinned and frozen at its size; hidden
+never grows, and its tile leaves Home at once. A folder the user placed or resized by hand is
+kept without asking: the tender only prunes what it grew.
+
+| Verb | Record | Tile |
+|---|---|---|
+| `garden.pin` | `pinned` | never removed by recession; may still grow |
+| `garden.keep` | `pinned`, `user_span = current` | frozen in size and place |
+| `garden.unpin` | neither | tended freely again |
+| `garden.hide` | `hidden`, unpinned | removed from every Home now (undoable); the record stays |
+| `garden.forget` | dropped | removed from every Home now (undoable); activity may regrow it |
 
 ## The tender's rules
 
 1. Tending happens only at tending moments: session start, Home reveal, `garden.tend`.
 2. It emits `Place`, `Resize`, `Remove`. Never `Move`.
 3. A `Place` lands at the remembered landing if free, else the nearest free cell to it, else
-   the nearest free cell to the home corner. Nothing is displaced; a full field gets nothing.
+   the nearest free cell to the home corner — the corner as a 4×3 would sit in it, so a Trace
+   has room to become Expanded in place. Nothing is displaced; a full field gets nothing.
 4. A `Resize` is accepted only when `reflow::find_resize` satisfies it without any tile the
-   tender does not own giving up span (garden-owned, unpinned, not user-sized).
+   tender does not own giving up span (garden-owned, unpinned, not user-sized) **and without any
+   neighbour's cell changing**; when the requested span would shift a neighbour, each axis alone
+   is tried before nothing is emitted.
 5. A tile the user moved keeps its new cell as its landing; a tile the user resized becomes
-   user-sized and is never resized again; a pinned place is never removed.
+   user-sized and is never resized again; a tile the tender never placed is the user's outright
+   (pinned and kept); a pinned place is never removed by recession.
 6. Every op carries a reason (`grew legeos to 4x3: 14 opens, 3 launches, 4 sessions`); the
    batch is one `History1` event and one `HomeField1.Undo` step.
 

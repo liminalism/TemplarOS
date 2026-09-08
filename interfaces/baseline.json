@@ -222,6 +222,7 @@
         "Forget": "(s)->()",
         "ForgetAll": "()->()",
         "Hide": "(sb)->()",
+        "Keep": "(s)->()",
         "Observe": "(ssss)->()",
         "Pin": "(sb)->()",
         "Tend": "(s)->(s)"

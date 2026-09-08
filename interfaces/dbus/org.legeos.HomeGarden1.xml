@@ -40,17 +40,26 @@
       <arg name="path" type="s" direction="in"/>
       <arg name="context_json" type="s" direction="out"/>
     </method>
-    <!-- A pinned context never recedes and is never removed; it may still grow. -->
+    <!-- A pinned context never recedes and is never removed; it may still grow. Unpinning also
+         releases a size kept by Keep. A folder the user placed or resized by hand is pinned and
+         kept without asking: the tender only ever resizes or removes what it grew itself. -->
     <method name="Pin">
       <arg name="path" type="s" direction="in"/>
       <arg name="pinned" type="b" direction="in"/>
     </method>
-    <!-- A hidden context never grows; its record is kept so it can be unhidden. -->
+    <!-- Pin, and freeze the tile at the size it has now: the tender never resizes it again. -->
+    <method name="Keep">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- A hidden context's tile leaves every Home it is on (one undoable HomeField1 change per
+         output) and never grows while hidden; the record is kept so it can be unhidden. Hiding
+         outranks a pin. -->
     <method name="Hide">
       <arg name="path" type="s" direction="in"/>
       <arg name="hidden" type="b" direction="in"/>
     </method>
-    <!-- Drop one context's record; fresh activity may grow it again. -->
+    <!-- Drop one context's record and take its tile off every Home it is on (undoable there);
+         fresh activity may grow it again. -->
     <method name="Forget">
       <arg name="path" type="s" direction="in"/>
     </method>
