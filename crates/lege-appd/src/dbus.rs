@@ -244,12 +244,29 @@ impl IdentityApi {
     pub async fn applications_changed(signal_emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
+/// Told after every successful launch, with the *resolved variant* id and the arguments it got.
+///
+/// appd knows nothing about what watches — a folder argument means something to the Home garden
+/// and nothing here — so this is a closure the host injects, not an interface appd reasons about.
+pub type LaunchObserver = Box<dyn Fn(&AppId, &[String]) + Send + Sync>;
+
 /// `org.legeos.Launcher1`
-#[derive(Debug)]
 pub struct LauncherApi {
     registry: Arc<Registry>,
     backend: LaunchBackend,
     connection: zbus::Connection,
+    observer: Option<LaunchObserver>,
+}
+
+/// Hand-written because a `dyn Fn` has no `Debug`; the observer is reported as present or not,
+/// which is the only thing about it anyone debugging a launch would want to know.
+impl std::fmt::Debug for LauncherApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LauncherApi")
+            .field("backend", &self.backend)
+            .field("observed", &self.observer.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl LauncherApi {
@@ -262,7 +279,25 @@ impl LauncherApi {
             registry,
             backend,
             connection,
+            observer: None,
         }
+    }
+
+    /// Watch every successful launch. Optional: the daemon launches identically without one.
+    #[must_use]
+    pub fn with_observer(mut self, observer: LaunchObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+}
+
+/// Both launch paths end here, so neither can grow a route that is unobserved.
+///
+/// Free rather than a method so a test can exercise it without a bus connection, which
+/// `LauncherApi` needs only in order to actually launch something.
+fn observed(observer: Option<&LaunchObserver>, app_id: &AppId, arguments: &[String]) {
+    if let Some(observer) = observer {
+        observer(app_id, arguments);
     }
 }
 
@@ -294,6 +329,7 @@ impl LauncherApi {
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
+        observed(self.observer.as_ref(), &app_id, &arguments);
         Ok(record.id.to_string())
     }
 
@@ -352,6 +388,9 @@ impl LauncherApi {
         )
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        // The resolved variant, not the logical id: what actually started is what an observer
+        // has to be told, or it cannot tell two copies of Firefox apart.
+        observed(self.observer.as_ref(), &chosen, &arguments);
         Ok(record.id.to_string())
     }
 }
@@ -454,6 +493,45 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// The observer sees the resolved id and the arguments verbatim — a `--directory` is what
+    /// makes a launch mean "here", and it must survive the trip.
+    #[test]
+    fn an_observer_is_told_the_resolved_id_and_the_arguments() {
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let observer: LaunchObserver = Box::new({
+            let seen = Arc::clone(&seen);
+            move |app_id: &AppId, arguments: &[String]| {
+                seen.lock().unwrap().push(format!("{app_id} {arguments:?}"));
+            }
+        });
+
+        let files: AppId = "org.legeos.Files".parse().unwrap();
+        observed(
+            Some(&observer),
+            &files,
+            &["--directory".to_owned(), "/tmp/x".to_owned()],
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [r#"org.legeos.Files ["--directory", "/tmp/x"]"#]
+        );
+    }
+
+    /// A launch reaches `systemd-run --user`, so no test can drive one end to end here. What can
+    /// be checked is that neither launch path forgets to report: an unobserved route would be a
+    /// launch the garden never learns about, and it would fail silently and for ever.
+    #[test]
+    fn both_launch_paths_report_to_the_observer() {
+        let source = include_str!("dbus.rs");
+        // Split so this assertion's own text is not one of the matches it counts.
+        let call = concat!("observed(self.observer.as", "_ref(), &");
+        assert_eq!(
+            source.matches(call).count(),
+            2,
+            "Launcher1 has a launch path that does not tell the observer"
         );
     }
 
