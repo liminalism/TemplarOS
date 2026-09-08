@@ -113,7 +113,7 @@ pub fn arb_exclusive_zones() -> impl Strategy<Value = Vec<Exclusive>> {
             ],
             0i32..6000,
         )
-            .prop_map(|(edge, size)| Exclusive { edge, size }),
+            .prop_map(|(edge, size)| Exclusive::new(edge, size)),
         0..3,
     )
 }

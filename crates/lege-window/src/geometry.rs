@@ -142,11 +142,45 @@ pub enum Edge {
     Right,
 }
 
-/// One shell surface's claim on an output's space: a dock of `size` logical pixels along `edge`.
+/// Where along its edge an anchored shell surface sits
+/// (`lege-shell-v1.xml`'s `set_edge_alignment`).
+///
+/// Placement only: the alignment moves the surface along its edge and changes nothing about what
+/// it reserves, so moving between alignments reflows no window — the same property as growing a
+/// strip along its edge.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Alignment {
+    /// The left end of a top/bottom edge, the top end of a left/right one. The default, and what
+    /// every surface got before the shell could ask for anything else.
+    #[default]
+    Start,
+    Centre,
+    End,
+}
+
+/// One shell surface's claim on an output's space: a dock of `size` logical pixels along `edge`,
+/// sitting at `alignment` along it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Exclusive {
     pub edge: Edge,
     pub size: i32,
+    /// Where along `edge` the surface sits. `#[serde(default)]` because a persisted claim written
+    /// before this field existed is a claim at the edge's start.
+    #[serde(default)]
+    pub alignment: Alignment,
+}
+
+impl Exclusive {
+    /// A claim at the edge's start — every claim that never asked for an alignment.
+    #[must_use]
+    pub fn new(edge: Edge, size: i32) -> Self {
+        Self {
+            edge,
+            size,
+            alignment: Alignment::Start,
+        }
+    }
 }
 
 /// Shrink `logical` by every zone, in the order given.
@@ -188,11 +222,12 @@ pub fn work_area_for(logical: Rect, zones: &[Exclusive]) -> Rect {
 /// does not ask to sit at the bottom of the screen — it declares that it *is* a dock reserving
 /// the bottom edge, and where that puts it follows.
 ///
-/// * A surface with an [`Exclusive`] claim is placed flush against that edge, at the start of it,
-///   as thick as the greater of its claim and its requested thickness, and as long *along* the
-///   edge as it asked to be. It is measured against `logical`, not [`Output::usable`], because
-///   the claim is what *creates* the usable area — insetting it by its own reservation would walk
-///   it off the screen one frame at a time.
+/// * A surface with an [`Exclusive`] claim is placed flush against that edge, at the claim's
+///   [`Alignment`] along it ([`Alignment::Start`] unless the shell said otherwise), as thick as
+///   the greater of its claim and its requested thickness, and as long *along* the edge as it
+///   asked to be. It is measured against `logical`, not [`Output::usable`], because the claim is
+///   what *creates* the usable area — insetting it by its own reservation would walk it off the
+///   screen one frame at a time.
 /// * A [`Layer::HomeSurface`] surface with no claim fills the output: it is the backdrop, the
 ///   thing visible wherever no window is.
 /// * Anything else keeps its requested size and is moved wholly inside the usable area, so a
@@ -218,40 +253,58 @@ pub fn shell_surface_placement(
         let size = zone.size.max(0);
         let thickness =
             |requested_side: i32, available: i32| requested_side.max(size).min(available);
-        // Anchored at the edge's start rather than centred: a strip that stays put as it grows is
-        // one a person can aim at, and the compositor has no business deciding where along an
-        // edge the shell's own chrome belongs.
-        let extent =
-            |requested_side: i32, available: i32| requested_side.clamp(1, available.max(1));
+        // Where along the edge is the shell's to say, not the compositor's — the same argument as
+        // before, now with a way for the shell to answer it (`lege-shell-v1.xml`'s
+        // `set_edge_alignment`). `Start` is what a surface that never asked for anything gets, so
+        // this is the behaviour every existing claim already had. The offset is placement alone:
+        // `work_area_for` reads `size` and never this, so sliding a strip along its edge reflows
+        // nothing.
+        let along = |requested_side: i32, available: i32| {
+            let extent = requested_side.clamp(1, available.max(1));
+            let offset = match zone.alignment {
+                Alignment::Start => 0,
+                Alignment::Centre => (available - extent) / 2,
+                Alignment::End => available - extent,
+            };
+            (offset.max(0), extent)
+        };
         return match zone.edge {
-            Edge::Top => Rect::new(
-                full.x,
-                full.y,
-                extent(requested.width, full.width),
-                thickness(requested.height, full.height),
-            ),
+            Edge::Top => {
+                let (offset, width) = along(requested.width, full.width);
+                Rect::new(
+                    full.x + offset,
+                    full.y,
+                    width,
+                    thickness(requested.height, full.height),
+                )
+            }
             Edge::Bottom => {
                 let height = thickness(requested.height, full.height);
+                let (offset, width) = along(requested.width, full.width);
                 Rect::new(
-                    full.x,
+                    full.x + offset,
                     full.bottom().saturating_sub(height),
-                    extent(requested.width, full.width),
+                    width,
                     height,
                 )
             }
-            Edge::Left => Rect::new(
-                full.x,
-                full.y,
-                thickness(requested.width, full.width),
-                extent(requested.height, full.height),
-            ),
+            Edge::Left => {
+                let (offset, height) = along(requested.height, full.height);
+                Rect::new(
+                    full.x,
+                    full.y + offset,
+                    thickness(requested.width, full.width),
+                    height,
+                )
+            }
             Edge::Right => {
                 let width = thickness(requested.width, full.width);
+                let (offset, height) = along(requested.height, full.height);
                 Rect::new(
                     full.right().saturating_sub(width),
-                    full.y,
+                    full.y + offset,
                     width,
-                    extent(requested.height, full.height),
+                    height,
                 )
             }
         };
@@ -1129,13 +1182,8 @@ mod tests {
     #[test]
     fn a_shell_surface_is_placed_by_what_it_is() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        let output = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
-            screen,
-            &[Exclusive {
-                edge: Edge::Bottom,
-                size: 64,
-            }],
-        ));
+        let output = Output::new("eDP-1", screen, 1000)
+            .with_work_area(work_area_for(screen, &[Exclusive::new(Edge::Bottom, 64)]));
         let asked_for = Rect::new(7000, 7000, 900, 64);
 
         // A dock claiming the bottom edge lands on the bottom edge, at the start of it, as long
@@ -1144,10 +1192,7 @@ mod tests {
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
-                Some(Exclusive {
-                    edge: Edge::Bottom,
-                    size: 64
-                }),
+                Some(Exclusive::new(Edge::Bottom, 64)),
                 &output,
                 asked_for,
             ),
@@ -1156,10 +1201,7 @@ mod tests {
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
-                Some(Exclusive {
-                    edge: Edge::Top,
-                    size: 40
-                }),
+                Some(Exclusive::new(Edge::Top, 40)),
                 &output,
                 asked_for,
             ),
@@ -1170,10 +1212,7 @@ mod tests {
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
-                Some(Exclusive {
-                    edge: Edge::Left,
-                    size: 72
-                }),
+                Some(Exclusive::new(Edge::Left, 72)),
                 &output,
                 asked_for,
             ),
@@ -1183,10 +1222,7 @@ mod tests {
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
-                Some(Exclusive {
-                    edge: Edge::Right,
-                    size: 72
-                }),
+                Some(Exclusive::new(Edge::Right, 72)),
                 &output,
                 asked_for,
             ),
@@ -1214,10 +1250,7 @@ mod tests {
         // and extent alike.
         let greedy = shell_surface_placement(
             Layer::ShellOverlay,
-            Some(Exclusive {
-                edge: Edge::Bottom,
-                size: 99_999,
-            }),
+            Some(Exclusive::new(Edge::Bottom, 99_999)),
             &output,
             Rect::new(7000, 7000, 99_999, 64),
         );
@@ -1231,10 +1264,7 @@ mod tests {
     #[test]
     fn a_zero_zone_anchors_the_surface_and_reserves_nothing() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        let zero = Exclusive {
-            edge: Edge::Bottom,
-            size: 0,
-        };
+        let zero = Exclusive::new(Edge::Bottom, 0);
         let output =
             Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(screen, &[zero]));
 
@@ -1263,10 +1293,7 @@ mod tests {
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
-                Some(Exclusive {
-                    edge: Edge::Top,
-                    size: 0
-                }),
+                Some(Exclusive::new(Edge::Top, 0)),
                 &output,
                 Rect::new(0, 0, 900, 6),
             ),
@@ -1278,23 +1305,11 @@ mod tests {
     fn exclusive_zones_shrink_the_work_area_and_stack() {
         let screen = Rect::new(0, 0, 1920, 1080);
         assert_eq!(
-            work_area_for(
-                screen,
-                &[Exclusive {
-                    edge: Edge::Top,
-                    size: 40
-                }]
-            ),
+            work_area_for(screen, &[Exclusive::new(Edge::Top, 40)]),
             Rect::new(0, 40, 1920, 1040)
         );
         assert_eq!(
-            work_area_for(
-                screen,
-                &[Exclusive {
-                    edge: Edge::Bottom,
-                    size: 64
-                }]
-            ),
+            work_area_for(screen, &[Exclusive::new(Edge::Bottom, 64)]),
             Rect::new(0, 0, 1920, 1016)
         );
         // A panel at the top and a dock at the bottom take from opposite ends.
@@ -1302,14 +1317,8 @@ mod tests {
             work_area_for(
                 screen,
                 &[
-                    Exclusive {
-                        edge: Edge::Top,
-                        size: 40
-                    },
-                    Exclusive {
-                        edge: Edge::Bottom,
-                        size: 64
-                    },
+                    Exclusive::new(Edge::Top, 40),
+                    Exclusive::new(Edge::Bottom, 64),
                 ]
             ),
             Rect::new(0, 40, 1920, 976)
@@ -1318,26 +1327,14 @@ mod tests {
         let stacked = work_area_for(
             screen,
             &[
-                Exclusive {
-                    edge: Edge::Left,
-                    size: 50,
-                },
-                Exclusive {
-                    edge: Edge::Left,
-                    size: 30,
-                },
+                Exclusive::new(Edge::Left, 50),
+                Exclusive::new(Edge::Left, 30),
             ],
         );
         assert_eq!(stacked, Rect::new(80, 0, 1840, 1080));
         // A negative claim is not a way to grow the work area past the output.
         assert_eq!(
-            work_area_for(
-                screen,
-                &[Exclusive {
-                    edge: Edge::Top,
-                    size: -500
-                }]
-            ),
+            work_area_for(screen, &[Exclusive::new(Edge::Top, -500)]),
             screen
         );
     }
@@ -1345,13 +1342,8 @@ mod tests {
     #[test]
     fn a_shell_cannot_make_windows_unreachable() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        let ordinary = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
-            screen,
-            &[Exclusive {
-                edge: Edge::Bottom,
-                size: 64,
-            }],
-        ));
+        let ordinary = Output::new("eDP-1", screen, 1000)
+            .with_work_area(work_area_for(screen, &[Exclusive::new(Edge::Bottom, 64)]));
         assert_eq!(ordinary.usable(), Rect::new(0, 0, 1920, 1016));
 
         // A dock taller than the screen, a dock that leaves a sliver too small for a recovery
@@ -1359,20 +1351,8 @@ mod tests {
         // refused and the whole output is returned, because a restartable shell process does
         // not get to decide whether the user can reach their windows.
         for hostile in [
-            work_area_for(
-                screen,
-                &[Exclusive {
-                    edge: Edge::Top,
-                    size: 5000,
-                }],
-            ),
-            work_area_for(
-                screen,
-                &[Exclusive {
-                    edge: Edge::Top,
-                    size: 1060,
-                }],
-            ),
+            work_area_for(screen, &[Exclusive::new(Edge::Top, 5000)]),
+            work_area_for(screen, &[Exclusive::new(Edge::Top, 1060)]),
             Rect::new(9000, 9000, 800, 600),
             Rect::new(0, 0, 0, 0),
         ] {
@@ -1392,13 +1372,8 @@ mod tests {
     fn a_window_under_the_dock_is_not_considered_recoverable() {
         let screen = Rect::new(0, 0, 1920, 1080);
         // A bar occupying the bottom 80 logical pixels.
-        let output = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
-            screen,
-            &[Exclusive {
-                edge: Edge::Bottom,
-                size: 80,
-            }],
-        ));
+        let output = Output::new("eDP-1", screen, 1000)
+            .with_work_area(work_area_for(screen, &[Exclusive::new(Edge::Bottom, 80)]));
         let outputs = vec![output];
 
         // A window whose whole tag strip sits beneath the bar: visible, but not grabbable.
@@ -1417,13 +1392,8 @@ mod tests {
         assert_eq!((repaired.width, repaired.height), (900, 700));
 
         // A panel at the top buries nothing that matters: the tags are at the bottom.
-        let panelled = Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(
-            screen,
-            &[Exclusive {
-                edge: Edge::Top,
-                size: 80,
-            }],
-        ));
+        let panelled = Output::new("eDP-1", screen, 1000)
+            .with_work_area(work_area_for(screen, &[Exclusive::new(Edge::Top, 80)]));
         assert!(is_recoverable(Rect::new(200, 10, 900, 700), &[panelled]));
     }
 
@@ -1487,10 +1457,7 @@ mod tests {
     #[test]
     fn an_exclusive_surface_may_be_thicker_than_its_zone_without_moving_the_work_area() {
         let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
-        let zone = Exclusive {
-            edge: Edge::Bottom,
-            size: 48,
-        };
+        let zone = Exclusive::new(Edge::Bottom, 48);
         let resting = shell_surface_placement(
             Layer::ShellOverlay,
             Some(zone),
@@ -1523,10 +1490,7 @@ mod tests {
     #[test]
     fn an_exclusive_surface_keeps_its_requested_extent_along_its_edge() {
         let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
-        let bottom = Exclusive {
-            edge: Edge::Bottom,
-            size: 48,
-        };
+        let bottom = Exclusive::new(Edge::Bottom, 48);
         let chips = shell_surface_placement(
             Layer::ShellOverlay,
             Some(bottom),
@@ -1540,10 +1504,7 @@ mod tests {
             "a narrow strip reserves exactly what a full-width one does"
         );
 
-        let left = Exclusive {
-            edge: Edge::Left,
-            size: 60,
-        };
+        let left = Exclusive::new(Edge::Left, 60);
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
@@ -1554,10 +1515,7 @@ mod tests {
             Rect::new(0, 0, 60, 300),
             "a side strip is as long as it asked and starts at the top of its edge"
         );
-        let right = Exclusive {
-            edge: Edge::Right,
-            size: 60,
-        };
+        let right = Exclusive::new(Edge::Right, 60);
         assert_eq!(
             shell_surface_placement(
                 Layer::ShellOverlay,
@@ -1569,16 +1527,97 @@ mod tests {
         );
     }
 
+    /// Where along its edge the surface sits is the shell's to say
+    /// (`lege-shell-v1.xml`'s `set_edge_alignment`), on all four edges. Every other test in this
+    /// module builds its claim with [`Exclusive::new`] — the start alignment — so they are the
+    /// proof that a surface which never asks is placed exactly where it always was.
+    #[test]
+    fn an_exclusive_surface_sits_where_along_its_edge_it_asked_to() {
+        let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
+        let place = |edge, alignment, requested| {
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    alignment,
+                    ..Exclusive::new(edge, 48)
+                }),
+                &output,
+                requested,
+            )
+        };
+        let strip = Rect::new(0, 0, 420, 48);
+        for (edge, y) in [(Edge::Top, 0), (Edge::Bottom, 952)] {
+            assert_eq!(
+                place(edge, Alignment::Start, strip),
+                Rect::new(0, y, 420, 48)
+            );
+            assert_eq!(
+                place(edge, Alignment::Centre, strip),
+                Rect::new(590, y, 420, 48),
+                "centred along a horizontal edge"
+            );
+            assert_eq!(
+                place(edge, Alignment::End, strip),
+                Rect::new(1180, y, 420, 48)
+            );
+        }
+        let side = Rect::new(0, 0, 48, 300);
+        for (edge, x) in [(Edge::Left, 0), (Edge::Right, 1552)] {
+            assert_eq!(
+                place(edge, Alignment::Start, side),
+                Rect::new(x, 0, 48, 300)
+            );
+            assert_eq!(
+                place(edge, Alignment::Centre, side),
+                Rect::new(x, 350, 48, 300),
+                "centred along a vertical edge"
+            );
+            assert_eq!(
+                place(edge, Alignment::End, side),
+                Rect::new(x, 700, 48, 300)
+            );
+        }
+    }
+
+    /// Alignment is placement, never reservation: the island the shell centres claims a zone of
+    /// 0, so it moves along its edge and the work area is still the whole output. Nothing
+    /// reflows on the way — which is the only reason the shell may move it at all.
+    #[test]
+    fn a_centred_zero_zone_surface_reserves_nothing() {
+        let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
+        let island = Exclusive {
+            alignment: Alignment::Centre,
+            ..Exclusive::new(Edge::Bottom, 0)
+        };
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(island),
+                &output,
+                Rect::new(0, 0, 420, 48)
+            ),
+            Rect::new(590, 952, 420, 48),
+            "centred, and flush to its edge with only its own thickness"
+        );
+        assert_eq!(
+            work_area_for(output.logical, &[island]),
+            output.logical,
+            "a zone of 0 reserves nothing, wherever along the edge it sits"
+        );
+        assert_eq!(
+            work_area_for(output.logical, &[island]),
+            work_area_for(output.logical, &[Exclusive::new(Edge::Bottom, 0)]),
+            "the same claim at the start of the edge reserves the same nothing"
+        );
+    }
+
     /// The extent is the surface's, but the output is still the compositor's: a claim longer than
     /// the edge is cut to it, and one of nothing is still one pixel — the clamp is what stops
     /// `apply_surface_claims` re-configuring a client with a size it will never commit.
     #[test]
     fn an_exclusive_surface_extent_is_clamped_to_the_output() {
         let output = Output::new("primary", Rect::new(0, 0, 1600, 1000), 1000);
-        let zone = Exclusive {
-            edge: Edge::Bottom,
-            size: 48,
-        };
+        let zone = Exclusive::new(Edge::Bottom, 48);
         let place = |requested| {
             shell_surface_placement(Layer::ShellOverlay, Some(zone), &output, requested)
         };
@@ -1879,7 +1918,7 @@ mod tests {
             edge in prop_oneof![Just(Edge::Top), Just(Edge::Bottom), Just(Edge::Left), Just(Edge::Right)],
             size in 0i32..6000,
         ) {
-            let zone = Exclusive { edge, size };
+            let zone = Exclusive::new(edge, size);
             let full = output.logical;
             let placed = shell_surface_placement(Layer::ShellOverlay, Some(zone), &output, requested);
 

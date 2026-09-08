@@ -224,27 +224,15 @@ mod tests {
         let forward = work_area_from_zones(
             logical,
             &[
-                Exclusive {
-                    edge: Edge::Top,
-                    size: 40,
-                },
-                Exclusive {
-                    edge: Edge::Bottom,
-                    size: 64,
-                },
+                Exclusive::new(Edge::Top, 40),
+                Exclusive::new(Edge::Bottom, 64),
             ],
         );
         let backward = work_area_from_zones(
             logical,
             &[
-                Exclusive {
-                    edge: Edge::Bottom,
-                    size: 64,
-                },
-                Exclusive {
-                    edge: Edge::Top,
-                    size: 40,
-                },
+                Exclusive::new(Edge::Bottom, 64),
+                Exclusive::new(Edge::Top, 40),
             ],
         );
         assert_eq!(forward, backward);
@@ -258,13 +246,7 @@ mod tests {
     fn a_zero_zone_subtracts_nothing() {
         let logical = Rect::new(0, 0, 1920, 1080);
         assert_eq!(
-            work_area_from_zones(
-                logical,
-                &[Exclusive {
-                    edge: Edge::Bottom,
-                    size: 0,
-                }],
-            ),
+            work_area_from_zones(logical, &[Exclusive::new(Edge::Bottom, 0)],),
             logical
         );
     }
