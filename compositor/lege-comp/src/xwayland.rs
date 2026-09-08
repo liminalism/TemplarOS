@@ -96,6 +96,11 @@ impl<B: Backend + 'static> XwmHandler for LegeCompState<B> {
         let element = Window::new_x11_window(window);
         self.windows.track_element(object_id, element.clone());
         self.space.map_element(element, (client.x, client.y), false);
+        // Same rule as the xdg path (`xdg_shell.rs::handle_toplevel_commit`): a newly mapped
+        // client window takes the keyboard.
+        if self.window_service.should_activate_on_map(window_id) {
+            crate::input::activate_window(self, window_id);
+        }
         crate::space_sync::sync_after_change(self);
     }
 

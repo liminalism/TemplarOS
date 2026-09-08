@@ -394,12 +394,25 @@ impl<B: Backend + 'static> LegeCompState<B> {
             });
             toplevel.send_configure();
         }
+        // The window the person just opened takes the keyboard (`should_activate_on_map`): no
+        // other path in the map sequence activates one, and a launch through `Launcher1` carries
+        // no xdg-activation token, so without this an application opened from the Home search bar
+        // maps unfocused under a Home surface that still owns the keyboard.
+        if self.window_service.should_activate_on_map(window_id) {
+            crate::input::activate_window(self, window_id);
+        }
         tracing::info!(
             ?window_id,
             requested = ?requested,
             geometry = ?repaired,
             layer = ?self.window_service.layer_of(window_id),
             recoverable = lege_window::is_recoverable(repaired, self.window_service.outputs()),
+            // Whether the window took the keyboard at map: the one thing the runbook check for
+            // "an application opened from the search bar can be typed into" can read from a log.
+            activated = self
+                .window_service
+                .window(window_id)
+                .is_some_and(|record| record.activated),
             "toplevel mapped"
         );
         crate::space_sync::sync_after_change(self);

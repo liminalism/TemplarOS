@@ -920,6 +920,40 @@ impl<I: IdentityCache> WindowService<I> {
         self.layers.explain(a, b)
     }
 
+    /// Whether a window that has just mapped should be given the keyboard.
+    ///
+    /// A window the person just opened is the window they meant to use: nothing else in the map
+    /// path activates one, so an application launched from the Home search bar would otherwise
+    /// map *under* a Home surface that still owns the keyboard. Client windows only — shell
+    /// chrome maps through [`Self::on_toplevel_mapped`] too and must never take focus from it.
+    ///
+    /// The one exception is a visible, activated **fullscreen** client window on the same output:
+    /// a video or a game filling the screen is not worth interrupting for a window that has only
+    /// just appeared. Same output, by [`choose_target_output`], for the same reason
+    /// [`Self::home_is_covered`] is per output rather than per rectangle.
+    pub fn should_activate_on_map(&self, window_id: WindowId) -> bool {
+        let Some(window) = self.windows.get(&window_id) else {
+            return false;
+        };
+        if !self.is_client_window(window_id) {
+            return false;
+        }
+        let output = (!self.outputs.is_empty()).then(|| {
+            choose_target_output(window.geometry, &self.outputs)
+                .name
+                .as_str()
+        });
+        !self.windows.values().any(|other| {
+            other.id != window_id
+                && other.fullscreen
+                && other.activated
+                && self.is_visible(other.id)
+                && output.is_none_or(|name| {
+                    choose_target_output(other.geometry, &self.outputs).name == name
+                })
+        })
+    }
+
     /// Give `window_id` keyboard focus: clears `activated` on every other window and raises it
     /// to the top of its layer. Returns `false` if the window does not exist.
     ///
@@ -1016,14 +1050,6 @@ impl<I: IdentityCache> WindowService<I> {
             window.geometry,
             window.decoration.needs_compositor_recovery_tab(),
         ))
-    }
-
-    /// Next (or previous) window in stacking order, for the minimal fallback switcher the
-    /// compositor core keeps even when the shell is dead. Shelved windows are skipped — they
-    /// are reached through the Window Shelf, not the switcher. `current` of `None`, or a window
-    /// no longer in the order, starts from the top.
-    pub fn cycle_focus(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
-        step_through(&self.switchable_order(), current, forward)
     }
 
     // ---- Window groups ---------------------------------------------------------------------
@@ -1266,62 +1292,13 @@ impl<I: IdentityCache> WindowService<I> {
         bounding_rect(&rects)
     }
 
-    /// `Alt+Tab`: the next (or previous) window **inside `current`'s group**, in stacking order,
-    /// shelved windows skipped. A window in no group cycles the loose set, which is why this is
-    /// the ordinary switcher too — with no group anywhere it behaves exactly like
-    /// [`Self::cycle_focus`] (planning doc §2 rule 4).
-    pub fn cycle_within_group(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
-        let Some(current) = current else {
-            // Nothing is focused — nothing to be *inside* of. The switcher must still land
-            // somewhere, so it starts from the top of everything, exactly as `cycle_focus` does.
-            return self.cycle_focus(None, forward);
-        };
-        let scope = self.group_of(current);
-        let order: Vec<WindowId> = self
-            .switchable_order()
-            .into_iter()
-            .filter(|id| self.group_of(*id) == scope)
-            .collect();
-        step_through(&order, Some(current), forward)
-    }
-
-    /// `Super+Tab`: the window to land on in the next (or previous) *group*.
-    ///
-    /// One entry per group, ordered by the stacking order of their top-most member, plus one
-    /// entry for the loose set (its top-most ungrouped window). A group's entry is its
-    /// `last_active` member when that member is still live and unshelved, otherwise its top-most
-    /// one — so coming back to a group comes back to the window you left it on.
-    pub fn cycle_groups(&self, current: Option<WindowId>, forward: bool) -> Option<WindowId> {
-        let targets = self.group_cycle_targets();
-        if targets.is_empty() {
-            return None;
-        }
-        let scope = current.and_then(|id| self.group_of(id));
-        let here = current.and_then(|current| {
-            self.windows.get(&current)?;
-            targets
-                .iter()
-                .position(|target| self.group_of(*target) == scope)
-        });
-        let Some(position) = here else {
-            return Some(targets[0]);
-        };
-        let len = targets.len();
-        let next = if forward {
-            (position + 1) % len
-        } else {
-            (position + len - 1) % len
-        };
-        Some(targets[next])
-    }
-
     /// One focus target per group, in stacking order, with the loose set counted as one group —
-    /// the list `Super+Tab` steps through and the group switcher HUD renders.
+    /// the list `Super+Tab` freezes into a [`crate::SwitchRing`] and the group switcher HUD renders.
     pub fn group_cycle_targets(&self) -> Vec<WindowId> {
         let mut targets = Vec::new();
         let mut seen: std::collections::BTreeSet<GroupId> = std::collections::BTreeSet::new();
         let mut loose_taken = false;
-        for id in self.switchable_order() {
+        for id in self.switch_order() {
             match self.group_of(id) {
                 Some(group) => {
                     if !seen.insert(group) {
@@ -1350,7 +1327,12 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Every window a switcher may land on, top-most first: client windows that are not shelved.
-    fn switchable_order(&self) -> Vec<WindowId> {
+    ///
+    /// This is *also* the most-recently-activated order, and not by accident:
+    /// [`crate::LayerStack`]'s rank is a monotonic counter bumped on every raise, and
+    /// [`Self::activate`] raises. So the switcher needs no recency stamp of its own — see
+    /// [`crate::SwitchRing`], which freezes this list for the length of one `Alt+Tab` hold.
+    pub fn switch_order(&self) -> Vec<WindowId> {
         self.layers
             .order()
             .into_iter()
@@ -1417,26 +1399,6 @@ impl<I: IdentityCache> WindowService<I> {
     }
 }
 
-/// One step forward or backward through `order`, wrapping. `current` absent from the list — a
-/// window that has just been shelved, or one in another group — starts from the top, which is
-/// what makes every switcher land somewhere rather than nowhere.
-fn step_through(order: &[WindowId], current: Option<WindowId>, forward: bool) -> Option<WindowId> {
-    if order.is_empty() {
-        return None;
-    }
-    let Some(position) = current.and_then(|id| order.iter().position(|candidate| *candidate == id))
-    else {
-        return Some(order[0]);
-    };
-    let len = order.len();
-    let next = if forward {
-        (position + 1) % len
-    } else {
-        (position + len - 1) % len
-    };
-    Some(order[next])
-}
-
 /// Where a maximized window goes: the usable area of the output nearest `current`. Always
 /// recoverable, because `Output::usable` refuses a work area too small for a recovery band. With
 /// no outputs at all there is nothing to fill, and the window is left as it is.
@@ -1500,6 +1462,77 @@ mod tests {
         assert_eq!(
             service.identity.requests.lock().unwrap().as_slice(),
             &[(id, 4242)]
+        );
+    }
+
+    #[test]
+    fn a_newly_mapped_client_window_is_the_one_to_focus_and_a_shell_surface_never_is() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let window = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "kitty".into(),
+            Rect::new(0, 0, 400, 300),
+        );
+        assert!(service.should_activate_on_map(window));
+        // A reveal that was hiding everything is over the moment something new arrives.
+        assert!(!service.home_revealed());
+
+        let home = service.on_toplevel_mapped(
+            2,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "Home".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
+            .unwrap();
+        assert!(!service.should_activate_on_map(home));
+        assert!(!service.should_activate_on_map(WindowId(9999)));
+    }
+
+    #[test]
+    fn a_new_window_never_interrupts_a_fullscreen_window_on_its_own_output() {
+        let mut service = WindowService::new(
+            FakeCache::default(),
+            vec![
+                Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000),
+                Output::new("HDMI-1", Rect::new(1920, 0, 1920, 1080), 1000),
+            ],
+        );
+        let video = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "video".into(),
+            Rect::new(0, 0, 800, 600),
+        );
+        service.set_fullscreen(video, true);
+        service.activate(video);
+
+        let here = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "notification-ish".into(),
+            Rect::new(100, 100, 400, 300),
+        );
+        assert!(
+            !service.should_activate_on_map(here),
+            "a new window must not steal the keyboard from a fullscreen window beside it"
+        );
+        let there = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "on the other screen".into(),
+            Rect::new(2000, 100, 400, 300),
+        );
+        assert!(
+            service.should_activate_on_map(there),
+            "the other output is not the fullscreen window's business"
         );
     }
 
@@ -1986,12 +2019,34 @@ mod tests {
         service.shelve(b);
 
         // Stacking order top-first is c, b, a; b is shelved and must be skipped entirely.
-        let first = service.cycle_focus(None, true).unwrap();
-        assert_eq!(first, c);
-        let second = service.cycle_focus(Some(first), true).unwrap();
-        assert_eq!(second, a);
-        let back = service.cycle_focus(Some(second), false).unwrap();
-        assert_eq!(back, c);
+        assert_eq!(service.switch_order(), vec![c, a]);
+        let mut ring = crate::SwitchRing::new(service.switch_order(), None).unwrap();
+        assert_eq!(ring.step(true), c);
+        assert_eq!(ring.step(true), a);
+        assert_eq!(ring.step(false), c);
+    }
+
+    /// The defect the frozen list exists for: every step activates, activation raises, and the
+    /// list is the stacking order — so a list rebuilt on each press swaps the top two windows
+    /// forever and the third is unreachable. Frozen once, the walk reaches all three.
+    #[test]
+    fn a_frozen_list_reaches_the_third_window_where_a_rebuilt_one_never_could() {
+        let (mut service, ids) = service_with(3);
+        service.activate(ids[2]);
+
+        // Rebuilding the order after each activation: ids[1], then straight back to ids[2].
+        let rebuilt_first = service.switch_order()[1];
+        service.activate(rebuilt_first);
+        assert_eq!(service.switch_order()[1], ids[2], "it can only oscillate");
+
+        service.activate(ids[2]);
+        let mut ring = crate::SwitchRing::new(service.switch_order(), Some(ids[2])).unwrap();
+        let first = ring.step(true);
+        service.activate(first);
+        let second = ring.step(true);
+        service.activate(second);
+        assert_ne!(first, second);
+        assert_ne!(second, ids[2], "the third window is reachable");
     }
 
     #[test]
@@ -2225,7 +2280,7 @@ mod tests {
             .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
             .unwrap();
 
-        assert_eq!(service.cycle_focus(None, true), Some(app));
+        assert_eq!(service.switch_order(), vec![app]);
         assert!(service.recovery_affordance(home).is_none());
 
         let listed: Vec<WindowId> = service
@@ -2485,34 +2540,6 @@ mod tests {
         assert!(service.windows().all(|window| !window.shelved));
     }
 
-    /// `Alt+Tab` stays inside the group; a loose window cycles the loose set and never reaches a
-    /// grouped one.
-    #[test]
-    fn cycling_within_a_group_never_leaves_it_and_the_loose_set_is_its_own_scope() {
-        let (mut service, ids) = service_with(4);
-        service.group(ids[0], ids[1]).unwrap();
-        assert_eq!(service.cycle_within_group(Some(ids[0]), true), Some(ids[1]));
-        assert_eq!(service.cycle_within_group(Some(ids[1]), true), Some(ids[0]));
-
-        let loose = service.cycle_within_group(Some(ids[2]), true);
-        assert_eq!(loose, Some(ids[3]));
-        assert_eq!(service.cycle_within_group(Some(ids[3]), true), Some(ids[2]));
-    }
-
-    /// With nothing focused there is no group to be inside of, and the switcher must still land
-    /// somewhere: it starts from the top of everything, exactly as it did before groups existed.
-    #[test]
-    fn cycling_with_nothing_focused_starts_from_the_top_of_every_window() {
-        let (mut service, ids) = service_with(2);
-        service.group(ids[0], ids[1]).unwrap();
-        assert!(service.windows().all(|window| !window.activated));
-        assert_eq!(
-            service.cycle_within_group(None, true),
-            service.cycle_focus(None, true)
-        );
-        assert!(service.cycle_within_group(None, true).is_some());
-    }
-
     /// `Super+Tab` moves between groups and lands on each group's last active member; the loose
     /// set counts as one group.
     #[test]
@@ -2528,10 +2555,14 @@ mod tests {
             2,
             "one group plus the loose set: {targets:?}"
         );
-        let next = service.cycle_groups(Some(ids[3]), true).unwrap();
+        let mut ring = crate::SwitchRing::new(targets, Some(ids[3])).unwrap();
+        let next = ring.step(true);
         assert_eq!(next, ids[1], "back to the group's last active member");
-        let back = service.cycle_groups(Some(next), true).unwrap();
-        assert_eq!(service.group_of(back), None, "and on to the loose set");
+        assert_eq!(
+            service.group_of(ring.step(true)),
+            None,
+            "and on to the loose set"
+        );
     }
 
     #[test]
