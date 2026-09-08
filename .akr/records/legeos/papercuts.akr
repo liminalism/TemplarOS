@@ -244,6 +244,28 @@ record legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 : paper
     created_at 2026-08-22
 }
 
+record legeos.papercut.campaign-5-lane-b-was-asked-to-validate-the-bar/1 : papercut {
+    title "Campaign 5 Lane B was asked to validate the bar in the nested session,…"
+    state verified
+    statement """
+        Campaign 5 Lane B was asked to validate the bar in the nested session, but scripts/nested-session.sh refuses to start while the installed session is running (refuse_over_live_session), and the user is logged in — so a lane whose deliverable is "validate in the nested session" cannot ever do it on this machine while the user is at the desk. The refusal is right; what is missing is a second seat or a nested mode that does not need org.legeos.Session (a --no-sessiond shell-and-compositor-only start would have let me see the zero-zone anchoring and the hint at least).
+        """
+    observed_at git:0b6d8fc3c84e46d6a7458b511b621e3ae3ba9f48
+    author "claude"
+    created_at 2026-09-08
+}
+
+record legeos.papercut.campaign-5-s-lane-briefs-name-scripts-nested/1 : papercut {
+    title "Campaign 5's lane briefs name `scripts/nested-session.sh start` as the…"
+    state verified
+    statement """
+        Campaign 5's lane briefs name `scripts/nested-session.sh start` as the validation bed, but the script's `refuse_over_live_session` guard refuses whenever `lege-comp.service`/`lege-sessiond.service` are active — which they are the whole time the user is logged into the installed LegeOS session. So no lane can do the nested-session validation its packet asks for. Either the brief should say "only when the user is logged out of LegeOS", or the script needs an opt-in that isolates the bus (its own DBUS_SESSION_BUS_ADDRESS) so it can nest inside a live session the way the rules assume.
+        """
+    observed_at git:71267e39433d1f0fbe4ff617d54318bbac249480
+    author "claude"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.cargo-deb-special-cases-the-crate-s-target/1 : papercut {
     title "cargo-deb special-cases the crate's target/release binary, but an…"
     state verified

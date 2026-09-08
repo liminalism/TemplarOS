@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:5f450b60f32134af785e3c5d7c807904b92004e29f791e7528732ab74ab9d2ad"
+    source_graph "sha256:bbff920227b97b15a241642773d418d12dfe3cd000841d5a0d34b83585fd985f"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:efdb3537ecd7741cdc4198d2ae19e9c74a18b5b56546b1a4d7af62794a9f18a2"
-    records 257
+    hash "sha256:29e7e3c63015916dae07de39c915e47033def2674e31b3c950877bfbaef98258"
+    records 262
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:3e749327f696f6e7d651fc4ce078aaaef8911f07a638d1e05bf434ef00a5fe22"
-    records 132
+    hash "sha256:188a0059ce41081e7c965faad96ed9a9909eae0eefdc368a9671b46348a50614"
+    records 134
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -3553,14 +3553,34 @@ seal @legeos.evidence.bar-lane-2-window-tests/1 {
     hash "sha256:21e8470f2d653626ed93bbe763d4bd25717e801c4bc396adb232132cd17a55d6"
 }
 
+seal @legeos.evidence.bar-over-home-not-observed-at-a-seat/1 {
+    state verified
+    hash "sha256:a2bed98c03da0b39fa9121863f671ca65dc48edb3860836440f1b1ff7b9c7dcd"
+}
+
 seal @legeos.evidence.bar-placed-once-nested-20260907/1 {
     state verified
     hash "sha256:98a0a44e3506825c5cfb40c966ea5879f30026135181539ccf0bf4d1771b6959"
 }
 
+seal @legeos.evidence.bar-presence-hint-reveal-and-fast-hide-tests/1 {
+    state verified
+    hash "sha256:cabf19068d2cecd1225d72361ec69a39c53f4eb1a4bb8c69ff413de71435f16c"
+}
+
+seal @legeos.evidence.bar-presence-reviewed-renders-20260908c/1 {
+    state verified
+    hash "sha256:049ff26eb3a138a217c951bc48aaa67979afd32f0dcc6eaad4eaa37952ee5959"
+}
+
 seal @legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 {
     state verified
     hash "sha256:7cd8ac222517035cf70a621f2a742c6dbba8522a94873c7b388d0adfa9dc67c5"
+}
+
+seal @legeos.evidence.bottom-edge-peek-deleted-from-the-compositor/1 {
+    state verified
+    hash "sha256:d582b1cf06199440ef777233cbba65b4ffe01c5d42896f31528fb51ba3f9a8d9"
 }
 
 seal @legeos.evidence.btrfs-delta-correctness-gate-passes/1 {
@@ -4748,6 +4768,11 @@ seal @legeos.evidence.ws6-signature-gate-20260901/1 {
     hash "sha256:5c110953d32313c72c9ace308d2e2b28bc8653b7e38bdc927c9965f5edc25137"
 }
 
+seal @legeos.evidence.zero-zone-anchors-and-reserves-nothing/1 {
+    state verified
+    hash "sha256:b1166198f39b59591fdb12fde28a5b0a943e6e1339cf94fe9c2aa60eb2ceeda6"
+}
+
 seal @legeos.milestone.developer-edition-0-1/1 {
     state active
     hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
@@ -5086,6 +5111,16 @@ seal @legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 {
 seal @legeos.papercut.bumping-interfaces-wayland-lege-shell-v1-xml-to/1 {
     state verified
     hash "sha256:0522b5015d69ab1b7842d9e5d6c19afb2d85d4acbe8708e969bae380b48d98c4"
+}
+
+seal @legeos.papercut.campaign-5-lane-b-was-asked-to-validate-the-bar/1 {
+    state verified
+    hash "sha256:866d7e2dfdf4480d06774ab67b852032364fb31152cb847a60eed1920c6b6701"
+}
+
+seal @legeos.papercut.campaign-5-s-lane-briefs-name-scripts-nested/1 {
+    state verified
+    hash "sha256:2a8268bb93d6dedaf03f5b6e0c23b6394583e8c319312975208e62160f6630dc"
 }
 
 seal @legeos.papercut.cargo-deb-special-cases-the-crate-s-target/1 {
