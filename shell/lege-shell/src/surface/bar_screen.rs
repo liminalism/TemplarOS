@@ -237,6 +237,15 @@ pub struct BarScreen {
     hint_since: Option<(u64, i32, i32)>,
     /// While revealed: when the pointer left the surface entirely.
     away_since: Option<u64>,
+    /// The shapes this frame considers solid, as `(rect, corner radius)` in the surface's own
+    /// logical coordinates: the island's plate, and the row band and popover frame when they are
+    /// open. Everything else on the surface is desktop.
+    ///
+    /// The host turns these into the alpha channel of the buffer it attaches
+    /// (`surface::window::HostedWindow::present_masked`), because pixelkit's own buffer holds
+    /// `0x00RRGGBB` and has nowhere to put coverage. Recorded here rather than recomputed there
+    /// so that the shape the person sees and the shape the compositor blends can never disagree.
+    opaque: Vec<(Rect, i32)>,
     /// The popover row armed by a first click and waiting for its second.
     ///
     /// `ActionDecl::confirm` is set on the three actions that end the session, and a bar chip is
@@ -396,6 +405,13 @@ impl BarScreen {
         [open, close, reveal, collapse].into_iter().flatten().min()
     }
 
+    /// The shapes this frame painted solid, for the host's alpha mask. Empty before the first
+    /// draw, which the host reads as "no coverage yet" and falls back to an opaque present.
+    #[must_use]
+    pub fn opaque_shapes(&self) -> &[(Rect, i32)] {
+        &self.opaque
+    }
+
     /// Back to the hint: the row and the popover go with it, because a menu hanging off a bar
     /// that is no longer there is a menu over somebody's window.
     fn collapse(&mut self) {
@@ -464,6 +480,8 @@ impl BarScreen {
     /// which is the only thing the hint can be asked to do.
     fn draw_hint(&mut self, ui: &mut Ui<'_>, area: Rect) {
         ui.painter.fill_rect(area, design::ground());
+        self.opaque.clear();
+        self.opaque.push((area, 0));
         let unit = ui.px(2).max(1);
         let centre = area.x + area.w / 2;
         // The chevron reads against the *ground*, not against a chip: `TAG_INK` is the ink of a
@@ -646,20 +664,35 @@ impl BarScreen {
         self.update_hover(ui, &layout, data);
         let layout = Self::layout(ui, area, data, self.open_row, self.account_open);
 
-        // Every pixel of the surface, first. This surface has no alpha — softbuffer attaches an
-        // `Xrgb8888` shm buffer — so anything a frame does not write shows as black, and a strip
-        // that painted only its chips was a black block in the corner of the screen rather than
-        // chips floating on the desktop. Home's own ground is the honest fill: the chips then
-        // read as sitting on Home, which is what is actually behind them.
-        //
-        // ponytail: an opaque ground, not transparency. The upgrade is a bridge-owned
-        // `Argb8888` wl_shm surface painted by pixelkit, the way `session_lock` already does it,
-        // instead of a winit window over softbuffer.
+        // Every pixel of the surface, first, and the shapes that are actually solid recorded
+        // beside it. The colour buffer has no alpha to give (pixelkit holds `0x00RRGGBB`), so the
+        // host builds the coverage from `self.opaque` and hands the compositor an `Argb8888`
+        // buffer; a frame that fills the whole surface with the ground and claims only the island
+        // is solid is a frame the compositor blends into a floating island. When the ARGB present
+        // is not available the same buffer is attached opaque, and the ground fill is what keeps
+        // that honest: the chips then read as sitting on Home, which is what is behind them.
         ui.painter.fill_rect(area, design::ground());
+        // The coverage is the chips themselves, not a plate behind them: "it shouldnt be a bar
+        // but a collection of icons floating". Everything between and around them is desktop, so
+        // the ground fill above exists only for the opaque fallback, where it is what makes the
+        // chips read as sitting on Home rather than on a black block.
+        let radius = ui.px(design::CHIP_RADIUS);
+        self.opaque.clear();
+        self.opaque
+            .extend(layout.cells.iter().map(|cell| (*cell, radius)));
+        for chip in [
+            layout.settings,
+            layout.network,
+            layout.clock,
+            layout.account,
+        ] {
+            self.opaque.push((chip, radius));
+        }
 
         // The account popover first, for the same reason the row is early: it floats over what is
         // above the bar and must claim its clicks before anything underneath can.
         if let Some((frame, rows)) = &layout.popover {
+            self.opaque.push((*frame, ui.px(design::CHIP_RADIUS)));
             design::shell(
                 ui,
                 *frame,
@@ -741,6 +774,7 @@ impl BarScreen {
             && let Some(entry) = data.entries.get(index)
         {
             for (rect, (window, title)) in layout.row.iter().zip(&entry.windows) {
+                self.opaque.push((*rect, ui.px(design::CHIP_RADIUS)));
                 let hovered = ui.input.hovering(*rect);
                 design::shell(
                     ui,
@@ -1608,6 +1642,60 @@ mod tests {
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Revealed);
         assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT));
+    }
+
+    /// The coverage the host turns into the surface's alpha channel. It is the whole of what
+    /// makes the island float, and it is not visible in a colour render, so it is asserted here:
+    /// solid exactly where the island is, and nothing outside it.
+    #[test]
+    fn the_coverage_is_the_island_and_nothing_around_it() {
+        let mut h = Harness::new(vec![
+            window(1, "org.example.Editor", "notes", true, false),
+            window(2, "org.legeos.Files", "Downloads", false, false),
+        ]);
+        h.frame();
+
+        let shapes = h.screen.opaque_shapes().to_vec();
+        // Two entries and four cluster chips: six shapes, and no plate behind them.
+        assert_eq!(shapes.len(), h.cells().len() + 4, "{shapes:?}");
+        assert!(shapes.iter().all(|(_, radius)| *radius > 0), "all rounded");
+        let widest = shapes.iter().map(|(rect, _)| rect.w).max().unwrap();
+        assert!(
+            widest < h.island(),
+            "no shape spans the island: it is chips, not a bar ({widest} of {})",
+            h.island()
+        );
+        let plate = shapes[0].0;
+        assert_eq!(plate.h, CHIP_H, "a chip's height, not the bar's");
+
+        // Open the account popover: its frame is solid too, and it is the only thing above the
+        // plate that is — the band it grows into is otherwise desktop.
+        h.screen.account_open = true;
+        // Twice: the first frame is what makes the host grow the surface, and the popover has
+        // nowhere to be until it has.
+        h.frame();
+        h.frame();
+        let shapes = h.screen.opaque_shapes().to_vec();
+        assert_eq!(shapes.len(), h.cells().len() + 5, "{shapes:?}");
+        let popover = shapes.last().expect("the popover is recorded last").0;
+        assert!(
+            popover.bottom() <= plate.y,
+            "the popover sits above the plate, not on it"
+        );
+        assert!(
+            popover.w > plate.w,
+            "and it is wider than one chip, being a menu"
+        );
+
+        // The hint covers its whole tab and nothing else: a six-pixel surface has no room for a
+        // shape, and an uncovered pixel there is a hole in the corner of the screen.
+        h.covered = true;
+        h.frame();
+        h.point_at(HINT_WIDTH / 2, tallest() - 1);
+        let shapes = h.screen.opaque_shapes().to_vec();
+        assert_eq!(shapes.len(), 1, "{shapes:?}");
+        assert_eq!(shapes[0].0.h, HINT_HEIGHT);
+        assert_eq!(shapes[0].1, 0, "the tab is not rounded");
     }
 
     /// The user's words: the bar "popups up at inopportune times". The strip is the whole width

@@ -90,6 +90,43 @@ impl ShmBuffer {
         Ok(())
     }
 
+    /// Write `pixels` with a per-pixel alpha taken from `coverage`, premultiplied.
+    ///
+    /// pixelkit's buffer is `0x00RRGGBB` and has nowhere to put coverage, so a surface that wants
+    /// to be a shape rather than a rectangle has to render that shape a second time — white on
+    /// black — and hand the result here. The blue channel is the one read: the mask is greyscale,
+    /// so any channel would do, and blue is the low byte.
+    ///
+    /// `Argb8888` on Wayland is **premultiplied**, so the colour channels are scaled by the
+    /// coverage. Skipping that is what makes a half-covered edge glow: the compositor would take
+    /// the full-strength colour and blend it at half weight over the desktop *and* over itself.
+    pub(crate) fn write_masked(&self, pixels: &[u32], coverage: &[u32]) -> Result<()> {
+        use std::os::unix::fs::FileExt as _;
+        let mut row = vec![0u8; self.stride as usize];
+        for y in 0..self.height {
+            let start = (y * self.width) as usize;
+            for x in 0..self.width as usize {
+                let colour = pixels.get(start + x).copied().unwrap_or(0);
+                let alpha = u8::try_from(coverage.get(start + x).copied().unwrap_or(0) & 0xff)
+                    .unwrap_or(0xff);
+                let premultiply = |channel: u32| {
+                    u32::from(
+                        (u16::try_from(channel & 0xff).unwrap_or(0) * u16::from(alpha) / 255) as u8,
+                    )
+                };
+                let pixel = (u32::from(alpha) << 24)
+                    | (premultiply(colour >> 16) << 16)
+                    | (premultiply(colour >> 8) << 8)
+                    | premultiply(colour);
+                row[x * 4..x * 4 + 4].copy_from_slice(&pixel.to_le_bytes());
+            }
+            self.file
+                .write_all_at(&row, u64::from(y) * u64::from(self.stride))
+                .context("writing a masked row")?;
+        }
+        Ok(())
+    }
+
     fn read(&self) -> Result<Bitmap> {
         let mut row = vec![0u8; self.stride as usize];
         let mut pixels = Vec::with_capacity((self.width * self.height) as usize);

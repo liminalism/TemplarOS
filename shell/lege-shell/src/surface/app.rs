@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use pixelkit_raster::{Painter, RasterKernel, Rect};
+use pixelkit_raster::{Painter, RasterKernel, Rect, WindowBuffer};
 use pixelkit_ui::{Theme, Ui};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -259,6 +259,12 @@ const STEP_PERCENT: i32 = 5;
 /// The application `settings.open` opens — the id of `apps/lege-settings/org.legeos.Settings.desktop`.
 const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 
+/// The two values the bar's coverage buffer holds: desktop, and island. Only the low byte is
+/// read back (`previews::ShmBuffer::write_masked`), so this is a greyscale mask that happens to
+/// be stored in a colour buffer.
+const MASK_CLEAR: u32 = 0x0000_0000;
+const MASK_SOLID: u32 = 0x00ff_ffff;
+
 /// Every provider role the shell itself acts on, as `Providers1` names them.
 ///
 /// One list, read by the `Providers1.Changed` watch and its startup snapshot, because two lists
@@ -347,6 +353,10 @@ struct ShellApp {
 
     text: pixelkit_text::TextCache,
     kernel: RasterKernel,
+    /// The bar's coverage, the same size as its colour buffer: black where the surface is
+    /// desktop, white where the island is. `bar_screen` records the shapes; this is where they
+    /// become the alpha channel the compositor blends with.
+    bar_mask: WindowBuffer,
     theme: Theme,
 
     field_screen: FieldScreen,
@@ -494,6 +504,7 @@ impl ShellApp {
             home: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
+            bar_mask: WindowBuffer::new(0, 0),
             theme: design::theme(),
             field_screen: FieldScreen::default(),
             field: FieldDocument::new(OUTPUT, 16, 8),
@@ -2556,7 +2567,50 @@ impl ShellApp {
             self.bar_screen.draw(&mut ui, area, &data)
         };
         bar.input.end_frame();
-        bar.present();
+        // The island is a shape, not a rectangle. Paint its coverage — the shapes the draw just
+        // recorded, white on black, anti-aliased — and hand both buffers to the compositor as one
+        // `Argb8888` frame, so the desktop shows through beside and between the chips.
+        //
+        // Every failure here falls back to the opaque present, which is the bar as it was before
+        // any of this: no wl_shm, an older compositor, a window that is not on Wayland at all.
+        // A bar that cannot float is still a bar.
+        if self.bar_mask.width != bar.buffer.width || self.bar_mask.height != bar.buffer.height {
+            self.bar_mask = WindowBuffer::new(bar.buffer.width, bar.buffer.height);
+        }
+        let shapes = self.bar_screen.opaque_shapes();
+        let floated = !shapes.is_empty();
+        if floated {
+            let mut painter = Painter::new(&mut self.bar_mask);
+            painter.fill_rect(pixelkit_raster::Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
+            for (rect, radius) in shapes {
+                painter.fill_rounded_rect_aa(
+                    &mut self.kernel,
+                    *rect,
+                    *radius as f32,
+                    MASK_SOLID,
+                    u8::MAX,
+                );
+            }
+        }
+        let presented = floated
+            && self.bridge.as_mut().is_some_and(|bridge| {
+                match bridge.present_masked(
+                    &bar.window,
+                    &bar.buffer.pixels,
+                    &self.bar_mask.pixels,
+                    bar.buffer.width,
+                    bar.buffer.height,
+                ) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::debug!(%error, "the bar could not float; presenting it opaque");
+                        false
+                    }
+                }
+            });
+        if !presented {
+            bar.present();
+        }
         // The surface is the output's width, and its height is whatever the presence the draw
         // just settled on asks for: the hint under a window, the bar over Home, plus whatever
         // band an open hover row or the account popover needs. The exclusive zone is 0 through

@@ -751,6 +751,8 @@ pub struct ShellBridge {
     queue: EventQueue<BridgeState>,
     manager: LegeShellManagerV1,
     state: BridgeState,
+    /// The `Argb8888` buffer behind [`Self::present_masked`], reused while its size holds.
+    masked: Option<crate::previews::ShmBuffer>,
 }
 
 impl std::fmt::Debug for ShellBridge {
@@ -820,6 +822,7 @@ impl ShellBridge {
             queue,
             manager,
             state,
+            masked: None,
         })
     }
 
@@ -1326,6 +1329,73 @@ impl ShellBridge {
             .iter()
             .find(|(id, _)| synthetic_window_id(id) == window_id)
             .and_then(|(_, tracked)| tracked.state.identifier.as_deref())
+    }
+
+    /// Attach an `Argb8888` buffer of `colour`, with its alpha taken from `coverage`, to
+    /// `window`'s own surface, so a shell surface can be a shape rather than a rectangle.
+    ///
+    /// The window stays winit's: it keeps its xdg role, its configure handling and every pointer
+    /// and keyboard event, and only the pixels come from here. That is deliberate rather than
+    /// convenient — `lege_shell_v1.set_layer_surface` only *tags* a surface with a layer and
+    /// grants no role of its own, so a surface created on this connection instead of winit's
+    /// would never map. The alternative was a compositor-side role, which is a much larger
+    /// change for the same pixels.
+    ///
+    /// The opaque region is cleared on every attach: without it the compositor is entitled to
+    /// skip everything behind the surface, which is precisely the desktop the transparency is
+    /// there to show.
+    ///
+    // ponytail: one buffer, reused by size, attached without waiting for `wl_buffer.release` —
+    // the same simplification `session_lock` makes, and the same reason (one surface, one frame
+    // in flight, redrawn only when something changed). A double buffer is the upgrade if a
+    // frame ever tears.
+    pub fn present_masked(
+        &mut self,
+        window: &winit::window::Window,
+        colour: &[u32],
+        coverage: &[u32],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        if width == 0 || height == 0 {
+            bail!("a surface with no pixels");
+        }
+        let surface = self.wrap_surface(window)?;
+        let qh = self.queue.handle();
+        let shm = self
+            .state
+            .previews
+            .shm()
+            .cloned()
+            .ok_or_else(|| anyhow!("the compositor offers no wl_shm on this connection"))?;
+        let reuse = self
+            .masked
+            .as_ref()
+            .is_some_and(|buffer| buffer.width == width && buffer.height == height);
+        if !reuse {
+            if let Some(old) = self.masked.take() {
+                old.destroy();
+            }
+            self.masked = Some(
+                crate::previews::allocate(
+                    &shm,
+                    width,
+                    height,
+                    wayland_client::protocol::wl_shm::Format::Argb8888,
+                    &qh,
+                )
+                .context("allocating the masked surface buffer")?,
+            );
+        }
+        let buffer = self.masked.as_ref().expect("allocated above");
+        buffer.write_masked(colour, coverage)?;
+        surface.set_opaque_region(None);
+        surface.attach(Some(&buffer.buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        self.connection
+            .flush()
+            .context("flushing a masked surface frame")
     }
 
     fn wrap_surface(&self, window: &winit::window::Window) -> Result<WlSurface> {
