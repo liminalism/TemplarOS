@@ -114,6 +114,8 @@ pub enum ActivityKind {
     ProjectEntered,
     /// A launch whose working directory or path argument is here.
     LaunchedHere,
+    /// An interactive terminal prompt entered this working directory.
+    TerminalEntered,
     /// A folder window or the Files surface entered it.
     DirectoryOpened,
     /// A brokered open of a file under it.
@@ -125,10 +127,11 @@ pub enum ActivityKind {
 }
 
 impl ActivityKind {
-    pub const ALL: [ActivityKind; 7] = [
+    pub const ALL: [ActivityKind; 8] = [
         Self::PlacedOnHome,
         Self::ProjectEntered,
         Self::LaunchedHere,
+        Self::TerminalEntered,
         Self::DirectoryOpened,
         Self::FileOpened,
         Self::CreatedOrRenamed,
@@ -141,6 +144,7 @@ impl ActivityKind {
             Self::PlacedOnHome => "placed-on-home",
             Self::ProjectEntered => "project-entered",
             Self::LaunchedHere => "launched-here",
+            Self::TerminalEntered => "terminal-entered",
             Self::DirectoryOpened => "directory-opened",
             Self::FileOpened => "file-opened",
             Self::CreatedOrRenamed => "created-or-renamed",
@@ -160,7 +164,7 @@ impl ActivityKind {
         match self {
             Self::PlacedOnHome => 8.0,
             Self::ProjectEntered => 5.0,
-            Self::LaunchedHere => 3.0,
+            Self::LaunchedHere | Self::TerminalEntered => 3.0,
             Self::DirectoryOpened => 2.0,
             Self::FileOpened | Self::CreatedOrRenamed => 1.5,
             Self::FileSaved => 0.8,
@@ -418,6 +422,13 @@ fn plural(kind: ActivityKind, count: u32) -> &'static str {
                 "launch"
             } else {
                 "launches"
+            }
+        }
+        ActivityKind::TerminalEntered => {
+            if one {
+                "terminal entry"
+            } else {
+                "terminal entries"
             }
         }
         ActivityKind::DirectoryOpened | ActivityKind::FileOpened => {
@@ -1257,6 +1268,34 @@ mod tests {
             changes[0].reason.starts_with("grew to tile: "),
             "{}",
             changes[0].reason
+        );
+    }
+
+    #[test]
+    fn one_terminal_entry_becomes_a_trace_at_the_next_tending_moment() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        assert_eq!(
+            ActivityKind::parse("terminal-entered"),
+            Some(ActivityKind::TerminalEntered)
+        );
+        ledger.observe(
+            &event(
+                "/home/dk/src/legeos",
+                ActivityKind::TerminalEntered,
+                Some(ProviderRole::Terminal),
+                at(1, 0.0),
+            ),
+            &probe,
+            &config,
+        );
+        assert_eq!(
+            ledger
+                .tend(at(1, 0.0), &config)
+                .last()
+                .map(|change| change.to),
+            Some(Stage::Trace)
         );
     }
 

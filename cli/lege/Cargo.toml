@@ -62,4 +62,5 @@ assets = [
     ["../../distro/deploy/layout.toml", "usr/share/legeos/layout.toml", "644"],
     ["../../installer/README.md", "usr/share/doc/legeos-cli/provision.md", "644"],
     ["../../installer/CHECKLIST.md", "usr/share/doc/legeos-cli/CHECKLIST.md", "644"],
+    ["../../session/profile.d/60-legeos-garden.sh", "etc/profile.d/60-legeos-garden.sh", "644"],
 ]

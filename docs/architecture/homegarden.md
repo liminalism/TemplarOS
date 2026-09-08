@@ -41,10 +41,11 @@ several sessions with a terminal, an editor and a file manager outranks any burs
 
 | Kind | Weight | Source today |
 |---|---|---|
-| `placed-on-home` | 8 | `HomeField1.PlaceFolder` (also pins) — next pass |
-| `project-entered` | 5 | `Projects1.SetCurrent` — next pass |
+| `placed-on-home` | 8 | `HomeField1.PlaceFolder` (also pins) |
+| `project-entered` | 5 | successful `Projects1.Open` and `Projects1.SetCurrent` |
 | `launched-here` | 3 | the launch channel: `--directory X`, `-d X`, or a bare directory argument; the role is the app's (Terminal, FileManager, CodeEditor) |
-| `directory-opened` | 2 | reserved for folder-window navigation |
+| `terminal-entered` | 3 | an interactive LegeOS Bash prompt whose working directory changed; no resident observer or timer |
+| `directory-opened` | 2 | successful Home folder-window and Files-object navigation |
 | `file-opened` | 1.5 | the shell's brokered `open_file` |
 | `created-or-renamed` | 1.5 | reserved for `Files.Operations1` |
 | `file-saved` | 0.8 | reserved for first-party saves |
@@ -111,5 +112,6 @@ listing until any structure has been earned. **Full** is the folder window.
 ## What is deliberately not here yet
 
 Growth forms and facets (Hierarchy/Media/Documents/Gallery), blooms (`2 new`, `unwatched`),
-material identity, sibling grouping, a Wide-vs-Tall geometry axis, the index change log and
-portal sources. Each waits on Phase 4: a day's use, judged by `lege garden why` on every place.
+material identity, sibling grouping, a Wide-vs-Tall geometry axis, bloom consumption of the
+index change log, and portal sources. Each waits on Phase 4: a day's use, judged by
+`lege garden why` on every place.

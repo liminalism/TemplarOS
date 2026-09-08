@@ -575,6 +575,17 @@ enum GardenCommand {
         #[arg(long, default_value = "primary")]
         output: String,
     },
+    /// Record a semantic activity source. Used by first-party shell integrations.
+    Observe {
+        /// placed-on-home | project-entered | launched-here | terminal-entered |
+        /// directory-opened | file-opened | created-or-renamed | file-saved
+        kind: String,
+        path: PathBuf,
+        #[arg(long, default_value = "")]
+        app_id: String,
+        #[arg(long, default_value = "")]
+        role: String,
+    },
     Pin {
         path: PathBuf,
     },
@@ -726,6 +737,23 @@ async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
             }
             emit(json, &report, human.trim_end())
         }
+        GardenCommand::Observe {
+            kind,
+            path,
+            app_id,
+            role,
+        } => {
+            let root = folder_argument(&path)?;
+            proxy
+                .observe(&kind, &path_of(&root), &app_id, &role)
+                .await
+                .context("recording Homegarden activity")?;
+            emit(
+                json,
+                &serde_json::json!({"observed": kind, "path": root, "app_id": app_id, "role": role}),
+                &format!("observed {kind} at {}", root.display()),
+            )
+        }
         other => garden_manage(&proxy, other, pinned, hidden, json).await,
     }
 }
@@ -801,7 +829,10 @@ async fn garden_manage(
                 ),
             )
         }
-        GardenCommand::Contexts | GardenCommand::Why { .. } | GardenCommand::Tend { .. } => {
+        GardenCommand::Contexts
+        | GardenCommand::Why { .. }
+        | GardenCommand::Tend { .. }
+        | GardenCommand::Observe { .. } => {
             unreachable!("handled by garden_command")
         }
     }
