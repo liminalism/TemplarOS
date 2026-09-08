@@ -91,6 +91,10 @@ pub struct WindowRecord {
     /// The geometry to return to on unmaximize — what the window had before
     /// [`WindowService::set_maximized`] grew it.
     pub restore_geometry: Option<Rect>,
+    /// The geometry to return to on unfullscreen. A slot of its own rather than sharing
+    /// [`Self::restore_geometry`]: a window can be maximized *and* fullscreen, and one slot
+    /// would have the fullscreen entry overwrite the floating geometry the unmaximize needs.
+    pub fullscreen_restore: Option<Rect>,
     /// The window group this window belongs to, if any (`crate::group`). Membership lives here,
     /// on the window, so no window can be in two groups.
     pub group: Option<GroupId>,
@@ -148,6 +152,10 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
+    /// The output whose overlay surfaces are currently peeked out from under a fullscreen
+    /// window (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
+    /// suspended on that output and the bar draws over the fullscreen window again.
+    peek_output: Option<String>,
     /// Every live window group. Ordered so that iteration — the switcher's group list, the
     /// snapshot — is deterministic rather than hash-ordered.
     groups: BTreeMap<GroupId, GroupRecord>,
@@ -168,6 +176,7 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
             arrangement_baseline: None,
+            peek_output: None,
             groups: BTreeMap::new(),
             next_group_id: 1,
         }
@@ -238,6 +247,7 @@ impl<I: IdentityCache> WindowService<I> {
                 shelf_rank: None,
                 maximized: false,
                 restore_geometry: None,
+                fullscreen_restore: None,
                 group: None,
             },
         );
@@ -273,10 +283,36 @@ impl<I: IdentityCache> WindowService<I> {
         }
     }
 
-    pub fn set_fullscreen(&mut self, window_id: WindowId, fullscreen: bool) {
-        if let Some(window) = self.windows.get_mut(&window_id) {
-            window.fullscreen = fullscreen;
+    /// `xdg_toplevel.set_fullscreen` / `unset_fullscreen`: fill the *whole* output —
+    /// [`Output::logical`], not [`Output::usable`], because a fullscreen window covers the bar's
+    /// exclusive zone too — remembering the geometry to return to in
+    /// [`WindowRecord::fullscreen_restore`]. Returns the geometry to configure, or `None` for an
+    /// unknown window or a no-op.
+    ///
+    /// The result is *not* recoverable in [`crate::geometry::is_recoverable`]'s sense, and must
+    /// not be: that predicate measures a window's tag strip against `usable()`, and a fullscreen
+    /// window has no tag strip ([`Self::has_frame`]). Its recovery route is the escape chord
+    /// ([`Self::escape`]), which restores through this same slot, and
+    /// [`Self::on_outputs_changed`] never repairs it.
+    pub fn set_fullscreen(&mut self, window_id: WindowId, fullscreen: bool) -> Option<Rect> {
+        let outputs = &self.outputs;
+        let window = self.windows.get_mut(&window_id)?;
+        if window.fullscreen == fullscreen {
+            return None;
         }
+        window.fullscreen = fullscreen;
+        if fullscreen {
+            window.fullscreen_restore = Some(window.geometry);
+            window.geometry = fullscreen_geometry(window.geometry, outputs);
+        } else {
+            let restore = window.fullscreen_restore.take().unwrap_or(window.geometry);
+            window.geometry = if window.maximized {
+                maximized_geometry(restore, outputs)
+            } else {
+                repair_window(restore, outputs)
+            };
+        }
+        Some(window.geometry)
     }
 
     pub fn set_modal(&mut self, window_id: WindowId, modal: bool) {
@@ -352,7 +388,13 @@ impl<I: IdentityCache> WindowService<I> {
             let Some(window) = self.windows.get_mut(&id) else {
                 continue;
             };
-            let repaired = if window.maximized {
+            let repaired = if window.fullscreen {
+                // A fullscreen window *is* its output rather than a rectangle on one: it follows
+                // whichever output is now nearest, and is never nudged to keep a recovery band on
+                // screen, because it has no band to keep (`has_frame`). Repairing it here is what
+                // would pull it off the full output the moment anything changed the topology.
+                fullscreen_geometry(window.geometry, &self.outputs)
+            } else if window.maximized {
                 // A maximized window is not floating: it fills whichever output is now closest
                 // to where it was, rather than being nudged until its band is visible.
                 maximized_geometry(window.geometry, &self.outputs)
@@ -788,8 +830,89 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Every window, top-most first.
+    ///
+    /// The one exception to [`LayerStack`]'s pure layer order: while a visible fullscreen client
+    /// window's output is not being peeked, that window sorts *above* [`Layer::ShellOverlay`] and
+    /// [`Layer::Notification`]. Without it the bar would sit on top of every fullscreen video,
+    /// because `ShellOverlay` is above `Normal` by design — which is why the shell used to destroy
+    /// its own bar to get out of the way. It never rises above [`Layer::SystemModal`],
+    /// [`Layer::Recovery`] or [`Layer::SecureLock`]: a permission prompt and the lock screen
+    /// outrank anything a client can ask for.
+    ///
+    /// This is the whole of the bottom-edge peek: [`Self::set_peek_output`] suspends the
+    /// exception for one output and the bar comes back, with no protocol change and no surface
+    /// destroyed. Every consumer follows, because this is the one z-order authority — the render
+    /// order (`lege_comp::scene`), the hit-test mirror (`lege_comp::space_sync`) and the shell
+    /// snapshot all read it.
     pub fn stacking_order(&self) -> Vec<WindowId> {
-        self.layers.order()
+        let mut order = self.layers.order();
+        if !order.iter().any(|id| self.outranks_overlay(*id)) {
+            return order;
+        }
+        // A stable second pass: only a promoted window's key differs, so everything else keeps
+        // the order `LayerStack` already put it in. A scene holds a handful of windows.
+        order.sort_by_key(|id| std::cmp::Reverse(self.stack_key(*id)));
+        order
+    }
+
+    /// The key [`Self::stacking_order`] sorts by, greatest first: the layer doubled so a promoted
+    /// fullscreen window can take the half step between `SystemModal` and `ShellOverlay`, then the
+    /// within-layer rank. Doubling rather than renumbering [`Layer`] leaves every discriminant —
+    /// and so every [`crate::layers::may_request_layer`] answer — exactly as it was.
+    fn stack_key(&self, window_id: WindowId) -> (i32, u64) {
+        let Some(position) = self.layers.position(window_id) else {
+            return (i32::MIN, 0);
+        };
+        let layer = if self.outranks_overlay(window_id) {
+            i32::from(Layer::ShellOverlay as u8) * 2 - 1
+        } else {
+            i32::from(position.layer as u8) * 2
+        };
+        // Negated because `Layer`'s discriminants count *down* the screen: `SecureLock` is 0.
+        (-layer, position.rank)
+    }
+
+    /// Whether `window_id` is the one kind of window that reorders the layer stack: a visible
+    /// fullscreen client window whose output is not being peeked.
+    fn outranks_overlay(&self, window_id: WindowId) -> bool {
+        let Some(window) = self.windows.get(&window_id) else {
+            return false;
+        };
+        if !window.fullscreen || window.shelved || !self.is_client_window(window_id) {
+            return false;
+        }
+        // A reveal hides every client window; nothing it is hiding can outrank the shell.
+        if self.home_revealed {
+            return false;
+        }
+        !self.is_peeking(window.geometry)
+    }
+
+    /// Whether the output a window at `geometry` is on is the one being peeked. With no outputs
+    /// there is one screen by definition, so any peek at all is that screen's.
+    fn is_peeking(&self, geometry: Rect) -> bool {
+        let Some(peeked) = self.peek_output.as_deref() else {
+            return false;
+        };
+        self.outputs.is_empty()
+            || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
+    }
+
+    /// The output whose overlay surfaces are peeked out from under a fullscreen window, if any.
+    pub fn peek_output(&self) -> Option<&str> {
+        self.peek_output.as_deref()
+    }
+
+    /// Start or end a peek on one output (`None` ends it). Returns whether anything changed, so
+    /// the compositor can re-stack only when it must. One output at a time, because there is one
+    /// pointer.
+    ///
+    // ponytail: one peeked output. Per-output peeks would need a set here and a pointer per seat
+    // above; nothing on this desktop has two pointers.
+    pub fn set_peek_output(&mut self, output: Option<String>) -> bool {
+        let changed = self.peek_output != output;
+        self.peek_output = output;
+        changed
     }
 
     /// One sentence explaining why `a` is stacked above or below `b`.
@@ -844,12 +967,14 @@ impl<I: IdentityCache> WindowService<I> {
                 .find(|window| window.activated && (window.fullscreen || window.modal))
                 .map(|window| window.id)
         })?;
-        let window = self.windows.get_mut(&target)?;
+        let window = self.windows.get(&target)?;
         if window.fullscreen {
-            window.fullscreen = false;
+            // Through `set_fullscreen`, so the escape route returns the window to exactly the
+            // geometry the fullscreen entry took it from — the same slot, the same restore.
+            self.set_fullscreen(target, false);
             Some(EscapeAction::ExitedFullscreen { window_id: target })
         } else if window.modal {
-            window.modal = false;
+            self.windows.get_mut(&target)?.modal = false;
             Some(EscapeAction::DismissedModalGrab { window_id: target })
         } else {
             None
@@ -1320,6 +1445,17 @@ fn maximized_geometry(current: Rect, outputs: &[Output]) -> Rect {
         return current;
     }
     choose_target_output(current, outputs).usable()
+}
+
+/// Where a fullscreen window goes: the whole [`Output::logical`] rectangle of the output nearest
+/// `current` — deliberately not [`Output::usable`], because "genuinely full screen" means over
+/// the bar's exclusive zone as well, not politely beside it. With no outputs at all there is
+/// nothing to fill, and the window is left as it is.
+fn fullscreen_geometry(current: Rect, outputs: &[Output]) -> Rect {
+    if outputs.is_empty() {
+        return current;
+    }
+    choose_target_output(current, outputs).logical
 }
 
 #[cfg(test)]
@@ -2444,6 +2580,187 @@ mod tests {
         assert_eq!(
             toplevels[1].group.as_ref().map(|g| g.group_id),
             Some(group.0)
+        );
+    }
+
+    // ---- fullscreen, and the bar it covers -----------------------------------------------
+
+    /// A machine with the shell's bar on it: the usable area stops 48px short of the bottom.
+    fn service_with_a_bar() -> (WindowService<FakeCache>, WindowId, WindowId) {
+        let mut service =
+            WindowService::new(FakeCache::default(), vec![output_with_a_bottom_bar(48)]);
+        let app = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(100, 100, 400, 300),
+        );
+        let bar = shell_surface(
+            &mut service,
+            Layer::ShellOverlay,
+            Rect::new(0, 1080 - 48, 1920, 48),
+        );
+        (service, app, bar)
+    }
+
+    /// "Genuinely full screen" is over the bar, not politely beside it: `usable()` is 1032 tall
+    /// here and the window must be 1080. The window is deliberately *not* `is_recoverable` while
+    /// it holds that rectangle — it has no tag strip to keep reachable, and the escape chord is
+    /// its way out.
+    #[test]
+    fn a_fullscreen_window_fills_the_output_over_the_bars_zone() {
+        let (mut service, app, _) = service_with_a_bar();
+        let screen = service.outputs()[0].logical;
+
+        let geometry = service.set_fullscreen(app, true).expect("a real change");
+
+        assert_eq!(geometry, screen);
+        assert_ne!(geometry, service.outputs()[0].usable());
+        assert!(
+            !service.has_frame(app),
+            "a fullscreen window wears no frame"
+        );
+        assert_eq!(
+            service.set_fullscreen(app, true),
+            None,
+            "already fullscreen"
+        );
+    }
+
+    /// The restore slot is fullscreen's own: a window that was maximized first must come back to
+    /// the maximized area, and the *floating* geometry the unmaximize needs must still be there.
+    #[test]
+    fn unfullscreen_restores_through_a_slot_maximize_never_touches() {
+        let (mut service, app, _) = service_with_a_bar();
+        let floating = service.window(app).unwrap().geometry;
+        let maximized = service.set_maximized(app, true).expect("maximized");
+
+        service.set_fullscreen(app, true);
+        assert_eq!(service.set_fullscreen(app, false), Some(maximized));
+        assert_eq!(service.set_maximized(app, false), Some(floating));
+    }
+
+    /// A hotplug or a scale change must not pull a fullscreen window off the full output, which
+    /// is exactly what `repair_window` would do: its tag strip is below `usable()`.
+    #[test]
+    fn an_output_change_never_repairs_a_fullscreen_window() {
+        let (mut service, app, _) = service_with_a_bar();
+        let screen = service.set_fullscreen(app, true).expect("fullscreen");
+        assert!(!crate::is_recoverable(screen, service.outputs()));
+
+        let changed = service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
+
+        assert!(!changed.iter().any(|(id, _)| *id == app), "{changed:?}");
+        assert_eq!(service.window(app).unwrap().geometry, screen);
+    }
+
+    /// The recovery route, and the reason a fullscreen window needs no recovery band.
+    #[test]
+    fn escape_returns_the_window_to_where_fullscreen_found_it() {
+        let (mut service, app, _) = service_with_a_bar();
+        let before = service.window(app).unwrap().geometry;
+        service.set_fullscreen(app, true);
+
+        assert_eq!(
+            service.escape(Some(app)),
+            Some(EscapeAction::ExitedFullscreen { window_id: app })
+        );
+
+        assert_eq!(service.window(app).unwrap().geometry, before);
+        assert!(crate::is_recoverable(before, service.outputs()));
+    }
+
+    /// The stacking exception, as a table. A fullscreen window outranks the shell's own overlay
+    /// and notifications — otherwise the bar draws over every video — and nothing else.
+    #[test]
+    fn a_fullscreen_window_outranks_the_overlay_and_nothing_above_it() {
+        for (layer, fullscreen_wins) in [
+            (Layer::SecureLock, false),
+            (Layer::Recovery, false),
+            (Layer::SystemModal, false),
+            (Layer::ShellOverlay, true),
+            (Layer::Notification, true),
+        ] {
+            let (mut service, app, _) = service_with_a_bar();
+            // `SecureLock` and `Recovery` are compositor-owned; the rest are the shell's.
+            let client = if layer.is_core_only() {
+                ClientKind::CompositorCore
+            } else {
+                ClientKind::TrustedShell
+            };
+            let other = service.on_toplevel_mapped(
+                2,
+                client,
+                WindowClaims::default(),
+                String::new(),
+                Rect::new(0, 0, 200, 200),
+            );
+            service
+                .set_layer(other, layer, client)
+                .expect("authorized for this layer");
+            service.set_fullscreen(app, true);
+
+            let order = service.stacking_order();
+            let app_at = order.iter().position(|id| *id == app).unwrap();
+            let other_at = order.iter().position(|id| *id == other).unwrap();
+
+            assert_eq!(
+                app_at < other_at,
+                fullscreen_wins,
+                "fullscreen against {layer}: {order:?}"
+            );
+        }
+    }
+
+    /// The whole of the peek: one flag, and the bar is back over the fullscreen window. No
+    /// surface is destroyed, no zone is released, so nothing reflows either way.
+    #[test]
+    fn a_peek_puts_the_overlay_back_on_top_and_nothing_else_moves() {
+        let (mut service, app, bar) = service_with_a_bar();
+        let screen = service.set_fullscreen(app, true).expect("fullscreen");
+        let bar_geometry = service.window(bar).unwrap().geometry;
+        let above = |service: &WindowService<FakeCache>| {
+            let order = service.stacking_order();
+            order.iter().position(|id| *id == bar).unwrap()
+                < order.iter().position(|id| *id == app).unwrap()
+        };
+        assert!(!above(&service), "the fullscreen window covers the bar");
+
+        assert!(service.set_peek_output(Some("eDP-1".to_owned())));
+        assert!(above(&service), "the peek raises the bar");
+        assert!(
+            !service.set_peek_output(Some("eDP-1".to_owned())),
+            "no change"
+        );
+
+        assert!(service.set_peek_output(None));
+        assert!(!above(&service));
+        // Neither the peek nor the fullscreen entry touched a rectangle.
+        assert_eq!(service.window(app).unwrap().geometry, screen);
+        assert_eq!(service.window(bar).unwrap().geometry, bar_geometry);
+        assert!(
+            service.is_visible(bar),
+            "the bar is never unmapped for this"
+        );
+    }
+
+    /// A peek on the other screen leaves this one's fullscreen window on top.
+    #[test]
+    fn a_peek_is_one_output_at_a_time() {
+        let (mut service, app, _) = service_with_a_bar();
+        let bar = shell_surface(
+            &mut service,
+            Layer::ShellOverlay,
+            Rect::new(0, 1080 - 48, 1920, 48),
+        );
+        service.set_fullscreen(app, true);
+        service.set_peek_output(Some("HDMI-1".to_owned()));
+
+        let order = service.stacking_order();
+        assert!(
+            order.iter().position(|id| *id == app).unwrap()
+                < order.iter().position(|id| *id == bar).unwrap()
         );
     }
 
