@@ -200,13 +200,12 @@ impl HomeGardenApi {
                     Some(span) if span != located.placement.span => {
                         context.user_span = Some(located.placement.span);
                     }
-                    Some(_) => {}
                     None if !context.hidden => {
                         context.pinned = true;
                         context.user_span = Some(located.placement.span);
                         context.tended_span = Some(located.placement.span);
                     }
-                    None => {}
+                    Some(_) | None => {}
                 }
             }
         }
