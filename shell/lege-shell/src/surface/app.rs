@@ -189,10 +189,15 @@ fn bar_covered(
     toplevels: &[lege_window::ShellToplevel],
     output: lege_window::Rect,
 ) -> bool {
+    // The island's own rectangle, not the width of the output: it sits at the bottom-left and is
+    // only as wide as its chips, so a window over the *right* of the screen is not over the bar
+    // and must not collapse it. Fullscreen is the exception below — that covers everything.
+    let island = crate::surface::bar_screen::island_width(crate::taskbar::entries(toplevels).len())
+        .min(output.width);
     let strip = lege_window::Rect::new(
         output.x,
         output.bottom() - crate::surface::bar_screen::BAR_HEIGHT,
-        output.width,
+        island,
         crate::surface::bar_screen::BAR_HEIGHT,
     );
     toplevels.iter().any(|window| {
@@ -2442,11 +2447,11 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        let _ = toplevels;
         let wanted = crate::surface::bar_screen::wanted_size(
             crate::surface::bar_screen::Presence::Open,
             false,
             false,
+            crate::taskbar::entries(toplevels).len(),
             self.output_width(),
         );
         let (width, height) = (f64::from(wanted.0), f64::from(wanted.1));
@@ -2560,6 +2565,7 @@ impl ShellApp {
             self.bar_screen.presence(covered),
             self.bar_screen.row_open(),
             self.bar_screen.account_open,
+            entries.len(),
             output_width,
         );
         if wanted != self.bar_wanted {
@@ -4320,6 +4326,14 @@ mod tests {
         let mut into = above;
         into.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT + 1);
         assert!(bar_covered(false, &[into], output));
+
+        // The island is at the bottom-left and only as wide as its chips, so a window along the
+        // bottom of the *right* of the screen is not over it. This is what the full-width bar
+        // could not say: half the screen's windows used to collapse it for nothing.
+        let mut beside = window(3, false, false, false);
+        let clear = crate::surface::bar_screen::island_width(1) + 1;
+        beside.geometry = lege_window::Rect::new(clear, 0, 1920 - clear, 1080);
+        assert!(!bar_covered(false, std::slice::from_ref(&beside), output));
     }
 
     #[test]

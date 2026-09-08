@@ -26,10 +26,17 @@
 //! control; the account chip is labelled with the account, because an unlabelled mark in the
 //! corner of the screen is a button nobody dares press.
 //!
-//! The bar is full width. It used to shrink to its chips so the desktop showed through beside
-//! them, which is right for a strip of two indicators and wrong for a cluster that has to sit at
-//! the right-hand end of the screen — a right-aligned thing on a left-anchored surface is not at
-//! the right of anything.
+//! **It is an island, not a bar.** The surface is exactly as wide as its contents
+//! ([`island_width`]) and sits at the bottom-left, because a zero-size zone claim anchors a
+//! surface at the start of its edge and leaves its extent alone. The machine cluster is at the
+//! island's right end rather than the screen's: a strip of chips that runs the whole width of the
+//! display is a bar across the bottom of the desktop, which is the shape the person is trying not
+//! to have. Everything either side of the island is desktop.
+//!
+//! ponytail: an opaque plate with square corners, because the surface has no alpha
+//! (softbuffer attaches an `Xrgb8888` buffer, so an unpainted pixel is black). Rounded corners
+//! and true floating chips need the bridge-owned `Argb8888` wl_shm surface the draw code's own
+//! note describes.
 //!
 //! **The bar reserves nothing.** Its exclusive zone is 0: the compositor keeps the surface
 //! bottom-anchored and leaves the output's usable area whole, so a maximized window fills the
@@ -37,9 +44,11 @@
 //!
 //! - **Open** — nothing covers the bottom strip, so the bar simply paints over Home. This is the
 //!   resting state at a bare desktop, and the switcher is visible without asking for it.
-//! - **Hint** — a window (or a fullscreen one) covers the strip. The surface shrinks to
-//!   `HINT_HEIGHT` and paints one `^` on the bar's ground: nothing of the bar is hit-testable
-//!   under the window, and the person can still see where it went.
+//! - **Hint** — a window (or a fullscreen one) covers the island's strip. The surface shrinks to
+//!   a `HINT_WIDTH` by `HINT_HEIGHT` tab in the corner and paints one `^` on the bar's ground:
+//!   nothing of the bar is hit-testable under the window, and the person can still see where it
+//!   went. A window that only covers the *right* of the screen is not over the island at all
+//!   (`app::bar_covered`), so it does not collapse anything.
 //! - **Revealed** — the pointer came to *rest* on the hint for `HINT_OPEN_MS`, so the surface
 //!   grows back to the bar and stays while the pointer is on it. Rest, not presence: the strip
 //!   runs the width of the output, so a pointer merely travelling along the bottom edge used to
@@ -75,6 +84,11 @@ pub const BAR_HEIGHT: i32 = 48;
 // hit, the knob is this constant (or an edge-sticky pointer region in the compositor, which is a
 // protocol change, not a shell one).
 pub const HINT_HEIGHT: i32 = 6;
+
+/// How wide the hint's tab is. The strip used to run the whole width of the output — a six-pixel
+/// line across the bottom of the screen, and a target a pointer could not avoid. It is now a tab
+/// at the bottom-left corner, under the island it belongs to.
+pub const HINT_WIDTH: i32 = 72;
 /// Dwell on the hint before the bar comes back out. Short: the hint is aimed at deliberately,
 /// unlike a taskbar chip the pointer only sweeps across on its way somewhere else.
 pub const HINT_OPEN_MS: u64 = 350;
@@ -260,20 +274,39 @@ pub fn wanted_size(
     presence: Presence,
     row_open: bool,
     account_open: bool,
+    entries: usize,
     full_width: i32,
 ) -> (i32, i32) {
-    let width = full_width.max(1);
     if presence == Presence::Hint {
         // Hint-sized: the row and the popover are closed with the collapse, so there is never a
-        // band to make room for here.
-        return (width, HINT_HEIGHT);
+        // band to make room for here, and the tab is only as wide as a chevron needs.
+        return (HINT_WIDTH.min(full_width.max(1)), HINT_HEIGHT);
     }
     let band = match (row_open, account_open) {
         (_, true) => popover_band(),
         (true, false) => ROW_BAND,
         (false, false) => 0,
     };
-    (width, BAR_HEIGHT + band)
+    (
+        island_width(entries).min(full_width.max(1)),
+        BAR_HEIGHT + band,
+    )
+}
+
+/// How wide the island is: its two margins, one square per entry, the gap that separates the
+/// switcher from the machine, and the cluster.
+///
+/// The surface is this wide and no wider. It used to be the output's whole width, which made a
+/// strip of chips read as a bar across the bottom of the screen — the thing the person is trying
+/// not to have. The zone claim anchors a bottom-edge surface at the start of its edge and leaves
+/// its extent alone (`shell_surface_placement`), so a narrower surface simply sits at the
+/// bottom-left and the desktop is visible either side of it.
+#[must_use]
+pub fn island_width(entries: usize) -> i32 {
+    let entries = i32::try_from(entries).unwrap_or(i32::MAX);
+    let switcher = entries * (CELL + CHIP_GAP);
+    let cluster = SETTINGS_WIDTH + NETWORK_WIDTH + CLOCK_WIDTH + ACCOUNT_WIDTH + 3 * CHIP_GAP;
+    2 * CHIP_PAD + switcher + cluster
 }
 
 /// The letter a chip wears when the application has no icon.
@@ -506,8 +539,10 @@ impl BarScreen {
             match open_row.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
                 Some((cell, entry)) if area.h > bar_height => {
                     let item_h = (area.h - bar_height - ui.px(8)).min(ui.px(ROW_BAND - 8));
-                    let item_w = ui.px(ROW_ITEM_WIDTH).min(area.w);
-                    let count = entry.windows.len() as i32;
+                    let count = i32::try_from(entry.windows.len()).unwrap_or(1).max(1);
+                    // The island is only as wide as its chips, so a long row shares that width
+                    // rather than stretching the surface back across the screen.
+                    let item_w = ui.px(ROW_ITEM_WIDTH).min(area.w / count).max(ui.px(CELL));
                     let start = cell.x.min(area.right() - item_w * count).max(area.x);
                     (0..count)
                         .map(|i| {
@@ -1055,6 +1090,7 @@ mod tests {
                 self.screen.presence(self.covered),
                 self.screen.open_row.is_some(),
                 self.screen.account_open,
+                taskbar::entries(&self.toplevels).len(),
                 W,
             )
         }
@@ -1066,10 +1102,16 @@ mod tests {
             self.frame()
         }
 
-        /// The middle of the surface's bottom edge — where the hint is, and where a pointer
-        /// reaching for it lands.
+        /// How wide the island is with this harness's windows on it.
+        fn island(&self) -> i32 {
+            island_width(taskbar::entries(&self.toplevels).len())
+        }
+
+        /// The middle of the hint tab's bottom edge — where the hint is, and where a pointer
+        /// reaching for it lands. The tab is at the bottom-left corner now, not across the
+        /// screen, so the middle of the *output* is no longer on it.
         fn bottom_middle() -> (i32, i32) {
-            (W / 2, tallest() - 1)
+            (HINT_WIDTH / 2, tallest() - 1)
         }
 
         fn frame(&mut self) -> Vec<BarAction> {
@@ -1223,7 +1265,7 @@ mod tests {
         assert_eq!(h.screen.open_row, Some(1));
         // The host has already made room (the harness resizes exactly where `app.rs` does); the
         // row's first item activates its window and closes the row.
-        assert_eq!(h.wanted(), (W, BAR_HEIGHT + ROW_BAND));
+        assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT + ROW_BAND));
         h.frame();
         let row_y = h.rects().row[0].y + 8;
         let actions = h.click(files.x + 20, row_y);
@@ -1271,7 +1313,11 @@ mod tests {
     fn a_maximized_window_wears_its_own_controls_and_the_bar_carries_none() {
         let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, true)]);
         h.frame();
-        assert_eq!(h.width, W, "the bar is the output's width");
+        assert_eq!(
+            h.width,
+            h.island(),
+            "the island is its contents wide, not the output's"
+        );
         let layout = h.rects();
         assert!(
             layout.account.right() >= layout.bar.right() - CHIP_PAD - 1,
@@ -1315,35 +1361,50 @@ mod tests {
         assert!(h.buffer.pixels.iter().any(|&p| p != 0));
     }
 
-    /// The bar is the output's width, always; only the band above it changes. The exclusive zone
-    /// is `BAR_HEIGHT` whatever this returns, so nothing here reflows a window.
+    /// The island is as wide as its contents and no wider — the user's words, "it shouldn't be
+    /// stretching the full length of the screen". Only the band above it changes with a row or
+    /// the popover, and the exclusive zone is 0 through all of it, so nothing here reflows a
+    /// window.
     #[test]
-    fn the_bar_takes_the_output_and_grows_upward_for_a_row_or_the_popover() {
+    fn the_island_is_its_contents_wide_and_grows_upward_for_a_row_or_the_popover() {
         let open = Presence::Open;
-        assert_eq!(wanted_size(open, false, false, W), (W, BAR_HEIGHT));
+        let empty = island_width(0);
+        assert!(
+            empty < W / 2,
+            "an empty island is not a bar: {empty} of {W}"
+        );
+        assert_eq!(island_width(3) - empty, 3 * (CELL + CHIP_GAP));
+
+        assert_eq!(wanted_size(open, false, false, 0, W), (empty, BAR_HEIGHT));
         assert_eq!(
-            wanted_size(open, true, false, W),
-            (W, BAR_HEIGHT + ROW_BAND)
+            wanted_size(open, true, false, 0, W),
+            (empty, BAR_HEIGHT + ROW_BAND)
         );
         assert_eq!(
-            wanted_size(open, false, true, W),
-            (W, BAR_HEIGHT + popover_band())
+            wanted_size(open, false, true, 0, W),
+            (empty, BAR_HEIGHT + popover_band())
         );
         // The popover is the taller of the two, so it wins when both are somehow asked for.
         assert_eq!(
-            wanted_size(open, true, true, W),
-            (W, BAR_HEIGHT + popover_band())
+            wanted_size(open, true, true, 0, W),
+            (empty, BAR_HEIGHT + popover_band())
         );
         assert!(popover_band() > ROW_BAND);
-        // A width of nothing is still a surface.
-        assert_eq!(wanted_size(open, false, false, 0), (1, BAR_HEIGHT));
-        // Revealed is the bar, in full; the hint is the hint, band or no band.
+        // An output narrower than the island clamps to the output, and a width of nothing is
+        // still a surface.
+        assert_eq!(wanted_size(open, false, false, 0, 200), (200, BAR_HEIGHT));
+        assert_eq!(wanted_size(open, false, false, 0, 0), (1, BAR_HEIGHT));
+        // Revealed is the island, in full; the hint is a tab, band or no band.
         assert_eq!(
-            wanted_size(Presence::Revealed, true, false, W),
-            (W, BAR_HEIGHT + ROW_BAND)
+            wanted_size(Presence::Revealed, true, false, 0, W),
+            (empty, BAR_HEIGHT + ROW_BAND)
         );
-        assert_eq!(wanted_size(Presence::Hint, true, true, W), (W, HINT_HEIGHT));
+        assert_eq!(
+            wanted_size(Presence::Hint, true, true, 0, W),
+            (HINT_WIDTH, HINT_HEIGHT)
+        );
         const { assert!(HINT_HEIGHT < BAR_HEIGHT) };
+        const { assert!(HINT_WIDTH < CLOCK_WIDTH) };
     }
 
     #[test]
@@ -1386,7 +1447,7 @@ mod tests {
         let (x, y) = Harness::centre(h.rects().account);
         assert!(h.click(x, y).is_empty(), "opening it performs nothing");
         assert!(h.screen.account_open);
-        assert_eq!(h.wanted(), (W, BAR_HEIGHT + popover_band()));
+        assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT + popover_band()));
         h.frame();
 
         // `LEGE_BAR_POPOVER_DUMP=<path>` writes the open popover as a PNG for review, the way
@@ -1528,7 +1589,7 @@ mod tests {
         h.covered = true;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Hint);
-        assert_eq!(h.wanted(), (W, HINT_HEIGHT));
+        assert_eq!(h.wanted(), (HINT_WIDTH, HINT_HEIGHT));
 
         let (x, y) = Harness::bottom_middle();
         h.point_at(x, y);
@@ -1546,7 +1607,7 @@ mod tests {
         h.now = HINT_OPEN_MS;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Revealed);
-        assert_eq!(h.wanted(), (W, BAR_HEIGHT));
+        assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT));
     }
 
     /// The user's words: the bar "popups up at inopportune times". The strip is the whole width
@@ -1559,10 +1620,10 @@ mod tests {
         h.covered = true;
         h.frame();
         let (_, y) = Harness::bottom_middle();
-        // Four times the dwell, spent crossing the strip rather than resting on it.
+        // Four times the dwell, spent crossing the tab rather than resting on it.
         for step in 0..8_i32 {
             h.now = u64::try_from(step).unwrap() * HINT_OPEN_MS / 2;
-            h.point_at(W / 4 + step * (HINT_REST_SLOP + 1) * 4, y);
+            h.point_at(4 + step * (HINT_REST_SLOP + 1), y);
             assert_eq!(
                 h.screen.presence(true),
                 Presence::Hint,
@@ -1571,7 +1632,7 @@ mod tests {
         }
         // It stops. The dwell now runs from where it stopped, not from when it arrived.
         let resting = h.now;
-        let x = W / 4 + 7 * (HINT_REST_SLOP + 1) * 4;
+        let x = 4 + 7 * (HINT_REST_SLOP + 1);
         h.now = resting + HINT_OPEN_MS - 1;
         h.point_at(x, y);
         assert_eq!(h.screen.presence(true), Presence::Hint);
@@ -1614,7 +1675,7 @@ mod tests {
         h.now += HINT_CLOSE_MS;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Hint);
-        assert_eq!(h.wanted(), (W, HINT_HEIGHT));
+        assert_eq!(h.wanted(), (HINT_WIDTH, HINT_HEIGHT));
         assert_eq!(h.screen.open_row, None, "the row closed with it");
         assert!(!h.screen.account_open, "and so did the popover");
     }
@@ -1631,7 +1692,7 @@ mod tests {
         h.now = HINT_OPEN_MS * 10;
         h.frame();
         assert_eq!(h.screen.presence(false), Presence::Open);
-        assert_eq!(h.wanted(), (W, BAR_HEIGHT));
+        assert_eq!(h.wanted(), (h.island(), BAR_HEIGHT));
 
         // Covered, revealed, then uncovered: the reveal does not survive the window leaving.
         h.covered = true;
@@ -1658,12 +1719,13 @@ mod tests {
             window(2, "org.legeos.Files", "Downloads", false, false),
         ]);
         h.frame();
-        // Where the second chip is while the bar is open — and where the pointer would aim if it
-        // tried to click it through a covering window.
-        let chip_x = Harness::centre(h.cells()[1]).0;
+        // Where the first chip is while the island is open — and where the pointer would aim if
+        // it tried to click it through a covering window. The tab is under the island's left end,
+        // so that aim lands on the hint rather than on nothing.
+        let chip_x = Harness::centre(h.cells()[0]).0;
         h.covered = true;
         h.frame();
-        assert_eq!(h.wanted(), (W, HINT_HEIGHT));
+        assert_eq!(h.wanted(), (HINT_WIDTH, HINT_HEIGHT));
         let actions = h.click(chip_x, tallest() - 1);
         assert!(actions.is_empty(), "a hint has no chips: {actions:?}");
         assert_eq!(
