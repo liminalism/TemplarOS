@@ -48,6 +48,39 @@
          Lifecycle1 version 1; a client that does not know this signal is unaffected. -->
     <signal name="LockRequested"/>
 
+    <!-- The session's own edges, so something can count session time rather than wall-clock time.
+
+         A laptop asleep for a week aged nothing; a screen locked overnight aged nothing. Anything
+         that ages with use - the Home garden above all - needs to know when this session was
+         actually being used, and no existing signal says so. These four are that record.
+
+         SessionStarted fires once, when lege-sessiond has claimed its bus name: a new session.
+         Locked fires when a lock is *asked for* (Lock, or `lege session lock`), not when the
+         screen is confirmed covered - sessiond speaks no Wayland and cannot observe the latter
+         (see Lock above). Unlocked fires from NotifyUnlocked. Sleeping carries true on the way
+         down and false on the way back, mirroring logind's PrepareForSleep, which sessiond
+         watches with one match rule and no polling.
+
+         Additive in Lifecycle1 version 1; a client that does not know them is unaffected. -->
+    <signal name="SessionStarted"/>
+    <signal name="Locked"/>
+    <signal name="Unlocked"/>
+    <signal name="Sleeping">
+      <arg name="going_to_sleep" type="b"/>
+    </signal>
+
+    <!-- The session was unlocked. Only the trusted shell may say so.
+
+         ext-session-lock-v1's unlock_and_destroy is the only thing that clears the compositor's
+         lock, and lege-shell is the only process that calls it (ADR-0010), so lege-shell is the
+         only process that knows the lock is gone. It reports that here and this emits Unlocked.
+
+         Restricted to lege-shell.service, identified by the caller's cgroup. That is a
+         correctness guard rather than a security one - the session bus is already the trust
+         boundary for Logout and PowerOff, which are unguarded - but a stray caller would corrupt
+         the session-time record for everything downstream, and there is no reason to accept one. -->
+    <method name="NotifyUnlocked"/>
+
     <!-- "yes" | "no" | "na" | "challenge", straight from logind. -->
     <method name="CanReboot">
       <arg name="result" type="s" direction="out"/>
