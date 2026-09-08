@@ -53,6 +53,15 @@ record legeos.question.home-field-default-density/2 : question {
     supersedes [ @legeos.question.home-field-default-density/1 ]
 }
 
+record legeos.question.homegarden-open-choices/1 : question {
+    title "Homegarden: the choices left to the user after Phase 4's day of use"
+    state open
+    question """
+        (1) Should the Desktop tray become an ordinary pinned Place that can be unpinned and recede, instead of a permanent default? (2) May the tender shrink another garden tile to make room (garden-only yield set), or only grow into empty cells? Phase 3 ships garden-only yield. (3) Home corner for first growths: bottom-left, opposite the Files object (shipped default), or beside the Desktop tray? (4) Do the garden.* verbs stay named garden, or become home.pin/home.hide to match home.reveal? (5) The stage thresholds in sessions and garden-hours (Expanded->Tile after 3 later sessions and 6 garden-hours idle, etc.) are illustrative: which values match a working week? Answer after @legeos.work.homegarden-hands-on.
+        """
+    derived_from [ @legeos.decision.homegarden-activity-grown-places ]
+}
+
 record legeos.question.no-route-for-a-privileged-fd-to-reach-the-per-user-daemon/1 : question {
     title "Nothing on the system bus can hand a file descriptor to a session service, which blocks both candidate index backends"
     state open

@@ -211,6 +211,73 @@ record legeos.work.application-integration-interim/2 : work {
     supersedes [ @legeos.work.application-integration-interim/1 ]
 }
 
+record legeos.work.bar-home-chip-cluster-and-fullscreen-peek/1 : work {
+    title "Lane 2 — the bar gains a Home chip, parked entries and the machine cluster; fullscreen fills the output and a bottom-edge dwell peeks the bar"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Make the bar the machine and fullscreen genuinely full screen. The bar takes the output's width and carries a Home chip at the left, the taskbar (parked windows included, dimmed, restored by a click), and one machine cluster at the right: readings, network, clock and an account chip whose popover holds Settings, the volume and brightness controls and the session actions. WindowService::set_fullscreen gives a fullscreen window the output's logical rectangle, stores it in a restore slot of its own, and stacking_order sorts it above ShellOverlay and Notification on its own output — never above SystemModal, Recovery or SecureLock. The shell stops destroying its bar for fullscreen; the compositor peeks it back with a bottom-edge dwell (set_peek_output suspends the exception).
+        """
+    target 2026-09-08
+    note """
+        Deliberate deferrals, with reasons: (1) scroll-to-adjust on the volume and brightness chips — the popover already carries volume.increase/decrease/mute and brightness.increase/decrease as rows, so a wheel handler on a read-only indicator would be a second route to the same five actions and a second set of hit-tests; add it when someone asks for it. (2) Peek on more than one output at a time — peek_output is a single Option<String> because there is one pointer; a second fullscreen output keeps its window on top. (3) PEEK_BAND is 4 logical px rather than the 2 the plan named: one or two pixels is under a pixel of slack at a fractional scale and a real mouse has to be able to land on it. Both the band and the dwell are named constants so the hands-on run can tune them. (4) XWayland override-redirect fullscreen (a game that maps a bare full-output window without asking) is out of scope; this covers the fullscreen_request path on both shells.
+        """
+    acceptance {
+        check actions-have-a-pointer-route {
+            statement """
+                xtask check-actions passes: every action the bar names is declared, and no action with a chord is left keyboard-only now that Home carries no system widgets.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.bar-lane-2-check-actions/1 ]
+        }
+        check bar-composition {
+            statement """
+                lege-shell: the bar is the output's width and grows upward for a row or the popover; the Home chip reveals Home; a parked entry is dimmed and a click restores then activates it; every account-popover row is a declared action and the session-ending ones take a second click; a refused control takes no click.
+                """
+            method command
+            command "cargo test -p lege-shell --lib bar_screen"
+            verified_by [ @legeos.evidence.bar-lane-2-shell-tests/1 ]
+        }
+        check compositor-configures-and-peeks {
+            statement """
+                lege-comp: the fullscreen configure carries the output's size on both shells and on the escape route, and the bottom-edge band opens on the last few pixels and holds across the shell's reserved strip.
+                """
+            method command
+            command "cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.bar-lane-2-compositor-tests/1 ]
+        }
+        check fullscreen-covers-the-bar-on-hardware {
+            statement """
+                In a session, a fullscreen client fills the whole output including the bar's zone, the bar surface is never destroyed, and leaving fullscreen returns the window and the bar with no reflow.
+                """
+            method observation
+            verified_by [ @legeos.evidence.bar-lane-2-nested-fullscreen/1 ]
+        }
+        check peek-on-hardware {
+            statement """
+                Resting the pointer on the bottom edge of an output with a fullscreen window raises the bar over it after the dwell, and leaving the reserved strip hides it again.
+                """
+            method manual
+        }
+        check window-fullscreen-and-stacking {
+            statement """
+                lege-window: a fullscreen window takes the output's logical rectangle (not usable()), restores through a slot maximize never touches, is never repaired by an output change, and sorts above ShellOverlay and Notification but below SystemModal, Recovery and SecureLock until a peek suspends it.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.bar-lane-2-window-tests/1 ]
+        }
+    }
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.bottom-bar-taskbar/1 : work {
     title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
     state superseded
@@ -2050,7 +2117,7 @@ record legeos.work.governor-containment/1 : work {
 
 record legeos.work.hands-on-run-2-fixes/1 : work {
     title "Act on the second hands-on run: adjustable windows, visible tiling, body-drag tiles, concise labels, a route to drives, one Settings widget"
-    state active
+    state superseded
     scope [
         path "apps/lege-files/**",
         path "apps/lege-settings/**",
@@ -2115,6 +2182,83 @@ record legeos.work.hands-on-run-2-fixes/1 : work {
     }
     derived_from [ @legeos.observation.hands-on-run-20260831-findings ]
     part_of [ @legeos.work.home-surface-usability-next ]
+}
+
+record legeos.work.hands-on-run-2-fixes/2 : work {
+    title "Act on the second hands-on run: adjustable windows, visible tiling, body-drag tiles, concise labels, a route to drives, one Settings widget"
+    state active
+    scope [
+        path "apps/lege-files/**",
+        path "apps/lege-settings/**",
+        path "compositor/lege-comp/**",
+        path "crates/lege-types/**",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Fix every deficiency in @legeos.observation.hands-on-run-20260831-findings. (1) Windows are adjustable: the compositor's recovery-band move and corner-grip resize actually start their grabs (they previously demanded an implicit grab that cannot exist yet at band-press time, so both affordances were dead on real hardware). (2) New windows are placed — centred in the usable area, cascaded, size-clamped — instead of honouring a meaningless (0,0) request flush into the corner. (3) Arranging from the Home menu ends the reveal so the result is visible, and arranging with no windows open says so on the field. (4) Object-like tiles (file, folder, pane, app) drag-move from anywhere in their body; instrument tiles keep the band. (5) Browse rows and grids drop the FOLDER/FILE caption noise: the name leads, '/' marks a folder, extensions name files once, folders read as the folder material. (6) The browse toolbar's path is a clickable breadcrumb and a Files button hands the folder to org.legeos.Files with its drives sidebar. (7) The battery/volume/brightness widgets consolidate into ONE Settings widget whose click opens the Settings app, per the user's direct instruction.
+        """
+    note """
+        2026-09-08, campaign 3: deliverable (7) - "the battery/volume/brightness widgets consolidate
+        into ONE Settings widget" - is retired one step further. The one Settings widget is gone from
+        Home too; battery, volume and brightness are a single readings chip in the bar's machine
+        cluster, and Settings opens from the account chip's popover (settings.open). The user's
+        instruction behind (7) was that these should be one thing rather than three, and that still
+        holds - it is now one thing on the bar instead of one thing on Home. Deliverables (1)-(6)
+        stand. See @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden.
+        """
+    acceptance {
+        check body-drag {
+            statement """
+                Object-like tiles arm a drag from anywhere in their body while widget tiles only grab by their band, and an unmoved press stays a click.
+                """
+            method command
+            command "cargo test -p lege-shell object_tiles_drag_by_their_whole_body_and_instruments_do_not"
+            verified_by [ @legeos.evidence.hands-on-2-body-drag-20260831 ]
+        }
+        check browse-navigation {
+            statement """
+                The toolbar breadcrumb browses to an ancestor and the Files button hands the open folder to the standalone manager.
+                """
+            method command
+            command "cargo test -p lege-shell -- toolbar_breadcrumb toolbar_files"
+            verified_by [ @legeos.evidence.hands-on-2-browse-navigation-20260831 ]
+        }
+        check gates-green {
+            statement """
+                The full repository gate passes with all of the above merged.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.hands-on-2-gate-20260831 ]
+        }
+        check hands-on-confirmation {
+            statement """
+                At a real seat: a new window opens centred and can be moved by its top band and resized by its corner grip; the tiling menu visibly arranges; tiles drag-move; the Settings widget opens Settings.
+                """
+            method manual
+        }
+        check placement-policy {
+            statement """
+                An origin-located map request is centred and cascaded wholly inside the usable area; an oversized one is clamped; a positioned request is honoured and repaired.
+                """
+            method command
+            command "cargo test -p lege-window -- centred cascade clamped honoured"
+            verified_by [ @legeos.evidence.hands-on-2-placement-20260831 ]
+        }
+        check settings-widget {
+            statement """
+                One Settings widget replaces the battery/volume/brightness tiles, shows their state, and its open action launches the Settings app; saved layouts migrate.
+                """
+            method command
+            command "cargo test -p lege-shell settings"
+            verified_by [ @legeos.evidence.settings-widget-consolidation-20260831 ]
+        }
+    }
+    derived_from [ @legeos.observation.hands-on-run-20260831-findings ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.hands-on-run-2-fixes/1 ]
+    supported_by [ @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden ]
 }
 
 record legeos.work.hands-on-run-3-fixes/1 : work {
@@ -2487,14 +2631,14 @@ record legeos.work.home-developer-setup-preview/1 : work {
     title "Proposal: an optional, previewed Home setup for development"
     state proposed
     intent """
-        For later consideration, offer an explicit setup action that previews a small developer working set built from existing Home objects: chosen project folder windows, project tiles and pinned editor/terminal providers. Let the person choose paths and remove suggested items before applying. Apply as one undoable layout operation, preserve existing geometry, and retain useful drop space. Never scan repositories automatically, infer projects from proximity, repack on activity, or turn Home into persistent application chrome. This is an extrapolation from the unresolved default-empty-field finding, not an accepted replacement layout.
+        For later consideration, offer an explicit setup action that previews a small developer working set built from existing Home objects: chosen project folder windows, project tiles and pinned editor/terminal providers. Let the person choose paths and remove suggested items before applying. Apply as one undoable layout operation, preserve existing geometry, and retain useful drop space. Never scan repositories automatically, infer projects from proximity, or turn Home into persistent application chrome. This is an extrapolation from the unresolved default-empty-field finding, not an accepted replacement layout.
         """
     note """
         No implementation in the 2026-09-05 review. Decide whether this belongs in first-run, Settings, or the Home menu before implementing; avoid adding a second application inventory.
 
         **Deferred 2026-09-07, with a reason that has changed since the record was written.** @legeos.work.home-project-tool-actions has now landed the capabilities this wizard would have wrapped: creating a project from the folder you are looking at is one row in native Files, and entering it and opening its terminal, file manager and editor at its real root are four rows on the project's own tile. A person reaches the same working set in about three clicks, without a preview step, without a second place that lists applications, and without the wizard having to decide what to suggest.
 
-        The record's own open question is also still open: where this would live (first-run, Settings, or the Home menu) was never settled, and an entry point chosen by whoever implements it is how a surface ends up somewhere nobody looks. Revisit only if the three-click route turns out not to be enough in practice — which is a thing to observe, not to predict.
+        **2026-09-08:** the clause 'never repack on activity' is superseded by @legeos.decision.homegarden-activity-grown-places: Homegarden resizes garden-owned Folder tiles in place at tending moments (reveal, session start, garden.tend) and never repacks, never moves, and never touches user tiles. The explicit preview proposed here stays an orthogonal, explicit route and remains deferred.
         """
     acceptance {
         check explicit-preview {
@@ -2515,7 +2659,7 @@ record legeos.work.home-developer-setup-preview/1 : work {
 
 record legeos.work.home-field/1 : work {
     title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
-    state active
+    state superseded
     scope [
         path "compositor/**",
         path "crates/lege-field/**",
@@ -2608,6 +2752,116 @@ record legeos.work.home-field/1 : work {
         @legeos.constraint.services-not-indicators
     ]
     part_of [ @legeos.milestone.m2-session-runs ]
+}
+
+record legeos.work.home-field/2 : work {
+    title "Home Field — taskbar-free desktop surface: tiles, parked sessions, go-home, information row, projects and previews"
+    state active
+    scope [
+        path "compositor/**",
+        path "crates/lege-field/**",
+        path "crates/lege-session-core/**",
+        path "crates/lege-treemap/**",
+        path "crates/lege-window/**",
+        path "interfaces/**",
+        path "services/lege-sessiond/**",
+        path "shell/**"
+    ]
+    intent """
+        Replace the drawer-list Home Surface with the Home Field: a bounded, taskbar-free field of rectangular tiles (projects, active apps / parked sessions, file trays, widgets, system) on the shell's Layer::HomeSurface backdrop. Installed-but-idle desktop entries remain searchable instead of automatically covering the field. Windows collapse into tiles instead of minimising and expand back out; a bare Super tap is the primary temporary Home toggle, with Ctrl+Alt+H and Super+D retained as fallbacks, and the reveal changes no window state. A standard information row on Home begins with local date/time, live/parked counts, and the selected network-status provider, using nm-tray2 for network control. Dragging a tile onto a target performs a typed, previewed, undoable operation; layout is a stable local grid that never reflows globally, persisted per output by sessiond (org.legeos.HomeField1). Phases: 1 compositor truths (shelved windows actually hidden and not hit-tested, maximize, reveal-home command + keybindings + protocol v2 with identifier/geometry), 2 the pure crates/lege-field model (document, ops with inverses, local reflow, representation ladder, drag/throw state machine), 3 FieldScreen in lege-shell with --print field and full keyboard reach, 4 HomeField1 persistence, 5 projects/trays/zoom, 6 previews over ext-image-copy-capture, 7 lege-treemap and budgeted widgets, 8 the throw spike with a keep/delete rule. Plan of record: ~/.claude/plans/for-this-project-i-crispy-shannon.md (author's machine).
+        """
+    note """
+        2026-09-08, campaign 3: two of this record's tile kinds no longer reach Home. merge_sessions
+        and merge_window_groups place no ParkedSession or WindowGroup tile for any running, parked or
+        grouped window, and a migration removes the existing ones as ordinary Remove ops - so the
+        document's invariants, the ops' inverses and undo are untouched, which is the property phase 2
+        was built for and it held. The information row's live/parked count went with them. Successor:
+        the bar's taskbar, parked entries dimmed.
+
+        "Taskbar-free" in the title is reversed rather than refined; see the closing paragraph of
+        @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden for why that is a different taskbar from the one this record removed. Phases 1-8 and the
+        field model itself stand: the field is still the surface, still bounded, still locally
+        reflowing, and what it now holds is the garden's Places
+        (legeos.work.homegarden-phases-0-3) rather than a tile per window.
+        """
+    acceptance {
+        check field-in-text {
+            statement """
+                lege-shell --print field lists exactly the tiles the graphical field draws, one line per tile.
+                """
+            method command
+            command "cargo test -p lege-shell print_field"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check field-is-keyboard-complete {
+            statement """
+                Every Home Field action reachable by pointer is reachable by keyboard alone (arrows, Enter, Space, Escape, Ctrl+Z).
+                """
+            method command
+            command "cargo test -p lege-shell field_keyboard"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check home-is-always-reachable {
+            statement """
+                A bare Super tap is the primary Home toggle; Ctrl+Alt+H, Super+D and Home's own button reach the same taskbar-free reveal with every client window hidden, and Escape, pressing again, or activating a window restores the exact prior stack.
+                """
+            method manual
+        }
+        check layout-is-stable {
+            statement """
+                Content, title, state or count changes move zero tiles; an insert displaces only tiles in the affected row, column or container; every field op's inverse restores the document exactly.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check maximize-fills-work-area {
+            statement """
+                Maximizing fills exactly one output's usable area, with no built-in taskbar reservation, and remains recoverable for any topology; unmaximize restores the floating geometry.
+                """
+            method command
+            command "cargo test -p lege-window maximize"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check no-new-toolkit-api {
+            statement """
+                just check passes with ../pixelkit unmodified; the Home Field needed no pixelkit API change.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check reveal-survives-shell-death {
+            statement """
+                Killing lege-shell while a reveal is in effect ends the reveal: every window reappears without user action.
+                """
+            method manual
+        }
+        check shelved-is-hidden {
+            statement """
+                A shelved (minimised) window is unmapped from the compositor's Space: it neither renders nor receives pointer input, and its recovery band is not painted; unshelving restores it at its repaired geometry.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-comp shelving_hides_and_unshelving_shows"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+        check windows-cannot-be-lost {
+            statement """
+                No sequence of shelve, reveal-home, activate or maximize leaves a window neither visible nor unshelvable; show-every-window unshelves everything; a reveal changes no window record.
+                """
+            method command
+            command "cargo test -p lege-window -- hidden_windows_are_explained_by_shelf_or_reveal_alone show_all_windows_unshelves_everything_and_ends_a_reveal a_reveal_changes_no_window_and_ends_on_activate"
+            verified_by [ @legeos.evidence.home-field-command-checks-20260831/1 ]
+        }
+    }
+    depends_on [ @legeos.decision.agplv3-own-code, @legeos.decision.compositor-on-smithay ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.home-field/1 ]
+    supported_by [ @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden ]
 }
 
 record legeos.work.home-field-discoverability/1 : work {
@@ -2989,7 +3243,7 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
 
 record legeos.work.home-input-and-refinement/1 : work {
     title "Home refinement — hardware input and cursor, bare-Super toggle, no taskbar, clean tiles and information row"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/**",
         path "docs/testing/README.md",
@@ -3062,6 +3316,93 @@ record legeos.work.home-input-and-refinement/1 : work {
         }
     }
     part_of [ @legeos.work.home-field ]
+}
+
+record legeos.work.home-input-and-refinement/2 : work {
+    title "Home refinement — hardware input and cursor, bare-Super toggle, no taskbar, clean tiles and information row"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "docs/testing/README.md",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Make the installed Home session directly usable on hardware: process libinput relative pointer motion, render a visible DRM cursor, focus the initial Home surface for keyboard input, and use a bare Super tap as the primary taskbar-free Home toggle. Remove the graphical dock and its exclusive bottom zone, limit automatic app tiles to active applications, preserve meaningful imported desktop names, and add a standard Home information row with local clock, live/parked counts, and nm-tray2 network control.
+        """
+    note """
+        2026-09-08, campaign 3: the standard information row this record added to Home has lost its
+        live/parked window count - counting windows is the bar's job now, and the taskbar shows the
+        windows themselves rather than a number. The clock and the network control stay.
+
+        The title's "no taskbar" is reversed, not refined: campaign 3 has one. It is not the dock this
+        record removed - it is a bar of running windows grouped by the garden's own groups, which
+        could not have been designed before the garden existed. Everything else here - libinput
+        motion, the DRM cursor, initial focus, the bare-Super toggle, meaningful imported names - is
+        untouched and still current. See @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden.
+        """
+    acceptance {
+        check bare-super-toggle {
+            statement """
+                A lone Super press toggles Home on release, a Super chord cancels the tap, and holding both Super keys never double-toggles.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests"
+            verified_by [ @legeos.evidence.refinement-checks-20260824/1 ]
+        }
+        check clean-home-tiles {
+            statement """
+                Installed-but-idle desktop files do not auto-fill Home, imported IDs never render every title as 'desktop', and active application/session tiles remain.
+                """
+            method command
+            command "cargo test -p lege-shell field_model"
+            verified_by [
+                @legeos.evidence.refinement-checks-20260824/1,
+                @legeos.evidence.taskbar-free-home-visual-20260824/1
+            ]
+        }
+        check hardware-input {
+            statement """
+                With the refreshed packages installed on the laptop, moving the mouse/touchpad moves a visible cursor, clicks reach Home controls, and keyboard navigation reaches the focused Home surface.
+                """
+            method manual
+        }
+        check information-row {
+            statement """
+                Home shows a standard top information row with local date/time, live/parked counts, and a network control state.
+                """
+            method observation
+            verified_by [ @legeos.evidence.taskbar-free-home-visual-20260824/1 ]
+        }
+        check installable-packages {
+            statement """
+                Fresh Debian packages contain the refined compositor and shell and the complete 12-package set builds.
+                """
+            method command
+            command "just deb"
+            verified_by [ @legeos.evidence.refinement-debian-packages-20260824/1 ]
+        }
+        check nm-tray2-control {
+            statement """
+                When nm-tray2 is installed, the Home network control launches it with --popup; an already-running instance receives the popup request over the session bus instead of duplicating.
+                """
+            method command
+            command "cargo test -p lege-shell network_control && cmake --build /mnt/Samsung980_1TB/Rust-projects/not-rust-projects/nm-tray-2/build --parallel 2"
+            verified_by [
+                @legeos.evidence.nm-tray2-popup-build-20260824/1,
+                @legeos.evidence.refinement-checks-20260824/1
+            ]
+        }
+        check taskbar-free-home {
+            statement """
+                The shell maps one full-screen Home surface and no graphical dock/ShellOverlay or exclusive bottom zone.
+                """
+            method observation
+            verified_by [ @legeos.evidence.taskbar-free-home-visual-20260824/1 ]
+        }
+    }
+    part_of [ @legeos.work.home-field ]
+    supersedes [ @legeos.work.home-input-and-refinement/1 ]
+    supported_by [ @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden ]
 }
 
 record legeos.work.home-navigation-manipulation-20260907/1 : work {
@@ -3273,6 +3614,35 @@ record legeos.work.home-project-tool-actions/1 : work {
     part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
+record legeos.work.home-purity-20260908/1 : work {
+    title "Home holds only your own things — the file manager works, running windows and the machine's instruments leave Home"
+    state proposed
+    scope [
+        path "apps/lege-settings/**",
+        path "crates/lege-appd/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        A hands-on run of the installed session on 2026-09-08 found the file manager doing nothing from Home, unselectable in Settings, and absent from the launcher under its own name; and found Home crowded with things that are not the user's own — a tile per running window, a container tile per window group, a Session, a Notifications and a Settings tile, a plate labelled "Home" standing on Home, and a permanent Help button. docs/garden/garden.md draws the line this work applies: Home deals with your stuff, the bar deals with the machine.
+
+        Four root causes, all read off the source rather than guessed. (1) The shell fetched only the `terminal` and `file-search` provider roles, so `providers[FileManager]` was never filled and every folder press took `open_in_file_manager`'s "no file manager is selected" branch on a session that had one selected. (2) The Files object's tile still launched `org.legeos.Files` by name — an application this desktop no longer ships — instead of routing through the role. (3) `derive_manifest` parsed `OnlyShowIn`/`NotShowIn` and threw them away, so `/etc/xdg/autostart/lxqt-desktop.desktop` (`OnlyShowIn=LXQt`, running `pcmanfm-qt --desktop`) won the default-variant election and the launcher's only row for PCManFM-Qt was named "Desktop" and painted a desktop. (4) The provider chooser's label was "name (import id) · priority N" in a 300px field, which elided inside the parenthesis and told the reader neither which application it was nor what its priority was.
+
+        And the subtraction: `merge_sessions` and `merge_window_groups` placed a tile for every running window and every group; `merge_system` placed the three machine widgets and `merge_panels` grouped them into a shelf. All are deleted. The merge's existing sweep removes what a saved field still carries, with no migration of its own — `wanted` never names a window tile — and one `migrate_system_tiles` takes off all seven retired system probes as ordinary invertible `Remove` ops.
+        """
+    target 2026-09-08
+    note """
+        Lane 1 of campaign 3, alongside Lane 2 (the bar: Home chip, taskbar with parked entries, machine cluster, real fullscreen) and Lane 3 (session edges and the launch observer).
+
+        Two things this deliberately did NOT do, both recorded so a later session does not re-derive them. First, the three `WidgetDescriptor`s in `surface/widgets/mod.rs` are kept even though nothing places a `TileKind::System` tile any more: nothing but `merge_system` ever created one, so they are inert data, and deleting them would empty `WIDGETS`, strand `descriptor`/`regions_at`/the `field_screen` draw arm as dead code under `-D warnings`, and remove the `WidgetRegion` pointer routes `xtask check-actions` reads. Second, `FieldScreen`'s `ParkedSession`/`WindowGroup` drawing and interaction arms are kept and still tested, through a `#[cfg(test)]` `field_model::place_window_tiles` seeder, because the bar's taskbar and its hover row are the successor consumer of exactly that code; both carry a `// ponytail:` comment naming the cleanup.
+
+        No new transient notification card was needed: `surface/app.rs::ensure_toast` already creates a real `Layer::Notification` surface for each new arrival, painted by `redraw_toast` and watermarked by `last_toasted_id`. The tile left with the rest of the shelf; the toast is what remains, which is what "absence by default" asked for.
+
+        One finding that loosened the campaign's ordering: `xtask::check_actions` only requires a pointer route for actions that carry a chord, and none of `session.*`, `settings.open`, `volume.*`, `brightness.*` or `notifications.clear` does. So Home could shed the machine widgets before the bar's cluster landed without breaking the gate. `field.help` and `home.reveal` keep both their chord and their `context_menu.rs` row.
+        """
+    depends_on [ @legeos.work.bottom-bar-taskbar ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.home-review-usability-20260905/1 : work {
     title "Home review: reachable context menus and current-directory terminals"
     state completed
@@ -3482,7 +3852,7 @@ record legeos.work.home-widget-foundations/1 : work {
 
 record legeos.work.home-widget-foundations/2 : work {
     title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
-    state active
+    state superseded
     scope [
         path "cli/lege/src/lifecycle.rs",
         path "compositor/lege-comp/src/keybindings.rs",
@@ -3586,9 +3956,115 @@ record legeos.work.home-widget-foundations/2 : work {
     supersedes [ @legeos.work.home-widget-foundations/1 ]
 }
 
+record legeos.work.home-widget-foundations/3 : work {
+    title "Home Field widget foundations — neighbour-yielding resize, the widget contract, the action manifest, and Lifecycle1 as the service pattern"
+    state active
+    scope [
+        path "cli/lege/src/lifecycle.rs",
+        path "compositor/lege-comp/src/keybindings.rs",
+        path "crates/lege-field/**",
+        path "crates/lege-types/src/action.rs",
+        path "crates/lege-window/src/geometry.rs",
+        path "interfaces/dbus/org.legeos.Session.Lifecycle1.xml",
+        path "services/lege-sessiond/src/apis/lifecycle.rs",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        The Home Field was a dead end for a desktop tester: no way to launch anything, no logout/restart/shutdown, no way to close a window, and a search bar that does nothing outside an expanded drawer. The decision is that every missing capability arrives as a widget on the one screen rather than as a panel or tray, consistent with M2's taskbar-free commitment. This item builds only the foundation those widgets stand on, in four parts. (1) A resize that lets adjacent tiles give up span instead of being evicted: reflow::find_resize, where a yielding neighbour keeps its far edge and the request is clamped to the largest span every neighbour can absorb. (2) The widget contract over TileKind::System, which was a designed-for slot nothing constructed: a descriptor declares what shows at each representation rung and which regions are clickable, and each region names an action rather than coding a behaviour. (3) An action manifest in lege-types, so one declaration drives the shell's labels, the keyboard accelerator and the lege verb. (4) org.legeos.Session.Lifecycle1 on sessiond forwarding to logind, built as the one worked example of the service-interface pattern every future widget follows.
+        """
+    note """
+        2026-09-08, campaign 3: part (2) of this work - the widget contract over TileKind::System - is
+        retired as a thing Home places. merge_system places no system widget, and a migration removes
+        the tiles from existing fields. The WidgetDescriptors stay in the shell's widgets module,
+        inert and marked as such, because they are the only written record of the contract. Parts (1)
+        neighbour-yielding resize, (3) the action manifest and (4) Lifecycle1 as the service pattern
+        all stand, and (4) grew this session: Lifecycle1 now also carries the session's own edges
+        (see legeos.observation.session-time-enters-sessiond-at-four-edges). Successor for the widgets
+        themselves: the bar's machine cluster - see @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden.
+        """
+    acceptance {
+        check hands-on-at-a-real-desktop {
+            statement """
+                At a real desktop: drag a tile's corner into free space and nothing else moves; drag it into a neighbour and the neighbour narrows in place without jumping; keep dragging and the ghost visibly stops while the pointer runs on; Ctrl+Z restores both sizes. The Session widget's Shut down arms on the first click and fires on the second. Super+Left/Right steps between windows, and still cycles by stacking order with lege-shell killed.
+                """
+            method manual
+        }
+        check invariants-unmodified {
+            statement """
+                lege-field's four pre-existing properties — ops_keep_invariants_and_invert_exactly, placing_moves_only_band_mates, placement_is_deterministic, content_changes_move_nothing — still pass with no edit to them. Editing one to accommodate the resize would mean the design is wrong.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check no-maximize-in-the-widget-system {
+            statement """
+                No non-container tile can be resized to cover its whole grid; widgets can nonetheless grow, which before this work they could not do at all.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check one-declaration-three-surfaces {
+            statement """
+                Every action a shell surface performs is declared in lege_types::action, every declared CLI verb reaches a real lege subcommand, and the compositor's fixed recovery chords agree with what the manifest says they do without the compositor reading the manifest at run time.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions && cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check resize-inverts-exactly {
+            statement """
+                Undo restores every affected tile's size as well as its position, with no new op and no change to DOCUMENT_VERSION.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check resize-yields-not-evicts {
+            statement """
+                Growing a tile into a neighbour narrows that neighbour against its own far edge; nothing is relocated, and a request past what neighbours can give is clamped to the largest achievable span rather than refused or paid for by an eviction.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check session-can-be-ended {
+            statement """
+                org.legeos.Session.Lifecycle1 forwards logout/reboot/poweroff/suspend to logind behind a testable seam, the Session widget offers them with a confirm step, `lege session` reaches the same verbs, and the interface XML ships in legeos-sessiond.
+                """
+            method command
+            command "cargo test -p lege-sessiond -p lege && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+        check shell-still-runs {
+            statement """
+                Nested, the shell connects to lege_shell_v1, declares Layer::HomeSurface and renders the new draw paths without error or panic.
+                """
+            method manual
+            verified_by [ @legeos.evidence.widget-foundations-nested-run-20260825 ]
+        }
+        check widget-contract-is-data-driven {
+            statement """
+                A TileKind::System tile renders through a declared descriptor: what it shows per representation rung, and which regions are clickable. Region hit-testing is generic, with no per-widget arm in the painter.
+                """
+            method command
+            command "cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.widget-foundations-workspace-20260825 ]
+        }
+    }
+    depends_on [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.home-widget-foundations/2 ]
+    supported_by [ @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden ]
+}
+
 record legeos.work.home-widget-launcher/1 : work {
     title "Launcher widget — make a cold session able to open its first application"
-    state active
+    state superseded
     scope [
         path "crates/lege-appd/src/dbus.rs",
         path "crates/lege-appd/src/desktop_entry.rs",
@@ -3607,6 +4083,37 @@ record legeos.work.home-widget-launcher/1 : work {
         FOR A SUCCESSOR: (1) `lege app list` still uses ListApps and shows bare ids — ListApplications is there if the CLI wants names and NoDisplay filtering. (2) SVG icons that are pure typography render shapes only (resvg font stack is off). (3) desktop_file_candidates cannot reverse derive_app_id's sanitiser for ids with characters outside [A-Za-z0-9.-_]; the shell always passes IconHints from the registry so this only bites a caller that does not. (4) No index.theme parsing or theme inheritance yet — only hicolor and /usr/share/pixmaps are walked. (5) The zoom test now stashes system tiles first; the real signal underneath is that eight drawers plus two system widgets crowd a small field — see @legeos.question.home-field-default-density.
         """
     part_of [ @legeos.work.home-widgets ]
+    verified_by [ @legeos.evidence.home-widget-launcher-20260825 ]
+}
+
+record legeos.work.home-widget-launcher/2 : work {
+    title "Launcher widget — make a cold session able to open its first application"
+    state active
+    scope [
+        path "crates/lege-appd/src/dbus.rs",
+        path "crates/lege-appd/src/desktop_entry.rs",
+        path "crates/lege-types/src/app.rs",
+        path "shell/lege-shell/src/icons.rs",
+        path "shell/lege-shell/src/surface/widgets/**"
+    ]
+    intent """
+        A launcher widget that lists installed applications, filters as the user types, and launches through Launcher1. This is the single most load-bearing gap: without it a freshly booted session cannot open anything at all, because application tiles are derived from windows that already exist (field_model::merge_apps) and are removed when the last one closes. The inventory is already in the shell — AppIdentity1.ListApps is fetched every three seconds into ShellApp::apps and its only consumer today is a grep for nm-tray — and Launcher1.Launch already works and is already called for the network control and for opening files. The widget itself is small; the prerequisites below are not.
+        """
+    note """
+        2026-09-08, campaign 3: the launcher survives on Home unchanged - finding an application is
+        "your stuff", not the machine - but two of the things this record leaned on were wrong.
+        derive_manifest parsed OnlyShowIn/NotShowIn and threw them away, so
+        /etc/xdg/autostart/lxqt-desktop.desktop (OnlyShowIn=LXQt, first_seen_ms=0) won the
+        default-variant election for pcmanfm-qt and the only row a search for "pcman" found was named
+        "Desktop" and launched pcmanfm-qt --desktop. And the shell fetched only the terminal and
+        file-search roles, so providers[FileManager] was always None and every folder press took the
+        "no file manager is selected" branch on a session that had one selected. Both are fixed;
+        SHELL_ROLES is now the one list. The "launcher" probe name is in the retirement migration's
+        sweep because an old field may still carry a tile for it - see @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden.
+        """
+    part_of [ @legeos.work.home-widgets ]
+    supersedes [ @legeos.work.home-widget-launcher/1 ]
+    supported_by [ @legeos.observation.home-chrome-retired-to-the-bar-and-the-garden ]
     verified_by [ @legeos.evidence.home-widget-launcher-20260825 ]
 }
 
@@ -3672,12 +4179,98 @@ record legeos.work.home-widgets/1 : work {
         Each child is independently landable against the finished foundation. Read @legeos.work.home-widget-foundations' note first: it records the constraints the user set (clamp rather than evict, navigation-only contiguity, session power over logind) which apply to every child here.
 
         Two rules from the foundation govern all of this work. The shell renders and forwards; policy lives in a service behind a D-Bus interface, so each widget needs a backing interface before it needs pixels — Lifecycle1 is the worked example to copy. And every capability must be declared once in lege_types::action, which is what puts it in the widget's regions, the cheat sheet and `lege` together; `cargo run -p xtask -- check-actions` fails the build when a surface performs an action nobody declared.
+
+        Amended 2026-09-08 (@legeos.work.home-purity-20260908). The widget contract stands and so does the capability review that produced this umbrella: every gap named in the intent is still a gap that must be filled, and the shell-renders/service-decides and declare-once-in-the-manifest rules are unchanged. What changes is *where* three of them are shown. Session, Notifications and Settings are the machine's business, and docs/garden/garden.md puts the machine on the bar and the user's own things on Home, so those three leave Home for the bar's cluster (@legeos.work.bottom-bar-taskbar) and Home places no `TileKind::System` tile at all. Notifications keep no surface of their own on Home: a new arrival is the transient `Layer::Notification` toast `surface/app.rs::ensure_toast` already creates, and the history is behind the bar's cluster. The three `WidgetDescriptor`s remain declared but inert — nothing places them — and are the bar cluster's contract to draw against.
         """
     depends_on [
         @legeos.constraint.services-not-indicators,
         @legeos.work.home-widget-foundations
     ]
     part_of [ @legeos.milestone.m2-session-runs ]
+}
+
+record legeos.work.homegarden-phases-0-3/1 : work {
+    title "Homegarden Phases 0–3: the activity ledger and Garden Clock, the tender, tending at reveal and session start, and the rung-aware Place tile"
+    state active
+    scope [
+        path "cli/lege/src/main.rs",
+        path "crates/lege-field/src/garden.rs",
+        path "crates/lege-session-core/src/homegarden.rs",
+        path "crates/lege-session-core/src/settings.rs",
+        path "crates/lege-state/src/migrations/session.rs",
+        path "crates/lege-types/src/action.rs",
+        path "interfaces/dbus/org.legeos.HomeGarden1.xml",
+        path "services/lege-sessiond/src/apis/homegarden.rs",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/field_screen.rs"
+    ]
+    intent """
+        Build the Homegarden model far enough to judge it in a day's use (@legeos.decision.homegarden-activity-grown-places, docs/garden/*.md): (1) a pure ledger in lege-session-core with HomeActivity/HomeContext, weights bucketed per (kind, role, session) so breadth beats count, root attribution behind a RootProbe (project root, existing context, workspace marker, mount point, XDG user dir; never $HOME), an ignore list as a setting, a bounded activity tree (depth 3, 32 nodes), stages Dormant/Trace/Tile/Expanded with promotion by relevance+sessions+breadth and demotion only when later sessions AND garden-hours both pass, and a Garden Clock that advances at Lifecycle1's session edges and never on wall-clock; (2) a pure tender in lege-field (garden::tend) emitting Place/Resize/Remove with a reason each, never Move, a Place only on free cells, a Resize only when nothing but an unpinned un-user-sized garden tile yields, property-tested; (3) org.legeos.HomeGarden1 on sessiond (Observe/Tend/Contexts/Describe/Pin/Hide/Forget/ForgetAll/Clock, signal Tended) applying each tending as one HomeField1 batch, recorded in History1, with sources: the launch channel (directory arguments -> LaunchedHere with the app's role), the shell's brokered open (FileOpened), the session-edge channel (the clock); (4) the shell tends at session start and on every Home reveal edge, draws a grown Folder tile by rung (Small: name + state; Wide: + roles row of text-led tools; Large: + the branch body of used structure, heavier branches thicker, falling back to the listing), and offers place.open-* and garden.* through the one action manifest (context menu, cheat sheet, lege garden CLI). Settings shell.home-garden.* hold the levers; default on.
+        """
+    note """
+        Deferred with reasons, to be built only if Phase 4 (a day's hands-on) judges the model right: growth forms/facets (Hierarchy/Media/Documents/Gallery), blooms (new/unwatched), material identity, sibling groups, a Wide-vs-Tall geometry axis (needs a Representation::for_span rewrite), the index change log and portal sources, the Settings app's Hidden-places list (lege garden unhide covers it), and PlacedOnHome/ProjectEntered observations inside sessiond's HomeField1.PlaceFolder and Projects1.SetCurrent (the launch and open sources are wired; those two are one call each in the next pass). Known limit: the shell observes folder navigation only through the file manager launch it causes (LaunchedHere), not the in-Home folder window's crumb.
+        """
+    acceptance {
+        check a-place-grows-on-the-installed-session {
+            statement """
+                After opening two folders and a terminal in one directory and pressing Super, a 2x2 place for that directory appears at Home's bottom-left; lege garden why names the opens and the launch; nothing else moved.
+                """
+            method manual
+        }
+        check garden-matches-the-day {
+            statement """
+                After a working day with the garden on, Home shows the three to five directories actually worked in, sized by how much, nothing untouched, and no tile moved that the user did not move.
+                """
+            method manual
+        }
+        check host-and-sources {
+            statement """
+                The HomeGarden1 host parses launch directory arguments and XDG user dirs; the interface, proxy and signature gates pass with the new additive interface.
+                """
+            method command
+            command "cargo test -p lege-sessiond homegarden && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 ]
+        }
+        check ledger-is-pure-and-breadth-beats-count {
+            statement """
+                300 saves in one session score below three opens and a launch across two sessions; a 14-hour single session promotes less than several short sessions; 40,000 target/ writes create no context; the ledger stays within max-contexts; a pinned place never recedes and a hidden one never grows; a place recedes only when later sessions and garden-hours both pass.
+                """
+            method command
+            command "cargo test -p lege-session-core homegarden"
+            verified_by [ @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 ]
+        }
+        check one-declaration-three-surfaces {
+            statement """
+                place.* and garden.* are declared once and reach the context menu, the cheat sheet and lege garden.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.campaign3-integrated-gate-20260908/1 ]
+        }
+        check shell-branch-body {
+            statement """
+                branch_rows orders the heaviest branch first and stops at the limit; the Contexts payload parses with unknown fields.
+                """
+            method command
+            command "cargo test -p lege-shell garden::"
+            verified_by [ @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 ]
+        }
+        check tender-never-moves {
+            statement """
+                The tender emits no Move, leaves every user tile's cell and span untouched, keeps every surviving tile's cell, is idempotent at the same wants, never removes a pinned place and never places a dormant one.
+                """
+            method command
+            command "cargo test -p lege-field garden"
+            verified_by [ @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-project-tool-actions ]
+    implements [ @legeos.decision.homegarden-activity-grown-places ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    verified_by [
+        @legeos.evidence.campaign3-integrated-gate-20260908/1,
+        @legeos.evidence.homegarden-phases-0-3-tests-20260908/1
+    ]
 }
 
 record legeos.work.host-update-transaction/1 : work {

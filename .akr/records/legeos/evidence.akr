@@ -96,6 +96,67 @@ record legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 : evidence {
         """
 }
 
+record legeos.evidence.bar-lane-2-check-actions/1 : evidence {
+    title "23 CLI verbs all reach a subcommand; 71 actions named by a surface are all declared; 19 actions with a chord all have a pointer route (3 exempt). The account popover's RunAction literals are what the scanner counts for the session and machine actions."
+    state verified
+    result pass
+    method command
+    observed_at git:6cb582adab19c168c47a7fd714878656abde7d66
+    command "cargo run -q -p xtask -- check-actions"
+    summary """
+        23 CLI verbs all reach a subcommand; 71 actions named by a surface are all declared; 19 actions with a chord all have a pointer route (3 exempt). The account popover's RunAction literals are what the scanner counts for the session and machine actions.
+        """
+}
+
+record legeos.evidence.bar-lane-2-compositor-tests/1 : evidence {
+    title "114 tests pass, including the peek band table: the last four pixels open a peek, the shell's whole reserved strip holds one, and the row below the output's bottom edge is outside both."
+    state verified
+    result pass
+    method command
+    observed_at git:6cb582adab19c168c47a7fd714878656abde7d66
+    command "cargo test -p lege-comp"
+    summary """
+        114 tests pass, including the peek band table: the last four pixels open a peek, the shell's whole reserved strip holds one, and the row below the output's bottom edge is outside both.
+        """
+}
+
+record legeos.evidence.bar-lane-2-nested-fullscreen/1 : evidence {
+    title "Nested lege-comp (winit on the X11 host) with lege-shell and a fullscreen kitty: every pixel of the 2560x1600 output, the bottom 48px bar zone included, is the client's opaque background — the fullscreen window takes Output::logical and stacks above the bar. With an 80%-opaque client the same strip reads exactly 0.2x the bar's ground (47,48,48 against 236,238,240), which is the bar still mapped and still painting underneath. Killing the client returns the bar (ground 236,238,240, a TAG_FILL chip at 46,51,61) with no bar re-creation in the shell log: the surface was never destroyed and its zone was never released."
+    state verified
+    result pass
+    method observation
+    observed_at git:6cb582adab19c168c47a7fd714878656abde7d66
+    artifact "docs/measurements/bar-20260908/nested-fullscreen-covers-bar.png"
+    summary """
+        Nested lege-comp (winit on the X11 host) with lege-shell and a fullscreen kitty: every pixel of the 2560x1600 output, the bottom 48px bar zone included, is the client's opaque background — the fullscreen window takes Output::logical and stacks above the bar. With an 80%-opaque client the same strip reads exactly 0.2x the bar's ground (47,48,48 against 236,238,240), which is the bar still mapped and still painting underneath. Killing the client returns the bar (ground 236,238,240, a TAG_FILL chip at 46,51,61) with no bar re-creation in the shell log: the surface was never destroyed and its zone was never released.
+        """
+}
+
+record legeos.evidence.bar-lane-2-shell-tests/1 : evidence {
+    title "13 bar tests pass: the bar takes the output and grows upward for a row or the popover, the Home chip reveals Home, a parked entry restores then activates, the popover confirms before it ends the session, a refused control takes no click, every popover row is declared. The offscreen renders in docs/measurements/bar-20260908/ show the bar at rest and the popover open."
+    state verified
+    result pass
+    method command
+    observed_at git:6cb582adab19c168c47a7fd714878656abde7d66
+    command "cargo test -p lege-shell --lib bar_screen"
+    artifact "docs/measurements/bar-20260908/bar-at-rest.png"
+    summary """
+        13 bar tests pass: the bar takes the output and grows upward for a row or the popover, the Home chip reveals Home, a parked entry restores then activates, the popover confirms before it ends the session, a refused control takes no click, every popover row is declared. The offscreen renders in docs/measurements/bar-20260908/ show the bar at rest and the popover open.
+        """
+}
+
+record legeos.evidence.bar-lane-2-window-tests/1 : evidence {
+    title "140 tests pass, including the seven new ones: a fullscreen window fills the output over the bar's zone, unfullscreen restores through a slot maximize never touches, an output change never repairs it, escape returns it, the stacking table (above ShellOverlay and Notification, below SystemModal/Recovery/SecureLock), the peek, and one output at a time."
+    state verified
+    result pass
+    method command
+    observed_at git:6cb582adab19c168c47a7fd714878656abde7d66
+    command "cargo test -p lege-window"
+    summary """
+        140 tests pass, including the seven new ones: a fullscreen window fills the output over the bar's zone, unfullscreen restores through a slot maximize never touches, an output change never repairs it, escape returns it, the stacking table (above ShellOverlay and Notification, below SystemModal/Recovery/SecureLock), the peek, and one output at a time.
+        """
+}
+
 record legeos.evidence.bar-placed-once-nested-20260907/1 : evidence {
     title "The bar is placed once in a nested session, and a shell restart re-places it once"
     state verified
@@ -155,6 +216,19 @@ record legeos.evidence.campaign2-merged-gate-20260907/1 : evidence {
     command "just check"
     summary """
         Full gate on the merged campaign-2 tree at 9b9ac2b: fmt, clippy pedantic, 1920 tests passed 0 failed, MSRV, seeds --check, check-packaging, check-interfaces, check-assets, check-actions all green.
+        """
+}
+
+record legeos.evidence.campaign3-integrated-gate-20260908/1 : evidence {
+    title "Campaign 3 integrated gate: just check green"
+    state verified
+    result pass
+    method command
+    observed_at git:01f48902b937ab0738ec55d2121f4cf9b324ffc3
+    command "just check"
+    artifact "docs/measurements/home-baseline-20260908.png"
+    summary """
+        Full gate green on the integrated campaign-3 tree: fmt, clippy pedantic -D warnings, workspace tests (64 test binaries, 0 failures), MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks (23 CLI verbs, 71 surfaced actions all declared). The reviewed Home baseline shows no Home plate, no Help button, no system widgets and no window tiles.
         """
 }
 
@@ -1521,6 +1595,18 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.homegarden-phases-0-3-tests-20260908/1 : evidence {
+    title "Homegarden Phases 0–3: unit, property and gate evidence"
+    state verified
+    result pass
+    method command
+    observed_at git:01f48902b937ab0738ec55d2121f4cf9b324ffc3
+    command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden && cargo test -p lege-sessiond homegarden && cargo test -p lege-shell garden:: && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-actions"
+    summary """
+        Ledger: 10 tests (breadth beats count, sessions beat hours, 40,000 target/ writes make no context, bounded eviction, pinned never recedes, hidden never grows, recession needs later sessions AND garden-hours, clock persists without inventing time). Tender: 4 unit tests + 2 proptests (never Move, user tiles untouched, idempotent, pinned never removed, dormant never placed). Host: launch-directory parsing, XDG user dirs. Shell: branch_rows order and limit, Contexts payload parses. HomeGarden1 frozen in the baseline; check-actions counts 23 verbs and 71 surfaced actions.
+        """
+}
+
 record legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 : evidence {
     title "Idle daemon wakeups could not be measured on this host"
     state verified
@@ -2298,6 +2384,38 @@ record legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1 : evide
     command "cargo run -q -p xtask -- check-packaging && cargo test -p xtask && cargo test -p lege-resourced && cargo test -p lege-file-index --test consumer_contract"
     summary """
         Seven services declare authority, lifetime, recovery, deadlines and eight timer exceptions, checked against session/units; the governor waits on the delegated cgroup's memory.pressure and the six existing replay fixtures still decide identically
+        """
+}
+
+record legeos.evidence.session-edges-and-launch-observer-20260908/1 : evidence {
+    title "Session edges, the launch observer and the CLI: tests and gates on the integrated tree"
+    state verified
+    result pass
+    method command
+    observed_at git:b1259f6fc8fc7973ce4090ab9f63af17d60b0206
+    command "cargo test -p lege-sessiond -p lege-appd -p lege && cargo run -q -p xtask -- check-interfaces check-interface-signatures check-proxies check-actions"
+    summary """
+        lege-sessiond 66 passed, lege-appd 48 passed, lege 186 passed; clippy pedantic with -D warnings
+        green on all three plus lege-shell.
+
+        The four tests that carry this work: sleep_signals_become_session_edges (a stream of logind
+        booleans becomes Sleeping(true)/Sleeping(false) on a subscriber - the match rule around it needs
+        a system bus and a machine willing to suspend, so pump_sleep is split out as the part a test can
+        reach); only_the_shell_may_report_an_unlock (an unidentifiable caller and an application unit
+        are both refused with AccessDenied, lege-shell.service is accepted and the edge arrives);
+        an_observer_is_told_the_resolved_id_and_the_arguments; and both_launch_paths_report_to_the_observer,
+        which is a source assertion rather than a live launch because a real launch shells out to
+        systemd-run --user and no fake backend exists - what it protects is a launch path growing that
+        forgets to report, which would fail silently and for ever.
+
+        Gates: check-interfaces 35/35, check-proxies 35/35, check-actions green,
+        check-interface-signatures exits 0 with the five new Lifecycle1 members frozen into
+        interfaces/baseline.json (the baseline was re-frozen with the coordinator's unfinished
+        HomeGarden1.xml moved aside, so it records only this lane's additions).
+
+        Not covered by any automated check, and in RUNBOOK.md step 1 for that reason: that the edges
+        actually fire on real hardware - a real lid close, a real unlock - and that busctl calling
+        NotifyUnlocked from a terminal is refused.
         """
 }
 

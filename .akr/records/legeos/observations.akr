@@ -324,6 +324,54 @@ record legeos.observation.hardware-home-loads-but-file-panes-empty/1 : observati
     ]
 }
 
+record legeos.observation.home-chrome-retired-to-the-bar-and-the-garden/1 : observation {
+    title "The Home chrome campaign 3 retired, and what took over each part"
+    state verified
+    statement """
+        Campaign 3 splits one surface into two along a rule that had never been written down: Home
+        deals with your stuff, the bar deals with the machine (docs/garden/garden.md). Everything Home
+        carried that was about the machine, or about windows rather than about work, left it. This is
+        the record of what went and where it went, because five active work records describe a Home
+        that no longer exists in those parts and would otherwise read as current.
+
+        Retired from the Home Field, and its successor:
+
+        * The top-left "Home" plate and the top-right Help button in draw_search_bar. Help is still
+          reachable by F1 and by the field context-menu row (field.help); Home is reached by the bar's
+          new Home chip (home.reveal) and by Super. Successor: the bar's Home chip.
+        * The information row's live/parked window count in draw_information_row. Counting windows is
+          the bar's job now. Successor: the taskbar, which shows the windows themselves.
+        * ParkedSession and WindowGroup tiles. merge_sessions and merge_window_groups no longer place a
+          tile for any running, parked or grouped window, and a migration removes the ones already on
+          existing fields as ordinary Remove ops, so undo and the document's invariants are untouched.
+          Successor: the bar's taskbar, with parked entries dimmed.
+        * The three system widget tiles - session, notifications, settings - which merge_system no
+          longer places, removed from existing fields by the same migration. That migration sweeps
+          seven probe names (battery, volume, brightness, launcher, session, notifications, settings),
+          not three, because a field written by an older generation of the shell can still be carrying
+          the ones consolidated before this. The WidgetDescriptors stay in the shell's widgets module
+          inert, marked as such, rather than being deleted: they are the only written record of the
+          widget contract and the campaign did not test deleting them.
+          Successors: session, settings and the sound/battery/brightness readings become the bar's
+          machine cluster at the right end - one readings chip (battery, volume, brightness), network,
+          clock, and an account chip whose popover carries settings.open and the five session.* actions.
+          Notifications becomes the transient toast that already exists (ensure_toast on the
+          notification layer), plus an unread chip on the bar when one is built.
+
+        What Home keeps is the Apps field, Files, Desktop, pinned objects and the garden. What "Home
+        shows your stuff" now means in the ledger is legeos.work.homegarden-phases-0-3.
+
+        Two premises are reversed rather than refined, and that is the part worth noticing: both
+        legeos.work.home-field and legeos.work.home-input-and-refinement commit in their titles to a
+        taskbar-free desktop, and campaign 3 has a taskbar. It is not the dock those records removed -
+        it is a bar of running windows grouped by the garden's own groups, which is a thing that could
+        not have been designed before the garden existed. The records stand for everything else they
+        did; this note is what stops them being read as current on this one point.
+        """
+    observed_at git:b1259f6fc8fc7973ce4090ab9f63af17d60b0206
+    method observation
+}
+
 record legeos.observation.home-hands-on-failures-diagnosed/1 : observation {
     title "Why the Home Field failed at a real desktop: four typing defects, an inverted rung rule, an unregistered interface and a mixed-age install"
     state verified
@@ -503,6 +551,40 @@ record legeos.observation.release-debs-ship-unstripped-line-tables/1 : observati
     watches [ "Cargo.toml", "*/*/Cargo.toml", "distro/iso/**" ]
     blocks [ @legeos.work.self-hosting-legeos ]
     derived_from [ @legeos.decision.debian-packaging ]
+}
+
+record legeos.observation.session-time-enters-sessiond-at-four-edges/1 : observation {
+    title "Session time enters sessiond at four edges and leaves by one broadcast"
+    state verified
+    statement """
+        Nothing in lege-sessiond knew when its own session began, was locked, was unlocked, or went to
+        sleep. There was no logind signal match anywhere in the repository, and Lifecycle1.Lock only
+        emitted LockRequested. So anything meant to age with use had wall-clock time and nothing else,
+        which is wrong in exactly the case that matters: a laptop asleep for a week aged nothing, and a
+        screen locked overnight aged nothing.
+
+        Session time now enters the process at four points and leaves it by one. The four are:
+        sessiond's own startup (Started, sent last in main so every in-process subscriber is already
+        listening); Lifecycle1.Lock (Locked - the request, not a covered screen, because sessiond speaks
+        no Wayland and cannot observe the latter); Lifecycle1.NotifyUnlocked, which only
+        lege-shell.service may call because ext-session-lock-v1's unlock_and_destroy is the only thing
+        that clears a lock and the shell is the only process that calls it (Unlocked); and one match
+        rule on org.freedesktop.login1.Manager.PrepareForSleep, no polling (Sleeping(bool)).
+
+        The one exit is a tokio broadcast of SessionEdge, capacity 64. The Lifecycle1 signals
+        SessionStarted/Locked/Unlocked/Sleeping are a *view* of that channel, re-emitted by a single
+        relay task that subscribes to it - so a client watching the bus and a host counting in-process
+        cannot disagree about what happened, and no edge can reach the bus twice by two routes.
+
+        Two ceilings are deliberate. Locked fires at request time, so a lock the compositor refuses
+        closes the interval early - the shell tears that attempt down through the same release_lock
+        path, which reports Unlocked, so the error is bounded to one frame rather than an open
+        interval. And a session that cannot reach the system bus counts sleep as ordinary idle time;
+        it says so once in the log and otherwise runs unchanged, which is the same bargain SystemLogind
+        already makes for the power controls.
+        """
+    observed_at git:b1259f6fc8fc7973ce4090ab9f63af17d60b0206
+    method command
 }
 
 record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {

@@ -85,6 +85,30 @@
     "title": "Full-Side Two-Axis Window Resizing — First Draft"
   },
   {
+    "added_at": "2026-09-08",
+    "availability": "full",
+    "byte_len": 41567,
+    "content_hash": "sha256:37ce41cd6d1f3200c6919d02a8f11041933d828f14eda5f563159df5186a9e76",
+    "id": "garden-design-conversation-20260907",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/garden-design-conversation-20260907--37ce41cd.md",
+    "scope": "shell/lege-shell/**",
+    "title": "garden.md — the Home design conversation: dashboard diagnosis, then the activity-grown Home"
+  },
+  {
+    "added_at": "2026-09-08",
+    "availability": "full",
+    "byte_len": 21555,
+    "content_hash": "sha256:28b96ed0de1c3b7f2f2860dae2971bcb5dc3a64d706dd4b9f1eadf34296aeab1",
+    "id": "garden2-growth-forms-and-session-time-20260907",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/garden2-growth-forms-and-session-time-20260907--28b96ed0.md",
+    "scope": "shell/lege-shell/**",
+    "title": "garden2.md — growth forms, Garden Clock (session time), branches and blooms"
+  },
+  {
     "added_at": "2026-08-22",
     "availability": "full",
     "byte_len": 26221,
@@ -95,6 +119,18 @@
     "path": "sources/external/homefield-design-advice--1f62a430.md",
     "scope": "shell/**",
     "title": "Home Field design advice (tiles, projects, trays, parked sessions, throwing)"
+  },
+  {
+    "added_at": "2026-09-08",
+    "availability": "full",
+    "byte_len": 64734,
+    "content_hash": "sha256:5e16651fd627e7b1fa7de04b566217f20f5c1eaa018c5abe84af640f41b45b18",
+    "id": "homegarden-plan-20260907",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/homegarden-plan-20260907--5e16651f.md",
+    "scope": "crates/lege-field/**",
+    "title": "Homegarden — an activity-grown Home (planning document, 2026-09-07)"
   },
   {
     "added_at": "2026-09-07",
