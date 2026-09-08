@@ -800,7 +800,10 @@ impl SettingsApp {
             ui.painter
                 .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
 
-            let field_w = ui.px(300);
+            // Wide enough for a real application name and its priority. At 300 the File Manager
+            // row read "PCManFM-Qt File Manag…" and the priority the sentence beside it explains
+            // was off the end of the field.
+            let field_w = ui.px(380);
             let text_w = (row.w - field_w - ui.px(36)).max(ui.px(120));
             ui.label(
                 Rect::new(row.x + ui.px(12), row.y + ui.px(8), text_w, ui.px(22)),
@@ -815,11 +818,7 @@ impl SettingsApp {
                 Align::Left,
             );
 
-            let labels: Vec<String> = choice
-                .options
-                .iter()
-                .map(|option| option.label(names))
-                .collect();
+            let labels = crate::providers::ChoiceOption::labels(&choice.options, names);
             let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             let field = Rect::new(
                 row.right() - field_w - ui.px(12),

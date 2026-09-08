@@ -112,15 +112,40 @@ pub(crate) enum ChoiceOption {
 }
 
 impl ChoiceOption {
-    /// The text the chooser shows. Priority is spelled out because it is the reason an
-    /// application is offered where it is, and a bare list of identifiers explains nothing.
-    pub(crate) fn label(&self, names: &crate::names::AppNames) -> String {
-        match self {
-            Self::Automatic => "Choose automatically".to_owned(),
-            Self::App { app_id, priority } => {
-                format!("{} · priority {priority}", names.qualified(app_id))
+    /// The text the chooser shows for every option in one role's list.
+    ///
+    /// Per list rather than per option, because whether the id belongs in a row is a property of
+    /// the list: `AppNames::qualified` appends it so that two installed copies of Okular are
+    /// distinguishable, and where there is only one Okular it is noise that costs the row its
+    /// name. At the chooser's width "PCManFM-Qt File Manager
+    /// (desktop-import.pcmanfm-qt.desktop) · priority 50" elided inside the parenthesis, so the
+    /// row said neither which application it was nor what its priority was. So: the plain name
+    /// unless another option in the same list carries it too.
+    ///
+    /// Priority is spelled out either way — it is the reason an application is offered where it
+    /// is, and a bare list of identifiers explains nothing.
+    pub(crate) fn labels(options: &[Self], names: &crate::names::AppNames) -> Vec<String> {
+        let mut seen: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for option in options {
+            if let Self::App { app_id, .. } = option {
+                *seen.entry(names.name(app_id)).or_default() += 1;
             }
         }
+        options
+            .iter()
+            .map(|option| match option {
+                Self::Automatic => "Choose automatically".to_owned(),
+                Self::App { app_id, priority } => {
+                    let name = names.name(app_id);
+                    let shown = if seen.get(name).copied().unwrap_or(0) > 1 {
+                        names.qualified(app_id)
+                    } else {
+                        name.to_owned()
+                    };
+                    format!("{shown} · priority {priority}")
+                }
+            })
+            .collect()
     }
 }
 
@@ -259,6 +284,73 @@ mod tests {
 
     fn app(id: &str) -> AppId {
         id.parse().unwrap()
+    }
+
+    fn row(app_id: &str, name: &str) -> lege_client::proxies::ApplicationRow {
+        (
+            app_id.to_owned(),
+            name.to_owned(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+    }
+
+    /// The chooser reads as the application's name, and keeps the id only where the name alone
+    /// would not tell two rows apart. The File Manager row is the one that sent this lane: at the
+    /// field's width the id ate the whole label.
+    #[test]
+    fn a_choice_reads_as_the_application_name_unless_two_of_them_share_it() {
+        let names = crate::names::AppNames::from_rows(&[
+            row(
+                "desktop-import.pcmanfm-qt.desktop",
+                "PCManFM-Qt File Manager",
+            ),
+            row("desktop-import.okular.desktop", "Okular"),
+            row("flatpak.org.kde.okular.desktop", "Okular"),
+        ]);
+
+        let one = [
+            ChoiceOption::Automatic,
+            ChoiceOption::App {
+                app_id: "desktop-import.pcmanfm-qt.desktop".to_owned(),
+                priority: 50,
+            },
+            // Nothing known about this one: the id is all there is to say.
+            ChoiceOption::App {
+                app_id: "org.example.Other".to_owned(),
+                priority: 10,
+            },
+        ];
+        assert_eq!(
+            ChoiceOption::labels(&one, &names),
+            [
+                "Choose automatically",
+                "PCManFM-Qt File Manager · priority 50",
+                "org.example.Other · priority 10",
+            ]
+        );
+
+        // Two copies of one application: without the id the two rows are the same row.
+        let two = [
+            ChoiceOption::App {
+                app_id: "desktop-import.okular.desktop".to_owned(),
+                priority: 50,
+            },
+            ChoiceOption::App {
+                app_id: "flatpak.org.kde.okular.desktop".to_owned(),
+                priority: 40,
+            },
+        ];
+        assert_eq!(
+            ChoiceOption::labels(&two, &names),
+            [
+                "Okular (desktop-import.okular.desktop) · priority 50",
+                "Okular (flatpak.org.kde.okular.desktop) · priority 40",
+            ]
+        );
     }
 
     #[test]
@@ -434,23 +526,6 @@ mod tests {
         let choice = choice_for(&Resolution::NoProvider, &[]);
         assert_eq!(choice.options, vec![ChoiceOption::Automatic]);
         assert_eq!(choice.selected, 0);
-    }
-
-    #[test]
-    fn an_option_says_why_it_is_where_it_is() {
-        let names = crate::names::AppNames::default();
-        assert_eq!(
-            ChoiceOption::Automatic.label(&names),
-            "Choose automatically"
-        );
-        assert_eq!(
-            ChoiceOption::App {
-                app_id: "org.legeos.NetworkTray".to_owned(),
-                priority: 100
-            }
-            .label(&names),
-            "org.legeos.NetworkTray · priority 100"
-        );
     }
 
     #[tokio::test]
