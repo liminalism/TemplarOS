@@ -8,6 +8,9 @@
 //! ImageMagick and Poppler are not used.
 
 use anyhow::{Context, Result, anyhow, bail};
+// `bpg-decode` is the still265 crate under its historical name; the HEIC helpers live
+// under its compatibility module rather than at the root.
+use bpg_decode::internal::bpg_decode::heic;
 use bpg_decode::{DecoderConfig, Limits as BpgLimits, PixelLayout};
 use image::{ImageReader, RgbaImage, imageops::FilterType};
 use serde::{Deserialize, Serialize};
@@ -161,14 +164,14 @@ fn decode_bpg(source: &[u8]) -> Result<DecodedRaster> {
 }
 
 fn decode_heic(source: &[u8]) -> Result<DecodedRaster> {
-    let info = bpg_decode::heic::get_heic_image_info(source)
-        .context("reading HEIC/HEIF dimensions with bpg-rs")?;
+    let info =
+        heic::get_heic_image_info(source).context("reading HEIC/HEIF dimensions with bpg-rs")?;
     checked_dimensions(info.width, info.height)?;
     // Prefer a container-provided thumbnail: the file manager never needs the
     // full camera raster when a purpose-built preview is available.
-    let decoded = match bpg_decode::heic::decode_heic_thumbnail(source, PixelLayout::Rgba8) {
+    let decoded = match heic::decode_heic_thumbnail(source, PixelLayout::Rgba8) {
         Ok(Some(thumbnail)) => thumbnail,
-        Ok(None) | Err(_) => bpg_decode::heic::decode_heic(source, PixelLayout::Rgba8)
+        Ok(None) | Err(_) => heic::decode_heic(source, PixelLayout::Rgba8)
             .context("decoding HEIC/HEIF with bpg-rs")?,
     };
     raster_from_bpg(decoded)

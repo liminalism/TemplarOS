@@ -74,7 +74,7 @@ lege = { path = "cli/lege" }
 # external
 anyhow = "1"
 async-trait = "0.1"
-bpg-decode = { path = "../bpg-rs/crates/bpg-decode", features = ["rayon"] }
+bpg-decode = { package = "still265", path = "../bpg-rs/crates/still265", features = ["rayon"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }

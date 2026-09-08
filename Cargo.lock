@@ -336,43 +336,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bpg-bitstream"
-version = "0.6.0"
-
-[[package]]
-name = "bpg-decode"
-version = "0.6.0"
-dependencies = [
- "bpg-bitstream",
- "bpg-format",
- "bpg-hevc",
- "bpg-hevc-decode",
-]
-
-[[package]]
-name = "bpg-format"
-version = "0.6.0"
-dependencies = [
- "bpg-bitstream",
-]
-
-[[package]]
-name = "bpg-hevc"
-version = "0.6.0"
-dependencies = [
- "bpg-bitstream",
-]
-
-[[package]]
-name = "bpg-hevc-decode"
-version = "0.6.0"
-dependencies = [
- "archmage",
- "rayon",
- "safe_unaligned_simd",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1764,7 +1727,6 @@ name = "lege-filed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bpg-decode",
  "clap",
  "futures-util",
  "image",
@@ -1779,6 +1741,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "still265",
  "tempfile",
  "tokio",
  "tracing",
@@ -3305,6 +3268,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "safe_unaligned_simd"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3704,6 +3676,16 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "still265"
+version = "0.6.0"
+dependencies = [
+ "archmage",
+ "rayon",
+ "safe_unaligned_simd",
+ "wide",
+]
 
 [[package]]
 name = "strict-num"
@@ -4493,6 +4475,16 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "wide"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf05ca94c9fba0c51316899caa1d1e74a064fc310a5efa7375e614343d415be"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
 
 [[package]]
 name = "winapi"
