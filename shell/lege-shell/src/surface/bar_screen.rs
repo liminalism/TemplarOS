@@ -1,11 +1,23 @@
-//! The bottom bar: **Home at the left, the running windows next to it, the machine at the right.**
+//! The bottom bar: **the running windows at the left, the machine at the right.**
 //!
 //! That division is the whole design (`docs/garden/garden.md`): Home deals with your things, the
-//! bar deals with the machine. So the bar carries a Home chip (so a bare Super tap is no longer
-//! the only route back), one chip per taskbar entry including the parked ones, and at the right a
-//! single cluster — Settings, the network, the clock, and an account chip whose popover holds the
-//! machine's readings, the volume and brightness controls and the session actions. There is
-//! exactly one of each of those on this desktop; Home has no system widgets any more.
+//! bar deals with the machine. So the bar carries one square chip per taskbar entry including the
+//! parked ones, and at the right a single cluster — Settings, the network, the clock, and an
+//! account chip whose popover holds the machine's readings, the volume and brightness controls
+//! and the session actions. There is exactly one of each of those on this desktop; Home has no
+//! system widgets any more.
+//!
+//! **Nothing here is a window button.** An entry is a square wearing its application's icon,
+//! active or not; it never widens to print the active window's title. A row of labelled window
+//! buttons is the Windows taskbar's signature, and it is also this desktop's own redundancy rule
+//! broken: the window wears its name on its own tag, so a second copy of it on the bar says
+//! nothing new and costs the switcher a fifth of the screen. The name is on the hover row, next
+//! to every *other* window of that application, which is the question a person actually has.
+//!
+//! **There is no Home chip.** A "Home" button at the bottom-left is the one thing on a desktop
+//! that reads as a Start menu, and it is a second route to a place the desktop already goes on
+//! its own: Home is what is behind everything, `home.reveal` has Super, and the bar is not Home's
+//! — it is the machine's.
 //!
 //! Every chip in that cluster does one named thing. The readings used to have a chip of their own
 //! that could not be clicked and a battery percentage is not a place to go, so the readings became
@@ -28,8 +40,10 @@
 //! - **Hint** — a window (or a fullscreen one) covers the strip. The surface shrinks to
 //!   `HINT_HEIGHT` and paints one `^` on the bar's ground: nothing of the bar is hit-testable
 //!   under the window, and the person can still see where it went.
-//! - **Revealed** — the pointer rested `HINT_OPEN_MS` on the hint, so the surface grows back to
-//!   the bar and stays while the pointer is on it. It collapses `HINT_CLOSE_MS` after the pointer
+//! - **Revealed** — the pointer came to *rest* on the hint for `HINT_OPEN_MS`, so the surface
+//!   grows back to the bar and stays while the pointer is on it. Rest, not presence: the strip
+//!   runs the width of the output, so a pointer merely travelling along the bottom edge used to
+//!   open the bar on its way somewhere else. It collapses `HINT_CLOSE_MS` after the pointer
 //!   leaves, closing any open row or popover with it: it hides as easily as it appears.
 //!
 //! One `layout` computes every rectangle and both the painting and the hit-testing read it, so a
@@ -63,7 +77,15 @@ pub const BAR_HEIGHT: i32 = 48;
 pub const HINT_HEIGHT: i32 = 6;
 /// Dwell on the hint before the bar comes back out. Short: the hint is aimed at deliberately,
 /// unlike a taskbar chip the pointer only sweeps across on its way somewhere else.
-pub const HINT_OPEN_MS: u64 = 120;
+pub const HINT_OPEN_MS: u64 = 350;
+
+/// How far the pointer may drift and still be resting on the hint, in logical pixels.
+///
+/// The strip is six pixels tall and the whole width of the output, so a pointer travelling *along*
+/// the bottom edge — on its way to a maximized window's own controls, or thrown at the corner —
+/// used to satisfy the dwell simply by being low. Requiring it to come to rest is what separates
+/// "I want the switcher" from "I passed through".
+const HINT_REST_SLOP: i32 = 4;
 /// Grace after the pointer leaves the revealed bar before it collapses to the hint. The same
 /// number as the open dwell, on purpose: "it should hide as easily as it appears".
 pub const HINT_CLOSE_MS: u64 = 120;
@@ -77,10 +99,6 @@ const CHIP_GAP: i32 = 8;
 const CHIP_PAD: i32 = 8;
 const CELL: i32 = 48;
 const ICON: i32 = 32;
-const ACTIVE_WIDTH: i32 = 220;
-/// The Home chip: the pointer route back to the Home Field. Super still works; it is no longer
-/// the only thing that does.
-const HOME_WIDTH: i32 = 80;
 /// The Settings chip — the whole of Settings, not one corner of it. It took the readings chip's
 /// place in the cluster.
 const SETTINGS_WIDTH: i32 = 112;
@@ -201,8 +219,8 @@ pub struct BarScreen {
     pub account_open: bool,
     /// While covered: whether the pointer has revealed the bar out from under the window.
     revealed: bool,
-    /// While covered and not revealed: when the pointer arrived on the hint.
-    hint_since: Option<u64>,
+    /// While covered and not revealed: when the pointer came to rest on the hint, and where.
+    hint_since: Option<(u64, i32, i32)>,
     /// While revealed: when the pointer left the surface entirely.
     away_since: Option<u64>,
     /// The popover row armed by a first click and waiting for its second.
@@ -215,8 +233,6 @@ pub struct BarScreen {
 
 struct Layout {
     bar: Rect,
-    /// The Home chip, at the left end.
-    home: Rect,
     cells: Vec<Rect>,
     /// The machine cluster, right to left: account, clock, network, Settings.
     settings: Rect,
@@ -339,7 +355,7 @@ impl BarScreen {
         let reveal = self
             .hint_since
             .filter(|_| covered && !self.revealed)
-            .map(|since| since + HINT_OPEN_MS);
+            .map(|(since, _, _)| since + HINT_OPEN_MS);
         let collapse = self
             .away_since
             .filter(|_| covered && self.revealed)
@@ -386,16 +402,22 @@ impl BarScreen {
             }
             return Presence::Revealed;
         }
-        if inside {
-            let since = *self.hint_since.get_or_insert(data.now_ms);
-            if data.now_ms.saturating_sub(since) >= HINT_OPEN_MS {
-                self.revealed = true;
-                self.hint_since = None;
-                self.away_since = None;
-                return Presence::Revealed;
+        match ui.input.cursor().filter(|(x, y)| area.contains(*x, *y)) {
+            Some((x, y)) => {
+                // The dwell restarts wherever the pointer moves to. Resting is the condition, not
+                // merely being low: a pointer crossing the bottom edge on its way somewhere else
+                // never holds still long enough to ask for the bar.
+                let (since, at_x, at_y) = *self.hint_since.get_or_insert((data.now_ms, x, y));
+                if (x - at_x).abs() > HINT_REST_SLOP || (y - at_y).abs() > HINT_REST_SLOP {
+                    self.hint_since = Some((data.now_ms, x, y));
+                } else if data.now_ms.saturating_sub(since) >= HINT_OPEN_MS {
+                    self.revealed = true;
+                    self.hint_since = None;
+                    self.away_since = None;
+                    return Presence::Revealed;
+                }
             }
-        } else {
-            self.hint_since = None;
+            None => self.hint_since = None,
         }
         Presence::Hint
     }
@@ -474,12 +496,11 @@ impl BarScreen {
             x += width + gap;
             rect
         };
-        let home = chip(ui.px(HOME_WIDTH));
-        let cells: Vec<Rect> = data
-            .entries
-            .iter()
-            .map(|entry| chip(ui.px(if entry.active { ACTIVE_WIDTH } else { CELL })))
-            .collect();
+        // Every entry is one square, active or not. A wide button carrying the active window's
+        // title is the Windows taskbar's signature, and it is also the redundancy this desktop
+        // spent a campaign removing: the window itself wears its name on its own tag, so a second
+        // copy of it down here says nothing new and costs 220 pixels of the switcher's room.
+        let cells: Vec<Rect> = data.entries.iter().map(|_| chip(ui.px(CELL))).collect();
 
         let row =
             match open_row.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
@@ -532,7 +553,6 @@ impl BarScreen {
 
         Layout {
             bar,
-            home,
             cells,
             settings,
             network,
@@ -720,31 +740,6 @@ impl BarScreen {
             }
         }
 
-        // Home, at the left end: the pointer route back to the field, filled while the reveal is
-        // in effect so the chip says which way it will go.
-        let home_label = lege_types::action::action("home.reveal")
-            .map_or("Home", |declaration| declaration.label);
-        let home_hovered = ui.input.hovering(layout.home);
-        chip(
-            ui,
-            layout.home,
-            if data.home_revealed || home_hovered {
-                design::accent()
-            } else {
-                design::TAG_FILL
-            },
-        );
-        ui.label_styled(
-            layout.home.inset(ui.px(6)),
-            home_label,
-            design::state_style(ui),
-            design::TAG_INK,
-            Align::Centre,
-        );
-        if ui.input.take_click(layout.home) {
-            actions.push(BarAction::Field(FieldAction::RevealHome));
-        }
-
         // The machine cluster, left to right: Settings, the network, the clock, the account.
         // The label comes from the action manifest for the same reason the network's does.
         let settings_label = lege_types::action::action("settings.open")
@@ -914,22 +909,6 @@ impl BarScreen {
                     &entry.windows.len().to_string(),
                     design::TAG_INK,
                     Align::Centre,
-                );
-            }
-            if entry.active {
-                // The active entry wears the window's name tag: its icon and its title.
-                let title = Rect::new(
-                    icon.right() + ui.px(6),
-                    cell.y,
-                    (cell.right() - icon.right() - ui.px(12)).max(0),
-                    cell.h,
-                );
-                ui.label_styled(
-                    title,
-                    &entry.label,
-                    design::state_style(ui),
-                    ink,
-                    Align::Left,
                 );
             }
             if let Some(accent) = entry.accent {
@@ -1380,18 +1359,6 @@ mod tests {
         );
     }
 
-    /// The Home chip: the route back to the field that is not a keyboard chord.
-    #[test]
-    fn the_home_chip_reveals_home() {
-        let mut h = Harness::new(Vec::new());
-        h.frame();
-        let (x, y) = Harness::centre(h.rects().home);
-        assert_eq!(
-            h.click(x, y),
-            vec![BarAction::Field(FieldAction::RevealHome)]
-        );
-    }
-
     /// A parked window is still on the bar, and clicking it brings it back before activating it —
     /// `Activate` alone would focus a window nobody can see.
     #[test]
@@ -1580,6 +1547,37 @@ mod tests {
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Revealed);
         assert_eq!(h.wanted(), (W, BAR_HEIGHT));
+    }
+
+    /// The user's words: the bar "popups up at inopportune times". The strip is the whole width
+    /// of the output, so a pointer travelling along the bottom edge — to a maximized window's own
+    /// controls, or thrown at a corner — satisfied a dwell that only asked it to be low. Resting
+    /// is the condition: every move restarts the clock.
+    #[test]
+    fn a_pointer_travelling_along_the_bottom_edge_never_reveals_the_bar() {
+        let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, false)]);
+        h.covered = true;
+        h.frame();
+        let (_, y) = Harness::bottom_middle();
+        // Four times the dwell, spent crossing the strip rather than resting on it.
+        for step in 0..8_i32 {
+            h.now = u64::try_from(step).unwrap() * HINT_OPEN_MS / 2;
+            h.point_at(W / 4 + step * (HINT_REST_SLOP + 1) * 4, y);
+            assert_eq!(
+                h.screen.presence(true),
+                Presence::Hint,
+                "a pointer still moving has not asked for the bar"
+            );
+        }
+        // It stops. The dwell now runs from where it stopped, not from when it arrived.
+        let resting = h.now;
+        let x = W / 4 + 7 * (HINT_REST_SLOP + 1) * 4;
+        h.now = resting + HINT_OPEN_MS - 1;
+        h.point_at(x, y);
+        assert_eq!(h.screen.presence(true), Presence::Hint);
+        h.now = resting + HINT_OPEN_MS;
+        h.point_at(x, y);
+        assert_eq!(h.screen.presence(true), Presence::Revealed);
     }
 
     /// "it should hide as easily as it appears, if moused away from" — and the row and the

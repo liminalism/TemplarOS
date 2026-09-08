@@ -672,9 +672,9 @@ mod tests {
 
         let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
         for (presence, name, expected) in [
-            (Presence::Open, "open", 0x8f74_a830_2732_adb3_u64),
+            (Presence::Open, "open", 0x7ea1_67f6_e793_b0a4_u64),
             (Presence::Hint, "hint", 0x01f6_203e_ed9b_b415),
-            (Presence::Revealed, "revealed", 0x1ea5_c065_0f00_6a5c),
+            (Presence::Revealed, "revealed", 0x34cf_95be_f34c_0d1b),
         ] {
             let buffer = bar_frame(presence, 1.0);
             if let Some(dir) = &dump {
