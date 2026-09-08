@@ -48,8 +48,11 @@
         whether the user can reach their windows. A refused claim is silently ignored rather than
         erroring: a shell that asked for too much should still run, just without its reservation.
 
-        `size` of 0 releases a previously reserved zone. Reservations are per surface, so a
-        surface that is destroyed releases its own automatically.
+        `size` of 0 keeps the surface anchored to `edge` and reserves nothing; a surface destroyed
+        releases its claim. A dock that shrinks to a hint is still a dock — the claim is what
+        anchors it to its edge, so releasing it on 0 would leave the surface unplaced. Reservations
+        are per surface, so a surface that is destroyed releases its own automatically, and that is
+        the only thing that does.
 
         The reservation is a floor on the surface's thickness, not its size: the surface is
         anchored to its edge and may commit a size thicker than it reserves — a bar opening a row
@@ -70,16 +73,16 @@
         fullscreen client window sorts above `overlay` and `notification` on its own output (never
         above `system_modal`, and never above the lock or recovery surfaces the core owns), so the
         surface is simply covered. Destroying it instead releases the zone, which reflows every
-        maximized window on that output twice — once on the way in and once on the way out. When
-        the pointer rests on that output's bottom edge for a moment, the compositor suspends the
-        exception and the surface is drawn over the fullscreen window again for as long as the
-        pointer stays on the reserved strip. No request is involved and no event is sent: the
-        surface keeps painting exactly as it always does, and its frame callbacks continue while it
-        is covered.
+        maximized window on that output twice — once on the way in and once on the way out.
+
+        That exception is unconditional: fullscreen is uninterrupted. Nothing of the surface shows
+        over a fullscreen window and no pointer gesture reveals it — the switch route there is the
+        compositor's own Alt+Tab. No request is involved and no event is sent: the surface keeps
+        painting exactly as it always does, and its frame callbacks continue while it is covered.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>
-      <arg name="size" type="uint" summary="logical pixels along that edge; 0 releases"/>
+      <arg name="size" type="uint" summary="logical pixels along that edge; 0 anchors and reserves nothing"/>
     </request>
     <request name="reveal_home" since="2">
       <description summary="go home: hide every client window so the Home Surface shows, or bring them back">

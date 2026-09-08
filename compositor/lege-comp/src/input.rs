@@ -30,7 +30,6 @@ use smithay::{
             PointerGrab, PointerInnerHandle, RelativeMotionEvent,
         },
     },
-    reexports::calloop::timer::Timer,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState,
         wayland_server::{Resource, protocol::wl_surface::WlSurface},
@@ -46,7 +45,6 @@ use smithay::{
         },
     },
 };
-use std::time::Duration;
 
 impl<B: Backend + 'static> SeatHandler for LegeCompState<B> {
     type KeyboardFocus = WlSurface;
@@ -867,7 +865,6 @@ impl<B: Backend + 'static> LegeCompState<B> {
         );
         pointer.frame(self);
         self.update_perimeter_cursor(to_lege_point(position));
-        self.update_bar_peek(to_lege_point(position));
     }
 
     /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
@@ -918,7 +915,6 @@ impl<B: Backend + 'static> LegeCompState<B> {
         );
         pointer.frame(self);
         self.update_perimeter_cursor(to_lege_point(pos));
-        self.update_bar_peek(to_lege_point(pos));
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) {
@@ -1044,87 +1040,6 @@ impl<B: Backend + 'static> LegeCompState<B> {
             _ => None,
         };
         self.show_compositor_cursor(shape);
-    }
-
-    /// A dwell on an output's bottom edge peeks the shell's bar out from under a fullscreen
-    /// window ([`lege_window::WindowService::set_peek_output`]).
-    ///
-    /// This has to be the compositor's rule rather than the shell's: while a window is fullscreen
-    /// it is the topmost surface on that output, so it receives the pointer and the shell never
-    /// learns that the pointer reached the bottom edge at all. Nothing about the bar surface
-    /// changes — it stays mapped, it keeps its exclusive zone, and so nothing reflows on the way
-    /// in or out; only the stacking order does.
-    ///
-    /// The dwell needs a timer because a client that is not animating sends no further motion
-    /// once the pointer stops moving, and "rested here for a moment" is exactly the state that
-    /// separates a deliberate reach for the bar from a pointer sweeping past.
-    fn update_bar_peek(&mut self, pos: LegePoint) {
-        if self.session_lock.locked {
-            return;
-        }
-        let peeking = self.window_service.peek_output().is_some();
-        let Some(candidate) = self.peek_output_at(pos, peeking) else {
-            self.peek_armed = None;
-            if self.window_service.set_peek_output(None) {
-                crate::space_sync::sync_after_change(self);
-            }
-            return;
-        };
-        // Already up, or already waiting on this same edge: nothing to arm.
-        if peeking || self.peek_armed.as_deref() == Some(candidate.as_str()) {
-            return;
-        }
-        self.peek_armed = Some(candidate);
-        let timer = Timer::from_duration(Duration::from_millis(PEEK_DWELL_MS));
-        // Nothing cancels this timer: `finish_bar_peek` re-reads where the pointer actually is,
-        // so a stale one fires into a no-op. One `Drop`ping timer per approach to the edge is
-        // cheaper than tracking a `RegistrationToken` to remove.
-        if let Err(error) = self
-            .loop_handle
-            .insert_source(timer, |_, (), state: &mut Self| {
-                state.finish_bar_peek();
-                smithay::reexports::calloop::timer::TimeoutAction::Drop
-            })
-        {
-            tracing::warn!(%error, "arming the bar peek");
-            self.peek_armed = None;
-        }
-    }
-
-    /// The dwell elapsed: peek, if the pointer is still on the edge that armed it.
-    fn finish_bar_peek(&mut self) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
-        let pos = to_lege_point(pointer.current_location());
-        let Some(output) = self.peek_output_at(pos, false) else {
-            self.peek_armed = None;
-            return;
-        };
-        if self.peek_armed.as_deref() != Some(output.as_str()) {
-            return;
-        }
-        if self.window_service.set_peek_output(Some(output)) {
-            crate::space_sync::sync_after_change(self);
-        }
-    }
-
-    /// The output whose bar `pos` is reaching for, if any: an output with a visible fullscreen
-    /// client window on it, with the pointer inside the band along its bottom edge.
-    fn peek_output_at(&self, pos: LegePoint, hold: bool) -> Option<String> {
-        let output = self
-            .window_service
-            .outputs()
-            .iter()
-            .find(|output| rect_contains(output.logical, pos))?;
-        let covered = self.window_service.windows().any(|window| {
-            window.fullscreen
-                && !window.shelved
-                && self.window_service.is_client_window(window.id)
-                && window.geometry.intersection_area(output.logical) > 0
-        });
-        let reserved = output.logical.bottom() - output.usable().bottom();
-        (covered && in_peek_band(output.logical, reserved, pos, hold)).then(|| output.name.clone())
     }
 
     /// Show `shape` (a `cursor-spec` name) as the compositor's own cursor, or `None` to give the
@@ -1381,32 +1296,6 @@ fn rect_contains(rect: lege_window::Rect, point: LegePoint) -> bool {
     point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
 }
 
-/// How close to an output's bottom edge the pointer must come to *start* a peek, in logical
-/// pixels.
-///
-/// A calibration knob rather than a constant of nature: one or two pixels is under a pixel of
-/// slack once a fractional scale is applied, and a person pushing a real mouse into the bottom of
-/// a real screen has to be able to land on it. Widen it if the peek is hard to reach; narrow it
-/// if it triggers on its own.
-const PEEK_BAND: i32 = 4;
-/// How long the pointer must rest on that edge before the bar comes up. Long enough that dragging
-/// something across the bottom of a fullscreen window does not raise it.
-const PEEK_DWELL_MS: u64 = 150;
-
-/// Whether `pos` is inside the band along `output`'s bottom edge that a peek watches.
-///
-/// `hold` widens it from the few pixels that start a peek to the whole strip the shell reserved
-/// there (`reserved`, an exclusive zone) — without that, moving the pointer *onto* the bar that
-/// just appeared would leave the band and dismiss it again.
-fn in_peek_band(output: lege_window::Rect, reserved: i32, pos: LegePoint, hold: bool) -> bool {
-    let band = if hold {
-        reserved.max(PEEK_BAND)
-    } else {
-        PEEK_BAND
-    };
-    pos.y >= output.bottom() - band && pos.y < output.bottom()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1419,36 +1308,6 @@ mod tests {
 
     fn at(x: i32, y: i32) -> LegePoint {
         LegePoint { x, y }
-    }
-
-    /// The band a peek watches: a few pixels to start one, and the shell's whole reserved strip
-    /// to keep it — otherwise reaching for the bar that just appeared dismisses it again.
-    #[test]
-    fn the_peek_band_is_the_edge_to_open_and_the_reserved_strip_to_hold() {
-        let screen = Rect::new(0, 0, 1920, 1080);
-        let reserved = 48;
-        for (y, open, hold) in [
-            (1031, false, false),
-            (1032, false, true),
-            (1040, false, true),
-            (1075, false, true),
-            (1076, true, true),
-            (1079, true, true),
-            (1080, false, false),
-        ] {
-            assert_eq!(
-                in_peek_band(screen, reserved, at(960, y), false),
-                open,
-                "opening at y={y}"
-            );
-            assert_eq!(
-                in_peek_band(screen, reserved, at(960, y), true),
-                hold,
-                "holding at y={y}"
-            );
-        }
-        // An output nothing reserved on still has the few pixels that start a peek.
-        assert!(in_peek_band(screen, 0, at(960, 1079), true));
     }
 
     /// A framed client window, laid out the way the compositor lays one out: the record's

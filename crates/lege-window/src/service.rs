@@ -152,10 +152,6 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
-    /// The output whose overlay surfaces are currently peeked out from under a fullscreen
-    /// window (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
-    /// suspended on that output and the bar draws over the fullscreen window again.
-    peek_output: Option<String>,
     /// Every live window group. Ordered so that iteration — the switcher's group list, the
     /// snapshot — is deterministic rather than hash-ordered.
     groups: BTreeMap<GroupId, GroupRecord>,
@@ -176,7 +172,6 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
             arrangement_baseline: None,
-            peek_output: None,
             groups: BTreeMap::new(),
             next_group_id: 1,
         }
@@ -831,19 +826,18 @@ impl<I: IdentityCache> WindowService<I> {
 
     /// Every window, top-most first.
     ///
-    /// The one exception to [`LayerStack`]'s pure layer order: while a visible fullscreen client
-    /// window's output is not being peeked, that window sorts *above* [`Layer::ShellOverlay`] and
-    /// [`Layer::Notification`]. Without it the bar would sit on top of every fullscreen video,
-    /// because `ShellOverlay` is above `Normal` by design — which is why the shell used to destroy
-    /// its own bar to get out of the way. It never rises above [`Layer::SystemModal`],
-    /// [`Layer::Recovery`] or [`Layer::SecureLock`]: a permission prompt and the lock screen
-    /// outrank anything a client can ask for.
+    /// The one exception to [`LayerStack`]'s pure layer order: a visible fullscreen client window
+    /// sorts *above* [`Layer::ShellOverlay`] and [`Layer::Notification`]. Without it the bar would
+    /// sit on top of every fullscreen video, because `ShellOverlay` is above `Normal` by design —
+    /// which is why the shell used to destroy its own bar to get out of the way. It never rises
+    /// above [`Layer::SystemModal`], [`Layer::Recovery`] or [`Layer::SecureLock`]: a permission
+    /// prompt and the lock screen outrank anything a client can ask for.
     ///
-    /// This is the whole of the bottom-edge peek: [`Self::set_peek_output`] suspends the
-    /// exception for one output and the bar comes back, with no protocol change and no surface
-    /// destroyed. Every consumer follows, because this is the one z-order authority — the render
-    /// order (`lege_comp::scene`), the hit-test mirror (`lege_comp::space_sync`) and the shell
-    /// snapshot all read it.
+    /// The exception is unconditional. Fullscreen is uninterrupted: nothing of the bar shows over
+    /// a fullscreen window and no pointer gesture reveals it — the switch route there is Alt+Tab.
+    /// Every consumer follows, because this is the one z-order authority — the render order
+    /// (`lege_comp::scene`), the hit-test mirror (`lege_comp::space_sync`) and the shell snapshot
+    /// all read it.
     pub fn stacking_order(&self) -> Vec<WindowId> {
         let mut order = self.layers.order();
         if !order.iter().any(|id| self.outranks_overlay(*id)) {
@@ -873,7 +867,7 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Whether `window_id` is the one kind of window that reorders the layer stack: a visible
-    /// fullscreen client window whose output is not being peeked.
+    /// fullscreen client window.
     fn outranks_overlay(&self, window_id: WindowId) -> bool {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
@@ -882,37 +876,7 @@ impl<I: IdentityCache> WindowService<I> {
             return false;
         }
         // A reveal hides every client window; nothing it is hiding can outrank the shell.
-        if self.home_revealed {
-            return false;
-        }
-        !self.is_peeking(window.geometry)
-    }
-
-    /// Whether the output a window at `geometry` is on is the one being peeked. With no outputs
-    /// there is one screen by definition, so any peek at all is that screen's.
-    fn is_peeking(&self, geometry: Rect) -> bool {
-        let Some(peeked) = self.peek_output.as_deref() else {
-            return false;
-        };
-        self.outputs.is_empty()
-            || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
-    }
-
-    /// The output whose overlay surfaces are peeked out from under a fullscreen window, if any.
-    pub fn peek_output(&self) -> Option<&str> {
-        self.peek_output.as_deref()
-    }
-
-    /// Start or end a peek on one output (`None` ends it). Returns whether anything changed, so
-    /// the compositor can re-stack only when it must. One output at a time, because there is one
-    /// pointer.
-    ///
-    // ponytail: one peeked output. Per-output peeks would need a set here and a pointer per seat
-    // above; nothing on this desktop has two pointers.
-    pub fn set_peek_output(&mut self, output: Option<String>) -> bool {
-        let changed = self.peek_output != output;
-        self.peek_output = output;
-        changed
+        !self.home_revealed
     }
 
     /// One sentence explaining why `a` is stacked above or below `b`.
@@ -1762,6 +1726,33 @@ mod tests {
         assert!(service.has_frame(id));
         service.set_fullscreen(id, true);
         assert!(!service.has_frame(id), "fullscreen never has a frame");
+    }
+
+    /// A bar that claims `Exclusive{Bottom, 0}` — collapsed to a hint — reserves nothing, so the
+    /// maximized window under it fills the whole output and wears its own tags again. Same claim,
+    /// same surface, different size: the only thing the size decides is the reservation.
+    #[test]
+    fn a_zero_bottom_zone_leaves_a_maximized_window_whole_and_framed() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        let screen = outputs()[0].logical;
+        service.set_maximized(id, true);
+
+        service.on_outputs_changed(vec![output_with_a_bottom_bar(0)]);
+        assert!(!service.outputs()[0].reserves_bottom());
+        assert_eq!(service.outputs()[0].usable(), screen);
+        assert!(
+            service.has_frame(id),
+            "a zone reserving nothing takes no controls away"
+        );
+        assert_eq!(
+            service.window(id).unwrap().geometry,
+            screen,
+            "maximized fills the whole output when nothing is reserved"
+        );
+
+        // And the same output with a real reservation still takes the tags back.
+        service.on_outputs_changed(vec![output_with_a_bottom_bar(48)]);
+        assert!(!service.has_frame(id));
     }
 
     #[test]
@@ -2742,57 +2733,6 @@ mod tests {
                 "fullscreen against {layer}: {order:?}"
             );
         }
-    }
-
-    /// The whole of the peek: one flag, and the bar is back over the fullscreen window. No
-    /// surface is destroyed, no zone is released, so nothing reflows either way.
-    #[test]
-    fn a_peek_puts_the_overlay_back_on_top_and_nothing_else_moves() {
-        let (mut service, app, bar) = service_with_a_bar();
-        let screen = service.set_fullscreen(app, true).expect("fullscreen");
-        let bar_geometry = service.window(bar).unwrap().geometry;
-        let above = |service: &WindowService<FakeCache>| {
-            let order = service.stacking_order();
-            order.iter().position(|id| *id == bar).unwrap()
-                < order.iter().position(|id| *id == app).unwrap()
-        };
-        assert!(!above(&service), "the fullscreen window covers the bar");
-
-        assert!(service.set_peek_output(Some("eDP-1".to_owned())));
-        assert!(above(&service), "the peek raises the bar");
-        assert!(
-            !service.set_peek_output(Some("eDP-1".to_owned())),
-            "no change"
-        );
-
-        assert!(service.set_peek_output(None));
-        assert!(!above(&service));
-        // Neither the peek nor the fullscreen entry touched a rectangle.
-        assert_eq!(service.window(app).unwrap().geometry, screen);
-        assert_eq!(service.window(bar).unwrap().geometry, bar_geometry);
-        assert!(
-            service.is_visible(bar),
-            "the bar is never unmapped for this"
-        );
-    }
-
-    /// A peek on the other screen leaves this one's fullscreen window on top.
-    #[test]
-    fn a_peek_is_one_output_at_a_time() {
-        let (mut service, app, _) = service_with_a_bar();
-        let bar = shell_surface(
-            &mut service,
-            Layer::ShellOverlay,
-            Rect::new(0, 1080 - 48, 1920, 48),
-        );
-        service.set_fullscreen(app, true);
-        service.set_peek_output(Some("HDMI-1".to_owned()));
-
-        let order = service.stacking_order();
-        assert!(
-            order.iter().position(|id| *id == app).unwrap()
-                < order.iter().position(|id| *id == bar).unwrap()
-        );
     }
 
     proptest! {
