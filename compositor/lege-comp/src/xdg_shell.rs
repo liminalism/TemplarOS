@@ -216,6 +216,11 @@ pub fn apply_fullscreen<B: Backend + 'static>(
         return;
     }
     state.window_service.set_fullscreen(window_id, fullscreen);
+    if !fullscreen {
+        // Nothing is covering the bar any more, so a peek left over from the way out would
+        // otherwise still be in effect the next time something went fullscreen.
+        state.window_service.set_peek_output(None);
+    }
     let client = crate::space_sync::client_area(state, window_id);
     if let Some(window) = crate::space_sync::element_for_window(state, window_id) {
         if let Some(toplevel) = window.toplevel() {

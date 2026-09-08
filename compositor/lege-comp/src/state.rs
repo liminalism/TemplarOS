@@ -226,6 +226,15 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// because the black-screen-at-login fault was invisible: the units started, the journal said
     /// nothing, and the only account of what went wrong was a screen that did not change.
     pub home_mapped: Option<bool>,
+    /// What the pointer is currently resting at the bottom of the screen *for*, and since when
+    /// (`input::update_dwell`). Not the outcome — Home's reveal is `WindowService`'s
+    /// `home_revealed` and the peek is its `peek_output`; this is only what a pending timer is
+    /// about to check. One slot, because there is one pointer and one intent at a time.
+    pub dwell: Option<crate::input::Dwell>,
+    /// Whether a dwell timer is already in flight on the event loop. One source at a time: the
+    /// callback reschedules itself (`TimeoutAction::ToDuration`) when the pointer settled again
+    /// mid-flight, rather than a fresh source per motion event of a sweep.
+    pub dwell_timer_pending: bool,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
@@ -352,6 +361,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
             drop_target: None,
             previous_focus: None,
             home_mapped: None,
+            dwell: None,
+            dwell_timer_pending: false,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
         })

@@ -11,7 +11,7 @@
 
 use crate::chrome::layout::{self, ControlTag};
 use crate::state::{Backend, LegeCompState};
-use lege_window::{Point as LegePoint, WindowId};
+use lege_window::{Layer, Point as LegePoint, RevealHome, WindowId};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
@@ -30,6 +30,7 @@ use smithay::{
             PointerGrab, PointerInnerHandle, RelativeMotionEvent,
         },
     },
+    reexports::calloop::timer::{TimeoutAction, Timer},
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState,
         wayland_server::{Resource, protocol::wl_surface::WlSurface},
@@ -45,6 +46,8 @@ use smithay::{
         },
     },
 };
+
+use std::time::Duration;
 
 impl<B: Backend + 'static> SeatHandler for LegeCompState<B> {
     type KeyboardFocus = WlSurface;
@@ -865,6 +868,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
         );
         pointer.frame(self);
         self.update_perimeter_cursor(to_lege_point(position));
+        self.update_dwell(to_lege_point(position));
     }
 
     /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
@@ -915,6 +919,7 @@ impl<B: Backend + 'static> LegeCompState<B> {
         );
         pointer.frame(self);
         self.update_perimeter_cursor(to_lege_point(pos));
+        self.update_dwell(to_lege_point(pos));
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) {
@@ -1040,6 +1045,179 @@ impl<B: Backend + 'static> LegeCompState<B> {
             _ => None,
         };
         self.show_compositor_cursor(shape);
+    }
+
+    /// A dwell at the bottom of the screen: the bottom-left corner is Home
+    /// ([`DwellIntent::HomeCorner`]), and the rest of the bottom edge peeks the shell's bar out
+    /// from under a fullscreen window ([`DwellIntent::BarPeek`]).
+    ///
+    /// Both have to be the compositor's rule rather than the shell's: whatever is under the
+    /// pointer owns it, so under a maximized or fullscreen window the shell never learns the
+    /// pointer reached the edge at all. And both need a timer, because a client that is not
+    /// animating sends no further motion once the pointer stops — "rested here for a moment" is
+    /// exactly the state that separates a deliberate reach from a pointer sweeping past.
+    ///
+    /// Nothing about the bar surface changes for a peek: it stays mapped, it keeps its exclusive
+    /// zone, and so no work area is recomputed and no window reflows on the way in or out. Only
+    /// the stacking order does ([`lege_window::WindowService::set_peek_output`]).
+    fn update_dwell(&mut self, pos: LegePoint) {
+        if self.session_lock.locked {
+            self.dwell = None;
+            return;
+        }
+        // A peek ends the moment the pointer walks away from it — no dwell on the way out, the
+        // same asymmetry the shell's own reveal has. A *reveal* of Home does not end here: it is
+        // a deliberate act, and `WindowService::set_home_revealed` (a click, `Super+H`, a window
+        // being activated) is what decides when Home goes away again.
+        if let Some(peeked) = self.window_service.peek_output().map(str::to_owned)
+            && !self.holding_peek(&peeked, pos)
+        {
+            self.dwell = None;
+            if self.window_service.set_peek_output(None) {
+                crate::space_sync::sync_after_change(self);
+            }
+        }
+        // A held button is a drag, not a request: a window thrown at the corner is not someone
+        // asking for Home. `is_grabbed` is true for the whole of a held button (smithay's
+        // `DefaultGrab` installs a `ClickGrab` on press) as well as for our own move/resize
+        // grabs, so this is both rules at once.
+        let intent = if self.pointer_gesture_active() {
+            None
+        } else {
+            self.dwell_intent_at(pos)
+        };
+        let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+        self.dwell = dwell_after_motion(self.dwell.take(), intent, pos, now);
+        if self.dwell.is_some() && !self.dwell_timer_pending {
+            self.arm_dwell_timer();
+        }
+    }
+
+    /// One timer source per dwell, rescheduled rather than replaced.
+    ///
+    /// The pointer settling somewhere new restarts the dwell (`dwell_after_motion`), and with a
+    /// four-pixel rest slop that happens on most motion events of an approach; inserting a source
+    /// per approach — what the first version of this did — would leave a pile of them to fire and
+    /// drop. Instead the callback asks `finish_dwell` how much of the dwell is left and waits out
+    /// the remainder on the same source.
+    fn arm_dwell_timer(&mut self) {
+        self.dwell_timer_pending = true;
+        let timer = Timer::from_duration(Duration::from_millis(DWELL_MS));
+        if let Err(error) = self
+            .loop_handle
+            .insert_source(timer, |_, (), state: &mut Self| {
+                if let Some(remaining) = state.finish_dwell() {
+                    return TimeoutAction::ToDuration(remaining);
+                }
+                state.dwell_timer_pending = false;
+                TimeoutAction::Drop
+            })
+        {
+            tracing::warn!(%error, "arming the bottom-edge dwell");
+            self.dwell_timer_pending = false;
+            self.dwell = None;
+        }
+    }
+
+    /// The dwell elapsed. Act, wait out the remainder, or fire into a no-op.
+    ///
+    /// Re-reads where the pointer actually is rather than trusting the position that armed the
+    /// timer: motion since then may have moved the dwell to another intent, ended it, or reset
+    /// its anchor. `Some(remaining)` means the anchor was reset while this timer was in flight.
+    fn finish_dwell(&mut self) -> Option<Duration> {
+        let dwell = self.dwell.take()?;
+        let pointer = self.seat.get_pointer()?;
+        let pos = to_lege_point(pointer.current_location());
+        if self.dwell_intent_at(pos).as_ref() != Some(&dwell.intent) {
+            return None;
+        }
+        let elapsed =
+            crate::window_bridge::now_monotonic_ns(&self.clock).saturating_sub(dwell.since_ns);
+        let dwell_ns = DWELL_MS * 1_000_000;
+        if elapsed < dwell_ns {
+            let remaining = Duration::from_nanos(dwell_ns - elapsed);
+            self.dwell = Some(dwell);
+            return Some(remaining);
+        }
+        match dwell.intent {
+            // `reveal_home` rather than `set_home_revealed` directly: reaching Home from the
+            // corner needs the scatter and switcher torn down, the `Space` mirror re-synced and
+            // the keyboard moved somewhere visible, exactly as reaching it from `Super+H` does.
+            DwellIntent::HomeCorner => self.reveal_home(RevealHome::Show),
+            DwellIntent::BarPeek(output) => {
+                if self.window_service.set_peek_output(Some(output)) {
+                    crate::space_sync::sync_after_change(self);
+                }
+            }
+        }
+        None
+    }
+
+    /// What a dwell at `pos` would be about, if anything.
+    ///
+    /// The corner and the peek band are disjoint by construction (`in_peek_band` excludes the
+    /// corner square), so there is never a precedence question between them: each region has one
+    /// rule. The corner is Home from anywhere, a fullscreen window included — the bar has no Home
+    /// chip, so with a window covering the screen this is the only pointer route there.
+    fn dwell_intent_at(&self, pos: LegePoint) -> Option<DwellIntent> {
+        let output = self
+            .window_service
+            .outputs()
+            .iter()
+            .find(|output| rect_contains(output.logical, pos))?;
+        if in_home_corner(output.logical, pos) {
+            // Nothing to ask for if Home is already showing. Without this, a pointer resting in
+            // the corner re-fires the reveal on every twitch inside the rest slop, and each one
+            // costs a re-sync and a refocus for a state that has not changed.
+            if self.window_service.home_revealed() {
+                return None;
+            }
+            // Not while the shell's own chrome is under the pointer: whatever it is showing there
+            // is what the person is reaching for, and it gets the press. This is why the island
+            // is centred (`lege-shell-v1.xml`'s `set_edge_alignment`) — a bottom-anchored surface
+            // at the start of its edge sits exactly on top of this square.
+            return (!self.over_shell_overlay(pos)).then_some(DwellIntent::HomeCorner);
+        }
+        if !in_peek_band(output.logical, pos)
+            || self.window_service.peek_output() == Some(output.name.as_str())
+        {
+            return None;
+        }
+        let covered = self.window_service.windows().any(|window| {
+            window.fullscreen
+                && !window.shelved
+                && self.window_service.is_client_window(window.id)
+                && window.geometry.intersection_area(output.logical) > 0
+        });
+        covered.then(|| DwellIntent::BarPeek(output.name.clone()))
+    }
+
+    /// Whether a peek on `output` should stay up: the pointer is still on the edge that opened
+    /// it, or anywhere on the shell's own surface.
+    ///
+    /// The surface is the point. The first version of this widened the band to the strip the
+    /// shell *reserved* there, which was right when the bar reserved 48 pixels and is nothing at
+    /// all now that it claims a zone of 0 — moving onto the bar that just appeared would have
+    /// dismissed it again.
+    fn holding_peek(&self, output: &str, pos: LegePoint) -> bool {
+        let Some(output) = self
+            .window_service
+            .outputs()
+            .iter()
+            .find(|candidate| candidate.name == output)
+        else {
+            return false;
+        };
+        in_peek_band(output.logical, pos) || self.over_shell_overlay(pos)
+    }
+
+    /// Whether a visible shell-overlay surface is under `pos`.
+    fn over_shell_overlay(&self, pos: LegePoint) -> bool {
+        self.window_service.windows().any(|window| {
+            self.window_service.layer_of(window.id) == Some(Layer::ShellOverlay)
+                && self.window_service.is_visible(window.id)
+                && rect_contains(window.geometry, pos)
+        })
     }
 
     /// Show `shape` (a `cursor-spec` name) as the compositor's own cursor, or `None` to give the
@@ -1296,6 +1474,92 @@ fn rect_contains(rect: lege_window::Rect, point: LegePoint) -> bool {
     point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
 }
 
+/// The square at the bottom-left of an output that is the route to the Home Surface, in logical
+/// pixels.
+///
+/// A calibration knob rather than a constant of nature: a person pushing a real mouse into the
+/// bottom-left of a real screen has to be able to land on it, and a fractional scale eats a pixel
+/// or two of it. Widen it if the corner is hard to hit; narrow it if it fires on its own.
+const HOME_CORNER: i32 = 8;
+/// How close to an output's bottom edge the pointer must come to *start* a peek, in logical
+/// pixels. Same knob, same reasoning.
+const PEEK_BAND: i32 = 4;
+/// How long the pointer must rest before either dwell fires.
+///
+/// The same number as the shell's own reveal (`lege_shell::surface::bar_screen::HINT_OPEN_MS`),
+/// on purpose: reaching the bar from under a fullscreen window and reaching it from under a
+/// maximized one should feel like the same gesture, because to the person doing it they are.
+const DWELL_MS: u64 = 350;
+/// How far the pointer may drift and still be resting, in logical pixels — the shell's
+/// `HINT_REST_SLOP`. Resting is the condition, not merely being low: a pointer crossing the
+/// bottom of the screen on its way somewhere else never holds still long enough to ask for
+/// anything.
+const DWELL_REST_SLOP: i32 = 4;
+
+/// What the pointer resting at the bottom of the screen is asking for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DwellIntent {
+    /// The bottom-left corner: reveal the Home Surface.
+    HomeCorner,
+    /// The rest of the bottom edge of a named output carrying a fullscreen window: raise the
+    /// shell's overlay over it.
+    BarPeek(String),
+}
+
+/// A dwell in progress: what it is for, where the pointer settled, and when it settled there.
+#[derive(Clone, Debug)]
+pub struct Dwell {
+    pub intent: DwellIntent,
+    at: LegePoint,
+    since_ns: u64,
+}
+
+/// One motion event's effect on a dwell.
+///
+/// Pure, because this is the whole of the "swept through versus rested" rule and it is worth
+/// being able to drive it directly: a pointer that keeps moving keeps resetting `since_ns`, so it
+/// never accumulates a dwell however long it spends in the region.
+fn dwell_after_motion(
+    current: Option<Dwell>,
+    intent: Option<DwellIntent>,
+    pos: LegePoint,
+    now_ns: u64,
+) -> Option<Dwell> {
+    let intent = intent?;
+    if let Some(dwell) = current
+        && dwell.intent == intent
+        && (pos.x - dwell.at.x).abs() <= DWELL_REST_SLOP
+        && (pos.y - dwell.at.y).abs() <= DWELL_REST_SLOP
+    {
+        return Some(dwell);
+    }
+    Some(Dwell {
+        intent,
+        at: pos,
+        since_ns: now_ns,
+    })
+}
+
+/// Whether `pos` is in the square at `output`'s bottom-left corner that reveals Home.
+fn in_home_corner(output: lege_window::Rect, pos: LegePoint) -> bool {
+    pos.x >= output.x
+        && pos.x < output.x + HOME_CORNER
+        && pos.y >= output.bottom() - HOME_CORNER
+        && pos.y < output.bottom()
+}
+
+/// Whether `pos` is in the band along `output`'s bottom edge that opens a peek.
+///
+/// Disjoint from [`in_home_corner`] by construction rather than by a precedence rule: the corner
+/// is Home and the rest of the edge is the bar, so one pointer position never means two things.
+fn in_peek_band(output: lege_window::Rect, pos: LegePoint) -> bool {
+    pos.x >= output.x
+        && pos.x < output.right()
+        && pos.y >= output.bottom() - PEEK_BAND
+        && pos.y < output.bottom()
+        && !in_home_corner(output, pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,6 +1572,103 @@ mod tests {
 
     fn at(x: i32, y: i32) -> LegePoint {
         LegePoint { x, y }
+    }
+
+    /// The two regions along the bottom of the screen, and the fact that they are disjoint: the
+    /// corner square is Home, the rest of the edge is the bar, and no point is both. That is what
+    /// makes "the corner works under a fullscreen window too" a rule rather than a precedence
+    /// argument — the peek never gets a chance to claim it.
+    #[test]
+    fn the_corner_and_the_peek_band_divide_the_bottom_edge_between_them() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        for (x, y, corner, band) in [
+            (0, 1079, true, false),    // the true corner
+            (7, 1072, true, false),    // the far edge of the square
+            (8, 1079, false, true),    // one pixel past it, along the bottom
+            (0, 1071, false, false),   // one pixel above it
+            (7, 1079, true, false),    // inside the square, on the bottom row
+            (960, 1079, false, true),  // the middle of the edge
+            (1919, 1076, false, true), // the other end of it
+            (960, 1075, false, false), // above the band
+            (960, 1080, false, false), // off the output
+        ] {
+            assert_eq!(
+                in_home_corner(screen, at(x, y)),
+                corner,
+                "corner at {x},{y}"
+            );
+            assert_eq!(in_peek_band(screen, at(x, y)), band, "band at {x},{y}");
+            assert!(
+                !(in_home_corner(screen, at(x, y)) && in_peek_band(screen, at(x, y))),
+                "disjoint at {x},{y}"
+            );
+        }
+    }
+
+    /// The dwell is a *rest*, not a presence: a pointer swept through the corner keeps resetting
+    /// the clock and never earns a reveal, however many events it spends inside the square.
+    #[test]
+    fn sweeping_through_the_corner_never_completes_a_dwell() {
+        let ms = |n: u64| n * 1_000_000;
+        let dwell_ns = ms(DWELL_MS);
+        let completed = |dwell: &Option<Dwell>, now: u64| {
+            dwell
+                .as_ref()
+                .is_some_and(|dwell| now.saturating_sub(dwell.since_ns) >= dwell_ns)
+        };
+
+        // Swept: one pixel every 10ms, right through the square and out the other side. Every
+        // step is further than the rest slop from where the last one settled.
+        let mut dwell = None;
+        for step in 0..40u64 {
+            let now = ms(step * 10);
+            let x = i32::try_from(step).unwrap() * (DWELL_REST_SLOP + 1);
+            let intent = in_home_corner(Rect::new(0, 0, 1920, 1080), at(x, 1079))
+                .then_some(DwellIntent::HomeCorner);
+            dwell = dwell_after_motion(dwell, intent, at(x, 1079), now);
+            assert!(!completed(&dwell, now), "swept through at step {step}");
+        }
+
+        // Rested: arrives once and stops. Nothing further is sent — which is exactly why the
+        // timer exists — so the dwell completes on elapsed time alone.
+        let arrived = dwell_after_motion(None, Some(DwellIntent::HomeCorner), at(2, 1079), ms(0));
+        assert!(!completed(&arrived, ms(DWELL_MS - 1)));
+        assert!(completed(&arrived, dwell_ns));
+
+        // And drifting within the slop is still resting: the anchor does not move, so the clock
+        // does not restart.
+        let drifted = dwell_after_motion(
+            arrived,
+            Some(DwellIntent::HomeCorner),
+            at(2 + DWELL_REST_SLOP, 1079),
+            ms(200),
+        );
+        assert!(
+            completed(&drifted, dwell_ns),
+            "a drift within the slop rests"
+        );
+    }
+
+    /// Leaving the region ends the dwell, and so does changing what it is about: one intent at a
+    /// time, and the clock restarts when the intent does.
+    #[test]
+    fn a_dwell_ends_with_its_intent_and_restarts_with_a_new_one() {
+        assert!(dwell_after_motion(None, None, at(0, 1079), 0).is_none());
+        let corner =
+            dwell_after_motion(None, Some(DwellIntent::HomeCorner), at(2, 1079), 0).unwrap();
+        assert!(
+            dwell_after_motion(Some(corner.clone()), None, at(400, 500), 5_000_000).is_none(),
+            "the pointer left"
+        );
+        let peeking = dwell_after_motion(
+            Some(corner),
+            Some(DwellIntent::BarPeek("eDP-1".to_owned())),
+            at(3, 1079),
+            5_000_000,
+        )
+        .unwrap();
+        assert_eq!(peeking.intent, DwellIntent::BarPeek("eDP-1".to_owned()));
+        assert_eq!(peeking.since_ns, 5_000_000, "a new intent is a new clock");
     }
 
     /// A framed client window, laid out the way the compositor lays one out: the record's
