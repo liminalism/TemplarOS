@@ -994,7 +994,12 @@ fn check_packaging(root: &Path) -> Result<()> {
         &deb_depends,
         &deb_name_to_crate,
     ));
-    problems.extend(service_inventory_problems(&matrix, &unit_types(root)?));
+    problems.extend(service_inventory_problems(
+        &matrix,
+        &unit_types(root)?,
+        &dbus_activated_units(root)?,
+        &session_wanted_units(root)?,
+    ));
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
@@ -1534,20 +1539,21 @@ fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String
 }
 
 /// Every service names its authority, its lifetime, its recovery and its deadlines, and its
-/// declared lifetime is the one its unit actually has.
+/// declared lifetime is supported by the way it is started.
 ///
 /// `@legeos.decision.event-driven-service-authorities` requires that "each persistent daemon and
 /// polling exception records its authority, lifetime, activation, recovery, deadline and
 /// justification". A hand-written inventory document goes stale the first time a unit changes;
 /// this is the same statement made where the build can check it.
 ///
-/// The lifetime check runs in both directions on purpose. `Type=dbus` with any other declared
-/// lifetime means the inventory is describing a daemon that is not the one shipping;
-/// `dbus-activated` over a `Type=simple` unit means a consumer that expects activation on demand
-/// will find nothing answering the name.
+/// `Type=dbus` only tells systemd when a service is ready. Actual D-Bus activation requires a
+/// descriptor naming the unit, and an eagerly wanted unit is session-bound even if it uses the
+/// bus name as its readiness condition.
 fn service_inventory_problems(
     matrix: &lege_build::components::Matrix,
     unit_types: &BTreeMap<String, String>,
+    dbus_activated: &BTreeSet<String>,
+    session_wanted: &BTreeSet<String>,
 ) -> Vec<String> {
     use lege_build::components::Lifetime;
 
@@ -1580,19 +1586,66 @@ fn service_inventory_problems(
             problems.push(format!("{name}: {unit} declares no Type="));
             continue;
         };
-        let expected = match unit_type.as_str() {
-            "dbus" => Lifetime::DbusActivated,
-            "oneshot" => Lifetime::Oneshot,
-            _ => Lifetime::SessionBound,
-        };
-        if lifetime != expected {
-            problems.push(format!(
-                "{name}: the matrix says lifetime = {lifetime:?}, but {unit} is Type={unit_type}, \
-                 which is {expected:?}"
-            ));
+        match lifetime {
+            Lifetime::Oneshot if unit_type != "oneshot" => problems.push(format!(
+                "{name}: the matrix says lifetime = Oneshot, but {unit} is Type={unit_type}"
+            )),
+            Lifetime::DbusActivated if unit_type != "dbus" => problems.push(format!(
+                "{name}: the matrix says lifetime = DbusActivated, but {unit} is Type={unit_type}; \
+                 D-Bus readiness requires Type=dbus"
+            )),
+            Lifetime::DbusActivated if !dbus_activated.contains(unit) => problems.push(format!(
+                "{name}: the matrix says lifetime = DbusActivated, but no D-Bus service \
+                 descriptor names SystemdService={unit}"
+            )),
+            Lifetime::DbusActivated if session_wanted.contains(unit) => problems.push(format!(
+                "{name}: the matrix says lifetime = DbusActivated, but legeos-session.target \
+                 eagerly Wants={unit}; declare it session-bound or stop eager activation"
+            )),
+            Lifetime::SessionBound if unit_type == "oneshot" => problems.push(format!(
+                "{name}: the matrix says lifetime = SessionBound, but {unit} is Type=oneshot"
+            )),
+            Lifetime::Oneshot | Lifetime::DbusActivated | Lifetime::SessionBound => {}
         }
     }
     problems
+}
+
+/// Units named by repository-owned D-Bus activation descriptors.
+fn dbus_activated_units(root: &Path) -> Result<BTreeSet<String>> {
+    let mut units = BTreeSet::new();
+    let dir = root.join("distro/policy/dbus");
+    if !dir.is_dir() {
+        return Ok(units);
+    }
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("service") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if let Some(unit) = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("SystemdService="))
+        {
+            units.insert(unit.trim().to_owned());
+        }
+    }
+    Ok(units)
+}
+
+/// Services eagerly started by the graphical session target.
+fn session_wanted_units(root: &Path) -> Result<BTreeSet<String>> {
+    let path = root.join("session/units/user/legeos-session.target");
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Wants="))
+        .flat_map(str::split_whitespace)
+        .map(str::to_owned)
+        .collect())
 }
 
 /// `Type=` for every unit under `session/units/`. A unit with no `Type=` is `simple`, which is
@@ -2221,7 +2274,9 @@ mod extraction_tests {
         let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
-        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
+        let activated = BTreeSet::from(["lege-filed.service".to_owned()]);
+        let problems =
+            service_inventory_problems(&matrix_of(vec![row]), &types, &activated, &BTreeSet::new());
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("declares no authority"),
@@ -2230,24 +2285,45 @@ mod extraction_tests {
     }
 
     #[test]
-    fn a_declared_lifetime_that_the_unit_contradicts_is_a_packaging_failure() {
+    fn type_dbus_is_readiness_and_does_not_make_a_service_activation_driven() {
         let row = service_row(Some(lege_build::components::Lifetime::SessionBound));
         let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
-        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("Type=dbus"), "{problems:?}");
+        assert!(
+            service_inventory_problems(
+                &matrix_of(vec![row]),
+                &types,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            )
+            .is_empty()
+        );
+    }
 
-        // ...and the same mistake the other way round: a unit systemd starts with the session,
-        // declared as something a consumer can activate on demand.
+    #[test]
+    fn dbus_activation_requires_a_descriptor_and_must_not_be_eagerly_wanted() {
         let row = service_row(Some(lege_build::components::Lifetime::DbusActivated));
-        let types = [("lege-filed.service".to_owned(), "simple".to_owned())]
+        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
-        let problems = service_inventory_problems(&matrix_of(vec![row]), &types);
+        let problems = service_inventory_problems(
+            &matrix_of(vec![row.clone()]),
+            &types,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("SessionBound"), "{problems:?}");
+        assert!(
+            problems[0].contains("no D-Bus service descriptor"),
+            "{problems:?}"
+        );
+
+        let present = BTreeSet::from(["lege-filed.service".to_owned()]);
+        let problems =
+            service_inventory_problems(&matrix_of(vec![row]), &types, &present, &present);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("eagerly Wants"), "{problems:?}");
     }
 
     #[test]
@@ -2258,7 +2334,15 @@ mod extraction_tests {
         row.authority.clear();
         row.recovery.clear();
         row.deadlines.clear();
-        assert!(service_inventory_problems(&matrix_of(vec![row]), &BTreeMap::new()).is_empty());
+        assert!(
+            service_inventory_problems(
+                &matrix_of(vec![row]),
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

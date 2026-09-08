@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.legeos.Host
+Exec=/usr/libexec/lege-hostd
+User=root
+SystemdService=lege-hostd.service

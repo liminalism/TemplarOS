@@ -30,8 +30,9 @@
 # renders them.
 #
 # authority     — the state domain this component is the single authoritative owner of.
-# lifetime      — dbus-activated | session-bound | oneshot. Checked against the unit's `Type=`:
-#                 `Type=dbus` and `dbus-activated` mean each other, in both directions.
+# lifetime      — dbus-activated | session-bound | oneshot. `Type=dbus` describes readiness, not
+#                 activation. A dbus-activated unit must also ship a D-Bus activation descriptor;
+#                 a session-bound authority may use `Type=dbus` while continuously owning state.
 # consumer_interfaces — the typed boundary consumers read that state through. Never the private
 #                 store: a consumer that opens the owner's SQLite is the thing the decision
 #                 forbids.
@@ -104,7 +105,7 @@ activation = "manual"
 depends_on = []
 summary = "file service"
 authority = "the per-user file index and every filesystem watch in the session; transactional file operations and their journals"
-lifetime = "dbus-activated"
+lifetime = "session-bound"
 consumer_interfaces = [
     "org.legeos.Files.Index1", "org.legeos.Files.Browse1", "org.legeos.Files.Search1",
     "org.legeos.Files.Volumes1", "org.legeos.Files.Previews1",
@@ -208,7 +209,11 @@ lifetime = "session-bound"
 consumer_interfaces = []
 recovery = "restartable in about half a second; it re-reads every service it draws from on start"
 deadlines = "restart is not allowed to outlive the compositor's recovery band"
-timer_exceptions = []
+timer_exceptions = [
+    { site = "surface/app.rs:spawn_reconciliation_loop", interval = "5m", reason = "bounded reconciliation after a lost D-Bus signal or an authority restart, and a backstop for legacy battery, volume, brightness and mount sources that do not yet signal every external change; normal updates use authority signals" },
+    { site = "surface/app.rs:copy_text_to_clipboard", interval = "3s deadline", reason = "an inherently temporal upper bound while waiting for wl-copy to take clipboard ownership; the child exit normally wakes the task first" },
+    { site = "screenshot.rs:capture", interval = "10s deadline", reason = "an inherently temporal watchdog for a compositor backend that stops producing frame callbacks; a screenshot command must fail rather than hang forever" },
+]
 
 
 [[component]]
