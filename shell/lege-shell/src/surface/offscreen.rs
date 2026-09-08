@@ -158,7 +158,22 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 /// hundred pixels in the corner of a live session, and every question about it (is the ground
 /// there, do the labels fit, does the stripe eat the plate) is answerable from an image.
 pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
-    use crate::surface::bar_screen::{BarData, BarScreen, wanted_size};
+    let buffer = bar_frame(crate::surface::bar_screen::Presence::Open, scale);
+    write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
+}
+
+/// One frame of the bar in one presence, in a surface exactly the size the host would ask for
+/// (`bar_screen::wanted_size`).
+///
+/// `Revealed` is *driven* rather than set: the fixture puts the pointer on the hint and lets the
+/// dwell elapse, so this renders the state a person actually reaches rather than one only a test
+/// can construct.
+#[allow(clippy::too_many_lines)]
+pub(super) fn bar_frame(
+    presence: crate::surface::bar_screen::Presence,
+    scale: f64,
+) -> WindowBuffer {
+    use crate::surface::bar_screen::{BarData, BarScreen, HINT_OPEN_MS, Presence, wanted_size};
 
     let entries = vec![
         crate::taskbar::Entry {
@@ -197,7 +212,7 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
             active: false,
         },
     ];
-    let logical = wanted_size(false, false, 2560);
+    let logical = wanted_size(presence, false, false, 2560);
     let scale = Scale::new(scale);
     let (width, height) = (scale.px(logical.0) as u32, scale.px(logical.1) as u32);
 
@@ -228,30 +243,64 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
     let data = BarData {
         entries: &entries,
         icons: &icons,
-        clock_label: &crate::surface::app::clock_label_now(),
+        // A fixed clock, not the wall clock: this fixture is hashed as a visual baseline, and
+        // a baseline that changes every minute is not one.
+        clock_label: "MON 8 SEP 12:00",
         network_control_available: true,
         calendar_available: true,
         account_label: "dk",
-        activated: Some((lege_window::WindowId(1), false)),
+        activated: Some(lege_window::WindowId(1)),
+        covered: presence != Presence::Open,
         home_revealed: false,
         machine: &machine,
         now_ms: 0,
     };
-    // The pointer over the last chip, so one entry is drawn hovered. The dwell has not elapsed
-    // (`now_ms` is 0), so no row opens and the strip stays its resting width.
-    let last = width as f32 - scale.px(24) as f32;
-    input.cursor_moved(last, height as f32 / 2.0);
-    let mut ui = Ui::new(
-        Painter::new(&mut buffer),
-        &mut text,
-        &mut input,
-        design::theme(),
-        scale,
-        &mut kernel,
-    );
-    screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
-    input.end_frame();
-    write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
+    // Open: the pointer over the last chip, so one entry is drawn hovered. The dwell has not
+    // elapsed (`now_ms` is 0), so no row opens and the strip stays its resting height.
+    // Hint: no pointer at all — the chevron at rest, which is how it is nearly always seen.
+    // Revealed: the pointer on the hint, then again once the reveal dwell has elapsed.
+    let mut paint = |buffer: &mut WindowBuffer, input: &mut Input, data: &BarData<'_>| {
+        let (w, h) = (buffer.width as i32, buffer.height as i32);
+        let mut ui = Ui::new(
+            Painter::new(buffer),
+            &mut text,
+            input,
+            design::theme(),
+            scale,
+            &mut kernel,
+        );
+        screen.draw(&mut ui, Rect::new(0, 0, w, h), data);
+        input.end_frame();
+    };
+    match presence {
+        Presence::Open => {
+            let last = width as f32 - scale.px(24) as f32;
+            input.cursor_moved(last, height as f32 / 2.0);
+        }
+        Presence::Hint => {}
+        Presence::Revealed => {
+            let hint = wanted_size(Presence::Hint, false, false, 2560);
+            let mut first = WindowBuffer::new(width, scale.px(hint.1) as u32);
+            input.cursor_moved(width as f32 / 2.0, scale.px(hint.1) as f32 - 1.0);
+            paint(&mut first, &mut input, &data);
+            let revealed = BarData {
+                now_ms: HINT_OPEN_MS,
+                ..data
+            };
+            paint(&mut first, &mut input, &revealed);
+            input.cursor_moved(width as f32 / 2.0, height as f32 - 1.0);
+        }
+    }
+    let now = BarData {
+        now_ms: if presence == Presence::Revealed {
+            HINT_OPEN_MS
+        } else {
+            0
+        },
+        ..data
+    };
+    paint(&mut buffer, &mut input, &now);
+    buffer
 }
 
 /// `WindowBuffer` is 0xAARRGGBB in native order; PNG wants RGBA bytes.
@@ -605,6 +654,69 @@ mod tests {
         assert_eq!(
             hash, 0xa386_f28b_037c_e53e,
             "review the Home Field pixels before updating this baseline"
+        );
+    }
+
+    /// Fixed-pixel baseline for the three presences of the bottom bar.
+    ///
+    /// The bar has no reservation any more, so what it looks like *is* the whole of how it
+    /// behaves: open over Home, a six-pixel chevron under a window, and the bar back out again
+    /// when the pointer asks. One hash each, reviewed by eye through the dump below. Fails on any
+    /// pixel change — read it as "look at the render", not as "something is broken".
+    ///
+    /// `LEGE_BAR_PRESENCE_DUMP=<dir>` writes the three renders as PNGs (at scale 1 and 2) and
+    /// skips the hashes, which is how the reviewed images under `docs/measurements/` are made.
+    #[test]
+    fn visual_regression_bar_presence_baseline() {
+        use crate::surface::bar_screen::Presence;
+
+        let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
+        for (presence, name, expected) in [
+            (Presence::Open, "open", 0x8f74_a830_2732_adb3_u64),
+            (Presence::Hint, "hint", 0x01f6_203e_ed9b_b415),
+            (Presence::Revealed, "revealed", 0x1ea5_c065_0f00_6a5c),
+        ] {
+            let buffer = bar_frame(presence, 1.0);
+            if let Some(dir) = &dump {
+                let dir = std::path::Path::new(dir);
+                std::fs::create_dir_all(dir).expect("the dump directory");
+                write_png(&dir.join(format!("bar-{name}.png")), &buffer).expect("dumping");
+                let at_2x = bar_frame(presence, 2.0);
+                write_png(&dir.join(format!("bar-{name}@2x.png")), &at_2x).expect("dumping");
+                continue;
+            }
+            let hash = buffer
+                .pixels
+                .iter()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, pixel| {
+                    pixel.to_le_bytes().into_iter().fold(hash, |hash, byte| {
+                        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                    })
+                });
+            assert_eq!(
+                hash, expected,
+                "review the bar's {name} pixels before updating this baseline"
+            );
+        }
+    }
+
+    /// The hint is a strip of the bar's ground with a chevron on it, and nothing else: whatever
+    /// the surface's height, the paint must fill it — this surface has no alpha, so an unpainted
+    /// row is a black line across the bottom of the screen.
+    #[test]
+    fn the_hint_is_six_logical_pixels_and_every_one_of_them_is_painted() {
+        use crate::surface::bar_screen::{HINT_HEIGHT, Presence};
+
+        let buffer = bar_frame(Presence::Hint, 1.0);
+        assert_eq!(buffer.height, HINT_HEIGHT as u32);
+        let ground = design::ground();
+        assert!(
+            buffer.pixels.iter().any(|&p| p != ground),
+            "the chevron is somewhere on the strip"
+        );
+        assert!(
+            buffer.pixels.iter().all(|&p| p != 0),
+            "and nothing was left black"
         );
     }
 
