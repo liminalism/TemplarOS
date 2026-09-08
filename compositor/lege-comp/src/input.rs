@@ -1364,11 +1364,25 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     return;
                 }
                 Affordance::Button(ControlTag::Maximize) => {
+                    // On a fullscreen window's own chrome the middle tag leaves fullscreen. It
+                    // used to maximize instead: the client was configured to the maximized
+                    // rectangle while `fullscreen` stayed true, which is a window that is both
+                    // and neither.
+                    if self.window_service.fullscreen_chrome() == Some(window_id) {
+                        crate::xdg_shell::apply_fullscreen(self, window_id, false);
+                        return;
+                    }
                     let maximized = self
                         .window_service
                         .window(window_id)
                         .is_some_and(|window| window.maximized);
                     crate::xdg_shell::apply_maximized(self, window_id, !maximized);
+                    return;
+                }
+                // A fullscreen window's name tag names it and nothing else. Dragging it would
+                // move a window whose geometry is the output off the output, which COMPOSITOR.md
+                // says is never repaired — and there is nowhere for it to go anyway.
+                Affordance::Tag if self.window_service.fullscreen_chrome() == Some(window_id) => {
                     return;
                 }
                 Affordance::Tag => Gesture::Move,
