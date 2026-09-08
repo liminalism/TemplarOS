@@ -10,6 +10,18 @@ use std::collections::BTreeMap;
 
 use lege_window::{DockGrouping, Layer, ShellToplevel, WindowId};
 
+/// One window of an entry, as the hover row needs it.
+///
+/// `preview` is what this window's capture is filed under
+/// ([`crate::field_model::session_identifier`]) — carried rather than derived because the bar
+/// never sees a `ShellToplevel`, and the key belongs to one function, not to two.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryWindow {
+    pub id: WindowId,
+    pub title: String,
+    pub preview: String,
+}
+
 /// One thing on the bar to switch to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -21,8 +33,8 @@ pub struct Entry {
     pub accent: Option<u32>,
     /// The application whose icon this entry wears, when it is one.
     pub app_id: Option<String>,
-    /// Every window in the entry with its title, in encounter order.
-    pub windows: Vec<(WindowId, String)>,
+    /// Every window in the entry, in encounter order.
+    pub windows: Vec<EntryWindow>,
     /// Which of [`Self::windows`] are parked on the shelf.
     ///
     /// Parking used to mean a tile appeared on Home; Home now holds only the user's own things,
@@ -37,7 +49,7 @@ impl Entry {
     /// The one window a click goes straight to, when there is exactly one.
     pub fn sole_window(&self) -> Option<WindowId> {
         match self.windows.as_slice() {
-            [(id, _)] => Some(*id),
+            [only] => Some(only.id),
             _ => None,
         }
     }
@@ -75,10 +87,7 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
             label: crate::field_model::group_title(&info.name, members.len()),
             accent: Some(info.accent),
             app_id: None,
-            windows: members
-                .iter()
-                .map(|member| (member.window_id, title_of(member)))
-                .collect(),
+            windows: members.iter().map(|member| entry_window(member)).collect(),
             parked: members
                 .iter()
                 .filter(|member| member.shelved)
@@ -88,14 +97,24 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
         });
     }
     for entry in crate::dock::group(&loose, DockGrouping::ByApplication) {
-        let windows: Vec<(WindowId, String)> = entry
+        let windows: Vec<EntryWindow> = entry
             .window_ids
             .iter()
-            .copied()
-            .zip(entry.titles.iter().cloned())
+            .zip(entry.titles.iter())
+            .map(|(id, title)| EntryWindow {
+                id: *id,
+                title: title.clone(),
+                // The key is a function of the window, and `dock::group` has already dropped the
+                // toplevel it came from; the list is a few dozen windows at most.
+                preview: loose
+                    .iter()
+                    .find(|toplevel| toplevel.window_id == *id)
+                    .map(preview_key)
+                    .unwrap_or_default(),
+            })
             .collect();
         let label = match windows.as_slice() {
-            [(_, title)] => title.clone(),
+            [only] => only.title.clone(),
             _ => entry.key.parse::<lege_types::AppId>().map_or_else(
                 |_| entry.key.clone(),
                 |id| crate::field_model::short_name(&id),
@@ -120,6 +139,20 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
         });
     }
     out
+}
+
+fn entry_window(toplevel: &ShellToplevel) -> EntryWindow {
+    EntryWindow {
+        id: toplevel.window_id,
+        title: title_of(toplevel),
+        preview: preview_key(toplevel),
+    }
+}
+
+/// What this window's capture is filed under — the same key Home's session tiles use, so the
+/// bar and Home read one cache rather than two.
+fn preview_key(toplevel: &ShellToplevel) -> String {
+    crate::field_model::session_identifier(toplevel, None)
 }
 
 fn title_of(toplevel: &ShellToplevel) -> String {
@@ -174,6 +207,20 @@ mod tests {
             vec!["group:9", "org.example.Editor", "org.legeos.Files"]
         );
         assert_eq!(entries[0].windows.len(), 2);
+        // The hover row looks a preview up by this key, and Home files it under that same one:
+        // one cache, one formula, whichever branch of `entries` built the window.
+        for entry in &entries {
+            for window in &entry.windows {
+                let toplevel = toplevels
+                    .iter()
+                    .find(|t| t.window_id == window.id)
+                    .expect("every entry window is a toplevel");
+                assert_eq!(
+                    window.preview,
+                    crate::field_model::session_identifier(toplevel, None)
+                );
+            }
+        }
         assert_eq!(entries[0].label, "2 windows");
         assert_eq!(entries[0].accent, Some(0x0011_2233));
         // A one-window application is that window.
@@ -256,7 +303,7 @@ mod tests {
         let entries = entries(&toplevels);
         let mut seen: Vec<WindowId> = entries
             .iter()
-            .flat_map(|entry| entry.windows.iter().map(|(id, _)| *id))
+            .flat_map(|entry| entry.windows.iter().map(|window| window.id))
             .collect();
         let count = seen.len();
         seen.sort_unstable();

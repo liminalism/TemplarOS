@@ -158,7 +158,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 /// hundred pixels in the corner of a live session, and every question about it (is the ground
 /// there, do the labels fit, does the stripe eat the plate) is answerable from an image.
 pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
-    let buffer = bar_frame(crate::surface::bar_screen::Presence::Open, scale);
+    let buffer = bar_frame(crate::surface::bar_screen::Presence::Open, false, scale);
     write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
 }
 
@@ -167,13 +167,17 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
 ///
 /// `Revealed` is *driven* rather than set: the fixture puts the pointer on the hint and lets the
 /// dwell elapse, so this renders the state a person actually reaches rather than one only a test
-/// can construct.
+/// can construct. `open_row` is driven the same way: the pointer rests on the group's chip until
+/// the hover dwell elapses, which is the only way a row opens in the running shell.
 #[allow(clippy::too_many_lines)]
 pub(super) fn bar_frame(
     presence: crate::surface::bar_screen::Presence,
+    open_row: bool,
     scale: f64,
 ) -> WindowBuffer {
-    use crate::surface::bar_screen::{BarData, BarScreen, HINT_OPEN_MS, Presence, wanted_size};
+    use crate::surface::bar_screen::{
+        BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
+    };
 
     let entries = vec![
         crate::taskbar::Entry {
@@ -182,8 +186,16 @@ pub(super) fn bar_frame(
             accent: Some(0x00e0_7b39),
             app_id: None,
             windows: vec![
-                (lege_window::WindowId(1), "Notes".to_owned()),
-                (lege_window::WindowId(2), "Sources".to_owned()),
+                crate::taskbar::EntryWindow {
+                    id: lege_window::WindowId(1),
+                    title: "Notes".to_owned(),
+                    preview: "window:1".to_owned(),
+                },
+                crate::taskbar::EntryWindow {
+                    id: lege_window::WindowId(2),
+                    title: "Sources".to_owned(),
+                    preview: "window:2".to_owned(),
+                },
             ],
             parked: Vec::new(),
             active: true,
@@ -194,10 +206,11 @@ pub(super) fn bar_frame(
             label: "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
             accent: None,
             app_id: Some("desktop-import.kitty.desktop".to_owned()),
-            windows: vec![(
-                lege_window::WindowId(3),
-                "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
-            )],
+            windows: vec![crate::taskbar::EntryWindow {
+                id: lege_window::WindowId(3),
+                title: "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
+                preview: "window:3".to_owned(),
+            }],
             parked: Vec::new(),
             active: false,
         },
@@ -206,13 +219,17 @@ pub(super) fn bar_frame(
             label: "Settings".to_owned(),
             accent: None,
             app_id: Some("org.legeos.Settings".to_owned()),
-            windows: vec![(lege_window::WindowId(4), "Appearance".to_owned())],
+            windows: vec![crate::taskbar::EntryWindow {
+                id: lege_window::WindowId(4),
+                title: "Appearance".to_owned(),
+                preview: "window:4".to_owned(),
+            }],
             // A parked window exists only on the bar now that Home holds no window tiles.
             parked: vec![lege_window::WindowId(4)],
             active: false,
         },
     ];
-    let logical = wanted_size(presence, false, false, entries.len(), 2560);
+    let logical = wanted_size(presence, open_row, false, entries.len(), 2560);
     let scale = Scale::new(scale);
     let (width, height) = (scale.px(logical.0) as u32, scale.px(logical.1) as u32);
 
@@ -222,6 +239,11 @@ pub(super) fn bar_frame(
     let mut input = Input::new();
     let mut screen = BarScreen::default();
     let icons = HashMap::new();
+    // One of the group's two windows has a capture and the other has not, so a single image
+    // shows both halves of the rule: a preview when there is one, the icon fallback when there
+    // is not. The gradient stands in for a real window's pixels.
+    let mut previews = HashMap::new();
+    previews.insert("window:1".to_owned(), preview_fixture());
     let machine = crate::data::MachineReadings {
         battery: Some(lege_client::status::BatteryState {
             present: true,
@@ -243,6 +265,7 @@ pub(super) fn bar_frame(
     let data = BarData {
         entries: &entries,
         icons: &icons,
+        previews: &previews,
         // A fixed clock, not the wall clock: this fixture is hashed as a visual baseline, and
         // a baseline that changes every minute is not one.
         clock_label: "MON 8 SEP 12:00",
@@ -291,16 +314,45 @@ pub(super) fn bar_frame(
             input.cursor_moved(width as f32 / 2.0, height as f32 - 1.0);
         }
     }
+    if open_row {
+        // The row is opened the way a person opens it: the pointer comes to the first chip and
+        // stays there until the hover dwell elapses. This frame is the chip merely hovered; the
+        // final paint below is the one with the row on it.
+        //
+        // 32 is the island's 8-pixel margin plus half a 48-pixel cell — the middle of the first
+        // chip, which is the group with two windows.
+        input.cursor_moved(scale.px(32) as f32, height as f32 - scale.px(24) as f32);
+        paint(&mut buffer, &mut input, &data);
+    }
     let now = BarData {
-        now_ms: if presence == Presence::Revealed {
-            HINT_OPEN_MS
-        } else {
-            0
+        now_ms: match (presence, open_row) {
+            (Presence::Revealed, _) => HINT_OPEN_MS,
+            (_, true) => HOVER_OPEN_MS,
+            _ => 0,
         },
         ..data
     };
     paint(&mut buffer, &mut input, &now);
     buffer
+}
+
+/// A stand-in for a captured window: a gradient, so a preview in a render is unmistakably a
+/// preview and not a flat fill that happens to be the well's colour.
+fn preview_fixture() -> pixelkit_raster::Bitmap {
+    let (width, height) = (160u32, 100u32);
+    let pixels = (0..width * height)
+        .map(|i| {
+            let (x, y) = (i % width, i / width);
+            let r = 0x20 + (x * 0x60 / width);
+            let g = 0x30 + (y * 0x70 / height);
+            0xff00_0000 | (r << 16) | (g << 8) | 0x90
+        })
+        .collect();
+    pixelkit_raster::Bitmap {
+        width,
+        height,
+        pixels,
+    }
 }
 
 /// `WindowBuffer` is 0xAARRGGBB in native order; PNG wants RGBA bytes.
@@ -657,31 +709,34 @@ mod tests {
         );
     }
 
-    /// Fixed-pixel baseline for the three presences of the bottom bar.
+    /// Fixed-pixel baseline for the bottom bar: its three presences, and the hover row.
     ///
     /// The bar has no reservation any more, so what it looks like *is* the whole of how it
     /// behaves: open over Home, a six-pixel chevron under a window, and the bar back out again
-    /// when the pointer asks. One hash each, reviewed by eye through the dump below. Fails on any
-    /// pixel change — read it as "look at the render", not as "something is broken".
+    /// when the pointer asks. The fourth is the row a dwell opens — one item with a capture and
+    /// one without, which is the whole of the fallback rule in one image. One hash each, reviewed
+    /// by eye through the dump below. Fails on any pixel change — read it as "look at the render",
+    /// not as "something is broken".
     ///
-    /// `LEGE_BAR_PRESENCE_DUMP=<dir>` writes the three renders as PNGs (at scale 1 and 2) and
+    /// `LEGE_BAR_PRESENCE_DUMP=<dir>` writes the four renders as PNGs (at scale 1 and 2) and
     /// skips the hashes, which is how the reviewed images under `docs/measurements/` are made.
     #[test]
     fn visual_regression_bar_presence_baseline() {
         use crate::surface::bar_screen::Presence;
 
         let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
-        for (presence, name, expected) in [
-            (Presence::Open, "open", 0x2fe0_0b05_2398_f2b4_u64),
-            (Presence::Hint, "hint", 0x090f_a0c5_682c_df95),
-            (Presence::Revealed, "revealed", 0x4dbb_4a1a_07a5_150b),
+        for (presence, open_row, name, expected) in [
+            (Presence::Open, false, "open", 0x2fe0_0b05_2398_f2b4_u64),
+            (Presence::Hint, false, "hint", 0x090f_a0c5_682c_df95),
+            (Presence::Revealed, false, "revealed", 0x4dbb_4a1a_07a5_150b),
+            (Presence::Open, true, "row", 0x9b8a_843f_7411_1075),
         ] {
-            let buffer = bar_frame(presence, 1.0);
+            let buffer = bar_frame(presence, open_row, 1.0);
             if let Some(dir) = &dump {
                 let dir = std::path::Path::new(dir);
                 std::fs::create_dir_all(dir).expect("the dump directory");
                 write_png(&dir.join(format!("bar-{name}.png")), &buffer).expect("dumping");
-                let at_2x = bar_frame(presence, 2.0);
+                let at_2x = bar_frame(presence, open_row, 2.0);
                 write_png(&dir.join(format!("bar-{name}@2x.png")), &at_2x).expect("dumping");
                 continue;
             }
@@ -707,7 +762,7 @@ mod tests {
     fn the_hint_is_six_logical_pixels_and_every_one_of_them_is_painted() {
         use crate::surface::bar_screen::{HINT_HEIGHT, Presence};
 
-        let buffer = bar_frame(Presence::Hint, 1.0);
+        let buffer = bar_frame(Presence::Hint, false, 1.0);
         assert_eq!(buffer.height, HINT_HEIGHT as u32);
         let ground = design::ground();
         assert!(

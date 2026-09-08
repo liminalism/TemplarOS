@@ -74,7 +74,7 @@ use lege_window::WindowId;
 
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
-use crate::taskbar::Entry;
+use crate::taskbar::{Entry, EntryWindow};
 
 /// The bar's thickness. It reserves nothing: the exclusive zone is 0.
 pub const BAR_HEIGHT: i32 = 48;
@@ -104,8 +104,18 @@ const HINT_REST_SLOP: i32 = 4;
 /// number as the open dwell, on purpose: "it should hide as easily as it appears".
 pub const HINT_CLOSE_MS: u64 = 120;
 /// The hover row's height, plus the gap between it and the bar.
-pub const ROW_BAND: i32 = 40;
-const ROW_ITEM_WIDTH: i32 = 220;
+///
+/// The row used to be a list of names 40 pixels tall. It is a strip of the windows themselves
+/// now, so it needs the height a picture needs — and it costs it only while the pointer rests on
+/// a chip. The width is what went down: an item is [`ROW_ITEM_WIDTH`] rather than 220, because
+/// the surface is a content-width island and the row shares its width, not the screen's.
+pub const ROW_BAND: i32 = 104;
+/// One row item's pitch. The item itself is [`ROW_GAP`] narrower, so two previews side by side
+/// read as two windows rather than one strip — and on the ARGB surface that gutter is desktop.
+const ROW_ITEM_WIDTH: i32 = 132;
+const ROW_GAP: i32 = 4;
+/// The title line under a row item's preview.
+const ROW_TITLE: i32 = 16;
 /// A chip's height, and the compositor's tag height: the same object on the bar as on the window.
 const CHIP_H: i32 = lege_window::geometry::TAG_HEIGHT;
 const CHIP_GAP: i32 = 8;
@@ -200,6 +210,10 @@ pub struct BarData<'a> {
     pub entries: &'a [Entry],
     /// Application icons by canonical id; absent keys draw an initial.
     pub icons: &'a HashMap<String, Bitmap>,
+    /// Window captures by [`Entry`]'s `EntryWindow::preview` key — the same map Home's session
+    /// tiles read. A key with nothing behind it is a preview that has not arrived (or previews
+    /// turned off), and the row falls back to the application's icon and the title.
+    pub previews: &'a HashMap<String, Bitmap>,
     pub clock_label: &'a str,
     /// Whether the network control's role has a provider that can be launched.
     pub network_control_available: bool,
@@ -370,6 +384,19 @@ impl BarScreen {
     /// Whether the host should make room for a row above the bar.
     pub fn row_open(&self) -> bool {
         self.open_row.is_some()
+    }
+
+    /// The windows whose previews the row wants captured: the open row's, and nothing else.
+    ///
+    /// Home stops capturing the moment a window covers it (`app::previews_covered`), which is
+    /// exactly when this row is the thing being looked at — so the row asks on its own behalf.
+    /// It is a slice of the open entry rather than a policy: empty means "ask for nothing", which
+    /// is every frame in which no row is open.
+    #[must_use]
+    pub fn preview_wants<'a>(&self, entries: &'a [Entry]) -> &'a [EntryWindow] {
+        self.open_row
+            .and_then(|index| entries.get(index))
+            .map_or(&[], |entry| entry.windows.as_slice())
     }
 
     /// How much of the bar is on screen, given what the host says covers the strip. The host
@@ -560,16 +587,14 @@ impl BarScreen {
                     let count = i32::try_from(entry.windows.len()).unwrap_or(1).max(1);
                     // The island is only as wide as its chips, so a long row shares that width
                     // rather than stretching the surface back across the screen.
-                    let item_w = ui.px(ROW_ITEM_WIDTH).min(area.w / count).max(ui.px(CELL));
-                    let start = cell.x.min(area.right() - item_w * count).max(area.x);
+                    let pitch = ui.px(ROW_ITEM_WIDTH).min(area.w / count).max(ui.px(CELL));
+                    let start = cell.x.min(area.right() - pitch * count).max(area.x);
+                    // The pitch is the item plus its gutter; the item is what is painted and what
+                    // is clicked, so the gutter belongs to neither.
+                    let item_w = (pitch - ui.px(ROW_GAP)).max(1);
                     (0..count)
                         .map(|i| {
-                            Rect::new(
-                                start + i * item_w,
-                                bar.y - ui.px(4) - item_h,
-                                item_w,
-                                item_h,
-                            )
+                            Rect::new(start + i * pitch, bar.y - ui.px(4) - item_h, item_w, item_h)
                         })
                         .collect()
                 }
@@ -647,6 +672,62 @@ impl BarScreen {
                     self.left_at = None;
                 }
             }
+        }
+    }
+
+    /// One row item's picture: the window itself once a capture has arrived, and until then the
+    /// application's icon — which is what the row was before previews, so a preview in flight is
+    /// a legible item rather than an empty box.
+    fn draw_row_preview(
+        ui: &mut Ui<'_>,
+        rect: Rect,
+        entry: &Entry,
+        window: &EntryWindow,
+        data: &BarData<'_>,
+    ) {
+        let pad = ui.px(4);
+        let well = Rect::new(
+            rect.x + pad,
+            rect.y + pad,
+            rect.w - 2 * pad,
+            rect.h - 2 * pad - ui.px(ROW_TITLE),
+        );
+        if well.w <= 0 || well.h <= 0 {
+            return;
+        }
+        ui.painter.fill_rounded_rect_aa(
+            ui.kernel,
+            well,
+            ui.px(design::WELL_RADIUS) as f32,
+            design::well_fill(),
+            255,
+        );
+        ui.painter
+            .stroke_rect(well, ui.scale.hairline(), design::edge());
+        if let Some(preview) = data.previews.get(&window.preview) {
+            // ponytail: stretched into the well, exactly as Home's own tiles blit theirs. If a
+            // squashed thumbnail ever reads wrong, the upgrade is letterboxing to the capture's
+            // aspect inside this one rectangle.
+            ui.painter
+                .blit(preview, well.inset(ui.px(1)), ScaleFilter::Bilinear);
+            return;
+        }
+        let side = ui.px(ICON).min(well.w).min(well.h).max(4);
+        let icon = Rect::new(
+            well.x + (well.w - side) / 2,
+            well.y + (well.h - side) / 2,
+            side,
+            side,
+        );
+        if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
+            ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
+        } else {
+            ui.label(
+                icon,
+                &chip_initial(entry),
+                design::text_faint(),
+                Align::Centre,
+            );
         }
     }
 
@@ -773,8 +854,9 @@ impl BarScreen {
         if let Some(index) = self.open_row
             && let Some(entry) = data.entries.get(index)
         {
-            for (rect, (window, title)) in layout.row.iter().zip(&entry.windows) {
+            for (rect, window) in layout.row.iter().zip(&entry.windows) {
                 self.opaque.push((*rect, ui.px(design::CHIP_RADIUS)));
+                let parked = entry.is_parked(window.id);
                 let hovered = ui.input.hovering(*rect);
                 design::shell(
                     ui,
@@ -787,11 +869,18 @@ impl BarScreen {
                     design::edge_strong(),
                     Elevation::Lifted,
                 );
+                Self::draw_row_preview(ui, *rect, entry, window, data);
+                let title = Rect::new(
+                    rect.x,
+                    rect.bottom() - ui.px(ROW_TITLE + 4),
+                    rect.w,
+                    ui.px(ROW_TITLE),
+                );
                 ui.label_styled(
-                    rect.inset(ui.px(8)),
-                    title,
+                    title.inset(ui.px(6)),
+                    &window.title,
                     design::state_style(ui),
-                    if entry.is_parked(*window) {
+                    if parked {
                         design::text_faint()
                     } else {
                         design::text()
@@ -799,10 +888,10 @@ impl BarScreen {
                     Align::Left,
                 );
                 if ui.input.take_click(*rect) {
-                    if entry.is_parked(*window) {
-                        actions.push(BarAction::Field(FieldAction::Restore(*window)));
+                    if parked {
+                        actions.push(BarAction::Field(FieldAction::Restore(window.id)));
                     }
-                    actions.push(BarAction::Activate(*window));
+                    actions.push(BarAction::Activate(window.id));
                     self.open_row = None;
                     self.left_at = None;
                 }
@@ -1066,6 +1155,7 @@ mod tests {
         screen: BarScreen,
         toplevels: Vec<ShellToplevel>,
         icons: HashMap<String, Bitmap>,
+        previews: HashMap<String, Bitmap>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
         buffer: WindowBuffer,
@@ -1085,6 +1175,7 @@ mod tests {
                 screen: BarScreen::default(),
                 toplevels,
                 icons: HashMap::new(),
+                previews: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, tallest() as u32),
@@ -1155,6 +1246,7 @@ mod tests {
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
+                previews: &self.previews,
                 clock_label: "MON 7 SEP 12:00",
                 network_control_available: true,
                 calendar_available: self.calendar_available,
@@ -1203,6 +1295,7 @@ mod tests {
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
+                previews: &self.previews,
                 clock_label: "",
                 network_control_available: true,
                 calendar_available: self.calendar_available,
@@ -1338,6 +1431,134 @@ mod tests {
         h.now += HOVER_CLOSE_MS;
         h.frame();
         assert_eq!(h.screen.open_row, None);
+    }
+
+    /// Open the row of the first entry the way a person does: rest on its chip until the dwell
+    /// elapses. The host has resized by the time this returns, so the row's rectangles are the
+    /// ones a real click would land on.
+    fn open_row_of(h: &mut Harness, index: usize) {
+        h.frame();
+        let cell = h.cells()[index];
+        h.input
+            .cursor_moved((cell.x + 10) as f32, (cell.y + 10) as f32);
+        h.frame();
+        h.now = HOVER_OPEN_MS;
+        h.frame();
+        h.frame();
+        assert_eq!(h.screen.open_row, Some(index));
+    }
+
+    /// A row item is the window, not its name — and when the capture has not arrived it is still
+    /// legible, because that is what the row was before previews. Both halves in one frame: the
+    /// first window has a preview and the second has not.
+    #[test]
+    fn a_row_item_shows_its_window_preview_and_falls_back_without_one() {
+        const CAPTURE: u32 = 0x0012_3456;
+        let mut h = Harness::new(vec![
+            window(2, "org.legeos.Files", "Downloads", false, false),
+            window(3, "org.legeos.Files", "Pictures", false, false),
+        ]);
+        h.previews.insert(
+            "window:2".to_owned(),
+            Bitmap {
+                width: 8,
+                height: 8,
+                // Opaque, like every capture `previews::ShmBuffer::read` produces: a bitmap with
+                // no alpha blits to nothing.
+                pixels: vec![0xff00_0000 | CAPTURE; 64],
+            },
+        );
+        open_row_of(&mut h, 0);
+        let row = h.rects().row;
+        assert_eq!(row.len(), 2);
+        let stride = h.buffer.width as usize;
+        // The middle of each item's well: above the title line, inside the preview.
+        let well_centre = |rect: Rect| {
+            let (x, y) = (
+                rect.x + rect.w / 2,
+                rect.y + 4 + (rect.h - 8 - ROW_TITLE) / 2,
+            );
+            h.buffer.pixels[y as usize * stride + x as usize] & 0x00ff_ffff
+        };
+        assert_eq!(
+            well_centre(row[0]),
+            CAPTURE,
+            "the window with a capture shows it"
+        );
+        assert_ne!(
+            well_centre(row[1]),
+            CAPTURE,
+            "the window without one shows its own fallback, not the other window"
+        );
+        // And the fallback is not the raw surface either: the well is painted.
+        assert_ne!(well_centre(row[1]), 0, "an empty box is not an item");
+    }
+
+    /// The island is only as wide as its chips and the row shares that width, so a row that
+    /// reached past it would be a strip of previews hanging off the end of the surface.
+    #[test]
+    fn the_open_row_fits_inside_the_island() {
+        for titles in [vec!["Downloads", "Pictures"], vec!["a", "b", "c", "d", "e"]] {
+            let toplevels = titles
+                .iter()
+                .enumerate()
+                .map(|(index, title)| {
+                    window(index as u64 + 2, "org.legeos.Files", title, false, false)
+                })
+                .collect();
+            let mut h = Harness::new(toplevels);
+            open_row_of(&mut h, 0);
+            let island = h.island();
+            let row = h.rects().row;
+            assert_eq!(row.len(), titles.len());
+            for rect in &row {
+                assert!(
+                    rect.x >= 0 && rect.right() <= island,
+                    "{rect:?} leaves the island ({island} wide) with {} windows",
+                    titles.len()
+                );
+            }
+            assert_eq!(h.wanted().0, island, "the row never widens the surface");
+        }
+    }
+
+    /// The row is the only thing that asks for a capture while a window covers Home, so it must
+    /// ask for exactly the windows it is showing and stop the moment it closes.
+    #[test]
+    fn previews_are_asked_for_only_while_a_row_is_open() {
+        let mut h = Harness::new(vec![
+            window(2, "org.legeos.Files", "Downloads", false, false),
+            window(3, "org.legeos.Files", "Pictures", false, false),
+            window(4, "org.example.Editor", "notes", false, false),
+        ]);
+        h.frame();
+        let entries = taskbar::entries(&h.toplevels);
+        assert!(
+            h.screen.preview_wants(&entries).is_empty(),
+            "a closed row asks for nothing"
+        );
+        // The Files entry is second: applications sort by key, and `org.example.Editor` is the
+        // one-window entry that opens no row at all.
+        open_row_of(&mut h, 1);
+        let wants: Vec<WindowId> = h
+            .screen
+            .preview_wants(&entries)
+            .iter()
+            .map(|window| window.id)
+            .collect();
+        assert_eq!(
+            wants,
+            vec![WindowId(2), WindowId(3)],
+            "the open row's windows, and not the editor that is not in it"
+        );
+        h.input.cursor_left();
+        h.frame();
+        h.now += HOVER_CLOSE_MS;
+        h.frame();
+        assert!(
+            h.screen.preview_wants(&entries).is_empty(),
+            "the row closed, so nothing is being looked at"
+        );
     }
 
     /// The bar reserves nothing, so a maximized window fills the output and wears its own tags
@@ -1840,7 +2061,7 @@ mod tests {
 #[cfg(test)]
 mod initial_tests {
     use super::{chip_initial, first_letter};
-    use crate::taskbar::Entry;
+    use crate::taskbar::{Entry, EntryWindow};
     use lege_window::WindowId;
 
     fn entry(app_id: Option<&str>, label: &str) -> Entry {
@@ -1849,7 +2070,11 @@ mod initial_tests {
             label: label.to_owned(),
             accent: None,
             app_id: app_id.map(ToOwned::to_owned),
-            windows: vec![(WindowId(1), label.to_owned())],
+            windows: vec![EntryWindow {
+                id: WindowId(1),
+                title: label.to_owned(),
+                preview: "window:1".to_owned(),
+            }],
             parked: Vec::new(),
             active: false,
         }
