@@ -1023,9 +1023,12 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     window_id,
                     geometry: record.geometry,
                     is_client: self.window_service.is_client_window(window_id),
-                    has_frame: self.window_service.has_frame(window_id),
+                    has_frame: self.window_service.has_frame(window_id)
+                        || self.window_service.fullscreen_chrome() == Some(window_id),
                     maximized: record.maximized,
-                    strip: if self.window_service.has_frame(window_id) {
+                    strip: if self.window_service.has_frame(window_id)
+                        || self.window_service.fullscreen_chrome() == Some(window_id)
+                    {
                         self.window_service
                             .recovery_affordance(window_id)
                             .map(|affordance| affordance.strip)
@@ -1081,6 +1084,16 @@ impl<B: Backend + 'static> LegeCompState<B> {
         {
             self.dwell = None;
             if self.window_service.set_peek_output(None) {
+                crate::space_sync::sync_after_change(self);
+            }
+        }
+        // A fullscreen window's own chrome goes the same way, and holds for the same reason: the
+        // strip it just showed has to be reachable, so the pointer is allowed anywhere on it.
+        if let Some(shown) = self.window_service.fullscreen_chrome()
+            && !self.holding_fullscreen_chrome(shown, pos)
+        {
+            self.dwell = None;
+            if self.window_service.set_fullscreen_chrome(None) {
                 crate::space_sync::sync_after_change(self);
             }
         }
@@ -1156,6 +1169,11 @@ impl<B: Backend + 'static> LegeCompState<B> {
                     crate::space_sync::sync_after_change(self);
                 }
             }
+            DwellIntent::FullscreenChrome(window_id) => {
+                if self.window_service.set_fullscreen_chrome(Some(window_id)) {
+                    crate::space_sync::sync_after_change(self);
+                }
+            }
         }
         None
     }
@@ -1172,31 +1190,63 @@ impl<B: Backend + 'static> LegeCompState<B> {
             .outputs()
             .iter()
             .find(|output| rect_contains(output.logical, pos))?;
-        if in_home_corner(output.logical, pos) {
-            // Nothing to ask for if Home is already showing. Without this, a pointer resting in
-            // the corner re-fires the reveal on every twitch inside the rest slop, and each one
-            // costs a re-sync and a refocus for a state that has not changed.
-            if self.window_service.home_revealed() {
-                return None;
-            }
+        // What is fullscreen on this output, if anything. It changes what both corners mean: a
+        // window filling the screen has no frame to reach for and the shell's bar carries no copy
+        // of its controls, so while one is up the corners belong to *it* rather than to Home.
+        let fullscreen = self
+            .window_service
+            .windows()
+            .find(|window| {
+                window.fullscreen
+                    && !window.shelved
+                    && self.window_service.is_client_window(window.id)
+                    && window.geometry.intersection_area(output.logical) > 0
+            })
+            .map(|window| window.id);
+
+        if in_home_corner(output.logical, pos) || in_controls_corner(output.logical, pos) {
             // Not while the shell's own chrome is under the pointer: whatever it is showing there
             // is what the person is reaching for, and it gets the press. This is why the island
             // is centred (`lege-shell-v1.xml`'s `set_edge_alignment`) — a bottom-anchored surface
-            // at the start of its edge sits exactly on top of this square.
-            return (!self.over_shell_overlay(pos)).then_some(DwellIntent::HomeCorner);
+            // at the start of its edge sits exactly on top of the left-hand square.
+            if self.over_shell_overlay(pos) {
+                return None;
+            }
+            if let Some(window_id) = fullscreen {
+                // The user's rule: "close/maximize/minimize should appear on hover in the bottom
+                // right, over the full screen window, not adjacent to it. same for the tag in the
+                // bottom left." One dwell shows both — they are one strip, and a person reaching
+                // for either has asked to see the window's own chrome.
+                return (self.window_service.fullscreen_chrome() != Some(window_id))
+                    .then_some(DwellIntent::FullscreenChrome(window_id));
+            }
+            // Nothing to ask for if Home is already showing. Without this, a pointer resting in
+            // the corner re-fires the reveal on every twitch inside the rest slop, and each one
+            // costs a re-sync and a refocus for a state that has not changed.
+            return (!self.window_service.home_revealed() && in_home_corner(output.logical, pos))
+                .then_some(DwellIntent::HomeCorner);
         }
         if !in_peek_band(output.logical, pos)
             || self.window_service.peek_output() == Some(output.name.as_str())
         {
             return None;
         }
-        let covered = self.window_service.windows().any(|window| {
-            window.fullscreen
-                && !window.shelved
-                && self.window_service.is_client_window(window.id)
-                && window.geometry.intersection_area(output.logical) > 0
-        });
-        covered.then(|| DwellIntent::BarPeek(output.name.clone()))
+        fullscreen.map(|_| DwellIntent::BarPeek(output.name.clone()))
+    }
+
+    /// Whether a fullscreen window's chrome should stay shown: the pointer is still in one of the
+    /// corners that opened it, or anywhere on the strip it put there. Without the strip, moving on
+    /// to the close button would be moving off the thing that summoned it.
+    fn holding_fullscreen_chrome(&self, window_id: WindowId, pos: LegePoint) -> bool {
+        let Some(window) = self.window_service.window(window_id) else {
+            return false;
+        };
+        if in_home_corner(window.geometry, pos) || in_controls_corner(window.geometry, pos) {
+            return true;
+        }
+        self.window_service
+            .recovery_affordance(window_id)
+            .is_some_and(|affordance| rect_contains(affordance.strip, pos))
     }
 
     /// Whether a peek on `output` should stay up: the pointer is still on the edge that opened
@@ -1518,6 +1568,10 @@ pub enum DwellIntent {
     /// The rest of the bottom edge of a named output carrying a fullscreen window: raise the
     /// shell's overlay over it.
     BarPeek(String),
+    /// Either bottom corner of a fullscreen window: show that window's own name tag and controls
+    /// over it. A fullscreen window has no frame to reach for and the shell's bar carries no copy
+    /// of its controls, so without this there is no pointer route to closing it at all.
+    FullscreenChrome(WindowId),
 }
 
 /// A dwell in progress: what it is for, where the pointer settled, and when it settled there.
@@ -1562,6 +1616,16 @@ fn in_home_corner(output: lege_window::Rect, pos: LegePoint) -> bool {
         && pos.y < output.bottom()
 }
 
+/// The bottom-*right* square, mirroring [`in_home_corner`]. It is where a fullscreen window's
+/// controls appear, and it means nothing when no window is fullscreen — a corner that does
+/// something only sometimes is better than one that does two things.
+fn in_controls_corner(output: lege_window::Rect, pos: LegePoint) -> bool {
+    pos.x >= output.right() - HOME_CORNER
+        && pos.x < output.right()
+        && pos.y >= output.bottom() - HOME_CORNER
+        && pos.y < output.bottom()
+}
+
 /// Whether `pos` is in the band along `output`'s bottom edge that opens a peek.
 ///
 /// Disjoint from [`in_home_corner`] by construction rather than by a precedence rule: the corner
@@ -1572,6 +1636,7 @@ fn in_peek_band(output: lege_window::Rect, pos: LegePoint) -> bool {
         && pos.y >= output.bottom() - PEEK_BAND
         && pos.y < output.bottom()
         && !in_home_corner(output, pos)
+        && !in_controls_corner(output, pos)
 }
 
 #[cfg(test)]
@@ -1606,7 +1671,7 @@ mod tests {
             (0, 1069, false, false),   // and one pixel above the band
             (7, 1079, true, false),    // inside the square, on the bottom row
             (960, 1079, false, true),  // the middle of the edge
-            (1919, 1076, false, true), // the other end of it
+            (1900, 1076, false, true), // the other end of it, short of the controls' corner
             (960, 1069, false, false), // above the band
             (960, 1080, false, false), // off the output
         ] {
@@ -1620,6 +1685,37 @@ mod tests {
                 !(in_home_corner(screen, at(x, y)) && in_peek_band(screen, at(x, y))),
                 "disjoint at {x},{y}"
             );
+        }
+    }
+
+    /// A fullscreen window owns both bottom corners: the tag at the left, the controls at the
+    /// right, drawn over it rather than beside it. The user's rule, and the reason for it is that
+    /// there is otherwise no pointer route to closing a fullscreen window at all — it wears no
+    /// frame, and the island carries no copy of its controls.
+    #[test]
+    fn a_fullscreen_window_owns_both_bottom_corners_and_the_bar_owns_the_edge_between_them() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        for (x, y, left, right, band) in [
+            (0, 1079, true, false, false),     // the tag's corner
+            (1919, 1079, false, true, false),  // the controls' corner
+            (1912, 1072, false, true, false),  // the far edge of that square
+            (1911, 1079, false, false, true),  // one pixel inside it, along the bottom
+            (960, 1079, false, false, true),   // the middle of the edge is the switcher's
+            (960, 1069, false, false, false),  // above the band
+            (1919, 1069, false, false, false), // and above the right-hand square
+        ] {
+            assert_eq!(in_home_corner(screen, at(x, y)), left, "left at {x},{y}");
+            assert_eq!(
+                in_controls_corner(screen, at(x, y)),
+                right,
+                "right at {x},{y}"
+            );
+            assert_eq!(in_peek_band(screen, at(x, y)), band, "band at {x},{y}");
+            // Three regions along one edge, and never two of them at once.
+            let claims = u8::from(in_home_corner(screen, at(x, y)))
+                + u8::from(in_controls_corner(screen, at(x, y)))
+                + u8::from(in_peek_band(screen, at(x, y)));
+            assert!(claims <= 1, "{claims} regions claim {x},{y}");
         }
     }
 

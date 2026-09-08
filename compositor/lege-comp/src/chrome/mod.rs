@@ -292,7 +292,13 @@ pub fn collect_window_chrome(
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
     renderer: &mut GlesRenderer,
 ) {
-    if window_service.has_frame(window_id) {
+    // A fullscreen window wears no frame, but it can be *asked* for one: resting the pointer in
+    // either bottom corner shows its name tag at the left and its controls at the right, drawn
+    // over the window rather than beside it. Its geometry is the whole output, so the strip
+    // `recovery_affordance` already computes lands exactly on the bottom edge of the screen —
+    // which is where the user asked for them, and why this needs no geometry of its own.
+    if window_service.has_frame(window_id) || window_service.fullscreen_chrome() == Some(window_id)
+    {
         collect_name_tag(
             chrome,
             window_service,

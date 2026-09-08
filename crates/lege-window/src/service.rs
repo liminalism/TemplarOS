@@ -152,6 +152,12 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
+    /// The fullscreen window whose own chrome is currently shown over it
+    /// (`set_fullscreen_chrome`). A fullscreen window wears no frame — its geometry is the whole
+    /// output and the client owns every pixel — so its name tag and controls are drawn *over* it,
+    /// on the strip its geometry already puts along the output's bottom edge, and only while the
+    /// pointer has asked for them.
+    fullscreen_chrome: Option<WindowId>,
     /// The output whose overlay surfaces are currently peeked out from under a fullscreen
     /// window (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
     /// suspended on that output and the bar draws over the fullscreen window again.
@@ -176,6 +182,7 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             home_revealed: false,
             arrangement_baseline: None,
+            fullscreen_chrome: None,
             peek_output: None,
             groups: BTreeMap::new(),
             next_group_id: 1,
@@ -897,6 +904,24 @@ impl<I: IdentityCache> WindowService<I> {
         };
         self.outputs.is_empty()
             || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
+    }
+
+    /// The fullscreen window showing its own chrome, if any.
+    #[must_use]
+    pub fn fullscreen_chrome(&self) -> Option<WindowId> {
+        self.fullscreen_chrome
+            .filter(|id| self.windows.get(id).is_some_and(|window| window.fullscreen))
+    }
+
+    /// Show or hide one fullscreen window's chrome (`None` hides it). Returns whether anything
+    /// changed, so the compositor re-renders only when it must.
+    ///
+    /// Filtered on read rather than cleaned up on every state change: a window that stops being
+    /// fullscreen, or stops existing, stops showing chrome by that fact alone.
+    pub fn set_fullscreen_chrome(&mut self, window_id: Option<WindowId>) -> bool {
+        let changed = self.fullscreen_chrome != window_id;
+        self.fullscreen_chrome = window_id;
+        changed
     }
 
     /// The output whose overlay surfaces are peeked out from under a fullscreen window, if any.

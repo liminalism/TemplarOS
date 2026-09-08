@@ -116,3 +116,28 @@ over in-memory state, and every `lege-comp-integration` type hands work to a bac
 `Layer::SecureLock` and `Layer::Recovery` surfaces (the lock screen, the pressure overlay, the recovery
 tab) are created by the compositor core calling `WindowService::set_layer(id, layer, ClientKind::CompositorCore)`
 directly — no protocol request exists for them, by design (`interfaces/wayland/lege-recovery-v1.xml`).
+
+## A fullscreen window's own chrome
+
+A fullscreen window wears no frame: its geometry is the whole output and the client owns every
+pixel of it. That left it with no pointer route to its own controls at all — the island carries no
+copy of them, and there is no strip beside the window to reach for.
+
+Both of its bottom corners now belong to it. Resting the pointer in either one shows that window's
+name tag and control tags *over* it, on the strip its own geometry already puts along the bottom
+edge of the screen: the tag at the left, close/maximize/minimize at the right. The strip stays
+while the pointer is on it or on either corner, and goes when the pointer leaves — the same
+asymmetry every other reveal on this desktop has.
+
+Three regions divide the bottom edge of an output, and never two of them claim one point:
+
+| Region | With a fullscreen window | Without one |
+|---|---|---|
+| bottom-left square | that window's chrome | reveal Home |
+| bottom-right square | that window's chrome | nothing |
+| the edge between them | raise the shell's overlay (the switcher) | nothing |
+
+`WindowService::fullscreen_chrome` is the whole of the state, filtered on read so a window that
+stops being fullscreen stops showing chrome by that fact alone. `chrome::collect_window_chrome`
+draws it, and `press_candidates` makes the same strip hit-testable, so a click on the close tag
+reaches the window rather than the client underneath.
