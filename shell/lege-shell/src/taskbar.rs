@@ -218,6 +218,72 @@ mod tests {
         assert!(!group.all_parked());
     }
 
+    /// Nothing on the workspace may be missing from the bar. The bar is the only place a window
+    /// exists once Home stopped placing tiles for running windows, so a window that is in the
+    /// snapshot and in no entry is a window the user can only reach by moving the ones on top of
+    /// it — which is exactly the complaint this test exists for.
+    ///
+    /// Note what it does *not* claim: one entry per window. Two windows of one application are
+    /// deliberately one chip
+    /// (`@legeos.decision.one-persistent-bottom-bar-tags-not-bands/2`), with its members in
+    /// `Entry::windows` for the row above the bar. Every window is *accounted for*, exactly once.
+    #[test]
+    fn every_unshelved_client_window_is_in_exactly_one_entry() {
+        let mut unresolved = window(1, "org.example.Term", "sh", None);
+        // An identity `appd` could not resolve: `grouping_key` gives each such window a key of
+        // its own (`unknown-window-<id>`) rather than one shared bucket.
+        unresolved.canonical_app_id = None;
+        unresolved.verified_identity = false;
+        let mut also_unresolved = window(2, "org.example.Term", "sh", None);
+        also_unresolved.canonical_app_id = None;
+        also_unresolved.verified_identity = false;
+        let mut parked = window(3, "org.legeos.Files", "Downloads", None);
+        parked.shelved = true;
+        // A group with one member on screen and one parked: still a group, not a lone window.
+        let mut parked_member = window(6, "org.example.Browser", "docs", Some(9));
+        parked_member.shelved = true;
+        let toplevels = vec![
+            unresolved,
+            also_unresolved,
+            parked,
+            window(4, "org.legeos.Files", "Pictures", None),
+            window(5, "org.example.Term", "sh", Some(9)),
+            parked_member,
+            // XWayland windows arrive on the same layer through the same records; an X11 client
+            // that never got an app id is the `None` case above.
+            window(7, "org.example.Xterm", "xterm", None),
+        ];
+        let entries = entries(&toplevels);
+        let mut seen: Vec<WindowId> = entries
+            .iter()
+            .flat_map(|entry| entry.windows.iter().map(|(id, _)| *id))
+            .collect();
+        let count = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            count,
+            "a window appears in two entries: {entries:?}"
+        );
+        assert_eq!(
+            seen,
+            toplevels.iter().map(|t| t.window_id).collect::<Vec<_>>(),
+            "every window in the snapshot is on the bar: {entries:?}"
+        );
+        // Two windows whose identity did not resolve are two chips, not one bucket.
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.key.starts_with("unknown-window-"))
+                .count(),
+            2
+        );
+        let group = entries.iter().find(|e| e.key == "group:9").unwrap();
+        assert_eq!(group.windows.len(), 2, "a parked member is still a member");
+        assert!(!group.all_parked());
+    }
+
     #[test]
     fn order_is_stable_under_input_reordering() {
         let a = vec![
