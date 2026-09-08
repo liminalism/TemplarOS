@@ -1,6 +1,6 @@
 //! Wiring: one `winit::application::ApplicationHandler` hosting the Home Surface, the
-//! trusted-shell protocol connection that declares its layer, and the background D-Bus refresh
-//! loop that keeps its content live. See `window.rs`'s module doc for why this crate drives winit
+//! trusted-shell protocol connection that declares its layer, and D-Bus subscriptions that keep
+//! its content live. See `window.rs`'s module doc for why this crate drives winit
 //! itself rather than `pixelkit_shell::run_app`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -17,7 +17,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
 use lege_client::proxies::{
-    FilesSearchProxy, LauncherProxy, LifecycleProxy, ProjectsProxy, SettingsProxy,
+    FilesIndexProxy, FilesSearchProxy, LauncherProxy, LifecycleProxy, ProjectsProxy, SettingsProxy,
 };
 use lege_field::{FieldDocument, FieldOp};
 use lege_types::AppId;
@@ -52,8 +52,7 @@ pub struct Wake;
 
 enum DataUpdate {
     Drawers(Vec<(Drawer, crate::drawers::DrawerFeed)>),
-    /// One drawer's refreshed contents, out of band: what a service's own change signal delivers
-    /// between the periodic sweeps.
+    /// One drawer's refreshed contents after its authority emits a change signal.
     Drawer(Drawer, crate::drawers::DrawerFeed),
     /// Every installed application, with the metadata a launcher needs
     /// (`AppIdentity1.ListApplications`). `None` when the registry did not answer, which the
@@ -149,6 +148,8 @@ enum DataUpdate {
         path: PathBuf,
         result: Result<crate::data::OpenFileResult, String>,
     },
+    /// The file authority committed a generation; re-read only open views and file-backed feeds.
+    FilesChanged,
 }
 
 /// Whether the field is behind something and its window previews should stop.
@@ -255,7 +256,7 @@ const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 
 /// Every provider role the shell itself acts on, as `Providers1` names them.
 ///
-/// One list, read by both the refresh sweep and the `Providers1.Changed` watch, because two lists
+/// One list, read by the `Providers1.Changed` watch and its startup snapshot, because two lists
 /// is how `file-manager` came to be missing from both: every folder press took
 /// `open_in_file_manager`'s "no file manager is selected" branch on a session that had one
 /// selected, because nothing ever asked for the role. A role the shell acts on and does not fetch
@@ -274,15 +275,9 @@ const SHELL_ROLES: [&str; 5] = [
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 
-/// How often an open folder window re-reads its directory. Slow on purpose: this is a poll
-/// standing in for the change notification the shared file index will deliver
-/// (`@legeos.work.shared-incremental-file-index`), and a fast poll would be a busy loop per window.
-const FOLDER_REFRESH: Duration = Duration::from_secs(5);
-/// How many three-second refreshes pass between full re-reads of the installed application set.
-/// Thirty seconds: slow enough that the most expensive read on the loop stops dominating it,
-/// soon enough that a package installed by a path that announces nothing still turns up while
-/// the person is still looking for it.
-const APPS_REFRESH_TICKS: u32 = 10;
+/// A reliability backstop for sources that do not yet signal every external change. Normal
+/// operation is signal-driven; this is reconciliation, not the shell's observation path.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Whether this EMPTY press is the confirming one: a press is only armed for a short window, so
 /// an unanswered confirmation expires rather than sitting armed until a stray click hours later
@@ -401,10 +396,8 @@ struct ShellApp {
     /// What each open folder window is showing, keyed by the directory. Bounded by how many
     /// folder tiles are on the field, which is bounded by the field.
     folder_listings: HashMap<PathBuf, Result<DirectoryListing, String>>,
-    /// Directories a folder window has asked for and not yet received, and when each was last
-    /// asked for, so a window refreshes on a slow beat instead of once and never again.
+    /// Directories a folder window has asked for and not yet received.
     folder_pending: HashSet<PathBuf>,
-    folder_asked: HashMap<PathBuf, Instant>,
     /// Previews keyed the way session tiles are (`field_model::session_identifier`).
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
@@ -518,7 +511,6 @@ impl ShellApp {
             home_dir: crate::drawers::standard_paths::home_dir(),
             folder_listings: HashMap::new(),
             folder_pending: HashSet::new(),
-            folder_asked: HashMap::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
@@ -554,39 +546,21 @@ impl ShellApp {
         }
     }
 
-    fn spawn_refresh_loop(&self) {
+    fn spawn_reconciliation_loop(&self) {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
-        self.runtime.spawn({
-            let tx = tx.clone();
-            let proxy = proxy.clone();
-            async move {
-                let recents = match crate::data::session().await {
-                    Ok(connection) => match SettingsProxy::new(&connection).await {
-                        Ok(settings) => crate::settings::load_recent_apps(&settings).await,
-                        Err(_) => crate::recents::RecentApps::default(),
-                    },
-                    Err(_) => crate::recents::RecentApps::default(),
-                };
-                let _ = tx.send(DataUpdate::RecentApps(recents));
-                let _ = proxy.send_event(Wake);
-            }
-        });
-        self.spawn_applications_watch();
         self.runtime.spawn(async move {
-            let mut ticks: u32 = 0;
+            let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
             loop {
-                ticks = ticks.wrapping_add(1);
-                if ticks.is_multiple_of(100) {
-                    let _ = tx.send(DataUpdate::TreemapsStale);
-                }
-                // Concurrently, because none of these reads depends on another and they were
-                // costing the sum of their round trips rather than the longest of them.
-                let (drawers, field_settings, projects, browser_sources) = tokio::join!(
+                interval.tick().await;
+                // Signals are the normal path. This infrequent full snapshot recovers from a
+                // lost signal, an authority restart, and legacy sources with no signal yet.
+                let (drawers, field_settings, projects, browser_sources, apps) = tokio::join!(
                     crate::data::fetch_all(20),
                     fetch_home_field_settings(),
                     crate::data::fetch_projects(),
                     crate::data::fetch_browser_sources(),
+                    crate::data::fetch_apps(),
                 );
                 let (session_widget, notifications_widget, settings_widget, machine) = tokio::join!(
                     crate::data::fetch_session_widget(),
@@ -598,23 +572,10 @@ impl ShellApp {
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
-                // The installed set is the most expensive read here by a wide margin — the whole
-                // catalogue, then its logical grouping — and it is also the one that changes
-                // least: a person installs software, they do not install it every three seconds.
-                // `ApplicationsChanged` carries the prompt update; this is the backstop for the
-                // paths that do not announce themselves, which is why it is slow rather than off.
-                if ticks == 1 || ticks.is_multiple_of(APPS_REFRESH_TICKS) {
-                    let _ = tx.send(DataUpdate::Apps(crate::data::fetch_apps().await));
-                    // Same cadence and the same reason: a person changes when their screen turns
-                    // off about as often as they install software, and `Power1` has no change
-                    // signal to sleep on.
-                    let _ = tx.send(DataUpdate::IdleTimeout(
-                        crate::data::fetch_idle_timeout().await,
-                    ));
-                }
-                // Every role the shell itself acts on. Cheap (one `Report` each), and the
-                // backstop under the `Providers1.Changed` watch: a selection made while the shell
-                // was starting still reaches the compositor.
+                let _ = tx.send(DataUpdate::Apps(apps));
+                let _ = tx.send(DataUpdate::IdleTimeout(
+                    crate::data::fetch_idle_timeout().await,
+                ));
                 for role in SHELL_ROLES {
                     let _ = tx.send(DataUpdate::Provider {
                         role,
@@ -632,19 +593,16 @@ impl ShellApp {
                 ));
                 let _ = tx.send(DataUpdate::NotificationRows(notification_rows));
                 let _ = tx.send(DataUpdate::Widget("settings".to_owned(), settings_widget));
+                let _ = tx.send(DataUpdate::TreemapsStale);
+                let _ = tx.send(DataUpdate::FilesChanged);
                 let _ = proxy.send_event(Wake);
-                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
     }
 
     /// Re-read the installed applications whenever `AppIdentity1` says the set moved.
     ///
-    /// A separate task from the refresh loop because it spends nearly all its time asleep on a
-    /// signal, and folding it into a three-second poll would be the poll again by another name.
-    /// The signal is best-effort by its own documentation — sessiond emits it when the autostart
-    /// scan imports something, and a package installed later announces nothing — so this makes
-    /// the common case immediate and leaves the loop's slow backstop to catch the rest.
+    /// Subscribe before the startup snapshot so a change between the two cannot be missed.
     fn spawn_applications_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
@@ -660,6 +618,13 @@ impl ShellApp {
             let Ok(mut changed) = identity.receive_applications_changed().await else {
                 return;
             };
+            if tx
+                .send(DataUpdate::Apps(crate::data::fetch_apps().await))
+                .is_err()
+            {
+                return;
+            }
+            let _ = proxy.send_event(Wake);
             while changed.next().await.is_some() {
                 if tx
                     .send(DataUpdate::Apps(crate::data::fetch_apps().await))
@@ -774,8 +739,8 @@ impl ShellApp {
     /// needs to know.
     ///
     /// Only on a change, and only over a live connection: the compositor keeps whatever it was
-    /// last told, so re-sending the same id every three seconds would be a round trip for
-    /// nothing — the same rule `DataUpdate::IdleTimeout` follows.
+    /// last told, so re-sending the same id would be a round trip for nothing — the same rule
+    /// `DataUpdate::IdleTimeout` follows.
     fn note_provider(&mut self, role: &'static str, app_id: Option<String>) {
         let parsed = app_id.and_then(|id| match id.parse::<AppId>() {
             Ok(app_id) => Some(app_id),
@@ -927,9 +892,9 @@ impl ShellApp {
         }
     }
 
-    /// Fetch what one location needs. A feed location needs nothing — its rows are the drawer
-    /// feeds the background refresh already carries — so only a directory reaches the service.
-    fn spawn_browse(&mut self, location: FilesLocation, show_hidden: bool) {
+    /// Fetch what one location needs. A feed location needs nothing — its authority-backed
+    /// drawer already carries the rows — so only a directory reaches the service.
+    fn spawn_browse(&mut self, location: FilesLocation, show_hidden: bool, observe_activity: bool) {
         let Some(path) = location.directory().map(std::path::Path::to_path_buf) else {
             return;
         };
@@ -946,6 +911,9 @@ impl ShellApp {
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
             let result = crate::data::browse_directory(&path, show_hidden).await;
+            if observe_activity && result.is_ok() {
+                crate::garden::observe("directory-opened", &path, "").await;
+            }
             let _ = tx.send(DataUpdate::BrowserListing {
                 location,
                 show_hidden,
@@ -955,29 +923,20 @@ impl ShellApp {
         });
     }
 
-    /// One folder window's directory, on a slow refresh beat.
-    ///
-    /// There is no filesystem watcher behind Home yet, so a window that fetched once would show a
-    /// directory as it was when it opened. Re-asking every few seconds is the honest interim: it
-    /// is bounded by the number of folder windows, and it is the same call the Files object makes.
-    fn spawn_folder_browse(&mut self, path: PathBuf) {
-        if self.folder_pending.contains(&path) {
-            return;
-        }
-        let now = Instant::now();
-        let fresh = self
-            .folder_asked
-            .get(&path)
-            .is_some_and(|at| now.duration_since(*at) < FOLDER_REFRESH);
-        if fresh {
+    /// Fetch one folder window's directory once. `Files.Index1.GenerationAdvanced` invalidates
+    /// the stored result and triggers another fetch; no folder owns a timer.
+    fn spawn_folder_browse(&mut self, path: PathBuf, observe_activity: bool) {
+        if self.folder_pending.contains(&path) || self.folder_listings.contains_key(&path) {
             return;
         }
         self.folder_pending.insert(path.clone());
-        self.folder_asked.insert(path.clone(), now);
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
             let result = crate::data::browse_directory(&path, false).await;
+            if observe_activity && result.is_ok() {
+                crate::garden::observe("directory-opened", &path, "").await;
+            }
             let _ = tx.send(DataUpdate::FolderListing { path, result });
             let _ = proxy.send_event(Wake);
         });
@@ -1032,8 +991,8 @@ impl ShellApp {
     fn drain_updates(&mut self) {
         while let Ok(update) = self.data_rx.try_recv() {
             match update {
-                // Both shapes of the same news: the periodic sweep's whole set, and the one
-                // drawer a service's change signal refreshed on its own.
+                // Both shapes of the same news: a reconciliation snapshot's whole set, and the
+                // one drawer a service's change signal refreshed on its own.
                 DataUpdate::Drawers(drawers) => self.drawer_feeds.extend(drawers),
                 DataUpdate::Drawer(drawer, feed) => {
                     self.drawer_feeds.insert(drawer, feed);
@@ -1067,7 +1026,7 @@ impl ShellApp {
                         }
                     }
                     // Keep the last good inventory rather than blanking the launcher on one
-                    // failed poll; the flag is what the widget reports.
+                    // failed read; the flag is what the widget reports.
                     None => self.apps_available = false,
                 },
                 DataUpdate::AppVariants(logical, variants) => {
@@ -1086,8 +1045,8 @@ impl ShellApp {
                 }
                 DataUpdate::IdleTimeout(seconds) => {
                     // Only on a change, and only over a live connection: the compositor keeps
-                    // whatever it was last told, so re-sending the same number every three
-                    // seconds would be a protocol round trip for nothing.
+                    // whatever it was last told, so re-sending the same number would be a
+                    // protocol round trip for nothing.
                     if self.idle_timeout != Some(seconds) {
                         self.idle_timeout = Some(seconds);
                         if let Some(bridge) = &self.bridge
@@ -1244,6 +1203,21 @@ impl ShellApp {
                         ),
                         Err(error) => error,
                     });
+                }
+                DataUpdate::FilesChanged => {
+                    let paths: Vec<PathBuf> = self.folder_listings.keys().cloned().collect();
+                    self.folder_listings.clear();
+                    for path in paths {
+                        self.spawn_folder_browse(path, false);
+                    }
+                    let browser = self
+                        .browser_listing
+                        .as_ref()
+                        .map(|(location, show_hidden, _)| (location.clone(), *show_hidden));
+                    if let Some((location, show_hidden)) = browser {
+                        self.browser_pending = None;
+                        self.spawn_browse(location, show_hidden, false);
+                    }
                 }
             }
         }
@@ -1712,8 +1686,8 @@ impl ShellApp {
             FieldAction::BrowseLocation {
                 location,
                 show_hidden,
-            } => self.spawn_browse(location, show_hidden),
-            FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path),
+            } => self.spawn_browse(location, show_hidden, true),
+            FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path, true),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => self.open_in_file_manager(&path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
@@ -2817,16 +2791,8 @@ impl ShellApp {
         });
     }
 
-    /// Refresh the Trash drawer the moment `Files.Trash1.Changed` says it changed, rather than
-    /// on the next three-second tick.
-    ///
-    /// The signal is what makes the drawer live *whichever client did the mutating* — the file
-    /// manager permanently deleting something, or `lege trash restore` in a terminal, and not
-    /// only Home's own EMPTY. Losing the connection ends the watch rather than spinning: the
-    /// periodic refresh is still there underneath, so the drawer degrades to slow, not stale.
-    /// Refetch the notifications the moment the server says they changed — this is what makes
-    /// a toast a push rather than a poll: a new arrival reaches the shell on the Changed
-    /// signal, not on the next three-second sweep.
+    /// Refetch notifications when the server says they changed. The subscription is installed
+    /// before the startup snapshot, so arrivals are pushed without a read/subscribe race.
     fn spawn_notifications_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -2841,6 +2807,15 @@ impl ShellApp {
             let Ok(mut changed) = proxy.receive_changed().await else {
                 return;
             };
+            let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
+            if tx
+                .send(DataUpdate::Widget("notifications".to_owned(), snapshot))
+                .is_err()
+            {
+                return;
+            }
+            let _ = tx.send(DataUpdate::NotificationRows(rows));
+            let _ = proxy_wake.send_event(Wake);
             while changed.next().await.is_some() {
                 let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
                 if tx
@@ -2851,6 +2826,52 @@ impl ShellApp {
                 }
                 let _ = tx.send(DataUpdate::NotificationRows(rows));
                 let _ = proxy_wake.send_event(Wake);
+            }
+        });
+    }
+
+    /// Sleep on the file authority's generation signal. A committed generation invalidates the
+    /// open directory views and refreshes only file-backed feeds.
+    fn spawn_files_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(index) = FilesIndexProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut generation) = index.receive_generation_advanced().await else {
+                return;
+            };
+            let Ok(mut roots) = index.receive_root_state_changed().await else {
+                return;
+            };
+            loop {
+                for drawer in [
+                    Drawer::Recent,
+                    Drawer::Downloads,
+                    Drawer::Documents,
+                    Drawer::Media,
+                    Drawer::Drives,
+                    Drawer::Operations,
+                ] {
+                    let feed = crate::data::fetch_drawer(drawer, 20).await;
+                    if tx.send(DataUpdate::Drawer(drawer, feed)).is_err() {
+                        return;
+                    }
+                }
+                let _ = tx.send(DataUpdate::BrowserSources(
+                    crate::data::fetch_browser_sources().await,
+                ));
+                let _ = tx.send(DataUpdate::FilesChanged);
+                let _ = proxy_wake.send_event(Wake);
+                tokio::select! {
+                    event = generation.next() => if event.is_none() { return; },
+                    event = roots.next() => if event.is_none() { return; },
+                }
             }
         });
     }
@@ -2872,7 +2893,7 @@ impl ShellApp {
             let Ok(mut changed) = proxy.receive_changed().await else {
                 return;
             };
-            while changed.next().await.is_some() {
+            loop {
                 for role in SHELL_ROLES {
                     if tx
                         .send(DataUpdate::Provider {
@@ -2885,6 +2906,80 @@ impl ShellApp {
                     }
                 }
                 let _ = proxy_wake.send_event(Wake);
+                if changed.next().await.is_none() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Projects owns both its list and current selection. Subscribe to both signals before the
+    /// startup read, then sleep until either changes.
+    fn spawn_projects_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(proxy) = ProjectsProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = proxy.receive_changed().await else {
+                return;
+            };
+            let Ok(mut current_changed) = proxy.receive_current_changed().await else {
+                return;
+            };
+            loop {
+                let projects = crate::data::fetch_projects().await;
+                if tx.send(DataUpdate::Projects(projects)).is_err() {
+                    return;
+                }
+                let feed = crate::data::fetch_drawer(Drawer::Projects, 20).await;
+                let _ = tx.send(DataUpdate::Drawer(Drawer::Projects, feed));
+                let _ = proxy_wake.send_event(Wake);
+                tokio::select! {
+                    event = changed.next() => if event.is_none() { return; },
+                    event = current_changed.next() => if event.is_none() { return; },
+                }
+            }
+        });
+    }
+
+    /// Settings changes drive both Home's representation policy and the persisted launcher
+    /// recents. The signal is installed before either startup read.
+    fn spawn_settings_watch(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(settings) = SettingsProxy::new(&connection).await else {
+                return;
+            };
+            let Ok(mut changed) = settings.receive_changed().await else {
+                return;
+            };
+            loop {
+                let (field, recents) = tokio::join!(
+                    fetch_home_field_settings(),
+                    crate::settings::load_recent_apps(&settings),
+                );
+                if tx.send(DataUpdate::HomeFieldSettings(field)).is_err() {
+                    return;
+                }
+                let _ = tx.send(DataUpdate::RecentApps(recents));
+                let _ = tx.send(DataUpdate::IdleTimeout(
+                    crate::data::fetch_idle_timeout().await,
+                ));
+                let _ = proxy_wake.send_event(Wake);
+                if changed.next().await.is_none() {
+                    return;
+                }
             }
         });
     }
@@ -2943,18 +3038,21 @@ impl ShellApp {
             let Ok(mut changed) = proxy.receive_changed().await else {
                 return;
             };
-            while changed.next().await.is_some() {
+            loop {
                 let feed = crate::data::fetch_drawer(Drawer::Trash, 20).await;
                 if tx.send(DataUpdate::Drawer(Drawer::Trash, feed)).is_err() {
                     return;
                 }
                 let _ = proxy_wake.send_event(Wake);
+                if changed.next().await.is_none() {
+                    return;
+                }
             }
         });
     }
 
     /// One `Audio1` or `Backlight1` call off the event loop, refreshing that widget the moment it
-    /// returns rather than waiting for the next three-second sweep.
+    /// returns rather than waiting for the next authority update.
     ///
     /// Immediate feedback is the whole point of a level control: a volume button whose number
     /// only moves a beat or two later reads as a button that did not work, and the second press
@@ -3903,12 +4001,18 @@ impl ApplicationHandler<Wake> for ShellApp {
                 None
             }
         };
-        self.spawn_refresh_loop();
-        self.spawn_trash_watch();
+        // Every watcher installs its match rule before taking its startup snapshot. The slow
+        // reconciliation task starts last and exists only as a continuity backstop.
+        self.spawn_applications_watch();
         self.spawn_field_watch();
+        self.spawn_files_watch();
         self.spawn_notifications_watch();
         self.spawn_providers_watch();
+        self.spawn_projects_watch();
+        self.spawn_settings_watch();
+        self.spawn_trash_watch();
         self.spawn_lock_watch();
+        self.spawn_reconciliation_loop();
         if let Some(home) = &self.home {
             home.request_redraw();
         }

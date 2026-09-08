@@ -228,10 +228,31 @@ pub fn read_transfer(read_end: OwnedFd) -> std::io::Result<String> {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                // Rounded up: a truncated millisecond would wake the poll just before the
+                // deadline and read as an expiry that has not happened yet.
+                let timeout_ms =
+                    i32::try_from(remaining.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
+                let mut descriptor = libc::pollfd {
+                    fd: raw,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: `descriptor` is one valid pollfd and `raw` remains owned by `file`.
+                #[allow(unsafe_code)]
+                let ready = unsafe { libc::poll(&raw mut descriptor, 1, timeout_ms) };
+                if ready == 0 {
+                    break;
+                }
+                if ready < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),

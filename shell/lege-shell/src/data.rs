@@ -481,22 +481,26 @@ pub async fn fetch_notifications_widget() -> (
 /// What the shell calls itself to `Files.Operations1`, so the journal records who asked.
 pub const SHELL_APP_ID: &str = "org.legeos.Shell";
 
-/// Poll one journalled operation until it stops, and hand back the record.
+/// Wait for one journalled operation to stop, and hand back its terminal record.
 ///
-/// Polling rather than the `Finished` signal because this is a short-lived task that started the
-/// operation and wants only its own: subscribing would mean filtering a stream of everybody's.
-/// The interval is the service's own progress cadence; a copy of any size reports several times.
+/// Subscribe before the first state read. A fast operation may already be terminal in that
+/// snapshot; otherwise any `Finished` signal wakes this task and it checks only its own id.
 pub async fn follow_operation(
     proxy: &lege_client::proxies::FilesOperationsProxy<'_>,
     op_id: &str,
 ) -> anyhow::Result<lege_client::files::OperationRecord> {
+    use futures_util::StreamExt as _;
+    let mut finished = proxy.receive_finished().await?;
     loop {
         let json = proxy.get(op_id).await?;
         let record: lege_client::files::OperationRecord = serde_json::from_str(&json)?;
         if record.state.terminal() {
             return Ok(record);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        anyhow::ensure!(
+            finished.next().await.is_some(),
+            "file operation signal stream ended before {op_id} finished"
+        );
     }
 }
 
