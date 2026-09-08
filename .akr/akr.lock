@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:cf67e27d2b2ba732ebb52460c091a69bb82f3769701b6c8c0dbee90625d74bee"
+    source_graph "sha256:7ac9f8851cbe1895f451de9452ae258c8a2c5f6a7842682dc0f1e25421cc72e0"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:d997c7e97e1d65749eb1f3bf21f430d1fa3a35eac483ead2bf999241a4c0bdbb"
-    records 272
+    hash "sha256:dc2551cfee7197bf84bc54f53f33a4886aa7076a079d3f7b28466439823e7db9"
+    records 273
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -4912,6 +4912,11 @@ seal @legeos.evidence.taskbar-free-home-visual-20260824/1 {
 seal @legeos.evidence.the-bar-s-coverage-is-its-chips/1 {
     state verified
     hash "sha256:1ebdb35d7475924817eae3b87eac62a0836b979e54259436b2418c9064fa7026"
+}
+
+seal @legeos.evidence.the-cluster-split-reviewed-and-its-eight-findings/1 {
+    state verified
+    hash "sha256:7c04894082cf4915f7b0275686e8c5935d2ef815557283bd2b4e5ae180eaa67c"
 }
 
 seal @legeos.evidence.the-semantic-source-ledger-and-the-shell-s-garden-projection/1 {

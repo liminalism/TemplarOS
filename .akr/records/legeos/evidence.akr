@@ -2919,6 +2919,19 @@ record legeos.evidence.the-bar-s-coverage-is-its-chips/1 : evidence {
         """
 }
 
+record legeos.evidence.the-cluster-split-reviewed-and-its-eight-findings/1 : evidence {
+    title "A second adversarial review of the cluster split and the fullscreen chrome found eight issues; all eight were fixed. Four existed only with a real pointer and a real compositor and no test could have caught them: chips sliding out from under the pointer when a row widened the surface, a stale surface-local pointer after a bottom-anchored resize, an account popover with no dismissal route because its ground click landed outside the input region, and a cluster that never redrew for its own clock. The gate is green after all of them."
+    state verified
+    result pass
+    method command
+    observed_at git:1792fab6398121a27a9d562525987a008e8a314e
+    command "just check"
+    artifact ".agent/scratch/bar-6/advisor-findings-2.md"
+    summary """
+        A second adversarial review of the cluster split and the fullscreen chrome found eight issues; all eight were fixed. Four existed only with a real pointer and a real compositor and no test could have caught them: chips sliding out from under the pointer when a row widened the surface, a stale surface-local pointer after a bottom-anchored resize, an account popover with no dismissal route because its ground click landed outside the input region, and a cluster that never redrew for its own clock. The gate is green after all of them.
+        """
+}
+
 record legeos.evidence.the-semantic-source-ledger-and-the-shell-s-garden-projection/1 : evidence {
     title "2 sessiond tests (launch directory read from --directory/--working-directory=/bare argument, a file argument rejected; XDG user dirs) and 2 shell tests (branch rows ordered by weight and capped; a context payload with unknown fields still parses) pass. This covers the ledger the sources feed, not the call sites themselves."
     state verified
