@@ -6,7 +6,7 @@
 <protocol name="lege_shell_v1">
   <copyright>Copyright 2026 LegeOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="lege_shell_manager_v1" version="6">
+  <interface name="lege_shell_manager_v1" version="7">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -79,12 +79,17 @@
         That exception is suspended for as long as the pointer asks for it. When the pointer comes
         to *rest* on that output's bottom edge — outside the bottom-left corner square, which is
         the compositor's route to the Home Surface and is never this — the surface is drawn over
-        the fullscreen window again, and stays there while the pointer is either still on that edge
-        or anywhere on the surface itself. No request is involved and no event is sent: the surface
-        keeps painting exactly as it always does, its frame callbacks continue while it is covered,
-        and nothing about its size, its zone or the work area changes on the way in or out. A
-        surface that has collapsed itself to a hint is therefore the thing the pointer finds there,
-        and reaching it is what its own reveal responds to.
+        the covering window again, and stays there while the pointer is either still on that edge
+        or anywhere on the surface itself. No request is involved: the surface keeps painting
+        exactly as it always does, its frame callbacks continue while it is covered, and nothing
+        about its size, its zone or the work area changes on the way in or out. The compositor
+        says so with `bar_peeked`, because the pointer is the compositor's to see — under a window
+        filling the screen the surface never learns the pointer reached the edge at all, and a
+        reveal it cannot see is a reveal it cannot answer.
+
+        A *maximized* window covers the bottom edge without outranking the overlay, so nothing
+        about the stacking order changes for one; the edge is asked for and reported in exactly
+        the same way, and the surface decides for itself what to do about it.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="edge" type="uint" enum="edge"/>
@@ -113,6 +118,18 @@
       <entry name="hide" value="1"/>
       <entry name="toggle" value="2"/>
     </enum>
+    <event name="bar_peeked" since="7">
+      <description summary="whether the pointer is asking for this output's bottom edge">
+        Sent on bind and after every state change. While set, a surface anchored to that output's
+        bottom edge has been asked for by a pointer resting there, under a window that covers the
+        screen (maximized or fullscreen); it is the surface's own business what to show, and
+        collapsing to a hint until this arrives is the expected shape.
+
+        One output at a time, because there is one pointer. The empty string means no output is
+        being asked for.
+      </description>
+      <arg name="output" type="string" summary="the output's name, or empty for none"/>
+    </event>
     <request name="arrange_windows" since="3">
       <description summary="arrange every eligible open window per a named preset">
         User-invoked arrangement, never a standing tiling policy
