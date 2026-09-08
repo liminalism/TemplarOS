@@ -246,6 +246,10 @@ pub struct MenuTarget {
     pub project: Option<String>,
     /// The folder tile — a Place — under the pointer, carried for the same reason as `project`.
     pub place: Option<std::path::PathBuf>,
+    /// The place's state, so "Pin here" and "Unpin" are one row that says the true thing, and
+    /// "Keep this size and place" is not offered for a place already kept.
+    pub place_pinned: bool,
+    pub place_kept: bool,
 }
 
 impl MenuTarget {
@@ -269,10 +273,24 @@ impl MenuTarget {
         }
     }
 
+    /// Whether a row that depends on the place's state is true of it right now.
+    fn state_allows(&self, action: &str) -> bool {
+        match action {
+            "garden.pin" => !self.place_pinned,
+            "garden.unpin" => self.place_pinned,
+            "garden.keep" => !self.place_kept,
+            _ => true,
+        }
+    }
+
     /// The rows this target offers, in [`MENU`] order.
     pub fn rows(&self) -> Vec<&'static MenuItem> {
         MENU.iter()
-            .filter(|item| self.offers(item.scope) && item.declaration().is_some())
+            .filter(|item| {
+                self.offers(item.scope)
+                    && self.state_allows(item.action)
+                    && item.declaration().is_some()
+            })
             .collect()
     }
 }
@@ -944,6 +962,26 @@ mod tests {
             in_window_group: true,
             ..window.clone()
         };
+        // A Place: "Pin here" or "Unpin", never both, and "Keep" only until it is kept.
+        let place = MenuTarget {
+            tile: Some(TileId(3)),
+            place: Some(std::path::PathBuf::from("/home/dk/src/legeos")),
+            ..MenuTarget::default()
+        };
+        let ids = |t: &MenuTarget| -> Vec<&str> { t.rows().iter().map(|r| r.action).collect() };
+        assert!(ids(&place).contains(&"garden.pin") && !ids(&place).contains(&"garden.unpin"));
+        assert!(ids(&place).contains(&"garden.keep"));
+        let pinned = MenuTarget {
+            place_pinned: true,
+            ..place.clone()
+        };
+        assert!(ids(&pinned).contains(&"garden.unpin") && !ids(&pinned).contains(&"garden.pin"));
+        let kept = MenuTarget {
+            place_pinned: true,
+            place_kept: true,
+            ..place.clone()
+        };
+        assert!(!ids(&kept).contains(&"garden.keep"));
         // A project's tile: the five project rows, and nothing about a window it does not have.
         let project = MenuTarget {
             tile: Some(TileId(7)),

@@ -1700,3 +1700,127 @@ mod tests {
         assert_eq!(restored, before, "reference removal inverts exactly");
     }
 }
+
+/// The ops that bring `local` in line with what another client did to `remote`: a tile placed
+/// elsewhere is adopted where it was put; a Place the garden resized is resized here; a folder
+/// tile absent from the daemon's copy — a Place the garden removed, or the user hid or forgot —
+/// goes. Nothing is moved, and only folder tiles are ever removed: anything else absent from
+/// the daemon's copy is a local change still on its way there, not a deletion.
+pub fn reconcile_remote(local: &FieldDocument, remote: &FieldDocument) -> Vec<FieldOp> {
+    let mut ops = Vec::new();
+    for (id, located) in &remote.located {
+        match local.location(*id) {
+            None => {
+                if let Some(tile) = remote.tile(*id) {
+                    ops.push(FieldOp::AddTile {
+                        tile: tile.clone(),
+                        at: Some(*located),
+                        container: None,
+                    });
+                }
+            }
+            Some(here)
+                if here.placement.cell == located.placement.cell
+                    && here.placement.span != located.placement.span =>
+            {
+                ops.push(FieldOp::Resize {
+                    id: *id,
+                    span: located.placement.span,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    ops.extend(
+        local
+            .located
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| remote.location(*id).is_none())
+            .filter(|id| matches!(local.kind_of(*id), Some(TileKind::Folder { .. })))
+            .map(|id| FieldOp::Remove { id }),
+    );
+    ops
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::*;
+    use lege_field::{Cell, Landing, Placement, Span, apply};
+    use std::path::Path;
+
+    fn with_folder(doc: &FieldDocument, id: u64, path: &str, cell: Cell) -> FieldDocument {
+        let tile = lege_field::folder_tile(TileId(id), Path::new(path), doc.cols, doc.rows);
+        apply(
+            doc,
+            &FieldOp::Place {
+                tile,
+                landing: Landing {
+                    container: None,
+                    cell,
+                },
+            },
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn a_remote_resize_and_removal_of_a_place_reach_the_local_field_and_nothing_else_moves() {
+        let base = FieldDocument::new("DP-1", 12, 8);
+        let local = with_folder(&base, 1, "/home/dk/a", Cell::new(0, 5));
+        let local = with_folder(&local, 2, "/home/dk/b", Cell::new(6, 0));
+        // Remotely: `a` grew to 4x3 in place, `b` was removed, and `c` was placed elsewhere.
+        let remote = apply(
+            &local,
+            &FieldOp::Resize {
+                id: TileId(1),
+                span: Span::new(4, 3),
+            },
+        )
+        .unwrap()
+        .0;
+        let remote = apply(&remote, &FieldOp::Remove { id: TileId(2) }).unwrap().0;
+        let remote = with_folder(&remote, 3, "/home/dk/c", Cell::new(8, 4));
+        let ops = reconcile_remote(&local, &remote);
+        let mut doc = local.clone();
+        for op in &ops {
+            doc = apply(&doc, op).unwrap().0;
+        }
+        assert_eq!(
+            doc.location(TileId(1)).unwrap().placement,
+            Placement::new(Cell::new(0, 5), Span::new(4, 3))
+        );
+        assert!(doc.location(TileId(2)).is_none());
+        assert_eq!(doc.location(TileId(3)).unwrap().placement.cell, Cell::new(8, 4));
+        assert!(ops.iter().all(|op| !matches!(op, FieldOp::Move { .. })));
+        assert!(reconcile_remote(&doc, &remote).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn a_non_folder_tile_missing_remotely_is_a_local_change_in_flight_not_a_deletion() {
+        let base = FieldDocument::new("DP-1", 12, 8);
+        let app = lege_field::Tile {
+            id: TileId(9),
+            kind: TileKind::App {
+                app_id: "org.example.A".parse().unwrap(),
+            },
+            title: "A".into(),
+            spans: lege_field::SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(2, 2)),
+            accent: None,
+        };
+        let local = apply(
+            &base,
+            &FieldOp::Place {
+                tile: app,
+                landing: Landing {
+                    container: None,
+                    cell: Cell::new(0, 0),
+                },
+            },
+        )
+        .unwrap()
+        .0;
+        assert!(reconcile_remote(&local, &base).is_empty());
+    }
+}

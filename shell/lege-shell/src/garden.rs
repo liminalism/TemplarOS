@@ -26,6 +26,8 @@ pub struct GardenPlace {
     pub roles: Vec<String>,
     pub tree: Vec<TreeNode>,
     pub pinned: bool,
+    /// Pinned and frozen at its size (`garden.keep`, or the user's own hand).
+    pub kept: bool,
     pub hidden: bool,
     pub summary: String,
     pub why: String,
@@ -34,7 +36,9 @@ pub struct GardenPlace {
 impl GardenPlace {
     /// The one-line state a Small place shows under its name.
     pub fn state_line(&self) -> String {
-        if self.pinned {
+        if self.kept {
+            format!("kept · {}", self.summary)
+        } else if self.pinned {
             format!("pinned · {}", self.summary)
         } else {
             self.summary.clone()
@@ -147,7 +151,8 @@ pub async fn manage(id: &str, path: &std::path::Path) -> Result<Option<String>, 
         .map_err(|error| format!("garden unavailable: {error}"))?;
     let root = path.to_string_lossy();
     let outcome = match id {
-        "garden.pin" | "garden.keep" => proxy.pin(&root, true).await.map(|()| None),
+        "garden.pin" => proxy.pin(&root, true).await.map(|()| None),
+        "garden.keep" => proxy.keep(&root).await.map(|()| None),
         "garden.unpin" => proxy.pin(&root, false).await.map(|()| None),
         "garden.hide" => proxy.hide(&root, true).await.map(|()| None),
         "garden.forget" => proxy.forget(&root).await.map(|()| None),
