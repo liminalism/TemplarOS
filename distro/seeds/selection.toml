@@ -368,6 +368,10 @@ reason = "the Terminal provider role's default (lege-session-core/src/providers.
 role = "terminal"
 
 [[layer.package]]
+name = "gsimplecal"
+reason = "what the bar's clock opens (shell/lege-shell/src/surface/bar_screen.rs, action `clock.open-calendar`); LegeOS writes no calendar of its own, and this is the classic panel-clock calendar — a few hundred kilobytes of GTK that declares Categories=Calendar, which is how the shell finds it"
+
+[[layer.package]]
 name = "flatpak"
 reason = "the sandboxed application route (ADR-0011); the browser layer is Flatpak refs, not debs"
 

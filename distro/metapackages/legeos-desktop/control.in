@@ -4,7 +4,7 @@ Architecture: all
 Depends: legeos-session, legeos-sessiond, legeos-resourced, legeos-filed, legeos-hostd,
  legeos-boot-health, legeos-shell, legeos-comp, legeos-portal, legeos-cli, legeos-greeter,
  greetd, xdg-desktop-portal, xdg-desktop-portal-gtk, xwayland, polkitd, dbus-broker,
- legeos-settings, pcmanfm-qt, qt6-wayland, kitty, flatpak, fonts-noto,
+ legeos-settings, pcmanfm-qt, qt6-wayland, kitty, gsimplecal, flatpak, fonts-noto,
  fonts-noto-color-emoji, xdg-utils, shared-mime-info, desktop-file-utils, gnome-keyring,
  linux-firmware, linux-modules-iwlwifi-generic, network-manager, wpasupplicant,
  firmware-sof-signed, alsa-ucm-conf, thermald, upower, power-profiles-daemon, fwupd,
