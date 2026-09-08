@@ -47,4 +47,6 @@ assets = [
     ["target/release/xdg-desktop-portal-lege", "usr/libexec/xdg-desktop-portal-lege", "755"],
     ["legeos.portal", "usr/share/xdg-desktop-portal/portals/legeos.portal", "644"],
     ["legeos-portals.conf", "usr/share/xdg-desktop-portal/legeos-portals.conf", "644"],
+    ["../../distro/policy/dbus/org.freedesktop.impl.portal.desktop.legeos.service", "usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.legeos.service", "644"],
+    ["../../session/units/user/xdg-desktop-portal-lege.service", "usr/lib/systemd/user/xdg-desktop-portal-lege.service", "644"],
 ]

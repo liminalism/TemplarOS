@@ -1,0 +1,18 @@
+[Unit]
+Description=LegeOS xdg-desktop-portal backend (FileChooser, AppChooser, Settings, Background)
+Documentation=https://legeos.org/docs/portals
+PartOf=legeos-session.target
+After=lege-sessiond.service lege-filed.service
+
+[Service]
+# Type=dbus, and genuinely activation-driven: xdg-desktop-portal starts this backend the first
+# time a client asks for one of the four interfaces `legeos.portal` claims, and nothing in the
+# session eagerly wants it. Started by systemd rather than by dbus-daemon's own `Exec=` so that
+# it inherits the user manager's environment — WAYLAND_DISPLAY above all, without which every
+# dialog would decline instead of appearing.
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.legeos
+ExecStart=/usr/libexec/xdg-desktop-portal-lege
+Restart=on-failure
+RestartSec=1
+Slice=session.slice

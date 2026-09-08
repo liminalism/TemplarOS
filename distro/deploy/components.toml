@@ -243,10 +243,20 @@ name = "portal"
 crate = "xdg-desktop-portal-lege"
 package = "legeos-portal"
 stamp = "xdg-desktop-portal-lege"
-scope = "none"
+unit = "xdg-desktop-portal-lege.service"
+scope = "user"
 activation = "manual"
 depends_on = ["sessiond", "filed"]
-summary = "xdg-desktop-portal backend — D-Bus activated by xdg-desktop-portal, not a unit of ours"
+summary = "xdg-desktop-portal backend — activated on demand by xdg-desktop-portal"
+authority = "no state of its own: it is the freedesktop-shaped face of Files (FileChooser), Associations and AppIdentity (AppChooser), Settings and Resources (Background)"
+lifetime = "dbus-activated"
+consumer_interfaces = [
+    "org.freedesktop.impl.portal.FileChooser", "org.freedesktop.impl.portal.AppChooser",
+    "org.freedesktop.impl.portal.Settings", "org.freedesktop.impl.portal.Background",
+]
+recovery = "stateless between calls: a crash loses at most the dialog that was open, and the next request activates it again"
+deadlines = "a dialog waits for the person; the portal frontend owns the client-facing timeout"
+timer_exceptions = []
 
 [[component]]
 name = "cli"

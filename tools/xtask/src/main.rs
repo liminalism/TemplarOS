@@ -1000,6 +1000,7 @@ fn check_packaging(root: &Path) -> Result<()> {
         &dbus_activated_units(root)?,
         &session_wanted_units(root)?,
     ));
+    problems.extend(portal_backend_problems(root, &dbus_activated_names(root)?)?);
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
@@ -1609,6 +1610,78 @@ fn service_inventory_problems(
         }
     }
     problems
+}
+
+/// Every portal backend this repository declares is actually startable.
+///
+/// A `.portal` file only tells `xdg-desktop-portal` that a backend exists and which interfaces it
+/// implements. Starting it is D-Bus activation, and that needs a service descriptor claiming the
+/// same name. Shipping the first without the second is silent: the frontend chooses the backend,
+/// every call to it fails with `ServiceUnknown`, and the person sees a file chooser that never
+/// opens. That is exactly what shipped, so it is checked here.
+fn portal_backend_problems(root: &Path, activatable: &BTreeSet<String>) -> Result<Vec<String>> {
+    let mut problems = Vec::new();
+    let portals = root.join("portals");
+    let mut declarations = Vec::new();
+    for backend in
+        std::fs::read_dir(&portals).with_context(|| format!("reading {}", portals.display()))?
+    {
+        let backend = backend?.path();
+        if !backend.is_dir() {
+            continue;
+        }
+        for entry in
+            std::fs::read_dir(&backend).with_context(|| format!("reading {}", backend.display()))?
+        {
+            declarations.push(entry?.path());
+        }
+    }
+    for entry in declarations {
+        if entry.extension().and_then(|extension| extension.to_str()) != Some("portal") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&entry)
+            .with_context(|| format!("reading {}", entry.display()))?;
+        let Some(name) = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("DBusName="))
+            .map(str::trim)
+        else {
+            problems.push(format!("{}: declares no DBusName=", entry.display()));
+            continue;
+        };
+        if !activatable.contains(name) {
+            problems.push(format!(
+                "{}: nothing activates {name}; ship a D-Bus service descriptor claiming that name",
+                entry.display()
+            ));
+        }
+    }
+    Ok(problems)
+}
+
+/// Bus names claimed by repository-owned D-Bus activation descriptors.
+fn dbus_activated_names(root: &Path) -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    let dir = root.join("distro/policy/dbus");
+    if !dir.is_dir() {
+        return Ok(names);
+    }
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("service") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if let Some(name) = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Name="))
+        {
+            names.insert(name.trim().to_owned());
+        }
+    }
+    Ok(names)
 }
 
 /// Units named by repository-owned D-Bus activation descriptors.
