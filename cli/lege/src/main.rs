@@ -609,6 +609,9 @@ enum SessionCommand {
     Suspend,
     /// Lock the screen. Not yet implemented — see `Lifecycle1.Lock`.
     Lock,
+    /// Print the session's own edges — start, lock, unlock, sleep — as they happen, until
+    /// interrupted. What a hands-on runbook watches while it locks the screen and closes the lid.
+    Events,
 }
 
 #[tokio::main]
@@ -1000,7 +1003,39 @@ async fn session_command(command: SessionCommand, json: bool) -> Result<()> {
             LifecycleClient::lock(&proxy).await?;
             emit(json, &serde_json::json!({"session": "lock"}), "locked")
         }
+        SessionCommand::Events => session_events(&connection, json).await,
     }
+}
+
+/// Follow `Lifecycle1`'s signals until interrupted.
+///
+/// A raw match rule on the interface rather than one generated stream per signal: it is a third of
+/// the code and it reports a signal this build of `lege` has never heard of, which is exactly what
+/// you want from the command you leave running while you test a new daemon.
+async fn session_events(connection: &zbus::Connection, json: bool) -> Result<()> {
+    use futures_util::StreamExt as _;
+
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.legeos.Session.Lifecycle1")?
+        .build();
+    let mut stream = zbus::MessageStream::for_match_rule(rule, connection, Some(16))
+        .await
+        .context("watching org.legeos.Session.Lifecycle1")?;
+    while let Some(message) = stream.next().await {
+        let message = message.context("reading a Lifecycle1 signal")?;
+        let Some(member) = message.header().member().map(ToString::to_string) else {
+            continue;
+        };
+        // Only `Sleeping` carries an argument; for the rest this is simply `None`.
+        let going_to_sleep = message.body().deserialize::<bool>().ok();
+        emit(
+            json,
+            &serde_json::json!({"event": member, "going_to_sleep": going_to_sleep}),
+            &lege::lifecycle::render_edge(&member, going_to_sleep),
+        )?;
+    }
+    Ok(())
 }
 
 async fn app(command: AppCommand, json: bool) -> Result<()> {

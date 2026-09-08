@@ -67,6 +67,24 @@ impl LifecycleClient for lege_client::proxies::LifecycleProxy<'_> {
     }
 }
 
+/// One `Lifecycle1` signal as a line.
+///
+/// The member name is matched rather than an enum, and an unrecognised one is printed as itself:
+/// a newer daemon's signal should be reported by this command, not swallowed by it.
+#[must_use]
+pub fn render_edge(member: &str, going_to_sleep: Option<bool>) -> String {
+    match (member, going_to_sleep) {
+        ("SessionStarted", _) => "session started",
+        ("LockRequested", _) => "lock requested",
+        ("Locked", _) => "locked",
+        ("Unlocked", _) => "unlocked",
+        ("Sleeping", Some(true)) => "going to sleep",
+        ("Sleeping", Some(false)) => "awake",
+        _ => member,
+    }
+    .to_owned()
+}
+
 /// Turn one of logind's verdicts into a sentence. The four values are genuinely different
 /// answers and flattening them would lose the reason.
 pub fn render_verdict(action: Action, verdict: &str) -> String {
@@ -107,6 +125,18 @@ mod tests {
             render_verdict(Action::Reboot, "no"),
             render_verdict(Action::Reboot, "challenge")
         );
+    }
+
+    /// Sleep is the one edge with an argument, and the two directions must not read alike — the
+    /// whole reason `lege session events` exists is to tell them apart in a runbook transcript.
+    #[test]
+    fn each_session_edge_reads_as_itself_and_an_unknown_one_survives() {
+        assert_eq!(render_edge("SessionStarted", None), "session started");
+        assert_eq!(render_edge("Locked", None), "locked");
+        assert_eq!(render_edge("Unlocked", None), "unlocked");
+        assert_eq!(render_edge("Sleeping", Some(true)), "going to sleep");
+        assert_eq!(render_edge("Sleeping", Some(false)), "awake");
+        assert_eq!(render_edge("SomethingNewer", None), "SomethingNewer");
     }
 
     #[test]

@@ -1581,6 +1581,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "futures-util",
  "lege-appd",
  "lege-associationd",
  "lege-build",
