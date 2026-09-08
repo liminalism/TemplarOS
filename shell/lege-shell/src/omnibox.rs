@@ -124,6 +124,10 @@ pub struct FileResults<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Sources<'a> {
     pub apps: &'a [AppEntry],
+    /// The applications launched most recently, newest first, as
+    /// [`crate::recents::RecentApps::ids`] keeps them. The launcher's tiebreak within a match
+    /// tier — nothing else reads it.
+    pub recents: &'a [String],
     /// `None` while nothing has come back yet, which is a different thing from a search that
     /// found nothing — see [`file_state`].
     pub files: Option<FileResults<'a>>,
@@ -207,7 +211,7 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
     }
 
     match scope {
-        Scope::Applications => rows.extend(apps(sources.apps, &needle)),
+        Scope::Applications => rows.extend(apps(sources.apps, &needle, sources.recents)),
         Scope::Location(_) => {
             let (directories, files) = files_split(sources.files, &needle);
             rows.extend(capped(directories, DIRECTORY_CAP));
@@ -285,19 +289,42 @@ fn capped(mut rows: Vec<Row>, cap: usize) -> Vec<Row> {
     rows
 }
 
-fn apps(entries: &[AppEntry], needle: &str) -> Vec<Row> {
-    crate::app_search::search(entries, needle)
+fn apps(entries: &[AppEntry], needle: &str, recents: &[String]) -> Vec<Row> {
+    crate::app_search::search(entries, needle, recents)
         .into_iter()
         .map(|row| Row {
             hit: Hit::App {
                 id: row.entry.id.clone(),
             },
             label: row.entry.label().to_owned(),
-            detail: row.entry.id.as_str().to_owned(),
+            detail: app_detail(row.entry),
             kind: row.kind,
             extra: RowExtra::None,
         })
         .collect()
+}
+
+/// The second line of an application row: the `.desktop` name it is installed under, which is
+/// what a person recognises and what every other desktop's launcher shows.
+///
+/// Never the shell's internal id. `desktop-import.pcmanfm-qt.desktop` under "PCManFM-Qt File
+/// Manager" told nobody anything except that the shell has an import prefix; `pcmanfm-qt` is the
+/// command they would have typed. An application with no `.desktop` entry of its own — a native
+/// LegeOS one — falls back to what it is for, and only then to the id with the prefix taken off.
+fn app_detail(entry: &AppEntry) -> String {
+    let desktop = entry.desktop_file_id.trim_end_matches(".desktop");
+    if !desktop.is_empty() {
+        return desktop.to_owned();
+    }
+    if let Some(category) = entry.categories.first() {
+        return category.clone();
+    }
+    entry
+        .id
+        .as_str()
+        .trim_start_matches("desktop-import.")
+        .trim_end_matches(".desktop")
+        .to_owned()
 }
 
 /// The file results, split into the two sources they actually are: a directory is somewhere to
@@ -498,9 +525,29 @@ mod tests {
     fn sources<'a>(apps: &'a [AppEntry], files: Option<FileResults<'a>>) -> Sources<'a> {
         Sources {
             apps,
+            recents: &[],
             files,
             home: None,
         }
+    }
+
+    /// The second line names the application the way it is installed, never the shell's own id.
+    #[test]
+    fn an_application_row_says_its_desktop_name_and_not_the_internal_id() {
+        let mut pcmanfm = app(
+            "desktop-import.pcmanfm-qt.desktop",
+            "PCManFM-Qt File Manager",
+        );
+        pcmanfm.desktop_file_id = "pcmanfm-qt.desktop".to_owned();
+        let mut native = app("org.legeos.Settings", "Settings");
+        native.desktop_file_id = String::new();
+        native.categories = vec!["System".to_owned()];
+        let apps = [pcmanfm, native];
+
+        let rows = federate(sources(&apps, None), "pcmanfm", &Scope::Applications, 12);
+        assert_eq!(rows[0].detail, "pcmanfm-qt");
+        let rows = federate(sources(&apps, None), "settings", &Scope::Applications, 12);
+        assert_eq!(rows[0].detail, "System");
     }
 
     fn in_work() -> Scope {
