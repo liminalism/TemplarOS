@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 6;
+pub const SHELL_PROTOCOL_VERSION: u32 = 7;
 
 /// The value of `lege_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
@@ -92,6 +92,9 @@ impl<B: Backend + 'static> GlobalDispatch2<LegeShellManagerV1, LegeCompState<B>>
         }
         if manager.version() >= 5 {
             manager.group_cycle_binding(GROUP_CYCLE_BINDING_SUPER_TAB);
+        }
+        if manager.version() >= 7 {
+            manager.bar_peeked(peeked_output(state));
         }
         state.shell_protocol.managers.push(manager);
     }
@@ -855,11 +858,27 @@ pub fn sync_toplevels<B: Backend + 'static>(
         .identified
         .retain(|window_id| live.contains(window_id));
 
+    // Read live rather than from `snapshot`: the peek is a pointer state the compositor changes
+    // between snapshots, and every change publishes another one, so the last sync wins either way.
+    let peeked = peeked_output(state);
     for manager in &state.shell_protocol.managers {
         if manager.version() >= 2 {
             manager.home_revealed(u32::from(snapshot.home_revealed));
         }
+        if manager.version() >= 7 {
+            manager.bar_peeked(peeked.clone());
+        }
     }
+}
+
+/// The output whose bottom edge the pointer is asking for, as `bar_peeked` sends it: the empty
+/// string for none, because a Wayland `string` argument is not nullable here.
+fn peeked_output<B: Backend + 'static>(state: &LegeCompState<B>) -> String {
+    state
+        .window_service
+        .peek_output()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// `lege_window::Layer`'s wire mapping is fixed by `lege-shell-v1.xml`'s `layer` enum
