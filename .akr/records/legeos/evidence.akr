@@ -333,6 +333,19 @@ record legeos.evidence.btrfs-delta-transport-and-backend-20260907/1 : evidence {
         """
 }
 
+record legeos.evidence.campaign-6-advisor-review-and-its-fixes/1 : evidence {
+    title "An adversarial review of the eleven campaign-6 commits found eight issues; seven were fixed and one (a group chip's count beside a row tile's initial) was accepted as cosmetic. The load-bearing three were a rounding error that put the bottom half-pixel of every output outside both dwell regions, a missing input region that made the island's transparent parts swallow clicks and suppress the hot corner, and a coverage radius of 4 against a paint radius of 8. The gate is green after all of them."
+    state verified
+    result pass
+    method command
+    observed_at git:8506cc526b3ab1eac3a217266a01731271214e0a
+    command "just check"
+    artifact ".agent/scratch/bar-6/advisor-findings.md"
+    summary """
+        An adversarial review of the eleven campaign-6 commits found eight issues; seven were fixed and one (a group chip's count beside a row tile's initial) was accepted as cosmetic. The load-bearing three were a rounding error that put the bottom half-pixel of every output outside both dwell regions, a missing input region that made the island's transparent parts swallow clicks and suppress the hot corner, and a coverage radius of 4 against a paint radius of 8. The gate is green after all of them.
+        """
+}
+
 record legeos.evidence.campaign2-merged-gate-20260907/1 : evidence {
     title "Full gate on the merged campaign-2 tree at 9b9ac2b: fmt, clippy pedantic, 1920 tests passed 0 failed, MSRV, seeds --check, check-packaging, check-interfaces, check-assets, check-actions all green."
     state verified

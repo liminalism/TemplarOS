@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:e13e4932c84eff1608c2ef9996994530290397587b117c5df130e1cd113e34cc"
+    source_graph "sha256:cf67e27d2b2ba732ebb52460c091a69bb82f3769701b6c8c0dbee90625d74bee"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:3851a1d846f6dac484eccd9d0715d9fa452b1c2caa6f0c16316ba6b92b5c9cdf"
-    records 271
+    hash "sha256:d997c7e97e1d65749eb1f3bf21f430d1fa3a35eac483ead2bf999241a4c0bdbb"
+    records 272
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -3857,6 +3857,11 @@ seal @legeos.evidence.btrfs-delta-correctness-gate-passes/1 {
 seal @legeos.evidence.btrfs-delta-transport-and-backend-20260907/1 {
     state verified
     hash "sha256:ab793c000ccf630003656077f33dd43e94126809e483fe7c9dbe49b07ae85e6f"
+}
+
+seal @legeos.evidence.campaign-6-advisor-review-and-its-fixes/1 {
+    state verified
+    hash "sha256:621775a880b93133c2f53b63014e3fa87d9903ed43b38e998b4e9fe68c1a5d4a"
 }
 
 seal @legeos.evidence.campaign2-merged-gate-20260907/1 {
