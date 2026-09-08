@@ -22,9 +22,10 @@ use std::collections::HashMap;
 use crate::omnibox::{FileState, Hit, Row, RowExtra};
 use crate::surface::design::{self, Elevation};
 
-/// One row's height in logical pixels: enough for a 20px mark, a name and a detail line, with
-/// air around them. A row below this is a sliver, and a sliver is a control that cannot be hit.
-pub const ROW_HEIGHT: i32 = 38;
+/// One row's height in logical pixels: enough for a 24px mark, a name and a detail line, with
+/// air around them. A row below this is a sliver, and a sliver is a control that cannot be hit —
+/// at 38 the two lines of text touched and the list read as one grey block.
+pub const ROW_HEIGHT: i32 = 46;
 /// The dropdown never grows past this many rows on screen, whatever the cap allowed.
 const MAX_VISIBLE: usize = 12;
 
@@ -171,10 +172,18 @@ pub fn draw(
     anchor: Rect,
     bounds: Rect,
     rows: &[Row],
-    state: &OmniboxState,
+    state: &mut OmniboxState,
     icons: &HashMap<String, Bitmap>,
     files: FileState,
 ) -> OmniboxOutcome {
+    // The pointer moves the one highlight rather than painting a second one. Two rows lit at once
+    // — the arrow keys' and the pointer's — is the list saying two different things about what
+    // Enter will do, and it is the whole reason this list was hard to use.
+    if let Some((x, y)) = ui.input.cursor()
+        && let Some(hovered) = row_at(ui, anchor, bounds, rows, files, x, y)
+    {
+        state.highlighted = hovered;
+    }
     if crate::omnibox::is_panel(rows) {
         return draw_panel(ui, panel_area(bounds), rows, state, files);
     }
@@ -348,11 +357,7 @@ fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
 fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> bool {
     let hovered = ui.input.hovering(rect);
     if highlighted || hovered {
-        ui.painter.fill_rounded_rect(
-            rect.inset(ui.px(1)),
-            ui.px(design::CHIP_RADIUS),
-            design::accent_soft(),
-        );
+        highlight(ui, rect);
     }
     let (changed_at, left_of_it) = rect.split_right(ui.px(150).min(rect.w / 4));
     let (size, name) = left_of_it.split_right(ui.px(100).min(left_of_it.w / 4));
@@ -436,15 +441,10 @@ fn draw_row(
     highlighted: bool,
     icons: &HashMap<String, Bitmap>,
 ) -> bool {
-    let hovered = ui.input.hovering(rect);
-    if highlighted || hovered {
-        ui.painter.fill_rounded_rect(
-            rect.inset(ui.px(1)),
-            ui.px(design::CHIP_RADIUS),
-            design::accent_soft(),
-        );
+    if highlighted {
+        highlight(ui, rect);
     }
-    let mark_size = ui.px(22).min(rect.h - ui.px(8)).max(4);
+    let mark_size = ui.px(24).min(rect.h - ui.px(10)).max(4);
     let mark = Rect::new(
         rect.x + ui.px(6),
         rect.y + (rect.h - mark_size) / 2,
@@ -480,7 +480,7 @@ fn draw_row(
             name,
             &row.label,
             design::title_style(ui),
-            if highlighted || hovered {
+            if highlighted {
                 design::accent()
             } else {
                 design::text()
@@ -491,11 +491,24 @@ fn draw_row(
             detail,
             &row.detail,
             design::state_style(ui),
-            design::text_faint(),
+            design::text_dim(),
             Align::Left,
         );
     }
     ui.input.take_click(rect)
+}
+
+/// What the one chosen row looks like: the soft accent ground, and a solid bar down its leading
+/// edge. The ground alone was the same weight as the panel's own fill at a glance — the bar is
+/// what makes "Enter opens this one" readable across the room.
+fn highlight(ui: &mut Ui<'_>, rect: Rect) {
+    let inner = rect.inset(ui.px(1));
+    ui.painter
+        .fill_rounded_rect(inner, ui.px(design::CHIP_RADIUS), design::accent_soft());
+    ui.painter.fill_rect(
+        Rect::new(inner.x, inner.y, ui.px(3), inner.h),
+        design::accent(),
+    );
 }
 
 fn kind_mark(hit: &Hit) -> &'static str {
