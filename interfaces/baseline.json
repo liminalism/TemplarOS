@@ -214,6 +214,23 @@
       },
       "properties": {}
     },
+    "org.legeos.HomeGarden1": {
+      "methods": {
+        "Clock": "()->(s)",
+        "Contexts": "()->(s)",
+        "Describe": "(s)->(s)",
+        "Forget": "(s)->()",
+        "ForgetAll": "()->()",
+        "Hide": "(sb)->()",
+        "Observe": "(ssss)->()",
+        "Pin": "(sb)->()",
+        "Tend": "(s)->(s)"
+      },
+      "signals": {
+        "Tended": "(su)"
+      },
+      "properties": {}
+    },
     "org.legeos.Host.Deployments1": {
       "methods": {
         "Backend": "()->(s)",
@@ -385,12 +402,17 @@
         "CanSuspend": "()->(s)",
         "Lock": "()->()",
         "Logout": "()->()",
+        "NotifyUnlocked": "()->()",
         "PowerOff": "()->()",
         "Reboot": "()->()",
         "Suspend": "()->()"
       },
       "signals": {
-        "LockRequested": "()"
+        "LockRequested": "()",
+        "Locked": "()",
+        "SessionStarted": "()",
+        "Sleeping": "(b)",
+        "Unlocked": "()"
       },
       "properties": {}
     },

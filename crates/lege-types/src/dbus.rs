@@ -32,6 +32,9 @@ pub mod session {
     pub const HOME_FIELD_PATH: &str = "/org/legeos/Session/HomeField";
     pub const HOME_FIELD_IFACE: &str = "org.legeos.HomeField1";
 
+    pub const HOME_GARDEN_PATH: &str = "/org/legeos/Session/HomeGarden";
+    pub const HOME_GARDEN_IFACE: &str = "org.legeos.HomeGarden1";
+
     pub const POWER_PATH: &str = "/org/legeos/Session/Power";
     pub const POWER_IFACE: &str = "org.legeos.Power1";
 

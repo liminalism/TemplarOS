@@ -1,0 +1,69 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/HomeGarden.
+     The activity ledger behind Home's grown places (docs/architecture/homegarden.md,
+     @legeos.decision.homegarden-activity-grown-places). Observation is fire-and-forget;
+     tending is explicit and happens only at tending moments (Home reveal, session start,
+     `garden.tend`); every change to the field goes through HomeField1 as one batch, so it is
+     undoable there and appears in History1. Time is Garden time: sessions counted and
+     unlocked-session runtime accumulated at Lifecycle1's session edges, never wall-clock.
+     Implemented in services/lege-sessiond/src/apis/homegarden.rs. -->
+<node>
+  <interface name="org.legeos.HomeGarden1">
+    <!-- Record one human-significant act on `path`. `kind` is one of placed-on-home,
+         project-entered, launched-here, directory-opened, file-opened, created-or-renamed,
+         file-saved; `app_id` and `role` may be empty. Paths under build output, caches, hidden
+         directories and the machine's own directories are dropped, silently. -->
+    <method name="Observe">
+      <arg name="kind" type="s" direction="in"/>
+      <arg name="path" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="role" type="s" direction="in"/>
+    </method>
+    <!-- Recompute every context's stage and bring `output`'s field in line: one HomeField1
+         batch of Place/Resize/Remove ops, never a Move, never a change to a tile the user
+         placed, moved, resized or pinned. Returns the tending report as JSON
+         ({"changed": n, "ops": [{"op": label, "reason": sentence}]}); "changed" is 0 when the
+         field was already in line. -->
+    <method name="Tend">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="report_json" type="s" direction="out"/>
+    </method>
+    <!-- Every context with its effective relevance now, stage, sessions seen, roles, tree and
+         flags, as a JSON array. -->
+    <method name="Contexts">
+      <arg name="contexts_json" type="s" direction="out"/>
+    </method>
+    <!-- One context by root, with the reason for its last stage change: what `garden.why`
+         shows. An empty string when the path is no context. -->
+    <method name="Describe">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="context_json" type="s" direction="out"/>
+    </method>
+    <!-- A pinned context never recedes and is never removed; it may still grow. -->
+    <method name="Pin">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="pinned" type="b" direction="in"/>
+    </method>
+    <!-- A hidden context never grows; its record is kept so it can be unhidden. -->
+    <method name="Hide">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="hidden" type="b" direction="in"/>
+    </method>
+    <!-- Drop one context's record; fresh activity may grow it again. -->
+    <method name="Forget">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Drop every context except the pinned ones. -->
+    <method name="ForgetAll"/>
+    <!-- The Garden Clock now: {"session": n, "active_ms": n, "active": bool}. -->
+    <method name="Clock">
+      <arg name="moment_json" type="s" direction="out"/>
+    </method>
+    <!-- A tending moment changed `output`'s field; HomeField1.Changed follows for the document. -->
+    <signal name="Tended">
+      <arg name="output" type="s"/>
+      <arg name="changed" type="u"/>
+    </signal>
+  </interface>
+</node>
