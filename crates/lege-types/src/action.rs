@@ -330,8 +330,8 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
-    // Alt+Tab moves inside the focused window's *group*; with no group anywhere the loose set is
-    // the group, so this is the switcher it has always been (planning doc §2 rules 3-4).
+    // Alt+Tab walks every unshelved window, most recently used first, on a list frozen while the
+    // modifier is held (campaign 4, Lane A); Super+Tab crosses window groups.
     ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",
@@ -686,6 +686,20 @@ pub const MANIFEST: &[ActionDecl] = &[
         cli_verb: None,
         confirm: false,
         requires: Requires::Provider(ProviderRole::NetworkStatusUi),
+    },
+    // The bar's clock. `Requires::Always` rather than a `Calendar` provider role: there is no such
+    // role, and inventing one for a single chip would put a contract in `lege-session-core` to
+    // carry one launch. The bar dims the chip when no installed application declares
+    // `Categories=Calendar`, which is the same thing a person sees.
+    ActionDecl {
+        id: "clock.open-calendar",
+        label: "Calendar",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
     },
     ActionDecl {
         id: "launcher.launch",
@@ -1094,7 +1108,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     // explain itself, and this is the one declared route from the glance to that window.
     ActionDecl {
         id: "settings.open",
-        label: "Open Settings",
+        label: "Settings",
         control: Some("Open"),
         category: ActionCategory::System,
         // No chord: it opens a window, and nothing that opens a window is a keystroke away here.
@@ -1325,7 +1339,7 @@ mod tests {
     #[test]
     fn a_control_is_the_short_form_when_the_tile_already_names_the_noun() {
         let settings = action("settings.open").expect("declared");
-        assert_eq!(settings.label, "Open Settings");
+        assert_eq!(settings.label, "Settings");
         assert_eq!(settings.control_label(), "Open");
         let lock = action("session.lock").expect("declared");
         assert_eq!(lock.control_label(), lock.label);
