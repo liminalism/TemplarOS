@@ -751,6 +751,10 @@ impl<B: Backend + 'static> LegeCompState<B> {
             time,
             |state, modifiers, handle| {
                 let keysym = handle.modified_sym();
+                // The switcher walks a list frozen for the length of the hold; this is where the
+                // release that ends it is seen. Read from the modifier state rather than matched
+                // by keysym, so either Alt (or either Super) ending the walk cannot be missed.
+                state.chord_held = modifiers.alt || modifiers.logo;
                 match state
                     .super_tap
                     .update(event.state(), keysym, time, home_revealed)
@@ -800,20 +804,31 @@ impl<B: Backend + 'static> LegeCompState<B> {
         }
 
         if let Some(Some(action)) = action {
-            // The fallback switcher HUD (`chrome::SwitcherState`) stays up only until something
-            // else happens — any reserved action other than another cycle step clears it here;
-            // `run_recovery_action` itself repopulates it for a cycle step.
+            // Any reserved action other than another switcher step ends the walk;
+            // `run_recovery_action` itself repopulates the ring and the HUD for a step.
             if !matches!(
                 action,
                 crate::keybindings::RecoveryAction::CycleFocusForward
                     | crate::keybindings::RecoveryAction::CycleFocusBackward
+                    | crate::keybindings::RecoveryAction::GroupCycleForward
+                    | crate::keybindings::RecoveryAction::GroupCycleBackward
             ) {
-                self.switcher = None;
+                self.switch_ring = None;
             }
             if !self.session_lock.locked {
                 self.run_recovery_action(action);
             }
-        } else {
+        } else if event.state() == smithay::backend::input::KeyState::Pressed {
+            // Some other key: the walk is over. A *release* must not end it — clearing on every
+            // forwarded key is what used to kill the HUD one keystroke after it appeared, on the
+            // release of the very Tab that opened it.
+            self.switch_ring = None;
+        }
+        if !self.chord_held {
+            self.switch_ring = None;
+        }
+        // The HUD lives exactly as long as the list it draws.
+        if self.switch_ring.is_none() {
             self.switcher = None;
         }
     }

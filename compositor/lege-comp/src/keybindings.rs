@@ -26,14 +26,16 @@ pub enum RecoveryAction {
     ShowAllWindows,
     /// `WindowService::handle_command(EscapeFullscreenOrModal { window_id: None }, ..)`.
     EscapeFullscreenOrModal,
-    /// `WindowService::cycle_within_group(current, forward: true)` — `Alt+Tab` moves *inside* the
-    /// focused window's group, and the loose set is a group for this purpose, so with no group
-    /// anywhere this is exactly the switcher it has always been.
+    /// `Alt+Tab`: the next window in `WindowService::switch_order` — every unshelved client
+    /// window, most-recently-activated first — walked as a list frozen for the length of the
+    /// hold (`LegeCompState::step_switcher`). There is no within-group cycling any more: scoping
+    /// this to the focused window's group made a group a place Alt+Tab could not leave, which is
+    /// the opposite of what a person pressing it wants.
     CycleFocusForward,
-    /// `WindowService::cycle_within_group(current, forward: false)`.
+    /// `Alt+Shift+Tab`: the previous window in the same frozen list.
     CycleFocusBackward,
-    /// `Super+Tab`: `WindowService::cycle_groups(current, forward: true)` — the next group,
-    /// landing on its last active member; the loose set counts as one group.
+    /// `Super+Tab`: the next group (`WindowService::group_cycle_targets`), landing on its last
+    /// active member; the loose set counts as one group. Frozen for the hold, like `Alt+Tab`.
     GroupCycleForward,
     /// `Super+Shift+Tab`: the previous group.
     GroupCycleBackward,
@@ -73,8 +75,8 @@ const STEP_HOPS: u8 = 2;
 /// |------------------------|---------------------------|
 /// | Ctrl+Alt+Escape        | escape fullscreen/modal   |
 /// | Ctrl+Alt+Space         | show every window         |
-/// | Alt+Tab                | next window in the group  |
-/// | Alt+Shift+Tab          | previous window in it     |
+/// | Alt+Tab                | next window               |
+/// | Alt+Shift+Tab          | previous window           |
 /// | Super+Tab              | next window group         |
 /// | Super+Shift+Tab        | previous window group     |
 /// | Super+G                | group with the last window|
@@ -413,27 +415,52 @@ impl<B: Backend + 'static> LegeCompState<B> {
                 }
             }
             RecoveryAction::GroupCycleForward | RecoveryAction::GroupCycleBackward => {
-                let current = self.activated_window();
-                let forward = matches!(action, RecoveryAction::GroupCycleForward);
-                if let Some(next) = self.window_service.cycle_groups(current, forward) {
-                    crate::input::activate_window(self, next);
-                    self.switcher = Some(self.group_switcher(next));
-                }
+                self.step_switcher(true, matches!(action, RecoveryAction::GroupCycleForward));
             }
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
-                let current = self.activated_window();
-                let forward = matches!(action, RecoveryAction::CycleFocusForward);
-                // Inside the focused window's group, or the loose set when it is in none
-                // (planning doc §2 rule 4: the feature costs nothing until a group exists).
-                if let Some(next) = self.window_service.cycle_within_group(current, forward) {
-                    crate::input::activate_window(self, next);
-                    // Draw the compositor-owned fallback switcher HUD (`src/chrome/mod.rs`) so
-                    // cycling is visible without the shell. `src/input.rs` clears it on the next
-                    // input that is not itself another switcher step.
-                    self.switcher = Some(self.within_group_switcher(next));
-                }
+                self.step_switcher(false, matches!(action, RecoveryAction::CycleFocusForward));
             }
         }
+    }
+
+    /// One `Alt+Tab` (`groups: false`) or `Super+Tab` (`groups: true`) step.
+    ///
+    /// The list is built at the first press and *frozen* until the modifier is released
+    /// (`src/input.rs::on_keyboard` drops the ring), because every step activates, activation
+    /// raises, and the list is the stacking order — rebuilt per press it can only ever swap the
+    /// top two windows, which is what made a third window unreachable no matter how many times
+    /// Tab was pressed. `Alt+Tab` walks *every* unshelved client window, in
+    /// most-recently-activated order; it used to be scoped to the focused window's group, which
+    /// meant a group was a place Alt+Tab could not leave.
+    ///
+    /// ponytail: each step activates as it goes, so walking past three windows raises three. The
+    /// upgrade — commit only on release, as Windows does — costs a second commit path for the
+    /// cases where the release is never seen; this way the keyboard is always somewhere real.
+    fn step_switcher(&mut self, groups: bool, forward: bool) {
+        let ring = match self.switch_ring.take() {
+            Some((ring, walking_groups)) if walking_groups == groups => Some(ring),
+            _ => {
+                let targets = if groups {
+                    self.window_service.group_cycle_targets()
+                } else {
+                    self.window_service.switch_order()
+                };
+                lege_window::SwitchRing::new(targets, self.activated_window())
+            }
+        };
+        let Some(mut ring) = ring else {
+            return;
+        };
+        let next = ring.step(forward);
+        // The compositor-owned switcher HUD (`src/chrome/mod.rs`), so cycling is visible with the
+        // shell dead. It draws the frozen list, which is the list actually being walked.
+        self.switcher = Some(if groups {
+            self.group_switcher(&ring, next)
+        } else {
+            self.window_switcher(&ring, next)
+        });
+        self.switch_ring = Some((ring, groups));
+        crate::input::activate_window(self, next);
     }
 
     /// The window that currently holds the keyboard, if any.
@@ -459,50 +486,46 @@ impl<B: Backend + 'static> LegeCompState<B> {
         crate::window_groups::group_windows(self, previous, focused);
     }
 
-    /// The `Alt+Tab` HUD: this group's members under the group's name, in stacking order. A loose
-    /// window gets the plain list it always had, with no heading.
-    fn within_group_switcher(
+    /// The `Alt+Tab` HUD: the frozen list, titles top-first, the current step highlighted.
+    fn window_switcher(
         &self,
+        ring: &lege_window::SwitchRing,
         selected: lege_window::WindowId,
     ) -> crate::chrome::SwitcherState {
-        let group = self.window_service.group_of(selected);
-        let entries = self
-            .window_service
-            .stacking_order()
-            .into_iter()
-            .filter(|id| self.window_service.group_of(*id) == group)
-            .filter_map(|id| {
-                self.window_service
-                    .window(id)
-                    .filter(|window| self.window_service.is_client_window(id) && !window.shelved)
-                    .map(|window| (id, window.title.clone()))
-            })
-            .collect();
-        let record = group.and_then(|group| self.window_service.group_record(group));
         crate::chrome::SwitcherState {
-            heading: record.map(|record| match record.display_name() {
-                "" => "Group".to_owned(),
-                name => name.to_owned(),
-            }),
-            accent: record.map(|record| record.accent),
-            entries,
+            heading: None,
+            accent: None,
+            entries: ring
+                .targets()
+                .iter()
+                .map(|id| {
+                    let title = self
+                        .window_service
+                        .window(*id)
+                        .map(|window| window.title.clone())
+                        .unwrap_or_default();
+                    (*id, title)
+                })
+                .collect(),
             selected,
         }
     }
 
     /// The `Super+Tab` HUD: one row per group with its member count, the loose set last under
-    /// "Other windows" — the same list `cycle_groups` steps through, in the same order.
-    fn group_switcher(&self, selected: lege_window::WindowId) -> crate::chrome::SwitcherState {
-        let entries = self
-            .window_service
-            .group_cycle_targets()
-            .into_iter()
-            .map(|target| (target, self.group_label(target)))
-            .collect();
+    /// "Other windows" — the same frozen list `Super+Tab` is stepping through, in the same order.
+    fn group_switcher(
+        &self,
+        ring: &lege_window::SwitchRing,
+        selected: lege_window::WindowId,
+    ) -> crate::chrome::SwitcherState {
         crate::chrome::SwitcherState {
             heading: Some("Groups".to_owned()),
             accent: None,
-            entries,
+            entries: ring
+                .targets()
+                .iter()
+                .map(|target| (*target, self.group_label(*target)))
+                .collect(),
             selected,
         }
     }

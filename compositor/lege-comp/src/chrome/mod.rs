@@ -48,14 +48,14 @@ const SCATTER_LABEL_HEIGHT: i32 = 26;
 /// pixels in the group's accent colour").
 const GROUP_OUTLINE_THICKNESS: i32 = 2;
 
-/// The compositor-drawn fallback switcher's transient state (`WindowService::cycle_within_group`
-/// and `cycle_groups`, `src/keybindings.rs`): what to list, in display order, and which entry was
-/// just selected. Cleared by `src/input.rs` on the next input that is not itself another switcher
-/// step — this module owns no clock, so there is no timed fade, only "until you do something
-/// else".
+/// The compositor-drawn fallback switcher's transient state (`LegeCompState::step_switcher`,
+/// `src/keybindings.rs`): what to list, in display order, and which entry was just selected. It
+/// lives exactly as long as the frozen list it draws — until the modifier comes up, or until any
+/// other action ends the walk (`src/input.rs`). This module owns no clock, so there is no timed
+/// fade.
 ///
-/// Two switchers share it. `Alt+Tab` lists the focused window's group under the group's name, in
-/// its accent; `Super+Tab` lists the groups themselves with their member counts under "Groups".
+/// Two switchers share it. `Alt+Tab` lists every unshelved window, most-recently-activated first;
+/// `Super+Tab` lists the groups themselves with their member counts under "Groups".
 /// One HUD, because they are the same gesture at two scales, and because a second panel widget
 /// would be a second thing to keep alive with the shell dead.
 #[derive(Clone, Debug)]

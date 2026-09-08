@@ -18,6 +18,7 @@ pub mod group;
 pub mod layers;
 mod service;
 mod shell;
+mod switch;
 
 pub use arrangement::{ArrangementPreset, preset_rects};
 pub use commands::{
@@ -35,6 +36,7 @@ pub use service::{
     CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowService,
 };
 pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
+pub use switch::SwitchRing;
 
 // Re-exported so `WindowClaims::default()` and friends stay reachable as `lege_window::WindowClaims`
 // for crates that otherwise only need this crate.

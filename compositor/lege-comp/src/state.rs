@@ -198,9 +198,19 @@ pub struct LegeCompState<B: Backend + 'static> {
     /// Non-`None` while the "show every window" recovery view is active: the scattered layout to
     /// draw and hit-test against instead of `window_service`'s ordinary geometry.
     pub show_all_windows: Option<Vec<(lege_window::WindowId, lege_window::Rect)>>,
-    /// Non-`None` while the compositor-drawn fallback switcher (`WindowService::cycle_focus`,
-    /// `src/keybindings.rs`) is showing.
+    /// Non-`None` while the compositor-drawn fallback switcher (`src/keybindings.rs`) is showing.
     pub switcher: Option<crate::chrome::SwitcherState>,
+    /// The list `Alt+Tab` / `Super+Tab` is walking, frozen at the first press and dropped when
+    /// the modifier comes up (`src/input.rs::on_keyboard`). The flag is `true` for the group
+    /// walk, so pressing the other chord rebuilds the list instead of continuing this one.
+    ///
+    /// Frozen because every step activates and activation raises: the list is the stacking order,
+    /// so rebuilding it per press only ever swaps the top two windows (`lege_window::SwitchRing`).
+    pub switch_ring: Option<(lege_window::SwitchRing, bool)>,
+    /// Whether `Alt` or `Super` was still held at the last key event — the release that ends a
+    /// switcher walk. Read from the keyboard filter's modifier state rather than tracked by
+    /// keysym, so a modifier released while another window has the keyboard cannot be missed.
+    pub chord_held: bool,
     /// The window whose name tag a name-tag drag is hovering: releasing there groups the two
     /// (`src/input.rs`, planning doc §2 rule 6). Non-`None` only during a drag, and only while
     /// the pointer is actually over another window's name tag — it is what that tag draws itself
@@ -341,6 +351,8 @@ impl<B: Backend + 'static> LegeCompState<B> {
             screencopy: crate::screencopy::ScreencopyState::new::<B>(dh),
             show_all_windows: None,
             switcher: None,
+            switch_ring: None,
+            chord_held: false,
             drop_target: None,
             previous_focus: None,
             home_mapped: None,
