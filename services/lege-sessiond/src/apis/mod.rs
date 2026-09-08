@@ -9,6 +9,7 @@ pub mod backlight;
 pub mod battery;
 pub mod history;
 pub mod homefield;
+pub mod homegarden;
 pub mod lifecycle;
 pub mod location;
 pub mod notifications;

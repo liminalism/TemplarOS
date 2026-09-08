@@ -532,6 +532,7 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving HomeField1")?;
+    serve_home_garden(connection, services).await?;
     object_server
         .at(
             names::POWER_PATH,
@@ -563,6 +564,27 @@ async fn serve_policy_interfaces(
 }
 
 /// Serve every `org.legeos.Session` interface, in-process, before the bus name is claimed.
+/// Homegarden: the ledger behind Home's grown places. Subscribed to the session edges and the
+/// launch channel here, before `Started` is sent (see `main`), so the Garden Clock sees the
+/// session begin.
+async fn serve_home_garden(connection: &zbus::Connection, services: &Services) -> Result<()> {
+    let garden = apis::homegarden::HomeGardenApi::new(
+        services.store.clone(),
+        services.history.clone(),
+        services.providers.clone(),
+        services.schema.clone(),
+        services.settings_values.clone(),
+        connection.clone(),
+    );
+    apis::homegarden::spawn_sources(garden.clone(), &services.session_edges, &services.launches);
+    connection
+        .object_server()
+        .at(names::HOME_GARDEN_PATH, garden)
+        .await
+        .context("serving HomeGarden1")?;
+    Ok(())
+}
+
 async fn serve_interfaces(
     connection: &zbus::Connection,
     system_connection: Option<zbus::Connection>,

@@ -376,6 +376,41 @@ mod homefield {
     }
 }
 
+mod homegarden {
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.legeos.HomeGarden1",
+        default_service = "org.legeos.Session",
+        default_path = "/org/legeos/Session/HomeGarden"
+    )]
+    pub trait HomeGarden {
+        /// Record one human-significant act on `path` (`kind` is an ActivityKind name; `app_id`
+        /// and `role` may be empty). Fire-and-forget by design.
+        fn observe(&self, kind: &str, path: &str, app_id: &str, role: &str) -> zbus::Result<()>;
+
+        /// Recompute stages and bring `output`'s field in line; returns the tending report.
+        fn tend(&self, output: &str) -> zbus::Result<String>;
+
+        /// Every context as JSON.
+        fn contexts(&self) -> zbus::Result<String>;
+
+        /// One context by root, or `""`.
+        fn describe(&self, path: &str) -> zbus::Result<String>;
+
+        fn pin(&self, path: &str, pinned: bool) -> zbus::Result<()>;
+        fn hide(&self, path: &str, hidden: bool) -> zbus::Result<()>;
+        fn forget(&self, path: &str) -> zbus::Result<()>;
+        fn forget_all(&self) -> zbus::Result<()>;
+
+        /// The Garden Clock now.
+        fn clock(&self) -> zbus::Result<String>;
+
+        #[zbus(signal)]
+        fn tended(&self, output: String, changed: u32) -> zbus::Result<()>;
+    }
+}
+
 mod power {
     use zbus::proxy;
 
@@ -441,6 +476,11 @@ mod lifecycle {
         fn suspend(&self) -> zbus::Result<()>;
 
         fn lock(&self) -> zbus::Result<()>;
+
+        /// The trusted shell reporting that it has released the compositor's lock. Refused for
+        /// anyone else: `lege-shell` is the only process that calls `unlock_and_destroy`, so it
+        /// is the only one that knows.
+        fn notify_unlocked(&self) -> zbus::Result<()>;
 
         fn can_reboot(&self) -> zbus::Result<String>;
 
@@ -551,6 +591,7 @@ pub use backlight::BacklightProxy;
 pub use battery::BatteryProxy;
 pub use history::HistoryProxy;
 pub use homefield::HomeFieldProxy;
+pub use homegarden::HomeGardenProxy;
 pub use launcher::LauncherProxy;
 pub use lifecycle::LifecycleProxy;
 pub use location::LocationProxy;

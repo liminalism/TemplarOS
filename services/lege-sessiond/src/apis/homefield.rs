@@ -42,6 +42,12 @@ impl HomeFieldApi {
     }
 }
 
+/// Emit `HomeField1.Changed` on behalf of another host that applied ops through the same store
+/// (Homegarden's tending), so the shell re-reads the document exactly as after an `Apply`.
+pub async fn announce_changed(emitter: &SignalEmitter<'_>, output: &str, revision: u64) {
+    let _ = HomeFieldApi::changed(emitter, output.to_owned(), revision).await;
+}
+
 fn to_json(doc: &lege_field::FieldDocument) -> fdo::Result<String> {
     serde_json::to_string(doc).map_err(|error| fdo::Error::Failed(error.to_string()))
 }
