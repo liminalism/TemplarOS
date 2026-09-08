@@ -158,6 +158,7 @@ pub fn baseline_schema() -> SettingsSchema {
     });
     add_appearance_specs(&mut schema);
     add_home_field_specs(&mut schema);
+    add_home_garden_specs(&mut schema);
     schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
         description: "Recently launched applications, newest first, shown under Home's search"
@@ -284,6 +285,84 @@ fn add_home_field_specs(schema: &mut SettingsSchema) {
             "shell.home-field.reduced-motion",
             "No zoom or throw animation on the Home Field; the ghost still shows",
             SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+    ] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min,
+            max,
+            privileged: false,
+        });
+    }
+}
+
+/// Homegarden's levers (`shell.home-garden.*`), read by `lege-sessiond`'s HomeGarden1 host
+/// (`@legeos.decision.homegarden-activity-grown-places`). Every duration is in garden time.
+fn add_home_garden_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices, min, max) in [
+        (
+            "shell.home-garden.enabled",
+            "Grow places on Home from the user's own activity (opens, launches, project entry); \
+             off means no observation and no tending, and existing places stay ordinary folders",
+            SettingValue::Bool(true),
+            vec![],
+            None,
+            None,
+        ),
+        (
+            "shell.home-garden.half-life-hours",
+            "Garden hours (unlocked session runtime) over which a place's relevance halves while \
+             it is untouched",
+            SettingValue::Int(12),
+            vec![],
+            Some(1),
+            Some(1000),
+        ),
+        (
+            "shell.home-garden.half-life-sessions",
+            "Later sessions over which a place's relevance halves while it is untouched",
+            SettingValue::Int(4),
+            vec![],
+            Some(1),
+            Some(100),
+        ),
+        (
+            "shell.home-garden.max-contexts",
+            "How many places the ledger remembers; the least relevant unpinned one is dropped past it",
+            SettingValue::Int(64),
+            vec![],
+            Some(8),
+            Some(512),
+        ),
+        (
+            "shell.home-garden.home-corner",
+            "The corner of Home that first growths cluster at",
+            SettingValue::Choice("bottom-left".into()),
+            vec![
+                "bottom-left".into(),
+                "bottom-right".into(),
+                "top-left".into(),
+                "top-right".into(),
+            ],
+            None,
+            None,
+        ),
+        (
+            "shell.home-garden.ignore",
+            "Directory names (or absolute prefixes) under which activity is machine churn and \
+             never grows a place; hidden directories are always ignored",
+            SettingValue::StrList(
+                crate::homegarden::DEFAULT_IGNORE
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            ),
             vec![],
             None,
             None,

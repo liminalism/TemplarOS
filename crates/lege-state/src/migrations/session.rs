@@ -170,4 +170,17 @@ pub const MIGRATIONS: &[Migration] = &[
         ALTER TABLE desktop_import ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown';
 ",
     ),
+    // `0007`: Homegarden's ledger, one JSON value (`lege_session_core::homegarden::Ledger`)
+    // under the key `ledger`, in the same store as the Home Field it tends. Unread by an older
+    // binary, which simply never grows a place.
+    Migration::additive(
+        "0007-home-garden",
+        r"
+        CREATE TABLE home_garden (
+            key        TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_ms INTEGER NOT NULL
+        );
+",
+    ),
 ];

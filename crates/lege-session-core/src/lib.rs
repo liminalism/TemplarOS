@@ -12,6 +12,7 @@ pub mod file_view;
 pub mod first_run;
 pub mod history;
 pub mod homefield;
+pub mod homegarden;
 pub mod location;
 pub mod notifications;
 pub mod power;
