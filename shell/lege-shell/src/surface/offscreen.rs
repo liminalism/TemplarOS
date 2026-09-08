@@ -127,6 +127,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         actions: lege_types::action::MANIFEST,
         file_search: None,
         recents: &[],
+        recent_ids: &[],
         reduced_motion: true,
         now_ms: 0,
     };
@@ -229,6 +230,8 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
         icons: &icons,
         clock_label: &crate::surface::app::clock_label_now(),
         network_control_available: true,
+        calendar_available: true,
+        account_label: "dk",
         activated: Some((lege_window::WindowId(1), false)),
         home_revealed: false,
         machine: &machine,
@@ -521,6 +524,7 @@ mod tests {
             actions: lege_types::action::MANIFEST,
             file_search: None,
             recents: &recents,
+            recent_ids: &[],
             reduced_motion: true,
             now_ms: 0,
         };
@@ -599,7 +603,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x48c1_2433_81ea_4129,
+            hash, 0xa386_f28b_037c_e53e,
             "review the Home Field pixels before updating this baseline"
         );
     }

@@ -97,11 +97,14 @@ pub enum FieldAction {
     /// there is one Files object but many folder windows: this one is keyed by path and cached
     /// per path, so several windows on the field each list their own directory.
     BrowseFolder(PathBuf),
-    /// Open `path` as a folder window on Home — a tile placed on the field, not a mode the whole
-    /// screen enters. Raises the window already showing that path rather than opening a second.
-    OpenFolderWindow(PathBuf),
-    /// Open this folder in whichever application holds `ProviderRole::FileManager`, the surface with
-    /// the full drives sidebar — the browse pane's door to somewhere it does not go itself.
+    /// Open this folder in whichever application holds `ProviderRole::FileManager`.
+    ///
+    /// The one route from Home to a folder. Every press that opens one arrives here — the Files
+    /// object's ground, a Folder tile, a row or a crumb of a folder window, a Files-tile row, a
+    /// typed path in the search, and the Place menu's `place.open-files`. There used to be an
+    /// `OpenFolderWindow` beside it that did nothing but forward here, and a second copy of the
+    /// role lookup in `perform_place`; a route that exists twice is a route that behaves
+    /// differently twice.
     OpenInFiles(PathBuf),
     /// Perform one declared action (`lege_types::action::MANIFEST`). This is how every widget
     /// region, and every menu row, reaches a capability: the tile names an action id and the
@@ -248,6 +251,11 @@ pub struct FieldData<'a> {
     /// Recently launched applications, newest first, already resolved against `apps`. Empty on a
     /// cold session; the strip under search is then simply not drawn.
     pub recents: &'a [&'a crate::app_search::AppEntry],
+    /// The same list as ids, newest first, straight from [`crate::recents::RecentApps::ids`] —
+    /// what the launcher ranks with. Separate from `recents` because that one is resolved against
+    /// the registry and this one is not: an application that was uninstalled still says something
+    /// about the order you reach for the ones that are left.
+    pub recent_ids: &'a [String],
     /// Each widget's current content, keyed by `TileKind::System`'s probe. Absent means the
     /// first fetch has not landed; see `crate::surface::widgets` for why a widget that cannot
     /// reach its service reports that rather than showing a zero.
@@ -1201,6 +1209,14 @@ impl FieldScreen {
         if ui.input.take_click(search_area) {
             self.search_focused = true;
         }
+        // Escape leaves the search and empties it, so the next letter typed starts a new question
+        // rather than continuing one asked minutes ago. Read *here*: the focused `text_field`
+        // below consumes every key of the frame, so `handle_keys` never sees one while the search
+        // has focus — which is why Escape used to do nothing at all.
+        if self.search_focused && ui.input.keys().contains(&KeyInput::Escape) {
+            self.search_focused = false;
+            self.search.set_text("");
+        }
         // Scope is derived from where the surface is, never chosen. There is no mode to be in,
         // so there is no mode to get stuck in: on bare Home the field is the application
         // launcher, and inside the expanded Files object it searches that location.
@@ -1209,6 +1225,7 @@ impl FieldScreen {
         let rows = crate::omnibox::federate(
             crate::omnibox::Sources {
                 apps: data.apps,
+                recents: data.recent_ids,
                 files: data.file_search,
                 home: data.browser.home,
             },
@@ -1224,7 +1241,9 @@ impl FieldScreen {
             .flatten();
         let placeholder = match &scope {
             crate::omnibox::Scope::Location(location) => format!("Search {}", location.label()),
-            crate::omnibox::Scope::Applications => "Open an application".to_owned(),
+            // It says what to do, because there is now something to do without touching the
+            // pointer at all: any letter typed on Home lands here.
+            crate::omnibox::Scope::Applications => "Type to open an application".to_owned(),
         };
         let previous_theme = ui.theme;
         ui.theme.background = design::shell_fill();
@@ -1265,7 +1284,15 @@ impl FieldScreen {
 
         self.omnibox_rows = rows;
         self.omnibox_anchor = search_area;
-        self.omnibox_files = crate::omnibox::file_state(data.file_search, &query);
+        // Only a location has files to be searching for. The launcher had its whole answer in
+        // hand and still printed "still searching files…" under it, which is the general search
+        // this control is explicitly not.
+        self.omnibox_files = match scope {
+            crate::omnibox::Scope::Applications => crate::omnibox::FileState::Idle,
+            crate::omnibox::Scope::Location(_) => {
+                crate::omnibox::file_state(data.file_search, &query)
+            }
+        };
         self.omnibox_committed = committed;
     }
 
@@ -1377,7 +1404,7 @@ impl FieldScreen {
             self.omnibox_anchor,
             self.bounds,
             &rows,
-            &self.omnibox,
+            &mut self.omnibox,
             data.icons,
             self.omnibox_files,
         );
@@ -1525,15 +1552,15 @@ impl FieldScreen {
                 self.search.set_text("");
             }
             Hit::File { path } => actions.push(FieldAction::OpenFile(path)),
-            // Inside the Files object a folder is somewhere to go; on bare Home it is a window
-            // to open. Same row, same hit — the scope decides, exactly as it does for the query
-            // itself, so there is still no mode to be in.
+            // Inside the Files object a folder is somewhere to go; on bare Home it is the file
+            // manager opening there, exactly as a Folder tile is. Same row, same hit — the scope
+            // decides, exactly as it does for the query itself, so there is still no mode to be in.
             Hit::Directory { path } => {
                 if self.files_expanded {
                     self.files
                         .go_to(crate::files_surface::FilesLocation::Directory(path));
                 } else {
-                    actions.push(FieldAction::OpenFolderWindow(path));
+                    actions.push(FieldAction::OpenInFiles(path));
                 }
             }
         }
@@ -1852,10 +1879,9 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
+        // A focused search owns the keyboard, and `draw_search_bar` has already had this frame's
+        // keys (Escape included) before the field consumed them.
         if self.search_focused {
-            if ui.input.keys().contains(&KeyInput::Escape) {
-                self.search_focused = false;
-            }
             return;
         }
         let keys: Vec<KeyInput> = ui.input.keys().to_vec();
@@ -1869,6 +1895,27 @@ impl FieldScreen {
             }
             if let Some((tile, span)) = self.keyboard_resize {
                 self.handle_resize_key(&key, doc, tile, span, actions);
+                continue;
+            }
+            // Type to search. A letter on bare Home is somebody starting to name an application:
+            // it opens the search and goes into it, rather than falling on the floor while the
+            // field waits to be clicked. Only when the keyboard is not already driving the field
+            // — a focused or selected tile keeps `r` (resize), space (move) and Enter — and only
+            // for unmodified printable keys. Renames and menus are handled by the caller, which
+            // does not reach here while either is open.
+            if let KeyInput::Character(character) = key
+                && !character.is_control()
+                && !character.is_whitespace()
+                && !modifiers.control
+                && !modifiers.alt
+                && self.focus.is_none()
+                && self.selection.is_empty()
+                && self.confirming.is_none()
+                && self.zoomed.is_none()
+            {
+                self.search_focused = true;
+                self.search
+                    .set_text(format!("{}{character}", self.search.text()));
                 continue;
             }
             match key {
@@ -2557,6 +2604,11 @@ impl FieldScreen {
                     )
                     .collect()
             });
+        let place = tile.and_then(|id| match doc.kind_of(id) {
+            Some(TileKind::Folder { path }) => Some(path.clone()),
+            _ => None,
+        });
+        let place_state = place.as_ref().and_then(|path| data.garden.get(path));
         self.menu.open_at_with(
             (cx, cy),
             MenuTarget {
@@ -2569,10 +2621,9 @@ impl FieldScreen {
                     Some(TileKind::Project { project_id }) => Some(project_id.clone()),
                     _ => None,
                 }),
-                place: tile.and_then(|id| match doc.kind_of(id) {
-                    Some(TileKind::Folder { path }) => Some(path.clone()),
-                    _ => None,
-                }),
+                place: place.clone(),
+                place_pinned: place_state.is_some_and(|p| p.pinned),
+                place_kept: place_state.is_some_and(|p| p.kept),
             },
             choices,
         );
@@ -4949,6 +5000,7 @@ mod tests {
         toplevels: Vec<ShellToplevel>,
         apps: Vec<crate::app_search::AppEntry>,
         recents: Vec<crate::app_search::AppEntry>,
+        recent_ids: Vec<String>,
         variants: HashMap<String, Vec<(String, String, String)>>,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
@@ -4994,6 +5046,7 @@ mod tests {
                     ),
                 ],
                 recents: Vec::new(),
+                recent_ids: Vec::new(),
                 variants: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
@@ -5072,6 +5125,7 @@ mod tests {
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
                 recents: &recents,
+                recent_ids: &self.recent_ids,
                 reduced_motion: false,
                 now_ms: self.now,
             };
@@ -5229,6 +5283,112 @@ mod tests {
         assert_eq!(
             actions,
             vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())],
+        );
+    }
+
+    /// One route to the file manager. A Folder tile and a path typed into the search are the two
+    /// presses that used to take different ways out of Home — a tile went straight to
+    /// `OpenInFiles`, a typed path went through an `OpenFolderWindow` that did nothing but
+    /// forward there, and the Place menu's row resolved the role a second time in `app.rs`. All
+    /// three are `OpenInFiles(path)` now, which is what `open_in_file_manager` answers.
+    #[test]
+    fn every_folder_press_on_home_opens_the_file_manager_on_that_folder() {
+        let mut h = Harness::new();
+        let path = std::path::PathBuf::from("/home/a/work");
+        h.with_only(vec![(
+            tile_id_for("folder:/home/a/work"),
+            TileKind::Folder { path: path.clone() },
+            Cell::new(0, 0),
+        )]);
+        let rect = h.rect_of(tile_id_for("folder:/home/a/work"));
+        let pressed = h.click(rect.x + rect.w / 2, rect.bottom() - 8);
+        assert!(
+            pressed.contains(&FieldAction::OpenInFiles(path.clone())),
+            "the Folder tile: {pressed:?}"
+        );
+
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        h.screen.search.set_text("/etc");
+        h.frame();
+        let typed = h.key(KeyInput::Enter);
+        assert!(
+            typed.contains(&FieldAction::OpenInFiles("/etc".into())),
+            "a typed path: {typed:?}"
+        );
+    }
+
+    /// Typing on bare Home is how the search opens. A letter is somebody starting to name an
+    /// application, and it used to fall on the floor until the bar was clicked with the pointer.
+    #[test]
+    fn a_letter_typed_on_bare_home_opens_the_search_with_that_letter_in_it() {
+        let mut h = Harness::new();
+        assert!(!h.screen.search_focused);
+        h.key(KeyInput::Character('p'));
+        assert!(
+            h.screen.search_focused,
+            "the letter did not open the search"
+        );
+        assert_eq!(h.screen.search.text(), "p");
+        // And the field itself takes the next one, so a word arrives whole.
+        h.key(KeyInput::Character('c'));
+        assert_eq!(h.screen.search.text(), "pc");
+    }
+
+    /// A chord is not typing. Home's own keys keep working with a modifier held.
+    #[test]
+    fn a_modified_letter_is_a_chord_and_never_opens_the_search() {
+        let mut h = Harness::new();
+        h.input.modifiers_changed(pixelkit_shell::Modifiers {
+            shift: false,
+            control: true,
+            alt: false,
+        });
+        h.key(KeyInput::Character('c'));
+        assert!(!h.screen.search_focused);
+        assert_eq!(h.screen.search.text(), "");
+    }
+
+    /// Escape leaves the search and empties it: the next letter typed starts a new question
+    /// rather than continuing one asked minutes ago.
+    #[test]
+    fn escape_clears_the_query_as_well_as_unfocusing_it() {
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        h.screen.search.set_text("image");
+        h.frame();
+        h.key(KeyInput::Escape);
+        assert!(!h.screen.search_focused);
+        assert_eq!(h.screen.search.text(), "");
+    }
+
+    /// One highlight, wherever it came from. The pointer moves the same cursor the arrow keys
+    /// move, so Enter always opens the row that looks chosen.
+    #[test]
+    fn hovering_a_row_moves_the_one_highlight_and_enter_opens_that_row() {
+        let mut h = Harness::new();
+        h.screen.search_focused = true;
+        // Both of the harness's applications match: "GNU **I**mage…" by a word, "F**i**les" by a
+        // substring, in that order.
+        h.screen.search.set_text("i");
+        h.frame();
+        assert_eq!(
+            h.screen.omnibox.highlighted, 0,
+            "the best match starts chosen"
+        );
+
+        h.input
+            .cursor_moved((W / 2) as f32, omnibox_row_y(1) as f32);
+        h.frame();
+        assert_eq!(
+            h.screen.omnibox.highlighted, 1,
+            "the pointer did not move the highlight"
+        );
+        let actions = h.key(KeyInput::Enter);
+        assert_eq!(
+            actions,
+            vec![FieldAction::Launch("org.legeos.Files".parse().unwrap())],
+            "Enter opened a row other than the one that looked chosen"
         );
     }
 

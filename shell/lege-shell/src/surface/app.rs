@@ -229,7 +229,16 @@ const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 /// `open_in_file_manager`'s "no file manager is selected" branch on a session that had one
 /// selected, because nothing ever asked for the role. A role the shell acts on and does not fetch
 /// is a control that silently does nothing.
-const SHELL_ROLES: [&str; 4] = ["terminal", "file-search", "file-manager", "code-editor"];
+const SHELL_ROLES: [&str; 5] = [
+    "terminal",
+    "file-search",
+    "file-manager",
+    "code-editor",
+    // The bar's network chip. `network.open-control` has declared
+    // `Requires::Provider(NetworkStatusUi)` all along; without the role here the shell never
+    // asked who filled it and resolved the control by file name instead.
+    "network-status-ui",
+];
 
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
@@ -657,24 +666,15 @@ impl ShellApp {
         });
     }
 
-    /// Take the tiles another client placed (a Files window's "Add to Home") exactly where the
-    /// daemon put them. Nothing already here is moved or removed.
+    /// Take what another client did to the field (`field_model::reconcile_remote`): a tile
+    /// placed elsewhere, a Place the garden resized, a Place removed, hidden or forgotten.
     fn adopt_remote_tiles(&mut self, remote: &FieldDocument) {
-        for (id, located) in &remote.located {
-            if self.field.tile(*id).is_some() {
-                continue;
-            }
-            let Some(tile) = remote.tile(*id) else {
-                continue;
-            };
-            let op = FieldOp::AddTile {
-                tile: tile.clone(),
-                at: Some(*located),
-                container: None,
-            };
+        for op in field_model::reconcile_remote(&self.field, remote) {
             match lege_field::apply(&self.field, &op) {
                 Ok((next, _)) => self.field = next,
-                Err(error) => tracing::warn!(%error, "adopting a tile placed elsewhere"),
+                Err(error) => {
+                    tracing::warn!(%error, op = op.label(), "taking a change made elsewhere");
+                }
             }
         }
     }
@@ -958,20 +958,32 @@ impl ShellApp {
     /// is — and the role is the only thing that knows which one this session chose, so this takes
     /// the same route `project.open-files` already took (`tool_launch`) rather than naming one.
     fn open_in_file_manager(&mut self, path: &std::path::Path) {
+        // `project.open-files` *is* this route's argument shape — the bare directory. Asking
+        // [`tool_launch`] for it rather than writing it out a second time is what stops the Place
+        // menu's row and a Folder tile from drifting apart, which is the whole of K3.
+        let root = path.to_string_lossy().into_owned();
+        if let Some((role, arguments)) = tool_launch("project.open-files", &root) {
+            self.launch_provider(role, arguments);
+        }
+    }
+
+    /// Start whichever application holds `role`, with `arguments`, or say that none does.
+    ///
+    /// The one place a provider role becomes a running program. Every caller that resolved the
+    /// role itself wrote the same four lines and the same sentence; two of them had already
+    /// started to differ.
+    fn launch_provider(&mut self, role: ProviderRole, arguments: Vec<String>) {
         let now_ms = self.started.elapsed().as_millis() as u64;
-        let Some(app_id) = self.providers.get(&ProviderRole::FileManager).cloned() else {
+        let Some(app_id) = self.providers.get(&role).cloned() else {
             // The sentence every unfilled role uses, pointing at the same page.
             self.field_screen.report(
-                format!(
-                    "No {} is selected — choose one in Settings ▸ Providers",
-                    ProviderRole::FileManager
-                ),
+                format!("No {role} is selected — choose one in Settings ▸ Providers"),
                 now_ms,
             );
             return;
         };
         self.record_recent(&app_id);
-        self.spawn_launch_with_args(app_id, vec![path.to_string_lossy().into_owned()]);
+        self.spawn_launch_with_args(app_id, arguments);
     }
 
     fn spawn_open_file(&mut self, path: PathBuf) {
@@ -1351,7 +1363,7 @@ impl ShellApp {
     /// still fills in over a second or two without this asking for a frame itself.
     fn ensure_launcher_icons(&mut self) {
         let query = self.field_screen.search.text().to_owned();
-        let wanted: Vec<String> = crate::app_search::search(&self.apps, &query)
+        let wanted: Vec<String> = crate::app_search::search(&self.apps, &query, self.recent.ids())
             .into_iter()
             .take(LAUNCHER_ICON_LOOKAHEAD)
             .map(|row| row.entry.id.as_str().to_owned())
@@ -1579,6 +1591,7 @@ impl ShellApp {
             actions: lege_types::action::MANIFEST,
             file_search,
             recents: &recents,
+            recent_ids: self.recent.ids(),
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
         };
@@ -1670,9 +1683,6 @@ impl ShellApp {
                 show_hidden,
             } => self.spawn_browse(location, show_hidden),
             FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path),
-            FieldAction::OpenFolderWindow(path) => {
-                self.perform(FieldAction::OpenInFiles(path));
-            }
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => self.open_in_file_manager(&path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),
@@ -1844,27 +1854,23 @@ impl ShellApp {
     /// The tools are the project tools with the folder itself as root; the garden verbs go to
     /// `HomeGarden1`, and `garden.why` answers on the field's notice line.
     fn perform_place(&mut self, id: &'static str, path: &Path) {
-        let now_ms = self.started.elapsed().as_millis() as u64;
         if let Some(project_id) = id.strip_prefix("place.") {
+            // A folder is a folder: this row is the same press as a Folder tile and takes the
+            // same route, rather than resolving the `FileManager` role a second time with its own
+            // copy of the argument shape. One route means one thing to get right.
+            if project_id == "open-files" {
+                self.open_in_file_manager(path);
+                return;
+            }
             let project_id: &'static str = match project_id {
                 "open-terminal" => "project.open-terminal",
-                "open-files" => "project.open-files",
                 "open-editor" => "project.open-editor",
                 _ => return,
             };
             let root = path.to_string_lossy().into_owned();
-            let Some((role, arguments)) = tool_launch(project_id, &root) else {
-                return;
-            };
-            let Some(app_id) = self.providers.get(&role).cloned() else {
-                self.field_screen.report(
-                    format!("No {role} is selected — choose one in Settings ▸ Providers"),
-                    now_ms,
-                );
-                return;
-            };
-            self.record_recent(&app_id);
-            self.spawn_launch_with_args(app_id, arguments);
+            if let Some((role, arguments)) = tool_launch(project_id, &root) {
+                self.launch_provider(role, arguments);
+            }
             return;
         }
         let tx = self.data_tx.clone();
@@ -2008,6 +2014,7 @@ impl ShellApp {
     fn perform_declared(&mut self, id: &'static str) {
         match id {
             "network.open-control" => self.spawn_network_control(),
+            "clock.open-calendar" => self.spawn_calendar(),
             // Two view-state actions: they change what the field's own search bar is doing, so
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
@@ -2186,12 +2193,35 @@ impl ShellApp {
         }
     }
 
+    /// Open the network control: the application that fills the `network-status-ui` role, with
+    /// `--popup`.
+    ///
+    /// The role, never a file called `nm-tray`. Stock `nm-tray` is packaged by Ubuntu, declares no
+    /// `X-LegeOS-Provides`, ignores `--popup` and only ever draws a tray icon — and this desktop
+    /// has no tray, so resolving it by name produced a chip that launched something invisible.
+    /// `legeos-nm-tray` (`distro/forks/nm-tray-2/`) is the build that answers `--popup` and
+    /// declares the role; until it is installed the role is empty and the chip is drawn dimmed.
     fn spawn_network_control(&self) {
-        let Some(app_id) = network_control_app(&self.apps) else {
-            tracing::warn!("nm-tray2 is not installed in the application registry");
+        let Some(app_id) = self.providers.get(&ProviderRole::NetworkStatusUi).cloned() else {
+            tracing::warn!(
+                "no application fills the network-status-ui role — install legeos-nm-tray \
+                 (distro/forks/nm-tray-2); stock nm-tray declares no X-LegeOS-Provides and \
+                 ignores --popup, and this desktop has no tray for it to draw into"
+            );
             return;
         };
         self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
+    }
+
+    /// Open the installed calendar, through the same launch chain as everything else.
+    fn spawn_calendar(&self) {
+        let Some(app_id) = calendar_app(&self.apps) else {
+            tracing::warn!(
+                "no installed application declares Categories=Calendar — install gsimplecal"
+            );
+            return;
+        };
+        self.spawn_launch(app_id);
     }
 
     /// How long a toast stays up before it retires on its own.
@@ -2453,7 +2483,14 @@ impl ShellApp {
             .iter()
             .find(|t| t.activated)
             .map(|t| (t.window_id, t.maximized));
-        let network_control_available = network_control_app(&self.apps).is_some();
+        let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
+        let calendar_available = calendar_app(&self.apps).is_some();
+        // Who is signed in. `USER` is what the session manager sets; the uid is the honest
+        // fallback, because a chip labelled with nothing is the one the user did not dare press.
+        let account_label = std::env::var("USER")
+            .ok()
+            .filter(|user| !user.is_empty())
+            .unwrap_or_else(account_uid_label);
         let clock_label = local_clock_label(std::time::SystemTime::now());
         let now_ms = self.started.elapsed().as_millis() as u64;
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
@@ -2470,6 +2507,8 @@ impl ShellApp {
             icons: &self.icons,
             clock_label: &clock_label,
             network_control_available,
+            calendar_available,
+            account_label: &account_label,
             activated,
             home_revealed,
             machine: &self.machine,
@@ -3479,15 +3518,30 @@ fn tool_launch(id: &str, root: &str) -> Option<(ProviderRole, Vec<String>)> {
     }
 }
 
-fn network_control_app(apps: &[crate::app_search::AppEntry]) -> Option<AppId> {
-    apps.iter()
-        .find(|app| app.id.as_str() == "org.legeos.NetworkTray")
-        .or_else(|| {
-            apps.iter().find(|app| {
-                let id = app.id.as_str().to_ascii_lowercase();
-                id.ends_with("nm-tray.desktop") && !id.contains("autostart")
-            })
-        })
+/// The account chip's label when `USER` is unset: the numeric uid, which is at least true.
+#[allow(unsafe_code)]
+fn account_uid_label() -> String {
+    // SAFETY: `getuid` takes no arguments, touches no memory and cannot fail.
+    format!("uid {}", unsafe { libc::getuid() })
+}
+
+/// The first installed application that offers a calendar, for the bar's clock.
+///
+/// `Categories=Calendar` is the desktop-entry spec's own word for this, so anything a person
+/// installs to get a calendar answers here without LegeOS knowing its name. `gsimplecal` is
+/// preferred only because it is the one the composition ships (`distro/seeds/selection.toml`) and
+/// a panel clock that opens a full groupware suite is a surprise.
+///
+/// ponytail: first match by category, not a provider role. Upgrade to a `Calendar` role in
+/// `lege-session-core::providers` if a second surface ever needs to open one.
+fn calendar_app(apps: &[crate::app_search::AppEntry]) -> Option<AppId> {
+    let calendars = || {
+        apps.iter()
+            .filter(|app| app.categories.iter().any(|c| c == "Calendar"))
+    };
+    calendars()
+        .find(|app| app.id.as_str().contains("gsimplecal"))
+        .or_else(|| calendars().next())
         .map(|app| app.id.clone())
 }
 
@@ -4179,20 +4233,29 @@ mod tests {
         }
     }
 
+    /// The clock resolves a calendar by what the desktop entry says it is, and prefers the one
+    /// the composition ships. Matching by name instead is exactly the mistake the network chip
+    /// used to make.
     #[test]
-    fn network_control_prefers_the_native_id_and_falls_back_to_the_imported_desktop() {
-        let imported = app_entry("desktop-import.nm-tray.desktop");
-        let native = app_entry("org.legeos.NetworkTray");
-        let autostart = app_entry("desktop-import.nm-tray-autostart.desktop");
+    fn the_clock_resolves_a_calendar_by_category_and_prefers_the_shipped_one() {
+        let calendar = |id: &str| {
+            let mut entry = app_entry(id);
+            entry.categories = vec!["Utility".to_owned(), "Calendar".to_owned()];
+            entry
+        };
+        let simple = calendar("desktop-import.gsimplecal.desktop");
+        let other = calendar("desktop-import.org.gnome.Calendar.desktop");
         assert_eq!(
-            network_control_app(&[imported.clone(), native.clone()]),
-            Some(native.id)
+            calendar_app(&[other.clone(), simple.clone()]),
+            Some(simple.id)
         );
+        assert_eq!(calendar_app(std::slice::from_ref(&other)), Some(other.id));
         assert_eq!(
-            network_control_app(&[autostart, imported.clone()]),
-            Some(imported.id)
+            calendar_app(&[app_entry("desktop-import.gsimplecal.desktop")]),
+            None,
+            "a name that looks like a calendar is not a declared calendar"
         );
-        assert_eq!(network_control_app(&[]), None);
+        assert_eq!(calendar_app(&[]), None);
     }
 
     #[test]
@@ -4202,6 +4265,27 @@ mod tests {
     }
 
     /// A tool row resolves a provider role, never a copied path, and hands that program the
+    /// The Place menu's "open in files" row is not its own route. It resolves nothing of its
+    /// own: it is the same press as a Folder tile, and `open_in_file_manager` is where both land.
+    /// `tool_launch` therefore has nothing to say about it any more.
+    #[test]
+    fn opening_a_place_in_files_is_not_a_second_route_of_its_own() {
+        assert_eq!(
+            tool_launch("project.open-files", "/home/dk/src/legeos"),
+            Some((
+                ProviderRole::FileManager,
+                vec!["/home/dk/src/legeos".to_owned()]
+            )),
+            "a project's own tool row still resolves the role"
+        );
+        // And what it resolves is exactly what the one route passes: the bare directory, which
+        // is what pcmanfm-qt (and every file manager for thirty years) takes.
+        let (role, arguments) =
+            tool_launch("project.open-files", "/home/dk/src/legeos").expect("the row exists");
+        assert_eq!(role, ProviderRole::FileManager);
+        assert_eq!(arguments, vec!["/home/dk/src/legeos".to_owned()]);
+    }
+
     /// project's real root in the form it takes. Getting the argument wrong opens the editor on
     /// the person's home directory, which looks like it worked.
     #[test]

@@ -3,9 +3,16 @@
 //! That division is the whole design (`docs/garden/garden.md`): Home deals with your things, the
 //! bar deals with the machine. So the bar carries a Home chip (so a bare Super tap is no longer
 //! the only route back), one chip per taskbar entry including the parked ones, and at the right a
-//! single cluster — the readings, the network, the clock, and an account chip whose popover holds
-//! Settings, the volume and brightness controls and the session actions. There is exactly one of
-//! each of those on this desktop; Home has no system widgets any more.
+//! single cluster — Settings, the network, the clock, and an account chip whose popover holds the
+//! machine's readings, the volume and brightness controls and the session actions. There is
+//! exactly one of each of those on this desktop; Home has no system widgets any more.
+//!
+//! Every chip in that cluster does one named thing. The readings used to have a chip of their own
+//! that could not be clicked and a battery percentage is not a place to go, so the readings became
+//! the first line of the account popover and their width went to a Settings chip, which is
+//! somewhere to go. The clock opens the installed calendar; the network chip opens the network
+//! control; the account chip is labelled with the account, because an unlabelled mark in the
+//! corner of the screen is a button nobody dares press.
 //!
 //! The bar is full width. It used to shrink to its chips so the desktop showed through beside
 //! them, which is right for a strip of two indicators and wrong for a cluster that has to sit at
@@ -52,13 +59,13 @@ const ACTIVE_WIDTH: i32 = 220;
 /// The Home chip: the pointer route back to the Home Field. Super still works; it is no longer
 /// the only thing that does.
 const HOME_WIDTH: i32 = 80;
-/// The readings chip — what the machine is doing, at a glance. The numbers that need a word
-/// beside them live in the account popover, which names each control.
-const READINGS_WIDTH: i32 = 112;
+/// The Settings chip — the whole of Settings, not one corner of it. It took the readings chip's
+/// place in the cluster.
+const SETTINGS_WIDTH: i32 = 112;
 const NETWORK_WIDTH: i32 = 96;
 const CLOCK_WIDTH: i32 = 160;
-/// The account chip: one mark, and the popover behind it.
-const ACCOUNT_WIDTH: i32 = 40;
+/// The account chip: the account's name, its mark, and the popover behind it.
+const ACCOUNT_WIDTH: i32 = 140;
 const CONTROL: i32 = 40;
 /// The account popover's width and one row's height, and the padding inside its frame.
 const POPOVER_WIDTH: i32 = 232;
@@ -73,8 +80,10 @@ const POPOVER_GAP: i32 = 6;
 /// purpose: that spelling is what `xtask check-actions` reads as a pointer route, and this popover
 /// is now the only pointer route to the session and machine actions — Home no longer carries the
 /// Session or Settings widget.
-const ACCOUNT_ROWS: [FieldAction; 11] = [
-    FieldAction::RunAction("settings.open"),
+///
+/// `settings.open` is not here any more: it has its own chip in the cluster, and an action offered
+/// in two places is one a person has to look for twice.
+const ACCOUNT_ROWS: [FieldAction; 10] = [
     FieldAction::RunAction("volume.decrease"),
     FieldAction::RunAction("volume.mute"),
     FieldAction::RunAction("volume.increase"),
@@ -95,9 +104,10 @@ fn row_id(row: &FieldAction) -> &'static str {
     }
 }
 
-/// How far above the bar the account popover reaches, gap included.
+/// How far above the bar the account popover reaches, gap included. The readings line is the
+/// first row and costs a row's height like any other.
 fn popover_band() -> i32 {
-    POPOVER_GAP + 2 * POPOVER_PAD + ACCOUNT_ROWS.len() as i32 * POPOVER_ROW
+    POPOVER_GAP + 2 * POPOVER_PAD + (ACCOUNT_ROWS.len() as i32 + 1) * POPOVER_ROW
 }
 /// Dwell before hovering an entry opens its row: long enough that sweeping the pointer across
 /// the bar opens nothing.
@@ -126,7 +136,13 @@ pub struct BarData<'a> {
     /// Application icons by canonical id; absent keys draw an initial.
     pub icons: &'a HashMap<String, Bitmap>,
     pub clock_label: &'a str,
+    /// Whether the network control's role has a provider that can be launched.
     pub network_control_available: bool,
+    /// Whether an installed application declares `Categories=Calendar`, so the clock has
+    /// somewhere to open into.
+    pub calendar_available: bool,
+    /// Who is signed in: what the account chip says next to its mark.
+    pub account_label: &'a str,
     /// The activated window and whether it is maximized — the one whose controls the bar holds.
     pub activated: Option<(WindowId, bool)>,
     /// Whether a "go home" reveal is in effect, so the Home chip can show that it is.
@@ -159,8 +175,8 @@ struct Layout {
     /// The Home chip, at the left end.
     home: Rect,
     cells: Vec<Rect>,
-    /// The machine cluster, right to left: readings, network, clock, account.
-    readings: Rect,
+    /// The machine cluster, right to left: account, clock, network, Settings.
+    settings: Rect,
     network: Rect,
     clock: Rect,
     account: Rect,
@@ -213,6 +229,20 @@ fn chip_initial(entry: &Entry) -> String {
 
 fn first_letter(text: &str) -> Option<char> {
     text.chars().find(|letter| letter.is_alphanumeric())
+}
+
+/// The popover's first line: charge, volume and backlight, as the services last reported them.
+/// A reading with no hardware behind it is left out rather than shown as a dash — a machine with
+/// no backlight has nothing to say about brightness.
+fn readings_line(machine: &crate::data::MachineReadings) -> String {
+    let mut parts = vec![machine.chip_label()];
+    if let Some(audio) = machine.audio.as_ref().filter(|audio| audio.present) {
+        parts.push(format!("Volume {}%", audio.volume_percent));
+    }
+    if let Some(backlight) = machine.backlight.as_ref().filter(|light| light.present) {
+        parts.push(format!("Brightness {}%", backlight.percent));
+    }
+    parts.join(" \u{b7} ")
 }
 
 /// One chip's ground: the compositor's tag, rounded the way every other small shell object is.
@@ -287,7 +317,7 @@ impl BarScreen {
         let account = cluster(ui.px(ACCOUNT_WIDTH));
         let clock = cluster(ui.px(CLOCK_WIDTH));
         let network = cluster(ui.px(NETWORK_WIDTH));
-        let readings = cluster(ui.px(READINGS_WIDTH));
+        let settings = cluster(ui.px(SETTINGS_WIDTH));
         let limit = right;
 
         // Then left to right from the bar's own left edge. Each chip is clipped to whatever room
@@ -333,14 +363,15 @@ impl BarScreen {
             let width = ui.px(POPOVER_WIDTH).min(area.w);
             let row_h = ui.px(POPOVER_ROW);
             let pad = ui.px(POPOVER_PAD);
-            let height = (2 * pad + ACCOUNT_ROWS.len() as i32 * row_h).min(area.h - bar_height);
+            let height =
+                (2 * pad + (ACCOUNT_ROWS.len() as i32 + 1) * row_h).min(area.h - bar_height);
             let frame = Rect::new(
                 (account.right() - width).max(area.x),
                 bar.y - ui.px(POPOVER_GAP) - height,
                 width,
                 height,
             );
-            let rows = (0..ACCOUNT_ROWS.len() as i32)
+            let rows = (0..=ACCOUNT_ROWS.len() as i32)
                 .map(|i| {
                     Rect::new(
                         frame.x + pad,
@@ -357,7 +388,7 @@ impl BarScreen {
             bar,
             home,
             cells,
-            readings,
+            settings,
             network,
             clock,
             account,
@@ -429,7 +460,19 @@ impl BarScreen {
                 design::edge_strong(),
                 Elevation::Lifted,
             );
-            for (rect, row) in rows.iter().zip(ACCOUNT_ROWS) {
+            // The readings first, as a line rather than a row: what the machine is doing belongs
+            // beside the controls that change it, and it is the one line here that is not a
+            // button. It replaces the chip the cluster used to spend 112 pixels on.
+            if let Some(first) = rows.first() {
+                ui.label_styled(
+                    first.inset(ui.px(6)),
+                    &readings_line(data.machine),
+                    design::state_style(ui),
+                    design::text_faint(),
+                    Align::Left,
+                );
+            }
+            for (rect, row) in rows.iter().skip(1).zip(ACCOUNT_ROWS) {
                 let id = row_id(&row);
                 let Some(declaration) = lege_types::action::action(id) else {
                     continue;
@@ -448,8 +491,13 @@ impl BarScreen {
                         },
                     );
                 }
+                // A row that ends the session says so twice: an ellipsis before it is armed,
+                // and then in words. "Click again to log out" is a sentence; "Log out — again to
+                // confirm" is a state machine talking to itself.
                 let label = if armed {
-                    format!("{} — again to confirm", declaration.label)
+                    format!("Click again to {}", declaration.label.to_lowercase())
+                } else if declaration.confirm {
+                    format!("{}\u{2026}", declaration.label)
                 } else {
                     declaration.label.to_owned()
                 };
@@ -545,16 +593,30 @@ impl BarScreen {
             actions.push(BarAction::Field(FieldAction::RevealHome));
         }
 
-        // The machine cluster. The readings chip is a glance, not a panel: the popover behind the
-        // account chip is where each control is named.
-        chip(ui, layout.readings, design::TAG_FILL);
+        // The machine cluster, left to right: Settings, the network, the clock, the account.
+        // The label comes from the action manifest for the same reason the network's does.
+        let settings_label = lege_types::action::action("settings.open")
+            .map_or("Settings", |declaration| declaration.label);
+        let settings_hovered = ui.input.hovering(layout.settings);
+        chip(
+            ui,
+            layout.settings,
+            if settings_hovered {
+                design::accent()
+            } else {
+                design::TAG_FILL
+            },
+        );
         ui.label_styled(
-            layout.readings.inset(ui.px(6)),
-            &data.machine.chip_label(),
+            layout.settings.inset(ui.px(6)),
+            &format!("\u{2699} {settings_label}"),
             design::state_style(ui),
             design::TAG_INK,
             Align::Centre,
         );
+        if ui.input.take_click(layout.settings) {
+            actions.push(BarAction::Field(FieldAction::RunAction("settings.open")));
+        }
 
         // The label comes from the action manifest, so the bar and the cheat sheet
         // cannot call the same capability two different things.
@@ -587,14 +649,34 @@ impl BarScreen {
             )));
         }
 
-        chip(ui, layout.clock, design::TAG_FILL);
+        // The clock opens the installed calendar. Dimmed when none is installed, the way the
+        // network chip is: a chip that looks live and does nothing is worse than one that says so.
+        let clock_hovered = data.calendar_available && ui.input.hovering(layout.clock);
+        chip(
+            ui,
+            layout.clock,
+            if clock_hovered {
+                design::accent()
+            } else {
+                design::TAG_FILL
+            },
+        );
         ui.label_styled(
             layout.clock.inset(ui.px(6)),
             data.clock_label,
             design::state_style(ui),
-            design::TAG_INK,
+            if data.calendar_available {
+                design::TAG_INK
+            } else {
+                design::text_faint()
+            },
             Align::Centre,
         );
+        if data.calendar_available && ui.input.take_click(layout.clock) {
+            actions.push(BarAction::Field(FieldAction::RunAction(
+                "clock.open-calendar",
+            )));
+        }
 
         // The account chip: Settings, the machine's controls and the session actions, in one
         // place, because there is one of each of them on this desktop.
@@ -608,7 +690,13 @@ impl BarScreen {
                 design::TAG_FILL
             },
         );
-        ui.label(layout.account, "\u{25c9}", design::TAG_INK, Align::Centre);
+        ui.label_styled(
+            layout.account.inset(ui.px(6)),
+            &format!("\u{25c9} {}", data.account_label),
+            design::state_style(ui),
+            design::TAG_INK,
+            Align::Centre,
+        );
         if ui.input.take_click(layout.account) {
             self.account_open = !self.account_open;
             self.confirming = None;
@@ -658,6 +746,18 @@ impl BarScreen {
                     chip_initial(entry)
                 };
                 ui.label(icon, &mark, ink, Align::Centre);
+            }
+            // How many windows are behind this chip. One entry per application is deliberate
+            // (@legeos.decision.one-persistent-bottom-bar-tags-not-bands) and the row above the
+            // bar is how the rest are reached — but a chip that says nothing about the second
+            // window is a window the person can only find by moving the one on top of it. Groups
+            // already carry their count as the icon mark, so this is the loose-entry case.
+            if entry.accent.is_none() && entry.windows.len() > 1 {
+                let side = ui.px(12).min(cell.h);
+                let badge = Rect::new(icon.right() - side / 2, icon.y, side.min(cell.w), side);
+                ui.painter
+                    .fill_rounded_rect(badge, ui.px(design::CHIP_RADIUS), design::accent());
+                ui.label(badge, &entry.windows.len().to_string(), design::TAG_INK, Align::Centre);
             }
             if entry.active {
                 // The active entry wears the window's name tag: its icon and its title.
@@ -812,6 +912,7 @@ mod tests {
         buffer: WindowBuffer,
         input: Input,
         machine: crate::data::MachineReadings,
+        calendar_available: bool,
         now: u64,
         width: i32,
         height: i32,
@@ -840,6 +941,7 @@ mod tests {
                     }),
                     battery: None,
                 },
+                calendar_available: true,
                 now: 0,
                 width: W,
                 height: BAR_HEIGHT,
@@ -868,6 +970,8 @@ mod tests {
                 icons: &self.icons,
                 clock_label: "MON 7 SEP 12:00",
                 network_control_available: true,
+                calendar_available: self.calendar_available,
+                account_label: "dk",
                 activated,
                 home_revealed: false,
                 machine: &machine,
@@ -913,6 +1017,8 @@ mod tests {
                 icons: &self.icons,
                 clock_label: "",
                 network_control_available: true,
+                calendar_available: self.calendar_available,
+                account_label: "dk",
                 activated,
                 home_revealed: false,
                 machine: &machine,
@@ -1159,7 +1265,7 @@ mod tests {
     /// The account popover is the one place the machine's actions live now. Every row is a
     /// declared action; the session-ending ones take two clicks.
     #[test]
-    fn the_account_popover_runs_settings_and_confirms_before_it_ends_the_session() {
+    fn the_account_popover_runs_a_control_and_confirms_before_it_ends_the_session() {
         let mut h = Harness::new(Vec::new());
         h.frame();
         let (x, y) = Harness::centre(h.rects().account);
@@ -1175,17 +1281,9 @@ mod tests {
                 .expect("dumping the popover render");
         }
         let rows = h.rects().popover.expect("the popover has room").1;
-        let settings = ACCOUNT_ROWS
-            .iter()
-            .position(|row| row_id(row) == "settings.open")
-            .unwrap();
-        let poweroff = ACCOUNT_ROWS
-            .iter()
-            .position(|row| row_id(row) == "session.poweroff")
-            .unwrap();
 
         // A confirmed action arms on the first click and fires on the second.
-        let (x, y) = Harness::centre(rows[poweroff]);
+        let (x, y) = Harness::centre(popover_row(&rows, "session.poweroff"));
         assert!(h.click(x, y).is_empty(), "the first click only arms it");
         assert!(h.screen.account_open, "and leaves the popover open");
         assert_eq!(
@@ -1199,11 +1297,21 @@ mod tests {
         h.click(x, y);
         h.frame();
         let rows = h.rects().popover.expect("the popover has room").1;
-        let (x, y) = Harness::centre(rows[settings]);
+        let (x, y) = Harness::centre(popover_row(&rows, "volume.mute"));
         assert_eq!(
             h.click(x, y),
-            vec![BarAction::Field(FieldAction::RunAction("settings.open"))]
+            vec![BarAction::Field(FieldAction::RunAction("volume.mute"))]
         );
+    }
+
+    /// Where one popover row is. The first rectangle is the readings line, which is not a row, so
+    /// every test that clicks a row has to skip it — once, here.
+    fn popover_row(rows: &[Rect], id: &str) -> Rect {
+        let index = ACCOUNT_ROWS
+            .iter()
+            .position(|row| row_id(row) == id)
+            .unwrap_or_else(|| panic!("{id} is not a popover row"));
+        rows[index + 1]
     }
 
     /// A machine with no backlight cannot change its brightness: the row is drawn, and inert.
@@ -1215,13 +1323,86 @@ mod tests {
         h.frame();
         h.frame();
         let rows = h.rects().popover.expect("the popover has room").1;
-        let dimmer = ACCOUNT_ROWS
-            .iter()
-            .position(|row| row_id(row) == "brightness.decrease")
-            .unwrap();
-        let (x, y) = Harness::centre(rows[dimmer]);
+        let (x, y) = Harness::centre(popover_row(&rows, "brightness.decrease"));
         assert!(h.click(x, y).is_empty(), "a refused row does nothing");
         assert!(h.screen.account_open, "and does not dismiss the popover");
+    }
+
+    /// The user's report was "the bottom right buttons aren't clickable". Every chip in the
+    /// cluster now performs one named action, and this is the test that says so — one click each,
+    /// at the rectangle the paint actually used.
+    #[test]
+    fn every_chip_in_the_machine_cluster_performs_its_named_action() {
+        let mut h = Harness::new(Vec::new());
+        h.frame();
+        let layout = h.rects();
+
+        let (x, y) = Harness::centre(layout.settings);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RunAction("settings.open"))],
+            "the Settings chip opens Settings"
+        );
+        let (x, y) = Harness::centre(layout.clock);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RunAction(
+                "clock.open-calendar"
+            ))],
+            "the clock opens the calendar"
+        );
+        let (x, y) = Harness::centre(layout.network);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RunAction(
+                "network.open-control"
+            ))],
+            "the network chip opens the network control"
+        );
+        let (x, y) = Harness::centre(layout.account);
+        assert!(h.click(x, y).is_empty(), "the account chip only opens up");
+        assert!(h.screen.account_open, "and it does open");
+    }
+
+    /// A chip with nothing to open is drawn inert rather than lying: no calendar installed means
+    /// the clock takes no click, and the same rule the network chip has always followed.
+    #[test]
+    fn a_clock_with_no_calendar_installed_takes_no_click() {
+        let mut h = Harness::new(Vec::new());
+        h.calendar_available = false;
+        h.frame();
+        let (x, y) = Harness::centre(h.rects().clock);
+        assert!(h.click(x, y).is_empty(), "a dimmed clock does nothing");
+    }
+
+    /// The cluster grew by a Settings chip, so the one thing that must not have changed is that a
+    /// maximized window's controls still own the very end of the bar and nothing overlaps them.
+    #[test]
+    fn the_cluster_never_overlaps_the_maximized_window_controls() {
+        let mut h = Harness::new(vec![window(1, "org.legeos.Files", "Files", true, true)]);
+        h.frame();
+        let layout = h.rects();
+        let controls = layout.controls.expect("a maximized window has controls");
+        let cluster = [
+            layout.account,
+            layout.clock,
+            layout.network,
+            layout.settings,
+        ];
+        assert!(
+            cluster[0].right() <= controls[0].x,
+            "the cluster sits left of the controls"
+        );
+        for pair in cluster.windows(2) {
+            assert!(
+                pair[1].right() <= pair[0].x,
+                "the cluster runs right to left without overlapping itself"
+            );
+        }
+        assert!(
+            cluster.iter().all(|rect| rect.x >= layout.bar.x),
+            "and stays on the bar"
+        );
     }
 
     /// Every row of the popover names a declared action, so no chip can promise something the
