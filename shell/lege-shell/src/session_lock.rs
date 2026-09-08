@@ -25,6 +25,30 @@
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 
+/// Tell sessiond the lock is gone.
+///
+/// `unlock_and_destroy` above is the only thing that clears the compositor's lock, and this
+/// process is the only one that calls it — so this process is the only one that can report it.
+/// sessiond needs to know because session time is counted from these edges: a screen locked
+/// overnight aged nothing, and without this the interval never closes.
+///
+/// Best-effort and deliberately quiet on failure: the session is already unlocked by the time
+/// this runs, and a bookkeeping call that could not be made must not become an error in the
+/// user's face.
+pub async fn notify_unlocked() {
+    let Ok(connection) = crate::data::session().await else {
+        return;
+    };
+    match lege_client::proxies::LifecycleProxy::new(&connection).await {
+        Ok(proxy) => {
+            if let Err(error) = proxy.notify_unlocked().await {
+                tracing::debug!(%error, "sessiond would not record the unlock");
+            }
+        }
+        Err(error) => tracing::debug!(%error, "no Lifecycle1 to report the unlock to"),
+    }
+}
+
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum,
     protocol::{
