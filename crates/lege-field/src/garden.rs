@@ -4,7 +4,9 @@
 //! the field in line with them. It emits **only** `Place`, `Resize` and `Remove`, never `Move`:
 //! position is spatial memory, and the only hand that moves a tile is the user's. A `Resize` is
 //! accepted only when `reflow::find_resize` satisfies it without any tile the tender does not own
-//! giving up span, and a `Place` lands only on free cells — the tender never displaces anything.
+//! giving up span **and without any neighbour's cell changing** — a neighbour that keeps its far
+//! edge and loses its near one has moved, whatever the op is called — and a `Place` lands only on
+//! free cells. The tender never displaces anything.
 //!
 //! The ledger (`lege-session-core::homegarden`) decides *stages*; this module decides *ops*. It
 //! sees contexts through [`ContextView`], the small projection it needs, so this crate stays
@@ -30,6 +32,12 @@ pub struct ContextView {
     /// The ledger's account of why: `14 opens, 3 terminals, 4 sessions`.
     pub summary: String,
 }
+
+/// The largest span a place can grow to (the ledger's Expanded stage). Growth is anchored at a
+/// tile's top-left, so a first landing is chosen as if the tile were already this big: a Trace
+/// flush against the bottom edge could never become Expanded, and the representation ladder the
+/// stages promise would stop one rung short with empty rows above it.
+pub const GROWTH_ROOM: Span = Span::new(4, 3);
 
 /// The corner first growths cluster at, so the user learns where to look.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,7 +139,11 @@ fn plan_place(
     })
 }
 
-/// A resize is accepted only when nothing but an unpinned, un-user-sized garden tile yields.
+/// A resize is accepted only when nothing but an unpinned, un-user-sized garden tile yields, and
+/// every yielding neighbour keeps its cell. `find_resize` clamps toward the request one cell at a
+/// time and answers with the first span that fits; when that answer would shift a neighbour, the
+/// next-smaller spans are tried (the request, then each axis alone) before giving up, so growth
+/// that can only be had by moving something is not had at all.
 fn plan_resize(
     doc: &FieldDocument,
     contexts: &[ContextView],
@@ -153,20 +165,26 @@ fn plan_resize(
         rows: doc.rows,
         places,
     };
-    let reflow = find_resize(&grid, &ranges, id, span).ok()?;
-    if reflow.placed.span == current.span {
-        return None;
-    }
-    let yields_only_garden = reflow.moved.iter().all(|(other, _, _)| {
-        contexts
-            .iter()
-            .find(|c| garden_tile_id(&c.root) == *other)
-            .is_some_and(|c| !c.pinned && c.user_span.is_none())
-    });
-    if !yields_only_garden {
-        return None;
-    }
-    let target = reflow.placed.span;
+    let candidates = [
+        span,
+        Span::new(span.cols, current.span.rows),
+        Span::new(current.span.cols, span.rows),
+    ];
+    let target = candidates.iter().find_map(|candidate| {
+        let reflow = find_resize(&grid, &ranges, id, *candidate).ok()?;
+        let target = reflow.placed.span;
+        if target == current.span {
+            return None;
+        }
+        let yields_stay_put = reflow.moved.iter().all(|(other, before, after)| {
+            before.cell == after.cell
+                && contexts
+                    .iter()
+                    .find(|c| garden_tile_id(&c.root) == *other)
+                    .is_some_and(|c| !c.pinned && c.user_span.is_none())
+        });
+        yields_stay_put.then_some(target)
+    })?;
     let verb = if u32::from(target.cols) * u32::from(target.rows)
         > u32::from(current.span.cols) * u32::from(current.span.rows)
     {
@@ -200,14 +218,16 @@ fn name_of(root: &Path) -> String {
 }
 
 /// The remembered landing if free, else the nearest free cell to it, else the nearest free
-/// cell to the home corner. `None` when nothing fits: the tender never displaces.
+/// cell to the home corner — the corner as a [`GROWTH_ROOM`] tile would sit in it, so what lands
+/// small has somewhere to grow. `None` when nothing fits: the tender never displaces.
 fn free_landing(
     doc: &FieldDocument,
     span: Span,
     remembered: Option<Cell>,
     corner: HomeCorner,
 ) -> Option<Cell> {
-    let anchor = remembered.unwrap_or_else(|| corner.cell(doc.cols, doc.rows, span));
+    let room = Span::new(span.cols.max(GROWTH_ROOM.cols), span.rows.max(GROWTH_ROOM.rows));
+    let anchor = remembered.unwrap_or_else(|| corner.cell(doc.cols, doc.rows, room));
     let mut best: Option<(u32, Cell)> = None;
     for row in 0..doc.rows {
         for col in 0..doc.cols {
@@ -259,7 +279,9 @@ mod tests {
         let FieldOp::Place { landing, .. } = &ops[0].op else {
             panic!("{:?}", ops[0].op)
         };
-        assert_eq!(landing.cell, Cell::new(0, 6));
+        // Row 5, not 6: the corner is taken as a 4x3 would sit in it, so the 2x2 can become 4x3
+        // in place, growing down and right into free cells.
+        assert_eq!(landing.cell, Cell::new(0, 5));
     }
 
     #[test]
@@ -305,6 +327,65 @@ mod tests {
         let mut sized = view("/home/dk/a", Some(Span::new(4, 3)));
         sized.user_span = Some(Span::new(2, 2));
         assert!(tend(&doc, &[sized], HomeCorner::default()).is_empty());
+    }
+
+    /// A garden neighbour to the *right* of a growing place yields from its near edge and keeps
+    /// its far one — its cell shifts, which is a move by another name. The tender must decline.
+    #[test]
+    fn growth_never_shifts_a_neighbours_cell() {
+        let doc = FieldDocument::new("DP-1", 8, 4);
+        let a = view("/home/dk/a", Some(Span::new(2, 2)));
+        let mut b = view("/home/dk/b", Some(Span::new(2, 2)));
+        b.landing = Some(Cell::new(2, 0));
+        let mut a_first = a.clone();
+        a_first.landing = Some(Cell::new(0, 0));
+        let doc = {
+            let ops = tend(&doc, &[a_first.clone(), b.clone()], HomeCorner::TopLeft);
+            let mut doc = doc;
+            for op in &ops {
+                doc = crate::apply(&doc, &op.op).unwrap().0;
+            }
+            doc
+        };
+        assert_eq!(doc.location(garden_tile_id(&b.root)).unwrap().placement.cell, Cell::new(2, 0));
+        // `a` wants 4x2: the only way is for `b` to give up its left column, moving to (3,0).
+        let mut a_wants = a_first;
+        a_wants.wanted = Some(Span::new(4, 2));
+        let ops = tend(&doc, &[a_wants, b.clone()], HomeCorner::TopLeft);
+        for op in &ops {
+            let next = crate::apply(&doc, &op.op).unwrap().0;
+            assert_eq!(
+                next.location(garden_tile_id(&b.root)).unwrap().placement.cell,
+                Cell::new(2, 0),
+                "{:?} shifted b",
+                op.op
+            );
+        }
+        // Growing *down* instead is free and is taken: the axis ladder finds 2x4 is out of the
+        // grid, so nothing there either — the field is 4 rows and `a` would need row 4.
+        assert!(ops.iter().all(|t| !matches!(t.op, FieldOp::Resize { span, .. } if span.cols == 4)));
+    }
+
+    /// A Trace placed at the corner leaves room to become Expanded in place.
+    #[test]
+    fn a_corner_landing_leaves_room_to_reach_the_expanded_span() {
+        let doc = FieldDocument::new("DP-1", 12, 8);
+        let ops = tend(
+            &doc,
+            &[view("/home/dk/a", Some(Span::new(2, 2)))],
+            HomeCorner::BottomRight,
+        );
+        let (doc, _) = crate::apply(&doc, &ops[0].op).unwrap();
+        let ops = tend(
+            &doc,
+            &[view("/home/dk/a", Some(GROWTH_ROOM))],
+            HomeCorner::BottomRight,
+        );
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        let FieldOp::Resize { span, .. } = ops[0].op else {
+            panic!("{:?}", ops[0].op)
+        };
+        assert_eq!(span, GROWTH_ROOM);
     }
 
     #[test]
