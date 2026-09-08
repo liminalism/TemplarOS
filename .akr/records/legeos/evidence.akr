@@ -1607,6 +1607,18 @@ record legeos.evidence.homegarden-phases-0-3-tests-20260908/1 : evidence {
         """
 }
 
+record legeos.evidence.homegarden-usability-review-20260908/1 : evidence {
+    title "Homegarden review: existing tests pass; isolated layout probes reproduce seven gaps"
+    state verified
+    result fail
+    method command
+    observed_at git:fbe44804b505bc2b564ce2e28855ae60659f33f2
+    command "cargo test -p lege-field -p lege-session-core garden -- --nocapture; rustc --edition=2024 /tmp/legeos-homegarden-review.Ld9smL/probe.rs -L dependency=target/debug/deps --extern lege_field=target/debug/deps/liblege_field-905fa36c54a4a471.rlib -o /tmp/legeos-homegarden-review.Ld9smL/probe && /tmp/legeos-homegarden-review.Ld9smL/probe"
+    summary """
+        At fbe44804, the 16 existing garden tests pass. A temporary standalone Rust probe against the current lege-field rlib executes seven assertions documenting current behavior: on a 12x8 empty field, bottom-left 2x2 at (0,6) requesting 4x3 reaches only 4x2; pinned 2x2 at top-left requesting 3x2 grows; pinned with wanted=None stays; forgetting the context (empty ContextView list) leaves its tile; a manually placed same-path 3x3 folder with a new unprotected Trace context shrinks to 2x2; user_span=Some does not prevent Dormant removal; garden A at (0,0) 2x2 growing to 3x2 shifts neighboring garden B from (2,0) to (3,0) through Resize yielding. Probe uses only in-memory FieldDocuments and no live services. Result fail denotes violated usability/invariant expectations, not failing existing tests.
+        """
+}
+
 record legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 : evidence {
     title "Idle daemon wakeups could not be measured on this host"
     state verified

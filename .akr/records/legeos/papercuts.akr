@@ -446,6 +446,39 @@ record legeos.papercut.home-audit-initially-scoped-crates-lege-shell/1 : papercu
     created_at 2026-09-05
 }
 
+record legeos.papercut.homegarden-review-knowledge-context-with-a/1 : papercut {
+    title "Homegarden review: knowledge.context with a 14000-token budget returned…"
+    state verified
+    statement """
+        Homegarden review: knowledge.context with a 14000-token budget returned about 41000 tokens across content blocks and expanded many unrelated milestone siblings; narrower paths and targeted record reads are needed to keep the governing plan readable.
+        """
+    observed_at git:fbe44804b505bc2b564ce2e28855ae60659f33f2
+    author "codex"
+    created_at 2026-09-08
+}
+
+record legeos.papercut.homegarden-review-plan-prose-refers-to-app-rs/1 : papercut {
+    title "Homegarden review: plan prose refers to app.rs without its surface…"
+    state verified
+    statement """
+        Homegarden review: plan prose refers to app.rs without its surface directory; initial direct reads guessed shell/src/app.rs and missed. Code is shell/lege-shell/src/surface/app.rs; resolve prose filenames through file discovery first.
+        """
+    observed_at git:fbe44804b505bc2b564ce2e28855ae60659f33f2
+    author "codex"
+    created_at 2026-09-08
+}
+
+record legeos.papercut.homegarden-s-property-tests-pass-but-emit/1 : papercut {
+    title "Homegarden's property tests pass but emit…"
+    state verified
+    statement """
+        Homegarden's property tests pass but emit FileFailurePersistence::SourceParallel could not find lib.rs or main.rs twice; regression-seed persistence may need an explicit path for the integration-test layout.
+        """
+    observed_at git:fbe44804b505bc2b564ce2e28855ae60659f33f2
+    author "codex"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.in-a-shared-working-tree-cargo-test-p-lege-and/1 : papercut {
     title "In a shared working tree, `cargo test -p lege` and `cargo check -p…"
     state verified

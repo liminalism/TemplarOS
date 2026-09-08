@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:91ab709a98a95cdcd1d4cab5e7d3c67a617535f5e9f4e9064e23838958042d71"
+    source_graph "sha256:8e33601be3299d9a1df4f28f5a399fa6b51188e04f3e6c20d56972aba3b38fb1"
 }
 
 source ".akr/project.akr" {
@@ -14,8 +14,8 @@ source ".akr/project.akr" {
 }
 
 source ".akr/records/legeos/assessments.akr" {
-    hash "sha256:02ea345bbbe86725f903e1ce5b6d967bef79634d0f7e6b72723b69061fd142d2"
-    records 6
+    hash "sha256:318b7a26461959a4e69b127e51e23b0cf27782e42ba43b809a85cd40309d510b"
+    records 7
 }
 
 source ".akr/records/legeos/constraints.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:bddc908b2b83c75c01d6d606aa34d401537a56f63a0fc96684d35ff5f24de436"
-    records 241
+    hash "sha256:5663f63c9bbbba4e102dde7f2bc01c611ccce7dd5438868c2ee6201a46f23588"
+    records 242
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:650f297b8f4475b37c380759d2b3b4fdc5a3941a4c857de121b52e713d061e1b"
-    records 124
+    hash "sha256:506798ed72ca59d636bc572c0c002bfab37b114bc38525b1fd481515e44d927d"
+    records 127
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -80,6 +80,24 @@ resolution @legeos.assessment.home-vision-review-20260905/1 {
     slot supported_by
     to @legeos.evidence.home-review-visual-20260905/1
     hash "sha256:1cf28c7513a0daca548088e2a293ab761eff55c9e81e1ffe112d52962022d026"
+}
+
+resolution @legeos.assessment.homegarden-usability-review-20260908/1 {
+    slot derived_from
+    to @legeos.decision.homegarden-activity-grown-places/1
+    hash "sha256:aa93ea7e548a8db379712a1fc03e7cca9bcff9607b0e13a49a0a7d7bd186cc55"
+}
+
+resolution @legeos.assessment.homegarden-usability-review-20260908/1 {
+    slot derived_from
+    to @legeos.work.homegarden-phases-0-3/1
+    hash "sha256:02dd4aa6e294346e4e5e20204b4533ab2aa5934a58d1de8a39308101b3d7c1e3"
+}
+
+resolution @legeos.assessment.homegarden-usability-review-20260908/1 {
+    slot supported_by
+    to @legeos.evidence.homegarden-usability-review-20260908/1
+    hash "sha256:7e589cb72798ce54b51f9e9ff0d483273c115cc36877e7ac1d36a33b3b660f3a"
 }
 
 resolution @legeos.decision.agplv3-own-code/1 {
@@ -3000,6 +3018,11 @@ seal @legeos.assessment.home-vision-review-20260905/1 {
     hash "sha256:f800bb1dc79580e05b6a2b7140d41e670f7fd027d89cc51464a75ea0236bdfff"
 }
 
+seal @legeos.assessment.homegarden-usability-review-20260908/1 {
+    state verified
+    hash "sha256:f375ba0f16ac94f469401dcf097d7396989df8509de8697955a30f174a415ca0"
+}
+
 seal @legeos.assessment.hotfixability-current-state-20260831/1 {
     state superseded
     hash "sha256:0088044208f32250d1204200fb5fc3dda31ef693e79034ad84258d188dc1528a"
@@ -3843,6 +3866,11 @@ seal @legeos.evidence.home-widget-launcher-20260825/1 {
 seal @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 {
     state verified
     hash "sha256:2be34a66eabb614a1fdf1ba8902a8e6482156e0e8d1b0253a89f623a2f395697"
+}
+
+seal @legeos.evidence.homegarden-usability-review-20260908/1 {
+    state verified
+    hash "sha256:7e589cb72798ce54b51f9e9ff0d483273c115cc36877e7ac1d36a33b3b660f3a"
 }
 
 seal @legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 {
@@ -4818,6 +4846,21 @@ seal @legeos.papercut.fresh-git-worktrees-omit-scratch-keep-markers/1 {
 seal @legeos.papercut.home-audit-initially-scoped-crates-lege-shell/1 {
     state verified
     hash "sha256:82ef23660af93cd73b92645404d42e542bf34ba40286720889f29ef4878372e1"
+}
+
+seal @legeos.papercut.homegarden-review-knowledge-context-with-a/1 {
+    state verified
+    hash "sha256:ee79181c0122537fe848c65bcd3bb52be69b5ffff499d08c8755dee30e8e9766"
+}
+
+seal @legeos.papercut.homegarden-review-plan-prose-refers-to-app-rs/1 {
+    state verified
+    hash "sha256:7ded2ec111d382b4be1fe574fffe6b4acaf312fcf37b8304e01953b2c01e8bbd"
+}
+
+seal @legeos.papercut.homegarden-s-property-tests-pass-but-emit/1 {
+    state verified
+    hash "sha256:18a1ee985933133a6b96d3597dccb7d02246eb3259ccd4f494cd524af2ce234f"
 }
 
 seal @legeos.papercut.in-a-shared-working-tree-cargo-test-p-lege-and/1 {
