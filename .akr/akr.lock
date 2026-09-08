@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:56c5f199e3c82f2da4543f686e2c877d6f74db6c168cc2fd2f09da9ee8419636"
+    source_graph "sha256:e13e4932c84eff1608c2ef9996994530290397587b117c5df130e1cd113e34cc"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:d3526eedf3074eb98426d0d65cdda1bb8cc3d6a2e5705ca21837b11e3e1843f6"
-    records 269
+    hash "sha256:3851a1d846f6dac484eccd9d0715d9fa452b1c2caa6f0c16316ba6b92b5c9cdf"
+    records 271
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:36084bf9423101a0403d8b1111cc350f14de95a1d32b6fb311242e7b80f8e3da"
-    records 120
+    hash "sha256:4fdeb9b38a8fa3c68e95eebe946af75d4a249bf8028deadd6ec02b343aca45a0"
+    records 121
 }
 
 resolution @legeos.assessment.home-vision-review-20260905/1 {
@@ -1322,6 +1322,18 @@ resolution @legeos.work.bar-home-chip-cluster-and-fullscreen-peek/1 {
     slot part_of
     to @legeos.milestone.developer-edition-0-1/1
     hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
+}
+
+resolution @legeos.work.bar-hover-row-switcher-header-20260908/1 {
+    slot derived_from
+    to @legeos.decision.one-persistent-bottom-bar-tags-not-bands/8
+    hash "sha256:353284881a81c49a759b2b3515c5a9da1a8e136a53c0f861857c7a51f52d48ca"
+}
+
+resolution @legeos.work.bar-hover-row-switcher-header-20260908/1 {
+    slot part_of
+    to @legeos.work.bottom-bar-taskbar/6
+    hash "sha256:a36abd487f588bb9b9836d1b2453e1d55b307e8bd54304dd7c2b5fca753797d8"
 }
 
 resolution @legeos.work.bottom-bar-taskbar/1 {
@@ -2758,6 +2770,18 @@ resolution @legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-202609
     hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
 }
 
+resolution @legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 {
+    slot verified_by
+    to @legeos.evidence.edge-alignment-placement-and-interfaces-20260908/1
+    hash "sha256:a1093865634c770f518715f64708d29736bab5e002752b00cebcb380113d9810"
+}
+
+resolution @legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 {
+    slot verified_by
+    to @legeos.evidence.hot-corner-and-peek-dwell-tests-20260908/1
+    hash "sha256:9d93b921f8ebe602ef9109d49ceb9dcff70da9d5fc1ca494629c6ca3601de4f6"
+}
+
 resolution @legeos.work.iso-hardware-safety/1 {
     slot implements
     to @legeos.decision.base-ubuntu-2604-kernel-70/1
@@ -4000,6 +4024,11 @@ seal @legeos.evidence.desktop-systemd-units-20260823/1 {
     hash "sha256:5d65fef2e8842b8760f19149baf316a66f8632031ead321440894b6cfafe9798"
 }
 
+seal @legeos.evidence.edge-alignment-placement-and-interfaces-20260908/1 {
+    state verified
+    hash "sha256:a1093865634c770f518715f64708d29736bab5e002752b00cebcb380113d9810"
+}
+
 seal @legeos.evidence.fanotify-against-inotify-20260904/1 {
     state verified
     hash "sha256:790527548b19160135e60c8ad746eafb69463b8867af8b4bfa1fba4a00cd1f7b"
@@ -4448,6 +4477,11 @@ seal @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 {
 seal @legeos.evidence.homegarden-usability-review-20260908/1 {
     state verified
     hash "sha256:7e589cb72798ce54b51f9e9ff0d483273c115cc36877e7ac1d36a33b3b660f3a"
+}
+
+seal @legeos.evidence.hot-corner-and-peek-dwell-tests-20260908/1 {
+    state verified
+    hash "sha256:9d93b921f8ebe602ef9109d49ceb9dcff70da9d5fc1ca494629c6ca3601de4f6"
 }
 
 seal @legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 {

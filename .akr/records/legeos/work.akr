@@ -371,6 +371,26 @@ record legeos.work.bar-home-chip-cluster-and-fullscreen-peek/1 : work {
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
+record legeos.work.bar-hover-row-switcher-header-20260908/1 : work {
+    title "The hover row's two remaining gaps against the cosmic-applets fork: a header naming what is being switched, and a shorter dwell when a row is already open"
+    state proposed
+    scope [ path "shell/lege-shell/src/surface/bar_screen.rs" ]
+    intent """
+        Two things the user's own cosmic-applets fork (branch local/dock-window-grouping) has and LegeOS's hover row still does not, neither built in the previews pass.
+
+        1. A header on the row. The fork's window_switcher_view (cosmic-app-list/src/app.rs:914) puts the application's icon, its name and its window count above the tiles. LegeOS's row is tiles alone: it opens under the chip you are pointing at, so the application is implied — but it opens 104 pixels above the bar, over whatever window is there, and at that distance from its chip the implication weakens. Worth having; costs a band and one more opaque shape to record (the ARGB surface shows nothing that is not in BarScreen::opaque).
+
+        2. A shorter dwell when a row is already open. The fork has two: HOVER_OPEN_DELAY_MS 225 to open the first switcher, HOVER_SWITCH_DELAY_MS 80 to move to another icon once one is up (app.rs:587-592). LegeOS has one, HOVER_OPEN_MS 400 (bar_screen.rs:167), so walking the chips with a row open costs the full dwell at every chip and the row flickers shut between them. This is the cheaper of the two and the more felt: one constant and one branch in BarScreen::update_hover, where the branch already knows whether a row is open.
+
+        Deliberately not in this list: the fork's per-tile close button (see the note on BarAction::Window below), its New Window button, and its hover_previews config gate. The close button is nearly wired — BarAction::Window { id, window } exists in bar_screen.rs and app.rs:2583 already performs it, and no code path produces one — so it is a design question (is a second route to a control the window already wears on its own tag wanted?) rather than an implementation one, and it is the user's to answer. New Window duplicates Home, which is this desktop's launcher. The config gate is a second setting for one hover row when HomeFieldSettings::previews already turns the pictures off.
+        """
+    note """
+        Raised by Lane B of campaign 6 while putting previews on the row; the coordinator asked for these two as follow-ups rather than as part of that pass.
+        """
+    derived_from [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.work.bottom-bar-taskbar ]
+}
+
 record legeos.work.bottom-bar-taskbar/1 : work {
     title "Lane B — shell: the persistent bottom bar with indicators, the taskbar with its hover row, and the maximized window's controls"
     state superseded
@@ -4796,12 +4816,14 @@ record legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 
 
         1. A bottom-left hot corner reveals Home. "I would prefer a bottom left hot corner for showing the home screen, not a button" — this replaces the Home chip removed in @legeos.decision.one-persistent-bottom-bar-tags-not-bands/6, whose only surviving pointer route is the Field's own context menu, which a covering window hides.
 
-        2. Fullscreen auto show/hide. "auto show/hide in full screen, and always there on the home screen itself." This reverses rev 5's deletion of the bottom-edge peek: a visible fullscreen window sorts above the shell overlay, so the compositor has to raise the overlay on a dwell. The deleted machinery is recoverable verbatim from commit 0b6d8fc (update_bar_peek / finish_bar_peek / peek_output_at / in_peek_band, WindowService::{peek_output,set_peek_output,is_peeking}).
+        2. Fullscreen auto show/hide. "auto show/hide in full screen, and always there on the home screen itself." This reverses rev 5's deletion of the bottom-edge peek: a visible fullscreen client window sorts above the shell overlay, so the compositor has to raise the overlay on a dwell. The deleted machinery is recoverable verbatim from commit 0b6d8fc (update_bar_peek / finish_bar_peek / peek_output_at / in_peek_band, WindowService::{peek_output,set_peek_output,is_peeking}).
 
         3. The island moves off the corner. The island now sits at the bottom-left because a zero-size zone claim anchors a surface at the start of its edge, which is exactly where the hot corner has to be — the two would fight over the same pixels. The fix is an additive alignment on the shell protocol (start / centre / end along the anchored edge) so the island can be centred the way the user's cosmic dock is, with the corner left to Home.
+
+        As built, 1 and 2 are one dwell mechanism with two intents, and the two regions are disjoint by construction rather than by a precedence rule: the corner square is Home everywhere and always (a fullscreen window included, because with no Home chip on the bar it is the only pointer route there), and the peek band is the bottom edge excluding that square. The corner is instead suppressed while a visible ShellOverlay surface is under the pointer, which makes item 3 a hard prerequisite of item 1 rather than a cosmetic improvement on it: until the shell centres its island, its collapsed 72x6 hint tab sits on top of the 8x8 corner square and the corner cannot fire.
         """
     note """
-        One dwell mechanism, two intents, both hung off the single place the compositor already sees the pointer in global logical coordinates (`update_perimeter_cursor`'s call sites in both motion paths). Item 3 adds a Wayland request, so the interface version bumps and the baseline is re-frozen; items 1 and 2 need no protocol change. All three need a logout: lege-comp is Restart=no.
+        One dwell mechanism, two intents, both hung off the single place the compositor already sees the pointer in global logical coordinates (`update_perimeter_cursor`'s call sites in both motion paths). Item 3 adds a Wayland request, so the interface version bumps — but there is no Wayland baseline to re-freeze: `interfaces/baseline.json` freezes D-Bus signatures only and `xtask check-interfaces` walks `interfaces/dbus/`, so the gate for a protocol change here is the build (wayland-scanner generates from the XML), SHELL_PROTOCOL_VERSION on both peers, and the crate tests. All three need a logout: lege-comp is Restart=no.
         """
     acceptance {
         check corner-and-island-do-not-fight {
@@ -4816,20 +4838,23 @@ record legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 
                 """
             method command
             command "cargo test -p lege-comp -p lege-window"
+            verified_by [ @legeos.evidence.hot-corner-and-peek-dwell-tests-20260908 ]
         }
         check hot-corner {
             statement """
-                Resting the pointer in the bottom-left corner reveals Home, from a bare desktop and from under a maximized window alike; sweeping through the corner does not.
+                Resting the pointer in the bottom-left corner reveals Home, from a bare desktop and from under a maximized or fullscreen window alike; sweeping through the corner does not, and neither does a drag released there.
                 """
             method command
             command "cargo test -p lege-comp -p lege-window"
+            verified_by [ @legeos.evidence.hot-corner-and-peek-dwell-tests-20260908 ]
         }
         check island-placement {
             statement """
-                A bottom-anchored shell surface can ask to be centred along its edge; the zero-size claim still reserves nothing, and check-interfaces, check-interface-signatures and the re-frozen baseline all pass.
+                A bottom-anchored shell surface can ask to be centred along its edge; the zero-size claim still reserves nothing, and check-interfaces and check-interface-signatures both pass.
                 """
             method command
             command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.edge-alignment-placement-and-interfaces-20260908 ]
         }
     }
     implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]

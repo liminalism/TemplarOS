@@ -736,6 +736,18 @@ record legeos.evidence.desktop-systemd-units-20260823/1 : evidence {
         """
 }
 
+record legeos.evidence.edge-alignment-placement-and-interfaces-20260908/1 : evidence {
+    title "set_edge_alignment places without reserving"
+    state verified
+    result pass
+    method command
+    observed_at git:1d1284ba34296e76bcd79cb0f9326255209aee67
+    command "cargo test -p lege-window && cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        149 lege-window tests pass, including an_exclusive_surface_sits_where_along_its_edge_it_asked_to (start/centre/end on all four edges) and a_centred_zero_zone_surface_reserves_nothing (work_area_for over a centred zero zone equals the whole output, and equals the same claim at the edge's start). Every other placement test builds its claim with Exclusive::new, i.e. Alignment::Start, so they are the unchanged-default proof. check-interfaces reports 35 interfaces documented; check-interface-signatures reports 204 shipped members across 35 interfaces, all unchanged. Neither tool reads interfaces/wayland: there is no Wayland baseline to re-freeze.
+        """
+}
+
 record legeos.evidence.fanotify-against-inotify-20260904/1 : evidence {
     title "fanotify measured against inotify — the numbers behind keeping inotify"
     state verified
@@ -1828,6 +1840,18 @@ record legeos.evidence.homegarden-usability-review-20260908/1 : evidence {
     command "cargo test -p lege-field -p lege-session-core garden -- --nocapture; rustc --edition=2024 /tmp/legeos-homegarden-review.Ld9smL/probe.rs -L dependency=target/debug/deps --extern lege_field=target/debug/deps/liblege_field-905fa36c54a4a471.rlib -o /tmp/legeos-homegarden-review.Ld9smL/probe && /tmp/legeos-homegarden-review.Ld9smL/probe"
     summary """
         At fbe44804, the 16 existing garden tests pass. A temporary standalone Rust probe against the current lege-field rlib executes seven assertions documenting current behavior: on a 12x8 empty field, bottom-left 2x2 at (0,6) requesting 4x3 reaches only 4x2; pinned 2x2 at top-left requesting 3x2 grows; pinned with wanted=None stays; forgetting the context (empty ContextView list) leaves its tile; a manually placed same-path 3x3 folder with a new unprotected Trace context shrinks to 2x2; user_span=Some does not prevent Dormant removal; garden A at (0,0) 2x2 growing to 3x2 shifts neighboring garden B from (2,0) to (3,0) through Resize yielding. Probe uses only in-memory FieldDocuments and no live services. Result fail denotes violated usability/invariant expectations, not failing existing tests.
+        """
+}
+
+record legeos.evidence.hot-corner-and-peek-dwell-tests-20260908/1 : evidence {
+    title "The dwell, the corner and the peek under test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d1284ba34296e76bcd79cb0f9326255209aee67
+    command "cargo test -p lege-comp -p lege-window"
+    summary """
+        117 lege-comp and 149 lege-window tests pass on the working tree. New: input::the_corner_and_the_peek_band_divide_the_bottom_edge_between_them (the two regions are disjoint at every sampled point), input::sweeping_through_the_corner_never_completes_a_dwell (a pointer moving further than DWELL_REST_SLOP resets the clock every step and never reaches DWELL_MS; one that arrives and stops does), input::a_dwell_ends_with_its_intent_and_restarts_with_a_new_one, and the two restored service tests a_peek_puts_the_overlay_back_on_top_and_nothing_else_moves (both rectangles and the usable area unchanged across a peek) and a_peek_is_one_output_at_a_time. Run on the uncommitted working tree at this commit; hardware behaviour was not observed, the session being in use.
         """
 }
 
