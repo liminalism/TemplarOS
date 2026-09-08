@@ -748,7 +748,7 @@ record legeos.decision.one-persistent-bottom-bar-tags-not-bands/3 : decision {
 
 record legeos.decision.one-persistent-bottom-bar-tags-not-bands/4 : decision {
     title "Window tags and shell controls; fullscreen hides the bar and window management is explicitly summoned"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/**",
         path "crates/lege-window/**",
@@ -771,6 +771,33 @@ record legeos.decision.one-persistent-bottom-bar-tags-not-bands/4 : decision {
     ]
     implements [ @legeos.constraint.services-not-indicators ]
     supersedes [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/3 ]
+}
+
+record legeos.decision.one-persistent-bottom-bar-tags-not-bands/5 : decision {
+    title "Window tags and shell controls; the bar reserves nothing, shows over Home, collapses to a hint under windows, and is absent in fullscreen"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    topic bottom-bar
+    decision """
+        A single shell-drawn bottom bar, the output's full width: Home chip at the left, then the taskbar (LegeOS window groups first, one entry each in the group accent; then one entry per open application, parked windows included and dimmed; a multi-window entry wears a count; hovering an entry after a dwell opens a row above the bar listing its windows, a grace period closes it, a click activates), then the machine cluster at the right end (account chip wearing the account's name, clock, network indicator, Settings; each does one named thing on one click, dimmed and inert when its thing is not installed; charge, volume and backlight are the first line of the account popover). The bar reserves NO exclusive zone: it claims set_exclusive_zone(bottom, 0), which keeps it bottom-anchored and reserves nothing, so windows use the whole output and a maximized window wears its own tags (its controls are never duplicated on the bar). Presence is by what is under it: over Home, or with no unshelved non-fullscreen window meeting its strip, it is visible at full height; when a window is under its strip it collapses to a thin hint (a ^ on the bar's ground at the very bottom of the output), a pointer resting on the hint reveals the whole bar, and the pointer leaving it collapses it again after the same short dwell, closing any open row or popover. In fullscreen it is absent: a visible fullscreen window stacks above the shell overlay on its output, there is no bottom-edge peek, and Alt+Tab is the switch route. Window management remains on the window's tag and in the switcher; a separate popup manager is deferred (see @legeos.work.window-manager-popup-and-functional-edge-tabs).
+        """
+    context """
+        The user's hands-on runs showed a mouse-only user had no persistent route between windows because Home is momentary and Alt+Tab is keyboard. A reserved row wastes space; an unreserved row overlays the window. The user's answer (2026-09-08, from their cosmic fork) is presence by need: visible where nothing is under it, a hint and a mouseover elsewhere, and a hide as easy as the reveal. The reviewer's redundancy principle (rev 3/4: a window's name and controls belong to the window) is kept; their replacement of the bar by a popup is not — the bar is the switcher.
+        """
+    consequences """
+        Compositor: a zero-size zone claim anchors without reserving (lege-shell-v1 prose clarified, no signature change); the fullscreen peek of campaign 3 is deleted; has_frame gives maximized windows their tags because no bottom zone is claimed. Shell: the bar's maximized-window controls go; covered/hint/revealed presence with two short dwells; the Home field still ends above the bar. Needs one logout. Rev 4's peek-on-hardware acceptance is retired.
+        """
+    derived_from [
+        @legeos.decision.home-is-momentary-and-placeable-objects-are-containers,
+        @legeos.decision.window-groups-are-explicit-and-compositor-owned
+    ]
+    implements [ @legeos.constraint.services-not-indicators ]
+    supersedes [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands/4 ]
 }
 
 record legeos.decision.one-privileged-host-daemon/1 : decision {

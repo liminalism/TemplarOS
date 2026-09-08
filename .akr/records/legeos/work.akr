@@ -6007,94 +6007,57 @@ record legeos.work.window-groups-protocol/1 : work {
 }
 
 record legeos.work.window-manager-popup-and-functional-edge-tabs/1 : work {
-    title "Planning: a COSMIC-derived popup window manager, uninterrupted fullscreen, and functional edge tabs"
-    state proposed
+    title "The bar is the switcher and gets out of the way: no reservation, visible over Home, a hint and a mouseover reveal under windows, nothing in fullscreen; the popup manager deferred"
+    state active
     intent """
-        Planning only, following the user's 2026-09-08 request: the taskbar must not show in fullscreen; a popup window manager must reuse cosmic-applets code; retain and refine LegeOS's own compact, functional design language, eliminating redundancy gradually. No implementation, dependency import, deployment or live-session operation is authorized by this record. The explicit fullscreen/no-peek and COSMIC-code direction is accepted in @legeos.decision.one-persistent-bottom-bar-tags-not-bands/3. The interaction, composition and sizing choices below are recommendations to review.
-
-        PRODUCT MODEL. Home owns places and launching. Attached window tags identify and manipulate the current visible windows. Windows is one on-demand inventory of running work, including parked and fullscreen windows. Machine controls own system state. A permanent repeated row of app logos/window titles adds little when the window already has its own tag. Remove that row only once the replacement manager makes every parked or obscured window reachable. Grouping remains explicit and compositor-owned; app identity alone may organize a display list but never creates a LegeOS group.
-
-        FULLSCREEN. Every ordinary managed toplevel should have a compositor-level Fullscreen action via its tag's existing management affordance and the popup, plus a proposed Super+F binding after conflict checks. Support native Wayland and XWayland; fixed-size clients retain a safe centered surface if they cannot render at the requested size. Owned dialogs must remain reachable above their parent. Entering fullscreen preserves geometry, output, maximize state, group membership and stacking context. Selecting another window suspends presentation of the old fullscreen window without changing its fullscreen flag, parking it or losing its restore slot; returning presents it fullscreen again. Selecting ordinary work restores the ordinary arrangement. This is a per-output presentation choice in the existing one-workspace model; no macOS Spaces or inferred groups are introduced. Focus changing to a different monitor does not hide the fullscreen app on the first. Leaving fullscreen restores prior ordinary/fit state. Plain Escape remains application-owned except when the manager itself is open; Ctrl+Alt+Escape remains compositor recovery. No bar, clock, tabs, invisible pointer strip or bar pixels through transparency while fullscreen is presented. Hover and bottom-edge dwell do nothing to shell chrome. An explicit Home command changes to the Home view while retaining the saved fullscreen state; this is distinct from overlaying the bar on fullscreen.
-
-        POPUP. One compact, opaque, content-sized surface, anchored at the lower-left of the invoking output, above both ordinary and fullscreen clients but below security/permission/recovery surfaces. It reserves no work area and opens without moving/resizing windows. Proposed invocation: click Windows at the normal edge; Super+W globally; Super+secondary-click as a deliberate pointer gesture anywhere, including fullscreen. The pointer gesture and chord are proposals, not settled preferences. They must not conflict with window dragging/grouping or flash Home through bare-Super handling. Preserve current Alt+Tab within group and Super+Tab across groups; fast cycling stays compositor-owned. The manager is a latched inspect/act view, not a mandatory delay on each switch. If a mouse-only fullscreen route is required, choose an explicit edge gesture that opens only the manager and never an automatic hover reveal; evaluate it in the interaction trial before assigning a hotspot.
-
-        POPUP CONTENT. One row per window, with explicit groups shown once and expandable in place; title first, small app identity only where it disambiguates, state text only for Parked, Fullscreen, or another output. Avoid simultaneous duplicate all/group/app lists and avoid a second app launcher. Group entry activates its last-active member, preserving relationships; an individual member has its own actions. A single selected/hovered-window preview uses the existing trusted preview path, requested only while the popup needs it. This lets two identical terminal titles be distinguished without a permanent thumbnail for every row. List rows remain usable if capture fails; display a named placeholder or unavailable state, never a fabricated live image. Keep insertion order stable while the popup is open; seed selection from recent focus, hold it by WindowId, append new arrivals without moving the target under the pointer, remove closed windows without activating their replacement. Keyboard arrows navigate, Enter activates/restores, Escape/outside click cancels and restores the prior focus. Pointer activation is one click; focus/hover only previews. Closed-while-open, rename, same-app multiple windows, and unavailable title/icon are normal states. Type-to-filter is local to open windows, never the Home launcher; clear query when dismissed. Use a bounded scrolling list only when content demands it. Selected-window actions: Fit / Restore, Fullscreen / Leave fullscreen, Park / Restore parked, Close, and contextual Group/Ungroup. Expose the appropriate state-dependent actions, not conflicting pairs. Close asks the client to close and lets its unsaved-work dialog decide; it must never become forced process termination. Reuse the same target/action declarations for a tag-opened manager scoped to that window.
-
-        NON-FULLSCREEN EDGE. Recommended resting composition: Home and a single Windows tab at the left; a compact time/machine tab at the right; no full-width painted panel and no always-visible per-app inventory. Windows appears when any window exists, including when all are parked; zero windows leaves Home and machine access. Its label may show total window count only if the trial finds it useful, otherwise a readable Windows label suffices. Keep a stable corner and ordering rather than hiding individual entries as overlap/focus changes. The right tab displays time and useful power state; network/volume details live in its popup unless an actionable condition makes an indicator worth exposing (disconnect, mute, low charge). This does not make controls disappear: machine controls remain available at a stable target and via existing hardware/chord routes. Home should not gain a duplicate Settings/Help/Session plate.
-
-        GEOMETRY AND MATERIAL. Carry forward current tag geometry and ink, modest corner radii, existing theme palette and group accent grammar. Prototype one 32-logical-pixel tag-height seam instead of the current 48px bar: smaller painted objects do not justify tiny hit targets. Preserve an adequate target under pointer/touch scaling. Fit/maximized windows use that same seam for their single title/control set; do not add a second title row or repeated maximize controls. A normal fitted application needs a safe rectangular area so edge controls do not cover its content; the tag-height reservation is a deliberate usability cost, not an invisible 48px leftover. Fullscreen uses all output pixels. Keep left and right surfaces separate (or use a tested alpha-capable path with accurate input regions) so unpainted space is not an opaque bar; current softbuffer XRGB cannot supply transparency. Opening a popup adds no exclusive-zone height and changes no application geometry. Empty space between windows belongs to work/Home and needs no decorative filler.
-
-        VISUAL LANGUAGE. A boundary denotes something separable or manipulable; a tag is an attachment to its owner; a raised surface denotes a temporary decision. Material distinguishes object kind using existing palette roles. Accent retains group identity with a textual/grouping cue; focus uses one clear outline/ink treatment rather than another competing color system. State has one small cue, with readable names on focus or inspection. Do not add generic OS branding, giant cards, ornamental blur, duplicate badges, mirrored clocks, desktop miniatures or a permanent account portrait. Functional space includes separation for reading, dragging and avoiding accidental activation. Eliminate repeated information before reducing text sizes, targets or meaningful spacing. Pointer routes and keyboard accelerators are complementary access, not redundancy to remove.
-
-        CODE REUSE. Inspected pop-os/cosmic-applets commit 1aa03111c5cd92051c9af28b43cb1ee9f43dbb25 (2026-09-01). Primary donor: cosmic-app-list/src/app.rs popup lifecycle, toplevel reconciliation and selected-window preview/action behavior; wayland_subscription.rs provides an explicit request/update separation and Screencopy request. Supplement: cosmic-applet-minimize/src/lib.rs and window_image.rs for parked-window/overflow/preview handling. Reuse/adapt actual selected source with file-level upstream SHA, copyright/SPDX notices and a documented local delta, not merely copy COSMIC's visual appearance or claim another independent rewrite is code reuse. The existing bar says its COSMIC behavior was reimplemented, so it does not already satisfy this new reuse request. The donor is a libcosmic/cctk applet, not a drop-in LegeOS widget: map upstream toplevel handles to WindowId, messages to the trusted lege_shell bridge, image requests to existing LegeOS capture, and desktop identity to appd; render in the established Pixelkit language. Do not bring COSMIC's compositor, panel hosting, workspace authority or another background window inventory just to host the popup. Begin with a narrow extraction/proof-of-fit and record which source was retained. Upstream ToplevelRequest exposes Activate, Minimize and Quit, not the required fullscreen control, so fullscreen is a LegeOS compositor/bridge addition. The existing all-ShellOverlay peek exception must be replaced by visibility/composition rules for the bar and a narrowly authorized manager surface. Preserving an inactive window's fullscreen state additionally needs a presentation policy, because current stacking promotes every unshelved fullscreen window regardless of activation.
-
-        GRADUAL CUTOVER. (1) Establish actual donor/adaptor seam and a tested window-state/action model. (2) Add compositor-controlled fullscreen entry, distinct presentation selection, bar exclusion and explicit manager invocation while preserving existing recovery. (3) Add popup coverage for every running/parked/grouped/fullscreen window, keyboard/pointer operation, preview fallback and scoped actions. (4) Replace per-app bar chips/hover row with the Windows entry; consolidate status/account controls and fit-window controls into the single seam. Delete redundant paths only after the replacement's acceptance passes, without shipping a permanent choice between two inventories. (5) Trial daily work and refine labels/counts, preview density, pointer invocation and seam geometry. No broad refactor or desktop replacement is implied.
-
-        PLANNING ARTIFACT. The retained conversation study .agent/scratch/window-manager-plan-20260908/window-manager-states.html compares ordinary windows, uninterrupted fullscreen and the explicit manager over fullscreen. It is an interaction sketch, not a finished UI, production implementation or pixel-perfect acceptance baseline.
+        Rev 2 (2026-09-08, the user's decision after reading rev 1's recommendation): the reviewer's redundancy principle is kept — a window's name and controls live on the window as its tag, and the bottom edge must not repeat what has an owner — but the bar stays the pointer switcher; it is not replaced by a Windows entry and a popup. What changes is presence. The bar reserves no exclusive zone (a zero-size claim keeps it bottom-anchored). Over Home it is simply visible, full height, drawn over the garden. When a window is under its strip (any unshelved, non-fullscreen toplevel whose geometry meets the bottom BAR_HEIGHT strip while Home is not revealed) it collapses to a thin hint at the very bottom — a small ^ chevron on the bar's ground — and a pointer resting on the hint reveals the whole bar; the pointer leaving it collapses the bar again after the same short dwell, closing any open row or popover, so it hides as easily as it appears (the user's cosmic fork was slow to hide). Chip hover still opens the per-application window row after its dwell; a click on a row activates. In fullscreen nothing of the bar shows and no edge dwell reveals it: the compositor's bottom-edge peek is deleted; a visible fullscreen window stays stacked above the shell overlay on its output; Alt+Tab (MRU, campaign 4) is the switch route there. With no bottom zone a maximized window fills the output and wears its own tags (WindowService::has_frame already does this), so the bar's copies of the maximized window's controls are removed rather than kept in a shared seam; the 32px seam and the permanent Home/Windows edge entries of rev 1 are dropped. DEFERRED, not rejected: the COSMIC-derived popup window manager (Super+W, Super+secondary-click, previews) — its keyboard role is covered by Alt+Tab and its pointer-in-fullscreen role is the one open question for the trial; rev 1's popup, source-reuse and fullscreen-switching sections remain the plan for it if the trial wants a pointer route in fullscreen. Compositor changes need one logout.
         """
     note """
-        Replaces the pending peek behavior from @legeos.work.bar-home-chip-cluster-and-fullscreen-peek; previous implementation evidence remains historical. User's words: 'planning only. i do not want it to show when in full screen. i want a popup window manager using the cosmic-applets code.' The stricter fullscreen direction is adopted; exact defaults and the proposed ordinary edge layout are not yet adopted. Homegarden fixes from the preceding review remain separate.
+        Rev 1's text stays in history as the reviewer's recommendation. Implementation: campaign 5, packets under .agent/scratch/bar-5 (Lane A compositor/lege-window, Lane B shell). The trial settles: hint height and dwell constants, whether a pointer route in fullscreen is wanted (then the popup), and whether the bar wants the reviewer's title-first density.
         """
     acceptance {
-        check edge-no-duplicate-inventory {
+        check bar-over-home {
             statement """
-                Outside fullscreen, attached window tags and a single Windows entry replace the permanent per-app row; parked windows remain discoverable; time and machine controls occur once; fit controls share the same seam.
+                With nothing under its strip the bar is visible at full height over Home; the Home field ends above it; no window is displaced by its presence or absence.
                 """
             method observation
         }
         check fullscreen-is-uninterrupted {
             statement """
-                On Wayland and XWayland, opaque and translucent fullscreen show no bar pixels or bar hit targets; dwell at every edge shows nothing; application occupies logical output and explicit manager invocation shows only the manager.
+                On Wayland and XWayland, opaque and translucent fullscreen show no bar pixels or bar hit targets; a dwell at the bottom edge shows nothing; Alt+Tab switches away and back with the window still fullscreen.
                 """
             method observation
         }
-        check fullscreen-switch-and-restore {
+        check hint-and-reveal {
             statement """
-                Switch A fullscreen -> B fullscreen -> ordinary work -> A, preserving both fullscreen flags and prior restore geometry; include a grouped member, an owned modal, output removal and two outputs. Other-output focus does not dismiss presentation.
+                A window under the strip collapses the bar to a thin hint with a ^ at the very bottom; a pointer resting on the hint reveals the whole bar; chip hover opens the window row; a click on the hint reveals immediately.
                 """
             method observation
         }
-        check keyboard-pointer-and-recovery {
+        check mouse-away-hides {
             statement """
-                Popup opens through declared pointer and keyboard routes without Home flash; arrows/Enter/Escape and outside dismissal behave predictably; current-window click never unexpectedly parks it; compositor recovery works with shell absent.
+                The pointer leaving the revealed bar collapses it to the hint within the close dwell, closing any open row or popover; no stuck-open bar after sweeping the pointer across it.
                 """
             method observation
         }
-        check layout-and-input-integrity {
+        check tags-not-duplicated {
             statement """
-                At small laptop, large and fractional-scale outputs, text/controls fit, pointer targets remain usable, empty spans neither paint opaque ground nor intercept input, and opening/dismissing any popup changes no client geometry.
-                """
-            method observation
-        }
-        check popup-all-windows {
-            statement """
-                Every ordinary, obscured, parked, grouped and inactive-fullscreen window is reachable; empty, one-window, duplicate-title, 12-window, same-app and closed-during-popup cases preserve selection and give honest state.
-                """
-            method observation
-        }
-        check previews-and-accessibility {
-            statement """
-                Preview work is bounded to visible manager selection and stops on dismissal/lock; unavailable previews remain identifiable; keyboard focus, accessible names/roles/state, non-color cues and reduced motion are verified.
-                """
-            method observation
-        }
-        check real-source-reuse {
-            statement """
-                Record retained and adapted cosmic-applets source at a pinned commit, the source-level provenance/local delta and the LegeOS adapter; no claim of drop-in compatibility or behavior-only reimplementation.
-                """
-            method observation
-        }
-        check shared-window-actions {
-            statement """
-                Tag and manager routes target the same WindowId with state-correct Fit/Restore, Fullscreen/Leave, Park/Restore and Close; no forced quit, no hidden owned dialogs and no implied group creation.
+                A maximized window's name and controls appear once, on its tag; the bar carries no copy.
                 """
             method observation
         }
         check user-design-trial {
             statement """
-                User judges actual work switching/fullscreen and zero/full/parked window states; settles pointer gesture, title/count/preview density, 32px seam feasibility and whether the ordinary layout is more useful without redundant information.
+                The user judges the open/hint/revealed presence over a working day, settles the hint height and dwells, and decides whether a pointer route in fullscreen (the deferred popup) is wanted.
                 """
             method manual
+        }
+        check zero-zone-anchors {
+            statement """
+                set_exclusive_zone(bottom, 0) keeps the bar surface bottom-anchored at any committed height while Output::usable() is the whole output and reserves_bottom() is false; a maximized window fills the output and wears its own tags.
+                """
+            method command
+            command "cargo test -p lege-window -p lege-comp"
         }
     }
     derived_from [ @legeos.work.bar-home-chip-cluster-and-fullscreen-peek ]
