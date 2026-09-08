@@ -19,7 +19,7 @@ use crate::window_bridge::now_monotonic_ns;
 use lege_comp_integration::ShellStateSnapshot;
 use lege_window::{
     ActivationGrant, ClientKind, CommandContext, Layer, Rect, RevealHome, WindowCommand, WindowId,
-    geometry::{Edge, Exclusive, shell_surface_placement},
+    geometry::{Alignment, Edge, Exclusive, shell_surface_placement},
 };
 use smithay::reexports::wayland_server::{
     Client, DataInit, DisplayHandle, New, Resource, WEnum,
@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 5;
+pub const SHELL_PROTOCOL_VERSION: u32 = 6;
 
 /// The value of `lege_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
@@ -57,6 +57,12 @@ pub struct ShellProtocolState {
     /// and reserves nothing. Released only when the surface is destroyed
     /// (`lege-shell-v1.xml`'s `set_exclusive_zone` doc) — enforced in `on_shell_surface_destroyed`.
     pub exclusive_zones: HashMap<ObjectId, (String, Exclusive)>,
+    /// One entry per surface that has sent `set_edge_alignment`, for the edge it named.
+    ///
+    /// Only here because the two requests may arrive in either order: the alignment lives on the
+    /// claim in `exclusive_zones`, which is what every reader reads, and this is what a claim
+    /// arriving *after* its alignment is built from. Cleared with the claim on destruction.
+    pub edge_alignments: HashMap<ObjectId, (Edge, Alignment)>,
     /// The canonical application id of the selected `terminal` provider, from
     /// `set_terminal` (§4.6). Deliberately kept when the shell disconnects: the chord toggles an
     /// existing terminal window with the shell dead, and only *launching* one needs it back.
@@ -159,6 +165,13 @@ impl<B: Backend + 'static> Dispatch2<LegeShellManagerV1, LegeCompState<B>> for (
                 size,
             } => {
                 handle_set_exclusive_zone(state, &surface, edge, size);
+            }
+            lege_shell_manager_v1::Request::SetEdgeAlignment {
+                surface,
+                edge,
+                alignment,
+            } => {
+                handle_set_edge_alignment(state, &surface, edge, alignment);
             }
             lege_shell_manager_v1::Request::RevealHome { reveal } => {
                 if let WEnum::Value(reveal) = reveal {
@@ -269,14 +282,8 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
     edge: WEnum<lege_shell_manager_v1::Edge>,
     size: u32,
 ) {
-    let WEnum::Value(edge) = edge else {
+    let Some(edge) = wire_edge(edge) else {
         return;
-    };
-    let edge = match edge {
-        lege_shell_manager_v1::Edge::Top => Edge::Top,
-        lege_shell_manager_v1::Edge::Bottom => Edge::Bottom,
-        lege_shell_manager_v1::Edge::Left => Edge::Left,
-        lege_shell_manager_v1::Edge::Right => Edge::Right,
     };
     let Some(output_name) = state
         .space
@@ -300,19 +307,83 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
         surface,
         |state, surface| on_shell_surface_destroyed(state, &surface.id()),
     );
+    // The alignment may have arrived first (nothing orders the two requests), in which case it
+    // is waiting in `edge_alignments` for the edge it named.
+    let alignment = match state.shell_protocol.edge_alignments.get(&object_id) {
+        Some((aligned_edge, alignment)) if *aligned_edge == edge => *alignment,
+        _ => Alignment::Start,
+    };
     state.shell_protocol.exclusive_zones.insert(
         object_id,
         (
             output_name,
             Exclusive {
-                edge,
-                size: size.min(i32::MAX as u32) as i32,
+                alignment,
+                ..Exclusive::new(edge, size.min(i32::MAX as u32) as i32)
             },
         ),
     );
     // `recompute_outputs` re-places every claiming surface, this one included — a zone changing
     // and a monitor moving are the same event, so they must not have two different repair paths.
     crate::backend::recompute_outputs(state);
+}
+
+/// Where along its edge an anchored surface sits (`lege-shell-v1.xml`'s `set_edge_alignment`).
+///
+/// Placement, never reservation: `work_area_for` reads the claim's size and never its alignment,
+/// so a surface sliding along its edge reflows nothing — which is what lets the shell move its
+/// island off the bottom-left corner the compositor's hot corner owns
+/// (`input::in_home_corner`) without touching a single window.
+///
+/// The alignment only means anything for a live claim on the same edge; an alignment for an edge
+/// the surface does not claim is remembered but not applied, so the two requests may arrive in
+/// either order and a later claim on that edge picks it up.
+fn handle_set_edge_alignment<B: Backend + 'static>(
+    state: &mut LegeCompState<B>,
+    surface: &WlSurface,
+    edge: WEnum<lege_shell_manager_v1::Edge>,
+    alignment: WEnum<lege_shell_manager_v1::Alignment>,
+) {
+    let Some(edge) = wire_edge(edge) else {
+        return;
+    };
+    let WEnum::Value(alignment) = alignment else {
+        return;
+    };
+    let alignment = match alignment {
+        lege_shell_manager_v1::Alignment::Start => Alignment::Start,
+        lege_shell_manager_v1::Alignment::Centre => Alignment::Centre,
+        lege_shell_manager_v1::Alignment::End => Alignment::End,
+    };
+    let object_id = surface.id();
+    state
+        .shell_protocol
+        .edge_alignments
+        .insert(object_id.clone(), (edge, alignment));
+    let Some((_, claim)) = state.shell_protocol.exclusive_zones.get_mut(&object_id) else {
+        return;
+    };
+    if claim.edge != edge || claim.alignment == alignment {
+        return;
+    }
+    claim.alignment = alignment;
+    // The same repair path a zone change takes: one entry point, so a surface moving along its
+    // edge and a monitor moving cannot diverge.
+    crate::backend::recompute_outputs(state);
+}
+
+/// The protocol's `edge` enum as this crate's. `None` for a value this compositor does not know —
+/// a newer shell against an older compositor, which is silently ignored like a refused claim.
+fn wire_edge(edge: WEnum<lege_shell_manager_v1::Edge>) -> Option<Edge> {
+    let WEnum::Value(edge) = edge else {
+        return None;
+    };
+    Some(match edge {
+        lege_shell_manager_v1::Edge::Top => Edge::Top,
+        lege_shell_manager_v1::Edge::Bottom => Edge::Bottom,
+        lege_shell_manager_v1::Edge::Left => Edge::Left,
+        lege_shell_manager_v1::Edge::Right => Edge::Right,
+    })
 }
 
 /// Apply the trusted shell's claims once the corresponding xdg-toplevel exists in
@@ -478,6 +549,7 @@ pub fn on_shell_surface_destroyed<B: Backend + 'static>(
     surface: &ObjectId,
 ) {
     state.shell_protocol.layer_surfaces.remove(surface);
+    state.shell_protocol.edge_alignments.remove(surface);
     if state
         .shell_protocol
         .exclusive_zones
