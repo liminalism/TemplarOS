@@ -34,6 +34,11 @@ const ACCOUNT_WIDTH: i32 = 140;
 const POPOVER_WIDTH: i32 = 232;
 const POPOVER_ROW: i32 = 28;
 const POPOVER_PAD: i32 = 8;
+/// Grace after the pointer leaves the cluster before an open popover closes. The same number the
+/// island's hover row uses, and for the same reason: long enough to cross a gap, short enough that
+/// a menu never outstays the pointer.
+pub const POPOVER_CLOSE_MS: u64 = 200;
+
 /// The gap between the popover's frame and the bar it grows out of.
 const POPOVER_GAP: i32 = 6;
 
@@ -99,6 +104,7 @@ pub struct ClusterData<'a> {
     pub account_label: &'a str,
     /// Charge, volume and backlight, as the services last reported them.
     pub machine: &'a crate::data::MachineReadings,
+    pub now_ms: u64,
 }
 
 /// Where each chip and the popover are, in the surface's own coordinates.
@@ -124,6 +130,8 @@ pub struct ClusterScreen {
     confirming: Option<&'static str>,
     /// The shapes this frame painted solid, for the host's alpha and input regions.
     opaque: Vec<(Rect, i32)>,
+    /// When the pointer left the cluster's surface, while the popover is open.
+    left_at: Option<u64>,
 }
 
 /// How wide the cluster is: its two margins, its four chips, and the gaps between them.
@@ -418,12 +426,31 @@ impl ClusterScreen {
             self.confirming = None;
         }
 
-        // Anything else on the surface is the cluster's own ground, not the window behind: a press
-        // that missed a chip still dismisses an open popover rather than reaching past it.
-        if self.account_open && ui.input.take_click(area) {
-            self.account_open = false;
-            self.confirming = None;
+        // Leaving closes it. A press on the surface's own ground cannot: the input region is the
+        // chips and the popover, so the ground is desktop and its clicks go to whatever is behind.
+        // That left the popover with no way out but the chip that opened it — a menu that stays up
+        // while you use the window underneath. The row's rule instead: the pointer leaves, a grace
+        // period passes, it goes.
+        if self.account_open {
+            if ui.input.cursor().is_some_and(|(x, y)| area.contains(x, y)) {
+                self.left_at = None;
+            } else {
+                let left = *self.left_at.get_or_insert(data.now_ms);
+                if data.now_ms.saturating_sub(left) >= POPOVER_CLOSE_MS {
+                    self.account_open = false;
+                    self.confirming = None;
+                    self.left_at = None;
+                }
+            }
+        } else {
+            self.left_at = None;
         }
         actions
+    }
+
+    /// When the host should wake to close a popover the pointer has left, if it should.
+    #[must_use]
+    pub fn next_deadline_ms(&self) -> Option<u64> {
+        self.left_at.map(|left| left + POPOVER_CLOSE_MS)
     }
 }

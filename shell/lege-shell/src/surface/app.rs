@@ -216,6 +216,45 @@ fn bar_covered(
     })
 }
 
+/// When the wall clock next changes the minute the cluster is showing.
+///
+/// The cluster draws a clock, so it has to wake for the minute even with nothing else happening —
+/// and it must wake for *that* minute rather than every sixty seconds from an arbitrary start, or
+/// a clock reading 12:04 would sit there for most of 12:05.
+fn next_minute() -> Instant {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Instant::now() + Duration::from_secs(60 - now % 60)
+}
+
+/// Move a bottom-anchored surface's stored pointer with the surface, after it resized.
+///
+/// The compositor sends no motion when a surface moves under a pointer that has not moved, and
+/// these surfaces grow *upward*: the chips stay exactly where they were on screen, but everything
+/// gains height at the top, so a surface-local `y` that was on a chip is now in the empty band
+/// above it. Left alone, a motionless mouse resting on a chip would open its row, lose the chip to
+/// the growth, close the row, shrink, find the chip again — a cycle of about six hundred
+/// milliseconds. Shifting the stored cursor by the height delta is the whole fix, and it is the
+/// same arithmetic the compositor would do if it re-sent the event.
+fn follow_bottom_anchored_resize(window: &mut HostedWindow) {
+    let Some((x, y)) = window.input.cursor() else {
+        return;
+    };
+    let height = window
+        .window
+        .inner_size()
+        .to_logical::<f64>(window.window.scale_factor())
+        .height as i32;
+    let was = window.buffer.height as i32;
+    if height == was || was == 0 {
+        return;
+    }
+    let moved = y + (height - was);
+    window.input.cursor_moved(x as f32, moved as f32);
+}
+
 /// `1 item` or `3 items` — what an operation summary calls a path set.
 fn items(count: usize) -> String {
     if count == 1 {
@@ -1084,7 +1123,15 @@ impl ShellApp {
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
                 }
-                DataUpdate::Machine(machine) => self.machine = machine,
+                DataUpdate::Machine(machine) => {
+                    self.machine = machine;
+                    // The cluster draws the charge, the volume and the backlight now, and has no
+                    // other reason to redraw: without this its readings would sit at whatever they
+                    // were when the pointer last touched it.
+                    if let Some(cluster) = &self.cluster {
+                        cluster.request_redraw();
+                    }
+                }
                 DataUpdate::HomeFieldSettings(settings) => {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
@@ -2635,15 +2682,6 @@ impl ShellApp {
             self.ensure_icon(&key);
         }
         let activated = toplevels.iter().find(|t| t.activated).map(|t| t.window_id);
-        let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
-        let calendar_available = calendar_app(&self.apps).is_some();
-        // Who is signed in. `USER` is what the session manager sets; the uid is the honest
-        // fallback, because a chip labelled with nothing is the one the user did not dare press.
-        let account_label = std::env::var("USER")
-            .ok()
-            .filter(|user| !user.is_empty())
-            .unwrap_or_else(account_uid_label);
-        let clock_label = local_clock_label(std::time::SystemTime::now());
         let now_ms = self.started.elapsed().as_millis() as u64;
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
         let (output_width, output_height) = self.output_size();
@@ -2665,14 +2703,9 @@ impl ShellApp {
             entries: &entries,
             icons: &self.icons,
             previews: &self.previews,
-            clock_label: &clock_label,
-            network_control_available,
-            calendar_available,
-            account_label: &account_label,
             activated,
             covered,
             home_revealed,
-            machine: &self.machine,
             now_ms,
         };
         let actions = {
@@ -2798,6 +2831,10 @@ impl ShellApp {
         if wanted_gone {
             self.cluster = None;
             self.cluster_wanted = (0, 0);
+            // And with it whatever was open on it. The screen's state does not survive the screen:
+            // a popover left open when something went fullscreen would otherwise be waiting when
+            // the window closed, over a desktop nobody had asked it about.
+            self.cluster_screen = crate::surface::cluster_screen::ClusterScreen::default();
             return;
         }
         if self.cluster.is_some() {
@@ -2855,6 +2892,7 @@ impl ShellApp {
             .filter(|user| !user.is_empty())
             .unwrap_or_else(account_uid_label);
         let clock_label = local_clock_label(std::time::SystemTime::now());
+        let now_ms = self.started.elapsed().as_millis() as u64;
         let Some(cluster) = &mut self.cluster else {
             return;
         };
@@ -2873,6 +2911,7 @@ impl ShellApp {
             calendar_available,
             account_label: &account_label,
             machine: &self.machine,
+            now_ms,
         };
         let actions = {
             let mut ui = Ui::new(
@@ -2969,6 +3008,7 @@ impl ShellApp {
                         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                             cluster.scale = pixelkit_shell::Scale::new(*scale_factor);
                         }
+                        follow_bottom_anchored_resize(cluster);
                         cluster.request_redraw();
                     }
                     WindowEvent::CursorMoved { position, .. } => {
@@ -3007,6 +3047,7 @@ impl ShellApp {
                         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                             bar.scale = pixelkit_shell::Scale::new(*scale_factor);
                         }
+                        follow_bottom_anchored_resize(bar);
                         bar.request_redraw();
                     }
                     WindowEvent::CursorMoved { position, .. } => {
@@ -4554,6 +4595,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(bridge) = &mut self.bridge
             && let Err(error) = bridge.pump()
@@ -4660,10 +4702,23 @@ impl ApplicationHandler<Wake> for ShellApp {
             }
             Some(deadline)
         });
-        let deadline = match (toast_deadline, bar_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        // The cluster's own two: a popover the pointer has left, and the next minute — it draws
+        // the clock, so it has to wake for one whether or not anything else happens.
+        let cluster_deadline = self.cluster.as_ref().map(|cluster| {
+            let popover = self
+                .cluster_screen
+                .next_deadline_ms()
+                .map(|ms| self.started + Duration::from_millis(ms));
+            let minute = next_minute();
+            if popover.is_some_and(|at| at <= Instant::now()) {
+                cluster.request_redraw();
+            }
+            popover.map_or(minute, |at| at.min(minute))
+        });
+        let deadline = [toast_deadline, bar_deadline, cluster_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         match deadline {
             Some(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline.max(Instant::now())));

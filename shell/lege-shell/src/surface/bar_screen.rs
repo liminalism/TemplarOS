@@ -174,14 +174,6 @@ pub struct BarData<'a> {
     /// tiles read. A key with nothing behind it is a preview that has not arrived (or previews
     /// turned off), and the row falls back to the application's icon and the title.
     pub previews: &'a HashMap<String, Bitmap>,
-    pub clock_label: &'a str,
-    /// Whether the network control's role has a provider that can be launched.
-    pub network_control_available: bool,
-    /// Whether an installed application declares `Categories=Calendar`, so the clock has
-    /// somewhere to open into.
-    pub calendar_available: bool,
-    /// Who is signed in: what the account chip says next to its mark.
-    pub account_label: &'a str,
     /// The activated window: what a press on the bar's own ground gives the keyboard back to.
     pub activated: Option<WindowId>,
     /// Whether something covers the bottom `BAR_HEIGHT` strip of this output, so the bar has to
@@ -190,8 +182,6 @@ pub struct BarData<'a> {
     pub covered: bool,
     /// Whether a "go home" reveal is in effect, so the Home chip can show that it is.
     pub home_revealed: bool,
-    /// Charge, volume and backlight, as the services last reported them.
-    pub machine: &'a crate::data::MachineReadings,
     pub now_ms: u64,
 }
 
@@ -218,12 +208,6 @@ pub struct BarScreen {
     /// `0x00RRGGBB` and has nowhere to put coverage. Recorded here rather than recomputed there
     /// so that the shape the person sees and the shape the compositor blends can never disagree.
     opaque: Vec<(Rect, i32)>,
-    /// The popover row armed by a first click and waiting for its second.
-    ///
-    /// `ActionDecl::confirm` is set on the three actions that end the session, and a bar chip is
-    /// exactly the sort of thing a sleeve catches: without this, brushing the popover would shut
-    /// the machine down.
-    confirming: Option<&'static str>,
 }
 
 struct Layout {
@@ -285,7 +269,12 @@ pub fn wanted_size(
 /// reachable by pointer at all, at somewhere around fifteen open applications on a 1280-pixel
 /// screen. A centred island that runs out of room crowds its chips instead, which is visible.
 fn widest(full_width: i32) -> i32 {
-    (full_width - 2 * CORNER_CLEARANCE).max(1)
+    // Twice the cluster's width, not once: the island is centred, so it reaches the cluster's left
+    // edge when it is `full_width - 2 * cluster_width` across. Without this an island of five
+    // applications on a 1366-pixel screen sits under the clock, and which of the two is on top is
+    // whichever mapped last. Reserved whether or not the cluster is there — it costs a wide island
+    // some room in fullscreen, and it costs a mistake nothing.
+    (full_width - 2 * crate::surface::cluster_screen::cluster_width() - 2 * CORNER_CLEARANCE).max(1)
 }
 
 /// How much of each end of the bottom edge the island leaves alone, in logical pixels. The
@@ -529,12 +518,20 @@ impl BarScreen {
         let chip_y = bar.y + (bar.h - chip_h) / 2;
         let gap = ui.px(CHIP_GAP);
 
-        // Left to right from the island's own left edge. Each chip is clipped to whatever room is
-        // left rather than being dropped: a half-width chip still shows an icon. The machine's own
-        // chips are not here at all — they are the cluster's, on its own surface at the right-hand
-        // end of the screen, because what the machine is doing is not what the switcher is for.
-        let limit = bar.right() - ui.px(CHIP_PAD);
-        let mut x = bar.x + ui.px(CHIP_PAD);
+        // The chips are centred *inside* the surface, not laid from its left edge. That matters
+        // because an open row makes the surface wider than the island, and the surface is centred
+        // on the output — so laying the chips from its left edge slid every one of them sideways
+        // the moment a row opened, out from under the pointer that opened it. The row would then
+        // close, the surface shrink, the chip come back, and the whole thing cycle. Centring the
+        // strip means a change of surface width moves nothing the pointer is on.
+        //
+        // Each chip is still clipped to whatever room is left rather than dropped: a half-width
+        // chip shows an icon. The machine's own chips are not here at all — they are the
+        // cluster's, on its own surface at the right-hand end of the screen.
+        let strip = ui.px(island_width(data.entries.len())).min(bar.w);
+        let origin = bar.x + ((bar.w - strip) / 2).max(0);
+        let limit = origin + strip - ui.px(CHIP_PAD);
+        let mut x = origin + ui.px(CHIP_PAD);
         let mut chip = |width: i32| {
             let rect = Rect::new(x, chip_y, width.min((limit - x).max(0)), chip_h);
             x += width + gap;
@@ -852,7 +849,9 @@ impl BarScreen {
                 height,
             );
             if frame.y >= area.y {
-                self.opaque.push((frame, ui.px(design::CHIP_RADIUS)));
+                // `design::shell` fills at TILE_RADIUS; recording the smaller one would leave
+                // the coverage solid where the paint has already curved away.
+                self.opaque.push((frame, ui.px(design::TILE_RADIUS)));
                 design::shell(
                     ui,
                     frame,
@@ -870,14 +869,14 @@ impl BarScreen {
             }
         }
 
-        // A press on empty bar ground: the compositor gave this surface the keyboard for it, and
-        // the activated window is the one that should have it. A press anywhere else while the
-        // popover is open dismisses it, the way any menu behaves.
-        if ui.input.take_click(layout.bar) {
-            self.confirming = None;
-            if let Some(window) = data.activated {
-                actions.push(BarAction::Activate(window));
-            }
+        // A press on the island's own ground: the compositor gave this surface the keyboard for
+        // it, and the activated window is the one that should have it. Reachable only where the
+        // input region is, which is the chips — so in practice this is a press that landed on a
+        // chip's rounded corner.
+        if ui.input.take_click(layout.bar)
+            && let Some(window) = data.activated
+        {
+            actions.push(BarAction::Activate(window));
         }
         actions
     }
@@ -891,8 +890,11 @@ mod tests {
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, MouseButton, Scale};
 
-    /// The output's logical width, which is what the host passes as `full_width`.
-    const W: i32 = 1200;
+    /// The output's logical width, which is what the host passes as `full_width`. A real screen,
+    /// because the island's room is now `full_width` less twice the cluster's width — a centred
+    /// island reaches a right-anchored cluster from both sides at once — and a toy width leaves it
+    /// no room to be tested in.
+    const W: i32 = 1920;
 
     /// The tallest the island ever gets: the bar plus an open hover row. The harness buffer is
     /// this tall so every state fits in one buffer, and the island is always drawn at the bottom
@@ -927,8 +929,6 @@ mod tests {
         kernel: RasterKernel,
         buffer: WindowBuffer,
         input: Input,
-        machine: crate::data::MachineReadings,
-        calendar_available: bool,
         /// What the host would say about the bottom strip this frame (`app::bar_covered`).
         covered: bool,
         now: u64,
@@ -947,20 +947,6 @@ mod tests {
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, tallest() as u32),
                 input: Input::new(),
-                machine: crate::data::MachineReadings {
-                    audio: Some(lege_client::status::AudioState {
-                        present: true,
-                        volume_percent: 45,
-                        muted: false,
-                    }),
-                    backlight: Some(lege_client::status::BacklightState {
-                        present: true,
-                        percent: 60,
-                        ..Default::default()
-                    }),
-                    battery: None,
-                },
-                calendar_available: true,
                 covered: false,
                 now: 0,
                 width: W,
@@ -1009,19 +995,13 @@ mod tests {
         fn frame(&mut self) -> Vec<BarAction> {
             let entries = taskbar::entries(&self.toplevels);
             let activated = self.activated();
-            let machine = self.machine.clone();
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
                 previews: &self.previews,
-                clock_label: "MON 7 SEP 12:00",
-                network_control_available: true,
-                calendar_available: self.calendar_available,
-                account_label: "dk",
                 activated,
                 covered: self.covered,
                 home_revealed: false,
-                machine: &machine,
                 now_ms: self.now,
             };
             let (width, height) = (self.width, self.height);
@@ -1058,19 +1038,13 @@ mod tests {
         fn rects(&mut self) -> Layout {
             let entries = taskbar::entries(&self.toplevels);
             let activated = self.activated();
-            let machine = self.machine.clone();
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
                 previews: &self.previews,
-                clock_label: "",
-                network_control_available: true,
-                calendar_available: self.calendar_available,
-                account_label: "dk",
                 activated,
                 covered: self.covered,
                 home_revealed: false,
-                machine: &machine,
                 now_ms: self.now,
             };
             let ui = Ui::new(
@@ -1213,10 +1187,11 @@ mod tests {
     /// ones a real click would land on.
     /// Hover a chip until its row opens, re-aiming at it after every frame.
     ///
-    /// The re-aim is the harness standing in for the compositor. The surface grows *upward* from
-    /// the bottom edge, so on screen the chip does not move — but its y inside the buffer does,
-    /// and a real pointer that has not moved gets a fresh `CursorMoved` in the new coordinates.
-    /// Without this the pointer would appear to slide off the chip every time the surface grew.
+    /// The re-aim is not modelling anything: the harness lays its chips from the buffer's own
+    /// origin, so a chip's coordinates do not move when the surface resizes. On hardware they do,
+    /// in both axes — the host answers with `follow_bottom_anchored_resize` for the height, and
+    /// centring the chip strip (`layout`) is what holds them still in the width. Neither is
+    /// visible from here, which is why both are named in the runbook.
     fn open_row_of(h: &mut Harness, index: usize) {
         for now in [0, 0, HOVER_OPEN_MS, HOVER_OPEN_MS] {
             h.now = now;
@@ -1426,10 +1401,9 @@ mod tests {
         // An output narrower than the island clamps to the output *less its two corners*, which
         // belong to the compositor's hot corner rather than to the bar; a width of nothing is
         // still a surface.
-        assert_eq!(
-            wanted_size(open, None, false, 20, 200),
-            (200 - 2 * CORNER_CLEARANCE, BAR_HEIGHT)
-        );
+        // An output with no room for both gives the island what is left and never a negative
+        // width; a width of nothing is still a surface.
+        assert_eq!(wanted_size(open, None, false, 20, 200), (1, BAR_HEIGHT));
         assert_eq!(wanted_size(open, None, false, 0, 0), (1, BAR_HEIGHT));
         // However many applications are open, the island never reaches either corner.
         assert!(
@@ -1522,6 +1496,40 @@ mod tests {
         assert_eq!(shapes.len(), 1, "{shapes:?}");
         assert_eq!(shapes[0].0.h, HINT_HEIGHT);
         assert_eq!(shapes[0].1, 0, "the tab is not rounded");
+    }
+
+    /// The chips do not move when the surface does. An open row makes the surface wider than the
+    /// island, and the surface is centred on the output — so laying the chips from its left edge
+    /// slid every one of them out from under the pointer that opened the row, which then closed,
+    /// which shrank the surface, which brought the chip back: a cycle rather than a hover.
+    #[test]
+    fn opening_a_row_leaves_every_chip_where_it_was() {
+        let mut h = Harness::new(vec![
+            window(1, "org.example.Editor", "notes", true, false),
+            window(2, "org.legeos.Files", "Downloads", false, false),
+            window(3, "org.legeos.Files", "Pictures", false, false),
+        ]);
+        h.frame();
+        // Where each chip is *on the output*: the surface is centred there, so a chip's screen
+        // position is the surface's own offset plus its position inside it. That is the number a
+        // pointer cares about, and the one that has to hold still.
+        let on_screen = |h: &mut Harness| -> Vec<i32> {
+            let offset = (W - h.wanted().0) / 2;
+            h.cells().iter().map(|cell| offset + cell.x).collect()
+        };
+        let closed = on_screen(&mut h);
+        let narrow = h.wanted().0;
+
+        open_row_of(&mut h, 1);
+        assert!(
+            h.wanted().0 > narrow,
+            "the row is what makes the surface wider"
+        );
+        assert_eq!(
+            on_screen(&mut h),
+            closed,
+            "a wider surface moved the chips out from under the pointer"
+        );
     }
 
     /// A chip is a picture, so it has to be askable: resting on one names it, and the name is

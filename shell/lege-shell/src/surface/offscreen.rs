@@ -250,38 +250,15 @@ pub(super) fn bar_frame(
     // is not. The gradient stands in for a real window's pixels.
     let mut previews = HashMap::new();
     previews.insert("window:1".to_owned(), preview_fixture());
-    let machine = crate::data::MachineReadings {
-        battery: Some(lege_client::status::BatteryState {
-            present: true,
-            percent: Some(72),
-            status: "discharging".to_owned(),
-            ..Default::default()
-        }),
-        audio: Some(lege_client::status::AudioState {
-            present: true,
-            volume_percent: 45,
-            muted: false,
-        }),
-        backlight: Some(lege_client::status::BacklightState {
-            present: true,
-            percent: 60,
-            ..Default::default()
-        }),
-    };
     let data = BarData {
         entries: &entries,
         icons: &icons,
         previews: &previews,
         // A fixed clock, not the wall clock: this fixture is hashed as a visual baseline, and
         // a baseline that changes every minute is not one.
-        clock_label: "MON 8 SEP 12:00",
-        network_control_available: true,
-        calendar_available: true,
-        account_label: "dk",
         activated: Some(lege_window::WindowId(1)),
         covered: presence != Presence::Open,
         home_revealed: false,
-        machine: &machine,
         now_ms: 0,
     };
     // Open: the pointer over the last chip, so one entry is drawn hovered. The dwell has not
@@ -735,7 +712,7 @@ mod tests {
             (Presence::Open, false, "open", 0xfc19_5fb8_f4de_5ae0u64),
             (Presence::Hint, false, "hint", 0x090f_a0c5_682c_df95),
             (Presence::Revealed, false, "revealed", 0xe1e8_7ec6_b7a2_cf8a),
-            (Presence::Open, true, "row", 0xb317_5ea3_89e7_832a),
+            (Presence::Open, true, "row", 0x00ae_baf7_72b7_549a),
         ] {
             let buffer = bar_frame(presence, open_row, 1.0);
             if let Some(dir) = &dump {

@@ -767,8 +767,11 @@ pub struct ShellBridge {
     queue: EventQueue<BridgeState>,
     manager: LegeShellManagerV1,
     state: BridgeState,
-    /// The `Argb8888` buffer behind [`Self::present_masked`], reused while its size holds.
-    masked: Option<crate::previews::ShmBuffer>,
+    /// The `Argb8888` buffer behind [`Self::present_masked`], one per surface, reused while its
+    /// size holds. Per surface rather than one shared: the bar and the cluster are never the same
+    /// size, so a single buffer meant every frame of either destroyed a `wl_buffer` still attached
+    /// to the other and allocated a fresh pool.
+    masked: HashMap<ObjectId, crate::previews::ShmBuffer>,
 }
 
 impl std::fmt::Debug for ShellBridge {
@@ -838,7 +841,7 @@ impl ShellBridge {
             queue,
             manager,
             state,
-            masked: None,
+            masked: HashMap::new(),
         })
     }
 
@@ -1414,15 +1417,17 @@ impl ShellBridge {
             .shm()
             .cloned()
             .ok_or_else(|| anyhow!("the compositor offers no wl_shm on this connection"))?;
+        let key = surface.id();
         let reuse = self
             .masked
-            .as_ref()
+            .get(&key)
             .is_some_and(|buffer| buffer.width == width && buffer.height == height);
         if !reuse {
-            if let Some(old) = self.masked.take() {
+            if let Some(old) = self.masked.remove(&key) {
                 old.destroy();
             }
-            self.masked = Some(
+            self.masked.insert(
+                key.clone(),
                 crate::previews::allocate(
                     &shm,
                     width,
@@ -1433,7 +1438,7 @@ impl ShellBridge {
                 .context("allocating the masked surface buffer")?,
             );
         }
-        let buffer = self.masked.as_ref().expect("allocated above");
+        let buffer = self.masked.get(&key).expect("allocated above");
         buffer.write_masked(colour, coverage)?;
         surface.set_opaque_region(None);
         // And the input region is the shapes, for the same reason the alpha is. Without it the
