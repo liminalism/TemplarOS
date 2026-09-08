@@ -18,7 +18,7 @@ use lege::{
 use lege_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
     FilesActionsProxy, FilesIndexProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy,
-    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HostDeploymentsProxy,
+    FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HomeGardenProxy, HostDeploymentsProxy,
     HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy, LauncherProxy,
     PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
 };
@@ -126,6 +126,13 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: Option<ProjectCommand>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Homegarden: the places Home has grown from what you do (`HomeGarden1`).
+    Garden {
+        #[command(subcommand)]
+        command: Option<GardenCommand>,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -556,6 +563,31 @@ enum ProjectCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum GardenCommand {
+    /// Every place the ledger knows, with its stage and relevance (the default).
+    Contexts,
+    /// Why a folder is (or is not) on Home: its evidence, stage and last tending reason.
+    Why { path: PathBuf },
+    /// Run a tending moment now and print the report.
+    Tend {
+        #[arg(long, default_value = "primary")]
+        output: String,
+    },
+    Pin { path: PathBuf },
+    Unpin { path: PathBuf },
+    /// Pin, and freeze at the tile's current size.
+    Keep { path: PathBuf },
+    Hide { path: PathBuf },
+    Unhide { path: PathBuf },
+    /// Drop a place's record; fresh activity may grow it again.
+    Forget { path: PathBuf },
+    /// Drop every unpinned place.
+    Clear,
+    /// The Garden Clock: sessions and unlocked hours so far.
+    Clock,
+}
+
+#[derive(Debug, Subcommand)]
 enum PowerCommand {
     /// The effective profile for a source (the default is both).
     Get {
@@ -612,6 +644,137 @@ async fn home_command(command: HomeCommand, json: bool) -> Result<()> {
         &serde_json::json!({"placed": root, "output": output, "revision": revision}),
         &format!("placed {} on Home", root.display()),
     )
+}
+
+async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
+    let connection = bus::session().await?;
+    let proxy = HomeGardenProxy::new(&connection).await?;
+    let path_of = |path: &Path| path.to_string_lossy().into_owned();
+    let pinned = !matches!(command, GardenCommand::Unpin { .. });
+    let hidden = matches!(command, GardenCommand::Hide { .. });
+    match command {
+        GardenCommand::Contexts => {
+            let contexts: serde_json::Value = serde_json::from_str(&proxy.contexts().await?)?;
+            let mut human = String::new();
+            for context in contexts.as_array().into_iter().flatten() {
+                let _ = writeln!(
+                    human,
+                    "{:<9} {:>7.1}  {}  ({})",
+                    context["stage"].as_str().unwrap_or("?"),
+                    context["effective"].as_f64().unwrap_or(0.0),
+                    context["root"].as_str().unwrap_or("?"),
+                    context["summary"].as_str().unwrap_or("")
+                );
+            }
+            if human.is_empty() {
+                human.push_str("no places yet: the garden grows from what you open and launch\n");
+            }
+            emit(json, &contexts, human.trim_end())
+        }
+        GardenCommand::Why { path } => {
+            let root = folder_argument(&path)?;
+            let described = proxy.describe(&path_of(&root)).await?;
+            if described.is_empty() {
+                return emit(
+                    json,
+                    &serde_json::json!({"root": root, "place": false}),
+                    &format!("{} is not a place the garden knows", root.display()),
+                );
+            }
+            let context: serde_json::Value = serde_json::from_str(&described)?;
+            let human = format!(
+                "{}: {} — {}\n{}\nidle {} session(s), {:.1} garden-hours; pinned={} hidden={}",
+                root.display(),
+                context["stage"].as_str().unwrap_or("?"),
+                context["summary"].as_str().unwrap_or(""),
+                context["why"].as_str().unwrap_or("(never tended)"),
+                context["idle_sessions"],
+                context["idle_hours"].as_f64().unwrap_or(0.0),
+                context["pinned"],
+                context["hidden"]
+            );
+            emit(json, &context, &human)
+        }
+        GardenCommand::Tend { output } => {
+            let report: serde_json::Value = serde_json::from_str(&proxy.tend(&output).await?)?;
+            let mut human = String::new();
+            for line in report["stages"].as_array().into_iter().flatten() {
+                let _ = writeln!(human, "{}", line.as_str().unwrap_or(""));
+            }
+            for op in report["ops"].as_array().into_iter().flatten() {
+                let _ = writeln!(human, "{}", op[1].as_str().unwrap_or(""));
+            }
+            if human.is_empty() {
+                human.push_str("nothing to tend\n");
+            }
+            emit(json, &report, human.trim_end())
+        }
+        other => garden_manage(&proxy, other, pinned, hidden, json).await,
+    }
+}
+
+/// The record-changing garden verbs: pin, hide, forget, clear, and the clock.
+async fn garden_manage(
+    proxy: &HomeGardenProxy<'_>,
+    command: GardenCommand,
+    pinned: bool,
+    hidden: bool,
+    json: bool,
+) -> Result<()> {
+    let path_of = |path: &Path| path.to_string_lossy().into_owned();
+    match command {
+        GardenCommand::Pin { path } | GardenCommand::Unpin { path } | GardenCommand::Keep { path } => {
+            let root = folder_argument(&path)?;
+            proxy.pin(&path_of(&root), pinned).await?;
+            emit(
+                json,
+                &serde_json::json!({"root": root, "pinned": pinned}),
+                &format!("{} pinned={pinned}", root.display()),
+            )
+        }
+        GardenCommand::Hide { path } | GardenCommand::Unhide { path } => {
+            let root = folder_argument(&path)?;
+            proxy.hide(&path_of(&root), hidden).await?;
+            emit(
+                json,
+                &serde_json::json!({"root": root, "hidden": hidden}),
+                &format!("{} hidden={hidden}", root.display()),
+            )
+        }
+        GardenCommand::Forget { path } => {
+            let root = folder_argument(&path)?;
+            proxy.forget(&path_of(&root)).await?;
+            emit(
+                json,
+                &serde_json::json!({"forgotten": root}),
+                &format!("forgot {}", root.display()),
+            )
+        }
+        GardenCommand::Clear => {
+            proxy.forget_all().await?;
+            emit(json, &serde_json::json!({"cleared": true}), "forgot every unpinned place")
+        }
+        GardenCommand::Clock => {
+            let clock: serde_json::Value = serde_json::from_str(&proxy.clock().await?)?;
+            let hours = clock["active_ms"].as_f64().unwrap_or(0.0) / 3_600_000.0;
+            emit(
+                json,
+                &clock,
+                &format!(
+                    "session {} · {hours:.2} garden-hours · {}",
+                    clock["session"],
+                    if clock["active"].as_bool().unwrap_or(false) {
+                        "running"
+                    } else {
+                        "paused"
+                    }
+                ),
+            )
+        }
+        GardenCommand::Contexts | GardenCommand::Why { .. } | GardenCommand::Tend { .. } => {
+            unreachable!("handled by garden_command")
+        }
+    }
 }
 
 fn emit(json: bool, value: &impl serde::Serialize, human: &str) -> Result<()> {
@@ -769,6 +932,9 @@ async fn run() -> Result<()> {
             settings_command(command.unwrap_or(SettingsCommand::List), json).await
         }
         Command::Home { command, json } => home_command(command, json).await,
+        Command::Garden { command, json } => {
+            garden_command(command.unwrap_or(GardenCommand::Contexts), json).await
+        }
         Command::Project { command, json } => {
             project_command(command.unwrap_or(ProjectCommand::List), json).await
         }
