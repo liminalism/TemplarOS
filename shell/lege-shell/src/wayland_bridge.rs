@@ -78,7 +78,10 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum
 
 use crate::data_device::{ClipboardPayload, ForeignSelection, InputSerials, choose_target};
 use lege_types::{AppId, InstanceId};
-use lege_window::{GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId, geometry::Edge};
+use lege_window::{
+    GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId,
+    geometry::{Alignment, Edge},
+};
 
 /// The highest `lege_shell_v1` version this shell speaks (`interfaces/wayland/lege-shell-v1.xml`).
 /// Bound at the lower of this and what the compositor advertises, so a newer shell against an
@@ -91,7 +94,12 @@ use lege_window::{GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId, g
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 5;
+const SHELL_PROTOCOL_VERSION: u32 = 6;
+
+/// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
+/// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
+/// `GROUP_SINCE` follows, and for the same reason.
+const ALIGNMENT_SINCE: u32 = 6;
 
 /// The manager version that carries `lege_shell_toplevel_v1`'s window-group requests.
 const GROUP_SINCE: u32 = 5;
@@ -734,6 +742,14 @@ fn wire_reveal(reveal: RevealHome) -> lege_shell_manager_v1::Reveal {
     }
 }
 
+fn wire_alignment(alignment: Alignment) -> lege_shell_manager_v1::Alignment {
+    match alignment {
+        Alignment::Start => lege_shell_manager_v1::Alignment::Start,
+        Alignment::Centre => lege_shell_manager_v1::Alignment::Centre,
+        Alignment::End => lege_shell_manager_v1::Alignment::End,
+    }
+}
+
 fn wire_edge(edge: Edge) -> lege_shell_manager_v1::Edge {
     match edge {
         Edge::Top => lege_shell_manager_v1::Edge::Top,
@@ -854,6 +870,30 @@ impl ShellBridge {
         self.connection
             .flush()
             .context("flushing set_exclusive_zone")
+    }
+
+    /// Sit at `alignment` along `edge` rather than at the edge's start
+    /// (`interfaces/wayland/lege-shell-v1.xml`'s `set_edge_alignment`). Placement only: this
+    /// reserves nothing and moves no window, so it may be sent as freely as a redraw.
+    ///
+    /// Silently does nothing against a compositor too old to have the request — which is the
+    /// running one until the user logs out. The surface then sits at the start of its edge, which
+    /// is where it sat before any of this, so an un-centred island is the worst of it.
+    pub fn set_edge_alignment(
+        &self,
+        window: &winit::window::Window,
+        edge: Edge,
+        alignment: Alignment,
+    ) -> Result<()> {
+        if self.manager.version() < ALIGNMENT_SINCE {
+            return Ok(());
+        }
+        let surface = self.wrap_surface(window)?;
+        self.manager
+            .set_edge_alignment(&surface, wire_edge(edge), wire_alignment(alignment));
+        self.connection
+            .flush()
+            .context("flushing set_edge_alignment")
     }
 
     /// Process whatever has already arrived on this connection's own event queue, without

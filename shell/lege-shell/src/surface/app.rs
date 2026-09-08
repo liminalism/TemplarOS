@@ -189,13 +189,14 @@ fn bar_covered(
     toplevels: &[lege_window::ShellToplevel],
     output: lege_window::Rect,
 ) -> bool {
-    // The island's own rectangle, not the width of the output: it sits at the bottom-left and is
-    // only as wide as its chips, so a window over the *right* of the screen is not over the bar
-    // and must not collapse it. Fullscreen is the exception below — that covers everything.
+    // The island's own rectangle, not the width of the output: it is only as wide as its chips
+    // and it is centred along the bottom edge (`ensure_bar` asks for `Alignment::Centre`), so a
+    // window over either side of the screen is not over the bar and must not collapse it.
+    // Fullscreen is the exception below — that covers everything.
     let island = crate::surface::bar_screen::island_width(crate::taskbar::entries(toplevels).len())
         .min(output.width);
     let strip = lege_window::Rect::new(
-        output.x,
+        output.x + (output.width - island) / 2,
         output.bottom() - crate::surface::bar_screen::BAR_HEIGHT,
         island,
         crate::surface::bar_screen::BAR_HEIGHT,
@@ -1404,6 +1405,48 @@ impl ShellApp {
     /// asks at the preview rate for every session tile. Arrived previews are filed under the
     /// tile's own identifier. The compositor's own floor of four frames a second per window
     /// holds whatever this asks.
+    /// Capture the windows of the bar's open hover row, at most twice a second each. The rate
+    /// policy is `preview_requested`, the same map Home's tiles use — a row that is open is a
+    /// deliberate look, so it refreshes; a row that is closed asks for nothing. Draining is
+    /// Home's (`drain_previews`), woken by `has_previews_ready`.
+    fn refresh_row_previews(
+        &mut self,
+        toplevels: &[lege_window::ShellToplevel],
+        wants: &[lege_window::WindowId],
+    ) {
+        if wants.is_empty() {
+            return;
+        }
+        let Some(bridge) = &mut self.bridge else {
+            return;
+        };
+        if self.field_settings.previews == PreviewMode::Off || !bridge.previews_available() {
+            return;
+        }
+        let now = Instant::now();
+        for window in wants {
+            if !toplevels.iter().any(|t| t.window_id == *window) {
+                continue;
+            }
+            if self
+                .preview_requested
+                .get(window)
+                .is_some_and(|at| now.duration_since(*at) < Duration::from_millis(500))
+            {
+                continue;
+            }
+            let Some(identifier) = bridge.identifier_of(*window).map(str::to_owned) else {
+                continue;
+            };
+            match bridge.request_preview(&identifier) {
+                Ok(()) => {
+                    self.preview_requested.insert(*window, now);
+                }
+                Err(error) => tracing::debug!(%error, "row preview request skipped"),
+            }
+        }
+    }
+
     fn refresh_previews(&mut self, toplevels: &[lege_window::ShellToplevel], covered: bool) {
         let Some(bridge) = &mut self.bridge else {
             return;
@@ -2492,6 +2535,19 @@ impl ShellApp {
         {
             tracing::warn!(%error, "anchoring the bar to the bottom edge");
         }
+        // Centred along that edge, not at its start. Two reasons, and the second is the one that
+        // matters: an island the width of its contents sitting hard against the bottom-left corner
+        // is a dock in the corner rather than a dock, and — the corner is Home's now. The
+        // compositor suppresses the hot corner while a shell overlay is under the pointer, and the
+        // island's collapsed hint tab is 72×6 at exactly that corner, so an island left at the
+        // start of its edge would sit on the corner and stop it firing at all.
+        if let Err(error) = bridge.set_edge_alignment(
+            &window,
+            lege_window::geometry::Edge::Bottom,
+            lege_window::geometry::Alignment::Centre,
+        ) {
+            tracing::warn!(%error, "centring the bar on the bottom edge");
+        }
         match HostedWindow::new(window) {
             Ok(hosted) => {
                 hosted.request_redraw();
@@ -2505,6 +2561,7 @@ impl ShellApp {
     /// Paint the bar and act on what was clicked. The window list is the bridge's; the entries
     /// are computed fresh each frame (`crate::taskbar::entries`), which is a few dozen windows at
     /// most.
+    #[allow(clippy::too_many_lines)]
     fn redraw_bar(&mut self) {
         let toplevels = self
             .bridge
@@ -2545,6 +2602,7 @@ impl ShellApp {
         let data = crate::surface::bar_screen::BarData {
             entries: &entries,
             icons: &self.icons,
+            previews: &self.previews,
             clock_label: &clock_label,
             network_control_available,
             calendar_available,
@@ -2611,6 +2669,16 @@ impl ShellApp {
         if !presented {
             bar.present();
         }
+        // The hover row shows the window, not its name, so the windows in the open row are
+        // captured while it is open — and nothing else is. Home's own policy stops at
+        // `previews_covered`, which is exactly when this row is the thing being looked at.
+        let wants: Vec<lege_window::WindowId> = self
+            .bar_screen
+            .preview_wants(&entries)
+            .iter()
+            .map(|window| window.id)
+            .collect();
+        self.refresh_row_previews(&toplevels, &wants);
         // The surface is the output's width, and its height is whatever the presence the draw
         // just settled on asks for: the hint under a window, the bar over Home, plus whatever
         // band an open hover row or the account popover needs. The exclusive zone is 0 through
@@ -4249,9 +4317,15 @@ impl ApplicationHandler<Wake> for ShellApp {
             .bridge
             .as_ref()
             .is_some_and(ShellBridge::has_previews_ready)
-            && let Some(home) = &self.home
         {
-            home.request_redraw();
+            if let Some(home) = &self.home {
+                home.request_redraw();
+            }
+            // The bar too: an arriving capture is the row's whole content, and without this it
+            // would keep its icon fallback until the pointer happened to move.
+            if let Some(bar) = &self.bar {
+                bar.request_redraw();
+            }
         }
         // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
         // ghost follows the pointer and a throw's velocity is sampled evenly. Otherwise the next
@@ -4381,13 +4455,17 @@ mod tests {
         into.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT + 1);
         assert!(bar_covered(false, &[into], output));
 
-        // The island is at the bottom-left and only as wide as its chips, so a window along the
-        // bottom of the *right* of the screen is not over it. This is what the full-width bar
-        // could not say: half the screen's windows used to collapse it for nothing.
+        // The island is centred and only as wide as its chips, so a window along the bottom of
+        // either *side* of the screen is not over it. This is what the full-width bar could not
+        // say: half the screen's windows used to collapse it for nothing.
+        let island = crate::surface::bar_screen::island_width(1);
+        let left_of_it = (1920 - island) / 2;
         let mut beside = window(3, false, false, false);
-        let clear = crate::surface::bar_screen::island_width(1) + 1;
-        beside.geometry = lege_window::Rect::new(clear, 0, 1920 - clear, 1080);
+        beside.geometry = lege_window::Rect::new(0, 0, left_of_it - 1, 1080);
         assert!(!bar_covered(false, std::slice::from_ref(&beside), output));
+        let mut over_it = beside;
+        over_it.geometry = lege_window::Rect::new(0, 0, left_of_it + 1, 1080);
+        assert!(bar_covered(false, &[over_it], output));
     }
 
     #[test]
