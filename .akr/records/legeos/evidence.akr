@@ -1,6 +1,17 @@
 akr 0.1
 project legeos
 
+record legeos.evidence.a-new-window-takes-the-keyboard-nested-20260908/1 : evidence {
+    title "In a nested compositor, a newly mapped client window reports activated=true at map"
+    state verified
+    result pass
+    method observation
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    summary """
+        Nested compositor alone (RUST_LOG=lege_comp=info target/debug/lege-comp --backend winit --socket-name legeos-nested-a) with two kitty clients: both 'toplevel mapped' lines report activated=true, where before this change the flag was false for every mapped window. No XWayland client was installed on the host, so the xwayland.rs path is covered by code inspection and the shared predicate only.
+        """
+}
+
 record legeos.evidence.acceptance-sweep-20260904/1 : evidence {
     title "Eighteen unsatisfied command acceptance checks run in one sweep; all pass"
     state verified
@@ -81,6 +92,55 @@ record legeos.evidence.astra-consolidation-advice-20260907/1 : evidence {
         Advisor result rs-2c84e80bdacd confirmed the seven-phase plan and identified three source-level corrections: existing-partition mode still formats both partitions, DRM named cursors still render as the arrow, and Index1 ChangesSince uses event sequence rather than generation. No tests or live operations were run.
         """
     author "GitHub Uploader"
+}
+
+record legeos.evidence.bar-cluster-chips-act-20260908/1 : evidence {
+    title "16 bar_screen tests pass, including every_chip_in_the_machine_cluster_performs_its_named_action (Settings, clock and network each return their own RunAction; the account chip opens the popover) and a_clock_with_no_calendar_installed_takes_no_click."
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-shell --lib bar_screen"
+    summary """
+        16 bar_screen tests pass, including every_chip_in_the_machine_cluster_performs_its_named_action (Settings, clock and network each return their own RunAction; the account chip opens the popover) and a_clock_with_no_calendar_installed_takes_no_click.
+        """
+}
+
+record legeos.evidence.bar-cluster-clears-window-controls-20260908/1 : evidence {
+    title "With the cluster widened from 408 to 540 logical pixels, all four chips still sit left of a maximized window's three controls, run right to left without overlapping each other, and stay on the bar."
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-shell --lib bar_screen::tests::the_cluster_never_overlaps_the_maximized_window_controls"
+    summary """
+        With the cluster widened from 408 to 540 logical pixels, all four chips still sit left of a maximized window's three controls, run right to left without overlapping each other, and stay on the bar.
+        """
+}
+
+record legeos.evidence.bar-cluster-gates-green-20260908/1 : evidence {
+    title "check-actions: 71 actions named by a surface all declared (clock.open-calendar included), 19 with a chord all have a pointer route. check-packaging: 15 seeds and 8 metapackages name only packages that exist, gsimplecal included. check-interfaces: 35 interfaces, unchanged."
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo run -q -p xtask -- check-actions && cargo run -q -p xtask -- check-packaging && cargo run -q -p xtask -- check-interfaces"
+    summary """
+        check-actions: 71 actions named by a surface all declared (clock.open-calendar included), 19 with a chord all have a pointer route. check-packaging: 15 seeds and 8 metapackages name only packages that exist, gsimplecal included. check-interfaces: 35 interfaces, unchanged.
+        """
+}
+
+record legeos.evidence.bar-cluster-rendered-20260908/1 : evidence {
+    title "The rendered bar shows the cluster right to left as the account chip labelled 'dk', the clock, Network and the Settings chip, with no readings chip; the popover dump shows the readings line above ten rows ending in Log out..., Restart..., Shut down...."
+    state verified
+    result pass
+    method observation
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo run -q -p lege-shell --bin lege-shell -- --render-bar docs/measurements/bar-20260908b/bar-at-rest.png"
+    artifact "docs/measurements/bar-20260908b"
+    summary """
+        The rendered bar shows the cluster right to left as the account chip labelled 'dk', the clock, Network and the Settings chip, with no readings chip; the popover dump shows the readings line above ten rows ending in Log out..., Restart..., Shut down....
+        """
 }
 
 record legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 : evidence {
@@ -229,6 +289,19 @@ record legeos.evidence.campaign3-integrated-gate-20260908/1 : evidence {
     artifact "docs/measurements/home-baseline-20260908.png"
     summary """
         Full gate green on the integrated campaign-3 tree: fmt, clippy pedantic -D warnings, workspace tests (64 test binaries, 0 failures), MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks (23 CLI verbs, 71 surfaced actions all declared). The reviewed Home baseline shows no Home plate, no Help button, no system widgets and no window tiles.
+        """
+}
+
+record legeos.evidence.campaign4-integrated-gate-20260908/1 : evidence {
+    title "Campaign 4 integrated tree: fmt, clippy -D warnings, every workspace test, MSRV and all xtask checks green after Lanes A, B, C and the Homegarden review fixes landed (log kept in the campaign scratch dir)"
+    state verified
+    result pass
+    method command
+    observed_at git:6580c0113bba62a30f3d17df93cfe734cdfa0a4c
+    command "just check"
+    artifact "docs/measurements/launcher-20260908"
+    summary """
+        Campaign 4 integrated tree: fmt, clippy -D warnings, every workspace test, MSRV and all xtask checks green after Lanes A, B, C and the Homegarden review fixes landed (log kept in the campaign scratch dir)
         """
 }
 
@@ -810,6 +883,30 @@ record legeos.evidence.first-iso-built-and-booted-under-secure-boot-20260907/1 :
     artifact "docs/measurements/iso-qemu-serial-20260907.txt"
     summary """
         Unprivileged build.sh run end to end (mmdebstrap unshare from resolute snapshot 20260905T011226Z plus the chroot-built set, 15 native / 1506 inherited, 4.0 GB ISO; transcript docs/measurements/iso-build-20260907.txt); iso-qemu.sh OK under Secure-Boot OVMF with KVM: shim → GRUB → kernel, live login reached, SecureBoot efivar 1, preflight network pass. The medium's preflight in QEMU fails only preflight-render-node (bochs-drm has no render node).
+        """
+}
+
+record legeos.evidence.focus-and-switching-compositor-20260908/1 : evidence {
+    title "lege-comp: activate at map, one frozen switcher ring for Alt+Tab and Super+Tab"
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-comp"
+    summary """
+        114 tests pass with both map paths activating a new client window and both switcher chords rewritten onto the frozen ring; cargo clippy -p lege-comp -p lege-window --all-targets is clean under pedantic -D warnings.
+        """
+}
+
+record legeos.evidence.focus-and-switching-window-model-20260908/1 : evidence {
+    title "lege-window: focus-on-map predicate, the frozen switcher ring and the recency order it walks"
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-window"
+    summary """
+        145 tests pass with should_activate_on_map, SwitchRing and switch_order in and cycle_focus/cycle_within_group/cycle_groups deleted; includes a_frozen_list_reaches_the_third_window_where_a_rebuilt_one_never_could, which fails on the pre-change rebuild-per-press behaviour.
         """
 }
 
@@ -1447,6 +1544,18 @@ record legeos.evidence.home-folders-and-panes-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.home-garden-keys-reach-settings-20260908/1 : evidence {
+    title "73 lege-settings tests pass, including every_home_garden_key_reaches_the_homegarden_page (every shell.home-garden.* schema key routes to GARDEN_PAGE and the ignore key is a StrList) and the two garden.rs parses of HomeGarden1.Contexts."
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-settings"
+    summary """
+        73 lege-settings tests pass, including every_home_garden_key_reaches_the_homegarden_page (every shell.home-garden.* schema key routes to GARDEN_PAGE and the ignore key is a StrList) and the two garden.rs parses of HomeGarden1.Contexts.
+        """
+}
+
 record legeos.evidence.home-light-and-dark-render-20260907/1 : evidence {
     title "The Home Field rendered in the light and dark palettes, reviewed before the baseline hash was updated"
     state verified
@@ -1568,6 +1677,19 @@ record legeos.evidence.home-review-visual-20260905/1 : evidence {
     artifact ".agent/scratch/home-review/help.png"
     summary """
         Inspected deterministic renders: default Home at 1280x832, Help at 1280x832 and 640x480, and overflowing context menu at 640x480. Help keeps readable text and a fixed close control, with category content clipped to a scrolling viewport. Menu arrows and visible rows stay inside the output. No live desktop was touched; actual seat and mixed-scale behaviour are not established by these fixtures.
+        """
+}
+
+record legeos.evidence.home-search-legibility-renders-20260908/1 : evidence {
+    title "The Home search at rest and answering, rendered offscreen"
+    state verified
+    result pass
+    method observation
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "LEGE_BASELINE_OMNIBOX=1 LEGE_BASELINE_DUMP=... cargo test -p lege-shell --lib visual_regression"
+    artifact "docs/measurements/launcher-20260908/"
+    summary """
+        Two offscreen renders at 1280x800 taken from the shell's own baseline test. home-at-rest.png: the bar reads "Type to open an application", which says a keystroke is enough. home-search-results.png: three rows at 46px with the leading accent bar on the one chosen row, the name in the accent colour and the .desktop-derived second line at text_dim. The earlier render of the same state carried a "still searching files…" line under a launcher answer that was already complete; it is gone, because the launcher no longer reports the file service's state at all.
         """
 }
 
@@ -1733,6 +1855,30 @@ record legeos.evidence.lane-1-crates-clean/1 : evidence {
         """
 }
 
+record legeos.evidence.launcher-and-one-folder-route-tests-20260908/1 : evidence {
+    title "Lane C launcher and folder-route tests"
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-shell"
+    summary """
+        378 lege-shell tests pass (367 lib + 11 integration), including the abbreviation tier ("vsc" finds Visual Studio Code and scattered mid-word letters do not), the tighter-abbreviation score, the recency boost and its tier ceiling, the .desktop detail line, a typed letter opening the search, a modified letter staying a chord, Escape emptying the query, the pointer moving the one highlight so Enter opens what looks chosen, and the Folder tile and a typed path both producing OpenInFiles(path). The Home Field visual baseline moved once, for the new placeholder text, and was re-frozen after inspecting the render.
+        """
+}
+
+record legeos.evidence.launcher-check-actions-20260908/1 : evidence {
+    title "check-actions after the launcher work"
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo run -q -p xtask -- check-actions"
+    summary """
+        23 CLI verbs all reach a subcommand; 71 actions named by a surface are all declared; 19 actions with a chord all have a pointer route (3 exempt). The launcher work added no action id: launcher.launch and launcher.search already covered both routes and neither carries a chord.
+        """
+}
+
 record legeos.evidence.layout-declaration-matches-repart-20260903/1 : evidence {
     title "The layout declaration matches repart and hostd"
     state verified
@@ -1767,6 +1913,19 @@ record legeos.evidence.lege-treemap-lifted-and-pure/1 : evidence {
     command "cargo test -p lege-treemap && cargo xtask deps-check"
     summary """
         crates/lege-treemap (tree arena, squarified layout, category palette, CPU cushion rasterizer, bounded std scanner) passes its 11 tests — byte-proportional areas at top level and nested, file count as tie-breaker only, cushions shade, scan limits hold — with zero dependencies; deps-check guards it.
+        """
+}
+
+record legeos.evidence.legeos-nm-tray-packaged-20260908/1 : evidence {
+    title "Preflight passed (the fork working tree at pin 0965344 carries both --popup and X-LegeOS-Provides, contrary to the manifest note) and dpkg-buildpackage produced target/debian/legeos-nm-tray_0.5.1+legeos1~g0965344.dirty_amd64.deb, shipping /usr/bin/nm-tray, /usr/share/applications/nm-tray.desktop and /etc/xdg/autostart/nm-tray-autostart.desktop. Installing it is the user's step."
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "scripts/build-fork-deb.sh nm-tray-2 --source ../not-rust-projects/nm-tray-2"
+    artifact "distro/forks/nm-tray-2/debian"
+    summary """
+        Preflight passed (the fork working tree at pin 0965344 carries both --popup and X-LegeOS-Provides, contrary to the manifest note) and dpkg-buildpackage produced target/debian/legeos-nm-tray_0.5.1+legeos1~g0965344.dirty_amd64.deb, shipping /usr/bin/nm-tray, /usr/share/applications/nm-tray.desktop and /etc/xdg/autostart/nm-tray-autostart.desktop. Installing it is the user's step.
         """
 }
 
@@ -2077,6 +2236,18 @@ record legeos.evidence.nested-session-journey-20260904/1 : evidence {
     observed_at git:8d74542b146fa8399817bd377094157b7bd1bb97
     summary """
         `tests/integration/nested-session.sh` reports `nested session: ok (live compositor, shell, services, CLI state journey)`: a private bus, isolated HOME/XDG, a winit compositor, the trusted-shell socket, lege-sessiond, lege-filed, lege-resourced and the portal backend all claiming their bus names, the shell surviving on the trusted socket, and the CLI round trips over app/files/settings/history/providers/resources. It had never passed: the harness waited for the shell socket under a name the compositor stopped using on 2026-09-03, and behind that lay a migration race that killed whichever daemon opened the fresh state database second. Both are fixed; the harness now also keeps its state directory when a run fails, having previously deleted the only account of why.
+        """
+}
+
+record legeos.evidence.network-status-ui-role-unfilled-20260908/1 : evidence {
+    title "On the live session at gfbe4480 `lege providers` prints 'network-status-ui  no application declares this role' while `lege app list` holds desktop-import.nm-tray.desktop: the filename heuristic the shell used resolved a binary the role does not, which is why the chip launched stock nm-tray invisibly. The shell now reads the role."
+    state verified
+    result pass
+    method observation
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "lege providers"
+    summary """
+        On the live session at gfbe4480 `lege providers` prints 'network-status-ui  no application declares this role' while `lege app list` holds desktop-import.nm-tray.desktop: the filename heuristic the shell used resolved a binary the role does not, which is why the chip launched stock nm-tray invisibly. The shell now reads the role.
         """
 }
 
@@ -2571,6 +2742,18 @@ record legeos.evidence.super-press-hold-20260831/1 : evidence {
     command "cargo test -p lege-comp keybindings::tests::super; cargo test -p lege-comp keybindings::tests::super_chord; cargo test -p lege-comp keybindings::tests::bare_super; cargo test -p lege-window commands::tests::a_reveal_changes_no_window; just check"
     summary """
         Super press/hold gesture: press reveals Home immediately, hold is momentary with release restoring the pre-press state, a short tap latches the toggle, chords fire only their action, both logo keys form one logical hold; the lege-window reveal no-mutation test now covers maximized and shelved windows over Show/Hide/Toggle; all four acceptance filters and the full just check gate passed.
+        """
+}
+
+record legeos.evidence.taskbar-accounts-for-every-window-20260908/1 : evidence {
+    title "taskbar::entries loses no window: every unshelved client window is in exactly one entry"
+    state verified
+    result pass
+    method command
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    command "cargo test -p lege-shell --lib taskbar::"
+    summary """
+        5 tests pass, including a new one asserting every unshelved client window of a mixed snapshot (two unresolved identities, a parked loose window, a group with one member parked, an XWayland-shaped window) appears in exactly one entry; it passed unchanged on its first run, so taskbar::entries was losing no window.
         """
 }
 

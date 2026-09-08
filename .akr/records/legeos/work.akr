@@ -211,9 +211,102 @@ record legeos.work.application-integration-interim/2 : work {
     supersedes [ @legeos.work.application-integration-interim/1 ]
 }
 
+record legeos.work.bar-cluster-clickable-20260908/1 : work {
+    title "Lane B — every chip in the bar's machine cluster does one named thing, and Settings reaches Home's garden"
+    state active
+    scope [
+        path "apps/lege-settings/src/**",
+        path "crates/lege-types/src/action.rs",
+        path "distro/metapackages/legeos-desktop/control.in",
+        path "distro/seeds/selection.toml",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "shell/lege-shell/src/surface/bar_screen.rs",
+        path "shell/lege-shell/src/surface/offscreen.rs"
+    ]
+    intent """
+        The user's report on the installed session at gfbe4480 was that the bar's bottom-right buttons are not clickable, that network should open nm-tray-2, that the separate power/battery bar should become a full OS Settings button, that date/time should open an existing calendar rather than a new one, and that the furthest bottom-right button was unlabelled and frightening. Finding 6 of the Homegarden usability review adds that Settings excludes every `shell.home-garden.*` key, so default-on automation has no graphical settings.
+
+        Three of those were literal: the readings chip and the clock had no click handler at all, so a click on either fell through to the bar's own ground and merely re-activated the window. The fourth was worse than literal: the network chip *was* wired, but `app.rs::network_control_app` resolved the control by desktop-file name (`*nm-tray.desktop`) while the action `network.open-control` has always declared `Requires::Provider(ProviderRole::NetworkStatusUi)`. On this host `lege providers` prints `network-status-ui  no application declares this role` and the registry nonetheless holds `desktop-import.nm-tray.desktop` for Ubuntu's stock nm-tray 0.5.1 — which ignores `--popup`, only ever draws a tray icon, and had no tray to draw into. The chip lit up and launched something invisible.
+
+        The work: the cluster becomes account · clock · network · Settings, right to left, with the readings moved into the account popover's first line and their 112 pixels spent on a Settings chip; the account chip wears the account's name beside its mark; the confirm rows read "Click again to log out"; the clock gains `clock.open-calendar`, which resolves the first application declaring `Categories=Calendar` (gsimplecal preferred, and now in the desktop seed); the network chip resolves the provider role and nothing else; and Settings gains a Homegarden tab with the typed `shell.home-garden.*` keys, an editable ignore list and the hidden places from `HomeGarden1.Contexts`, each with an Unhide that calls `Hide(path, false)`.
+        """
+    target 2026-09-08
+    note """
+        Lane B of campaign 4. The two package installs are the user's (RUNBOOK-lane-B.md); until they are run, the clock and network chips are drawn dimmed and take no click, which is the intended failure mode.
+        """
+    acceptance {
+        check cluster-clears-the-window-controls {
+            statement """
+                The widened cluster still sits entirely left of a maximized window's three controls and does not overlap itself.
+                """
+            method command
+            command "cargo test -p lege-shell --lib bar_screen::tests::the_cluster_never_overlaps_the_maximized_window_controls"
+            verified_by [ @legeos.evidence.bar-cluster-clears-window-controls-20260908 ]
+        }
+        check every-chip-acts {
+            statement """
+                Each of the four chips in the machine cluster performs its own declared action on one click at the rectangle the paint used, and a chip whose target is not installed takes no click.
+                """
+            method command
+            command "cargo test -p lege-shell --lib bar_screen"
+            verified_by [ @legeos.evidence.bar-cluster-chips-act-20260908 ]
+        }
+        check garden-keys-reach-settings {
+            statement """
+                Every `shell.home-garden.*` schema key routes to the Homegarden page, and the ignore key it draws by hand is a string list.
+                """
+            method command
+            command "cargo test -p lege-settings"
+            verified_by [ @legeos.evidence.home-garden-keys-reach-settings-20260908 ]
+        }
+        check gates-green {
+            statement """
+                check-actions, check-packaging and check-interfaces pass with the new action id and the new seed package.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions && cargo run -q -p xtask -- check-packaging && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.bar-cluster-gates-green-20260908 ]
+        }
+        check installed-session {
+            statement """
+                On the installed session after RUNBOOK-lane-B.md steps 1-3, each of the four chips opens its named thing, and the Homegarden tab lists the ignore entries and the hidden places.
+                """
+            method manual
+        }
+        check network-resolves-the-role {
+            statement """
+                The network control is resolved through the `network-status-ui` provider role rather than by desktop-file name, so stock nm-tray can no longer be launched invisibly.
+                """
+            method observation
+            verified_by [ @legeos.evidence.network-status-ui-role-unfilled-20260908 ]
+        }
+        check the-cluster-is-visible {
+            statement """
+                The rendered bar shows the four chips in order and the popover shows the readings line above the ten action rows.
+                """
+            method observation
+            verified_by [ @legeos.evidence.bar-cluster-rendered-20260908 ]
+        }
+        check the-fork-packages {
+            statement """
+                `legeos-nm-tray` builds into a .deb from the fork working tree, preflight included.
+                """
+            method command
+            command "scripts/build-fork-deb.sh nm-tray-2 --source ../not-rust-projects/nm-tray-2"
+            verified_by [ @legeos.evidence.legeos-nm-tray-packaged-20260908 ]
+        }
+    }
+    derived_from [ @legeos.assessment.homegarden-usability-review-20260908 ]
+    implements [
+        @legeos.decision.homegarden-activity-grown-places,
+        @legeos.decision.one-persistent-bottom-bar-tags-not-bands
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.bar-home-chip-cluster-and-fullscreen-peek/1 : work {
     title "Lane 2 — the bar gains a Home chip, parked entries and the machine cluster; fullscreen fills the output and a bottom-edge dwell peeks the bar"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/**",
         path "crates/lege-window/**",
@@ -2084,6 +2177,64 @@ record legeos.work.files-windows-bookmarks-home-objects-20260907/1 : work {
     derived_from [ @legeos.work.home-navigation-manipulation-20260907 ]
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.hands-on-run-5-fixes ]
+}
+
+record legeos.work.focus-and-switching-20260908/1 : work {
+    title "A new window takes the keyboard at map, and Alt+Tab walks every window on a list frozen for the hold"
+    state active
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/lege-comp/**",
+        path "crates/lege-window/**",
+        path "shell/lege-shell/src/taskbar.rs"
+    ]
+    intent """
+        Lane A of campaign 4, from the user's session at gfbe4480: an application opened from the Home search bar maps unfocused under a Home surface that still holds the keyboard, and Alt+Tab cannot reach a window buried under two others. Three parts. (1) WindowService::should_activate_on_map — a client window, and no visible activated fullscreen client window on the same output — is called from both map paths (xdg_shell::handle_toplevel_commit after apply_surface_claims, xwayland::map_window_request) so a newly mapped window takes the keyboard; nothing else in the map sequence activates one and a launch through Launcher1 carries no xdg-activation token. (2) The switcher walks a list frozen at the first press (lege_window::SwitchRing) until the modifier is released: every step activates, activation raises, and the list is the stacking order, so a list rebuilt per press only ever swaps the top two windows and a third window was unreachable however many times Tab was pressed. Alt+Tab now walks every unshelved client window in most-recently-activated order — which the stacking order already is, LayerStack's rank being a monotonic counter bumped on every raise, so there is deliberately no recency stamp on WindowRecord. Within-group cycling is dropped: scoping Alt+Tab to the focused window's group made a group a place Alt+Tab could not leave. Super+Tab is unchanged in meaning and gains the same frozen list. cycle_focus, cycle_within_group and cycle_groups are deleted. (3) taskbar::entries was found to lose no window; the remaining bar gap is that a multi-window application chip shows no count, sent to the coordinator as a bar_screen.rs hunk (Lane B's file).
+        """
+    note """
+        Base 1c56b77 on developer-edition-0-1. Compositor and lege-window changes need a logout on the installed session (lege-comp.service is Restart=no): see RUNBOOK-lane-A.md. The switcher activates at each step rather than committing on release; the ceiling is marked with a ponytail: comment in keybindings.rs::step_switcher.
+        """
+    acceptance {
+        check compositor-green {
+            statement """
+                The compositor builds and its tests pass with the switcher rewritten onto the frozen ring and both map paths activating.
+                """
+            method command
+            command "cargo test -p lege-comp"
+            verified_by [ @legeos.evidence.focus-and-switching-compositor-20260908 ]
+        }
+        check focus-at-map-observed {
+            statement """
+                In a running compositor, a newly mapped client window reports activated=true on its 'toplevel mapped' line.
+                """
+            method observation
+            verified_by [ @legeos.evidence.a-new-window-takes-the-keyboard-nested-20260908 ]
+        }
+        check hands-on {
+            statement """
+                At the installed desktop after a logout: an application opened from the Home search bar has the keyboard and can be typed into immediately; Alt+Tab held with two Tab presses reaches a third window; every open window is accounted for on the bar.
+                """
+            method manual
+        }
+        check taskbar-complete {
+            statement """
+                Every unshelved client window of a mixed snapshot — unresolved identities, a parked loose window, a group with one member parked, an XWayland-shaped window — appears in exactly one taskbar entry.
+                """
+            method command
+            command "cargo test -p lege-shell --lib taskbar::"
+            verified_by [ @legeos.evidence.taskbar-accounts-for-every-window-20260908 ]
+        }
+        check window-model {
+            statement """
+                should_activate_on_map holds for a client window, is false for a shell-layer surface and for a window mapping beside an activated fullscreen window on the same output but true on another output; SwitchRing's first forward step is the previously activated window, it wraps, and a frozen list reaches a third window where a rebuilt one only oscillates; switch_order skips shelved and non-client windows.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.focus-and-switching-window-model-20260908 ]
+        }
+    }
+    derived_from [ @legeos.work.window-groups ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.full-distribution-roadmap/1 : work {
@@ -4273,6 +4424,72 @@ record legeos.work.homegarden-phases-0-3/1 : work {
     ]
 }
 
+record legeos.work.homegarden-review-fixes-20260908/1 : work {
+    title "Act on the Homegarden usability review: the view takes every remote change, the user's tiles are the user's, growth never shifts a neighbour, the garden verbs do what they say, a corner landing leaves room to grow"
+    state active
+    scope [
+        path "crates/lege-field/src/garden.rs",
+        path "crates/lege-session-core/src/homefield.rs",
+        path "crates/lege-session-core/src/homegarden.rs",
+        path "interfaces/dbus/org.legeos.HomeGarden1.xml",
+        path "services/lege-sessiond/src/apis/homegarden.rs",
+        path "shell/lege-shell/src/field_model.rs",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/context_menu.rs"
+    ]
+    intent """
+        The six findings of @legeos.assessment.homegarden-usability-review-20260908, five here and the sixth (a Settings Homegarden page) in @legeos.work.bar-cluster-clickable-20260908. (1) The shell reconciles the daemon's field on HomeField1.Changed: adopt, resize in place, remove folder tiles (field_model::reconcile_remote). (2) A folder tile the tender never placed is the user's outright: at the next tending it is pinned and kept (user_span = its span), so recession neither resizes nor removes it. (3) The tender rejects any resize whose yields shift a neighbour's cell, trying each axis alone before emitting nothing (lege-field::garden::plan_resize). (4) garden.keep is HomeGarden1.Keep (pin + freeze the size); Hide unpins and removes the tile from every Home now, undoably; Forget drops the record and removes the tile likewise; the context menu offers Pin or Unpin by the place's state and Keep only until kept. (5) A first landing takes the home corner as a 4x3 would sit in it (GROWTH_ROOM), so a Trace can become Expanded in place.
+        """
+    note """
+        HomeGarden1 gained the additive method Keep(path); baseline re-frozen. The garden design document's verb table (garden.keep = pinned + user_span) is now the implementation.
+        """
+    acceptance {
+        check hands-on-user-tile-survives {
+            statement """
+                On the installed session: place a folder on Home by hand, resize it to 3x3, open two other folders across a lock/unlock, reveal Home: the hand-placed tile is still 3x3 and its menu reads Unpin; Hide removes it and Ctrl+Z brings it back
+                """
+            method manual
+        }
+        check interfaces-additive {
+            statement """
+                Keep is additive: check-interfaces, check-interface-signatures and check-proxies pass
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-interface-signatures && cargo run -q -p xtask -- check-proxies"
+            verified_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
+        }
+        check tender-never-shifts-a-neighbour {
+            statement """
+                growth_never_shifts_a_neighbours_cell and a_corner_landing_leaves_room_to_reach_the_expanded_span pass with the garden proptests
+                """
+            method command
+            command "cargo test -p lege-field garden"
+            verified_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
+        }
+        check verbs-do-what-they-say {
+            statement """
+                keep freezes the size, hide outranks a pin, unpin lets go of both (ledger); the menu offers pin or unpin by state (shell)
+                """
+            method command
+            command "cargo test -p lege-session-core homegarden && cargo test -p lege-shell context_menu"
+            verified_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
+        }
+        check view-takes-remote-changes {
+            statement """
+                reconcile_remote adopts, resizes in place and removes folder tiles, never moves, and leaves a non-folder tile missing remotely alone
+                """
+            method command
+            command "cargo test -p lege-shell reconcile"
+            verified_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
+        }
+    }
+    after [ @legeos.work.homegarden-phases-0-3 ]
+    derived_from [ @legeos.assessment.homegarden-usability-review-20260908 ]
+    implements [ @legeos.decision.homegarden-activity-grown-places ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supported_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
+}
+
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
     state completed
@@ -4432,6 +4649,58 @@ record legeos.work.iso-hardware-safety/2 : work {
     implements [ @legeos.decision.base-ubuntu-2604-kernel-70 ]
     part_of [ @legeos.work.self-hosting-legeos ]
     supersedes [ @legeos.work.iso-hardware-safety/1 ]
+}
+
+record legeos.work.launcher-and-one-folder-route-20260908/1 : work {
+    title "Lane C — the Home search is an application launcher you can type into, and one route from Home to the file manager"
+    state proposed
+    scope [
+        path "shell/lege-shell/src/app_search.rs",
+        path "shell/lege-shell/src/omnibox.rs",
+        path "shell/lege-shell/src/recents.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "shell/lege-shell/src/surface/field_screen.rs",
+        path "shell/lege-shell/src/surface/offscreen.rs",
+        path "shell/lege-shell/src/surface/omnibox_screen.rs"
+    ]
+    intent """
+        Act on the user's two complaints about the Home search on 2026-09-08 ('it is also hard to use', 'there are some discrepancies between how the various buttons on the home screen open to the file manager'). (C1) Rank like a launcher: an abbreviation tier below the substring tier, a recency boost within a tier read from recents.rs alone, and a second line that names the .desktop the application is installed under instead of the shell's internal id. (C2) Keyboard flow: a printable key on bare Home opens the search and goes into it, Escape empties and leaves it, the pointer moves the one highlight instead of painting a second, and the launcher stops printing 'still searching files…' under an answer it already has. (C3) Decide against importing cosmic-launcher or pop-launcher, recorded in the decision this implements. (C4) One route from Home to a folder: every press arrives at open_in_file_manager, the OpenFolderWindow alias is retired, and the Place menu's open-files row stops resolving the FileManager role a second time.
+        """
+    target 2026-09-08
+    note """
+        The other half of 'the search bar doesn't draw focus to what it opens' is the compositor's (Lane A, contract K1: a newly mapped window is activated at map). Nothing in the shell re-takes the keyboard or re-reveals Home after a launch — that was already true at 1c56b77 and is now covered by a test.
+        """
+    acceptance {
+        check actions-gate {
+            statement """
+                check-actions stays green: the launcher needed no new action id, so every action a surface names is still declared and every chord still has a pointer route.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions"
+        }
+        check one-folder-route {
+            statement """
+                No press on Home reaches a file manager except through open_in_file_manager, and the Place menu's open-files row and a Folder tile produce the same role and the same argument vector.
+                """
+            method command
+            command "cargo test -p lege-shell -- every_folder_press_on_home_opens_the_file_manager_on_that_folder opening_a_place_in_files_is_not_a_second_route_of_its_own"
+        }
+        check shell-tests {
+            statement """
+                cargo test -p lege-shell is green, including the new tiers, the recency boost, the detail line, type-to-search, Escape, the single highlight and the folder routes.
+                """
+            method command
+            command "cargo test -p lege-shell"
+        }
+        check typed-launch {
+            statement """
+                In the nested session, typing pcm on bare Home and pressing Enter opens pcmanfm-qt with the keyboard and leaves no results on screen; every folder press opens pcmanfm-qt on that folder.
+                """
+            method manual
+        }
+    }
+    implements [ @legeos.decision.the-home-field-is-a-launcher-not-a-search ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
 record legeos.work.logical-app-and-variant-identity/1 : work {
@@ -5574,7 +5843,7 @@ record legeos.work.window-groups/1 : work {
 
 record legeos.work.window-groups/2 : work {
     title "Window groups — one unit of work: grouped windows park, return, stack and drag together, placed beside and outlined; Alt+Tab inside, Super+Tab across"
-    state active
+    state superseded
     scope [
         path "compositor/lege-comp/**",
         path "crates/lege-client/**",
@@ -5625,6 +5894,63 @@ record legeos.work.window-groups/2 : work {
     implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.window-groups/1 ]
+}
+
+record legeos.work.window-groups/3 : work {
+    title "Window groups — one unit of work: grouped windows park, return, stack and drag together, placed beside and outlined; Super+Tab across groups"
+    state active
+    scope [
+        path "compositor/lege-comp/**",
+        path "crates/lege-client/**",
+        path "crates/lege-field/**",
+        path "crates/lege-window/**",
+        path "interfaces/wayland/**",
+        path "shell/lege-shell/**"
+    ]
+    intent """
+        Implement @legeos.decision.window-groups-are-explicit-and-compositor-owned in four steps then a hands-on: WG1 the model in lege-window (GroupId, membership on WindowRecord, group/ungroup/dissolve, raise_many and group-contiguous activate, shelve/unshelve/move_group, place_beside, group_outline, accent palette, cycle_within_group and cycle_groups, group on ShellToplevel, new WindowCommands, property tests; the Super+Left/Right step renamed window.step-right/left); WG2 the compositor (Alt+Tab within group, Super+Tab across groups, Super+G group-with-previous placing beside, Super+Shift+G ungroup, HUDs, band accent stripe and name, group outline as per-window chrome, band-on-band drop groups and places beside with a drop highlight, band drag moves the group and Shift+drag one member, COMPOSITOR.md rows); WG3 lege_shell_v1 toplevel v3 / manager v5 (both ends at SHELL_PROTOCOL_VERSION 5; group event into ShellToplevel.group; join/leave/activate/shelve/unshelve/name requests); WG4 the Home tile (TileKind::WindowGroup container of ParkedSession tiles, merge_sessions placement and sweep, drop-to-group and drag-out gestures, container drag as one, title press activates the group, Park shelves the group, ladder rungs, accent edge, visual baseline); WG5 the user's hands-on acceptance.
+        """
+    note """
+        Plan text: docs/planning/window-groups-and-application-integration.md §2–3 (ea9810e). WG1–WG4 landed 2026-09-03 and merged at 6b354c5 (two lanes: model+compositor, shell+Home tile). Known deviations recorded there: place_beside picks the side by direction with the plan's order as tie-break and can overlap only when no side has room; group(a,b) with only b grouped joins a to b's group; join_group/leave_group are compositor-only from Home, the tile follows on the next sync; rename is a small panel. Still owed: a pointer route for moving between groups (check-actions exemptions window.group-cycle-forward/backward). Everything on screen and under the pointer awaits WG5.
+
+        Revised 2026-09-08 by @legeos.work.focus-and-switching-20260908: **the "Alt+Tab inside the group" clause is withdrawn**. Scoping Alt+Tab to the focused window's group made a group a place Alt+Tab could not leave, which is the opposite of what the user pressing it wanted — they reported not being able to reach a window buried under others. Alt+Tab now walks every unshelved client window in most-recently-activated order, on a list frozen for the length of the hold (lege_window::SwitchRing); WindowService::cycle_within_group, cycle_focus and cycle_groups are deleted. There is no replacement within-group chord: Super+Tab still crosses groups and lands on each group's last_active member, and the group's own windows are reachable through it and through the ordinary switcher. Everything else about groups — stacking as one, parking as one, place_beside, the outline, the accent — is unchanged.
+        """
+    acceptance {
+        check gates-green {
+            statement """
+                The full repository gate passes at the merged integration branch with WG1–WG4 in.
+                """
+            method command
+            command "just check"
+            verified_by [ @legeos.evidence.window-groups-gate-20260903/1 ]
+        }
+        check hands-on-groups {
+            statement """
+                At the installed desktop: dropping one band on another lands the dropped window beside the target with one outline around both; Super+Tab crosses between groups and lands on each group's last active member; a band drag moves both and Shift+drag one; the group parks and returns from Home as one tile; closing one of two dissolves it; Ctrl+Tab still reaches the browser's tabs.
+                """
+            method manual
+        }
+        check home-tile {
+            statement """
+                A grouped window's session tile lives inside its group tile, a leaving window's tile moves out, an empty group tile is swept, and the drop, drag-out, title, Park and rename gestures send the matching group requests.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-field"
+            verified_by [ @legeos.evidence.window-groups-home-tile-20260903/1 ]
+        }
+        check model-properties {
+            statement """
+                Raising never changes geometry; membership survives shelve, maximize, arrangement and output change; no window is in two groups; a live group has two or more members; every member stays recoverable after place_beside and move_group; place_beside never overlaps the target when a side has room.
+                """
+            method command
+            command "cargo test -p lege-window"
+            verified_by [ @legeos.evidence.window-groups-model-and-compositor-20260903/1 ]
+        }
+    }
+    after [ @legeos.work.hands-on-run-4-fixes ]
+    implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.window-groups/2 ]
 }
 
 record legeos.work.window-groups-compositor/1 : work {
@@ -5678,6 +6004,127 @@ record legeos.work.window-groups-protocol/1 : work {
     depends_on [ @legeos.work.window-groups-model ]
     implements [ @legeos.decision.window-groups-are-explicit-and-compositor-owned ]
     part_of [ @legeos.work.window-groups ]
+}
+
+record legeos.work.window-manager-popup-and-functional-edge-tabs/1 : work {
+    title "Planning: a COSMIC-derived popup window manager, uninterrupted fullscreen, and functional edge tabs"
+    state proposed
+    intent """
+        Planning only, following the user's 2026-09-08 request: the taskbar must not show in fullscreen; a popup window manager must reuse cosmic-applets code; retain and refine LegeOS's own compact, functional design language, eliminating redundancy gradually. No implementation, dependency import, deployment or live-session operation is authorized by this record. The explicit fullscreen/no-peek and COSMIC-code direction is accepted in @legeos.decision.one-persistent-bottom-bar-tags-not-bands/3. The interaction, composition and sizing choices below are recommendations to review.
+
+        PRODUCT MODEL. Home owns places and launching. Attached window tags identify and manipulate the current visible windows. Windows is one on-demand inventory of running work, including parked and fullscreen windows. Machine controls own system state. A permanent repeated row of app logos/window titles adds little when the window already has its own tag. Remove that row only once the replacement manager makes every parked or obscured window reachable. Grouping remains explicit and compositor-owned; app identity alone may organize a display list but never creates a LegeOS group.
+
+        FULLSCREEN. Every ordinary managed toplevel should have a compositor-level Fullscreen action via its tag's existing management affordance and the popup, plus a proposed Super+F binding after conflict checks. Support native Wayland and XWayland; fixed-size clients retain a safe centered surface if they cannot render at the requested size. Owned dialogs must remain reachable above their parent. Entering fullscreen preserves geometry, output, maximize state, group membership and stacking context. Selecting another window suspends presentation of the old fullscreen window without changing its fullscreen flag, parking it or losing its restore slot; returning presents it fullscreen again. Selecting ordinary work restores the ordinary arrangement. This is a per-output presentation choice in the existing one-workspace model; no macOS Spaces or inferred groups are introduced. Focus changing to a different monitor does not hide the fullscreen app on the first. Leaving fullscreen restores prior ordinary/fit state. Plain Escape remains application-owned except when the manager itself is open; Ctrl+Alt+Escape remains compositor recovery. No bar, clock, tabs, invisible pointer strip or bar pixels through transparency while fullscreen is presented. Hover and bottom-edge dwell do nothing to shell chrome. An explicit Home command changes to the Home view while retaining the saved fullscreen state; this is distinct from overlaying the bar on fullscreen.
+
+        POPUP. One compact, opaque, content-sized surface, anchored at the lower-left of the invoking output, above both ordinary and fullscreen clients but below security/permission/recovery surfaces. It reserves no work area and opens without moving/resizing windows. Proposed invocation: click Windows at the normal edge; Super+W globally; Super+secondary-click as a deliberate pointer gesture anywhere, including fullscreen. The pointer gesture and chord are proposals, not settled preferences. They must not conflict with window dragging/grouping or flash Home through bare-Super handling. Preserve current Alt+Tab within group and Super+Tab across groups; fast cycling stays compositor-owned. The manager is a latched inspect/act view, not a mandatory delay on each switch. If a mouse-only fullscreen route is required, choose an explicit edge gesture that opens only the manager and never an automatic hover reveal; evaluate it in the interaction trial before assigning a hotspot.
+
+        POPUP CONTENT. One row per window, with explicit groups shown once and expandable in place; title first, small app identity only where it disambiguates, state text only for Parked, Fullscreen, or another output. Avoid simultaneous duplicate all/group/app lists and avoid a second app launcher. Group entry activates its last-active member, preserving relationships; an individual member has its own actions. A single selected/hovered-window preview uses the existing trusted preview path, requested only while the popup needs it. This lets two identical terminal titles be distinguished without a permanent thumbnail for every row. List rows remain usable if capture fails; display a named placeholder or unavailable state, never a fabricated live image. Keep insertion order stable while the popup is open; seed selection from recent focus, hold it by WindowId, append new arrivals without moving the target under the pointer, remove closed windows without activating their replacement. Keyboard arrows navigate, Enter activates/restores, Escape/outside click cancels and restores the prior focus. Pointer activation is one click; focus/hover only previews. Closed-while-open, rename, same-app multiple windows, and unavailable title/icon are normal states. Type-to-filter is local to open windows, never the Home launcher; clear query when dismissed. Use a bounded scrolling list only when content demands it. Selected-window actions: Fit / Restore, Fullscreen / Leave fullscreen, Park / Restore parked, Close, and contextual Group/Ungroup. Expose the appropriate state-dependent actions, not conflicting pairs. Close asks the client to close and lets its unsaved-work dialog decide; it must never become forced process termination. Reuse the same target/action declarations for a tag-opened manager scoped to that window.
+
+        NON-FULLSCREEN EDGE. Recommended resting composition: Home and a single Windows tab at the left; a compact time/machine tab at the right; no full-width painted panel and no always-visible per-app inventory. Windows appears when any window exists, including when all are parked; zero windows leaves Home and machine access. Its label may show total window count only if the trial finds it useful, otherwise a readable Windows label suffices. Keep a stable corner and ordering rather than hiding individual entries as overlap/focus changes. The right tab displays time and useful power state; network/volume details live in its popup unless an actionable condition makes an indicator worth exposing (disconnect, mute, low charge). This does not make controls disappear: machine controls remain available at a stable target and via existing hardware/chord routes. Home should not gain a duplicate Settings/Help/Session plate.
+
+        GEOMETRY AND MATERIAL. Carry forward current tag geometry and ink, modest corner radii, existing theme palette and group accent grammar. Prototype one 32-logical-pixel tag-height seam instead of the current 48px bar: smaller painted objects do not justify tiny hit targets. Preserve an adequate target under pointer/touch scaling. Fit/maximized windows use that same seam for their single title/control set; do not add a second title row or repeated maximize controls. A normal fitted application needs a safe rectangular area so edge controls do not cover its content; the tag-height reservation is a deliberate usability cost, not an invisible 48px leftover. Fullscreen uses all output pixels. Keep left and right surfaces separate (or use a tested alpha-capable path with accurate input regions) so unpainted space is not an opaque bar; current softbuffer XRGB cannot supply transparency. Opening a popup adds no exclusive-zone height and changes no application geometry. Empty space between windows belongs to work/Home and needs no decorative filler.
+
+        VISUAL LANGUAGE. A boundary denotes something separable or manipulable; a tag is an attachment to its owner; a raised surface denotes a temporary decision. Material distinguishes object kind using existing palette roles. Accent retains group identity with a textual/grouping cue; focus uses one clear outline/ink treatment rather than another competing color system. State has one small cue, with readable names on focus or inspection. Do not add generic OS branding, giant cards, ornamental blur, duplicate badges, mirrored clocks, desktop miniatures or a permanent account portrait. Functional space includes separation for reading, dragging and avoiding accidental activation. Eliminate repeated information before reducing text sizes, targets or meaningful spacing. Pointer routes and keyboard accelerators are complementary access, not redundancy to remove.
+
+        CODE REUSE. Inspected pop-os/cosmic-applets commit 1aa03111c5cd92051c9af28b43cb1ee9f43dbb25 (2026-09-01). Primary donor: cosmic-app-list/src/app.rs popup lifecycle, toplevel reconciliation and selected-window preview/action behavior; wayland_subscription.rs provides an explicit request/update separation and Screencopy request. Supplement: cosmic-applet-minimize/src/lib.rs and window_image.rs for parked-window/overflow/preview handling. Reuse/adapt actual selected source with file-level upstream SHA, copyright/SPDX notices and a documented local delta, not merely copy COSMIC's visual appearance or claim another independent rewrite is code reuse. The existing bar says its COSMIC behavior was reimplemented, so it does not already satisfy this new reuse request. The donor is a libcosmic/cctk applet, not a drop-in LegeOS widget: map upstream toplevel handles to WindowId, messages to the trusted lege_shell bridge, image requests to existing LegeOS capture, and desktop identity to appd; render in the established Pixelkit language. Do not bring COSMIC's compositor, panel hosting, workspace authority or another background window inventory just to host the popup. Begin with a narrow extraction/proof-of-fit and record which source was retained. Upstream ToplevelRequest exposes Activate, Minimize and Quit, not the required fullscreen control, so fullscreen is a LegeOS compositor/bridge addition. The existing all-ShellOverlay peek exception must be replaced by visibility/composition rules for the bar and a narrowly authorized manager surface. Preserving an inactive window's fullscreen state additionally needs a presentation policy, because current stacking promotes every unshelved fullscreen window regardless of activation.
+
+        GRADUAL CUTOVER. (1) Establish actual donor/adaptor seam and a tested window-state/action model. (2) Add compositor-controlled fullscreen entry, distinct presentation selection, bar exclusion and explicit manager invocation while preserving existing recovery. (3) Add popup coverage for every running/parked/grouped/fullscreen window, keyboard/pointer operation, preview fallback and scoped actions. (4) Replace per-app bar chips/hover row with the Windows entry; consolidate status/account controls and fit-window controls into the single seam. Delete redundant paths only after the replacement's acceptance passes, without shipping a permanent choice between two inventories. (5) Trial daily work and refine labels/counts, preview density, pointer invocation and seam geometry. No broad refactor or desktop replacement is implied.
+
+        PLANNING ARTIFACT. The retained conversation study .agent/scratch/window-manager-plan-20260908/window-manager-states.html compares ordinary windows, uninterrupted fullscreen and the explicit manager over fullscreen. It is an interaction sketch, not a finished UI, production implementation or pixel-perfect acceptance baseline.
+        """
+    note """
+        Replaces the pending peek behavior from @legeos.work.bar-home-chip-cluster-and-fullscreen-peek; previous implementation evidence remains historical. User's words: 'planning only. i do not want it to show when in full screen. i want a popup window manager using the cosmic-applets code.' The stricter fullscreen direction is adopted; exact defaults and the proposed ordinary edge layout are not yet adopted. Homegarden fixes from the preceding review remain separate.
+        """
+    acceptance {
+        check edge-no-duplicate-inventory {
+            statement """
+                Outside fullscreen, attached window tags and a single Windows entry replace the permanent per-app row; parked windows remain discoverable; time and machine controls occur once; fit controls share the same seam.
+                """
+            method observation
+        }
+        check fullscreen-is-uninterrupted {
+            statement """
+                On Wayland and XWayland, opaque and translucent fullscreen show no bar pixels or bar hit targets; dwell at every edge shows nothing; application occupies logical output and explicit manager invocation shows only the manager.
+                """
+            method observation
+        }
+        check fullscreen-switch-and-restore {
+            statement """
+                Switch A fullscreen -> B fullscreen -> ordinary work -> A, preserving both fullscreen flags and prior restore geometry; include a grouped member, an owned modal, output removal and two outputs. Other-output focus does not dismiss presentation.
+                """
+            method observation
+        }
+        check keyboard-pointer-and-recovery {
+            statement """
+                Popup opens through declared pointer and keyboard routes without Home flash; arrows/Enter/Escape and outside dismissal behave predictably; current-window click never unexpectedly parks it; compositor recovery works with shell absent.
+                """
+            method observation
+        }
+        check layout-and-input-integrity {
+            statement """
+                At small laptop, large and fractional-scale outputs, text/controls fit, pointer targets remain usable, empty spans neither paint opaque ground nor intercept input, and opening/dismissing any popup changes no client geometry.
+                """
+            method observation
+        }
+        check popup-all-windows {
+            statement """
+                Every ordinary, obscured, parked, grouped and inactive-fullscreen window is reachable; empty, one-window, duplicate-title, 12-window, same-app and closed-during-popup cases preserve selection and give honest state.
+                """
+            method observation
+        }
+        check previews-and-accessibility {
+            statement """
+                Preview work is bounded to visible manager selection and stops on dismissal/lock; unavailable previews remain identifiable; keyboard focus, accessible names/roles/state, non-color cues and reduced motion are verified.
+                """
+            method observation
+        }
+        check real-source-reuse {
+            statement """
+                Record retained and adapted cosmic-applets source at a pinned commit, the source-level provenance/local delta and the LegeOS adapter; no claim of drop-in compatibility or behavior-only reimplementation.
+                """
+            method observation
+        }
+        check shared-window-actions {
+            statement """
+                Tag and manager routes target the same WindowId with state-correct Fit/Restore, Fullscreen/Leave, Park/Restore and Close; no forced quit, no hidden owned dialogs and no implied group creation.
+                """
+            method observation
+        }
+        check user-design-trial {
+            statement """
+                User judges actual work switching/fullscreen and zero/full/parked window states; settles pointer gesture, title/count/preview density, 32px seam feasibility and whether the ordinary layout is more useful without redundant information.
+                """
+            method manual
+        }
+    }
+    derived_from [ @legeos.work.bar-home-chip-cluster-and-fullscreen-peek ]
+    implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supersedes [ @legeos.work.bar-home-chip-cluster-and-fullscreen-peek/1 ]
+    source {
+        kind external
+        role rationale
+        url "https://github.com/pop-os/cosmic-applets/tree/1aa03111c5cd92051c9af28b43cb1ee9f43dbb25/cosmic-app-list"
+        use """
+            Actual code donor for popup window list, lifecycle, requests and previews.
+            """
+    }
+    source {
+        kind external
+        role rationale
+        url "https://github.com/pop-os/cosmic-applets/tree/1aa03111c5cd92051c9af28b43cb1ee9f43dbb25/cosmic-applet-minimize"
+        use """
+            Supplementary parked-window preview and overflow code.
+            """
+    }
+    source {
+        kind external
+        role example
+        url "https://support.apple.com/guide/mac-help/use-apps-in-full-screen-mchl9c21d2be/mac"
+        use """
+            Fullscreen focus/return reference; macOS Spaces and visual chrome are not adopted.
+            """
+    }
 }
 
 record legeos.work.window-perimeter-two-axis-resize/1 : work {

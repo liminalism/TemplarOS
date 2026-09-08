@@ -379,6 +379,17 @@ record legeos.papercut.deploy-pinned-the-image-metapackages/1 : papercut {
     about "cli/lege/src/dev/install.rs"
 }
 
+record legeos.papercut.distro-forks-manifest-toml-s-nm-tray-2-note/1 : papercut {
+    title "distro/forks/manifest.toml's nm-tray-2 `note` says build-fork-deb.sh…"
+    state verified
+    statement """
+        distro/forks/manifest.toml's nm-tray-2 `note` says build-fork-deb.sh refuses to package because --popup and X-LegeOS-Provides are uncommitted; in fact `scripts/build-fork-deb.sh nm-tray-2 --source ../not-rust-projects/nm-tray-2 --dry-run` passes preflight today (the dirty working tree has both). The note reads as a blocker and is not one — it should say "the pin cannot reproduce this build", not "the script refuses".
+        """
+    observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
+    author "claude (lane B, campaign 4)"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.distro-iso-build-sh-s-customize-hook-runs/1 : papercut {
     title "distro/iso/build.sh's customize hook runs inside mmdebstrap's user…"
     state verified
@@ -578,6 +589,30 @@ record legeos.papercut.knowledge-complete-refuses-a-check-whose/1 : papercut {
     about "akr"
     author "claude"
     created_at 2026-09-07
+}
+
+record legeos.papercut.knowledge-context-on-legeos-milestone-developer/1 : papercut {
+    title "knowledge.context on @legeos.milestone.developer-edition-0-1 with 8…"
+    state verified
+    statement """
+        knowledge.context on @legeos.milestone.developer-edition-0-1 with 8 path globs truncated: it reported estimated_tokens 42168 against hard_limit_tokens 4000 and returned an empty `milestone` section, so the bundle carried no governing records at all. A milestone with 41 live heads seems to blow the cap before any per-path narrowing helps; had to fall back to knowledge.get on the two decisions named in the handoff packet.
+        """
+    observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
+    about "akr"
+    author "claude (lane B, campaign 4)"
+    created_at 2026-09-08
+}
+
+record legeos.papercut.knowledge-context-on-legeos-milestone-developer-2/1 : papercut {
+    title "knowledge.context on @legeos.milestone.developer-edition-0-1 with six…"
+    state verified
+    statement """
+        knowledge.context on @legeos.milestone.developer-edition-0-1 with six path globs truncated at a 4000-token hard limit and returned an estimate of 42k, so the bundle carried no governing records at all — only the goal, the acceptance verdicts and one contradiction. The suggested continuation (a smaller budget_tokens) would return even less. I got what I needed from knowledge.get on two named records instead. A bundle that cannot fit should probably drop sections by relevance rather than truncate to nothing.
+        """
+    observed_at git:63ab3f7bb353786384742695cac68154d0bf3d46
+    about "akr"
+    author "claude-lane-A"
+    created_at 2026-09-08
 }
 
 record legeos.papercut.knowledge-context-on-legeos-work-home-surface/1 : papercut {
@@ -820,6 +855,18 @@ record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
     created_at 2026-08-21
 }
 
+record legeos.papercut.planning-mockup-qa-the-cached-playwright-1-52/1 : papercut {
+    title "Planning mockup QA: the cached Playwright 1.52 package is installed but…"
+    state verified
+    statement """
+        Planning mockup QA: the cached Playwright 1.52 package is installed but its expected chromium_headless_shell-1169 executable is absent. Use an installed browser explicitly rather than assuming package presence includes the matching browser.
+        """
+    observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
+    about "playwright"
+    author "codex"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercut {
     title "Promoting decisions to active with `akr revise <key> --state active` in…"
     state verified
@@ -908,6 +955,17 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     about "systemd-analyze"
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.taskbar-planning-targeted-reads-guessed-a/1 : papercut {
+    title "Taskbar planning: targeted reads guessed a standalone stacking.rs and…"
+    state verified
+    statement """
+        Taskbar planning: targeted reads guessed a standalone stacking.rs and minimize/window.rs; actual implementations are lege-window/src/service.rs and cosmic-applet-minimize/src/lib.rs. Upstream GitHub directory listing and source identifiers resolved the misses.
+        """
+    observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
+    author "codex"
+    created_at 2026-09-08
 }
 
 record legeos.papercut.tests-integration-nested-session-sh-deleted-its/1 : papercut {
