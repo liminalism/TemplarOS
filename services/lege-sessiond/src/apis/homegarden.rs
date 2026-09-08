@@ -145,7 +145,7 @@ impl HomeGardenApi {
             .ledger
             .observe(&activity, self.probe.as_ref(), &config)
         {
-            tracing::debug!(kind = kind.as_str(), root = %root.display(), "garden observed");
+            tracing::info!(kind = kind.as_str(), root = %root.display(), "garden observed");
             self.persist(&inner);
         }
     }
