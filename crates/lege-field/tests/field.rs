@@ -938,3 +938,157 @@ fn reshaping_onto_a_roomier_grid_shelves_nothing() {
         assert_eq!(next.shelved().count(), 0, "{cols}x{rows} shelved a tile");
     }
 }
+
+// ---------------------------------------------------------------- the tender ----------------
+//
+// `@legeos.decision.homegarden-activity-grown-places`: the tender never moves a tile, never
+// touches a user tile, is idempotent, and emits at most one op per context per moment.
+
+mod garden_invariants {
+    use super::*;
+    use lege_field::garden::{ContextView, HomeCorner, garden_tile_id, tend};
+    use std::path::PathBuf;
+
+    fn user_tiles() -> impl Strategy<Value = Vec<(Cell, Span)>> {
+        prop::collection::vec(((0u16..10, 0u16..6), (1u16..4, 1u16..4)), 0..6).prop_map(|v| {
+            v.into_iter()
+                .map(|((c, r), (w, h))| (Cell::new(c, r), Span::new(w, h)))
+                .collect()
+        })
+    }
+
+    fn contexts() -> impl Strategy<Value = Vec<ContextView>> {
+        prop::collection::vec(
+            (
+                0u8..6,
+                prop::option::of((1u16..5, 1u16..4)),
+                prop::option::of((0u16..12, 0u16..8)),
+                any::<bool>(),
+                prop::option::of((1u16..5, 1u16..4)),
+            ),
+            0..6,
+        )
+        .prop_map(|v| {
+            let mut seen = Vec::new();
+            v.into_iter()
+                .filter_map(|(n, wanted, landing, pinned, user_span)| {
+                    let root = PathBuf::from(format!("/home/dk/p{n}"));
+                    if seen.contains(&root) {
+                        return None;
+                    }
+                    seen.push(root.clone());
+                    Some(ContextView {
+                        root,
+                        wanted: wanted.map(|(c, r)| Span::new(c, r)),
+                        landing: landing.map(|(c, r)| Cell::new(c, r)),
+                        pinned,
+                        user_span: user_span.map(|(c, r)| Span::new(c, r)),
+                        summary: "test".into(),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn seeded(user: &[(Cell, Span)]) -> FieldDocument {
+        let mut doc = FieldDocument::new("DP-1", 12, 8);
+        for (i, (cell, span)) in user.iter().enumerate() {
+            let kind = TileKind::App {
+                app_id: format!("org.example.A{i}").parse().unwrap(),
+            };
+            let tile = Tile {
+                id: TileId(100 + i as u64),
+                kind,
+                title: format!("A{i}"),
+                spans: SpanRange::new(*span, *span, *span),
+                accent: None,
+            };
+            let placement = Placement::new(*cell, *span);
+            if doc.is_free(None, placement, None) {
+                let (next, _) = apply(
+                    &doc,
+                    &FieldOp::AddTile {
+                        tile,
+                        at: Some(Located {
+                            container: None,
+                            placement,
+                        }),
+                        container: None,
+                    },
+                )
+                .unwrap();
+                doc = next;
+            }
+        }
+        doc
+    }
+
+    fn apply_all(doc: &FieldDocument, ops: &[lege_field::garden::Tended]) -> FieldDocument {
+        let mut doc = doc.clone();
+        for tended in ops {
+            let (next, _) = apply(&doc, &tended.op).expect("the tender's ops apply");
+            doc = next;
+        }
+        doc
+    }
+
+    proptest! {
+        #[test]
+        fn the_tender_never_moves_and_never_touches_a_user_tile(
+            user in user_tiles(),
+            contexts in contexts(),
+        ) {
+            let doc = seeded(&user);
+            let ops = tend(&doc, &contexts, HomeCorner::BottomLeft);
+            for tended in &ops {
+                prop_assert!(
+                    !matches!(tended.op, FieldOp::Move { .. } | FieldOp::MoveMany { .. }),
+                    "{:?}",
+                    tended.op
+                );
+                prop_assert!(!tended.reason.is_empty());
+            }
+            let after = apply_all(&doc, &ops);
+            check_invariants(&after)?;
+            // Every tile that existed before and is not a garden Remove keeps its cell and span;
+            // user tiles (ids >= 100) keep both, always.
+            for (id, before) in &doc.located {
+                let removed = ops.iter().any(|t| matches!(t.op, FieldOp::Remove { id: r } if r == *id));
+                if id.0 >= 100 {
+                    prop_assert!(!removed, "user tile {id:?} removed");
+                    prop_assert_eq!(after.location(*id), Some(*before));
+                } else if !removed {
+                    let now = after.location(*id).expect("still placed");
+                    prop_assert_eq!(now.placement.cell, before.placement.cell, "{:?} moved", id);
+                }
+            }
+            // At most one op per context.
+            prop_assert!(ops.len() <= contexts.len());
+            // Idempotent: tending the result again at the same wants changes nothing.
+            prop_assert!(tend(&after, &contexts, HomeCorner::BottomLeft).is_empty());
+        }
+
+        #[test]
+        fn a_pinned_context_is_never_removed_and_a_hidden_one_is_never_placed(
+            contexts in contexts(),
+        ) {
+            let doc = FieldDocument::new("DP-1", 12, 8);
+            let placed = apply_all(&doc, &tend(&doc, &contexts, HomeCorner::BottomLeft));
+            let gone: Vec<ContextView> = contexts
+                .iter()
+                .map(|c| ContextView { wanted: None, ..c.clone() })
+                .collect();
+            for tended in tend(&placed, &gone, HomeCorner::BottomLeft) {
+                if let FieldOp::Remove { id } = tended.op {
+                    let ctx = contexts.iter().find(|c| garden_tile_id(&c.root) == id).unwrap();
+                    prop_assert!(!ctx.pinned, "pinned {:?} removed", ctx.root);
+                } else {
+                    prop_assert!(false, "{:?}", tended.op);
+                }
+            }
+            for tended in tend(&doc, &gone, HomeCorner::BottomLeft) {
+                prop_assert!(false, "a dormant context produced {:?}", tended.op);
+            }
+        }
+    }
+}

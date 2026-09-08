@@ -34,6 +34,7 @@
 pub mod drag;
 pub mod field;
 pub mod focus;
+pub mod garden;
 pub mod grammar;
 pub mod migrate;
 pub mod ops;
