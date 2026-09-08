@@ -1224,6 +1224,56 @@ mod tests {
         assert_eq!(greedy, screen);
     }
 
+    /// A zone of size 0 is a live claim that reserves nothing: it still anchors the surface to
+    /// its edge, at every height the surface may commit, while `usable()` stays the whole output
+    /// and `reserves_bottom()` is false — so a maximized window fills the screen and keeps its
+    /// own tags. This is the bar collapsed to a hint.
+    #[test]
+    fn a_zero_zone_anchors_the_surface_and_reserves_nothing() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        let zero = Exclusive {
+            edge: Edge::Bottom,
+            size: 0,
+        };
+        let output =
+            Output::new("eDP-1", screen, 1000).with_work_area(work_area_for(screen, &[zero]));
+
+        assert_eq!(work_area_for(screen, &[zero]), screen);
+        assert_eq!(output.usable(), screen);
+        assert!(!output.reserves_bottom());
+
+        // Whatever height it commits — a 6px hint, a 48px row, an open hover row — its bottom is
+        // the output's bottom and its left end is the output's left end.
+        for height in [1, 6, 48, 96, 240] {
+            let placed = shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(zero),
+                &output,
+                Rect::new(7000, 7000, 900, height),
+            );
+            assert_eq!(
+                placed,
+                Rect::new(0, 1080 - height, 900, height),
+                "at {height}"
+            );
+            assert_eq!(placed.bottom(), screen.bottom(), "at {height}");
+        }
+
+        // The other edges anchor the same way at 0.
+        assert_eq!(
+            shell_surface_placement(
+                Layer::ShellOverlay,
+                Some(Exclusive {
+                    edge: Edge::Top,
+                    size: 0
+                }),
+                &output,
+                Rect::new(0, 0, 900, 6),
+            ),
+            Rect::new(0, 0, 900, 6)
+        );
+    }
+
     #[test]
     fn exclusive_zones_shrink_the_work_area_and_stack() {
         let screen = Rect::new(0, 0, 1920, 1080);

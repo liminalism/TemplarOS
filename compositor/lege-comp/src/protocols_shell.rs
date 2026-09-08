@@ -52,8 +52,9 @@ pub struct ShellProtocolState {
     pub identified: HashSet<WindowId>,
     /// One entry per surface with a live `set_layer_surface` claim.
     pub layer_surfaces: HashMap<ObjectId, (WlSurface, lege_window::Layer)>,
-    /// One entry per surface with a live (non-zero) `set_exclusive_zone` claim: which output it
-    /// was on, and the claim itself. Released automatically when the surface is destroyed
+    /// One entry per surface with a live `set_exclusive_zone` claim: which output it was on, and
+    /// the claim itself. A claim of size 0 is a live claim — it anchors the surface to its edge
+    /// and reserves nothing. Released only when the surface is destroyed
     /// (`lege-shell-v1.xml`'s `set_exclusive_zone` doc) — enforced in `on_shell_surface_destroyed`.
     pub exclusive_zones: HashMap<ObjectId, (String, Exclusive)>,
     /// The canonical application id of the selected `terminal` provider, from
@@ -286,27 +287,29 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
         return;
     };
     let object_id = surface.id();
-    if size == 0 {
-        state.shell_protocol.exclusive_zones.remove(&object_id);
-    } else {
-        // Idempotent alongside `SetLayerSurface`'s identical registration: a surface that only
-        // ever calls `set_exclusive_zone` (never `set_layer_surface`) still needs its claim
-        // released on destruction.
-        smithay::wayland::compositor::add_destruction_hook::<LegeCompState<B>, _>(
-            surface,
-            |state, surface| on_shell_surface_destroyed(state, &surface.id()),
-        );
-        state.shell_protocol.exclusive_zones.insert(
-            object_id,
-            (
-                output_name,
-                Exclusive {
-                    edge,
-                    size: size.min(i32::MAX as u32) as i32,
-                },
-            ),
-        );
-    }
+    // A claim of 0 is kept, not dropped: it reserves nothing (`work_area_for` subtracts 0) but it
+    // is still what anchors the surface to its edge (`shell_surface_placement`). The bar collapsed
+    // to a hint is the same dock as the bar showing a full row — one that happens to reserve
+    // nothing — so shrinking it must not turn it into an unplaced surface that lands wherever it
+    // last committed. Only destroying the surface releases the claim.
+    //
+    // Idempotent alongside `SetLayerSurface`'s identical registration: a surface that only
+    // ever calls `set_exclusive_zone` (never `set_layer_surface`) still needs its claim
+    // released on destruction.
+    smithay::wayland::compositor::add_destruction_hook::<LegeCompState<B>, _>(
+        surface,
+        |state, surface| on_shell_surface_destroyed(state, &surface.id()),
+    );
+    state.shell_protocol.exclusive_zones.insert(
+        object_id,
+        (
+            output_name,
+            Exclusive {
+                edge,
+                size: size.min(i32::MAX as u32) as i32,
+            },
+        ),
+    );
     // `recompute_outputs` re-places every claiming surface, this one included — a zone changing
     // and a monitor moving are the same event, so they must not have two different repair paths.
     crate::backend::recompute_outputs(state);

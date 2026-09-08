@@ -250,4 +250,22 @@ mod tests {
         assert_eq!(forward, backward);
         assert_eq!(forward, Rect::new(0, 40, 1920, 976));
     }
+
+    /// A claim of 0 is kept rather than released (`protocols_shell::handle_set_exclusive_zone`),
+    /// so it reaches this function — and must subtract nothing. The bar collapsed to a hint is
+    /// still anchored to its edge, but the work area is the whole output.
+    #[test]
+    fn a_zero_zone_subtracts_nothing() {
+        let logical = Rect::new(0, 0, 1920, 1080);
+        assert_eq!(
+            work_area_from_zones(
+                logical,
+                &[Exclusive {
+                    edge: Edge::Bottom,
+                    size: 0,
+                }],
+            ),
+            logical
+        );
+    }
 }
