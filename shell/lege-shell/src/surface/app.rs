@@ -168,52 +168,38 @@ fn previews_covered(home_revealed: bool, toplevels: &[lege_window::ShellToplevel
     !home_revealed
         && toplevels
             .iter()
-            .any(|window| !window.shelved && (window.fullscreen || window.maximized))
+            .any(lege_window::ShellToplevel::covers_screen)
 }
 
-/// Whether anything covers the bottom `BAR_HEIGHT` strip of this output, so the bar has to
-/// collapse to its hint rather than paint over a window (`bar_screen::Presence`).
+/// Whether the switcher has to collapse to its hint rather than paint over a window
+/// (`bar_screen::Presence`).
 ///
-/// Three things count, and nothing else:
+/// Three things decide it, and nothing else:
 ///
-/// - a fullscreen toplevel, always — the compositor stacks a visible fullscreen window above
-///   `Layer::ShellOverlay` (contract Z3), so the bar would be *under* it whatever it painted, and
-///   a hint-sized surface is the only way nothing of the bar is hit-testable there;
-/// - any other unshelved toplevel whose frame intersects the strip, while Home is not revealed;
-/// - nothing at all while Home *is* revealed: the compositor has lifted Home over the windows, so
-///   the bar has Home to paint on and the switcher should simply be visible.
+/// - a window that fills the screen (`ShellToplevel::covers_screen`) — maximized or fullscreen.
+///   A fullscreen one sorts *above* `Layer::ShellOverlay` (contract Z3), so the bar would be under
+///   it whatever it painted; a maximized one does not, but it is just as much the thing the user
+///   is working in, and an island parked on top of it is the taskbar this desktop is not.
+/// - the pointer resting on the bottom edge (`lege_shell_manager_v1.bar_peeked`), which uncovers
+///   it. That is the whole of hover-to-appear, and it has to come from the compositor: under a
+///   window filling the screen the pointer never reaches this surface to be seen arriving.
+/// - Home being revealed, which uncovers it too: the compositor has lifted Home over the windows,
+///   so the bar has Home to paint on and the switcher should simply be visible.
 ///
-/// A shelved (parked) window is not on screen, so it covers nothing.
+/// An ordinary floating window over the bottom of the screen counts for nothing. It is not what
+/// the screen is *for* at that moment, the island is a small strip in the middle of the edge, and
+/// there is no hover route back out from under one — the compositor's dwell fires only under a
+/// window that covers the screen.
 fn bar_covered(
     home_revealed: bool,
-    centred: bool,
+    peeked: bool,
     toplevels: &[lege_window::ShellToplevel],
-    output: lege_window::Rect,
 ) -> bool {
-    // The island's own rectangle, not the width of the output: it is only as wide as its chips,
-    // so a window over the rest of the screen is not over the bar and must not collapse it.
-    // Where it is depends on whether the compositor took `Alignment::Centre` — a session older
-    // than the request has it at the start of its edge, and asking about the middle of the screen
-    // there is wrong in both directions at once.
-    // Fullscreen is the exception below — that covers everything.
-    let island = crate::surface::bar_screen::island_width(crate::taskbar::entries(toplevels).len())
-        .min(output.width);
-    let strip = lege_window::Rect::new(
-        output.x
-            + if centred {
-                (output.width - island) / 2
-            } else {
-                0
-            },
-        output.bottom() - crate::surface::bar_screen::BAR_HEIGHT,
-        island,
-        crate::surface::bar_screen::BAR_HEIGHT,
-    );
-    toplevels.iter().any(|window| {
-        !window.shelved
-            && (window.fullscreen
-                || (!home_revealed && window.geometry.intersection(strip).is_some()))
-    })
+    !home_revealed
+        && !peeked
+        && toplevels
+            .iter()
+            .any(lege_window::ShellToplevel::covers_screen)
 }
 
 /// When the wall clock next changes the minute the cluster is showing.
@@ -409,10 +395,8 @@ struct ShellApp {
     /// along the bottom edge rather than sitting at the start of it.
     ///
     /// A compositor older than the request is not an error and not a bug — it is the session the
-    /// user is in until they log out — but the island is then at x=0, and "is anything covering
-    /// the bar?" has to look for it there. Assuming centred for a session that is not would
-    /// collapse the switcher for windows nowhere near it and leave it up under windows on top of
-    /// it, which is the visible half of the same mistake.
+    /// user is in until they log out — it simply leaves the island at the start of its edge.
+    /// Recorded so the log says which of the two the running session got.
     bar_centred: bool,
     theme: Theme,
 
@@ -2684,12 +2668,11 @@ impl ShellApp {
         let activated = toplevels.iter().find(|t| t.activated).map(|t| t.window_id);
         let now_ms = self.started.elapsed().as_millis() as u64;
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
-        let (output_width, output_height) = self.output_size();
+        let output_width = self.output_width();
         let covered = bar_covered(
             home_revealed,
-            self.bar_centred,
+            self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked),
             &toplevels,
-            lege_window::Rect::new(0, 0, output_width, output_height),
         );
         let Some(bar) = &mut self.bar else {
             return;
@@ -2827,7 +2810,7 @@ impl ShellApp {
     ) {
         let wanted_gone = toplevels
             .iter()
-            .any(|window| window.fullscreen && !window.shelved);
+            .any(lege_window::ShellToplevel::covers_screen);
         if wanted_gone {
             self.cluster = None;
             self.cluster_wanted = (0, 0);
@@ -4682,12 +4665,10 @@ impl ApplicationHandler<Wake> for ShellApp {
         // bottom strip — the dwell that reveals the bar out from under it and the grace that
         // collapses it again. `covered` has to be recomputed here because it decides which of
         // those two pairs is running.
-        let (output_width, output_height) = self.output_size();
         let bar_covered = bar_covered(
             self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
-            self.bar_centred,
+            self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked),
             &toplevels,
-            lege_window::Rect::new(0, 0, output_width, output_height),
         );
         let bar_deadline = self.bar.as_ref().and_then(|bar| {
             let entries = crate::taskbar::entries(&toplevels);
@@ -4781,90 +4762,32 @@ mod tests {
     /// The bar reserves nothing, so "is anything in the way?" is a question the shell has to
     /// answer for itself every frame. This is that rule, and the whole of it (contracts Z2/Z3).
     #[test]
-    fn the_bar_is_covered_only_by_something_actually_over_its_strip() {
-        use crate::surface::bar_screen::BAR_HEIGHT;
-        let output = lege_window::Rect::new(0, 0, 1920, 1080);
-
+    fn the_switcher_hides_under_a_window_that_fills_the_screen_and_comes_back_on_a_peek() {
         assert!(
-            !bar_covered(false, true, &[], output),
+            !bar_covered(false, false, &[]),
             "a bare desktop covers nothing"
         );
-        // A maximized window fills the output now that nothing is reserved, strip included.
-        assert!(bar_covered(
-            false,
-            true,
-            &[window(1, false, true, false)],
-            output
-        ));
-        // Fullscreen counts however Home is behaving: the compositor stacks a visible fullscreen
-        // window above `Layer::ShellOverlay`, so the bar can only get out of its way.
-        assert!(bar_covered(
-            true,
-            true,
-            &[window(1, true, false, false)],
-            output
-        ));
+
+        // Maximized and fullscreen alike: the window fills the screen, and the switcher is the
+        // one thing on the bottom edge that is not part of it.
+        for filling in [window(1, false, true, false), window(1, true, false, false)] {
+            assert!(bar_covered(false, false, std::slice::from_ref(&filling)));
+            // The pointer resting on the bottom edge is what asks for it back.
+            assert!(!bar_covered(false, true, std::slice::from_ref(&filling)));
+            // Home revealed: the compositor lifted Home over the windows, so the bar has Home to
+            // paint on and the switcher is simply visible.
+            assert!(!bar_covered(true, false, std::slice::from_ref(&filling)));
+        }
+
         // Parked is not on screen, so it covers nothing.
-        assert!(!bar_covered(
-            false,
-            true,
-            &[window(1, false, true, true)],
-            output
-        ));
-        // Home revealed: the compositor lifted Home over the windows, so the bar has Home to
-        // paint on and the switcher is simply visible.
-        assert!(!bar_covered(
-            true,
-            true,
-            &[window(1, false, true, false)],
-            output
-        ));
+        assert!(!bar_covered(false, false, &[window(1, false, true, true)]));
 
-        // A window that stops above the strip leaves the bar alone; one pixel into it covers it.
-        let mut above = window(2, false, false, false);
-        above.geometry = lege_window::Rect::new(0, 0, 1920, 1080 - BAR_HEIGHT);
-        assert!(!bar_covered(
-            false,
-            true,
-            std::slice::from_ref(&above),
-            output
-        ));
-        let mut into = above;
-        into.geometry = lege_window::Rect::new(0, 0, 1920, 1080 - BAR_HEIGHT + 1);
-        assert!(bar_covered(false, true, &[into], output));
-
-        // The island is centred and only as wide as its chips, so a window along the bottom of
-        // either *side* of the screen is not over it. This is what the full-width bar could not
-        // say: half the screen's windows used to collapse it for nothing.
-        let island = crate::surface::bar_screen::island_width(1);
-        let left_of_it = (1920 - island) / 2;
-        let mut beside = window(3, false, false, false);
-        beside.geometry = lege_window::Rect::new(0, 0, left_of_it, 1080);
-        assert!(!bar_covered(
-            false,
-            true,
-            std::slice::from_ref(&beside),
-            output
-        ));
-        let mut over_it = beside;
-        over_it.geometry = lege_window::Rect::new(0, 0, left_of_it + 1, 1080);
-        assert!(bar_covered(false, true, &[over_it], output));
-
-        // And on a compositor too old to centre it, the island is at the start of its edge — so
-        // the window that covered a centred island covers nothing, and one at x=0 covers it. This
-        // is the session the user is in until they log out, and getting it backwards would
-        // collapse the switcher for windows nowhere near it.
-        let mut at_the_start = window(4, false, false, false);
-        at_the_start.geometry = lege_window::Rect::new(0, 0, island - 1, 1080);
-        assert!(bar_covered(
-            false,
-            false,
-            std::slice::from_ref(&at_the_start),
-            output
-        ));
-        let mut middle = at_the_start;
-        middle.geometry = lege_window::Rect::new(left_of_it, 0, island, 1080);
-        assert!(!bar_covered(false, false, &[middle], output));
+        // An ordinary floating window over the bottom of the screen is not what the screen is
+        // for at that moment, and there is no hover route back out from under one — the
+        // compositor's dwell fires only under a window that covers the screen.
+        let mut floating = window(2, false, false, false);
+        floating.geometry = lege_window::Rect::new(0, 0, 1920, 1080);
+        assert!(!bar_covered(false, false, &[floating]));
     }
 
     #[test]

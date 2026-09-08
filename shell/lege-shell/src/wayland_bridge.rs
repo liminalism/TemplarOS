@@ -94,7 +94,7 @@ use lege_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 6;
+const SHELL_PROTOCOL_VERSION: u32 = 7;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
@@ -289,6 +289,13 @@ pub struct BridgeState {
     toplevels: HashMap<ObjectId, TrackedToplevel>,
     /// `lege_shell_manager_v1.home_revealed`'s last word, whichever side started the reveal.
     home_revealed: bool,
+    /// `lege_shell_manager_v1.bar_peeked`'s last word: whether the pointer is resting on the
+    /// bottom edge of an output under a window that fills the screen. Empty means no.
+    ///
+    /// The compositor has to tell us, because under such a window the pointer never reaches our
+    /// surface — whatever is under it owns it — so a reveal we cannot see is a reveal we cannot
+    /// answer. Not compared against an output name here: this shell draws one bar.
+    bar_peeked: bool,
     /// Presses of the terminal chord the compositor could not answer itself because no terminal
     /// window exists. Counted rather than flagged: two quick presses are two launches asked for,
     /// and a flag would silently drop the second.
@@ -616,6 +623,11 @@ impl Dispatch<LegeShellManagerV1, ()> for BridgeState {
                 state.home_revealed = revealed != 0;
                 state.generation = state.generation.wrapping_add(1);
             }
+            // Version 7.
+            lege_shell_manager_v1::Event::BarPeeked { output } => {
+                state.bar_peeked = !output.is_empty();
+                state.generation = state.generation.wrapping_add(1);
+            }
             // The chord was pressed with no terminal window to toggle, so the launch is ours:
             // the compositor cannot start an application, and identity comes from the cgroup of
             // the unit the launcher starts.
@@ -681,6 +693,7 @@ impl std::fmt::Debug for BridgeState {
         f.debug_struct("BridgeState")
             .field("toplevels", &self.toplevels.len())
             .field("home_revealed", &self.home_revealed)
+            .field("bar_peeked", &self.bar_peeked)
             .field("previews", &self.previews)
             .finish_non_exhaustive()
     }
@@ -1281,6 +1294,10 @@ impl ShellBridge {
     /// A counter that moves whenever the toplevel list or the reveal state changed.
     pub fn generation(&self) -> u64 {
         self.state.generation
+    }
+
+    pub fn bar_peeked(&self) -> bool {
+        self.state.bar_peeked
     }
 
     pub fn home_revealed(&self) -> bool {
