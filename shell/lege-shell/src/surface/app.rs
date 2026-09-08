@@ -170,6 +170,37 @@ fn previews_covered(home_revealed: bool, toplevels: &[lege_window::ShellToplevel
             .any(|window| !window.shelved && (window.fullscreen || window.maximized))
 }
 
+/// Whether anything covers the bottom `BAR_HEIGHT` strip of this output, so the bar has to
+/// collapse to its hint rather than paint over a window (`bar_screen::Presence`).
+///
+/// Three things count, and nothing else:
+///
+/// - a fullscreen toplevel, always — the compositor stacks a visible fullscreen window above
+///   `Layer::ShellOverlay` (contract Z3), so the bar would be *under* it whatever it painted, and
+///   a hint-sized surface is the only way nothing of the bar is hit-testable there;
+/// - any other unshelved toplevel whose frame intersects the strip, while Home is not revealed;
+/// - nothing at all while Home *is* revealed: the compositor has lifted Home over the windows, so
+///   the bar has Home to paint on and the switcher should simply be visible.
+///
+/// A shelved (parked) window is not on screen, so it covers nothing.
+fn bar_covered(
+    home_revealed: bool,
+    toplevels: &[lege_window::ShellToplevel],
+    output: lege_window::Rect,
+) -> bool {
+    let strip = lege_window::Rect::new(
+        output.x,
+        output.bottom() - crate::surface::bar_screen::BAR_HEIGHT,
+        output.width,
+        crate::surface::bar_screen::BAR_HEIGHT,
+    );
+    toplevels.iter().any(|window| {
+        !window.shelved
+            && (window.fullscreen
+                || (!home_revealed && window.geometry.intersection(strip).is_some()))
+    })
+}
+
 /// `1 item` or `3 items` — what an operation summary calls a path set.
 fn items(count: usize) -> String {
     if count == 1 {
@@ -2397,17 +2428,24 @@ impl ShellApp {
         });
     }
 
-    /// The output's logical width, taken from the Home surface — which the compositor sizes to
-    /// the whole output, so it is the one thing in this process that knows how wide the screen is.
-    /// The bar needs it because the compositor no longer forces a zone-holding surface to the
-    /// output width: whatever this surface asks for is what it gets.
-    fn output_width(&self) -> i32 {
-        self.home.as_ref().map_or(800, |home| {
-            home.window
+    /// The output's logical size, taken from the Home surface — which the compositor sizes to
+    /// the whole output, so it is the one thing in this process that knows how big the screen is.
+    /// The bar needs the width because the compositor no longer forces a zone-holding surface to
+    /// the output width (whatever this surface asks for is what it gets), and the height to know
+    /// where the bottom strip is when it asks whether a window covers it.
+    fn output_size(&self) -> (i32, i32) {
+        self.home.as_ref().map_or((800, 600), |home| {
+            let logical = home
+                .window
                 .inner_size()
-                .to_logical::<f64>(home.window.scale_factor())
-                .width as i32
+                .to_logical::<f64>(home.window.scale_factor());
+            (logical.width as i32, logical.height as i32)
         })
+    }
+
+    /// Just the width, for the callers that only size the bar.
+    fn output_width(&self) -> i32 {
+        self.output_size().0
     }
 
     /// Create the bottom bar once the compositor connection is up. Both claims are declared
@@ -2416,9 +2454,9 @@ impl ShellApp {
     /// The bar used to destroy itself while a window was fullscreen, because `Layer::ShellOverlay`
     /// is above `Layer::Normal` and would otherwise cover the video. That is the compositor's
     /// question now: a visible fullscreen window sorts above the overlay on its own output
-    /// (`WindowService::stacking_order`), and a dwell on the bottom edge peeks the bar back out
-    /// from under it. Destroying the surface released its exclusive zone, which reflowed every
-    /// maximized window on that output twice — once going in, once coming out.
+    /// (`WindowService::stacking_order`). Destroying the surface released its exclusive zone,
+    /// which reflowed every maximized window on that output twice — once going in, once coming
+    /// out. The zone is 0 now, so there is nothing left to reflow either way.
     fn ensure_bar(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -2431,7 +2469,12 @@ impl ShellApp {
             return;
         };
         let _ = toplevels;
-        let wanted = crate::surface::bar_screen::wanted_size(false, false, self.output_width());
+        let wanted = crate::surface::bar_screen::wanted_size(
+            crate::surface::bar_screen::Presence::Open,
+            false,
+            false,
+            self.output_width(),
+        );
         let (width, height) = (f64::from(wanted.0), f64::from(wanted.1));
         let window = match event_loop.create_window(
             Window::default_attributes()
@@ -2448,12 +2491,16 @@ impl ShellApp {
         if let Err(error) = bridge.set_layer(&window, lege_window::Layer::ShellOverlay) {
             tracing::warn!(%error, "declaring the bar onto Layer::ShellOverlay");
         }
-        if let Err(error) = bridge.set_exclusive_zone(
-            &window,
-            lege_window::geometry::Edge::Bottom,
-            crate::surface::bar_screen::BAR_HEIGHT as u32,
-        ) {
-            tracing::warn!(%error, "reserving the bar's exclusive zone");
+        // A zone of 0, and the claim is still made: it is what anchors the surface to the bottom
+        // edge (its bottom on the output's bottom, its left end at x=0, its own committed
+        // height), and it is the difference between a bar that is at the bottom of the screen and
+        // a floating window that happens to be near it. Reserving *nothing* is the point — the
+        // output's usable area stays whole, so a maximized window fills the screen and wears its
+        // own tags and controls, and the bar paints over Home rather than pushing it up.
+        if let Err(error) =
+            bridge.set_exclusive_zone(&window, lege_window::geometry::Edge::Bottom, 0)
+        {
+            tracing::warn!(%error, "anchoring the bar to the bottom edge");
         }
         match HostedWindow::new(window) {
             Ok(hosted) => {
@@ -2479,10 +2526,7 @@ impl ShellApp {
         for key in keys {
             self.ensure_icon(&key);
         }
-        let activated = toplevels
-            .iter()
-            .find(|t| t.activated)
-            .map(|t| (t.window_id, t.maximized));
+        let activated = toplevels.iter().find(|t| t.activated).map(|t| t.window_id);
         let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
         let calendar_available = calendar_app(&self.apps).is_some();
         // Who is signed in. `USER` is what the session manager sets; the uid is the honest
@@ -2494,6 +2538,12 @@ impl ShellApp {
         let clock_label = local_clock_label(std::time::SystemTime::now());
         let now_ms = self.started.elapsed().as_millis() as u64;
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
+        let (output_width, output_height) = self.output_size();
+        let covered = bar_covered(
+            home_revealed,
+            &toplevels,
+            lege_window::Rect::new(0, 0, output_width, output_height),
+        );
         let Some(bar) = &mut self.bar else {
             return;
         };
@@ -2510,6 +2560,7 @@ impl ShellApp {
             calendar_available,
             account_label: &account_label,
             activated,
+            covered,
             home_revealed,
             machine: &self.machine,
             now_ms,
@@ -2527,14 +2578,15 @@ impl ShellApp {
         };
         bar.input.end_frame();
         bar.present();
-        // The surface is the output's width, and grows upward for an open hover row or the
-        // account popover. The exclusive zone is unchanged either way, so neither reflows
-        // anything (the compositor reserves BAR_HEIGHT along the whole bottom edge whatever this
-        // surface's own extent is).
+        // The surface is the output's width, and its height is whatever the presence the draw
+        // just settled on asks for: the hint under a window, the bar over Home, plus whatever
+        // band an open hover row or the account popover needs. The exclusive zone is 0 through
+        // all of it, so no size this surface takes reflows anything.
         let wanted = crate::surface::bar_screen::wanted_size(
+            self.bar_screen.presence(covered),
             self.bar_screen.row_open(),
             self.bar_screen.account_open,
-            self.output_width(),
+            output_width,
         );
         if wanted != self.bar_wanted {
             self.bar_wanted = wanted;
@@ -2552,11 +2604,6 @@ impl ShellApp {
                     self.perform(FieldAction::RunWindowAction { id, window });
                 }
                 BarAction::Field(action) => self.perform(action),
-                BarAction::SetMaximized(window, maximized) => {
-                    self.bridge_call("set_maximized", |bridge| {
-                        bridge.set_maximized(window, maximized)
-                    });
-                }
             }
         }
     }
@@ -4058,9 +4105,19 @@ impl ApplicationHandler<Wake> for ShellApp {
             .toast
             .as_ref()
             .map(|(_, _, shown)| *shown + Self::TOAST_LIFETIME);
+        // The bar's own timers: a hover row's dwell and grace, and — while a window covers the
+        // bottom strip — the dwell that reveals the bar out from under it and the grace that
+        // collapses it again. `covered` has to be recomputed here because it decides which of
+        // those two pairs is running.
+        let (output_width, output_height) = self.output_size();
+        let bar_covered = bar_covered(
+            self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
+            &toplevels,
+            lege_window::Rect::new(0, 0, output_width, output_height),
+        );
         let bar_deadline = self.bar.as_ref().and_then(|bar| {
             let entries = crate::taskbar::entries(&toplevels);
-            let deadline_ms = self.bar_screen.next_deadline_ms(&entries)?;
+            let deadline_ms = self.bar_screen.next_deadline_ms(&entries, bar_covered)?;
             let deadline = self.started + Duration::from_millis(deadline_ms);
             if deadline <= Instant::now() {
                 bar.request_redraw();
@@ -4128,6 +4185,37 @@ mod tests {
                 "the shell acts on {role} and never fetches it"
             );
         }
+    }
+
+    /// The bar reserves nothing, so "is anything in the way?" is a question the shell has to
+    /// answer for itself every frame. This is that rule, and the whole of it (contracts Z2/Z3).
+    #[test]
+    fn the_bar_is_covered_only_by_something_actually_over_its_strip() {
+        use crate::surface::bar_screen::BAR_HEIGHT;
+        let output = lege_window::Rect::new(0, 0, 1920, 1080);
+
+        assert!(
+            !bar_covered(false, &[], output),
+            "a bare desktop covers nothing"
+        );
+        // A maximized window fills the output now that nothing is reserved, strip included.
+        assert!(bar_covered(false, &[window(1, false, true, false)], output));
+        // Fullscreen counts however Home is behaving: the compositor stacks a visible fullscreen
+        // window above `Layer::ShellOverlay`, so the bar can only get out of its way.
+        assert!(bar_covered(true, &[window(1, true, false, false)], output));
+        // Parked is not on screen, so it covers nothing.
+        assert!(!bar_covered(false, &[window(1, false, true, true)], output));
+        // Home revealed: the compositor lifted Home over the windows, so the bar has Home to
+        // paint on and the switcher is simply visible.
+        assert!(!bar_covered(true, &[window(1, false, true, false)], output));
+
+        // A window that stops above the strip leaves the bar alone; one pixel into it covers it.
+        let mut above = window(2, false, false, false);
+        above.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT);
+        assert!(!bar_covered(false, std::slice::from_ref(&above), output));
+        let mut into = above;
+        into.geometry = lege_window::Rect::new(0, 0, 800, 1080 - BAR_HEIGHT + 1);
+        assert!(bar_covered(false, &[into], output));
     }
 
     #[test]
