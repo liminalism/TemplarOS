@@ -28,6 +28,7 @@ pub mod field_model;
 pub mod file_browser;
 pub mod files_surface;
 pub mod format;
+pub mod garden;
 pub mod home_surface;
 pub mod icons;
 pub mod omnibox;

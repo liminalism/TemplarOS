@@ -1,14 +1,17 @@
-//! The bottom bar: a strip of chips at the left — network, clock, one per taskbar entry — which
-//! becomes a full-width row only when there is something that needs the width.
+//! The bottom bar: **Home at the left, the running windows next to it, the machine at the right.**
 //!
-//! There is no bar when there is nothing to put on one. A person with no windows open should see
-//! the clock and the network, not a band of empty furniture across the bottom of their screen, so
-//! the resting state is chips on the compositor's own tag colours and nothing else: the surface
-//! is exactly as wide as they are, and the desktop shows through everywhere else. Two things
-//! still want the full width — a maximized window's controls, which belong at the right-hand end
-//! of the screen rather than beside the clock, and an entry's hover row, which needs somewhere to
-//! open. [`wanted_size`] is the one answer to which of those is true, and the host sizes the
-//! surface to it.
+//! That division is the whole design (`docs/garden/garden.md`): Home deals with your things, the
+//! bar deals with the machine. So the bar carries a Home chip (so a bare Super tap is no longer
+//! the only route back), one chip per taskbar entry including the parked ones, and at the right a
+//! single cluster — the readings, the network, the clock, and an account chip whose popover holds
+//! Settings, the volume and brightness controls and the session actions. There is exactly one of
+//! each of those on this desktop; Home has no system widgets any more.
+//!
+//! The bar is full width. It used to shrink to its chips so the desktop showed through beside
+//! them, which is right for a strip of two indicators and wrong for a cluster that has to sit at
+//! the right-hand end of the screen — a right-aligned thing on a left-anchored surface is not at
+//! the right of anything. The exclusive zone is `BAR_HEIGHT` either way, so this changed no
+//! window's geometry.
 //!
 //! One `layout` computes every rectangle and both the painting and the hit-testing read it, so a
 //! click can never land on a rectangle the paint did not use. The bar's own surface is the
@@ -46,9 +49,56 @@ const CHIP_PAD: i32 = 8;
 const CELL: i32 = 48;
 const ICON: i32 = 32;
 const ACTIVE_WIDTH: i32 = 220;
+/// The Home chip: the pointer route back to the Home Field. Super still works; it is no longer
+/// the only thing that does.
+const HOME_WIDTH: i32 = 80;
+/// The readings chip — what the machine is doing, at a glance. The numbers that need a word
+/// beside them live in the account popover, which names each control.
+const READINGS_WIDTH: i32 = 112;
 const NETWORK_WIDTH: i32 = 96;
 const CLOCK_WIDTH: i32 = 160;
+/// The account chip: one mark, and the popover behind it.
+const ACCOUNT_WIDTH: i32 = 40;
 const CONTROL: i32 = 40;
+/// The account popover's width and one row's height, and the padding inside its frame.
+const POPOVER_WIDTH: i32 = 232;
+const POPOVER_ROW: i32 = 28;
+const POPOVER_PAD: i32 = 8;
+/// The gap between the popover's frame and the bar it grows out of.
+const POPOVER_GAP: i32 = 6;
+
+/// The account popover's rows, in order.
+///
+/// Written out as literal `RunAction` constructions rather than as a table of bare ids on
+/// purpose: that spelling is what `xtask check-actions` reads as a pointer route, and this popover
+/// is now the only pointer route to the session and machine actions — Home no longer carries the
+/// Session or Settings widget.
+const ACCOUNT_ROWS: [FieldAction; 11] = [
+    FieldAction::RunAction("settings.open"),
+    FieldAction::RunAction("volume.decrease"),
+    FieldAction::RunAction("volume.mute"),
+    FieldAction::RunAction("volume.increase"),
+    FieldAction::RunAction("brightness.decrease"),
+    FieldAction::RunAction("brightness.increase"),
+    FieldAction::RunAction("session.lock"),
+    FieldAction::RunAction("session.suspend"),
+    FieldAction::RunAction("session.logout"),
+    FieldAction::RunAction("session.reboot"),
+    FieldAction::RunAction("session.poweroff"),
+];
+
+/// The action id a popover row performs. The table above is built entirely of `RunAction`s.
+fn row_id(row: &FieldAction) -> &'static str {
+    match row {
+        FieldAction::RunAction(id) => id,
+        _ => "",
+    }
+}
+
+/// How far above the bar the account popover reaches, gap included.
+fn popover_band() -> i32 {
+    POPOVER_GAP + 2 * POPOVER_PAD + ACCOUNT_ROWS.len() as i32 * POPOVER_ROW
+}
 /// Dwell before hovering an entry opens its row: long enough that sweeping the pointer across
 /// the bar opens nothing.
 pub const HOVER_OPEN_MS: u64 = 400;
@@ -79,6 +129,10 @@ pub struct BarData<'a> {
     pub network_control_available: bool,
     /// The activated window and whether it is maximized — the one whose controls the bar holds.
     pub activated: Option<(WindowId, bool)>,
+    /// Whether a "go home" reveal is in effect, so the Home chip can show that it is.
+    pub home_revealed: bool,
+    /// Charge, volume and backlight, as the services last reported them.
+    pub machine: &'a crate::data::MachineReadings,
     pub now_ms: u64,
 }
 
@@ -90,50 +144,50 @@ pub struct BarScreen {
     pub open_row: Option<usize>,
     /// When the pointer left both the open entry and its row.
     left_at: Option<u64>,
+    /// Whether the account popover is open.
+    pub account_open: bool,
+    /// The popover row armed by a first click and waiting for its second.
+    ///
+    /// `ActionDecl::confirm` is set on the three actions that end the session, and a bar chip is
+    /// exactly the sort of thing a sleeve catches: without this, brushing the popover would shut
+    /// the machine down.
+    confirming: Option<&'static str>,
 }
 
 struct Layout {
     bar: Rect,
+    /// The Home chip, at the left end.
+    home: Rect,
+    cells: Vec<Rect>,
+    /// The machine cluster, right to left: readings, network, clock, account.
+    readings: Rect,
     network: Rect,
     clock: Rect,
-    cells: Vec<Rect>,
+    account: Rect,
     controls: Option<[Rect; 3]>,
     /// The open row's items, one rect per window of the open entry.
     row: Vec<Rect>,
+    /// The account popover's frame and its rows, when it is open and the host has made room.
+    popover: Option<(Rect, Vec<Rect>)>,
 }
 
 /// The surface size the host should ask for, in logical pixels.
 ///
-/// Normally the chips and nothing else: there is no bar to see when there is nothing on one. Two
-/// things claim the whole width instead — a maximized window's controls, which belong at the
-/// right-hand end of the screen, and an open hover row, which needs room to open into.
-/// `full_width` is the output's own logical width, which the shell already knows from its Home
-/// surface; the compositor never configures this surface's width, so the answer has to come from
-/// here.
+/// The output's width, and whatever band an open hover row or an open account popover needs above
+/// the bar. `full_width` is the output's own logical width, which the shell already knows from its
+/// Home surface; the compositor never configures this surface's width, so the answer has to come
+/// from here.
 ///
-/// Pure, because getting it wrong means either a bar that clips its own clock or a full-width
-/// band the user explicitly said they did not want, and neither is worth finding out by looking.
-pub fn wanted_size(
-    entries: &[Entry],
-    activated: Option<(WindowId, bool)>,
-    row_open: bool,
-    full_width: i32,
-) -> (i32, i32) {
-    let full_width = full_width.max(1);
-    let height = BAR_HEIGHT + if row_open { ROW_BAND } else { 0 };
-    if row_open || activated.is_some_and(|(_, maximized)| maximized) {
-        return (full_width, height);
-    }
-    let chips: i32 = [NETWORK_WIDTH, CLOCK_WIDTH]
-        .into_iter()
-        .chain(
-            entries
-                .iter()
-                .map(|entry| if entry.active { ACTIVE_WIDTH } else { CELL }),
-        )
-        .map(|width| width + CHIP_GAP)
-        .sum();
-    ((2 * CHIP_PAD + chips - CHIP_GAP).min(full_width), height)
+/// The exclusive zone is `BAR_HEIGHT` whatever this returns — it is a floor on the surface's
+/// thickness and says nothing about its extent — so growing the band above the bar reflows
+/// nothing (`interfaces/wayland/lege-shell-v1.xml`, `set_exclusive_zone`).
+pub fn wanted_size(row_open: bool, account_open: bool, full_width: i32) -> (i32, i32) {
+    let band = match (row_open, account_open) {
+        (_, true) => popover_band(),
+        (true, false) => ROW_BAND,
+        (false, false) => 0,
+    };
+    (full_width.max(1), BAR_HEIGHT + band)
 }
 
 /// The letter a chip wears when the application has no icon.
@@ -193,38 +247,58 @@ impl BarScreen {
         }
     }
 
-    fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_row: Option<usize>) -> Layout {
+    fn layout(
+        ui: &Ui<'_>,
+        area: Rect,
+        data: &BarData<'_>,
+        open_row: Option<usize>,
+        account_open: bool,
+    ) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
         let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
         let chip_h = ui.px(CHIP_H).min(bar.h);
         let chip_y = bar.y + (bar.h - chip_h) / 2;
         let gap = ui.px(CHIP_GAP);
 
-        // The maximized window's controls, if there are any, are placed first: they own the right
-        // end of the bar, and the chips stop before them rather than sliding underneath.
+        // The right-hand end first, because everything there is anchored to it: the maximized
+        // window's controls own the very end, then the machine cluster, right to left. The
+        // taskbar then fills whatever is left, so a screenful of windows crowds itself rather
+        // than sliding under the clock.
         let control = ui.px(CONTROL).min(chip_h);
-        let controls = data
+        let mut right = bar.right() - ui.px(CHIP_PAD);
+        let controls: Option<[Rect; 3]> = data
             .activated
             .is_some_and(|(_, maximized)| maximized)
             .then(|| {
-                let right = bar.right() - ui.px(CHIP_PAD);
+                let end = right;
                 std::array::from_fn(|which| {
                     let from_right = i32::try_from(3 - which).unwrap_or(1);
-                    Rect::new(right - from_right * control, chip_y, control, chip_h)
+                    Rect::new(end - from_right * control, chip_y, control, chip_h)
                 })
             });
-        let limit = controls.map_or(bar.right(), |c: [Rect; 3]| c[0].x - gap);
+        if let Some(controls) = controls {
+            right = controls[0].x - gap;
+        }
+        let mut cluster = |width: i32| {
+            let rect = Rect::new(right - width, chip_y, width, chip_h);
+            right = rect.x - gap;
+            rect
+        };
+        let account = cluster(ui.px(ACCOUNT_WIDTH));
+        let clock = cluster(ui.px(CLOCK_WIDTH));
+        let network = cluster(ui.px(NETWORK_WIDTH));
+        let readings = cluster(ui.px(READINGS_WIDTH));
+        let limit = right;
 
-        // The chips, left to right from the bar's own left edge. Each one is clipped to whatever
-        // room is left rather than being dropped: a half-width clock still says the time.
+        // Then left to right from the bar's own left edge. Each chip is clipped to whatever room
+        // is left rather than being dropped: a half-width chip still shows an icon.
         let mut x = bar.x + ui.px(CHIP_PAD);
         let mut chip = |width: i32| {
             let rect = Rect::new(x, chip_y, width.min((limit - x).max(0)), chip_h);
             x += width + gap;
             rect
         };
-        let network = chip(ui.px(NETWORK_WIDTH));
-        let clock = chip(ui.px(CLOCK_WIDTH));
+        let home = chip(ui.px(HOME_WIDTH));
         let cells: Vec<Rect> = data
             .entries
             .iter()
@@ -251,13 +325,45 @@ impl BarScreen {
                 }
                 _ => Vec::new(),
             };
+
+        // The popover hangs off the account chip's right edge and grows upward into the band the
+        // host made for it — the same trick the hover row uses, and for the same reason: the zone
+        // is a floor, so growing over the windows above moves none of them.
+        let popover = (account_open && area.h > bar_height).then(|| {
+            let width = ui.px(POPOVER_WIDTH).min(area.w);
+            let row_h = ui.px(POPOVER_ROW);
+            let pad = ui.px(POPOVER_PAD);
+            let height = (2 * pad + ACCOUNT_ROWS.len() as i32 * row_h).min(area.h - bar_height);
+            let frame = Rect::new(
+                (account.right() - width).max(area.x),
+                bar.y - ui.px(POPOVER_GAP) - height,
+                width,
+                height,
+            );
+            let rows = (0..ACCOUNT_ROWS.len() as i32)
+                .map(|i| {
+                    Rect::new(
+                        frame.x + pad,
+                        frame.y + pad + i * row_h,
+                        (frame.w - 2 * pad).max(0),
+                        row_h,
+                    )
+                })
+                .collect();
+            (frame, rows)
+        });
+
         Layout {
             bar,
+            home,
+            cells,
+            readings,
             network,
             clock,
-            cells,
+            account,
             controls,
             row,
+            popover,
         }
     }
 
@@ -298,9 +404,9 @@ impl BarScreen {
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &BarData<'_>) -> Vec<BarAction> {
         let mut actions = Vec::new();
-        let layout = Self::layout(ui, area, data, self.open_row);
+        let layout = Self::layout(ui, area, data, self.open_row, self.account_open);
         self.update_hover(ui, &layout, data);
-        let layout = Self::layout(ui, area, data, self.open_row);
+        let layout = Self::layout(ui, area, data, self.open_row, self.account_open);
 
         // Every pixel of the surface, first. This surface has no alpha — softbuffer attaches an
         // `Xrgb8888` shm buffer — so anything a frame does not write shows as black, and a strip
@@ -313,7 +419,68 @@ impl BarScreen {
         // instead of a winit window over softbuffer.
         ui.painter.fill_rect(area, design::ground());
 
-        // The row first: it floats over whatever is above the bar and claims its clicks before
+        // The account popover first, for the same reason the row is early: it floats over what is
+        // above the bar and must claim its clicks before anything underneath can.
+        if let Some((frame, rows)) = &layout.popover {
+            design::shell(
+                ui,
+                *frame,
+                design::shell_fill(),
+                design::edge_strong(),
+                Elevation::Lifted,
+            );
+            for (rect, row) in rows.iter().zip(ACCOUNT_ROWS) {
+                let id = row_id(&row);
+                let Some(declaration) = lege_types::action::action(id) else {
+                    continue;
+                };
+                let refused = data.machine.refuses(id);
+                let armed = self.confirming == Some(id);
+                let hovered = !refused && ui.input.hovering(*rect);
+                if armed || hovered {
+                    ui.painter.fill_rounded_rect(
+                        *rect,
+                        ui.px(design::CHIP_RADIUS),
+                        if armed {
+                            design::danger()
+                        } else {
+                            design::accent_soft()
+                        },
+                    );
+                }
+                let label = if armed {
+                    format!("{} — again to confirm", declaration.label)
+                } else {
+                    declaration.label.to_owned()
+                };
+                ui.label_styled(
+                    rect.inset(ui.px(6)),
+                    &label,
+                    design::state_style(ui),
+                    if refused {
+                        design::text_faint()
+                    } else {
+                        design::text()
+                    },
+                    Align::Left,
+                );
+                if !refused && ui.input.take_click(*rect) {
+                    // Two steps for the three actions that end the session, one for everything
+                    // else. A different row cancels whatever was armed.
+                    if declaration.confirm && !armed {
+                        self.confirming = Some(id);
+                    } else {
+                        self.confirming = None;
+                        self.account_open = false;
+                        actions.push(BarAction::Field(FieldAction::RunAction(id)));
+                    }
+                }
+            }
+            // Anything else inside the frame is the popover's own ground, not the window behind.
+            let _ = ui.input.take_click(*frame);
+        }
+
+        // The row next: it floats over whatever is above the bar and claims its clicks before
         // the bar's own cells can.
         if let Some(index) = self.open_row
             && let Some(entry) = data.entries.get(index)
@@ -335,10 +502,17 @@ impl BarScreen {
                     rect.inset(ui.px(8)),
                     title,
                     design::state_style(ui),
-                    design::text(),
+                    if entry.is_parked(*window) {
+                        design::text_faint()
+                    } else {
+                        design::text()
+                    },
                     Align::Left,
                 );
                 if ui.input.take_click(*rect) {
+                    if entry.is_parked(*window) {
+                        actions.push(BarAction::Field(FieldAction::Restore(*window)));
+                    }
                     actions.push(BarAction::Activate(*window));
                     self.open_row = None;
                     self.left_at = None;
@@ -346,7 +520,43 @@ impl BarScreen {
             }
         }
 
-        // Indicators. The label comes from the action manifest, so the bar and the cheat sheet
+        // Home, at the left end: the pointer route back to the field, filled while the reveal is
+        // in effect so the chip says which way it will go.
+        let home_label = lege_types::action::action("home.reveal")
+            .map_or("Home", |declaration| declaration.label);
+        let home_hovered = ui.input.hovering(layout.home);
+        chip(
+            ui,
+            layout.home,
+            if data.home_revealed || home_hovered {
+                design::accent()
+            } else {
+                design::TAG_FILL
+            },
+        );
+        ui.label_styled(
+            layout.home.inset(ui.px(6)),
+            home_label,
+            design::state_style(ui),
+            design::TAG_INK,
+            Align::Centre,
+        );
+        if ui.input.take_click(layout.home) {
+            actions.push(BarAction::Field(FieldAction::RevealHome));
+        }
+
+        // The machine cluster. The readings chip is a glance, not a panel: the popover behind the
+        // account chip is where each control is named.
+        chip(ui, layout.readings, design::TAG_FILL);
+        ui.label_styled(
+            layout.readings.inset(ui.px(6)),
+            &data.machine.chip_label(),
+            design::state_style(ui),
+            design::TAG_INK,
+            Align::Centre,
+        );
+
+        // The label comes from the action manifest, so the bar and the cheat sheet
         // cannot call the same capability two different things.
         let network_label = lege_types::action::action("network.open-control")
             .map_or("Network", |declaration| declaration.label);
@@ -386,6 +596,27 @@ impl BarScreen {
             Align::Centre,
         );
 
+        // The account chip: Settings, the machine's controls and the session actions, in one
+        // place, because there is one of each of them on this desktop.
+        let account_hovered = ui.input.hovering(layout.account);
+        chip(
+            ui,
+            layout.account,
+            if self.account_open || account_hovered {
+                design::accent()
+            } else {
+                design::TAG_FILL
+            },
+        );
+        ui.label(layout.account, "\u{25c9}", design::TAG_INK, Align::Centre);
+        if ui.input.take_click(layout.account) {
+            self.account_open = !self.account_open;
+            self.confirming = None;
+            if self.account_open {
+                self.open_row = None;
+            }
+        }
+
         // The taskbar: one chip per entry, in the same colours the compositor gives that window's
         // own name tag, so the two read as the same object.
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
@@ -394,6 +625,14 @@ impl BarScreen {
                 (true, _) => (design::accent_soft(), design::text()),
                 (false, true) => (design::accent(), design::TAG_INK),
                 (false, false) => (design::TAG_FILL, design::TAG_INK),
+            };
+            // A parked window is still running and still reachable — it is just not on screen.
+            // The bar is the only place it now exists, Home having stopped holding tiles for
+            // running windows, so it is dimmed rather than dropped.
+            let ink = if entry.all_parked() {
+                design::text_faint()
+            } else {
+                ink
             };
             chip(ui, *cell, fill);
             if entry.active {
@@ -451,6 +690,9 @@ impl BarScreen {
             }
             if ui.input.take_click(*cell) {
                 if let Some(window) = entry.sole_window() {
+                    if entry.is_parked(window) {
+                        actions.push(BarAction::Field(FieldAction::Restore(window)));
+                    }
                     actions.push(BarAction::Activate(window));
                 } else {
                     self.open_row = if self.open_row == Some(index) {
@@ -510,14 +752,17 @@ impl BarScreen {
         }
 
         // A press on empty bar ground: the compositor gave this surface the keyboard for it, and
-        // the activated window is the one that should have it. Only where there *is* ground —
-        // when the strip is chips alone the surface is the chips, and the pixels between them are
-        // padding rather than a band to click on.
-        if (layout.controls.is_some() || self.open_row.is_some())
-            && ui.input.take_click(layout.bar)
-            && let Some((window, _)) = data.activated
-        {
-            actions.push(BarAction::Activate(window));
+        // the activated window is the one that should have it. A press anywhere else while the
+        // popover is open dismisses it, the way any menu behaves.
+        if ui.input.take_click(layout.bar) {
+            self.account_open = false;
+            self.confirming = None;
+            if let Some((window, _)) = data.activated {
+                actions.push(BarAction::Activate(window));
+            }
+        } else if self.account_open && ui.input.take_click(area) {
+            self.account_open = false;
+            self.confirming = None;
         }
         actions
     }
@@ -533,6 +778,13 @@ mod tests {
 
     /// The output's logical width, which is what the host passes as `full_width`.
     const W: i32 = 1200;
+
+    /// The tallest the surface ever gets: the bar plus the account popover's band. The harness
+    /// buffer is this tall so every state fits in one buffer, and the bar is always drawn at the
+    /// bottom of it, exactly as the host's surface is.
+    fn tallest() -> i32 {
+        BAR_HEIGHT + popover_band()
+    }
 
     fn window(id: u64, app: &str, title: &str, activated: bool, maximized: bool) -> ShellToplevel {
         ShellToplevel {
@@ -559,6 +811,7 @@ mod tests {
         kernel: RasterKernel,
         buffer: WindowBuffer,
         input: Input,
+        machine: crate::data::MachineReadings,
         now: u64,
         width: i32,
         height: i32,
@@ -572,8 +825,21 @@ mod tests {
                 icons: HashMap::new(),
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
-                buffer: WindowBuffer::new(W as u32, (BAR_HEIGHT + ROW_BAND) as u32),
+                buffer: WindowBuffer::new(W as u32, tallest() as u32),
                 input: Input::new(),
+                machine: crate::data::MachineReadings {
+                    audio: Some(lege_client::status::AudioState {
+                        present: true,
+                        volume_percent: 45,
+                        muted: false,
+                    }),
+                    backlight: Some(lege_client::status::BacklightState {
+                        present: true,
+                        percent: 60,
+                        ..Default::default()
+                    }),
+                    battery: None,
+                },
                 now: 0,
                 width: W,
                 height: BAR_HEIGHT,
@@ -590,23 +856,21 @@ mod tests {
         /// The surface the host would give the bar this frame — width included, exactly as
         /// `app.rs` computes it, so a test never clicks somewhere the real surface does not have.
         fn wanted(&self) -> (i32, i32) {
-            wanted_size(
-                &taskbar::entries(&self.toplevels),
-                self.activated(),
-                self.screen.open_row.is_some(),
-                W,
-            )
+            wanted_size(self.screen.open_row.is_some(), self.screen.account_open, W)
         }
 
         fn frame(&mut self) -> Vec<BarAction> {
             let entries = taskbar::entries(&self.toplevels);
             let activated = self.activated();
+            let machine = self.machine.clone();
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
                 clock_label: "MON 7 SEP 12:00",
                 network_control_available: true,
                 activated,
+                home_revealed: false,
+                machine: &machine,
                 now_ms: self.now,
             };
             let (width, height) = (self.width, self.height);
@@ -618,7 +882,7 @@ mod tests {
                 Scale::ONE,
                 &mut self.kernel,
             );
-            let top = BAR_HEIGHT + ROW_BAND - height;
+            let top = tallest() - height;
             let actions = self
                 .screen
                 .draw(&mut ui, Rect::new(0, top, width, height), &data);
@@ -639,14 +903,19 @@ mod tests {
             self.frame()
         }
 
-        fn cells(&mut self) -> Vec<Rect> {
+        /// The rectangles this frame would use, for a test that needs to click one of them.
+        fn rects(&mut self) -> Layout {
             let entries = taskbar::entries(&self.toplevels);
+            let activated = self.activated();
+            let machine = self.machine.clone();
             let data = BarData {
                 entries: &entries,
                 icons: &self.icons,
                 clock_label: "",
                 network_control_available: true,
-                activated: None,
+                activated,
+                home_revealed: false,
+                machine: &machine,
                 now_ms: self.now,
             };
             let ui = Ui::new(
@@ -657,8 +926,23 @@ mod tests {
                 Scale::ONE,
                 &mut self.kernel,
             );
-            let top = BAR_HEIGHT + ROW_BAND - self.height;
-            BarScreen::layout(&ui, Rect::new(0, top, self.width, self.height), &data, None).cells
+            let top = tallest() - self.height;
+            BarScreen::layout(
+                &ui,
+                Rect::new(0, top, self.width, self.height),
+                &data,
+                self.screen.open_row,
+                self.screen.account_open,
+            )
+        }
+
+        fn cells(&mut self) -> Vec<Rect> {
+            self.rects().cells
+        }
+
+        /// The middle of a rectangle, which is where a click belongs.
+        fn centre(rect: Rect) -> (i32, i32) {
+            (rect.x + rect.w / 2, rect.y + rect.h / 2)
         }
     }
 
@@ -679,7 +963,7 @@ mod tests {
             h.buffer.pixels.fill(SENTINEL);
             h.frame();
             let stride = h.buffer.width as usize;
-            let top = BAR_HEIGHT + ROW_BAND - height;
+            let top = tallest() - height;
             for y in top..top + height {
                 for x in 0..width {
                     assert_ne!(
@@ -712,7 +996,8 @@ mod tests {
         // row's first item activates its window and closes the row.
         assert_eq!(h.wanted(), (W, BAR_HEIGHT + ROW_BAND));
         h.frame();
-        let actions = h.click(files.x + 20, 12);
+        let row_y = h.rects().row[0].y + 8;
+        let actions = h.click(files.x + 20, row_y);
         assert_eq!(actions, vec![BarAction::Activate(WindowId(2))]);
         assert_eq!(h.screen.open_row, None);
     }
@@ -751,29 +1036,30 @@ mod tests {
     fn controls_exist_only_for_a_maximized_activated_window_and_act_on_it() {
         let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, false)]);
         h.frame();
-        // Not maximized: the surface is the chip strip, so the right-hand end of the output is
-        // not this window at all — there is no bar ground out there to press.
-        assert!(h.width < W, "the strip should be narrower than the output");
-        let actions = h.click(W - 20, BAR_HEIGHT + ROW_BAND - 24);
-        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(h.width, W, "the bar is the output's width");
+        // Not maximized: no controls, so the right-hand end is the account chip and the ground
+        // beside it, neither of which closes a window.
+        assert!(h.rects().controls.is_none());
         h.toplevels[0].maximized = true;
-        // One frame to take the width the controls need, then the controls are there to press.
         h.frame();
-        assert_eq!(h.width, W);
-        h.frame();
-        let close = h.click(W - 20, BAR_HEIGHT + ROW_BAND - 24);
+        let [park, maximize, close] = h.rects().controls.expect("maximized: controls");
+
+        let (x, y) = Harness::centre(close);
         assert_eq!(
-            close,
+            h.click(x, y),
             vec![BarAction::Window {
                 id: "window.close",
                 window: WindowId(1)
             }]
         );
-        let maximize = h.click(W - 60, BAR_HEIGHT + ROW_BAND - 24);
-        assert_eq!(maximize, vec![BarAction::SetMaximized(WindowId(1), false)]);
-        let park = h.click(W - 100, BAR_HEIGHT + ROW_BAND - 24);
+        let (x, y) = Harness::centre(maximize);
         assert_eq!(
-            park,
+            h.click(x, y),
+            vec![BarAction::SetMaximized(WindowId(1), false)]
+        );
+        let (x, y) = Harness::centre(park);
+        assert_eq!(
+            h.click(x, y),
             vec![BarAction::Window {
                 id: "window.park",
                 window: WindowId(1)
@@ -810,61 +1096,145 @@ mod tests {
         assert!(h.buffer.pixels.iter().any(|&p| p != 0));
     }
 
-    /// The user's rule, as arithmetic: no bar unless there is something on one that needs the
-    /// width. Chips normally; the whole output only for a maximized window's controls or an open
-    /// row.
+    /// The bar is the output's width, always; only the band above it changes. The exclusive zone
+    /// is `BAR_HEIGHT` whatever this returns, so nothing here reflows a window.
     #[test]
-    fn wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width() {
-        let none: Vec<Entry> = Vec::new();
-        let bare = wanted_size(&none, None, false, W);
+    fn the_bar_takes_the_output_and_grows_upward_for_a_row_or_the_popover() {
+        assert_eq!(wanted_size(false, false, W), (W, BAR_HEIGHT));
+        assert_eq!(wanted_size(true, false, W), (W, BAR_HEIGHT + ROW_BAND));
         assert_eq!(
-            bare,
-            (
-                2 * CHIP_PAD + NETWORK_WIDTH + CHIP_GAP + CLOCK_WIDTH,
-                BAR_HEIGHT
-            ),
-            "with nothing running the bar is the network chip and the clock chip"
+            wanted_size(false, true, W),
+            (W, BAR_HEIGHT + popover_band())
         );
-        assert!(bare.0 < W, "and nothing like the width of the output");
-
-        let toplevels = vec![
-            window(1, "org.example.Editor", "notes", true, false),
-            window(2, "org.legeos.Files", "Downloads", false, false),
-        ];
-        let entries = taskbar::entries(&toplevels);
-        let with_windows = wanted_size(&entries, Some((WindowId(1), false)), false, W);
-        assert_eq!(with_windows.0, bare.0 + 2 * CHIP_GAP + ACTIVE_WIDTH + CELL);
-        assert_eq!(
-            with_windows.1, BAR_HEIGHT,
-            "no row, so no band above the bar"
-        );
-        assert!(with_windows.0 < W);
-
-        // A maximized window's controls belong at the right-hand end of the screen.
-        assert_eq!(
-            wanted_size(&entries, Some((WindowId(1), true)), false, W),
-            (W, BAR_HEIGHT)
-        );
-        // An open row needs both the width to open into and the band to open in.
-        assert_eq!(
-            wanted_size(&entries, Some((WindowId(1), false)), true, W),
-            (W, BAR_HEIGHT + ROW_BAND)
-        );
-        // A strip wider than the output is the output's width, never more.
-        assert_eq!(wanted_size(&entries, None, false, 100), (100, BAR_HEIGHT));
+        // The popover is the taller of the two, so it wins when both are somehow asked for.
+        assert_eq!(wanted_size(true, true, W), (W, BAR_HEIGHT + popover_band()));
+        assert!(popover_band() > ROW_BAND);
+        // A width of nothing is still a surface.
+        assert_eq!(wanted_size(false, false, 0), (1, BAR_HEIGHT));
     }
 
     #[test]
     fn the_network_indicator_runs_its_declared_action() {
         let mut h = Harness::new(Vec::new());
         h.frame();
-        let actions = h.click(40, BAR_HEIGHT + ROW_BAND - 24);
+        let (x, y) = Harness::centre(h.rects().network);
         assert_eq!(
-            actions,
+            h.click(x, y),
             vec![BarAction::Field(FieldAction::RunAction(
                 "network.open-control"
             ))]
         );
+    }
+
+    /// The Home chip: the route back to the field that is not a keyboard chord.
+    #[test]
+    fn the_home_chip_reveals_home() {
+        let mut h = Harness::new(Vec::new());
+        h.frame();
+        let (x, y) = Harness::centre(h.rects().home);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RevealHome)]
+        );
+    }
+
+    /// A parked window is still on the bar, and clicking it brings it back before activating it —
+    /// `Activate` alone would focus a window nobody can see.
+    #[test]
+    fn clicking_a_parked_entry_restores_it_and_then_activates_it() {
+        let mut parked = window(1, "org.example.Editor", "notes", false, false);
+        parked.shelved = true;
+        let mut h = Harness::new(vec![parked]);
+        h.frame();
+        let (x, y) = Harness::centre(h.cells()[0]);
+        assert_eq!(
+            h.click(x, y),
+            vec![
+                BarAction::Field(FieldAction::Restore(WindowId(1))),
+                BarAction::Activate(WindowId(1)),
+            ]
+        );
+    }
+
+    /// The account popover is the one place the machine's actions live now. Every row is a
+    /// declared action; the session-ending ones take two clicks.
+    #[test]
+    fn the_account_popover_runs_settings_and_confirms_before_it_ends_the_session() {
+        let mut h = Harness::new(Vec::new());
+        h.frame();
+        let (x, y) = Harness::centre(h.rects().account);
+        assert!(h.click(x, y).is_empty(), "opening it performs nothing");
+        assert!(h.screen.account_open);
+        assert_eq!(h.wanted(), (W, BAR_HEIGHT + popover_band()));
+        h.frame();
+
+        // `LEGE_BAR_POPOVER_DUMP=<path>` writes the open popover as a PNG for review, the way
+        // the row's own render test does.
+        if let Ok(path) = std::env::var("LEGE_BAR_POPOVER_DUMP") {
+            crate::surface::offscreen::write_png(std::path::Path::new(&path), &h.buffer)
+                .expect("dumping the popover render");
+        }
+        let rows = h.rects().popover.expect("the popover has room").1;
+        let settings = ACCOUNT_ROWS
+            .iter()
+            .position(|row| row_id(row) == "settings.open")
+            .unwrap();
+        let poweroff = ACCOUNT_ROWS
+            .iter()
+            .position(|row| row_id(row) == "session.poweroff")
+            .unwrap();
+
+        // A confirmed action arms on the first click and fires on the second.
+        let (x, y) = Harness::centre(rows[poweroff]);
+        assert!(h.click(x, y).is_empty(), "the first click only arms it");
+        assert!(h.screen.account_open, "and leaves the popover open");
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RunAction("session.poweroff"))]
+        );
+        assert!(!h.screen.account_open, "performing a row closes it");
+
+        // An unconfirmed one fires at once.
+        let (x, y) = Harness::centre(h.rects().account);
+        h.click(x, y);
+        h.frame();
+        let rows = h.rects().popover.expect("the popover has room").1;
+        let (x, y) = Harness::centre(rows[settings]);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::Field(FieldAction::RunAction("settings.open"))]
+        );
+    }
+
+    /// A machine with no backlight cannot change its brightness: the row is drawn, and inert.
+    #[test]
+    fn a_refused_control_takes_no_click() {
+        let mut h = Harness::new(Vec::new());
+        h.machine.backlight = None;
+        h.screen.account_open = true;
+        h.frame();
+        h.frame();
+        let rows = h.rects().popover.expect("the popover has room").1;
+        let dimmer = ACCOUNT_ROWS
+            .iter()
+            .position(|row| row_id(row) == "brightness.decrease")
+            .unwrap();
+        let (x, y) = Harness::centre(rows[dimmer]);
+        assert!(h.click(x, y).is_empty(), "a refused row does nothing");
+        assert!(h.screen.account_open, "and does not dismiss the popover");
+    }
+
+    /// Every row of the popover names a declared action, so no chip can promise something the
+    /// manifest has never heard of.
+    #[test]
+    fn every_popover_row_is_a_declared_action() {
+        for row in &ACCOUNT_ROWS {
+            let id = row_id(row);
+            assert!(
+                lege_types::action::action(id).is_some(),
+                "{id} is not declared"
+            );
+        }
     }
 }
 
@@ -881,6 +1251,7 @@ mod initial_tests {
             accent: None,
             app_id: app_id.map(ToOwned::to_owned),
             windows: vec![(WindowId(1), label.to_owned())],
+            parked: Vec::new(),
             active: false,
         }
     }

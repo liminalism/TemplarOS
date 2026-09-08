@@ -601,13 +601,68 @@ pub async fn fetch_idle_timeout() -> u32 {
         .unwrap_or(0)
 }
 
-pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot {
-    use crate::surface::widgets::WidgetSnapshot;
-    use crate::surface::widgets::settings;
-    let Ok(connection) = session().await else {
-        return WidgetSnapshot::unavailable("Settings — no session bus");
-    };
+/// What the machine is doing right now: charge, volume, backlight. `None` for a service that did
+/// not answer, which is a different thing from a service that answered "not present".
+///
+/// The *typed* states rather than the three formatted lines
+/// [`fetch_settings_widget`] packs them into: the bar's cluster wants the numbers (a chip has room
+/// for "72%", not for "72% discharging, 2 h 23 min remaining"), and a surface that had to parse
+/// them back out of a sentence would break the first time the wording improved.
+#[derive(Clone, Debug, Default)]
+pub struct MachineReadings {
+    pub battery: Option<lege_client::status::BatteryState>,
+    pub audio: Option<lege_client::status::AudioState>,
+    pub backlight: Option<lege_client::status::BacklightState>,
+}
 
+impl MachineReadings {
+    /// Whether any of the three services answered at all.
+    pub fn any(&self) -> bool {
+        self.battery.is_some() || self.audio.is_some() || self.backlight.is_some()
+    }
+
+    /// The one line the bar's readings chip shows.
+    ///
+    /// The charge, and "Muted" beside it when the machine is muted. Deliberately not three
+    /// percentages: three bare numbers in a row say nothing about which is which, and a chip has
+    /// no room for the words that would. Mute is the exception because it is a *state* — a person
+    /// needs to see at a glance that sound is off, in a way they never need to see that it is at
+    /// 45%. The numbers with a word beside them are in the account popover, which names each
+    /// control it offers.
+    pub fn chip_label(&self) -> String {
+        let charge = self.battery.as_ref().map_or_else(
+            || "—".to_owned(),
+            lege_client::status::BatteryState::headline,
+        );
+        if self.audio.as_ref().is_some_and(|audio| audio.muted) {
+            format!("{charge} · Muted")
+        } else {
+            charge
+        }
+    }
+
+    /// Whether a control the account popover offers would not work right now: a machine with no
+    /// mixer cannot change the volume, and one with no backlight cannot change the brightness.
+    /// A refused row is drawn inert rather than removed, so nobody wonders where it went.
+    pub fn refuses(&self, action: &str) -> bool {
+        if AUDIO_CONTROLS.contains(&action) {
+            return self.audio.as_ref().is_none_or(|audio| !audio.present);
+        }
+        if BACKLIGHT_CONTROLS.contains(&action) {
+            return self
+                .backlight
+                .as_ref()
+                .is_none_or(|backlight| !backlight.present);
+        }
+        false
+    }
+}
+
+/// `Battery1.Get`, `Audio1.Get` and `Backlight1.Get`, concurrently over one connection.
+pub async fn fetch_machine_readings() -> MachineReadings {
+    let Ok(connection) = session().await else {
+        return MachineReadings::default();
+    };
     let battery = async {
         let proxy = BatteryProxy::new(&connection).await.ok()?;
         let json = proxy.get().await.ok()?;
@@ -624,6 +679,21 @@ pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot 
         serde_json::from_str::<lege_client::status::BacklightState>(&json).ok()
     };
     let (battery, audio, backlight) = tokio::join!(battery, audio, backlight);
+    MachineReadings {
+        battery,
+        audio,
+        backlight,
+    }
+}
+
+pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot {
+    use crate::surface::widgets::WidgetSnapshot;
+    use crate::surface::widgets::settings;
+    let MachineReadings {
+        battery,
+        audio,
+        backlight,
+    } = fetch_machine_readings().await;
 
     // Nothing answering at all is a different thing from a machine without a battery, and the
     // tile has to say which. Only the first is unavailable.
@@ -1074,6 +1144,9 @@ pub async fn open_file(path: &std::path::Path) -> Result<OpenFileResult, String>
             )
             .await;
     }
+    // The same fact, told to the garden: an open under a directory is evidence the place
+    // matters (`@legeos.decision.homegarden-activity-grown-places`).
+    crate::garden::observe("file-opened", path, &result.app_id).await;
     Ok(result)
 }
 

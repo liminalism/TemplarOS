@@ -1,0 +1,218 @@
+//! What the shell knows about Homegarden's places: the `HomeGarden1.Contexts` snapshot the
+//! Folder tile draws its roles row and branch body from, and the fetches behind the tending
+//! moments (`@legeos.decision.homegarden-activity-grown-places`). The shell owns no garden
+//! state: it observes, asks for a tending, and draws what the daemon reports.
+
+use lege_client::proxies::HomeGardenProxy;
+use std::{collections::HashMap, path::PathBuf};
+
+/// One used-structure node beneath a place, as the daemon reports it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct TreeNode {
+    pub name: String,
+    pub is_dir: bool,
+    pub score: f32,
+    pub children: Vec<TreeNode>,
+}
+
+/// One place: the projection of a ledger context the tile needs.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct GardenPlace {
+    pub root: PathBuf,
+    pub stage: String,
+    pub effective: f32,
+    pub roles: Vec<String>,
+    pub tree: Vec<TreeNode>,
+    pub pinned: bool,
+    pub hidden: bool,
+    pub summary: String,
+    pub why: String,
+}
+
+impl GardenPlace {
+    /// The one-line state a Small place shows under its name.
+    pub fn state_line(&self) -> String {
+        if self.pinned {
+            format!("pinned · {}", self.summary)
+        } else {
+            self.summary.clone()
+        }
+    }
+}
+
+/// One row of the branch body: how deep, what, and how heavily used relative to its siblings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BranchRow {
+    pub depth: usize,
+    pub name: String,
+    pub is_dir: bool,
+    /// 0.0..=1.0, the node's share of the strongest sibling at its level.
+    pub weight: f32,
+    pub path: PathBuf,
+}
+
+/// The tree as rows, strongest branches first at every level, at most `limit` rows, so a
+/// place's body reads as *used structure* rather than a directory listing.
+pub fn branch_rows(root: &std::path::Path, tree: &[TreeNode], limit: usize) -> Vec<BranchRow> {
+    let mut rows = Vec::new();
+    push_rows(root, tree, 0, limit, &mut rows);
+    rows
+}
+
+fn push_rows(
+    parent: &std::path::Path,
+    nodes: &[TreeNode],
+    depth: usize,
+    limit: usize,
+    rows: &mut Vec<BranchRow>,
+) {
+    let strongest = nodes
+        .iter()
+        .map(|node| node.score)
+        .fold(0.0_f32, f32::max)
+        .max(f32::EPSILON);
+    let mut ordered: Vec<&TreeNode> = nodes.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    for node in ordered {
+        if rows.len() >= limit {
+            return;
+        }
+        let path = parent.join(&node.name);
+        rows.push(BranchRow {
+            depth,
+            name: node.name.clone(),
+            is_dir: node.is_dir,
+            weight: node.score / strongest,
+            path: path.clone(),
+        });
+        push_rows(&path, &node.children, depth + 1, limit, rows);
+    }
+}
+
+/// `HomeGarden1.Contexts`, keyed by root. Empty when sessiond is absent or the garden is off.
+pub async fn fetch_places() -> HashMap<PathBuf, GardenPlace> {
+    let Ok(connection) = crate::data::session().await else {
+        return HashMap::new();
+    };
+    let Ok(proxy) = HomeGardenProxy::new(&connection).await else {
+        return HashMap::new();
+    };
+    let Ok(json) = proxy.contexts().await else {
+        return HashMap::new();
+    };
+    serde_json::from_str::<Vec<GardenPlace>>(&json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|place| !place.hidden)
+        .map(|place| (place.root.clone(), place))
+        .collect()
+}
+
+/// One tending moment for `output`. Returns the daemon's report, or the reason it could not.
+pub async fn tend(output: &str) -> Result<String, String> {
+    let connection = crate::data::session().await?;
+    let proxy = HomeGardenProxy::new(&connection)
+        .await
+        .map_err(|error| format!("garden unavailable: {error}"))?;
+    proxy
+        .tend(output)
+        .await
+        .map_err(|error| format!("tending failed: {error}"))
+}
+
+/// Fire-and-forget: tell the garden one thing happened. Never an error for the caller.
+pub async fn observe(kind: &str, path: &std::path::Path, app_id: &str) {
+    let Ok(connection) = crate::data::session().await else {
+        return;
+    };
+    let Ok(proxy) = HomeGardenProxy::new(&connection).await else {
+        return;
+    };
+    let _ = proxy
+        .observe(kind, &path.to_string_lossy(), app_id, "")
+        .await;
+}
+
+/// `garden.pin` and friends against one root; `why` returns the description.
+pub async fn manage(id: &str, path: &std::path::Path) -> Result<Option<String>, String> {
+    let connection = crate::data::session().await?;
+    let proxy = HomeGardenProxy::new(&connection)
+        .await
+        .map_err(|error| format!("garden unavailable: {error}"))?;
+    let root = path.to_string_lossy();
+    let outcome = match id {
+        "garden.pin" | "garden.keep" => proxy.pin(&root, true).await.map(|()| None),
+        "garden.unpin" => proxy.pin(&root, false).await.map(|()| None),
+        "garden.hide" => proxy.hide(&root, true).await.map(|()| None),
+        "garden.forget" => proxy.forget(&root).await.map(|()| None),
+        "garden.forget-all" => proxy.forget_all().await.map(|()| None),
+        "garden.why" => proxy.describe(&root).await.map(|json| {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+            Some(match value["why"].as_str() {
+                Some(why) if !why.is_empty() => {
+                    format!("{why} — {}", value["summary"].as_str().unwrap_or(""))
+                }
+                _ if json.is_empty() => "not a place the garden knows".to_owned(),
+                _ => format!(
+                    "not yet tended — {}",
+                    value["summary"].as_str().unwrap_or("")
+                ),
+            })
+        }),
+        other => return Err(format!("{other} is not a garden verb")),
+    };
+    outcome.map_err(|error| format!("{id} failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(name: &str, score: f32, children: Vec<TreeNode>) -> TreeNode {
+        TreeNode {
+            name: name.into(),
+            is_dir: !children.is_empty() || !name.contains('.'),
+            score,
+            children,
+        }
+    }
+
+    #[test]
+    fn branch_rows_put_the_heaviest_branch_first_and_stop_at_the_limit() {
+        let tree = vec![
+            node("docs", 2.0, vec![node("plan.md", 1.0, vec![])]),
+            node(
+                "crates",
+                6.0,
+                vec![node("window", 4.0, vec![]), node("field", 2.0, vec![])],
+            ),
+        ];
+        let rows = branch_rows(std::path::Path::new("/home/dk/legeos"), &tree, 4);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["crates", "window", "field", "docs"]);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[1].depth, 1);
+        assert!((rows[0].weight - 1.0).abs() < f32::EPSILON);
+        assert!((rows[2].weight - 0.5).abs() < f32::EPSILON);
+        assert_eq!(rows[1].path, PathBuf::from("/home/dk/legeos/crates/window"));
+    }
+
+    #[test]
+    fn a_context_payload_with_unknown_fields_still_parses() {
+        let place: GardenPlace = serde_json::from_str(
+            r#"{"root":"/home/dk/x","stage":"tile","effective":9.5,"roles":["terminal"],
+                "tree":[{"name":"src","is_dir":true,"score":3.0,"last":{"session":1,"active_ms":0}}],
+                "summary":"3 opens, 1 session","material_seed":7,"tile":42}"#,
+        )
+        .unwrap();
+        assert_eq!(place.stage, "tile");
+        assert_eq!(place.tree[0].name, "src");
+        assert_eq!(place.state_line(), "3 opens, 1 session");
+    }
+}

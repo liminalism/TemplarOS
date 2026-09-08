@@ -57,6 +57,9 @@ pub enum MenuScope {
     WindowGroup,
     /// Needs a project's own tile under the pointer.
     Project,
+    /// Needs a folder tile — a Place — under the pointer
+    /// (`@legeos.decision.homegarden-activity-grown-places`).
+    Place,
     /// Needs at least one tile on the shelf. Offered on bare background like the other field
     /// rows, but only when there is actually something to bring back — a permanently visible
     /// "bring shelved tiles back" would be a row that does nothing almost every time it is read.
@@ -130,6 +133,17 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("project.open-terminal", MenuScope::Project),
     MenuItem::new("project.open-files", MenuScope::Project),
     MenuItem::new("project.open-editor", MenuScope::Project),
+    // A Place's tools and its gardening, above the generic tile rows for the same reason.
+    MenuItem::new("place.open-terminal", MenuScope::Place),
+    MenuItem::new("place.open-files", MenuScope::Place),
+    MenuItem::new("place.open-editor", MenuScope::Place),
+    MenuItem::new("garden.pin", MenuScope::Place),
+    MenuItem::new("garden.unpin", MenuScope::Place),
+    MenuItem::new("garden.keep", MenuScope::Place),
+    MenuItem::new("garden.hide", MenuScope::Place),
+    MenuItem::new("garden.forget", MenuScope::Place),
+    MenuItem::new("garden.why", MenuScope::Place),
+    MenuItem::new("garden.tend", MenuScope::Field),
     MenuItem::new("field.move", MenuScope::Tile),
     MenuItem::new("field.resize", MenuScope::Tile),
     MenuItem::new("field.stash", MenuScope::Tile),
@@ -199,7 +213,8 @@ impl FilesTarget {
             | MenuScope::Shelf
             | MenuScope::GroupedWindow
             | MenuScope::WindowGroup
-            | MenuScope::Project => false,
+            | MenuScope::Project
+            | MenuScope::Place => false,
         }
     }
 
@@ -229,6 +244,8 @@ pub struct MenuTarget {
     /// when a row is chosen: the field has reflowed by then, and "which project" must be the
     /// one the menu was opened over, not whatever is under the pointer now.
     pub project: Option<String>,
+    /// The folder tile — a Place — under the pointer, carried for the same reason as `project`.
+    pub place: Option<std::path::PathBuf>,
 }
 
 impl MenuTarget {
@@ -237,6 +254,7 @@ impl MenuTarget {
             MenuScope::Field => true,
             MenuScope::Tile => self.tile.is_some(),
             MenuScope::Project => self.project.is_some(),
+            MenuScope::Place => self.place.is_some(),
             MenuScope::Window => self.window.is_some(),
             MenuScope::Shelf => self.shelved,
             MenuScope::WindowGroup => self.window_group && self.window.is_some(),

@@ -73,7 +73,6 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         projects: &projects,
     };
     field_model::merge(&mut field, &live);
-    field_model::refresh_titles(&mut field, &live);
 
     let mut widgets = HashMap::new();
     widgets.insert("session".to_owned(), session_widget);
@@ -124,6 +123,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         widgets: &widgets,
         variants: &HashMap::new(),
         projects: &projects,
+        garden: &HashMap::new(),
         actions: lege_types::action::MANIFEST,
         file_search: None,
         recents: &[],
@@ -169,6 +169,7 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
                 (lege_window::WindowId(1), "Notes".to_owned()),
                 (lege_window::WindowId(2), "Sources".to_owned()),
             ],
+            parked: Vec::new(),
             active: true,
         },
         // A terminal whose title is a path: the case that put a chip reading "/" on the bar.
@@ -181,6 +182,7 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
                 lege_window::WindowId(3),
                 "/mnt/Samsung980_1TB/Rust-projects/LegeOS".to_owned(),
             )],
+            parked: Vec::new(),
             active: false,
         },
         crate::taskbar::Entry {
@@ -189,15 +191,12 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
             accent: None,
             app_id: Some("org.legeos.Settings".to_owned()),
             windows: vec![(lege_window::WindowId(4), "Appearance".to_owned())],
+            // A parked window exists only on the bar now that Home holds no window tiles.
+            parked: vec![lege_window::WindowId(4)],
             active: false,
         },
     ];
-    let logical = wanted_size(
-        &entries,
-        Some((lege_window::WindowId(1), false)),
-        false,
-        2560,
-    );
+    let logical = wanted_size(false, false, 2560);
     let scale = Scale::new(scale);
     let (width, height) = (scale.px(logical.0) as u32, scale.px(logical.1) as u32);
 
@@ -207,12 +206,32 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
     let mut input = Input::new();
     let mut screen = BarScreen::default();
     let icons = HashMap::new();
+    let machine = crate::data::MachineReadings {
+        battery: Some(lege_client::status::BatteryState {
+            present: true,
+            percent: Some(72),
+            status: "discharging".to_owned(),
+            ..Default::default()
+        }),
+        audio: Some(lege_client::status::AudioState {
+            present: true,
+            volume_percent: 45,
+            muted: false,
+        }),
+        backlight: Some(lege_client::status::BacklightState {
+            present: true,
+            percent: 60,
+            ..Default::default()
+        }),
+    };
     let data = BarData {
         entries: &entries,
         icons: &icons,
         clock_label: &crate::surface::app::clock_label_now(),
         network_control_available: true,
         activated: Some((lege_window::WindowId(1), false)),
+        home_revealed: false,
+        machine: &machine,
         now_ms: 0,
     };
     // The pointer over the last chip, so one entry is drawn hovered. The dwell has not elapsed
@@ -326,7 +345,6 @@ mod tests {
             projects: &projects,
         };
         field_model::merge(&mut field, &live);
-        field_model::refresh_titles(&mut field, &live);
         // One of each placeable object class the material roles distinguish: the merge already
         // adds widgets and the system shelf; a bound folder and a shortcut pane join here so
         // this baseline is also the reviewed render for their tints.
@@ -499,6 +517,7 @@ mod tests {
             widgets: &widgets,
             variants: &HashMap::new(),
             projects: &projects,
+            garden: &HashMap::new(),
             actions: lege_types::action::MANIFEST,
             file_search: None,
             recents: &recents,
@@ -580,7 +599,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x7194_7ca1_8c3a_8cf5,
+            hash, 0x48c1_2433_81ea_4129,
             "review the Home Field pixels before updating this baseline"
         );
     }

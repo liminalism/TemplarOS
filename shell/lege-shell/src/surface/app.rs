@@ -4,7 +4,7 @@
 //! itself rather than `pixelkit_shell::run_app`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -62,9 +62,13 @@ enum DataUpdate {
     Projects(Vec<ProjectInfo>),
     /// One widget's refreshed content. Content only: by the field's own rule this moves nothing.
     Widget(String, crate::surface::widgets::WidgetSnapshot),
+    /// Charge, volume and backlight for the bar's machine cluster.
+    Machine(crate::data::MachineReadings),
     /// The notifications widget's structured rows, beside its generic snapshot: ids and action
     /// keys the per-item dismiss and invoke controls act on.
     NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
+    /// `HomeGarden1.Contexts` by root.
+    Garden(HashMap<PathBuf, crate::garden::GardenPlace>),
     HomeFieldSettings(HomeFieldSettings),
     /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
     /// the compositor, which is the only process that can see the seat go idle.
@@ -218,6 +222,15 @@ const STEP_PERCENT: i32 = 5;
 /// The application `settings.open` opens — the id of `apps/lege-settings/org.legeos.Settings.desktop`.
 const SETTINGS_APP_ID: &str = "org.legeos.Settings";
 
+/// Every provider role the shell itself acts on, as `Providers1` names them.
+///
+/// One list, read by both the refresh sweep and the `Providers1.Changed` watch, because two lists
+/// is how `file-manager` came to be missing from both: every folder press took
+/// `open_in_file_manager`'s "no file manager is selected" branch on a session that had one
+/// selected, because nothing ever asked for the role. A role the shell acts on and does not fetch
+/// is a control that silently does nothing.
+const SHELL_ROLES: [&str; 4] = ["terminal", "file-search", "file-manager", "code-editor"];
+
 /// How long an armed EMPTY waits for its second press.
 const EMPTY_TRASH_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
 
@@ -334,6 +347,11 @@ struct ShellApp {
     /// Whether the last `ListApplications` succeeded.
     apps_available: bool,
     projects: Vec<ProjectInfo>,
+    /// Homegarden's places by root (`HomeGarden1.Contexts`), refreshed after every tending.
+    garden: HashMap<PathBuf, crate::garden::GardenPlace>,
+    /// Whether Home was revealed at the last frame: the false→true edge is a tending moment.
+    home_was_revealed: bool,
+    garden_tended_at_start: bool,
     /// The copies of each logical application that has more than one, keyed by logical id.
     /// Refreshed with the application list, and empty for nearly every application there is.
     app_variants: HashMap<String, Vec<(String, String, String)>>,
@@ -353,6 +371,8 @@ struct ShellApp {
     preview_requested: HashMap<lege_window::WindowId, Instant>,
     /// Each widget's latest content, keyed by `TileKind::System`'s probe.
     widgets: HashMap<String, crate::surface::widgets::WidgetSnapshot>,
+    /// What the machine is doing, for the bar's readings chip and its account popover.
+    machine: crate::data::MachineReadings,
     /// The Files object's current directory, its treemap and its composition. One directory,
     /// because there is one Files object.
     treemap: Option<(PathBuf, pixelkit_raster::Bitmap)>,
@@ -451,6 +471,9 @@ impl ShellApp {
             apps: Vec::new(),
             apps_available: false,
             projects: Vec::new(),
+            garden: HashMap::new(),
+            home_was_revealed: false,
+            garden_tended_at_start: false,
             app_variants: HashMap::new(),
             home_dir: crate::drawers::standard_paths::home_dir(),
             folder_listings: HashMap::new(),
@@ -459,6 +482,7 @@ impl ShellApp {
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
             widgets: HashMap::new(),
+            machine: crate::data::MachineReadings::default(),
             treemap: None,
             composition: Vec::new(),
             treemap_pending: None,
@@ -524,11 +548,13 @@ impl ShellApp {
                     crate::data::fetch_projects(),
                     crate::data::fetch_browser_sources(),
                 );
-                let (session_widget, notifications_widget, settings_widget) = tokio::join!(
+                let (session_widget, notifications_widget, settings_widget, machine) = tokio::join!(
                     crate::data::fetch_session_widget(),
                     crate::data::fetch_notifications_widget(),
                     crate::data::fetch_settings_widget(),
+                    crate::data::fetch_machine_readings(),
                 );
+                let _ = tx.send(DataUpdate::Machine(machine));
                 if tx.send(DataUpdate::Drawers(drawers)).is_err() {
                     return;
                 }
@@ -546,10 +572,10 @@ impl ShellApp {
                         crate::data::fetch_idle_timeout().await,
                     ));
                 }
-                // The two roles the shell itself acts on. Cheap (one `Report`), and the backstop
-                // under the `Providers1.Changed` watch: a selection made while the shell was
-                // starting still reaches the compositor.
-                for role in ["terminal", "file-search"] {
+                // Every role the shell itself acts on. Cheap (one `Report` each), and the
+                // backstop under the `Providers1.Changed` watch: a selection made while the shell
+                // was starting still reaches the compositor.
+                for role in SHELL_ROLES {
                     let _ = tx.send(DataUpdate::Provider {
                         role,
                         app_id: crate::data::selected_provider(role).await,
@@ -1005,9 +1031,11 @@ impl ShellApp {
                     self.app_variants.insert(logical, variants);
                 }
                 DataUpdate::Projects(projects) => self.projects = projects,
+                DataUpdate::Garden(places) => self.garden = places,
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
                 }
+                DataUpdate::Machine(machine) => self.machine = machine,
                 DataUpdate::HomeFieldSettings(settings) => {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
@@ -1113,6 +1141,12 @@ impl ShellApp {
                 DataUpdate::Field(doc) => {
                     self.field = doc;
                     self.field_synced = Some(true);
+                    if !self.garden_tended_at_start {
+                        // Session start is a tending moment too, and the field is only now
+                        // known to be the daemon's.
+                        self.garden_tended_at_start = true;
+                        self.spawn_tend();
+                    }
                     self.undo.clear();
                 }
                 DataUpdate::FieldUnavailable => {
@@ -1296,7 +1330,6 @@ impl ShellApp {
         if !sending.is_empty() && self.field_synced == Some(true) {
             self.spawn_field_apply(FieldOp::Batch { ops: sending });
         }
-        field_model::refresh_titles(&mut self.field, &live);
         let keys: Vec<String> = toplevels
             .iter()
             .filter_map(|t| t.canonical_app_id.as_ref().map(ToString::to_string))
@@ -1431,6 +1464,11 @@ impl ShellApp {
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
+        if home_revealed && !self.home_was_revealed {
+            // A reveal is the moment the user asks what is current: a tending moment.
+            self.spawn_tend();
+        }
+        self.home_was_revealed = home_revealed;
         let previews_covered = previews_covered(home_revealed, &toplevels);
         self.refresh_previews(&toplevels, previews_covered);
         let Some(home) = &self.home else { return };
@@ -1537,6 +1575,7 @@ impl ShellApp {
             widgets: &self.widgets,
             variants: &self.app_variants,
             projects: &self.projects,
+            garden: &self.garden,
             actions: lege_types::action::MANIFEST,
             file_search,
             recents: &recents,
@@ -1641,6 +1680,7 @@ impl ShellApp {
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
             FieldAction::Project { id, project_id } => self.perform_project(id, &project_id),
+            FieldAction::Place { id, path } => self.perform_place(id, &path),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             // `window.group`, which is the one window verb naming two windows and so cannot go
             // through `perform_on_window`.
@@ -1800,6 +1840,70 @@ impl ShellApp {
         self.spawn_launch_with_args(app_id, arguments);
     }
 
+    /// A Place's tools and its gardening (`@legeos.decision.homegarden-activity-grown-places`).
+    /// The tools are the project tools with the folder itself as root; the garden verbs go to
+    /// `HomeGarden1`, and `garden.why` answers on the field's notice line.
+    fn perform_place(&mut self, id: &'static str, path: &Path) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        if let Some(project_id) = id.strip_prefix("place.") {
+            let project_id: &'static str = match project_id {
+                "open-terminal" => "project.open-terminal",
+                "open-files" => "project.open-files",
+                "open-editor" => "project.open-editor",
+                _ => return,
+            };
+            let root = path.to_string_lossy().into_owned();
+            let Some((role, arguments)) = tool_launch(project_id, &root) else {
+                return;
+            };
+            let Some(app_id) = self.providers.get(&role).cloned() else {
+                self.field_screen.report(
+                    format!("No {role} is selected — choose one in Settings ▸ Providers"),
+                    now_ms,
+                );
+                return;
+            };
+            self.record_recent(&app_id);
+            self.spawn_launch_with_args(app_id, arguments);
+            return;
+        }
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        let path = path.to_path_buf();
+        self.runtime.spawn(async move {
+            match crate::garden::manage(id, &path).await {
+                Ok(Some(answer)) => {
+                    let _ = tx.send(DataUpdate::Notice(answer));
+                }
+                Ok(None) => {
+                    // The record changed; the tile follows at the next tending moment, which is
+                    // now: the person asked, and waiting for the next reveal would read as
+                    // "nothing happened".
+                    let _ = crate::garden::tend(OUTPUT).await;
+                    let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
+                }
+                Err(error) => {
+                    let _ = tx.send(DataUpdate::Notice(error));
+                }
+            }
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
+    /// One tending moment: `HomeGarden1.Tend`, then the places for the tiles to draw. The field
+    /// itself arrives through `HomeField1.Changed` like any other change.
+    fn spawn_tend(&self) {
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            if let Err(error) = crate::garden::tend(OUTPUT).await {
+                tracing::debug!(%error, "tending skipped");
+            }
+            let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
     /// `Projects1.SetCurrent` or `Projects1.Open`, whichever the row asked for.
     fn spawn_project_request(&self, id: &'static str, project_id: String, request: ProjectRequest) {
         let tx = self.data_tx.clone();
@@ -1925,6 +2029,8 @@ impl ShellApp {
             "brightness.decrease" => self.spawn_brightness_step(-STEP_PERCENT),
             "session.logout" | "session.reboot" | "session.poweroff" | "session.suspend"
             | "session.lock" => self.spawn_lifecycle(id),
+            "garden.tend" => self.spawn_tend(),
+            "garden.forget-all" => self.perform_place(id, Path::new("/")),
             "window.show-all" => {
                 self.bridge_call("show_all_windows", ShellBridge::show_all_windows);
             }
@@ -2168,6 +2274,8 @@ impl ShellApp {
         {
             tracing::warn!(%error, "releasing the session lock");
         }
+        // Only this process knows the lock is gone, and session time is counted from that edge.
+        self.runtime.spawn(crate::session_lock::notify_unlocked());
     }
 
     /// Draw the lock screen onto every lock surface.
@@ -2272,38 +2380,28 @@ impl ShellApp {
         })
     }
 
-    /// Create the bottom bar once the compositor connection is up, and drop it while a window is
-    /// fullscreen (`Layer::ShellOverlay` would cover the video). Both claims are declared before
-    /// the first commit maps the surface, so the compositor never sees it as an app window.
+    /// Create the bottom bar once the compositor connection is up. Both claims are declared
+    /// before the first commit maps the surface, so the compositor never sees it as an app window.
+    ///
+    /// The bar used to destroy itself while a window was fullscreen, because `Layer::ShellOverlay`
+    /// is above `Layer::Normal` and would otherwise cover the video. That is the compositor's
+    /// question now: a visible fullscreen window sorts above the overlay on its own output
+    /// (`WindowService::stacking_order`), and a dwell on the bottom edge peeks the bar back out
+    /// from under it. Destroying the surface released its exclusive zone, which reflowed every
+    /// maximized window on that output twice — once going in, once coming out.
     fn ensure_bar(
         &mut self,
         event_loop: &ActiveEventLoop,
         toplevels: &[lege_window::ShellToplevel],
     ) {
-        let fullscreen = toplevels.iter().any(|t| t.fullscreen && !t.shelved);
-        if fullscreen {
-            self.bar = None;
-            self.bar_wanted = (0, 0);
-            return;
-        }
         if self.bar.is_some() {
             return;
         }
         let Some(bridge) = &self.bridge else {
             return;
         };
-        // The bar opens at the size it wants rather than at the output's width and then shrinking:
-        // a full-width band for one frame is exactly the thing the chips exist to avoid.
-        let activated = toplevels
-            .iter()
-            .find(|t| t.activated)
-            .map(|t| (t.window_id, t.maximized));
-        let wanted = crate::surface::bar_screen::wanted_size(
-            &crate::taskbar::entries(toplevels),
-            activated,
-            false,
-            self.output_width(),
-        );
+        let _ = toplevels;
+        let wanted = crate::surface::bar_screen::wanted_size(false, false, self.output_width());
         let (width, height) = (f64::from(wanted.0), f64::from(wanted.1));
         let window = match event_loop.create_window(
             Window::default_attributes()
@@ -2358,6 +2456,7 @@ impl ShellApp {
         let network_control_available = network_control_app(&self.apps).is_some();
         let clock_label = local_clock_label(std::time::SystemTime::now());
         let now_ms = self.started.elapsed().as_millis() as u64;
+        let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
         let Some(bar) = &mut self.bar else {
             return;
         };
@@ -2372,6 +2471,8 @@ impl ShellApp {
             clock_label: &clock_label,
             network_control_available,
             activated,
+            home_revealed,
+            machine: &self.machine,
             now_ms,
         };
         let actions = {
@@ -2387,14 +2488,13 @@ impl ShellApp {
         };
         bar.input.end_frame();
         bar.present();
-        // The surface is only ever as big as the chips need, and grows to the whole width for a
-        // maximized window's controls or an open row. The exclusive zone is unchanged either way,
-        // so neither reflows anything (the compositor reserves BAR_HEIGHT along the whole bottom
-        // edge whatever this surface's own extent is).
+        // The surface is the output's width, and grows upward for an open hover row or the
+        // account popover. The exclusive zone is unchanged either way, so neither reflows
+        // anything (the compositor reserves BAR_HEIGHT along the whole bottom edge whatever this
+        // surface's own extent is).
         let wanted = crate::surface::bar_screen::wanted_size(
-            &entries,
-            activated,
             self.bar_screen.row_open(),
+            self.bar_screen.account_open,
             self.output_width(),
         );
         if wanted != self.bar_wanted {
@@ -2687,7 +2787,7 @@ impl ShellApp {
                 return;
             };
             while changed.next().await.is_some() {
-                for role in ["terminal", "file-search"] {
+                for role in SHELL_ROLES {
                     if tx
                         .send(DataUpdate::Provider {
                             role,
@@ -3949,6 +4049,30 @@ mod tests {
             geometry: lege_window::Rect::new(0, 0, 1920, 1080),
             layer: lege_window::Layer::Normal,
             group: None,
+        }
+    }
+
+    /// Every role in [`SHELL_ROLES`] is a role `note_provider` can actually record, and every
+    /// role the shell acts on is in the list. The second half is the bug this const was written
+    /// for: `file-manager` was acted on and never fetched.
+    #[test]
+    fn every_role_the_shell_acts_on_is_fetched_and_recognised() {
+        for role in SHELL_ROLES {
+            assert!(
+                ProviderRole::ALL.iter().any(|known| known.as_str() == role),
+                "{role} is fetched but `ProviderRole` does not know it"
+            );
+        }
+        for role in [
+            ProviderRole::Terminal,
+            ProviderRole::FileSearch,
+            ProviderRole::FileManager,
+            ProviderRole::CodeEditor,
+        ] {
+            assert!(
+                SHELL_ROLES.contains(&role.as_str()),
+                "the shell acts on {role} and never fetches it"
+            );
         }
     }
 

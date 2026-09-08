@@ -23,6 +23,12 @@ pub struct Entry {
     pub app_id: Option<String>,
     /// Every window in the entry with its title, in encounter order.
     pub windows: Vec<(WindowId, String)>,
+    /// Which of [`Self::windows`] are parked on the shelf.
+    ///
+    /// Parking used to mean a tile appeared on Home; Home now holds only the user's own things,
+    /// so the bar is the only place a parked window still exists. A parked entry is drawn dimmed
+    /// and a click on it brings the window back before activating it.
+    pub parked: Vec<WindowId>,
     /// Whether the activated window is one of these.
     pub active: bool,
 }
@@ -34,6 +40,16 @@ impl Entry {
             [(id, _)] => Some(*id),
             _ => None,
         }
+    }
+
+    /// Whether every window here is parked — what makes the whole chip read as dimmed. A group
+    /// with one member still open is not parked: something of it is on screen.
+    pub fn all_parked(&self) -> bool {
+        !self.windows.is_empty() && self.parked.len() == self.windows.len()
+    }
+
+    pub fn is_parked(&self, window: WindowId) -> bool {
+        self.parked.contains(&window)
     }
 }
 
@@ -63,6 +79,11 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
                 .iter()
                 .map(|member| (member.window_id, title_of(member)))
                 .collect(),
+            parked: members
+                .iter()
+                .filter(|member| member.shelved)
+                .map(|member| member.window_id)
+                .collect(),
             active: members.iter().any(|member| member.activated),
         });
     }
@@ -83,12 +104,18 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
         let active = loose
             .iter()
             .any(|t| t.activated && entry.window_ids.contains(&t.window_id));
+        let parked = loose
+            .iter()
+            .filter(|t| t.shelved && entry.window_ids.contains(&t.window_id))
+            .map(|t| t.window_id)
+            .collect();
         out.push(Entry {
             key: entry.key.clone(),
             label,
             accent: None,
             app_id: Some(entry.key),
             windows,
+            parked,
             active,
         });
     }
@@ -168,6 +195,27 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key, "group:9");
         assert_eq!(entries[0].label, "1 window");
+    }
+
+    #[test]
+    fn a_parked_window_keeps_its_place_on_the_bar() {
+        let mut parked = window(1, "org.legeos.Files", "Downloads", None);
+        parked.shelved = true;
+        let toplevels = vec![
+            parked,
+            window(2, "org.example.Term", "sh", Some(9)),
+            window(3, "org.example.Browser", "docs", Some(9)),
+        ];
+        let entries = entries(&toplevels);
+        let files = entries
+            .iter()
+            .find(|e| e.key == "org.legeos.Files")
+            .unwrap();
+        assert!(files.all_parked(), "a parked window is still on the bar");
+        assert!(files.is_parked(WindowId(1)));
+        let group = entries.iter().find(|e| e.key == "group:9").unwrap();
+        assert!(group.parked.is_empty());
+        assert!(!group.all_parked());
     }
 
     #[test]

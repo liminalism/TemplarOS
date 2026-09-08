@@ -34,6 +34,14 @@ use crate::field_model::{self, GAP};
 /// A folder window's row height and icon side, logical pixels. Tight on purpose: a window three
 /// cells tall has to be able to show more than four things.
 const FOLDER_ROW_HEIGHT: i32 = 20;
+
+/// A Place's roles row: text-led, symbolic glyphs only — "a project should look like the
+/// project, not like a collage of the applications used to manipulate it" (docs/garden).
+const PLACE_ROLES: [(&str, &str); 3] = [
+    ("place.open-terminal", ">_"),
+    ("place.open-files", "\u{25a4}"),
+    ("place.open-editor", "<>"),
+];
 const FOLDER_ICON: i32 = 14;
 
 /// What a folder tray opens to when it is pressed, clamped to the kind's ceiling. A tray is a
@@ -106,6 +114,12 @@ pub enum FieldAction {
     Project {
         id: &'static str,
         project_id: String,
+    },
+    /// The same, for a Place: `place.open-*` and the `garden.*` verbs, over the folder the menu
+    /// or the tile's own roles row named.
+    Place {
+        id: &'static str,
+        path: PathBuf,
     },
     /// The same, for an action that needs to name *which* window it applies to — everything the
     /// context menu offers over a session tile. One declaration, two routes: this is the pointer
@@ -222,6 +236,8 @@ pub struct FieldData<'a> {
     /// Every project `Projects1` knows, and every declared action — the omnibox's other two
     /// in-memory sources.
     pub projects: &'a [field_model::ProjectInfo],
+    /// Homegarden's places by root: the roles row and branch body a grown folder draws.
+    pub garden: &'a HashMap<PathBuf, crate::garden::GardenPlace>,
     pub actions: &'static [lege_types::action::ActionDecl],
     /// The last file search that completed, with the query it answered. The omnibox compares
     /// that query against the one on screen and withholds a stale answer rather than showing it.
@@ -1171,63 +1187,17 @@ impl FieldScreen {
         } else {
             chrome
         };
-        let (home, after_home) = bar.split_left(ui.px(design::HOME_WIDTH));
-        if ui.input.hovering(home) {
-            ui.painter
-                .shadow_rect(home, ui.px(2), ui.px(3), design::text(), 55);
-        }
-        ui.painter.fill_rounded_rect(
-            home,
-            ui.px(design::TILE_RADIUS),
-            if data.home_revealed {
-                design::accent()
-            } else {
-                design::text()
-            },
-        );
-        let home_label = lege_types::action::action("home.reveal")
-            .map_or("Home", |declaration| declaration.control_label());
-        ui.label_styled(
-            home,
-            home_label,
-            TextStyle::tracked(ui.theme.body.face, 13.0, 0.14),
-            // The plate is drawn in the text colour, so its label is ink *on* a strong fill —
-            // light on a light palette's dark plate, dark on a dark palette's light one. It was
-            // a hardcoded near-white, which on the dark palette was invisible.
-            design::strong_ink(),
-            Align::Centre,
-        );
-        if ui.input.take_click(home) {
-            if self.files_expanded {
-                self.collapse_files(data.now_ms);
-            } else {
-                actions.push(FieldAction::RevealHome);
-            }
-        }
-
-        let after_home = Rect::new(
-            after_home.x + gap,
-            after_home.y,
-            (after_home.w - gap).max(0),
-            after_home.h,
-        );
-        let after_home = self.draw_help_button(ui, after_home, gap);
-        let status_width = if after_home.w >= ui.px(820) {
-            (after_home.w / 3).clamp(ui.px(300), ui.px(520))
-        } else {
-            0
-        };
-        let (status, mid) = after_home.split_right(status_width);
-        let mid = if status_width == 0 {
-            mid
-        } else {
-            Rect::new(mid.x, mid.y, (mid.w - gap).max(0), mid.h)
-        };
-        // Centred in the bar, clamped so it never runs under Home or Help.
-        let search_w = ui.px(design::SEARCH_WIDTH).min(mid.w);
-        let ideal_x = bar.x + (bar.w - search_w) / 2;
-        let search_x = ideal_x.clamp(mid.x, mid.x + mid.w - search_w);
-        let search_area = Rect::new(search_x, mid.y, search_w, mid.h);
+        // No Home plate and no Help button. A plate labelled "Home" *on* Home said the word for
+        // the surface it was already standing on, and the route it offered — reveal the field
+        // from under the windows — is the bar's Home chip, which is visible from everywhere and
+        // not only from the place it takes you to. Help is a secondary-click row and F1
+        // (`context_menu.rs`, `MenuScope::Field`); a permanent button in the corner of every
+        // session is furniture for something a person reaches for twice.
+        // Centred in the bar, and nothing else is in it. The live/parked summary that used to
+        // sit on the right went with the window tiles it counted: the bar's taskbar lists every
+        // running window by name, which is more than a number ever said.
+        let search_w = ui.px(design::SEARCH_WIDTH).min(bar.w);
+        let search_area = Rect::new(bar.x + (bar.w - search_w) / 2, bar.y, search_w, bar.h);
         if ui.input.take_click(search_area) {
             self.search_focused = true;
         }
@@ -1267,10 +1237,6 @@ impl FieldScreen {
             false,
         );
         ui.theme = previous_theme;
-
-        if status_width > 0 {
-            Self::draw_information_row(ui, status, data);
-        }
 
         if recents_visible {
             let recents_row = Rect::new(
@@ -1573,39 +1539,6 @@ impl FieldScreen {
         }
     }
 
-    fn draw_help_button(&mut self, ui: &mut Ui<'_>, area: Rect, gap: i32) -> Rect {
-        let help_label = lege_types::action::action("field.help")
-            .map_or("Help", |declaration| declaration.control_label());
-        let (help, before_help) = area.split_right(ui.px(64).min(area.w / 4));
-        design::shell(
-            ui,
-            help,
-            design::shell_fill(),
-            design::edge(),
-            Elevation::Rest,
-        );
-        if ui.input.hovering(help) {
-            ui.painter.fill_rect(help.inset(1), design::accent_soft());
-        }
-        ui.label_styled(
-            help.inset(ui.px(6)),
-            help_label,
-            TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-            design::text_dim(),
-            Align::Centre,
-        );
-        if ui.input.take_click(help) {
-            self.help_open = true;
-            self.search_focused = false;
-        }
-        Rect::new(
-            before_help.x,
-            before_help.y,
-            (before_help.w - gap).max(0),
-            before_help.h,
-        )
-    }
-
     /// Toggle/dismiss Help and, while it is open, claim the entire surface for it.
     fn handle_help_mode(&mut self, ui: &mut Ui<'_>, area: Rect) -> bool {
         let f1 = ui.input.keys().contains(&KeyInput::Function(1));
@@ -1839,47 +1772,6 @@ impl FieldScreen {
         }
     }
 
-    /// The live/parked summary. Network and the clock live on the bottom bar now
-    /// (`crate::surface::bar_screen`), which is visible on Home too, so the row says only what
-    /// the field itself does not show.
-    fn draw_information_row(ui: &mut Ui<'_>, status: Rect, data: &FieldData<'_>) {
-        design::shell(
-            ui,
-            status,
-            design::recessed(),
-            design::edge(),
-            Elevation::Rest,
-        );
-        // The counts are a fallback, not a readout. When every live window already has a tile of
-        // its own on the field, saying "3 LIVE" beside three visible tiles is a number that
-        // repeats what the eye can already see — so it is only drawn when the field is *not*
-        // showing the whole story, which is exactly when a person needs to be told.
-        let live = data
-            .toplevels
-            .iter()
-            .filter(|window| !window.shelved)
-            .count();
-        let all_accounted_for =
-            data.toplevels
-                .iter()
-                .filter(|window| !window.shelved)
-                .all(|window| {
-                    field_model::session_tile_for(data.field, window)
-                        .is_some_and(|tile| data.field.location(tile).is_some())
-                });
-        if !all_accounted_for {
-            let parked = data.toplevels.len().saturating_sub(live);
-            let summary = format!("{live} live · {parked} parked");
-            ui.label_styled(
-                status.inset(ui.px(8)),
-                &summary,
-                design::state_style(ui),
-                design::text_dim(),
-                Align::Centre,
-            );
-        }
-    }
-
     /// The Files object over the whole field: one breadcrumb band and the object's own body.
     ///
     /// One nesting level, where there used to be three — a breadcrumb band, then a surface with
@@ -1903,14 +1795,25 @@ impl FieldScreen {
             crate::files_surface::FilesLocation::Directory(_) => "Home  ▸  Files".to_owned(),
             other => format!("Home  ▸  Files  ▸  {}", other.label()),
         };
+        // The object's own way out, at the band's right end. Escape closes it and so does a
+        // press on the dimmed field around it, but neither is visible: the Home plate used to be
+        // the visible one and Home has no plate any more.
+        let (close, label) = crumb.split_right(ui.px(32).min(crumb.w));
         ui.label_styled(
-            crumb.inset(ui.px(6)),
+            label.inset(ui.px(6)),
             &crumb_text,
             style,
             ui.theme.text_dim,
             Align::Left,
         );
-        if !self.search_focused && ui.input.keys().contains(&KeyInput::Escape) {
+        if ui.input.hovering(close) {
+            ui.painter
+                .fill_rounded_rect(close.inset(ui.px(4)), ui.px(4), design::accent_soft());
+        }
+        ui.label_styled(close, "⌄", style, ui.theme.text_dim, Align::Centre);
+        if ui.input.take_click(close)
+            || (!self.search_focused && ui.input.keys().contains(&KeyInput::Escape))
+        {
             self.collapse_files(data.now_ms);
             return;
         }
@@ -2666,6 +2569,10 @@ impl FieldScreen {
                     Some(TileKind::Project { project_id }) => Some(project_id.clone()),
                     _ => None,
                 }),
+                place: tile.and_then(|id| match doc.kind_of(id) {
+                    Some(TileKind::Folder { path }) => Some(path.clone()),
+                    _ => None,
+                }),
             },
             choices,
         );
@@ -2737,6 +2644,13 @@ impl FieldScreen {
             | "project.open-editor") => {
                 if let Some(project_id) = chosen.target.project.clone() {
                     actions.push(FieldAction::Project { id, project_id });
+                }
+            }
+            id if id.starts_with("place.") || id.starts_with("garden.") => {
+                if id == "garden.tend" {
+                    actions.push(FieldAction::RunAction(id));
+                } else if let Some(path) = chosen.target.place.clone() {
+                    actions.push(FieldAction::Place { id, path });
                 }
             }
             "window.park" => {
@@ -3382,11 +3296,16 @@ impl FieldScreen {
                     });
                 }
             }
+            // The Files object opens the file manager on home, exactly as a Folder tile opens it
+            // on its own path. It used to launch `org.legeos.Files` by name, which is an
+            // application this desktop no longer ships — every press logged "no manifest for
+            // org.legeos.Files" and did nothing. Which file manager runs is the provider role's
+            // answer, never a name written here.
             TileKind::Widget { widget, .. } => {
-                if widget == field_model::FILES_WIDGET {
-                    actions.push(FieldAction::Launch(
-                        "org.legeos.Files".parse().expect("built-in app id"),
-                    ));
+                if widget == field_model::FILES_WIDGET
+                    && let Some(home) = crate::drawers::standard_paths::home_dir()
+                {
+                    actions.push(FieldAction::OpenInFiles(home));
                 }
             }
             // A group's body opens it, exactly as a project's does — Full is the zoom, and the
@@ -3693,6 +3612,152 @@ impl FieldScreen {
     /// Navigation is view state, not document state: the tile keeps the path it was placed at, so
     /// closing and reopening the session puts the window back where it was put, not wherever it
     /// was last browsed to.
+    /// A grown Place, one rung at a time (`@legeos.decision.homegarden-activity-grown-places`):
+    /// Small is the name and one state line; Wide adds the roles row — text-led actions resolved
+    /// through providers at press, never application icons; Large adds the branch body, the
+    /// *used* structure beneath the root drawn as a trunk with the branches that earned it,
+    /// heavier branches larger, and falls back to the ordinary listing until any has. Full is
+    /// the folder window, which never reaches here.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_place(
+        &mut self,
+        ui: &mut Ui<'_>,
+        content: Rect,
+        tile: &Tile,
+        rung: Representation,
+        path: &Path,
+        place: &crate::garden::GardenPlace,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let inner = content.inset(ui.px(10));
+        if inner.w <= 0 || inner.h <= 0 {
+            return;
+        }
+        let line = ui.px(FOLDER_ROW_HEIGHT);
+        let (name_area, rest) = inner.split_top(ui.px(26));
+        ui.label_styled(
+            name_area,
+            &tile.title,
+            design::title_style(ui),
+            if place.pinned {
+                design::accent()
+            } else {
+                design::text()
+            },
+            Align::Left,
+        );
+        let (state_area, rest) = rest.split_top(line);
+        ui.label_styled(
+            state_area,
+            &place.state_line(),
+            design::state_style(ui),
+            design::text_dim(),
+            Align::Left,
+        );
+        if rung < Representation::Wide {
+            return;
+        }
+        let (roles, rest) = rest.split_top(ui.px(28));
+        let mut x = roles.x;
+        for (id, glyph) in PLACE_ROLES {
+            let Some(declaration) = lege_types::action::action(id) else {
+                continue;
+            };
+            let label = format!("{glyph} {}", declaration.control_label());
+            let width = ui.px(24) + ui.px(8) * i32::try_from(label.chars().count()).unwrap_or(8);
+            let chip = Rect::new(
+                x,
+                roles.y + ui.px(2),
+                width.min(roles.right() - x),
+                roles.h - ui.px(4),
+            );
+            if chip.w <= ui.px(24) {
+                break;
+            }
+            if ui.input.hovering(chip) {
+                ui.painter.fill_rounded_rect(
+                    chip,
+                    ui.px(design::CHIP_RADIUS),
+                    design::accent_soft(),
+                );
+            }
+            ui.label_styled(
+                chip,
+                &label,
+                design::state_style(ui),
+                design::text(),
+                Align::Centre,
+            );
+            if ui.input.take_click(chip) {
+                actions.push(FieldAction::Place {
+                    id,
+                    path: path.to_path_buf(),
+                });
+            }
+            x += width + ui.px(6);
+        }
+        if rung < Representation::Large || rest.h < line {
+            return;
+        }
+        let rows = crate::garden::branch_rows(path, &place.tree, (rest.h / line).max(0) as usize);
+        if rows.is_empty() {
+            self.paint_folder_window(ui, rest, tile.id, path, data, actions);
+            return;
+        }
+        Self::paint_branches(ui, rest, line, &rows, actions);
+    }
+
+    /// The branch body: one row per used node, a bar whose thickness is the node's share of its
+    /// strongest sibling, directories in the accent and files dimmer.
+    fn paint_branches(
+        ui: &mut Ui<'_>,
+        rest: Rect,
+        line: i32,
+        rows: &[crate::garden::BranchRow],
+        actions: &mut Vec<FieldAction>,
+    ) {
+        let mut y = rest.y;
+        for row in rows {
+            let indent = ui.px(14) * i32::try_from(row.depth).unwrap_or(0);
+            let area = Rect::new(rest.x + indent, y, (rest.w - indent).max(0), line);
+            if ui.input.hovering(area) {
+                ui.painter.fill_rect(area, ui.theme.hover);
+            }
+            let (trunk, label) = area.split_left(ui.px(10));
+            let thickness = (ui.px(2)
+                + (f32::from(u8::try_from(ui.px(6)).unwrap_or(6)) * row.weight) as i32)
+                .max(1);
+            ui.painter.fill_rect(
+                Rect::new(trunk.x, area.y + (line - thickness) / 2, ui.px(6), thickness),
+                if row.is_dir {
+                    design::accent()
+                } else {
+                    design::text_faint()
+                },
+            );
+            ui.label_styled(
+                label,
+                &row.name,
+                design::state_style(ui),
+                if row.is_dir {
+                    design::text()
+                } else {
+                    design::text_dim()
+                },
+                Align::Left,
+            );
+            if ui.input.take_click(area) {
+                actions.push(if row.is_dir {
+                    FieldAction::OpenInFiles(row.path.clone())
+                } else {
+                    FieldAction::OpenFile(row.path.clone())
+                });
+            }
+            y += line;
+        }
+    }
+
     fn paint_folder_window(
         &mut self,
         ui: &mut Ui<'_>,
@@ -4242,7 +4307,13 @@ impl FieldScreen {
                 }
             }
             TileKind::Folder { path } => {
-                self.paint_folder_window(ui, content, tile.id, path, data, actions);
+                let rung = representation_of(data.field, tile);
+                match data.garden.get(path) {
+                    Some(place) if rung < Representation::Full => {
+                        self.paint_place(ui, content, tile, rung, path, place, data, actions);
+                    }
+                    _ => self.paint_folder_window(ui, content, tile.id, path, data, actions),
+                }
             }
             TileKind::Tray { tray_id } => {
                 let inner = content.inset(ui.px(12));
@@ -4905,6 +4976,7 @@ mod tests {
             for app in ["org.legeos.Files", "org.example.Editor"] {
                 field_model::pin_app(&mut doc, &app.parse().unwrap());
             }
+
             Harness {
                 screen: FieldScreen::default(),
                 doc,
@@ -4925,6 +4997,16 @@ mod tests {
                 now: 0,
                 area: Rect::new(0, 0, W, H),
             }
+        }
+
+        /// Seed the field with a tile per running window, and a container per group.
+        ///
+        /// Home places none of these any more — a running window is the bar's business — but the
+        /// field still understands them and `FieldScreen` still draws and acts on them, which is
+        /// what the tests calling this cover.
+        fn with_window_tiles(mut self) -> Self {
+            field_model::place_window_tiles(&mut self.doc, &self.toplevels);
+            self
         }
 
         fn frame(&mut self) -> Vec<FieldAction> {
@@ -4981,6 +5063,7 @@ mod tests {
                 widgets: &widgets,
                 variants: &self.variants,
                 projects: &[],
+                garden: &HashMap::new(),
                 actions: lege_types::action::MANIFEST,
                 file_search: None,
                 recents: &recents,
@@ -5095,7 +5178,7 @@ mod tests {
 
     #[test]
     fn clicking_an_app_tile_launches_it_and_a_session_tile_restores_or_activates() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         let files = tile_id_for("app:org.legeos.Files");
         let rect = h.rect_of(files);
         let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
@@ -5397,19 +5480,12 @@ mod tests {
             });
             toplevel.shelved = false;
         }
-        merge(
-            &mut h.doc,
-            &LiveState {
-                toplevels: &h.toplevels,
-                projects: &[],
-            },
-        );
-        h
+        h.with_window_tiles()
     }
 
     #[test]
     fn dropping_one_window_on_another_asks_the_compositor_to_group_them() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         // Two loose windows, both on the field.
         let one = field_model::session_tile_for(&h.doc, &h.toplevels[0]).expect("a tile");
         let two = field_model::session_tile_for(&h.doc, &h.toplevels[1]).expect("a tile");
@@ -6230,13 +6306,13 @@ mod tests {
         let files = field_model::files_tile_id();
         let rect = h.rect_of(files);
 
-        // The object's own ground starts the Files application — a window the switcher lists —
-        // rather than growing the shell into a file manager.
+        // The object's own ground opens the home directory in the file manager — a window the
+        // switcher lists — rather than growing the shell into a file manager.
         let launched = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
         assert!(
             launched
                 .iter()
-                .any(|a| matches!(a, FieldAction::Launch(id) if id.as_str() == "org.legeos.Files")),
+                .any(|a| matches!(a, FieldAction::OpenInFiles(_))),
             "{launched:?}"
         );
         assert!(!h.screen.files_expanded);
@@ -6897,21 +6973,8 @@ mod tests {
     fn a_project_zooms_in_and_its_children_can_be_moved_within_and_back_out() {
         let mut h = Harness::new();
         // This is a test about zooming into a project, not about how much of a 11×7 field Home's
-        // own furniture claims: the system widgets are stashed so the hand-built project below
-        // has a quadrant to land in on the small test grid.
-        // Only the ones this field actually received: a small field places the widgets it has
-        // room for and leaves the rest off, so stashing the whole manifest would name a tile that
-        // was never placed.
-        for probe in field_model::SYSTEM_WIDGETS {
-            let id = tile_id_for(&format!("system:{probe}"));
-            if h.doc.tile(id).is_some() {
-                h.doc = apply(&h.doc, &FieldOp::Stash { id })
-                    .expect("stash applies")
-                    .0;
-            }
-        }
-        // The Files object goes with them, for the same reason: it is Home's furniture, and this
-        // test needs a quadrant free.
+        // own furniture claims: the Files object is stashed so the hand-built project below has a
+        // quadrant to land in on the small test grid.
         h.doc = apply(
             &h.doc,
             &FieldOp::Stash {
@@ -7316,7 +7379,7 @@ mod tests {
     /// that menu carries the window rows.
     #[test]
     fn secondary_click_over_a_session_tile_opens_that_windows_menu() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
@@ -7348,7 +7411,7 @@ mod tests {
     /// unsaved work and the compositor cannot know. One press arms; only the second closes.
     #[test]
     fn closing_a_window_from_the_menu_takes_two_presses() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
@@ -7408,7 +7471,7 @@ mod tests {
 
     #[test]
     fn escape_dismisses_the_menu_and_the_field_does_not_also_act_on_that_press() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.screen.focus = Some(open);
@@ -7429,7 +7492,7 @@ mod tests {
     /// own, and must not also open whatever the menu was covering.
     #[test]
     fn clicking_away_dismisses_the_menu_without_activating_anything_underneath() {
-        let mut h = Harness::new();
+        let mut h = Harness::new().with_window_tiles();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
