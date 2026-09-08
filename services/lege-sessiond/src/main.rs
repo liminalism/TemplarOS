@@ -184,6 +184,14 @@ struct Services {
     history: Arc<SqliteHistory>,
     open_projects: Arc<RwLock<BTreeSet<String>>>,
     checkpoint_transport: Arc<dyn checkpoint::CheckpointTransport>,
+    /// Session-time edges — start, lock, unlock, sleep — as they happen, in this process.
+    ///
+    /// The bus signals on `Lifecycle1` are a *view* of this (`lifecycle::spawn_signal_relay`);
+    /// the channel is the record. Anything in this daemon that has to count session time rather
+    /// than wall-clock time subscribes here and pays no round trip for it.
+    session_edges: apis::lifecycle::SessionEdges,
+    /// Every successful launch, as `(resolved variant, arguments)`. Fed by `Launcher1`'s observer.
+    launches: tokio::sync::broadcast::Sender<(lege_types::AppId, Vec<String>)>,
 }
 
 fn load_services(cli: &Cli) -> Result<Services> {
@@ -294,6 +302,8 @@ fn load_services(cli: &Cli) -> Result<Services> {
         history,
         open_projects: Arc::new(RwLock::new(BTreeSet::new())),
         checkpoint_transport: Arc::new(checkpoint::NullCheckpointTransport),
+        session_edges: tokio::sync::broadcast::channel(apis::lifecycle::EDGE_CAPACITY).0,
+        launches: tokio::sync::broadcast::channel(apis::lifecycle::EDGE_CAPACITY).0,
     })
 }
 
@@ -339,10 +349,17 @@ async fn serve_launch_and_association_interfaces(
         )
         .await
         .context("serving AppIdentity1")?;
+    // The observer only republishes: appd stays free of any idea of what a launch *means*, and
+    // whoever cares subscribes to `services.launches`.
+    let launches = services.launches.clone();
     object_server
         .at(
             names::LAUNCHER_PATH,
-            LauncherApi::new(services.registry.clone(), backend, connection.clone()),
+            LauncherApi::new(services.registry.clone(), backend, connection.clone()).with_observer(
+                Box::new(move |app_id, arguments| {
+                    let _ = launches.send((app_id.clone(), arguments.to_vec()));
+                }),
+            ),
         )
         .await
         .context("serving Launcher1")?;
@@ -431,6 +448,36 @@ async fn serve_hardware_status_interfaces(
     Ok(())
 }
 
+/// `Session.Lifecycle1`: ending, suspending and locking, and the session's own edges.
+///
+/// Served whether or not the system bus was reachable at startup: `SystemLogind` retries lazily,
+/// the way `Location1` does. Making the registration conditional is what made "the shutdown button
+/// does nothing" possible — a session that lost that one race had no power controls at all for its
+/// whole life and said so only in a startup warning. An interface that answers "the system bus is
+/// unreachable" can be reported to the user; an absent one cannot.
+async fn serve_lifecycle_interface(
+    connection: &zbus::Connection,
+    system_connection: Option<zbus::Connection>,
+    services: &Services,
+) -> Result<()> {
+    connection
+        .object_server()
+        .at(
+            names::LIFECYCLE_PATH,
+            apis::lifecycle::LifecycleApi::new(
+                Arc::new(apis::lifecycle::SystemLogind::new(system_connection)),
+                // Logout goes through the *session* bus manager, which is this connection: ending
+                // the session target is what lets the display manager see a clean exit.
+                Arc::new(apis::lifecycle::UserManagerSession::new(connection.clone())),
+                Arc::new(apis::lifecycle::PeerCgroupUnit::new(connection.clone())),
+                services.session_edges.clone(),
+            ),
+        )
+        .await
+        .context("serving Session.Lifecycle1")?;
+    Ok(())
+}
+
 /// The rest of the session-core domains: history/settings/projects/power/location.
 async fn serve_policy_interfaces(
     connection: &zbus::Connection,
@@ -500,26 +547,7 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Notifications1")?;
-    // Lifecycle needs the system bus to reach logind, and is served whether or not one was
-    // reachable at startup: `SystemLogind` retries lazily, the way `Location1` does. Making the
-    // registration conditional is what made "the shutdown button does nothing" possible — a
-    // session that lost that one race had no power controls at all and said so only in a startup
-    // warning. An interface that answers "the system bus is unreachable" can be reported to the
-    // user; an absent one cannot.
-    object_server
-        .at(
-            names::LIFECYCLE_PATH,
-            apis::lifecycle::LifecycleApi::new(
-                std::sync::Arc::new(apis::lifecycle::SystemLogind::new(
-                    system_connection.clone(),
-                )),
-                // Logout goes through the *session* bus manager, which is this connection: ending
-                // the session target is what lets the display manager see a clean exit.
-                std::sync::Arc::new(apis::lifecycle::UserManagerSession::new(connection.clone())),
-            ),
-        )
-        .await
-        .context("serving Session.Lifecycle1")?;
+    serve_lifecycle_interface(connection, system_connection.clone(), services).await?;
     object_server
         .at(
             names::LOCATION_PATH,
@@ -760,7 +788,12 @@ async fn main() -> Result<()> {
 
     reconcile::reconcile_instances(&connection, &services.registry, &services.store).await;
     let host_connection = system_connection.clone();
+    // One match rule on logind, so an hour asleep is not counted as an hour of session time.
+    apis::lifecycle::spawn_sleep_watch(system_connection.clone(), services.session_edges.clone());
     serve_interfaces(&connection, system_connection, &services, backend).await?;
+    // Subscribed before anything is sent, so no edge — `Started` included — is emitted into an
+    // empty channel and lost.
+    apis::lifecycle::spawn_signal_relay(connection.clone(), &services.session_edges);
 
     // Background work (autostart, crash ingestion, the checkpoint relay) needs to emit
     // `History1.Changed` the same way a D-Bus-invoked mutation does; that requires the
@@ -785,6 +818,12 @@ async fn main() -> Result<()> {
     report_session_healthy(host_connection.as_ref()).await;
     spawn_compositor_active_report(host_connection);
     spawn_background_tasks(&connection, &services, backend, history_notifier);
+
+    // The last thing startup does, so every in-process subscriber — the signal relay and anything
+    // `serve_interfaces` or `spawn_background_tasks` wired up — is already listening.
+    let _ = services
+        .session_edges
+        .send(apis::lifecycle::SessionEdge::Started);
 
     pending::<()>().await;
     Ok(())
