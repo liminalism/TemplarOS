@@ -10,6 +10,7 @@ use crate::{apis::failed, checkpoint::CheckpointTransport};
 use lege_appd::{Registry, launcher::LaunchBackend};
 use lege_session_core::{
     history::{Event, EventId, EventKind, HistoryStore, SqliteHistory},
+    homegarden::ActivityKind,
     projects::{self, Project, ProjectApp, ProjectId, ProjectState, hints_for},
 };
 use lege_state::Store;
@@ -36,6 +37,7 @@ pub struct ProjectsApi {
     checkpoint: Arc<dyn CheckpointTransport>,
     open_projects: Arc<RwLock<BTreeSet<String>>>,
     history: Arc<SqliteHistory>,
+    garden: crate::apis::homegarden::HomeGardenApi,
 }
 
 impl ProjectsApi {
@@ -47,6 +49,7 @@ impl ProjectsApi {
         checkpoint: Arc<dyn CheckpointTransport>,
         open_projects: Arc<RwLock<BTreeSet<String>>>,
         history: Arc<SqliteHistory>,
+        garden: crate::apis::homegarden::HomeGardenApi,
     ) -> Self {
         Self {
             store,
@@ -56,6 +59,7 @@ impl ProjectsApi {
             checkpoint,
             open_projects,
             history,
+            garden,
         }
     }
 
@@ -348,6 +352,12 @@ impl ProjectsApi {
         self.push_project_hints(&project, true).await;
         // Recent-file and last-directory suggestions should follow the work.
         self.tell_files_the_project(Some(&project), None).await;
+        self.garden.observe_activity(
+            ActivityKind::ProjectEntered,
+            project.root.clone(),
+            None,
+            None,
+        );
         Ok(())
     }
 
@@ -589,8 +599,17 @@ impl ProjectsApi {
             return Ok(());
         }
         let project = self.load(project_id)?;
+        if self.current().as_deref() == Some(project_id) {
+            return Ok(());
+        }
         self.store_current(Some(project_id))?;
         self.tell_files_the_project(Some(&project), None).await;
+        self.garden.observe_activity(
+            ActivityKind::ProjectEntered,
+            project.root.clone(),
+            None,
+            None,
+        );
         let _ = emitter.current_changed(project_id.to_owned()).await;
         Ok(())
     }

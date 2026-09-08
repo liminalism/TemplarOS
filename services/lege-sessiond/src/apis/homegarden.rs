@@ -56,6 +56,14 @@ pub struct HomeGardenApi {
     connection: zbus::Connection,
 }
 
+impl std::fmt::Debug for HomeGardenApi {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HomeGardenApi")
+            .finish_non_exhaustive()
+    }
+}
+
 impl HomeGardenApi {
     pub fn new(
         store: Store,

@@ -6,6 +6,7 @@ use crate::apis::failed;
 use lege_session_core::{
     history::{Event, EventId, EventKind, HistoryStore, SqliteHistory},
     homefield,
+    homegarden::ActivityKind,
 };
 use lege_state::Store;
 use std::sync::Arc;
@@ -15,11 +16,20 @@ use zbus::{fdo, object_server::SignalEmitter};
 pub struct HomeFieldApi {
     store: Store,
     history: Arc<SqliteHistory>,
+    garden: crate::apis::homegarden::HomeGardenApi,
 }
 
 impl HomeFieldApi {
-    pub fn new(store: Store, history: Arc<SqliteHistory>) -> Self {
-        Self { store, history }
+    pub fn new(
+        store: Store,
+        history: Arc<SqliteHistory>,
+        garden: crate::apis::homegarden::HomeGardenApi,
+    ) -> Self {
+        Self {
+            store,
+            history,
+            garden,
+        }
     }
 
     fn record(&self, message: String) {
@@ -142,6 +152,10 @@ impl HomeFieldApi {
         };
         let doc = homefield::apply_op(&self.store, output, &op)
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        // Record only after the placement committed. A rejected request or an already-present
+        // tile must not create activity that did not happen.
+        self.garden
+            .observe_activity(ActivityKind::PlacedOnHome, path.to_path_buf(), None, None);
         self.record(format!(
             "Home Field on {output}: folder {} added (revision {}).",
             path.display(),
