@@ -757,7 +757,12 @@ impl BarScreen {
                 let badge = Rect::new(icon.right() - side / 2, icon.y, side.min(cell.w), side);
                 ui.painter
                     .fill_rounded_rect(badge, ui.px(design::CHIP_RADIUS), design::accent());
-                ui.label(badge, &entry.windows.len().to_string(), design::TAG_INK, Align::Centre);
+                ui.label(
+                    badge,
+                    &entry.windows.len().to_string(),
+                    design::TAG_INK,
+                    Align::Centre,
+                );
             }
             if entry.active {
                 // The active entry wears the window's name tag: its icon and its title.

@@ -1780,7 +1780,9 @@ mod reconcile_tests {
         )
         .unwrap()
         .0;
-        let remote = apply(&remote, &FieldOp::Remove { id: TileId(2) }).unwrap().0;
+        let remote = apply(&remote, &FieldOp::Remove { id: TileId(2) })
+            .unwrap()
+            .0;
         let remote = with_folder(&remote, 3, "/home/dk/c", Cell::new(8, 4));
         let ops = reconcile_remote(&local, &remote);
         let mut doc = local.clone();
@@ -1792,7 +1794,10 @@ mod reconcile_tests {
             Placement::new(Cell::new(0, 5), Span::new(4, 3))
         );
         assert!(doc.location(TileId(2)).is_none());
-        assert_eq!(doc.location(TileId(3)).unwrap().placement.cell, Cell::new(8, 4));
+        assert_eq!(
+            doc.location(TileId(3)).unwrap().placement.cell,
+            Cell::new(8, 4)
+        );
         assert!(ops.iter().all(|op| !matches!(op, FieldOp::Move { .. })));
         assert!(reconcile_remote(&doc, &remote).is_empty(), "idempotent");
     }

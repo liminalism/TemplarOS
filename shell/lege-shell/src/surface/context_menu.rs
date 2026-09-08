@@ -1049,7 +1049,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_place_offers_pin_or_unpin_by_its_state_and_keep_only_until_kept() {
         // A Place: "Pin here" or "Unpin", never both, and "Keep" only until it is kept.

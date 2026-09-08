@@ -291,8 +291,10 @@ impl HomeGardenApi {
                 Ok(next) => {
                     self.record(format!(
                         "Home on {output}: {} {verb}.",
-                        root.file_name()
-                            .map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned())
+                        root.file_name().map_or_else(
+                            || root.display().to_string(),
+                            |n| n.to_string_lossy().into_owned()
+                        )
                     ));
                     self.announce_field_change(&output, next.revision).await;
                 }

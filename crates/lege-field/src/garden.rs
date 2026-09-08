@@ -226,7 +226,10 @@ fn free_landing(
     remembered: Option<Cell>,
     corner: HomeCorner,
 ) -> Option<Cell> {
-    let room = Span::new(span.cols.max(GROWTH_ROOM.cols), span.rows.max(GROWTH_ROOM.rows));
+    let room = Span::new(
+        span.cols.max(GROWTH_ROOM.cols),
+        span.rows.max(GROWTH_ROOM.rows),
+    );
     let anchor = remembered.unwrap_or_else(|| corner.cell(doc.cols, doc.rows, room));
     let mut best: Option<(u32, Cell)> = None;
     for row in 0..doc.rows {
@@ -347,7 +350,13 @@ mod tests {
             }
             doc
         };
-        assert_eq!(doc.location(garden_tile_id(&b.root)).unwrap().placement.cell, Cell::new(2, 0));
+        assert_eq!(
+            doc.location(garden_tile_id(&b.root))
+                .unwrap()
+                .placement
+                .cell,
+            Cell::new(2, 0)
+        );
         // `a` wants 4x2: the only way is for `b` to give up its left column, moving to (3,0).
         let mut a_wants = a_first;
         a_wants.wanted = Some(Span::new(4, 2));
@@ -355,7 +364,10 @@ mod tests {
         for op in &ops {
             let next = crate::apply(&doc, &op.op).unwrap().0;
             assert_eq!(
-                next.location(garden_tile_id(&b.root)).unwrap().placement.cell,
+                next.location(garden_tile_id(&b.root))
+                    .unwrap()
+                    .placement
+                    .cell,
                 Cell::new(2, 0),
                 "{:?} shifted b",
                 op.op
@@ -363,7 +375,10 @@ mod tests {
         }
         // Growing *down* instead is free and is taken: the axis ladder finds 2x4 is out of the
         // grid, so nothing there either — the field is 4 rows and `a` would need row 4.
-        assert!(ops.iter().all(|t| !matches!(t.op, FieldOp::Resize { span, .. } if span.cols == 4)));
+        assert!(
+            ops.iter()
+                .all(|t| !matches!(t.op, FieldOp::Resize { span, .. } if span.cols == 4))
+        );
     }
 
     /// A Trace placed at the corner leaves room to become Expanded in place.
