@@ -364,6 +364,18 @@ record legeos.evidence.capture-globals-stay-shell-only/1 : evidence {
         """
 }
 
+record legeos.evidence.content-changes-still-cannot-grow-a-place/1 : evidence {
+    title "12 ledger tests and 2 tender tests pass with the new terminal-entered kind in place: only the declared semantic kinds carry weight, a burst in one session stays a Trace against a mixed multi-session context, and tending still emits only Place/Resize/Remove at a tending moment."
+    state verified
+    result pass
+    method command
+    observed_at git:d413a55700102b6c7f0186df4c10a0ef0e744510
+    command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden"
+    summary """
+        12 ledger tests and 2 tender tests pass with the new terminal-entered kind in place: only the declared semantic kinds carry weight, a burst in one session stays a Trace against a mixed multi-session context, and tending still emits only Place/Resize/Remove at a tending moment.
+        """
+}
+
 record legeos.evidence.d2-archive-verify-20260903/1 : evidence {
     title "D2: archive verification catches mixed sets, missing components, tampered pool files and an unfinished publish"
     state verified
@@ -1740,6 +1752,18 @@ record legeos.evidence.home-search-legibility-renders-20260908/1 : evidence {
         """
 }
 
+record legeos.evidence.home-subscribes-before-it-reads-and-declares-its-remaining-timers/1 : evidence {
+    title "375 shell tests pass with the three-second sweep replaced by seven subscribe-then-snapshot watches and one five-minute reconciliation; the clipboard transfer now waits in poll and its deadline test passes. check-packaging accepts the shell's three declared timer exceptions."
+    state verified
+    result pass
+    method command
+    observed_at git:d413a55700102b6c7f0186df4c10a0ef0e744510
+    command "cargo test -p lege-shell && cargo run -q -p xtask -- check-packaging"
+    summary """
+        375 shell tests pass with the three-second sweep replaced by seven subscribe-then-snapshot watches and one five-minute reconciliation; the clipboard transfer now waits in poll and its deadline test passes. check-packaging accepts the shell's three declared timer exceptions.
+        """
+}
+
 record legeos.evidence.home-visibility-predicate-table/1 : evidence {
     title "lege-window is green on the new Home visibility predicate"
     state verified
@@ -2617,6 +2641,18 @@ record legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1 : evide
         """
 }
 
+record legeos.evidence.service-lifetime-declarations-are-checked-against-descriptors/1 : evidence {
+    title "46 xtask tests pass, including the two that separate Type=dbus readiness from activation: a session-bound service may be Type=dbus, and a dbus-activated one is a failure without a descriptor naming its unit or while legeos-session.target eagerly wants it. check-packaging accepts the matrix with filed session-bound and hostd's new descriptor."
+    state verified
+    result pass
+    method command
+    observed_at git:d413a55700102b6c7f0186df4c10a0ef0e744510
+    command "cargo test -p xtask && cargo run -q -p xtask -- check-packaging"
+    summary """
+        46 xtask tests pass, including the two that separate Type=dbus readiness from activation: a session-bound service may be Type=dbus, and a dbus-activated one is a failure without a descriptor naming its unit or while legeos-session.target eagerly wants it. check-packaging accepts the matrix with filed session-bound and hostd's new descriptor.
+        """
+}
+
 record legeos.evidence.session-edges-and-launch-observer-20260908/1 : evidence {
     title "Session edges, the launch observer and the CLI: tests and gates on the integrated tree"
     state verified
@@ -2812,6 +2848,31 @@ record legeos.evidence.taskbar-free-home-visual-20260824/1 : evidence {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     summary """
         An isolated 2560x1600 nested capture showed one full-size Home surface, the six standard drawer widgets, a top information row with clock/network/live counts, no bottom taskbar, and no repeated 'desktop' tiles; runtime logs mapped exactly one HomeSurface and no ShellOverlay.
+        """
+}
+
+record legeos.evidence.the-semantic-source-ledger-and-the-shell-s-garden-projection/1 : evidence {
+    title "2 sessiond tests (launch directory read from --directory/--working-directory=/bare argument, a file argument rejected; XDG user dirs) and 2 shell tests (branch rows ordered by weight and capped; a context payload with unknown fields still parses) pass. This covers the ledger the sources feed, not the call sites themselves."
+    state verified
+    result pass
+    method command
+    observed_at git:d413a55700102b6c7f0186df4c10a0ef0e744510
+    command "cargo test -p lege-sessiond homegarden && cargo test -p lege-shell garden"
+    summary """
+        2 sessiond tests (launch directory read from --directory/--working-directory=/bare argument, a file argument rejected; XDG user dirs) and 2 shell tests (branch rows ordered by weight and capped; a context payload with unknown fields still parses) pass. This covers the ledger the sources feed, not the call sites themselves.
+        """
+}
+
+record legeos.evidence.the-terminal-prompt-hook-observed-under-bash/1 : evidence {
+    title "Two tests pass: `lege garden observe terminal-entered <path> --role terminal` parses as the shipped hook calls it, and the hook run under bash against a recording stub emits exactly one line per directory entered, nothing on a repeat, and nothing at all in a non-LegeOS or non-interactive shell. A dash shell sources the file without a syntax error."
+    state verified
+    result pass
+    method command
+    observed_at git:d413a55700102b6c7f0186df4c10a0ef0e744510
+    command "cargo test -p lege -- garden"
+    artifact "session/profile.d/60-legeos-garden.sh"
+    summary """
+        Two tests pass: `lege garden observe terminal-entered <path> --role terminal` parses as the shipped hook calls it, and the hook run under bash against a recording stub emits exactly one line per directory entered, nothing on a repeat, and nothing at all in a non-LegeOS or non-interactive shell. A dash shell sources the file without a syntax error.
         """
 }
 

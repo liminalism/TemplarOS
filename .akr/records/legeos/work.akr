@@ -4490,6 +4490,276 @@ record legeos.work.homegarden-review-fixes-20260908/1 : work {
     supported_by [ @legeos.evidence.campaign4-integrated-gate-20260908 ]
 }
 
+record legeos.work.homegarden-semantic-sources-and-observation-depolling-20260908/1 : work {
+    title "Make Homegarden notice real work and remove false polling/activation claims"
+    state superseded
+    scope [
+        path "cli/lege/src/main.rs",
+        path "distro/deploy/components.toml",
+        path "distro/policy/**",
+        path "services/lege-sessiond/src/apis/homefield.rs",
+        path "services/lege-sessiond/src/apis/homegarden.rs",
+        path "services/lege-sessiond/src/apis/projects.rs",
+        path "services/lege-sessiond/src/main.rs",
+        path "session/units/**",
+        path "shell/lege-shell/src/data.rs",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "tools/xtask/src/main.rs"
+    ]
+    intent """
+        Implement the Astra-reviewed first response to the one-hour empty Homegarden report. Wire explicit semantic sources (project entry, Add to Home, successful directory navigation and terminal cwd integration), preserve reveal/start/explicit tending, make shell snapshots subscribe-before-read instead of sweeping local state every three seconds, and make the service inventory distinguish Type=dbus readiness from actual activation. True information blooms remain a separate projection inside established Places and index writes never create a Place.
+        """
+    note """
+        Advisor result rs-38981fd40ef0 rejected index-write-to-Place promotion and background tending. The repo is outside filed's default $HOME root. A Trace appears at the next tending moment once direct evidence reaches the threshold; actual temporary blooms are not present in the current data model.
+        """
+    acceptance {
+        check installed-latency {
+            statement """
+                After deployment/logout, two shell prompts in a project or one project-entry plus Home reveal grows a Trace; it appears on that reveal, never during an uninterrupted look at Home.
+                """
+            method manual
+        }
+        check lifetime-truth {
+            statement """
+                Packaging checks distinguish Type=dbus readiness from D-Bus activation, require actual descriptors for dbus-activated services, and accept filed as a justified persistent index owner.
+                """
+            method command
+            command "cargo test -p xtask && cargo run -q -p xtask -- check-packaging"
+        }
+        check no-index-growth {
+            statement """
+                Filesystem/index content changes cannot create, resize or move a Place; tending remains session-start, Home-reveal or explicit only.
+                """
+            method command
+            command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden"
+        }
+        check semantic-sources {
+            statement """
+                Successful ProjectEntered, PlacedOnHome, FileOpened and DirectoryOpened paths reach HomeGarden exactly once; failed/no-op paths do not invent activity.
+                """
+            method command
+            command "cargo test -p lege-sessiond homegarden && cargo test -p lege-shell garden"
+        }
+        check shell-depolled {
+            statement """
+                Home takes an initial state snapshot after subscribing and refreshes signalled domains on events; the unconditional three-second world sweep is gone and every remaining timer is declared.
+                """
+            method command
+            command "cargo test -p lege-shell && cargo run -q -p xtask -- check-packaging"
+        }
+        check terminal-development {
+            statement """
+                The LegeOS terminal integration reports bounded prompt/cwd events through the typed HomeGarden1 API so ordinary command-line project work can earn a Trace without filesystem-write inference.
+                """
+            method command
+            command "cargo test -p lege -- garden"
+        }
+    }
+    after [ @legeos.work.homegarden-review-fixes-20260908 ]
+    derived_from [
+        @legeos.observation.homegarden-produced-no-visible-place-or-bloom-during-an-hour-of-development-20260908
+    ]
+    implements [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.homegarden-activity-grown-places
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
+record legeos.work.homegarden-semantic-sources-and-observation-depolling-20260908/2 : work {
+    title "Make Homegarden notice real work and remove false polling/activation claims"
+    state superseded
+    scope [
+        path "cli/lege/Cargo.toml",
+        path "cli/lege/src/main.rs",
+        path "crates/lege-session-core/src/homegarden.rs",
+        path "distro/deploy/components.toml",
+        path "distro/policy/**",
+        path "services/lege-hostd/Cargo.toml",
+        path "services/lege-sessiond/src/apis/homefield.rs",
+        path "services/lege-sessiond/src/apis/homegarden.rs",
+        path "services/lege-sessiond/src/apis/projects.rs",
+        path "services/lege-sessiond/src/main.rs",
+        path "session/profile.d/**",
+        path "session/units/**",
+        path "shell/lege-shell/src/data.rs",
+        path "shell/lege-shell/src/data_device.rs",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "tools/xtask/src/main.rs"
+    ]
+    intent """
+        Implement the Astra-reviewed first response to the one-hour empty Homegarden report. Wire explicit semantic sources (project entry, Add to Home, successful directory navigation and terminal cwd integration), preserve reveal/start/explicit tending, make shell snapshots subscribe-before-read instead of sweeping local state every three seconds, and make the service inventory distinguish Type=dbus readiness from actual activation. True information blooms remain a separate projection inside established Places and index writes never create a Place.
+        """
+    note """
+        Advisor result rs-38981fd40ef0 rejected index-write-to-Place promotion and background tending. The repo is outside filed's default $HOME root. A Trace appears at the next tending moment once direct evidence reaches the threshold; actual temporary blooms are not present in the current data model.
+
+        Revision 2 corrects one acceptance check that named a command which could not prove its own statement, and records what the call sites can and cannot be tested for without a bus harness. Two behavioural consequences of dropping the folder poll are known and accepted: a folder window reopened on a directory outside filed's indexed roots shows its cached listing until the next generation signal or the five-minute reconciliation, and `directory-opened` is recorded once per navigation to a directory the shell has no listing for rather than on every repeat visit.
+        """
+    acceptance {
+        check installed-latency {
+            statement """
+                After deployment/logout, two shell prompts in a project or one project-entry plus Home reveal grows a Trace; it appears on that reveal, never during an uninterrupted look at Home.
+                """
+            method manual
+        }
+        check lifetime-truth {
+            statement """
+                Packaging checks distinguish Type=dbus readiness from D-Bus activation, require actual descriptors for dbus-activated services, and accept filed as a justified persistent index owner.
+                """
+            method command
+            command "cargo test -p xtask && cargo run -q -p xtask -- check-packaging"
+        }
+        check no-index-growth {
+            statement """
+                Filesystem/index content changes cannot create, resize or move a Place; tending remains session-start, Home-reveal or explicit only.
+                """
+            method command
+            command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden"
+        }
+        check semantic-sources {
+            statement """
+                The ledger behind the semantic sources holds: a launch directory is read from the argument shapes and a file argument is not one; repeats within a session saturate their bucket rather than inflating a place; and the shell's garden projection parses and orders what the daemon reports.
+                """
+            method command
+            command "cargo test -p lege-sessiond homegarden && cargo test -p lege-shell garden"
+        }
+        check semantic-sources-observed {
+            statement """
+                Each direct semantic API records exactly once on success and nothing on a failed, refused or no-op path: a refused PlaceFolder, a SetCurrent naming the current project, and the reconciliation refetch of an open folder window all leave the ledger unchanged. Not testable without a bus harness; read on the deployed session with `lege garden why <path>`.
+                """
+            method manual
+        }
+        check shell-depolled {
+            statement """
+                Home takes an initial state snapshot after subscribing and refreshes signalled domains on events; the unconditional three-second world sweep is gone and every remaining timer is declared.
+                """
+            method command
+            command "cargo test -p lege-shell && cargo run -q -p xtask -- check-packaging"
+        }
+        check terminal-development {
+            statement """
+                The LegeOS terminal integration reports bounded prompt/cwd events through the typed HomeGarden1 API so ordinary command-line project work can earn a Trace without filesystem-write inference: the verb parses as the shipped hook calls it, and the hook speaks once per directory entered and stays silent in a non-LegeOS, non-interactive or non-Bash shell.
+                """
+            method command
+            command "cargo test -p lege -- garden"
+        }
+    }
+    after [ @legeos.work.homegarden-review-fixes-20260908 ]
+    derived_from [
+        @legeos.observation.homegarden-produced-no-visible-place-or-bloom-during-an-hour-of-development-20260908
+    ]
+    implements [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.homegarden-activity-grown-places
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supersedes [ @legeos.work.homegarden-semantic-sources-and-observation-depolling-20260908/1 ]
+}
+
+record legeos.work.homegarden-semantic-sources-and-observation-depolling-20260908/3 : work {
+    title "Make Homegarden notice real work and remove false polling/activation claims"
+    state active
+    scope [
+        path "cli/lege/Cargo.toml",
+        path "cli/lege/src/main.rs",
+        path "crates/lege-session-core/src/homegarden.rs",
+        path "distro/deploy/components.toml",
+        path "distro/policy/**",
+        path "services/lege-hostd/Cargo.toml",
+        path "services/lege-sessiond/src/apis/homefield.rs",
+        path "services/lege-sessiond/src/apis/homegarden.rs",
+        path "services/lege-sessiond/src/apis/projects.rs",
+        path "services/lege-sessiond/src/main.rs",
+        path "session/profile.d/**",
+        path "session/units/**",
+        path "shell/lege-shell/src/data.rs",
+        path "shell/lege-shell/src/data_device.rs",
+        path "shell/lege-shell/src/garden.rs",
+        path "shell/lege-shell/src/surface/app.rs",
+        path "tools/xtask/src/main.rs"
+    ]
+    intent """
+        Implement the Astra-reviewed first response to the one-hour empty Homegarden report. Wire explicit semantic sources (project entry, Add to Home, successful directory navigation and terminal cwd integration), preserve reveal/start/explicit tending, make shell snapshots subscribe-before-read instead of sweeping local state every three seconds, and make the service inventory distinguish Type=dbus readiness from actual activation. True information blooms remain a separate projection inside established Places and index writes never create a Place.
+        """
+    note """
+        Advisor result rs-38981fd40ef0 rejected index-write-to-Place promotion and background tending. The repo is outside filed's default $HOME root. A Trace appears at the next tending moment once direct evidence reaches the threshold; actual temporary blooms are not present in the current data model.
+
+        Revision 2 corrects one acceptance check that named a command which could not prove its own statement, and records what the call sites can and cannot be tested for without a bus harness. Two behavioural consequences of dropping the folder poll are known and accepted: a folder window reopened on a directory outside filed's indexed roots shows its cached listing until the next generation signal or the five-minute reconciliation, and `directory-opened` is recorded once per navigation to a directory the shell has no listing for rather than on every repeat visit.
+        """
+    acceptance {
+        check installed-latency {
+            statement """
+                After deployment/logout, two shell prompts in a project or one project-entry plus Home reveal grows a Trace; it appears on that reveal, never during an uninterrupted look at Home.
+                """
+            method manual
+        }
+        check lifetime-truth {
+            statement """
+                Packaging checks distinguish Type=dbus readiness from D-Bus activation, require actual descriptors for dbus-activated services, and accept filed as a justified persistent index owner.
+                """
+            method command
+            command "cargo test -p xtask && cargo run -q -p xtask -- check-packaging"
+            verified_by [
+                @legeos.evidence.service-lifetime-declarations-are-checked-against-descriptors
+            ]
+        }
+        check no-index-growth {
+            statement """
+                Filesystem/index content changes cannot create, resize or move a Place; tending remains session-start, Home-reveal or explicit only.
+                """
+            method command
+            command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden"
+            verified_by [ @legeos.evidence.content-changes-still-cannot-grow-a-place ]
+        }
+        check semantic-sources {
+            statement """
+                The ledger behind the semantic sources holds: a launch directory is read from the argument shapes and a file argument is not one; repeats within a session saturate their bucket rather than inflating a place; and the shell's garden projection parses and orders what the daemon reports.
+                """
+            method command
+            command "cargo test -p lege-sessiond homegarden && cargo test -p lege-shell garden"
+            verified_by [
+                @legeos.evidence.the-semantic-source-ledger-and-the-shell-s-garden-projection
+            ]
+        }
+        check semantic-sources-observed {
+            statement """
+                Each direct semantic API records exactly once on success and nothing on a failed, refused or no-op path: a refused PlaceFolder, a SetCurrent naming the current project, and the reconciliation refetch of an open folder window all leave the ledger unchanged. Not testable without a bus harness; read on the deployed session with `lege garden why <path>`.
+                """
+            method manual
+        }
+        check shell-depolled {
+            statement """
+                Home takes an initial state snapshot after subscribing and refreshes signalled domains on events; the unconditional three-second world sweep is gone and every remaining timer is declared.
+                """
+            method command
+            command "cargo test -p lege-shell && cargo run -q -p xtask -- check-packaging"
+            verified_by [
+                @legeos.evidence.home-subscribes-before-it-reads-and-declares-its-remaining-timers
+            ]
+        }
+        check terminal-development {
+            statement """
+                The LegeOS terminal integration reports bounded prompt/cwd events through the typed HomeGarden1 API so ordinary command-line project work can earn a Trace without filesystem-write inference: the verb parses as the shipped hook calls it, and the hook speaks once per directory entered and stays silent in a non-LegeOS, non-interactive or non-Bash shell.
+                """
+            method command
+            command "cargo test -p lege -- garden"
+            verified_by [ @legeos.evidence.the-terminal-prompt-hook-observed-under-bash ]
+        }
+    }
+    after [ @legeos.work.homegarden-review-fixes-20260908 ]
+    derived_from [
+        @legeos.observation.homegarden-produced-no-visible-place-or-bloom-during-an-hour-of-development-20260908
+    ]
+    implements [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.homegarden-activity-grown-places
+    ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supersedes [ @legeos.work.homegarden-semantic-sources-and-observation-depolling-20260908/2 ]
+}
+
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
     state completed

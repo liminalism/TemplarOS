@@ -25,6 +25,18 @@ record legeos.papercut.a-batched-field-model-test-cleanup-missed/1 : papercut {
     created_at 2026-08-23
 }
 
+record legeos.papercut.a-batched-read-failed-before-execution-with-an/1 : papercut {
+    title "A batched read failed before execution with an unlocalized JavaScript…"
+    state verified
+    statement """
+        A batched read failed before execution with an unlocalized JavaScript `Unexpected string`; the wrapper did not identify which expression caused it, so the reads had to be retried in a smaller batch.
+        """
+    observed_at git:a9cc77b6d8c8149fca1527dd772e4457bac8079d
+    about "functions.exec"
+    author "codex-gpt6"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.a-bounded-d-bus-integration-script-using-an/1 : papercut {
     title "A bounded D-Bus integration script using an explicit…"
     state verified
@@ -432,6 +444,17 @@ record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : paper
     observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.during-final-verification-the-external-path/1 : papercut {
+    title "During final verification, the external path dependency…"
+    state verified
+    statement """
+        During final verification, the external path dependency ../bpg-rs/crates/bpg-decode disappeared after the same workspace had compiled and tested successfully, so later cargo commands failed at metadata loading. Preserve/check out that sibling dependency before repeating verification.
+        """
+    observed_at git:a9cc77b6d8c8149fca1527dd772e4457bac8079d
+    author "codex"
+    created_at 2026-09-08
 }
 
 record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut {
@@ -1323,6 +1346,17 @@ record legeos.papercut.the-working-tree-carried-a-body-of-in-flight/1 : papercut
     observed_at git:06bf665f54b58b218e145fb66f8d4033e53e39bc
     author "claude"
     created_at 2026-08-30
+}
+
+record legeos.papercut.the-workspace-stopped-building-entirely-because/1 : papercut {
+    title "The workspace stopped building entirely because the sibling repo…"
+    state verified
+    statement """
+        The workspace stopped building entirely because the sibling repo deleted the crate we point at: bpg-rs commit c8ebe3f removed crates/bpg-decode ('still265 carries the only copy'), so every cargo command failed on 'failed to load manifest for dependency bpg-decode'. Repointed the workspace dep to { package = \"still265\", path = \"../bpg-rs/crates/still265\" } and aliased the HEIC helpers through its internal compat module. This is the unpinned-sibling risk CLAUDE.md already names, now realised: the deps should be pinned git revs before packaging.
+        """
+    observed_at git:a9cc77b6d8c8149fca1527dd772e4457bac8079d
+    author "claude"
+    created_at 2026-09-08
 }
 
 record legeos.papercut.third-bug-in-the-same-chain-after-the-machine/1 : papercut {

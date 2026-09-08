@@ -441,6 +441,25 @@ record legeos.observation.home-tree-exceeds-the-inotify-watch-budget/1 : observa
     derived_from [ @legeos.work.file-index-maintenance ]
 }
 
+record legeos.observation.homegarden-produced-no-visible-place-or-bloom-during-an-hour-of-development-20260908/1 : observation {
+    title "Homegarden produced no visible Place or bloom during an hour of development in LegeOS"
+    state verified
+    statement """
+        The user worked on this repository for about one hour from a LegeOS terminal and saw no new Homegarden object. Source inspection explains the result: production observes only path-bearing launches plus shell-brokered file opens; terminal cwd/commands, project entry, Add to Home and successful directory navigation are not fully wired. Actual information blooms are explicitly deferred and have no implementation.
+        """
+    observed_at git:a9cc77b6d8c8149fca1527dd772e4457bac8079d
+    method observation
+    watches [
+        "services/lege-sessiond/src/apis/homegarden.rs",
+        "services/lege-sessiond/src/apis/projects.rs",
+        "services/lege-sessiond/src/apis/homefield.rs",
+        "shell/lege-shell/src/surface/app.rs",
+        "cli/lege/src/main.rs",
+        "docs/architecture/homegarden.md"
+    ]
+    derived_from [ @legeos.decision.homegarden-activity-grown-places ]
+}
+
 record legeos.observation.index-baseline-2026-09-04/1 : observation {
     title "Index baseline measurements (2026-09-04): watch-budget shortfall confirmed, idle-wakeup fix confirmed at 0"
     state verified
