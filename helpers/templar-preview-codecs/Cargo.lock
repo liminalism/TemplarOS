@@ -526,17 +526,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-preview-codecs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "jpxl-bitstream",
- "jpxl-core",
- "jpxl-decode",
- "lege-pdf-read",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1284,6 +1273,17 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "templar-preview-codecs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jpxl-bitstream",
+ "jpxl-core",
+ "jpxl-decode",
+ "lege-pdf-read",
 ]
 
 [[package]]
