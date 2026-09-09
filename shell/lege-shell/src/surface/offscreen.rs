@@ -485,6 +485,11 @@ mod tests {
                 crate::garden::GardenPlace {
                     root,
                     stage: stage.to_owned(),
+                    form: if tree.is_empty() {
+                        "plain".to_owned()
+                    } else {
+                        form.to_owned()
+                    },
                     tree,
                     summary: summary.to_owned(),
                     ..crate::garden::GardenPlace::default()

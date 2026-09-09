@@ -18,6 +18,7 @@ pub mod fonts;
 pub mod lock_screen;
 pub mod offscreen;
 pub mod omnibox_screen;
+pub mod place_forms;
 pub mod widgets;
 pub mod window;
 
