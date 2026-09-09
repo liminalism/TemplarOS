@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashMap, fmt, hash::Hash};
 
 /// Compositor layers from top-most to bottom-most.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+/// The discriminants are the **wire** values (`layer_to_wire`) and are append-only; the
+/// **order** is [`Layer::ALL`]'s, read through [`Layer::depth`]. The two were the same number
+/// until `Presentation` was added between `SystemModal` and `ShellOverlay`, which no free
+/// discriminant could express — so `Ord` is written by hand over `ALL` and every comparison and
+/// sort key goes through `depth`, never through `as u8`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Layer {
     /// Secure lock and authentication (`ext-session-lock-v1`).
@@ -26,20 +31,39 @@ pub enum Layer {
     Normal = 6,
     /// The desktopless Home Surface — visible wherever no window is.
     HomeSurface = 7,
+    /// Taskfield's chrome: the window overview's labels, headers and query field, drawn over the
+    /// windows the compositor is presenting. Above `ShellOverlay` — and above the half step a
+    /// fullscreen window takes over it (`WindowService::stacking_order`) — because Taskfield is
+    /// explicit navigation and a fullscreen window may not cover it. Mapped only while
+    /// `Presentation::Taskfield`; it reserves nothing.
+    Presentation = 8,
 }
 
 impl Layer {
-    /// All layers, top-most first.
-    pub const ALL: [Layer; 8] = [
+    /// All layers, top-most first. This — not the discriminant — is the stacking order.
+    pub const ALL: [Layer; 9] = [
         Self::SecureLock,
         Self::Recovery,
         Self::SystemModal,
+        Self::Presentation,
         Self::ShellOverlay,
         Self::Notification,
         Self::AppOnTop,
         Self::Normal,
         Self::HomeSurface,
     ];
+
+    /// How far down the screen this layer sits: 0 is the top-most. The one ordering authority —
+    /// [`Ord`] and every sort key are written over it, so inserting a layer is an edit to
+    /// [`Self::ALL`] and nothing else.
+    #[must_use]
+    pub fn depth(self) -> u8 {
+        let position = Self::ALL
+            .into_iter()
+            .position(|layer| layer == self)
+            .expect("ALL lists every layer");
+        u8::try_from(position).expect("nine layers")
+    }
 
     /// Layers only the compositor core itself may create surfaces on: unreachable by any
     /// client, including the trusted shell.
@@ -58,7 +82,23 @@ impl Layer {
             Self::AppOnTop => "AppOnTop",
             Self::Normal => "Normal",
             Self::HomeSurface => "HomeSurface",
+            Self::Presentation => "Presentation",
         }
+    }
+}
+
+/// By [`Layer::depth`], so a *lesser* layer draws *above* a greater one — the same direction the
+/// discriminants used to give, now stated once where inserting a layer cannot silently reorder
+/// the screen.
+impl Ord for Layer {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.depth().cmp(&other.depth())
+    }
+}
+
+impl PartialOrd for Layer {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -102,9 +142,11 @@ impl ClientKind {
 fn minimum_trust(layer: Layer) -> ClientKind {
     match layer {
         Layer::SecureLock | Layer::Recovery => ClientKind::CompositorCore,
-        Layer::SystemModal | Layer::ShellOverlay | Layer::Notification | Layer::HomeSurface => {
-            ClientKind::TrustedShell
-        }
+        Layer::SystemModal
+        | Layer::Presentation
+        | Layer::ShellOverlay
+        | Layer::Notification
+        | Layer::HomeSurface => ClientKind::TrustedShell,
         Layer::AppOnTop | Layer::Normal => ClientKind::Application,
     }
 }
@@ -316,6 +358,47 @@ mod tests {
             assert!(may_request_layer(ClientKind::CompositorCore, layer));
             assert!(!may_request_layer(ClientKind::Application, layer));
         }
+    }
+
+    /// The discriminants are the wire encoding and the depths are the screen order, and since
+    /// `Presentation` they are different numbers. Every comparison must use the depth.
+    #[test]
+    fn presentation_sits_between_system_modal_and_the_shell_overlay() {
+        assert!(Layer::SystemModal < Layer::Presentation);
+        assert!(Layer::Presentation < Layer::ShellOverlay);
+        assert!(
+            Layer::Presentation as u8 > Layer::HomeSurface as u8,
+            "not by discriminant"
+        );
+
+        let above = StackPosition {
+            layer: Layer::Presentation,
+            rank: 0,
+        };
+        let below = StackPosition {
+            layer: Layer::ShellOverlay,
+            rank: u64::MAX,
+        };
+        assert!(above.is_above(below), "no rank buys a lower layer the top");
+    }
+
+    #[test]
+    fn depths_are_the_order_all_lists_them_in() {
+        for (index, layer) in Layer::ALL.into_iter().enumerate() {
+            assert_eq!(usize::from(layer.depth()), index, "{layer}");
+        }
+    }
+
+    #[test]
+    fn taskfields_chrome_is_the_trusted_shells_to_claim() {
+        assert!(may_request_layer(
+            ClientKind::TrustedShell,
+            Layer::Presentation
+        ));
+        assert!(!may_request_layer(
+            ClientKind::Application,
+            Layer::Presentation
+        ));
     }
 
     #[test]

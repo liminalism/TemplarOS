@@ -20,13 +20,14 @@ mod service;
 mod shell;
 mod switch;
 pub mod task;
+pub mod taskfield;
 
 pub use arrangement::{ArrangementPreset, preset_rects};
 pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };
 pub use geometry::{
-    Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect,
+    Direction, Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect,
     client_area, frame_around, is_beside, is_recoverable, logical_to_physical, move_into_view,
     physical_to_logical, place_beside, recovery_affordance, repair_window, resize_edges_at,
     resize_rect, scatter_layout, tag_strip,
@@ -34,12 +35,13 @@ pub use geometry::{
 pub use group::{GROUP_ACCENTS, GroupId, GroupRecord, accent_for};
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};
 pub use service::{
-    CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowRole,
-    WindowService,
+    CachedIdentity, Decoration, EscapeAction, IdentityCache, Presentation, WindowId, WindowRecord,
+    WindowRole, WindowService,
 };
 pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
 pub use switch::SwitchRing;
 pub use task::{ChipAction, TaskKey, TaskUnit};
+pub use taskfield::{Card, Section, TaskFilter, TaskfieldState};
 
 // Re-exported so `WindowClaims::default()` and friends stay reachable as `templar_window::WindowClaims`
 // for crates that otherwise only need this crate.

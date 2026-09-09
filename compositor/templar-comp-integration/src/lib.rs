@@ -40,7 +40,7 @@ pub mod protocol {
         layer as u32
     }
 
-    /// Inverse of [`layer_to_wire`]. `None` for a value outside `0..=7`, which a conformant peer
+    /// Inverse of [`layer_to_wire`]. `None` for a value outside `0..=8`, which a conformant peer
     /// never sends.
     pub fn layer_from_wire(value: u32) -> Option<Layer> {
         Layer::ALL
@@ -61,7 +61,7 @@ pub mod protocol {
 
         #[test]
         fn an_out_of_range_wire_value_is_rejected() {
-            assert_eq!(layer_from_wire(8), None);
+            assert_eq!(layer_from_wire(9), None);
         }
     }
 }

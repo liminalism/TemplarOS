@@ -1,6 +1,7 @@
 //! Window records, identity cache boundary, drag handling, layer membership, the Window Shelf
 //! and the fullscreen/modal escape route.
 
+use crate::taskfield::{self, TaskFilter, TaskfieldState};
 use crate::{
     geometry::{
         Output, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect, choose_target_output,
@@ -38,6 +39,34 @@ pub enum WindowRole {
     Notification,
     Overlay,
     LockScreen,
+}
+
+/// What the compositor is currently presenting, and the one thing every "is this on screen"
+/// question consults.
+///
+/// It replaces the reveal flag the service used to carry and the `show_all_windows` slot the
+/// compositor carried beside it, so a new mode cannot be added without answering how it relates to
+/// the others. The lock screen and the recovery overlay are deliberately *not* here: they are
+/// [`crate::Layer`]s, and a layer already outranks everything by construction.
+///
+/// The invariant that replaces every fullscreen special case:
+///
+/// > **A fullscreen window covers passive chrome only while [`Presentation::Normal`].** Passive
+/// > chrome (the island, Home, tags) yields to fullscreen; explicit navigation (Taskfield, the
+/// > lock screen, recovery) yields to nothing — "I asked one application to occupy the display"
+/// > and "I asked to see my windows" are different requests, and the second must always be
+/// > honoured in one deterministic step.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Presentation {
+    #[default]
+    Normal,
+    /// "Go home": every client window is hidden so the Home Surface shows through. A *view* state
+    /// only — no record's geometry, `shelved` or `activated` changes because of it.
+    HomeReveal,
+    /// The window overview. The windows are drawn at their cards' rectangles instead of their real
+    /// ones; no client is reconfigured and no record is touched, so leaving restores the previous
+    /// scene exactly. Everything about it is thrown away on exit — Taskfield is a view, not a place.
+    Taskfield(TaskfieldState),
 }
 
 impl CachedIdentity {
@@ -185,12 +214,11 @@ pub struct WindowService<I> {
     /// expiry so they can be pruned once they could not be replayed anyway. See
     /// `try_spend_activation_token`.
     spent_activation_tokens: HashMap<String, u64>,
-    /// "Go home" (`WindowCommand::RevealHome`): while set, every window on `Layer::Normal` /
-    /// `Layer::AppOnTop` is hidden so the shell's `Layer::HomeSurface` backdrop shows through.
-    /// A *view* flag only — no record's geometry, `shelved` or `activated` changes because of it,
-    /// and the governor is never told about it — so a shell that dies mid-reveal, or a stray
-    /// press, can never leave a window anywhere but exactly where it was.
-    home_revealed: bool,
+    /// What is being presented ([`Presentation`]): the ordinary scene, a "go home" reveal, or
+    /// Taskfield. A *view* state only — no record's geometry, `shelved` or `activated` changes
+    /// because of it, and the governor is never told about it — so a shell that dies mid-mode, or
+    /// a stray press, can never leave a window anywhere but exactly where it was.
+    presentation: Presentation,
     /// The geometry and maximize state every eligible window had when the first arrangement
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
@@ -226,7 +254,7 @@ impl<I: IdentityCache> WindowService<I> {
             resize: None,
             layers: LayerStack::new(),
             spent_activation_tokens: HashMap::new(),
-            home_revealed: false,
+            presentation: Presentation::Normal,
             arrangement_baseline: None,
             covering_chrome: None,
             peek_output: None,
@@ -308,9 +336,9 @@ impl<I: IdentityCache> WindowService<I> {
                 group: None,
             },
         );
-        // A window the user just opened must be seen: a reveal that hid everything ends the
-        // moment something new arrives, rather than hiding the new window too.
-        self.home_revealed = false;
+        // A window the user just opened must be seen: any presentation hiding or shrinking the
+        // scene ends the moment something new arrives, rather than hiding the new window too.
+        self.presentation = Presentation::Normal;
 
         // `Layer::Normal` is reachable by every `ClientKind` (its minimum trust is the lowest
         // there is), so this cannot fail today — but it must not be able to abort the render
@@ -442,6 +470,18 @@ impl<I: IdentityCache> WindowService<I> {
             .is_some_and(|resize| resize.window_id == window_id)
         {
             self.resize = None;
+        }
+        // A window that is gone has no card. The rest of the frozen layout stays where it is:
+        // relayouting under the pointer is the one thing the mode must not do.
+        if let Presentation::Taskfield(state) = &mut self.presentation {
+            for section in &mut state.sections {
+                section.cards.retain(|card| card.window != window_id);
+            }
+            state.sections.retain(|section| !section.cards.is_empty());
+            state.selected = state.selected.filter(|id| *id != window_id);
+            if state.sections.is_empty() {
+                self.presentation = Presentation::Normal;
+            }
         }
     }
 
@@ -662,9 +702,9 @@ impl<I: IdentityCache> WindowService<I> {
             return false;
         }
         if self.layer_of(window_id) == Some(Layer::HomeSurface) {
-            return self.home_revealed || !self.home_is_covered(window.geometry);
+            return self.home_revealed() || !self.home_is_covered(window.geometry);
         }
-        if self.home_revealed {
+        if self.home_revealed() {
             return !matches!(
                 self.layer_of(window_id),
                 Some(Layer::Normal | Layer::AppOnTop)
@@ -686,6 +726,11 @@ impl<I: IdentityCache> WindowService<I> {
     /// A shelved window never counts (it is off the screen), and neither does a shell surface —
     /// only `Layer::Normal`/`Layer::AppOnTop` can cover Home.
     fn home_is_covered(&self, home: Rect) -> bool {
+        // Passive chrome yields to a fullscreen window only in the ordinary scene: in Taskfield
+        // that window is a card, and nothing it used to cover is covered any more.
+        if !matches!(self.presentation, Presentation::Normal) {
+            return false;
+        }
         let home_output = (!self.outputs.is_empty())
             .then(|| choose_target_output(home, &self.outputs).name.as_str());
         self.windows.values().any(|window| {
@@ -700,16 +745,113 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Whether a "go home" reveal is in effect (`WindowCommand::RevealHome`).
+    #[must_use]
     pub fn home_revealed(&self) -> bool {
-        self.home_revealed
+        matches!(self.presentation, Presentation::HomeReveal)
     }
 
-    /// Start or end a "go home" reveal. Returns whether anything changed. Purely a view flag —
-    /// see the field's doc: nothing about any window is touched.
+    /// Start or end a "go home" reveal. Returns whether anything changed. Purely a view state —
+    /// see the field's doc: nothing about any window is touched. Ending one returns to the
+    /// ordinary scene, which is also how it ends a Taskfield left open behind it: `Super` means
+    /// Home, from wherever the user was.
     pub fn set_home_revealed(&mut self, revealed: bool) -> bool {
-        let changed = self.home_revealed != revealed;
-        self.home_revealed = revealed;
+        let next = if revealed {
+            Presentation::HomeReveal
+        } else {
+            Presentation::Normal
+        };
+        let changed = self.presentation != next;
+        self.presentation = next;
         changed
+    }
+
+    /// What is being presented.
+    #[must_use]
+    pub fn presentation(&self) -> &Presentation {
+        &self.presentation
+    }
+
+    /// Open Taskfield over `filter`, laying it out once. `false` — and no change — when the filter
+    /// selects nothing: Taskfield is a view of windows that exist, so with none there is nothing to
+    /// enter and no way to tell that from a black screen.
+    pub fn enter_taskfield(&mut self, filter: TaskFilter) -> bool {
+        let units = self.task_units();
+        let toplevels = self.shell_toplevels();
+        let sections = taskfield::layout(&units, &toplevels, &self.outputs, &filter);
+        if sections.is_empty() {
+            return false;
+        }
+        let entered_from = self
+            .windows
+            .values()
+            .find(|window| window.activated && window.role == WindowRole::Application)
+            .map(|window| window.id);
+        let state = TaskfieldState {
+            selected: entered_from.filter(|id| {
+                sections
+                    .iter()
+                    .any(|section| section.cards.iter().any(|card| card.window == *id))
+            }),
+            entered_from,
+            filter,
+            query: String::new(),
+            sections,
+        };
+        let next = Presentation::Taskfield(state);
+        let changed = self.presentation != next;
+        self.presentation = next;
+        changed
+    }
+
+    /// Leave Taskfield, restoring the ordinary scene exactly. Everything the mode held is dropped:
+    /// no card position outlives it.
+    pub fn leave_taskfield(&mut self) -> bool {
+        if matches!(self.presentation, Presentation::Taskfield(_)) {
+            self.presentation = Presentation::Normal;
+            return true;
+        }
+        false
+    }
+
+    /// Move Taskfield's selection. Selection highlights; it never moves geometry.
+    pub fn taskfield_selected(&mut self, window_id: Option<WindowId>) -> bool {
+        let Presentation::Taskfield(state) = &mut self.presentation else {
+            return false;
+        };
+        let changed = state.selected != window_id;
+        state.selected = window_id;
+        changed
+    }
+
+    /// Set Taskfield's query. Matching *dims* non-matches ([`crate::task::matches`]); it never
+    /// relayouts, so the card under the pointer does not move as the user types.
+    pub fn taskfield_query(&mut self, query: String) -> bool {
+        let Presentation::Taskfield(state) = &mut self.presentation else {
+            return false;
+        };
+        let changed = state.query != query;
+        state.query = query;
+        changed
+    }
+
+    /// Where `window_id` is drawn instead of its real geometry, or `None` when it is drawn where it
+    /// really is. The renderer *and* the hit-test both ask this, so a card is clicked exactly where
+    /// it is seen.
+    #[must_use]
+    pub fn presentation_rect(&self, window_id: WindowId) -> Option<Rect> {
+        match &self.presentation {
+            Presentation::Taskfield(state) => state.card(window_id).map(|card| card.rect),
+            _ => None,
+        }
+    }
+
+    /// The windows `Alt+Tab` offers: [`Self::switch_order`] capped at [`crate::task::RECENT_MAX`].
+    /// Its job is going back to something just used; everything else is Taskfield's question.
+    #[must_use]
+    pub fn recent(&self) -> Vec<WindowId> {
+        let mut order = self.switch_order();
+        order.truncate(crate::task::RECENT_MAX);
+        order
     }
 
     pub fn begin_drag(&mut self, window_id: WindowId, pointer_global: Point) -> bool {
@@ -958,15 +1100,15 @@ impl<I: IdentityCache> WindowService<I> {
             return (i32::MIN, 0);
         };
         let layer = if self.outranks_overlay(window_id) {
-            i32::from(Layer::ShellOverlay as u8) * 2 - 1
+            i32::from(Layer::ShellOverlay.depth()) * 2 - 1
         } else if self.is_always_on_top(window_id) {
             // Sorted onto `AppOnTop` — the layer that exists for exactly this — without being
             // *assigned* to it. `layer_of` therefore still answers `Normal` for a pinned window,
             // so every rule written in terms of layers (`home_is_covered`, `may_request_layer`,
             // the shell's snapshot) reads a pinned window as the ordinary window it is.
-            i32::from((position.layer as u8).min(Layer::AppOnTop as u8)) * 2
+            i32::from(position.layer.depth().min(Layer::AppOnTop.depth())) * 2
         } else {
-            i32::from(position.layer as u8) * 2
+            i32::from(position.layer.depth()) * 2
         };
         // Negated because `Layer`'s discriminants count *down* the screen: `SecureLock` is 0.
         (-layer, position.rank)
@@ -986,8 +1128,9 @@ impl<I: IdentityCache> WindowService<I> {
         if !window.fullscreen || window.shelved || !self.is_client_window(window_id) {
             return false;
         }
-        // A reveal hides every client window; nothing it is hiding can outrank the shell.
-        if self.home_revealed {
+        // Only the ordinary scene has a fullscreen window to promote: a reveal hides every client
+        // window, and in Taskfield the window is a card under the mode's own chrome.
+        if !matches!(self.presentation, Presentation::Normal) {
             return false;
         }
         !self.is_peeking(window.geometry)
@@ -1157,9 +1300,10 @@ impl<I: IdentityCache> WindowService<I> {
                 window.last_activated = self.activation_serial;
             }
         }
-        // Activating a window (a click on its tile from the Home Field, say) is the user asking
-        // for it: a reveal that was hiding it ends here, for free, with nothing else to undo.
-        self.home_revealed = false;
+        // Activating a window (a click on its tile from the Home Field, a card in Taskfield) is
+        // the user asking for it: whatever presentation was over it ends here, for free, with
+        // nothing else to undo.
+        self.presentation = Presentation::Normal;
         true
     }
 
@@ -1464,43 +1608,6 @@ impl<I: IdentityCache> WindowService<I> {
             .map(|window| window.geometry)
             .collect();
         bounding_rect(&rects)
-    }
-
-    /// One focus target per group, in stacking order, with the loose set counted as one group —
-    /// the list `Super+Tab` freezes into a [`crate::SwitchRing`] and the group switcher HUD renders.
-    pub fn group_cycle_targets(&self) -> Vec<WindowId> {
-        let mut targets = Vec::new();
-        let mut seen: std::collections::BTreeSet<GroupId> = std::collections::BTreeSet::new();
-        let mut loose_taken = false;
-        for id in self.switch_order() {
-            match self.group_of(id) {
-                Some(group) => {
-                    if !seen.insert(group) {
-                        continue;
-                    }
-                    let landing = self
-                        .groups
-                        .get(&group)
-                        .map(|record| record.last_active)
-                        .filter(|member| {
-                            self.group_of(*member) == Some(group)
-                                && self
-                                    .windows
-                                    .get(member)
-                                    .is_some_and(|w| w.mapped && !w.shelved)
-                        })
-                        .unwrap_or(id);
-                    targets.push(landing);
-                }
-                None => {
-                    if !loose_taken {
-                        loose_taken = true;
-                        targets.push(id);
-                    }
-                }
-            }
-        }
-        targets
     }
 
     /// Every window a switcher may land on, most-recently activated first. Semantic role,
@@ -1921,7 +2028,10 @@ mod tests {
                 Layer::HomeSurface => WindowRole::Shell,
                 Layer::Notification => WindowRole::Notification,
                 Layer::SecureLock => WindowRole::LockScreen,
-                Layer::Recovery | Layer::SystemModal | Layer::ShellOverlay => WindowRole::Overlay,
+                Layer::Recovery
+                | Layer::SystemModal
+                | Layer::Presentation
+                | Layer::ShellOverlay => WindowRole::Overlay,
                 Layer::AppOnTop | Layer::Normal => WindowRole::Application,
             },
         );
@@ -2917,29 +3027,123 @@ mod tests {
         assert!(service.windows().all(|window| !window.shelved));
     }
 
-    /// `Super+Tab` moves between groups and lands on each group's last active member; the loose
-    /// set counts as one group.
+    /// The one invariant that replaces every fullscreen special case: passive chrome yields to a
+    /// fullscreen window only in the ordinary scene. In Taskfield the window is a card, so Home is
+    /// not covered by it and it does not outrank the shell's overlay.
     #[test]
-    fn cycling_groups_lands_on_each_groups_last_active_member() {
-        let (mut service, ids) = service_with(4);
-        service.group(ids[0], ids[1]).unwrap();
-        service.activate(ids[1]);
-        service.activate(ids[3]);
+    fn fullscreen_covers_chrome_only_while_normal() {
+        let (mut service, ids) = service_with(1);
+        let home = service.on_toplevel_mapped(
+            9,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "home".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
+            .unwrap();
+        service.set_role(home, WindowRole::Shell);
+        service.set_fullscreen(ids[0], true);
+        service.activate(ids[0]);
 
-        let targets = service.group_cycle_targets();
-        assert_eq!(
-            targets.len(),
-            2,
-            "one group plus the loose set: {targets:?}"
+        assert!(!service.is_visible(home), "fullscreen covers Home");
+        assert!(
+            service.stacking_order().first() == Some(&ids[0]),
+            "and outranks the shell's overlay"
         );
-        let mut ring = crate::SwitchRing::new(targets, Some(ids[3])).unwrap();
-        let next = ring.step(true);
-        assert_eq!(next, ids[1], "back to the group's last active member");
+
+        assert!(service.enter_taskfield(TaskFilter::All));
+        assert!(
+            service.is_visible(home),
+            "in Taskfield the fullscreen window is a card and covers nothing"
+        );
+        assert!(!service.stacking_order().is_empty());
+
+        assert!(service.leave_taskfield());
+        assert!(
+            !service.is_visible(home),
+            "and the scene comes back exactly"
+        );
+    }
+
+    #[test]
+    fn entering_taskfield_lays_out_once_and_leaving_throws_it_away() {
+        let (mut service, ids) = service_with(3);
+        service.activate(ids[1]);
+
+        assert!(service.enter_taskfield(TaskFilter::All));
+        let Presentation::Taskfield(state) = service.presentation() else {
+            panic!("in the mode");
+        };
+        assert_eq!(state.entered_from, Some(ids[1]));
         assert_eq!(
-            service.group_of(ring.step(true)),
+            state.selected,
+            Some(ids[1]),
+            "selection starts where you were"
+        );
+        assert_eq!(state.cards().count(), 3);
+
+        let rect = service.presentation_rect(ids[0]).expect("a card");
+        assert_ne!(rect, service.window(ids[0]).unwrap().geometry);
+
+        assert!(service.leave_taskfield());
+        assert_eq!(service.presentation(), &Presentation::Normal);
+        assert_eq!(
+            service.presentation_rect(ids[0]),
             None,
-            "and on to the loose set"
+            "no card position outlives the mode"
         );
+        assert!(!service.leave_taskfield(), "leaving twice changes nothing");
+    }
+
+    #[test]
+    fn taskfield_needs_windows_to_show() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        assert!(!service.enter_taskfield(TaskFilter::All));
+        assert_eq!(service.presentation(), &Presentation::Normal);
+    }
+
+    #[test]
+    fn activating_a_card_leaves_the_mode_and_a_closed_window_loses_its_card() {
+        let (mut service, ids) = service_with(2);
+        assert!(service.enter_taskfield(TaskFilter::All));
+        service.on_toplevel_destroyed(ids[0]);
+        assert_eq!(service.presentation_rect(ids[0]), None);
+        assert!(
+            service.presentation_rect(ids[1]).is_some(),
+            "the rest stays put"
+        );
+
+        assert!(service.activate(ids[1]));
+        assert_eq!(service.presentation(), &Presentation::Normal);
+    }
+
+    #[test]
+    fn the_query_and_the_selection_are_the_only_things_that_move() {
+        let (mut service, ids) = service_with(2);
+        assert!(service.enter_taskfield(TaskFilter::All));
+        let before = service.presentation_rect(ids[0]);
+
+        assert!(service.taskfield_query("smith".into()));
+        assert!(!service.taskfield_query("smith".into()));
+        assert!(service.taskfield_selected(Some(ids[1])));
+        assert_eq!(service.presentation_rect(ids[0]), before);
+
+        service.leave_taskfield();
+        assert!(!service.taskfield_query("x".into()), "not in the mode");
+        assert!(!service.taskfield_selected(None));
+    }
+
+    #[test]
+    fn recent_is_the_switch_order_capped() {
+        let (mut service, ids) = service_with(9);
+        for id in &ids {
+            service.activate(*id);
+        }
+        let recent = service.recent();
+        assert_eq!(recent.len(), crate::task::RECENT_MAX);
+        assert_eq!(recent, service.switch_order()[..crate::task::RECENT_MAX]);
     }
 
     #[test]
