@@ -271,10 +271,6 @@ async fn render_field(size: (u32, u32)) -> String {
             projects: &data::fetch_projects().await,
         },
     );
-    lege_shell::field_model::merge_desktop_folder(
-        &mut doc,
-        lege_shell::drawers::standard_paths::desktop_dir().as_deref(),
-    );
     let source = if stored {
         "the saved layout"
     } else {

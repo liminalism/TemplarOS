@@ -193,14 +193,43 @@ impl HomeGardenApi {
     }
 
     fn on_edge(&self, edge: SessionEdge) {
-        let mut inner = self.inner.lock().expect("garden lock");
-        let now = inner.monotonic_ms();
-        match edge {
-            SessionEdge::Started => inner.ledger.clock.start_session(now),
-            SessionEdge::Unlocked | SessionEdge::Sleeping(false) => inner.ledger.clock.resume(now),
-            SessionEdge::Locked | SessionEdge::Sleeping(true) => inner.ledger.clock.pause(now),
+        {
+            let mut inner = self.inner.lock().expect("garden lock");
+            let now = inner.monotonic_ms();
+            match edge {
+                SessionEdge::Started => inner.ledger.clock.start_session(now),
+                SessionEdge::Unlocked | SessionEdge::Sleeping(false) => {
+                    inner.ledger.clock.resume(now);
+                }
+                SessionEdge::Locked | SessionEdge::Sleeping(true) => inner.ledger.clock.pause(now),
+            }
+            self.persist(&mut inner);
         }
-        self.persist(&mut inner);
+        if edge == SessionEdge::Started {
+            self.ensure_desktop_place();
+        }
+    }
+
+    /// Desktop starts as a Place, once.
+    ///
+    /// Home used to merge a permanent Desktop tray of its own; it no longer does, because the one
+    /// tile the person never chose was also the one that manufactured its own evidence. The
+    /// directory things arrive in still has to be *there* on a first run, so the first session
+    /// records the same act a person's own "Add to Home" records — `placed-on-home`, which pins
+    /// it — and from then on it is an ordinary Place: unpin, hide, keep and recession all work on
+    /// it. Recorded only when the ledger has never heard of the directory, so a hidden or unpinned
+    /// Desktop stays the way it was left.
+    fn ensure_desktop_place(&self) {
+        let Some(desktop) = desktop_dir(self.probe.home()) else {
+            return;
+        };
+        {
+            let inner = self.inner.lock().expect("garden lock");
+            if inner.ledger.context(&desktop).is_some() {
+                return;
+            }
+        }
+        self.observe_activity(ActivityKind::PlacedOnHome, desktop, None, None);
     }
 
     /// One tending moment for `output`: stages, then the field.
@@ -662,11 +691,40 @@ impl DaemonProbe {
     }
 }
 
+fn config_dir(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from)
+}
+
 /// `~/.config/user-dirs.dirs`, the file `xdg-user-dirs` writes; the English defaults when absent.
 fn user_dirs(home: &Path) -> Vec<PathBuf> {
-    let config =
-        std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-    user_dirs_from(home, &config)
+    user_dirs_from(home, &config_dir(home))
+}
+
+/// The XDG Desktop directory, the one Place a first run starts with.
+fn desktop_dir(home: &Path) -> Option<PathBuf> {
+    desktop_dir_from(home, &config_dir(home))
+}
+
+/// `$XDG_DESKTOP_DIR`, or `~/Desktop` when the file says nothing. `None` when it is `$HOME`
+/// itself — a home directory is never a Place — or when there is no such directory, which is
+/// the readable degradation for an account that has none.
+fn desktop_dir_from(home: &Path, config_dir: &Path) -> Option<PathBuf> {
+    let named = std::fs::read_to_string(config_dir.join("user-dirs.dirs"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .filter_map(|line| line.split_once('='))
+                .find(|(key, _)| key.trim() == "XDG_DESKTOP_DIR")
+                .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+        });
+    let path = match named.as_deref() {
+        Some("$HOME") => return None,
+        Some(value) => value
+            .strip_prefix("$HOME/")
+            .map_or_else(|| PathBuf::from(value), |rest| home.join(rest)),
+        None => home.join("Desktop"),
+    };
+    path.is_dir().then_some(path)
 }
 
 fn user_dirs_from(home: &Path, config_dir: &Path) -> Vec<PathBuf> {
@@ -799,6 +857,39 @@ mod tests {
         assert_eq!(next.active_ms, 3_600_000);
         next.start_session(0);
         assert_eq!(advance(&mut next, 60_000).active_ms, 3_660_000);
+    }
+
+    /// Home no longer merges a permanent Desktop tray, so the directory things arrive in has to
+    /// reach the field the way every other Place does: one `placed-on-home` on a first run, which
+    /// pins it. This is the directory that act names.
+    #[test]
+    fn the_desktop_place_is_the_xdg_directory_and_never_home_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let config = home.join(".config");
+        std::fs::create_dir_all(&config).unwrap();
+
+        // No file: the English default, and only if it is really there.
+        assert_eq!(desktop_dir_from(home, &config), None);
+        std::fs::create_dir(home.join("Desktop")).unwrap();
+        assert_eq!(desktop_dir_from(home, &config), Some(home.join("Desktop")));
+
+        // The user's own name for it wins.
+        std::fs::create_dir(home.join("Skrivebord")).unwrap();
+        std::fs::write(
+            config.join("user-dirs.dirs"),
+            "XDG_DESKTOP_DIR=\"$HOME/Skrivebord\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            desktop_dir_from(home, &config),
+            Some(home.join("Skrivebord"))
+        );
+
+        // A desktop that *is* $HOME is the setting for "no desktop directory", and a home
+        // directory is never a Place.
+        std::fs::write(config.join("user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME\"\n").unwrap();
+        assert_eq!(desktop_dir_from(home, &config), None);
     }
 
     #[test]

@@ -1415,10 +1415,6 @@ impl ShellApp {
             projects: &self.projects,
         };
         sending.extend(field_model::merge(&mut self.field, &live));
-        sending.extend(field_model::merge_desktop_folder(
-            &mut self.field,
-            crate::drawers::standard_paths::desktop_dir().as_deref(),
-        ));
         if !sending.is_empty() && self.field_synced == Some(true) {
             self.spawn_field_apply(FieldOp::Batch { ops: sending });
         }

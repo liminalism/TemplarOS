@@ -212,16 +212,14 @@ pub fn default_pane_tile_id() -> TileId {
     tile_id_for("pane:shortcuts")
 }
 
-pub fn desktop_folder_tile_id() -> TileId {
-    tile_id_for("folder:desktop")
-}
-
 /// The tile id a folder window for `path` always has, so opening the same path twice raises the
 /// window that is already there instead of stacking a second one on top of it.
+///
+/// The XDG Desktop directory used to have an id of its own here, because Home merged a permanent
+/// tray for it. It no longer does (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-
+/// rectangle`): Desktop is an ordinary Place the garden holds, so it wears the ordinary id — the
+/// same one `lege_field::garden::garden_tile_id` gives it — and one folder is one tile again.
 pub fn folder_tile_id(path: &Path) -> TileId {
-    if crate::drawers::standard_paths::desktop_dir().as_deref() == Some(path) {
-        return desktop_folder_tile_id();
-    }
     tile_id_for(&format!("folder:{}", path.to_string_lossy()))
 }
 
@@ -236,49 +234,6 @@ pub fn open_folder_ops(doc: &FieldDocument, path: &Path) -> Vec<FieldOp> {
     lege_field::place_folder_op(doc, folder_tile_id(path), path)
         .into_iter()
         .collect()
-}
-
-/// The XDG Desktop directory as one placeable Home folder object — the visible destination for
-/// software that still writes desktop files, without recreating scattered desktop icons: the
-/// directory's children stay behind the folder's door, never exploded into Home tiles.
-/// Add-only like every merge step; `None` (no such directory) adds nothing, which is the
-/// readable degradation. The host passes `crate::drawers::standard_paths::desktop_dir()`.
-pub fn merge_desktop_folder(doc: &mut FieldDocument, desktop: Option<&Path>) -> Vec<FieldOp> {
-    let mut applied = Vec::new();
-    let Some(path) = desktop else {
-        return applied;
-    };
-    let id = desktop_folder_tile_id();
-    if doc.tile(id).is_some() {
-        return applied;
-    }
-    let kind = TileKind::Folder {
-        path: path.to_path_buf(),
-    };
-    // A tray, not a pane: Desktop opens at the folder kind's floor and grows when it is pressed
-    // (`FieldScreen::primary_action`). The desktop folder is somewhere things arrive, so it has
-    // to be *present* on Home and it must not be the biggest thing there.
-    let kind_spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-    let spans = SpanRange::new(kind_spans.min, kind_spans.min, kind_spans.max);
-    let tile = Tile {
-        id,
-        kind,
-        title: "Desktop".to_owned(),
-        spans,
-        accent: None,
-    };
-    // Beside the projects column, under the information row: a large, findable landing that
-    // the reflow adjusts if the corner is taken.
-    let landing = Landing {
-        container: None,
-        cell: Cell::new(doc.cols.saturating_sub(spans_preferred_cols(&tile)), 0),
-    };
-    try_apply(doc, FieldOp::Place { tile, landing }, &mut applied);
-    applied
-}
-
-fn spans_preferred_cols(tile: &Tile) -> u16 {
-    tile.spans.preferred.cols
 }
 
 /// The default pane's tray, created on first need: one op batch that makes the tray and places
@@ -1004,10 +959,13 @@ mod tests {
         assert!(restore_shelved(&doc).is_none(), "nothing is shelved yet");
 
         pin_app(&mut doc, &"org.legeos.Files".parse().unwrap());
-        merge_desktop_folder(&mut doc, Some(Path::new("/home/someone/Desktop")));
+        let desktop = Path::new("/home/someone/Desktop");
+        for op in open_folder_ops(&doc, desktop) {
+            doc = apply(&doc, &op).expect("the folder window places").0;
+        }
         let shelved: Vec<TileId> = [
             files_tile_id(),
-            desktop_folder_tile_id(),
+            folder_tile_id(desktop),
             tile_id_for("app:org.legeos.Files"),
         ]
         .into_iter()
@@ -1544,57 +1502,34 @@ mod tests {
         );
     }
 
-    /// Desktop is a tray: it opens at the folder floor, not at the folder kind's preferred size,
-    /// so the folder things arrive in is present on Home without being the largest thing on it.
+    /// Home merges no Desktop tray of its own any more.
+    ///
+    /// The permanent tray was the one Folder tile on the field the person never chose, and it
+    /// carried a Place's roles row pointing back at itself, so it manufactured its own evidence:
+    /// after a real day of work the garden held exactly one place, `~/Desktop`, grown out of
+    /// Home's chrome. Desktop is an ordinary Place now — the daemon records one `placed-on-home`
+    /// for it on a first run, so it arrives pinned and unpin, hide and recession then work on it
+    /// like any other. An existing field keeps whatever Desktop tile it already has: nothing
+    /// here removes one.
     #[test]
-    fn the_desktop_folder_opens_as_a_small_tray() {
+    fn home_merges_no_desktop_tray_of_its_own() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         merge(&mut doc, &LiveState::default());
-        merge_desktop_folder(&mut doc, Some(Path::new("/home/dk/Desktop")));
-        let id = desktop_folder_tile_id();
-        let tile = doc.tile(id).expect("desktop folder");
-        let floor = SpanRange::for_kind(&tile.kind, doc.cols, doc.rows).min;
-        assert_eq!(tile.spans.preferred, floor);
-        assert_eq!(
-            doc.location(id).expect("placed").placement.span,
-            floor,
-            "it starts collapsed; pressing it is what grows it"
-        );
-    }
-
-    /// The XDG Desktop directory appears as one placeable Home folder object when it exists,
-    /// simply does not appear when it is absent, and never explodes its children into loose
-    /// tiles — however many files the directory holds, the field gains exactly one tile.
-    #[test]
-    fn desktop_folder_appears_when_present_and_degrades_when_absent() {
-        let mut doc = FieldDocument::new("eDP-1", 16, 8);
-        merge(&mut doc, &LiveState::default());
-        let tiles_before = doc.tiles.len();
-
-        let absent = merge_desktop_folder(&mut doc, None);
-        assert!(absent.is_empty(), "no directory, no tile, no error");
-        assert_eq!(doc.tiles.len(), tiles_before);
-
-        let ops = merge_desktop_folder(&mut doc, Some(Path::new("/home/someone/Desktop")));
-        assert_eq!(ops.len(), 1, "one folder object, never one tile per child");
-        let tile = doc.tile(desktop_folder_tile_id()).expect("desktop folder");
-        assert_eq!(
-            tile.kind,
-            TileKind::Folder {
-                path: "/home/someone/Desktop".into()
-            }
-        );
-        assert_eq!(tile.title, "Desktop");
         assert!(
             !doc.tiles
                 .iter()
-                .any(|tile| matches!(tile.kind, TileKind::File { .. })),
-            "no loose file tiles came with it"
+                .any(|tile| matches!(&tile.kind, TileKind::Folder { .. })),
+            "a fresh Home has no folder tile at all: {:?}",
+            doc.tiles.iter().map(|tile| &tile.kind).collect::<Vec<_>>()
         );
 
-        // Add-only: the next merge changes nothing, so a moved or resized folder stays put.
-        let again = merge_desktop_folder(&mut doc, Some(Path::new("/home/someone/Desktop")));
-        assert!(again.is_empty());
+        // And Desktop wears the ordinary folder id, the one the garden's tender uses, so one
+        // folder is one tile rather than a tray beside a Place.
+        let desktop = Path::new("/home/someone/Desktop");
+        assert_eq!(
+            folder_tile_id(desktop),
+            lege_field::garden::garden_tile_id(desktop)
+        );
     }
 
     /// No Home path creates a loose file tile: a file arriving on bare Home becomes a
