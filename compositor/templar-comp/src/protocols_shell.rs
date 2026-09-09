@@ -25,8 +25,8 @@ use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use std::collections::{HashMap, HashSet};
 use templar_comp_integration::ShellStateSnapshot;
 use templar_window::{
-    ActivationGrant, ClientKind, CommandContext, Layer, Rect, RevealHome, WindowCommand, WindowId,
-    WindowRole,
+    ActivationGrant, ClientKind, CommandContext, Layer, Rect, RevealHome, TaskFilter,
+    WindowCommand, WindowId, WindowRole,
     geometry::{Alignment, Edge, Exclusive, shell_surface_placement},
 };
 
@@ -53,6 +53,11 @@ pub struct ShellProtocolState {
     pub identified: HashSet<WindowId>,
     /// One entry per surface with a live `set_layer_surface` claim.
     pub layer_surfaces: HashMap<ObjectId, (WlSurface, templar_window::Layer)>,
+    /// The header text an `open_taskfield` with the `windows` filter carried. The compositor
+    /// never learns what a HomeGarden place is — the shell sends the ids and the name — so this
+    /// is the one string of the mode that is not derivable from `WindowService`, kept here to be
+    /// echoed straight back in `taskfield_state`. Cleared when the mode leaves.
+    pub taskfield_key: String,
     /// One entry per surface with a live `set_exclusive_zone` claim: which output it was on, and
     /// the claim itself. A claim of size 0 is a live claim — it anchors the surface to its edge
     /// and reserves nothing. Released only when the surface is destroyed
@@ -97,6 +102,10 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
         if manager.version() >= 7 {
             manager.bar_peeked(peeked_output(state));
         }
+        if manager.version() >= 8 {
+            let (active, filter, key, query, selected) = taskfield_wire(state);
+            manager.taskfield_state(active, filter, key, query, selected);
+        }
         state.shell_protocol.managers.push(manager);
     }
 
@@ -129,6 +138,36 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
             }
             templar_shell_manager_v1::Request::ShowAllWindows => {
                 state.run_recovery_action(crate::keybindings::RecoveryAction::ShowAllWindows);
+            }
+            templar_shell_manager_v1::Request::OpenTaskfield {
+                filter,
+                key,
+                windows,
+            } => {
+                let ids: Vec<WindowId> = windows
+                    .chunks_exact(4)
+                    .filter_map(|raw| <[u8; 4]>::try_from(raw).ok())
+                    .map(|raw| WindowId(u64::from(u32::from_ne_bytes(raw))))
+                    .collect();
+                let filter = match filter.into_result() {
+                    Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
+                        match templar_window::TaskKey::from_wire(&key) {
+                            Some(unit) => TaskFilter::Unit(unit),
+                            None => return,
+                        }
+                    }
+                    Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => {
+                        TaskFilter::Windows(ids)
+                    }
+                    Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
+                    Ok(templar_shell_manager_v1::TaskfieldFilter::All) => TaskFilter::All,
+                    // A filter this compositor does not know is not a protocol error: the shell
+                    // ships from this repository and may be a version ahead during a hot swap.
+                    Err(_) => return,
+                };
+                state.shell_protocol.taskfield_key = key;
+                state.enter_taskfield(filter);
+                crate::space_sync::sync_after_change(state);
             }
             templar_shell_manager_v1::Request::EscapeFullscreenOrModal { toplevel } => {
                 let window_id =
@@ -439,7 +478,9 @@ pub fn apply_surface_claims<B: Backend + 'static>(
             Layer::HomeSurface => WindowRole::Shell,
             Layer::Notification => WindowRole::Notification,
             Layer::SecureLock => WindowRole::LockScreen,
-            Layer::Recovery | Layer::SystemModal | Layer::ShellOverlay => WindowRole::Overlay,
+            Layer::Recovery | Layer::SystemModal | Layer::ShellOverlay | Layer::Presentation => {
+                WindowRole::Overlay
+            }
             Layer::AppOnTop | Layer::Normal => WindowRole::Application,
         };
         state.window_service.set_role(window_id, role);
@@ -894,6 +935,76 @@ pub fn sync_toplevels<B: Backend + 'static>(
     }
 }
 
+/// `taskfield_state`'s five arguments for whatever the compositor is presenting right now — the
+/// mode's whole wire form, derived in one place so entry, every change, a leave and a fresh bind
+/// cannot describe it differently.
+fn taskfield_wire<B: Backend + 'static>(
+    state: &TemplarCompState<B>,
+) -> (
+    u32,
+    templar_shell_manager_v1::TaskfieldFilter,
+    String,
+    String,
+    u32,
+) {
+    let templar_window::Presentation::Taskfield(taskfield) = state.window_service.presentation()
+    else {
+        return (
+            0,
+            templar_shell_manager_v1::TaskfieldFilter::All,
+            String::new(),
+            String::new(),
+            0,
+        );
+    };
+    let (filter, key) = match &taskfield.filter {
+        TaskFilter::All => (
+            templar_shell_manager_v1::TaskfieldFilter::All,
+            String::new(),
+        ),
+        TaskFilter::Shelved => (
+            templar_shell_manager_v1::TaskfieldFilter::Shelved,
+            String::new(),
+        ),
+        TaskFilter::Windows(_) => (
+            templar_shell_manager_v1::TaskfieldFilter::Windows,
+            state.shell_protocol.taskfield_key.clone(),
+        ),
+        TaskFilter::Unit(unit) => (templar_shell_manager_v1::TaskfieldFilter::Unit, unit.wire()),
+    };
+    (
+        1,
+        filter,
+        key,
+        taskfield.query.clone(),
+        taskfield
+            .selected
+            .map_or(0, |id| u32::try_from(id.0).unwrap_or(0)),
+    )
+}
+
+/// Tell the shell what the overview is doing. Called on entry, on every query or selection
+/// change, and on leave — the shell's whole view of the mode, since no card geometry crosses the
+/// wire (`templar-shell-v1.xml`'s `taskfield_state`).
+pub fn send_taskfield_state<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    let (active, filter, key, query, selected) = taskfield_wire(state);
+    for manager in &state.shell_protocol.managers {
+        if manager.version() >= 8 {
+            manager.taskfield_state(active, filter, key.clone(), query.clone(), selected);
+        }
+    }
+}
+
+/// `Super+Space`: Home is already revealed; arm its Apps bar. One launcher object, one more route
+/// into it (`templar-shell-v1.xml`'s `launcher_focus`).
+pub fn send_launcher_focus<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    for manager in &state.shell_protocol.managers {
+        if manager.version() >= 8 {
+            manager.launcher_focus();
+        }
+    }
+}
+
 /// The output whose bottom edge the pointer is asking for, as `bar_peeked` sends it: the empty
 /// string for none, because a Wayland `string` argument is not nullable here.
 fn peeked_output<B: Backend + 'static>(state: &TemplarCompState<B>) -> String {
@@ -914,6 +1025,7 @@ fn wire_layer(layer: Layer) -> templar_shell_manager_v1::Layer {
         Layer::Recovery => templar_shell_manager_v1::Layer::Recovery,
         Layer::SystemModal => templar_shell_manager_v1::Layer::SystemModal,
         Layer::ShellOverlay => templar_shell_manager_v1::Layer::ShellOverlay,
+        Layer::Presentation => templar_shell_manager_v1::Layer::Presentation,
         Layer::Notification => templar_shell_manager_v1::Layer::Notification,
         Layer::AppOnTop => templar_shell_manager_v1::Layer::AppOnTop,
         Layer::Normal => templar_shell_manager_v1::Layer::Normal,

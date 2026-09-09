@@ -884,8 +884,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 action,
                 crate::keybindings::RecoveryAction::CycleFocusForward
                     | crate::keybindings::RecoveryAction::CycleFocusBackward
-                    | crate::keybindings::RecoveryAction::GroupCycleForward
-                    | crate::keybindings::RecoveryAction::GroupCycleBackward
+                    | crate::keybindings::RecoveryAction::WithinUnitForward
+                    | crate::keybindings::RecoveryAction::WithinUnitBackward
             ) {
                 self.switch_ring = None;
             }

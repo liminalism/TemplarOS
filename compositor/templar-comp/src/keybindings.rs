@@ -22,7 +22,9 @@ use templar_window::{CommandContext, CommandEffect, RevealHome, WindowCommand};
 /// One compositor-reserved recovery action, independent of whether a shell is connected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryAction {
-    /// `WindowService::handle_command(ShowAllWindows, ..)` (`geometry::scatter_layout`).
+    /// `WindowService::handle_command(ShowAllWindows, ..)` — unshelve everything, end any reveal
+    /// — and then [`RecoveryAction::OpenTaskfield`]. The recovery spelling of the overview: the
+    /// one chord that gets *every* window back on screen, shelf included, with the shell dead.
     ShowAllWindows,
     /// `WindowService::handle_command(EscapeFullscreenOrModal { window_id: None }, ..)`.
     EscapeFullscreenOrModal,
@@ -34,11 +36,19 @@ pub enum RecoveryAction {
     CycleFocusForward,
     /// `Alt+Shift+Tab`: the previous window in the same frozen list.
     CycleFocusBackward,
-    /// `Super+Tab`: the next group (`WindowService::group_cycle_targets`), landing on its last
-    /// active member; the loose set counts as one group. Frozen for the hold, like `Alt+Tab`.
-    GroupCycleForward,
-    /// `Super+Shift+Tab`: the previous group.
-    GroupCycleBackward,
+    /// `Super+Tab`: open the window overview (`WindowService::enter_taskfield`), or close it
+    /// again. It used to cycle between window *groups*; the overview answers that question by
+    /// showing every group as a section, which is the same question asked properly.
+    OpenTaskfield,
+    /// `` Alt+` ``: the next window of the focused window's *unit* — its group when it is grouped,
+    /// its application otherwise (`templar_window::task::within_unit`) — walked as a frozen ring
+    /// exactly like `Alt+Tab`. The chord reads as "this one"; `Alt+Tab` is never scoped.
+    WithinUnitForward,
+    /// `` Alt+Shift+` ``: the previous window of that unit.
+    WithinUnitBackward,
+    /// `Super+Space`: reveal Home and arm its Apps bar (`templar_shell_manager_v1.launcher_focus`,
+    /// `since=8`). Not a second launcher — one launcher object, one more route into it.
+    RevealLauncher,
     /// `Super+G`: group the focused window with the previously focused one and set it down
     /// beside it (`src/window_groups.rs`, planning doc §2 rules 1 and 6).
     GroupWithPrevious,
@@ -77,8 +87,10 @@ const STEP_HOPS: u8 = 2;
 /// | Ctrl+Alt+Space         | show every window         |
 /// | Alt+Tab                | next window               |
 /// | Alt+Shift+Tab          | previous window           |
-/// | Super+Tab              | next window group         |
-/// | Super+Shift+Tab        | previous window group     |
+/// | Super+Tab              | the window overview       |
+/// | Alt+`                  | next window here          |
+/// | Alt+Shift+`            | previous window here      |
+/// | Super+Space            | Home, with the launcher armed |
 /// | Super+G                | group with the last window|
 /// | Super+Shift+G          | leave the group           |
 /// | Super+Left / Super+Right | step left / step right    |
@@ -115,6 +127,13 @@ pub fn recovery_action(
             return Some(RecoveryAction::ParkFocused);
         }
     }
+    if modifiers.alt && !modifiers.ctrl && !modifiers.logo && is_grave(raw) {
+        return Some(if modifiers.shift {
+            RecoveryAction::WithinUnitBackward
+        } else {
+            RecoveryAction::WithinUnitForward
+        });
+    }
     if modifiers.alt && !modifiers.ctrl && !modifiers.logo && is_tab(raw) {
         return Some(if modifiers.shift {
             RecoveryAction::CycleFocusBackward
@@ -123,14 +142,12 @@ pub fn recovery_action(
         });
     }
     if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
-        // Shift-able group chords first: `Super+Tab` and `Super+G` both take a Shift variant, so
-        // they are checked before the no-Shift block below rather than duplicated inside it.
+        // `Super+Tab` opens the overview with or without Shift: a mode has no direction, and a
+        // person reaching for the backward variant of the chord they know must not land on
+        // nothing. `Super+G` below still takes its Shift variant, so both are checked here rather
+        // than duplicated inside the no-Shift block.
         if is_tab(raw) {
-            return Some(if modifiers.shift {
-                RecoveryAction::GroupCycleBackward
-            } else {
-                RecoveryAction::GroupCycleForward
-            });
+            return Some(RecoveryAction::OpenTaskfield);
         }
         if raw == keysyms::KEY_g || raw == keysyms::KEY_G {
             return Some(if modifiers.shift {
@@ -142,6 +159,9 @@ pub fn recovery_action(
         if !modifiers.shift {
             if raw == keysyms::KEY_d || raw == keysyms::KEY_D {
                 return Some(RecoveryAction::RevealHome);
+            }
+            if raw == keysyms::KEY_space {
+                return Some(RecoveryAction::RevealLauncher);
             }
             // The drop-down terminal. A bare ` or ~ cannot be a global chord — both are typed
             // characters, in the home directory, in Markdown and in every shell — so a
@@ -169,20 +189,18 @@ pub fn recovery_action(
     None
 }
 
-/// "1 window" / "3 windows", for the group switcher's rows.
-fn windows_counted(count: usize) -> String {
-    if count == 1 {
-        "1 window".to_owned()
-    } else {
-        format!("{count} windows")
-    }
-}
-
 /// Whether `keysym` is a Tab, **including the one Shift produces**. With a Shift level in the
 /// layout, `Shift+Tab` resolves to `ISO_Left_Tab` rather than `Tab`, so a table that only looked
 /// for `Tab` would silently have no backward switcher at all on an ordinary keyboard.
 fn is_tab(raw: u32) -> bool {
     raw == keysyms::KEY_Tab || raw == keysyms::KEY_ISO_Left_Tab
+}
+
+/// Whether `keysym` is the grave key, **including the tilde Shift produces**. Same trap as
+/// [`is_tab`]: `` Alt+Shift+` `` arrives as `asciitilde` on an ordinary layout, so a table that
+/// only looked for `grave` would have no backward within-unit walk at all.
+fn is_grave(raw: u32) -> bool {
+    raw == keysyms::KEY_grave || raw == keysyms::KEY_asciitilde
 }
 
 /// Whether this is either physical Super/logo key. The input handler uses this to implement the
@@ -345,14 +363,26 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         };
         match action {
             RecoveryAction::ShowAllWindows => {
-                if self.show_all_windows.take().is_none()
-                    && let Ok(templar_window::CommandEffect::ShowAllWindows { layout }) = self
+                // The recovery spelling: get *every* window back, the shelf included, and then
+                // show them. `ShowAllWindows` is what unshelves and ends any reveal; the scatter
+                // rectangles it also returns are the layout Taskfield replaced, and are dropped.
+                if !self.leave_taskfield() {
+                    let _ = self
                         .window_service
-                        .handle_command(WindowCommand::ShowAllWindows, ctx)
-                {
-                    self.show_all_windows = Some(layout);
+                        .handle_command(WindowCommand::ShowAllWindows, ctx);
+                    self.enter_taskfield(templar_window::TaskFilter::All);
                 }
                 crate::space_sync::sync_after_change(self);
+            }
+            RecoveryAction::OpenTaskfield => {
+                if !self.leave_taskfield() {
+                    self.enter_taskfield(templar_window::TaskFilter::All);
+                }
+                crate::space_sync::sync_after_change(self);
+            }
+            RecoveryAction::RevealLauncher => {
+                self.reveal_home(RevealHome::Show);
+                crate::protocols_shell::send_launcher_focus(self);
             }
             RecoveryAction::RevealHome => self.reveal_home(RevealHome::Toggle),
             RecoveryAction::EscapeFullscreenOrModal => {
@@ -414,8 +444,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     crate::window_groups::ungroup_window(self, window_id);
                 }
             }
-            RecoveryAction::GroupCycleForward | RecoveryAction::GroupCycleBackward => {
-                self.step_switcher(true, matches!(action, RecoveryAction::GroupCycleForward));
+            RecoveryAction::WithinUnitForward | RecoveryAction::WithinUnitBackward => {
+                self.step_switcher(true, matches!(action, RecoveryAction::WithinUnitForward));
             }
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
                 self.step_switcher(false, matches!(action, RecoveryAction::CycleFocusForward));
@@ -423,26 +453,32 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
-    /// One `Alt+Tab` (`groups: false`) or `Super+Tab` (`groups: true`) step.
+    /// One `Alt+Tab` (`within_unit: false`) or `` Alt+` `` (`within_unit: true`) step.
     ///
     /// The list is built at the first press and *frozen* until the modifier is released
     /// (`src/input.rs::on_keyboard` drops the ring), because every step records activation and
-    /// changes the order a newly built semantic MRU list would expose. `Alt+Tab` walks *every*
-    /// mapped, unshelved application window in most-recently-activated order; it used to be
-    /// scoped to the focused window's group, which
-    /// meant a group was a place Alt+Tab could not leave.
+    /// changes the order a newly built semantic MRU list would expose. `Alt+Tab` walks
+    /// `WindowService::recent()` — the seven most-recently-activated application windows, which is
+    /// what "go back to what I was just doing" means; everything beyond that is the overview's
+    /// question, not a chord's. `` Alt+` `` walks `task::within_unit`: the windows of the focused
+    /// window's unit, its group when it is grouped and its application otherwise, so the group
+    /// feature costs nothing until a group exists. `Alt+Tab` itself is never scoped to either —
+    /// that made a group a place `Alt+Tab` could not leave.
     ///
     /// ponytail: each step activates as it goes, so walking past three windows raises three. The
     /// upgrade — commit only on release, as Windows does — costs a second commit path for the
     /// cases where the release is never seen; this way the keyboard is always somewhere real.
-    fn step_switcher(&mut self, groups: bool, forward: bool) {
+    fn step_switcher(&mut self, within_unit: bool, forward: bool) {
         let ring = match self.switch_ring.take() {
-            Some((ring, walking_groups)) if walking_groups == groups => Some(ring),
+            Some((ring, walking_unit)) if walking_unit == within_unit => Some(ring),
             _ => {
-                let targets = if groups {
-                    self.window_service.group_cycle_targets()
+                let targets = if within_unit {
+                    let units = self.window_service.task_units();
+                    self.activated_window()
+                        .map(|current| templar_window::task::within_unit(&units, current))
+                        .unwrap_or_default()
                 } else {
-                    let targets = self.window_service.switch_order();
+                    let targets = self.window_service.recent();
                     for window in self.window_service.windows() {
                         if let Some(reason) = self.window_service.switch_exclusion_reason(window.id)
                         {
@@ -470,12 +506,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let next = ring.step(forward);
         // The compositor-owned switcher HUD (`src/chrome/mod.rs`), so cycling is visible with the
         // shell dead. It draws the frozen list, which is the list actually being walked.
-        self.switcher = Some(if groups {
-            self.group_switcher(&ring, next)
+        self.switcher = Some(if within_unit {
+            self.unit_switcher(&ring, next)
         } else {
             self.window_switcher(&ring, next)
         });
-        self.switch_ring = Some((ring, groups));
+        self.switch_ring = Some((ring, within_unit));
         crate::input::activate_window(self, next);
     }
 
@@ -527,58 +563,35 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
-    /// The `Super+Tab` HUD: one row per group with its member count, the loose set last under
-    /// "Other windows" — the same frozen list `Super+Tab` is stepping through, in the same order.
-    fn group_switcher(
+    /// The `` Alt+` `` HUD: the windows of one unit, titled with the unit's own name — the same
+    /// frozen list the chord is stepping through, in the same order. Titles, not counts: every row
+    /// is a window here, so the count each row of the old group HUD carried has nothing to say.
+    fn unit_switcher(
         &self,
         ring: &templar_window::SwitchRing,
         selected: templar_window::WindowId,
     ) -> crate::chrome::SwitcherState {
+        let units = self.window_service.task_units();
+        let heading =
+            templar_window::task::unit_of(&units, selected).map(|unit| unit.label.clone());
+        let accent = templar_window::task::unit_of(&units, selected).and_then(|unit| unit.accent);
         crate::chrome::SwitcherState {
-            heading: Some("Groups".to_owned()),
-            accent: None,
+            heading,
+            accent,
             entries: ring
                 .targets()
                 .iter()
-                .map(|target| (*target, self.group_label(*target)))
+                .map(|id| {
+                    let title = self
+                        .window_service
+                        .window(*id)
+                        .map(|window| window.title.clone())
+                        .unwrap_or_default();
+                    (*id, title)
+                })
                 .collect(),
             selected,
         }
-    }
-
-    /// One row of the group switcher: the group's name and how many of its windows are on the
-    /// workspace, or "Other windows" for the loose set (planning doc §2 rule 4 — the loose set is
-    /// a group here, and saying so is what makes the list complete).
-    fn group_label(&self, target: templar_window::WindowId) -> String {
-        let unshelved = |id: &templar_window::WindowId| {
-            self.window_service
-                .window(*id)
-                .is_some_and(|window| !window.shelved)
-        };
-        let Some(group) = self.window_service.group_of(target) else {
-            let count = self
-                .window_service
-                .windows()
-                .filter(|window| {
-                    self.window_service.is_client_window(window.id)
-                        && !window.shelved
-                        && window.group.is_none()
-                })
-                .count();
-            return format!("Other windows — {}", windows_counted(count));
-        };
-        let count = self
-            .window_service
-            .group_members(group)
-            .iter()
-            .filter(|id| unshelved(id))
-            .count();
-        let name = self
-            .window_service
-            .group_record(group)
-            .map_or("", templar_window::GroupRecord::display_name);
-        let name = if name.is_empty() { "Group" } else { name };
-        format!("{name} — {}", windows_counted(count))
     }
 
     /// `Super+grave`, the drop-down terminal (§4.6). "The terminal" is the most recently
@@ -705,10 +718,40 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
+    /// Open the window overview over `filter`, and say so. The one entry point every route into
+    /// the mode takes — the chord, the Peek corner's promotion, `window.show-all`, the shell's
+    /// `open_taskfield` — so what is torn down on the way in cannot differ between them: a
+    /// switcher walk and the overview are two answers to the same question, and a reveal has
+    /// already ended inside `WindowService::enter_taskfield`.
+    ///
+    /// Refused, with nothing changed and nothing sent, when the filter selects no window: an
+    /// overview of nothing is indistinguishable from a black screen.
+    pub(crate) fn enter_taskfield(&mut self, filter: templar_window::TaskFilter) -> bool {
+        if !self.window_service.enter_taskfield(filter) {
+            return false;
+        }
+        self.switcher = None;
+        self.switch_ring = None;
+        crate::protocols_shell::send_taskfield_state(self);
+        true
+    }
+
+    /// Leave the overview, restoring the ordinary scene exactly, and say so (`active` 0). `false`
+    /// when no overview was up, which is what makes every caller able to spell "close it if it is
+    /// open" as one call.
+    pub(crate) fn leave_taskfield(&mut self) -> bool {
+        if !self.window_service.leave_taskfield() {
+            return false;
+        }
+        self.shell_protocol.taskfield_key.clear();
+        crate::protocols_shell::send_taskfield_state(self);
+        true
+    }
+
     /// "Go home" from either route — the keybindings above or the shell's
     /// `templar_shell_manager_v1.reveal_home`. The command is `WindowService`'s; what is left here
     /// is the compositor-side consequence: the
-    /// "show every window" scatter and the switcher HUD cannot coexist with a reveal, the
+    /// window overview and the switcher HUD cannot coexist with a reveal, the
     /// `Space` mirror must follow the new visibility, and the keyboard must go where the user
     /// can see (`crate::input::refocus_after_reveal`).
     pub(crate) fn reveal_home(&mut self, reveal: RevealHome) {
@@ -723,7 +766,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return;
         };
         if revealed {
-            self.show_all_windows = None;
+            // Home and the overview are two answers to the same question, so one ends the other;
+            // `leave_taskfield` is a no-op when no overview is up.
+            self.leave_taskfield();
             self.switcher = None;
         }
         crate::space_sync::sync_after_change(self);
@@ -852,20 +897,29 @@ mod tests {
                 recovery_action(mods(false, true, true), Keysym::new(backward), false),
                 Some(RecoveryAction::CycleFocusBackward)
             );
+            // `Super+Tab` is a mode, not a direction: both spellings open the overview, so a
+            // person reaching for the backward variant of a chord they know lands somewhere.
             assert_eq!(
                 recovery_action(logo_shift(), Keysym::new(backward), false),
-                Some(RecoveryAction::GroupCycleBackward)
+                Some(RecoveryAction::OpenTaskfield)
+            );
+        }
+        // `` Alt+Shift+` `` has the same trap: it arrives as a tilde.
+        for backward in [keysyms::KEY_grave, keysyms::KEY_asciitilde] {
+            assert_eq!(
+                recovery_action(mods(false, true, true), Keysym::new(backward), false),
+                Some(RecoveryAction::WithinUnitBackward)
             );
         }
     }
 
-    /// `Super+Tab` crosses between groups — and `Ctrl+Tab` is reserved by nothing here, because
-    /// it belongs to the browser, the terminal and the editor (planning doc §2.1).
+    /// `Super+Tab` opens the window overview — and `Ctrl+Tab` is reserved by nothing here,
+    /// because it belongs to the browser, the terminal and the editor (planning doc §2.1).
     #[test]
-    fn super_tab_cycles_groups_and_ctrl_tab_is_never_reserved() {
+    fn super_tab_opens_the_overview_and_ctrl_tab_is_never_reserved() {
         assert_eq!(
             recovery_action(logo(), Keysym::new(keysyms::KEY_Tab), false),
-            Some(RecoveryAction::GroupCycleForward)
+            Some(RecoveryAction::OpenTaskfield)
         );
         for modifiers in [mods(true, false, false), mods(true, false, true)] {
             assert_eq!(
@@ -1185,13 +1239,14 @@ mod tests {
             (RecoveryAction::StepRight, "window.step-right"),
             (RecoveryAction::StepLeft, "window.step-left"),
             (RecoveryAction::ParkFocused, "window.park"),
+            (RecoveryAction::OpenTaskfield, "taskfield.open"),
             (
-                RecoveryAction::GroupCycleForward,
-                "window.group-cycle-forward",
+                RecoveryAction::WithinUnitForward,
+                "window.within-unit-forward",
             ),
             (
-                RecoveryAction::GroupCycleBackward,
-                "window.group-cycle-backward",
+                RecoveryAction::WithinUnitBackward,
+                "window.within-unit-backward",
             ),
             (RecoveryAction::GroupWithPrevious, "window.group"),
             (RecoveryAction::UngroupFocused, "window.ungroup"),
