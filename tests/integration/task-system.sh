@@ -148,8 +148,15 @@ case "$client" in
     *)         client_cmd=(weston-terminal --fullscreen) ;;
 esac
 start_service client env WAYLAND_DISPLAY="$socket" WAYLAND_DEBUG=1 "${client_cmd[@]}"
-sleep 3
+# Wait for the window rather than guessing: a cold terminal on a cold `HOME` can take half a
+# minute to reach its first commit here, and a fixed sleep turns that into a failing acceptance
+# that says nothing about the compositor.
+for _ in $(seq 1 120); do
+    grep -q 'xdg_toplevel' "$logs/client.log" && break
+    sleep 0.5
+done
 grep -q 'xdg_toplevel' "$logs/client.log" || fail "the fullscreen client never spoke xdg-shell"
+sleep 2
 
 # --- from-fullscreen-every-time --------------------------------------------------------------
 
