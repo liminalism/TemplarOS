@@ -105,6 +105,10 @@ else
     # can always remove them first.
     rm -f "$tree"/casper/vmlinuz "$tree"/casper/initrd "$tree"/casper/filesystem.manifest \
         "$tree"/efi/* "$tree"/legeos/kernel
+    # Acquire::Retries because this is a 1.2 GB download from snapshot.ubuntu.com at a few
+    # hundred kB/s — half an hour of connection — and apt's default of no retries meant one
+    # dropped connection near the end (2026-09-09: 388 fetches failed at once, after 1181 MB had
+    # already arrived) discarded every byte of it and cost the whole half hour again.
     # Pin the set so a pool holding three sets yields this one, not the newest.
     pref="$work/legeos-set.pref"
     printf 'Package: legeos-* lege-files\nPin: version %s\nPin-Priority: 1001\n' "$set_id" > "$pref"
@@ -113,6 +117,7 @@ else
     mmdebstrap --mode="$mode" --variant=minbase --architectures=amd64 --components="$components" \
         --include="$includes" \
         --aptopt='Apt::Install-Recommends "true"' \
+        --aptopt='Acquire::Retries "8"' \
         --keyring="$archive/legeos-dev.gpg" \
         --setup-hook="upload $pref /etc/apt/preferences.d/legeos-set" \
         --customize-hook="upload $root/distro/branding/os-release /usr/lib/os-release.legeos" \
