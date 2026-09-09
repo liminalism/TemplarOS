@@ -23,6 +23,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -964,8 +968,11 @@ pub struct InotifySource {
     events: std::sync::mpsc::Receiver<SourceMessage>,
     /// A retained sender, so that [`SourceWaker`] can end a blocking `recv`. It also means the
     /// channel never disconnects on its own, which is why the reader announces its own exit
-    /// rather than leaving `recv` to infer it.
-    wake: std::sync::mpsc::Sender<SourceMessage>,
+    /// through [`ReaderState`] rather than leaving `recv` to infer it.
+    wake: std::sync::mpsc::SyncSender<SourceMessage>,
+    /// What the reader has to say that no event can carry, and that a full channel must not be
+    /// able to swallow.
+    state: Arc<ReaderState>,
     descriptors: HashMap<WatchId, inotify::WatchDescriptor>,
     /// The kernel names watches by descriptor; everything above this module names them by
     /// `WatchId`, so that the fake source can exist at all.
@@ -983,8 +990,19 @@ enum SourceMessage {
     Event(Box<KernelEvent>),
     /// Somebody wants an unbounded `poll` to return. Carries no meaning of its own.
     Wake,
-    /// The reader thread is gone. Sent from a drop guard, so a panic announces itself too.
-    ReaderStopped,
+}
+
+/// What the reader thread has to tell the owner thread that no event can carry.
+///
+/// Flags rather than messages, because a full channel is exactly the moment both matter: a
+/// message announcing that the queue is full cannot itself be queued.
+#[derive(Debug, Default)]
+struct ReaderState {
+    /// The handoff was full and events were dropped. Latched until a `poll` turns it into the
+    /// [`RawKind::Overflow`] the kernel would have sent for the same loss.
+    overflowed: AtomicBool,
+    /// The reader thread is gone. Set from a drop guard, so a panic announces itself too.
+    stopped: AtomicBool,
 }
 
 /// One event as it left the reader thread, still named by the kernel's descriptor.
@@ -998,13 +1016,41 @@ struct KernelEvent {
 }
 
 /// Announces the reader thread's exit however it happens, including by unwind.
-struct ReaderExit(std::sync::mpsc::Sender<SourceMessage>);
+struct ReaderExit {
+    state: Arc<ReaderState>,
+    wake: std::sync::mpsc::SyncSender<SourceMessage>,
+}
 
 impl Drop for ReaderExit {
     fn drop(&mut self) {
-        let _ = self.0.send(SourceMessage::ReaderStopped);
+        self.state.stopped.store(true, Ordering::Relaxed);
+        // Only to end a wait: an owner parked in `recv` has to be told, and one whose channel is
+        // too full to take this poke was never waiting in the first place.
+        let _ = self.wake.try_send(SourceMessage::Wake);
     }
 }
+
+/// How many events the reader thread may hold on the owner thread's behalf.
+///
+/// The handoff used to be unbounded, which made the reader's backlog the kernel's to grow: a tree
+/// under `cargo build` produces events faster than a repair pass consumes them, and an unbounded
+/// queue turns that into resident memory instead of into the one thing that is actually true —
+/// that the daemon could not keep up. Losing events is not new (the kernel's own queue does it at
+/// `max_queued_events`) and it already has an honest name, so the bound reports it that way.
+const EVENT_QUEUE_CAPACITY: usize = 4096;
+
+/// The most events one [`EventSource::poll`] will hand back.
+///
+/// Without it a queue that is replenished as fast as it is drained holds the event loop inside a
+/// single turn: `poll` drained until empty, and "empty" is a state a busy tree never reaches. The
+/// remainder is not lost, only deferred — the caller never blocks while the channel has more.
+const MAX_EVENTS_PER_POLL: usize = 1024;
+
+/// The reader's `read(2)` buffer. Large enough that an ordinary burst is one syscall.
+const READ_BUFFER_BYTES: usize = 16 * 1024;
+
+/// The one error a source with no reader can return, and it returns it forever.
+const READER_STOPPED: &str = "the inotify reader thread stopped";
 
 impl InotifySource {
     /// Open one inotify instance. One per process: `fs.inotify.max_user_instances` is 128 on the
@@ -1012,24 +1058,34 @@ impl InotifySource {
     pub fn open() -> std::io::Result<Self> {
         let inotify = inotify::Inotify::init()?;
         let watches = inotify.watches();
-        let (sender, events) = std::sync::mpsc::channel();
+        let (sender, events) = std::sync::mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let wake = sender.clone();
+        let state = Arc::new(ReaderState::default());
+        let reader_state = Arc::clone(&state);
         std::thread::Builder::new()
             .name("lege-index-inotify".to_owned())
             .spawn(move || {
-                let _exit = ReaderExit(sender.clone());
+                let _exit = ReaderExit {
+                    state: Arc::clone(&reader_state),
+                    wake: sender.clone(),
+                };
                 let mut inotify = inotify;
-                let mut buffer = [0u8; 16 * 1024];
+                let mut buffer = [0u8; READ_BUFFER_BYTES];
                 loop {
                     let Ok(batch) = inotify.read_events_blocking(&mut buffer) else {
                         break;
                     };
                     for event in batch {
-                        if sender
-                            .send(SourceMessage::Event(Box::new(convert(&event))))
-                            .is_err()
-                        {
-                            return;
+                        match sender.try_send(SourceMessage::Event(Box::new(convert(&event)))) {
+                            Ok(()) => {}
+                            // Dropped, and said out loud. Reading on rather than blocking here is
+                            // deliberate: a reader that stops draining lets the *kernel's* queue
+                            // overflow too, which loses the same events and tells us less about
+                            // where they went.
+                            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                reader_state.overflowed.store(true, Ordering::Relaxed);
+                            }
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return,
                         }
                     }
                 }
@@ -1038,6 +1094,7 @@ impl InotifySource {
             watches,
             events,
             wake,
+            state,
             descriptors: HashMap::new(),
             ids: HashMap::new(),
             next_id: 1,
@@ -1046,15 +1103,10 @@ impl InotifySource {
         })
     }
 
-    /// Fold one channel message into this poll's results. Returns false once the stream is over.
-    fn absorb(message: SourceMessage, kernel: &mut Vec<KernelEvent>) -> bool {
-        match message {
-            SourceMessage::Event(event) => {
-                kernel.push(*event);
-                true
-            }
-            SourceMessage::Wake => true,
-            SourceMessage::ReaderStopped => false,
+    /// Fold one channel message into this poll's results.
+    fn absorb(message: SourceMessage, kernel: &mut Vec<KernelEvent>) {
+        if let SourceMessage::Event(event) = message {
+            kernel.push(*event);
         }
     }
 }
@@ -1146,34 +1198,59 @@ impl EventSource for InotifySource {
     fn waker(&self) -> Option<SourceWaker> {
         let wake = self.wake.clone();
         Some(SourceWaker::new(std::sync::Arc::new(move || {
-            let _ = wake.send(SourceMessage::Wake);
+            // `try_send`, because the channel is bounded now: a full one is a `poll` that is
+            // about to return of its own accord, which is all a wake ever asked for.
+            let _ = wake.try_send(SourceMessage::Wake);
         })))
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> std::io::Result<Vec<RawEvent>> {
         if self.reader_stopped {
-            return Err(std::io::Error::other("the inotify reader thread stopped"));
+            return Err(std::io::Error::other(READER_STOPPED));
         }
         let mut kernel = Vec::new();
-        let mut alive = match timeout {
-            Some(timeout) => match self.events.recv_timeout(timeout) {
-                Ok(message) => Self::absorb(message, &mut kernel),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
-            },
-            // Unbounded: the thread parks until the kernel, or a `SourceWaker`, has something to
-            // say. This is the zero-idle-cost path.
-            None => match self.events.recv() {
-                Ok(message) => Self::absorb(message, &mut kernel),
-                Err(std::sync::mpsc::RecvError) => false,
-            },
-        };
-        while let Ok(message) = self.events.try_recv() {
-            alive &= Self::absorb(message, &mut kernel);
+        // A reader that has already gone is never waited for: the backlog it left is still worth
+        // handing over, but nothing will ever end a wait for more.
+        let stopped = self.state.stopped.load(Ordering::Relaxed);
+        if !stopped {
+            match timeout {
+                Some(timeout) => {
+                    if let Ok(message) = self.events.recv_timeout(timeout) {
+                        Self::absorb(message, &mut kernel);
+                    }
+                }
+                // Unbounded: the thread parks until the kernel, or a `SourceWaker`, has something
+                // to say. This is the zero-idle-cost path.
+                None => {
+                    if let Ok(message) = self.events.recv() {
+                        Self::absorb(message, &mut kernel);
+                    }
+                }
+            }
         }
-        if !alive {
+        // Bounded, not drained: a queue replenished as fast as it is emptied would otherwise keep
+        // the caller inside one turn forever. What is left stays queued for the next poll, which
+        // returns immediately because the channel is not empty.
+        while kernel.len() < MAX_EVENTS_PER_POLL {
+            let Ok(message) = self.events.try_recv() else {
+                break;
+            };
+            Self::absorb(message, &mut kernel);
+        }
+        // After the drain, so the loss is reported at the point it was noticed rather than ahead
+        // of events that arrived before it.
+        if self.state.overflowed.swap(false, Ordering::Relaxed) {
+            kernel.push(KernelEvent {
+                watch: None,
+                name: None,
+                kind: RawKind::Overflow,
+                cookie: 0,
+                is_dir: false,
+            });
+        }
+        if stopped && kernel.is_empty() {
             self.reader_stopped = true;
-            return Err(std::io::Error::other("the inotify reader thread stopped"));
+            return Err(std::io::Error::other(READER_STOPPED));
         }
         Ok(kernel
             .into_iter()
@@ -1336,6 +1413,63 @@ mod tests {
             "a wake carries no event of its own"
         );
         polling.join().expect("the polling thread");
+    }
+
+    /// A burst the consumer cannot keep up with is bounded, and what the bound cost is said out
+    /// loud.
+    ///
+    /// The handoff was unbounded and `poll` drained it until empty, so a tree producing events
+    /// faster than the loop consumed them bounded neither the reader's memory nor one turn's
+    /// work. Both are now capped, and the events that no longer fit come back as the `Overflow`
+    /// the kernel sends for exactly the same loss — the one thing that must never be dropped
+    /// silently, because the whole module is built on "a gap is always announced".
+    ///
+    /// Directories rather than files: one `CREATE` each, so the burst stays comfortably inside
+    /// the kernel's own 16,384-event queue and the loss under test is this module's.
+    #[test]
+    fn a_burst_larger_than_the_handoff_is_bounded_and_announced() {
+        let temp = tempfile::tempdir().expect("a temporary directory");
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let mut source = InotifySource::open().expect("an inotify instance");
+        source.add_watch(&tree).expect("a watch on the fixture");
+
+        let burst = EVENT_QUEUE_CAPACITY + 512;
+        for index in 0..burst {
+            std::fs::create_dir(tree.join(format!("d{index}"))).unwrap();
+        }
+        // The consumer is stalled while the reader works, which is the shape the bound exists
+        // for: the channel fills, and everything past it is dropped rather than accumulated.
+        std::thread::sleep(Duration::from_millis(500));
+
+        let mut delivered = 0usize;
+        let mut announced = false;
+        for _ in 0..16 {
+            let events = source
+                .poll(Some(Duration::from_millis(100)))
+                .expect("the reader is alive");
+            assert!(
+                events.len() <= MAX_EVENTS_PER_POLL + 1,
+                "one poll must be bounded rather than draining until empty: {} events",
+                events.len()
+            );
+            announced |= events.iter().any(|event| event.kind == RawKind::Overflow);
+            if events.is_empty() {
+                break;
+            }
+            delivered += events.len();
+        }
+        assert!(
+            announced,
+            "a handoff that dropped events has to say so, or a generation calls itself current \
+             over a gap"
+        );
+        assert!(
+            delivered <= EVENT_QUEUE_CAPACITY + 1,
+            "the bound has to bound: {delivered} events held for a {EVENT_QUEUE_CAPACITY}-slot \
+             handoff"
+        );
     }
 
     /// A source whose reader is gone reports it once and keeps reporting it, rather than
