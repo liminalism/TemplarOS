@@ -1,0 +1,975 @@
+//! Operations on the document, each applied by [`apply`] and answered with its exact inverse.
+//! Undo is `apply(inverse)`: there is no second undo model, in this crate or anywhere above it.
+//!
+//! Two kinds of op live here. The ones a user performs (`Place`, `Move`, `Resize`, `Stash`,
+//! `CreateProject`, trays…) decide *where* things go through the reflow; and two exact ones —
+//! [`FieldOp::Layout`] and [`FieldOp::AddTile`] — that set locations precisely, which is what an
+//! inverse is made of. [`FieldOp::Batch`] composes, and inverts to the reversed inverses.
+
+use crate::field::{Cell, Container, FieldDocument, Landing, Located, Placement, Tray};
+use crate::panel::{Arrangement, Panel, PanelId, arrangement_layout};
+use crate::reflow::{Grid, apply_reflow, find_placement, find_resize, tidy};
+use crate::tile::{Span, SpanRange, Tile, TileId, TrayId};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
+use std::path::PathBuf;
+
+/// Open `path` as a folder window on the field: the op that places one at the first free cell,
+/// or `None` when a tile with `id` is already there (the caller then raises what exists).
+///
+/// A folder window is a tile and nothing more exotic than that — it drags, resizes, groups and
+/// survives a restart because every one of those is something the field already does. Shared by
+/// the shell and the session daemon so a folder added from any client lands the same way.
+#[must_use]
+pub fn place_folder_op(doc: &FieldDocument, id: TileId, path: &std::path::Path) -> Option<FieldOp> {
+    if doc.tile(id).is_some() {
+        return None;
+    }
+    let tile = folder_tile(id, path, doc.cols, doc.rows);
+    let cell = first_free_cell(doc, tile.spans.preferred);
+    Some(FieldOp::Place {
+        tile,
+        landing: Landing {
+            container: None,
+            cell,
+        },
+    })
+}
+
+/// The folder window tile for `path`, before it is placed anywhere.
+#[must_use]
+pub fn folder_tile(id: TileId, path: &std::path::Path, cols: u16, rows: u16) -> Tile {
+    let kind = crate::tile::TileKind::Folder {
+        path: path.to_path_buf(),
+    };
+    let spans = SpanRange::for_kind(&kind, cols, rows);
+    let title = path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Tile {
+        id,
+        kind,
+        title,
+        spans,
+        accent: None,
+    }
+}
+
+/// The first cell, reading the field the way a page is read, where a `span`-sized tile fits with
+/// nothing under it. `Cell::new(0, 0)` when the field is full: the place op then displaces
+/// whatever is there, which is what the reflow is for and is better than refusing to open.
+fn first_free_cell(doc: &FieldDocument, span: Span) -> Cell {
+    for row in 0..doc.rows {
+        for col in 0..doc.cols {
+            let candidate = Placement::new(Cell::new(col, row), span);
+            if candidate.fits(doc.cols, doc.rows) && doc.is_free(None, candidate, None) {
+                return candidate.cell;
+            }
+        }
+    }
+    Cell::new(0, 0)
+}
+
+/// Why an op was refused. Nothing is applied on error: [`apply`] works on a copy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum FieldError {
+    UnknownTile,
+    UnknownContainer,
+    UnknownTray,
+    DuplicateTile,
+    DuplicateTray,
+    DuplicateReference,
+    UnknownReference,
+    /// The exact placement asked for is occupied or outside the grid.
+    NotFree,
+    /// Not even the tile's minimum span can be made to fit.
+    NoRoom,
+    /// A project cannot go inside a project (containers are one level deep).
+    NestingTooDeep,
+    /// Only a project tile has a container.
+    NotAContainer,
+    /// The span is outside the tile's accepted range.
+    BadSpan,
+    /// The document's `version` is not [`crate::DOCUMENT_VERSION`].
+    VersionMismatch,
+    /// A panel with that id already exists.
+    DuplicatePanel,
+    UnknownPanel,
+}
+
+impl fmt::Display for FieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::UnknownTile => "no such tile",
+            Self::UnknownContainer => "no such project container",
+            Self::UnknownTray => "no such tray",
+            Self::DuplicateTile => "a tile with that id already exists",
+            Self::DuplicateTray => "a tray with that id already exists",
+            Self::DuplicateReference => "the tray already holds that reference",
+            Self::UnknownReference => "the tray does not hold that reference",
+            Self::NotFree => "that placement is occupied or outside the grid",
+            Self::NoRoom => "no room for the tile, even at its minimum size",
+            Self::NestingTooDeep => "a project cannot be placed inside a project",
+            Self::NotAContainer => "only a project tile can hold other tiles",
+            Self::BadSpan => "the span is outside the tile's accepted range",
+            Self::VersionMismatch => "the document is from another version of the field",
+            Self::DuplicatePanel => "a panel with that id already exists",
+            Self::UnknownPanel => "no such panel",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for FieldError {}
+
+/// One change to a [`FieldDocument`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+pub enum FieldOp {
+    /// A new tile, dropped at `landing`; the reflow decides the exact placement.
+    Place {
+        tile: Tile,
+        landing: Landing,
+    },
+    /// A new tile at an exact location (or on the shelf), no reflow — the inverse of `Remove`.
+    /// `container` recreates a project's interior grid.
+    AddTile {
+        tile: Tile,
+        at: Option<Located>,
+        container: Option<Container>,
+    },
+    /// The tile is gone from the document. A removed project's children go to the shelf.
+    Remove {
+        id: TileId,
+    },
+    /// An existing tile dropped at `landing` (possibly on another grid, or out of a project).
+    Move {
+        id: TileId,
+        landing: Landing,
+    },
+    /// Move a group as one rigid shape. Relative cells and spans are preserved; unlike a single
+    /// move, a group never reflows unrelated tiles and is refused when its exact landing is busy.
+    MoveMany {
+        ids: Vec<TileId>,
+        anchor: TileId,
+        landing: Landing,
+    },
+    /// A tile's span changes in place; band-mates may be pushed.
+    Resize {
+        id: TileId,
+        span: Span,
+    },
+    /// To the shelf: the tile keeps existing but has no place on the field.
+    Stash {
+        id: TileId,
+    },
+    /// Put a selected group onto the shelf as one exactly invertible operation.
+    StashMany {
+        ids: Vec<TileId>,
+    },
+    /// Exact locations, no reflow: `None` means the shelf. Every entry must end up free.
+    Layout {
+        set: Vec<(TileId, Option<Located>)>,
+    },
+    /// Explicit global packing of one grid (`None` = the top level).
+    Tidy {
+        container: Option<TileId>,
+    },
+    /// The field is now `cols`×`rows`; tiles that no longer fit are re-placed or shelved.
+    SetGrid {
+        cols: u16,
+        rows: u16,
+    },
+    /// A new project whose container absorbs `absorb` (tiles currently on the top level),
+    /// placed at `landing` with its preferred span — "throw things into a quadrant".
+    CreateProject {
+        project: Tile,
+        landing: Landing,
+        absorb: Vec<TileId>,
+    },
+    CreateTray {
+        tray: Tray,
+    },
+    RemoveTray {
+        tray: TrayId,
+    },
+    AddReference {
+        tray: TrayId,
+        path: PathBuf,
+        /// Where in the tray's order the reference lands; `None` appends. Carried so that
+        /// `RemoveReference`'s inverse restores the exact prior order, not just membership.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<usize>,
+    },
+    RemoveReference {
+        tray: TrayId,
+        path: PathBuf,
+    },
+    /// A new Home-only layout group (`crate::panel`). Grouping only: no tile moves.
+    CreatePanel {
+        panel: Panel,
+    },
+    /// The group is gone; its member tiles stay exactly where they are.
+    RemovePanel {
+        id: PanelId,
+    },
+    /// Replace a panel's title, region, members or arrangement label in place — metadata only;
+    /// follow with [`FieldOp::ArrangePanel`] (usually as one `Batch`) to relayout.
+    ConfigurePanel {
+        panel: Panel,
+    },
+    /// Lay the panel's members out per `arrangement`, in one exactly invertible step. The first
+    /// preset applied over a custom layout retains that layout as the panel's baseline;
+    /// switching presets computes from the region and member set, never from the previous
+    /// preset's result; `Arrangement::Custom` restores the baseline exactly and clears it.
+    ArrangePanel {
+        id: PanelId,
+        arrangement: Arrangement,
+    },
+    /// Several ops as one; inverts to the reversed inverses.
+    Batch {
+        ops: Vec<FieldOp>,
+    },
+}
+
+impl FieldOp {
+    /// The text a pending operation is announced with before release — and what `--print`
+    /// shows — so the two can never disagree.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Place { .. } => "PLACE",
+            Self::AddTile { .. } => "ADD",
+            Self::Remove { .. } => "REMOVE FROM FIELD",
+            Self::Move { .. } => "MOVE",
+            Self::MoveMany { .. } => "MOVE SELECTION",
+            Self::Resize { .. } => "RESIZE",
+            Self::Stash { .. } => "STASH ON SHELF",
+            Self::StashMany { .. } => "STASH SELECTION ON SHELF",
+            Self::Layout { .. } => "ARRANGE",
+            Self::Tidy { .. } => "TIDY",
+            Self::SetGrid { .. } => "RESIZE FIELD",
+            // The one op that makes two kinds of container, named for the one it makes: a
+            // person who dropped two apps together made a group of favourites, not a project.
+            Self::CreateProject { project, .. } => {
+                if matches!(project.kind, crate::tile::TileKind::Project { .. }) {
+                    "NEW PROJECT FROM THESE"
+                } else {
+                    "NEW GROUP FROM THESE"
+                }
+            }
+            Self::CreateTray { .. } => "NEW TRAY",
+            Self::RemoveTray { .. } => "REMOVE TRAY",
+            Self::AddReference { .. } => "ADD REFERENCE · files remain in place",
+            Self::RemoveReference { .. } => "REMOVE REFERENCE",
+            Self::CreatePanel { .. } => "NEW PANEL",
+            Self::RemovePanel { .. } => "REMOVE PANEL · tiles stay",
+            Self::ConfigurePanel { .. } => "CONFIGURE PANEL",
+            Self::ArrangePanel { .. } => "ARRANGE PANEL",
+            Self::Batch { .. } => "SEVERAL CHANGES",
+        }
+    }
+}
+
+/// Apply `op` to a copy of `doc`. On success, the new document and the op that exactly undoes
+/// it; on failure, nothing changed.
+pub fn apply(doc: &FieldDocument, op: &FieldOp) -> Result<(FieldDocument, FieldOp), FieldError> {
+    if doc.version != crate::DOCUMENT_VERSION {
+        return Err(FieldError::VersionMismatch);
+    }
+    let mut next = doc.clone();
+    let inverse = apply_in_place(&mut next, op)?;
+    Ok((next, inverse))
+}
+
+fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, FieldError> {
+    match op {
+        FieldOp::Place { tile, landing } => place(doc, tile, *landing),
+        FieldOp::AddTile {
+            tile,
+            at,
+            container,
+        } => add_tile(doc, tile, *at, container.as_ref()),
+        FieldOp::Remove { id } => remove(doc, *id),
+        FieldOp::Move { id, landing } => move_tile(doc, *id, *landing),
+        FieldOp::MoveMany {
+            ids,
+            anchor,
+            landing,
+        } => move_many(doc, ids, *anchor, *landing),
+        FieldOp::Resize { id, span } => resize(doc, *id, *span),
+        FieldOp::Stash { id } => {
+            doc.tile(*id).ok_or(FieldError::UnknownTile)?;
+            let before = doc.location(*id);
+            doc.set_location(*id, None);
+            Ok(FieldOp::Layout {
+                set: vec![(*id, before)],
+            })
+        }
+        FieldOp::StashMany { ids } => stash_many(doc, ids),
+        FieldOp::Layout { set } => layout(doc, set),
+        FieldOp::CreatePanel { panel } => create_panel(doc, panel),
+        FieldOp::RemovePanel { id } => remove_panel(doc, *id),
+        FieldOp::ConfigurePanel { panel } => configure_panel(doc, panel),
+        FieldOp::ArrangePanel { id, arrangement } => arrange_panel(doc, *id, arrangement),
+        FieldOp::Tidy { container } => {
+            let mut grid = grid_of(doc, *container)?;
+            let moved = tidy(&grid);
+            let set = moved_back(*container, &moved);
+            for (id, _, to) in &moved {
+                if let Some(entry) = grid.places.iter_mut().find(|(tile, _)| tile == id) {
+                    entry.1 = *to;
+                }
+            }
+            write_grid(doc, *container, &grid);
+            Ok(FieldOp::Layout { set })
+        }
+        FieldOp::SetGrid { cols, rows } => set_grid(doc, *cols, *rows),
+        FieldOp::CreateProject {
+            project,
+            landing,
+            absorb,
+        } => create_project(doc, project, *landing, absorb),
+        FieldOp::CreateTray { tray } => {
+            if doc.tray(tray.id).is_some() {
+                return Err(FieldError::DuplicateTray);
+            }
+            doc.insert_tray(tray.clone());
+            Ok(FieldOp::RemoveTray { tray: tray.id })
+        }
+        FieldOp::RemoveTray { tray } => {
+            let index = doc
+                .trays
+                .iter()
+                .position(|t| t.id == *tray)
+                .ok_or(FieldError::UnknownTray)?;
+            let tray = doc.trays.remove(index);
+            Ok(FieldOp::CreateTray { tray })
+        }
+        FieldOp::AddReference { tray, path, at } => {
+            let entry = doc.tray_mut(*tray).ok_or(FieldError::UnknownTray)?;
+            if entry.entries.contains(path) {
+                return Err(FieldError::DuplicateReference);
+            }
+            let index = at.unwrap_or(entry.entries.len()).min(entry.entries.len());
+            entry.entries.insert(index, path.clone());
+            Ok(FieldOp::RemoveReference {
+                tray: *tray,
+                path: path.clone(),
+            })
+        }
+        FieldOp::RemoveReference { tray, path } => {
+            let entry = doc.tray_mut(*tray).ok_or(FieldError::UnknownTray)?;
+            let index = entry
+                .entries
+                .iter()
+                .position(|p| p == path)
+                .ok_or(FieldError::UnknownReference)?;
+            entry.entries.remove(index);
+            Ok(FieldOp::AddReference {
+                tray: *tray,
+                path: path.clone(),
+                at: Some(index),
+            })
+        }
+        FieldOp::Batch { ops } => {
+            let mut inverses = Vec::with_capacity(ops.len());
+            for op in ops {
+                inverses.push(apply_in_place(doc, op)?);
+            }
+            inverses.reverse();
+            Ok(FieldOp::Batch { ops: inverses })
+        }
+    }
+}
+
+fn place(doc: &mut FieldDocument, tile: &Tile, landing: Landing) -> Result<FieldOp, FieldError> {
+    if doc.tile(tile.id).is_some() {
+        return Err(FieldError::DuplicateTile);
+    }
+    check_grid_accepts(doc, landing.container, tile)?;
+    let mut grid = grid_of(doc, landing.container)?;
+    let reflow = find_placement(&grid, &tile.spans, landing.cell, None)?;
+    let moved_back = moved_back(landing.container, &reflow.moved);
+    apply_reflow(&mut grid, tile.id, &reflow);
+    doc.insert_tile(tile.clone());
+    if tile.kind.is_container() {
+        doc.insert_container(container_for(tile));
+    }
+    write_grid(doc, landing.container, &grid);
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Remove { id: tile.id },
+            FieldOp::Layout { set: moved_back },
+        ],
+    })
+}
+
+fn add_tile(
+    doc: &mut FieldDocument,
+    tile: &Tile,
+    at: Option<Located>,
+    container: Option<&Container>,
+) -> Result<FieldOp, FieldError> {
+    if doc.tile(tile.id).is_some() {
+        return Err(FieldError::DuplicateTile);
+    }
+    if let Some(at) = at {
+        check_grid_accepts(doc, at.container, tile)?;
+        if !doc.is_free(at.container, at.placement, None) {
+            return Err(FieldError::NotFree);
+        }
+    }
+    doc.insert_tile(tile.clone());
+    if tile.kind.is_container() {
+        doc.insert_container(container.cloned().unwrap_or_else(|| container_for(tile)));
+    }
+    doc.set_location(tile.id, at);
+    Ok(FieldOp::Remove { id: tile.id })
+}
+
+fn remove(doc: &mut FieldDocument, id: TileId) -> Result<FieldOp, FieldError> {
+    let index = doc
+        .tiles
+        .iter()
+        .position(|tile| tile.id == id)
+        .ok_or(FieldError::UnknownTile)?;
+    let tile = doc.tiles.remove(index);
+    let at = doc.location(id);
+    doc.set_location(id, None);
+    let container = doc.container(id).cloned();
+    let mut restore_children = Vec::new();
+    if container.is_some() {
+        for (child, placement) in doc.placements_in(Some(id)) {
+            restore_children.push((
+                child,
+                Some(Located {
+                    container: Some(id),
+                    placement,
+                }),
+            ));
+            doc.set_location(child, None);
+        }
+        doc.containers.retain(|c| c.id != id);
+    }
+    let mut inverse = vec![FieldOp::AddTile {
+        tile,
+        at,
+        container,
+    }];
+    if !restore_children.is_empty() {
+        inverse.push(FieldOp::Layout {
+            set: restore_children,
+        });
+    }
+    Ok(FieldOp::Batch { ops: inverse })
+}
+
+fn move_tile(doc: &mut FieldDocument, id: TileId, landing: Landing) -> Result<FieldOp, FieldError> {
+    let tile = doc.tile(id).cloned().ok_or(FieldError::UnknownTile)?;
+    if landing.container == Some(id) {
+        return Err(FieldError::NestingTooDeep);
+    }
+    check_grid_accepts(doc, landing.container, &tile)?;
+    let before = doc.location(id);
+    doc.set_location(id, None);
+    let mut grid = grid_of(doc, landing.container)?;
+    let reflow = match find_placement(&grid, &tile.spans, landing.cell, None) {
+        Ok(reflow) => reflow,
+        Err(error) => {
+            doc.set_location(id, before);
+            return Err(error);
+        }
+    };
+    let mut set = moved_back(landing.container, &reflow.moved);
+    set.push((id, before));
+    apply_reflow(&mut grid, id, &reflow);
+    write_grid(doc, landing.container, &grid);
+    Ok(FieldOp::Layout { set })
+}
+
+fn move_many(
+    doc: &mut FieldDocument,
+    ids: &[TileId],
+    anchor: TileId,
+    landing: Landing,
+) -> Result<FieldOp, FieldError> {
+    let ids: BTreeSet<TileId> = ids.iter().copied().collect();
+    if ids.is_empty() || !ids.contains(&anchor) {
+        return Err(FieldError::UnknownTile);
+    }
+    if landing
+        .container
+        .is_some_and(|container| ids.contains(&container))
+    {
+        return Err(FieldError::NestingTooDeep);
+    }
+    let anchor_location = doc.location(anchor).ok_or(FieldError::NotFree)?;
+    let source_container = anchor_location.container;
+    let delta_col = i32::from(landing.cell.col) - i32::from(anchor_location.placement.cell.col);
+    let delta_row = i32::from(landing.cell.row) - i32::from(anchor_location.placement.cell.row);
+    let mut before = Vec::with_capacity(ids.len());
+    let mut after = Vec::with_capacity(ids.len());
+    for id in ids {
+        let tile = doc.tile(id).cloned().ok_or(FieldError::UnknownTile)?;
+        let location = doc.location(id).ok_or(FieldError::NotFree)?;
+        if location.container != source_container {
+            return Err(FieldError::NotFree);
+        }
+        check_grid_accepts(doc, landing.container, &tile)?;
+        let col = i32::from(location.placement.cell.col) + delta_col;
+        let row = i32::from(location.placement.cell.row) + delta_row;
+        let (Ok(col), Ok(row)) = (u16::try_from(col), u16::try_from(row)) else {
+            return Err(FieldError::NotFree);
+        };
+        before.push((id, Some(location)));
+        after.push((
+            id,
+            Located {
+                container: landing.container,
+                placement: Placement::new(Cell::new(col, row), location.placement.span),
+            },
+        ));
+    }
+
+    for (id, _) in &before {
+        doc.set_location(*id, None);
+    }
+    for (id, location) in &after {
+        let (cols, rows) = doc
+            .grid_size(location.container)
+            .ok_or(FieldError::UnknownContainer)?;
+        if !location.placement.fits(cols, rows)
+            || !doc.is_free(location.container, location.placement, None)
+        {
+            return Err(FieldError::NotFree);
+        }
+        doc.set_location(*id, Some(*location));
+    }
+    Ok(FieldOp::Layout { set: before })
+}
+
+fn stash_many(doc: &mut FieldDocument, ids: &[TileId]) -> Result<FieldOp, FieldError> {
+    let ids: BTreeSet<TileId> = ids.iter().copied().collect();
+    if ids.is_empty() {
+        return Err(FieldError::UnknownTile);
+    }
+    let mut before = Vec::with_capacity(ids.len());
+    for id in ids {
+        doc.tile(id).ok_or(FieldError::UnknownTile)?;
+        before.push((id, doc.location(id)));
+    }
+    for (id, _) in &before {
+        doc.set_location(*id, None);
+    }
+    Ok(FieldOp::Layout { set: before })
+}
+
+fn resize(doc: &mut FieldDocument, id: TileId, span: Span) -> Result<FieldOp, FieldError> {
+    let tile = doc.tile(id).cloned().ok_or(FieldError::UnknownTile)?;
+    if !tile.spans.accepts(span) {
+        return Err(FieldError::BadSpan);
+    }
+    let before = doc.location(id).ok_or(FieldError::NotFree)?;
+    let (grid_cols, grid_rows) = doc
+        .grid_size(before.container)
+        .ok_or(FieldError::UnknownTile)?;
+    // Nothing in the widget system may fill its whole grid. A tile that covers everything is a
+    // maximised window wearing a tile's clothes, and the field stops being a field. Only a
+    // container may, because a project's full-field state is the zoom *view* — a different
+    // mechanism that leaves the document alone
+    // (`@templaros.decision.home-field-stable-bounded-semantic-grammar`).
+    if !tile.kind.is_container() && span.cols >= grid_cols && span.rows >= grid_rows {
+        return Err(FieldError::BadSpan);
+    }
+    let mut grid = grid_of(doc, before.container)?;
+    let ranges: Vec<(TileId, SpanRange)> = grid
+        .places
+        .iter()
+        .filter_map(|(placed, _)| doc.tile(*placed).map(|tile| (*placed, tile.spans)))
+        .collect();
+    let reflow = find_resize(&grid, &ranges, id, span)?;
+    // `reflow.moved` records each yielding neighbour's *whole prior placement*, span included,
+    // and `moved_back` turns those into `Layout` entries — so the inverse restores neighbours'
+    // sizes as exactly as it restores their positions, with no new op and no format change.
+    let mut set = moved_back(before.container, &reflow.moved);
+    set.push((id, Some(before)));
+    apply_reflow(&mut grid, id, &reflow);
+    write_grid(doc, before.container, &grid);
+    Ok(FieldOp::Layout { set })
+}
+
+fn layout(
+    doc: &mut FieldDocument,
+    set: &[(TileId, Option<Located>)],
+) -> Result<FieldOp, FieldError> {
+    let mut before = Vec::with_capacity(set.len());
+    for (id, _) in set {
+        doc.tile(*id).ok_or(FieldError::UnknownTile)?;
+        before.push((*id, doc.location(*id)));
+    }
+    for (id, _) in set {
+        doc.set_location(*id, None);
+    }
+    for (id, location) in set {
+        if let Some(located) = location {
+            let tile = doc.tile(*id).cloned().ok_or(FieldError::UnknownTile)?;
+            check_grid_accepts(doc, located.container, &tile)?;
+            if !doc.is_free(located.container, located.placement, None) {
+                return Err(FieldError::NotFree);
+            }
+        }
+        doc.set_location(*id, *location);
+    }
+    Ok(FieldOp::Layout { set: before })
+}
+
+fn create_panel(doc: &mut FieldDocument, panel: &Panel) -> Result<FieldOp, FieldError> {
+    if doc.panel(panel.id).is_some() {
+        return Err(FieldError::DuplicatePanel);
+    }
+    let at = doc
+        .panels
+        .binary_search_by_key(&panel.id, |existing| existing.id)
+        .unwrap_err();
+    doc.panels.insert(at, panel.clone());
+    Ok(FieldOp::RemovePanel { id: panel.id })
+}
+
+fn remove_panel(doc: &mut FieldDocument, id: PanelId) -> Result<FieldOp, FieldError> {
+    let at = doc
+        .panels
+        .binary_search_by_key(&id, |panel| panel.id)
+        .map_err(|_| FieldError::UnknownPanel)?;
+    let panel = doc.panels.remove(at);
+    Ok(FieldOp::CreatePanel { panel })
+}
+
+fn configure_panel(doc: &mut FieldDocument, panel: &Panel) -> Result<FieldOp, FieldError> {
+    let stored = doc.panel_mut(panel.id).ok_or(FieldError::UnknownPanel)?;
+    let before = std::mem::replace(stored, panel.clone());
+    Ok(FieldOp::ConfigurePanel { panel: before })
+}
+
+fn arrange_panel(
+    doc: &mut FieldDocument,
+    id: PanelId,
+    arrangement: &Arrangement,
+) -> Result<FieldOp, FieldError> {
+    let panel = doc.panel(id).cloned().ok_or(FieldError::UnknownPanel)?;
+    let before_panel = panel.clone();
+    let before_locations: Vec<(TileId, Option<Located>)> = panel
+        .members
+        .iter()
+        .copied()
+        .filter(|member| doc.tile(*member).is_some())
+        .map(|member| (member, doc.location(member)))
+        .collect();
+
+    let set = arrangement_layout(doc, &panel, arrangement);
+    layout(doc, &set)?;
+
+    let stored = doc.panel_mut(id).ok_or(FieldError::UnknownPanel)?;
+    match arrangement {
+        Arrangement::Custom => {
+            stored.baseline = None;
+        }
+        _ => {
+            if matches!(stored.arrangement, Arrangement::Custom) && stored.baseline.is_none() {
+                stored.baseline = Some(before_locations.clone());
+            }
+        }
+    }
+    stored.arrangement = arrangement.clone();
+
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Layout {
+                set: before_locations,
+            },
+            FieldOp::ConfigurePanel {
+                panel: before_panel,
+            },
+        ],
+    })
+}
+
+fn set_grid(doc: &mut FieldDocument, cols: u16, rows: u16) -> Result<FieldOp, FieldError> {
+    let (old_cols, old_rows) = (doc.cols, doc.rows);
+    doc.cols = cols.max(1);
+    doc.rows = rows.max(1);
+    let mut set = Vec::new();
+    let misfits: Vec<(TileId, Placement)> = doc
+        .placements_in(None)
+        .into_iter()
+        .filter(|(_, placement)| !placement.fits(doc.cols, doc.rows))
+        .collect();
+    for (id, from) in misfits {
+        let tile = doc.tile(id).cloned().ok_or(FieldError::UnknownTile)?;
+        let before = doc.location(id);
+        doc.set_location(id, None);
+        let mut grid = grid_of(doc, None)?;
+        match find_placement(&grid, &tile.spans, from.cell, None) {
+            Ok(reflow) => {
+                set.extend(moved_back(None, &reflow.moved));
+                apply_reflow(&mut grid, id, &reflow);
+                write_grid(doc, None, &grid);
+            }
+            Err(FieldError::NoRoom) => {}
+            Err(error) => return Err(error),
+        }
+        set.push((id, before));
+    }
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::SetGrid {
+                cols: old_cols,
+                rows: old_rows,
+            },
+            FieldOp::Layout { set },
+        ],
+    })
+}
+
+fn create_project(
+    doc: &mut FieldDocument,
+    project: &Tile,
+    landing: Landing,
+    absorb: &[TileId],
+) -> Result<FieldOp, FieldError> {
+    if !project.kind.is_container() {
+        return Err(FieldError::NotAContainer);
+    }
+    if doc.tile(project.id).is_some() {
+        return Err(FieldError::DuplicateTile);
+    }
+    if landing.container.is_some() {
+        return Err(FieldError::NestingTooDeep);
+    }
+    // The same tile named twice is absorbed once — recording it twice would make the inverse
+    // put it back and then take it away again.
+    let mut absorb: Vec<TileId> = absorb.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    absorb.retain(|id| seen.insert(*id));
+    let absorb = &absorb;
+    for id in absorb {
+        let tile = doc.tile(*id).ok_or(FieldError::UnknownTile)?;
+        if tile.kind.is_container() {
+            return Err(FieldError::NestingTooDeep);
+        }
+    }
+    let mut absorbed_back = Vec::with_capacity(absorb.len());
+    for id in absorb {
+        absorbed_back.push((*id, doc.location(*id)));
+        doc.set_location(*id, None);
+    }
+    let mut grid = grid_of(doc, None)?;
+    let reflow = match find_placement(&grid, &project.spans, landing.cell, None) {
+        Ok(reflow) => reflow,
+        Err(error) => {
+            for (id, location) in absorbed_back {
+                doc.set_location(id, location);
+            }
+            return Err(error);
+        }
+    };
+    let moved = moved_back(None, &reflow.moved);
+    apply_reflow(&mut grid, project.id, &reflow);
+    doc.insert_tile(project.clone());
+    doc.insert_container(container_for(project));
+    write_grid(doc, None, &grid);
+    // Children: first-fit in the order given, at their preferred span, shrinking if needed. A
+    // child that cannot fit even at its minimum stays on the shelf, visibly.
+    let mut inner = grid_of(doc, Some(project.id))?;
+    for id in absorb {
+        let tile = doc.tile(*id).cloned().ok_or(FieldError::UnknownTile)?;
+        let spans = SpanRange::new(
+            tile.spans.min,
+            tile.spans.preferred,
+            Span::new(
+                tile.spans.max.cols.min(inner.cols),
+                tile.spans.max.rows.min(inner.rows),
+            ),
+        );
+        if let Ok(child) = find_placement(&inner, &spans, Cell::new(0, 0), None) {
+            apply_reflow(&mut inner, *id, &child);
+        }
+    }
+    write_grid(doc, Some(project.id), &inner);
+    // Restore absorbed and displaced tiles atomically. Their original and post-reflow
+    // rectangles can cross: two separate Layout ops could try to restore an absorbed tile into
+    // a rectangle still occupied by a displaced tile and reject a valid inverse as NotFree.
+    absorbed_back.extend(moved);
+    Ok(FieldOp::Batch {
+        ops: vec![
+            FieldOp::Remove { id: project.id },
+            FieldOp::Layout { set: absorbed_back },
+        ],
+    })
+}
+
+/// A project's interior grid when it is created: twice its preferred span in each direction, so
+/// a quadrant-sized project holds a comfortable handful of tiles.
+fn container_for(project: &Tile) -> Container {
+    Container {
+        id: project.id,
+        cols: project.spans.preferred.cols.saturating_mul(2).max(2),
+        rows: project.spans.preferred.rows.saturating_mul(2).max(2),
+    }
+}
+
+/// Whether `tile` may go on `container`'s grid: the grid exists, and containers stay one deep.
+fn check_grid_accepts(
+    doc: &FieldDocument,
+    container: Option<TileId>,
+    tile: &Tile,
+) -> Result<(), FieldError> {
+    if let Some(project) = container {
+        if tile.kind.is_container() {
+            return Err(FieldError::NestingTooDeep);
+        }
+        let parent = doc.tile(project).ok_or(FieldError::UnknownContainer)?;
+        if !parent.kind.is_container() || doc.container(project).is_none() {
+            return Err(FieldError::NotAContainer);
+        }
+    }
+    Ok(())
+}
+
+fn grid_of(doc: &FieldDocument, container: Option<TileId>) -> Result<Grid, FieldError> {
+    let (cols, rows) = doc
+        .grid_size(container)
+        .ok_or(FieldError::UnknownContainer)?;
+    Ok(Grid {
+        cols,
+        rows,
+        places: doc.placements_in(container),
+    })
+}
+
+fn write_grid(doc: &mut FieldDocument, container: Option<TileId>, grid: &Grid) {
+    for (id, placement) in &grid.places {
+        doc.set_location(
+            *id,
+            Some(Located {
+                container,
+                placement: *placement,
+            }),
+        );
+    }
+}
+
+/// The `Layout` entries that put every displaced tile back where it was.
+fn moved_back(
+    container: Option<TileId>,
+    moved: &[(TileId, Placement, Placement)],
+) -> Vec<(TileId, Option<Located>)> {
+    moved
+        .iter()
+        .map(|(id, from, _)| {
+            (
+                *id,
+                Some(Located {
+                    container,
+                    placement: *from,
+                }),
+            )
+        })
+        .collect()
+}
+
+/// Re-seat a document onto a grid of a different size.
+///
+/// A field is persisted per output and reloaded whenever the shell starts, but the grid it was
+/// saved on is the one the *display* had at the time: change the resolution, the scale, or the
+/// monitor, and the stored cells describe a grid that no longer exists. Replayed verbatim they
+/// were drawn over the new pixel area anyway — a 24×15 field on a 1920×1080 screen gave 79×67
+/// cells instead of 104×104, so every tile was squat and the layout rules had no visible effect —
+/// and on a grid that shrank, a tile beyond the new edge simply stopped being reachable.
+///
+/// Each tile keeps its place in the field *proportionally*: a cell two thirds of the way across a
+/// 24-column grid is two thirds of the way across an 18-column one, so a shelf in the corner stays
+/// in the corner and the drawer rail stays against the left edge. Tiles are re-seated in reading
+/// order through the ordinary reflow, so the result obeys every invariant a drop does — nothing
+/// overlaps, nothing is out of bounds, and a tile that cannot fit even at its minimum span is
+/// shelved rather than dropped, which keeps it recoverable.
+///
+/// Container interiors are not touched: a project's own grid is its own, and does not change
+/// because the screen did.
+///
+/// Not [`FieldOp::SetGrid`], which the running shell applies when the grid changes under it:
+/// that one disturbs as little as possible, re-placing only the tiles that no longer *fit*, and
+/// inverts exactly so the change can be undone. That is right for a resize the user is watching.
+/// This is for a layout arriving from a display that is not this one, where every cell means
+/// something different and leaving the tiles that happen to fit where they are would scatter the
+/// arrangement rather than preserve it. It is a load-time transformation, not an edit, so it is
+/// deliberately not an op and does not enter the undo log — undoing into a layout shaped for a
+/// screen that is not attached would not be a kindness.
+pub fn reshape(doc: &FieldDocument, cols: u16, rows: u16) -> FieldDocument {
+    let (cols, rows) = (cols.max(1), rows.max(1));
+    if doc.cols == cols && doc.rows == rows {
+        return doc.clone();
+    }
+
+    // Reading order, so the result is deterministic and the top-left keeps first claim.
+    let mut top = doc.placements_in(None);
+    top.sort_by_key(|(id, placement)| (placement.cell.row, placement.cell.col, *id));
+
+    let mut next = doc.clone();
+    next.cols = cols;
+    next.rows = rows;
+    for (id, _) in &top {
+        next.set_location(*id, None);
+    }
+
+    let mut grid = Grid {
+        cols,
+        rows,
+        places: Vec::with_capacity(top.len()),
+    };
+    for (id, placement) in top {
+        let Some(tile) = doc.tile(id) else { continue };
+        let landing = Cell::new(
+            scale(placement.cell.col, doc.cols, cols),
+            scale(placement.cell.row, doc.rows, rows),
+        );
+        // The tile's own range, with the ceiling brought inside the new grid so a span that only
+        // made sense on a larger one cannot be asked for.
+        let spans = SpanRange::new(
+            Span::new(tile.spans.min.cols.min(cols), tile.spans.min.rows.min(rows)),
+            Span::new(placement.span.cols.min(cols), placement.span.rows.min(rows)),
+            Span::new(tile.spans.max.cols.min(cols), tile.spans.max.rows.min(rows)),
+        );
+        // The preferred landing first, then every other band, because `find_placement` only
+        // considers the band its anchor is in. Shelving is a genuinely last resort: nothing in
+        // the shell offers a route back off the shelf, so a tile put there by a resolution
+        // change would be gone until the user rebuilt it by hand.
+        let Some(reflow) = std::iter::once(landing)
+            .chain((0..rows).flat_map(|row| (0..cols).map(move |col| Cell::new(col, row))))
+            .find_map(|candidate| find_placement(&grid, &spans, candidate, None).ok())
+        else {
+            continue;
+        };
+        apply_reflow(&mut grid, id, &reflow);
+        for (moved, placement) in &grid.places {
+            next.set_location(
+                *moved,
+                Some(Located {
+                    container: None,
+                    placement: *placement,
+                }),
+            );
+        }
+    }
+    next
+}
+
+/// `value` on a `from`-wide axis, at the same proportion of a `to`-wide one.
+fn scale(value: u16, from: u16, to: u16) -> u16 {
+    if from <= 1 {
+        return 0;
+    }
+    let scaled = u32::from(value) * u32::from(to) / u32::from(from);
+    u16::try_from(scaled).unwrap_or(u16::MAX).min(to - 1)
+}

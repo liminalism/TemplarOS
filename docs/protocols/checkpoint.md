@@ -1,7 +1,7 @@
 # Checkpoint protocol
 
-First-party applications implement `lege_client::sdk::CheckpointHandler`; the wire types are
-`lege_types::checkpoint::{CheckpointRequest, CheckpointResponse}`.
+First-party applications implement `templar_client::sdk::CheckpointHandler`; the wire types are
+`templar_types::checkpoint::{CheckpointRequest, CheckpointResponse}`.
 
 ```
 governor ──(Action::TrimCaches)──▶ sessiond ──PrepareForPressure──▶ app  ──Prepared{released}──▶

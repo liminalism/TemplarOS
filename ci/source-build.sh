@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the LegeOS source package in a *disposable* Ubuntu 26.04 (resolute) root.
+# Build the TemplarOS source package in a *disposable* Ubuntu 26.04 (resolute) root.
 #
 # Why a clean root at all: `just deb` builds thirteen packages with whatever this developer's
 # machine happens to have installed, and a package that only builds here is not a package. This
@@ -45,9 +45,9 @@ if ! have mmdebstrap && ! have podman; then
 fi
 
 # The disposable copy: tracked files only, plus the vendored crates the offline build needs.
-work="$(mktemp -d -t legeos-source-build-XXXXXX)"
+work="$(mktemp -d -t templaros-source-build-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
-src="$work/legeos-${id}"
+src="$work/templaros-${id}"
 mkdir -p "$src"
 git -C "$root" archive --format=tar HEAD | tar -x -C "$src"
 echo "source-build: copied HEAD into $src"
@@ -62,7 +62,7 @@ cargo run -q -p xtask -- archive changelog --write "$src/debian/changelog"
 
 build_script="set -eu
 export DEBIAN_FRONTEND=noninteractive
-export LEGEOS_BUILD_SET_ID='$id'
+export TEMPLAROS_BUILD_SET_ID='$id'
 apt-get update
 apt-get install --yes --no-install-recommends build-essential debhelper devscripts equivs cargo rustc pkg-config
 cd /src

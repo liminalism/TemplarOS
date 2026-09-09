@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.templaros
+Exec=/usr/libexec/xdg-desktop-portal-templar
+SystemdService=xdg-desktop-portal-templar.service

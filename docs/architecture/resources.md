@@ -1,9 +1,9 @@
-# Resources (`lege-resourced`)
+# Resources (`templar-resourced`)
 
 The governor is a separate, tiny, protected process (ADR-0002). It must keep deciding while
 everything else stalls, so it holds no SQLite connection, does no fsync on its loop, and needs
 **no D-Bus round-trip to contain a runaway application**: launch units are self-describing
-(`app-legeos-<AppId>@<InstanceId>.service`), so cgroup → instance comes from `/sys/fs/cgroup`
+(`app-templaros-<AppId>@<InstanceId>.service`), so cgroup → instance comes from `/sys/fs/cgroup`
 alone.
 
 ## Pressure states
@@ -14,7 +14,7 @@ highest-scoring victim) → Critical (checkpoint request; kill the cgroup after
 
 The victim score weighs memory, growth rate, PSI contribution, foreground and visible state,
 unsaved work and disposability — **never size alone** — and returns a per-term breakdown, so
-`ExplainInstance` and `lege res` can say why, in numbers, and the history event can read like a
+`ExplainInstance` and `templar res` can say why, in numbers, and the history event can read like a
 sentence rather than a code.
 
 ## Two independent protections
@@ -37,7 +37,7 @@ and signalled with `applied = false`, and not performed. Planning doc 02 §8 is 
 `memory.high` and proactive reclaim wait for recorded playthroughs that show sensible choices,
 and that termination comes last.
 
-The traces are that evidence: a bounded JSONL ring under `$XDG_STATE_HOME/legeos/`, readable back
+The traces are that evidence: a bounded JSONL ring under `$XDG_STATE_HOME/templaros/`, readable back
 through `RecentTraces`, recording pressure episodes and every decision with the score breakdown
 that produced it. Idle ticks are not episodes and are not recorded — a ring full of nothing is a
 ring that has rotated away the thing you needed to see.

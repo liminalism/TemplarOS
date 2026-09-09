@@ -1,0 +1,16 @@
+{
+  "id": "org.templaros.Viewer",
+  "display_name": "Templar Viewer",
+  "primary_desktop_file_id": "org.templaros.Viewer.desktop",
+  "executable": "/usr/bin/templar-viewer",
+  "aliases": {
+    "desktop_file_ids": ["org.templaros.Viewer.desktop"],
+    "wayland_app_ids": ["org.templaros.Viewer"],
+    "startup_wm_classes": ["templar-viewer"],
+    "flatpak_ids": [],
+    "executable_paths": ["/usr/bin/templar-viewer"]
+  },
+  "mime_types": ["application/pdf", "image/tiff"],
+  "resource_class": "Interactive",
+  "supports_checkpoint": true
+}

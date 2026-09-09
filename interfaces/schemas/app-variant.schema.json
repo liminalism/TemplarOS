@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/app-variant.schema.json",
-  "title": "LegeOS application provenance",
-  "description": "Where one installed copy of an application came from. Mirrors lege_types::variant::AppProvenance, carried on AppManifest.provenance and returned as the provenance_json column of AppIdentity1.ListVariants. Every field is optional on read: a manifest written before provenance existed still parses, and an origin that cannot be determined is Unknown rather than a guess.",
+  "$id": "https://templaros.org/schemas/app-variant.schema.json",
+  "title": "TemplarOS application provenance",
+  "description": "Where one installed copy of an application came from. Mirrors templar_types::variant::AppProvenance, carried on AppManifest.provenance and returned as the provenance_json column of AppIdentity1.ListVariants. Every field is optional on read: a manifest written before provenance existed still parses, and an origin that cannot be determined is Unknown rather than a guess.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

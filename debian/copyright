@@ -1,16 +1,16 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: legeos
-Source: https://github.com/legeos/legeos
+Upstream-Name: templaros
+Source: https://github.com/templaros/templaros
 Comment: Regenerate the per-crate stanzas with `cargo xtask copyright`. Forks are separate source
  packages and keep their upstream (GPL-3.0) licences.
 
 Files: *
-Copyright: 2026 LegeOS contributors
+Copyright: 2026 TemplarOS contributors
 License: AGPL-3.0-only
 
-Files: compositor/lege-comp/*
-Copyright: 2026 LegeOS contributors
-Comment: ADR-0012. lege-comp is written directly against Smithay (MIT) with cosmic-comp
+Files: compositor/templar-comp/*
+Copyright: 2026 TemplarOS contributors
+Comment: ADR-0012. templar-comp is written directly against Smithay (MIT) with cosmic-comp
  (GPL-3.0-only) read as a reference; it is the single licence exception in this source package,
  and ADR-0013 records it as such.
 License: GPL-3.0-only

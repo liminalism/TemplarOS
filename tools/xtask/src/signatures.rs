@@ -23,12 +23,12 @@
 //! the code agrees with itself.
 
 use anyhow::{Context, Result, bail};
-use lege_build::interfaces::{Baseline, Change, InterfaceSignatures, diff, method_signature};
 use quick_xml::events::Event;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+use templar_build::interfaces::{Baseline, Change, InterfaceSignatures, diff, method_signature};
 
 /// Where the frozen signatures live.
 pub const BASELINE: &str = "interfaces/baseline.json";
@@ -281,7 +281,7 @@ mod tests {
 
     const XML: &str = r#"
 <node>
-  <interface name="org.legeos.Test1">
+  <interface name="org.templaros.Test1">
     <method name="Status">
       <arg name="level" type="s" direction="out"/>
       <arg name="observe_only" type="b" direction="out"/>
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn a_method_signature_is_its_argument_types_in_and_out() {
         let interfaces = parsed();
-        let test = &interfaces["org.legeos.Test1"];
+        let test = &interfaces["org.templaros.Test1"];
         assert_eq!(test.methods["Status"], "()->(sb)");
         assert_eq!(test.methods["SetHints"], "(ss)->()");
         assert_eq!(test.signals["Changed"], "(s)");
@@ -324,7 +324,7 @@ mod tests {
     fn a_new_member_is_not_a_breaking_change() {
         let mut baseline = parsed();
         baseline
-            .get_mut("org.legeos.Test1")
+            .get_mut("org.templaros.Test1")
             .unwrap()
             .methods
             .remove("SetHints");
@@ -345,7 +345,7 @@ mod tests {
         assert!(changes[0].is_breaking());
         let described = changes[0].describe();
         assert!(described.contains("(ss)->() to (ssu)->()"), "{described}");
-        assert!(described.contains("org.legeos.Test2"), "{described}");
+        assert!(described.contains("org.templaros.Test2"), "{described}");
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         let changes = diff(&parsed(), &BTreeMap::new());
         assert_eq!(changes.len(), 1);
         assert!(matches!(changes[0], Change::InterfaceRemoved(_)));
-        assert!(changes[0].describe().contains("org.legeos.Test2"));
+        assert!(changes[0].describe().contains("org.templaros.Test2"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# Minimal shared-mime-info globs2 fixture (weight:mimetype:pattern[:cs]) for lege-associationd's
+# Minimal shared-mime-info globs2 fixture (weight:mimetype:pattern[:cs]) for templar-associationd's
 # detector tests. Not the real system database — just enough rules to exercise weighting,
 # case-sensitivity and multi-dot suffixes.
 50:application/pdf:*.pdf

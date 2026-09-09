@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/hardware-profile.schema.json",
-  "title": "LegeOS hardware profile",
+  "$id": "https://templaros.org/schemas/hardware-profile.schema.json",
+  "title": "TemplarOS hardware profile",
   "description": "Declarative description of a supported machine class (distro/hardware/profiles/*.toml, converted to JSON at build time).",
   "type": "object",
   "required": ["id", "name", "gpus"],

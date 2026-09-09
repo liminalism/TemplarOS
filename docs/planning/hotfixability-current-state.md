@@ -1,4 +1,4 @@
-# LegeOS hot-fixability: current state and daily-development plan
+# TemplarOS hot-fixability: current state and daily-development plan
 
 **Assessment date:** 2026-08-31  
 **Repository snapshot reviewed:** `fe147d81961eb355a6fa1e77f4ffc789903a9b37` plus the working-tree changes present at review time  
@@ -6,7 +6,7 @@
 
 ## Executive answer
 
-LegeOS can already be used as a desktop environment under active development, provided it is installed as an **additional session on a stable Ubuntu installation** and the existing Ubuntu session, display manager, TTY access, and user-data backups remain available as recovery paths.
+TemplarOS can already be used as a desktop environment under active development, provided it is installed as an **additional session on a stable Ubuntu installation** and the existing Ubuntu session, display manager, TTY access, and user-data backups remain available as recovery paths.
 
 It is **not yet ready to be the only bare-metal operating system on a machine that must remain recoverable**. The installer is deferred, the installer ISO does not exist, clean-install validation is still open, the Btrfs boot-deployment design has not been proven end to end on hardware, and the Secure Boot/bootloader choice remains a proposed ADR.
 
@@ -24,7 +24,7 @@ On that definition, the current architecture is promising but incomplete. The sh
 
 There are four materially different claims which should not be conflated:
 
-| Level | Meaning | LegeOS status |
+| Level | Meaning | TemplarOS status |
 |---|---|---|
 | Hot install | Replace packaged files on disk while the machine/session runs | Available for the Stage-1 desktop packages |
 | Hot activate | Start using the new files after restarting only the owning process or service | Designed for the shell and most daemons; only partially exercised as a coordinated workflow |
@@ -37,7 +37,7 @@ Ubuntu and Debian packaging already allow files to be upgraded on a running syst
 
 ### 1. Development packages can be installed without ending the live session
 
-[`scripts/reinstall-legeos-desktop.sh`](../../scripts/reinstall-legeos-desktop.sh) builds 13 LegeOS Debian packages as one selected set, installs them with `dpkg`, repairs dependencies with APT, reloads the user-manager unit cache, and runs the installed `/usr/bin/lege doctor --root /`. It deliberately does not restart the live desktop and tells the developer to log out and back in to activate the new compositor and shell.
+[`scripts/reinstall-templaros-desktop.sh`](../../scripts/reinstall-templaros-desktop.sh) builds 13 TemplarOS Debian packages as one selected set, installs them with `dpkg`, repairs dependencies with APT, reloads the user-manager unit cache, and runs the installed `/usr/bin/templar doctor --root /`. It deliberately does not restart the live desktop and tells the developer to log out and back in to activate the new compositor and shell.
 
 This is a sensible safety property: a build or package failure does not immediately destroy the desktop from which it is being repaired. The doctor check is also placed before logout, when recovery is easiest.
 
@@ -55,14 +55,14 @@ The user-session units deliberately separate the desktop into restart domains:
 
 | Component | Current activation boundary | Assessment |
 |---|---|---|
-| `lege-shell` | User-service restart | Best current hot-fix target. Its unit uses `Restart=always`; applications remain compositor clients while the decorative Home/shell surface reconnects. |
-| `lege-resourced` | User-service restart | Designed to restart independently with persistent trace/stage state and `Restart=always`. A controlled replacement still needs a behavioral health gate. |
-| `lege-sessiond` | User-service restart | Durable state uses append-only SQLite migrations. Restart interrupts D-Bus availability and may affect clients, so reconnect behavior must be tested before calling it seamless. |
-| `lege-filed` | User-service restart | Resumes journalled file operations before claiming its D-Bus name. This is a strong state-preserving boundary, but active clients and in-flight operations need an upgrade-specific test. |
-| `lege-hostd` | System-service restart | Update transactions are journalled and resume on startup. Replacing the updater while it owns a transaction is higher risk and should be forbidden or explicitly tested. |
-| `lege-settings`, `lege-files`, CLI, ordinary apps | Restart that application / launch a new process | Straightforward; already-running instances retain old code until closed. |
+| `templar-shell` | User-service restart | Best current hot-fix target. Its unit uses `Restart=always`; applications remain compositor clients while the decorative Home/shell surface reconnects. |
+| `templar-resourced` | User-service restart | Designed to restart independently with persistent trace/stage state and `Restart=always`. A controlled replacement still needs a behavioral health gate. |
+| `templar-sessiond` | User-service restart | Durable state uses append-only SQLite migrations. Restart interrupts D-Bus availability and may affect clients, so reconnect behavior must be tested before calling it seamless. |
+| `templar-filed` | User-service restart | Resumes journalled file operations before claiming its D-Bus name. This is a strong state-preserving boundary, but active clients and in-flight operations need an upgrade-specific test. |
+| `templar-hostd` | System-service restart | Update transactions are journalled and resume on startup. Replacing the updater while it owns a transaction is higher risk and should be forbidden or explicitly tested. |
+| `templar-settings`, `templar-files`, CLI, ordinary apps | Restart that application / launch a new process | Straightforward; already-running instances retain old code until closed. |
 | Portal backend | Service restart, then client reconnection | Architecturally independent, but portal calls in flight may fail and need retry semantics. |
-| `lege-comp` | Logout and new login | Intentionally `Restart=no`. Restarting a Wayland compositor disconnects every client; pretending this is seamless would lose application sessions. |
+| `templar-comp` | Logout and new login | Intentionally `Restart=no`. Restarting a Wayland compositor disconnects every client; pretending this is seamless would lose application sessions. |
 | Greeter/display-manager integration | End the affected greeter/session | Risky during daily work. Keep the host display manager unchanged until this path is independently proven. |
 | Kernel, NVIDIA module/userspace set, firmware, boot chain | Staged reboot | Correctly treated as a deployment transition, not a live service restart. |
 
@@ -70,22 +70,22 @@ The compositor exception is a sound design choice, not a hot-fixability defect. 
 
 ### 3. Durable-state foundations are better than the activation workflow
 
-[`crates/lege-state`](../../crates/lege-state) opens one SQLite store in WAL mode and applies named, append-only migrations transactionally. `lege-filed` journals accepted operations, and `lege-hostd` journals update phases before moving its in-memory state. These are exactly the kinds of foundations that allow a daemon to be replaced without treating all of its state as process-local.
+[`crates/templar-state`](../../crates/templar-state) opens one SQLite store in WAL mode and applies named, append-only migrations transactionally. `templar-filed` journals accepted operations, and `templar-hostd` journals update phases before moving its in-memory state. These are exactly the kinds of foundations that allow a daemon to be replaced without treating all of its state as process-local.
 
 Two important policies are still missing from the evidence reviewed:
 
 - **Rollback compatibility.** Forward migrations are defined, but there is no stated rule that an older binary can read state after a newer binary has migrated it. A package rollback and a data rollback are not the same operation.
 - **Cross-version IPC compatibility.** `interfaces/` is treated as the source of truth and the contributor guidance says shipped interfaces are frozen and incompatible changes require a version bump. That is the right rule, but rolling/skew tests—old client/new service and new client/old service—are not part of the current reinstall gate.
 
-The Home Field document is stricter still: `lege-field` refuses a document with a different `DOCUMENT_VERSION`. That prevents silent corruption, but a future format change needs an explicit migration or recovery experience before the shell can be safely rolled forward and back.
+The Home Field document is stricter still: `templar-field` refuses a document with a different `DOCUMENT_VERSION`. That prevents silent corruption, but a future format change needs an explicit migration or recovery experience before the shell can be safely rolled forward and back.
 
 ### 4. Whole-system transactional updating exists as an implementation, not yet as a proven product path
 
-`lege-hostd` contains a resumable phase machine:
+`templar-hostd` contains a resumable phase machine:
 
 `Planned → Downloading → Staging → Verifying → AwaitingReboot → Trial → Promoted/RolledBack`
 
-It snapshots the running Btrfs root, installs packages into a candidate rather than the live root, verifies selected kernel/NVIDIA invariants, seals the snapshot, copies boot artifacts into a deployment-owned ESP directory, and stages a boot with a retry counter. `lege-boot-health` gates promotion. The code also accepts `other_packages`, so the mechanism is not structurally limited to kernels.
+It snapshots the running Btrfs root, installs packages into a candidate rather than the live root, verifies selected kernel/NVIDIA invariants, seals the snapshot, copies boot artifacts into a deployment-owned ESP directory, and stages a boot with a retry counter. `templar-boot-health` gates promotion. The code also accepts `other_packages`, so the mechanism is not structurally limited to kernels.
 
 This is the correct direction for high-risk updates, but current evidence does not justify relying on it as the sole recovery system:
 
@@ -105,30 +105,30 @@ The fast `cargo-deb` path has built successfully in prior recorded checks, but t
 - [`Cargo.toml`](../../Cargo.toml) requires Rust 1.97 and CI uses 1.97.1, while [`debian/control`](../../debian/control) and [`packaging/README.md`](../../packaging/README.md) still claim/build-depend on Rust 1.93.
 - The workspace explicitly retains sibling path dependencies which must become pinned dependencies before the vendored source package can be built in isolation.
 
-This does not prevent local iteration from this checkout. It does prevent claiming that a clean LegeOS archive can currently reproduce and distribute every update.
+This does not prevent local iteration from this checkout. It does prevent claiming that a clean TemplarOS archive can currently reproduce and distribute every update.
 
 ## Review of the supplied paper
 
 The reviewed paper is *A Programming Paradigm for Spatiotemporal Composability* by Yifan Shi, Wei Zhang, and Tianyi Cui (`/home/dk/Downloads/paper.pdf`, 88 pages). It presents Cordis, a TypeScript meta-framework for dynamically loading and unloading application components.
 
-Its two core ideas are useful vocabulary for LegeOS:
+Its two core ideas are useful vocabulary for TemplarOS:
 
 - **Temporal composability:** every component effect is paired with and tracked alongside an inverse, so removing the component recovers its contribution.
 - **Spatial composability:** components declare dependencies (“coeffects”), and the runtime activates, deactivates, or reloads dependents as providers appear, disappear, or change.
 
 Cordis builds hot module replacement from those properties: classify affected modules, identify stale component entries, dispose their old fibers, reload them, and restore cached old modules if import fails. The paper also explicitly recognizes the operating-system process boundary as a coarse-grained but practical form of temporal composability.
 
-### What LegeOS should adopt from it
+### What TemplarOS should adopt from it
 
-1. **Make every activation describe its inverse or recovery route.** For LegeOS that usually means stop/restart a unit, restore a package/deployment, replay a journal, or restore a compatible state backup—not a closure inside one process.
+1. **Make every activation describe its inverse or recovery route.** For TemplarOS that usually means stop/restart a unit, restore a package/deployment, replay a journal, or restore a compatible state backup—not a closure inside one process.
 2. **Declare compatibility and dependencies.** Debian package dependencies, systemd ordering/readiness, D-Bus/Wayland protocol versions, schema versions, and provider roles are the OS-scale equivalent of the paper's coeffects.
 3. **Withdraw dependents before providers.** A service replacement should stop accepting new work, let dependent/in-flight work drain or fail retryably, replace the provider, verify readiness, then reconnect consumers.
 4. **Reconcile desired state.** A recorded release manifest should name the exact package/build versions expected; the update system should converge to it rather than run an unrecorded series of `dpkg` operations.
-5. **Respect the system boundary.** The paper notes that external emissions—file writes observed by others, network messages, and similar effects—cannot simply be inverted. LegeOS should use transactions, snapshots, delayed commit, or explicit compensation where correctness requires recovery.
+5. **Respect the system boundary.** The paper notes that external emissions—file writes observed by others, network messages, and similar effects—cannot simply be inverted. TemplarOS should use transactions, snapshots, delayed commit, or explicit compensation where correctness requires recovery.
 
-### What LegeOS should not adopt yet
+### What TemplarOS should not adopt yet
 
-LegeOS should not turn the compositor, shell, or policy daemons into native plugin hosts merely to obtain in-process HMR. Rust dynamic-library replacement introduces ABI, ownership, thread, callback, and teardown hazards precisely where desktop recovery must remain simple. The project already has a stronger and easier-to-audit granularity: processes supervised by systemd and connected through versioned protocols.
+TemplarOS should not turn the compositor, shell, or policy daemons into native plugin hosts merely to obtain in-process HMR. Rust dynamic-library replacement introduces ABI, ownership, thread, callback, and teardown hazards precisely where desktop recovery must remain simple. The project already has a stronger and easier-to-audit granularity: processes supervised by systemd and connected through versioned protocols.
 
 The paper's technique becomes attractive only for a deliberately designed, sandboxed extension runtime whose capabilities and effects are mediated from its first version. It is not a shortcut for replacing arbitrary native code in a running compositor.
 
@@ -136,31 +136,31 @@ The paper's technique becomes attractive only for a deliberately designed, sandb
 
 Use three layers, in this order:
 
-### Layer A — stable Ubuntu host plus alternate LegeOS session (recommended now)
+### Layer A — stable Ubuntu host plus alternate TemplarOS session (recommended now)
 
 1. Keep the existing Ubuntu desktop and display manager installed and working.
-2. Install LegeOS as an additional Wayland session with `scripts/reinstall-legeos-desktop.sh`.
-3. Do not switch the host to greetd as part of ordinary LegeOS iteration.
+2. Install TemplarOS as an additional Wayland session with `scripts/reinstall-templaros-desktop.sh`.
+3. Do not switch the host to greetd as part of ordinary TemplarOS iteration.
 4. Keep a tested TTY login and enough free disk space for builds, package artifacts, and backups.
 5. Keep user data outside experiments with filesystem/deployment layout, and maintain an external backup. OS rollback is not user-data rollback.
-6. Before each installed-session test, run the nested session and the relevant package/tests; then install, run the installed doctor, and only then log out into LegeOS.
-7. If LegeOS fails, return through the unchanged Ubuntu session or TTY. Do not repair a broken compositor from inside the compositor session if an independent session is available.
+6. Before each installed-session test, run the nested session and the relevant package/tests; then install, run the installed doctor, and only then log out into TemplarOS.
+7. If TemplarOS fails, return through the unchanged Ubuntu session or TTY. Do not repair a broken compositor from inside the compositor session if an independent session is available.
 
-This lets LegeOS be used and improved on the same computer without asking the unfinished LegeOS boot/install stack to protect the machine.
+This lets TemplarOS be used and improved on the same computer without asking the unfinished TemplarOS boot/install stack to protect the machine.
 
-### Layer B — selective live activation inside a LegeOS session (usable with discipline)
+### Layer B — selective live activation inside a TemplarOS session (usable with discipline)
 
 Use a component matrix rather than a blanket “restart everything” command:
 
-- Shell-only change: package install, then restart `lege-shell`; verify Home, window controls, launcher, and a pre-existing application.
+- Shell-only change: package install, then restart `templar-shell`; verify Home, window controls, launcher, and a pre-existing application.
 - Application/CLI change: start a new instance; close old instances when convenient.
 - `sessiond`, `filed`, `resourced`, portal, or `hostd` change: first add/run an upgrade-specific restart test, including old/new client skew and durable-state recovery; only then permit a targeted service restart.
 - Compositor/protocol change: test nested, install, run doctor, then log out/in. If a protocol changes incompatibly, update compositor and clients as one activation set.
-- Kernel/driver/firmware/boot change: do not activate live; use a tested candidate deployment and reboot, or stay with Ubuntu's normal known-good kernel workflow until LegeOS deployment rollback is hardware-proven.
+- Kernel/driver/firmware/boot change: do not activate live; use a tested candidate deployment and reboot, or stay with Ubuntu's normal known-good kernel workflow until TemplarOS deployment rollback is hardware-proven.
 
 “Installed successfully” must not be reported as “running successfully.” The workflow should name both the installed build and the active build for each long-lived process.
 
-### Layer C — full LegeOS installation (not recommended as the sole daily driver yet)
+### Layer C — full TemplarOS installation (not recommended as the sole daily driver yet)
 
 Advance to this layer only after the installer, image, clean-install, boot-health, and rollback acceptance gates below are demonstrated on the target hardware. Until then, the mkosi disk image is suitable for VM/disposable-disk testing, not evidence that a sole-host installation can always recover.
 
@@ -168,7 +168,7 @@ Advance to this layer only after the installer, image, clean-install, boot-healt
 
 ### P0 — define and expose activation boundaries
 
-- Add a release/build identity containing package version plus source commit; expose installed and running identities in `lege doctor`/status.
+- Add a release/build identity containing package version plus source commit; expose installed and running identities in `templar doctor`/status.
 - Maintain a machine-readable component matrix: package, owning unit/process, state path/schema, IPC versions, activation action, interruption promise, rollback action, and health check.
 - Make the reinstall workflow produce a final status of: installed set, still-running old processes, safe targeted restarts, logout required, and reboot required.
 
@@ -233,18 +233,18 @@ After process-level replacement is proven, consider blue/green service instances
 
 | Use case | Current verdict | Minimum next evidence |
 |---|---|---|
-| Develop LegeOS from a normal Ubuntu session | **Go** | Existing build/test workflow |
-| Install LegeOS as an alternate session and use it experimentally | **Go with recovery discipline** | Installed doctor passes; Ubuntu session and TTY retained |
+| Develop TemplarOS from a normal Ubuntu session | **Go** | Existing build/test workflow |
+| Install TemplarOS as an alternate session and use it experimentally | **Go with recovery discipline** | Installed doctor passes; Ubuntu session and TTY retained |
 | Restart only the shell to try shell/UI work | **Go, but verify the current session first** | Short composed-session restart smoke |
-| Routinely restart all LegeOS daemons after each build | **No-go today** | Per-service reconnection/state/skew tests |
+| Routinely restart all TemplarOS daemons after each build | **No-go today** | Per-service reconnection/state/skew tests |
 | Activate compositor changes without logout | **No-go by design** | None planned; logout remains the honest boundary |
 | Use the current full image as the sole production/daily-driver installation | **No-go today** | Installer + clean-install + real-hardware rollback evidence |
-| Update kernel/NVIDIA through LegeOS and rely on automatic rollback | **No-go as the only safety net today** | Hardware-executed promotion/rollback matrix and resolved ADR-0004 |
+| Update kernel/NVIDIA through TemplarOS and rely on automatic rollback | **No-go as the only safety net today** | Hardware-executed promotion/rollback matrix and resolved ADR-0004 |
 | Add native in-process HMR broadly | **No-go / unnecessary** | A narrowly scoped use case that process restart cannot satisfy |
 
 ## Bottom line
 
-The user goal—install LegeOS and continue improving it while using the same computer—is realistic now in the **alternate-session** form. Most iteration can happen from Ubuntu or a nested LegeOS session; packaged changes can be installed while the old session runs; shell and application changes can use small restart boundaries; compositor work costs a logout; kernel/driver work costs a reboot.
+The user goal—install TemplarOS and continue improving it while using the same computer—is realistic now in the **alternate-session** form. Most iteration can happen from Ubuntu or a nested TemplarOS session; packaged changes can be installed while the old session runs; shell and application changes can use small restart boundaries; compositor work costs a logout; kernel/driver work costs a reboot.
 
 What is not yet justified is removing the stable Ubuntu recovery layer. The next hot-fixability work should therefore focus on observable build identity, compatible service restarts, retained package bundles, and executable clean-install/rollback gates. Those provide far more practical safety than attempting fine-grained native HMR.
 

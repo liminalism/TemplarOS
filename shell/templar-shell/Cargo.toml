@@ -1,0 +1,133 @@
+[package]
+name = "templar-shell"
+description = "TemplarOS restartable shell: the Home Field, integrated file browser and window overview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "templar_shell"
+path = "src/lib.rs"
+
+[[bin]]
+name = "templar-shell"
+path = "src/main.rs"
+
+# The lock screen's authenticator. A separate binary rather than a separate crate: it is the
+# shell's own package that ships it, `cargo deb -p templar-shell` builds every bin of the crate, and
+# a workspace member of its own would need a `Package:` stanza in debian/control and a row in
+# distro/deploy/components.toml for a program that is one file. It is a separate *process*
+# because PAM loads arbitrary modules into whatever calls it, and that must not be the shell.
+[[bin]]
+name = "templar-unlock"
+path = "src/bin/templar-unlock.rs"
+
+[dependencies]
+templar-build = { workspace = true }
+templar-types = { workspace = true }
+templar-client = { workspace = true }
+templar-window = { workspace = true }
+templar-field = { workspace = true }
+templar-treemap = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+# `StreamExt` for the `Files.Trash1.Changed` signal stream (src/surface/app.rs).
+futures-util = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+
+# `--render`: the Home Field written to a PNG with no compositor and no display
+# (src/surface/offscreen.rs). The encoder only; nothing here decodes images.
+png = { workspace = true }
+
+# The graphical Home Surface (src/surface/**): pixelkit is this project's toolkit
+# (declared in the root workspace manifest; see that file's comment on why it is a path
+# dependency for now).
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
+
+# `pixelkit-shell` opens windows through winit, but its own `PixelApp`/`run_app` never hands the
+# caller the winit `Window` (see src/surface/window.rs's module doc) — reaching the compositor's
+# private `templar_shell_v1` protocol needs the window's raw Wayland surface, so this crate drives its
+# own `winit::application::ApplicationHandler` directly, reusing pixelkit-shell's lower-level,
+# independently-public pieces (`SoftbufferPresenter`, `Input`, `Scale`, the key/mouse enums)
+# instead of `run_app`. Pinned to the same "0.30" line pixelkit's own Cargo.toml uses, so Cargo
+# resolves one compiled winit rather than two.
+winit = "0.30"
+
+# Directly needed to reach into the wl_display winit already opened on the compositor's private
+# trusted-shell socket (src/wayland_bridge.rs) and speak `templar_shell_v1` on it — winit exposes only
+# a raw pointer (`raw_window_handle`/`platform::wayland`), never a `wayland_client::Connection`, so
+# this crate rebuilds one over winit's own foreign `wl_display` via
+# `wayland_backend::sys::client::Backend::from_foreign_display` (the sanctioned entry point for a
+# library "plugging itself into an existing Wayland connection"; see that module's doc comment).
+# Pinned to the same "0.31"/"0.3" lines the compositor's own manifest uses for the matching reason:
+# so there is only ever one compiled `wayland-client`/`wayland-backend`, the same instance winit
+# itself already pulled in transitively.
+# `client_system` selects wayland-backend's libwayland-client-backed implementation (the one with
+# `Backend::from_foreign_display`/`ObjectId::from_ptr`) rather than its pure-Rust reimplementation,
+# which has neither — winit enables the same feature on its own `wayland-backend` dependency, so
+# this is also what keeps the two crates' feature sets (and therefore Cargo's unification of them
+# into one compiled `wayland-backend`) aligned rather than accidentally relying on winit having
+# requested it first.
+# The standard capture protocols the Home Field's window previews use (`src/previews.rs`):
+# `ext-image-capture-source-v1` + `ext-image-copy-capture-v1`, plus `ext-foreign-toplevel-list-v1`
+# for the handles those sources are made from. `staging` is where all three live.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# A preview's shm pool is an anonymous file the compositor writes and this process reads back
+# with plain `pread` — no mmap, so no unsafe here.
+tempfile = { workspace = true }
+# Application icons. A stock hicolor theme is overwhelmingly SVG, so a PNG-only icon lookup
+# resolves almost nothing on a real installation and the launcher would be a list of grey
+# placeholders. `pixelkit-raster` decodes PNG and nothing else, and the workspace has no SVG
+# parser at all (`tiny-skia` is in the lock file only as `sctk-adwaita`'s window-decoration
+# rasterizer — a back end, with no notion of SVG). `default-features = false` drops resvg's text
+# stack (`usvg/text`, `system-fonts`, `memmap-fonts`) and its raster-image codecs: an application
+# icon that needs a font shaper or an embedded JPEG to draw is not a case worth linking a font
+# database into a restartable shell for, and without them this is a geometry rasterizer.
+resvg = { version = "0.45", default-features = false }
+# The lock screen decodes its own keys (src/session_lock.rs): a lock surface is not a winit
+# window, so winit's keyboard translation is not available to it. Already in the lock file — the
+# compositor's Smithay pulls the same version — so this is a new edge, not a new dependency.
+xkbcommon = "0.9"
+# PAM, for `templar-unlock` only (src/bin/templar-unlock.rs). `pam-client` wraps libpam's own
+# conversation contract rather than reimplementing it; the shell binary never calls it.
+pam-client = "0.5"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-scanner = "0.31"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-shell"
+section = "x11"
+priority = "optional"
+depends = "$auto, templaros-sessiond, templaros-filed, wl-clipboard"
+assets = [
+    ["target/release/templar-shell", "usr/bin/templar-shell", "755"],
+    # The lock screen's authenticator, and the PAM service that configures it. Not in
+    # /usr/bin: it is called by the shell, never by a person.
+    ["target/release/templar-unlock", "usr/libexec/templar-unlock", "755"],
+    ["assets/pam/templar-unlock", "etc/pam.d/templar-unlock", "644"],
+    # kitty reads $XDG_CONFIG_DIRS before the person's own $XDG_CONFIG_HOME, so this is a
+    # default the shell ships rather than a policy it imposes: ~/.config/kitty wins over
+    # every line in it. It lives with the shell because it is the shell's palette
+    # (`src/surface/design.rs`) that it carries.
+    ["../../distro/policy/xdg/kitty.conf", "etc/xdg/kitty/kitty.conf", "644"],
+]

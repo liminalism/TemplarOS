@@ -1,0 +1,29 @@
+[Unit]
+Description=TemplarOS session policy daemon (identity, launching, associations, providers, history, settings)
+Documentation=https://templaros.org/docs/sessiond
+PartOf=templaros-session.target
+After=dbus.socket
+Requires=dbus.socket
+
+[Service]
+Type=notify
+BusName=org.templaros.Session
+ExecStart=/usr/libexec/templar-sessiond
+Restart=on-failure
+RestartSec=1
+WatchdogSec=30
+Slice=session.slice
+MemoryLow=128M
+CPUWeight=500
+IOWeight=500
+OOMScoreAdjust=-800
+# systemd-oomd must look elsewhere first (ADR-0014): even where it is armed on a slice this unit
+# is visible in — a distribution default, a future slice reorganisation, someone's own drop-in —
+# this is the unit a session cannot lose.
+ManagedOOMPreference=avoid
+# Hardening: it launches applications through the user manager, nothing more.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/templaros %h/.config/templaros %h/.local/share/applications
+StateDirectory=templaros

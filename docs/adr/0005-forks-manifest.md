@@ -20,13 +20,13 @@ from the manifest.
 `cosmic-comp` and `cosmic-greeter` have left the manifest. The compositor is written against
 Smithay and is an ordinary workspace member, not a fork; the greeter is our own. The mechanism
 here — manifest pins rather than submodules — is unchanged and still governs the forks that
-remain. `compositor/lege-comp-integration` is now linked by a workspace member rather than by an
+remain. `compositor/templar-comp-integration` is now linked by a workspace member rather than by an
 external fork, which is a simplification: the dependency no longer crosses a repository boundary.
 
 ## Amendment (2026-08-24, standalone Files)
 
-`cosmic-files` has also left the manifest. Its declared `legeos/cosmic-files` remote was never
+`cosmic-files` has also left the manifest. Its declared `templaros/cosmic-files` remote was never
 materialised and does not exist, while the service-owned browsing and journalled-operation model
 now makes the GUI a bounded presentation client rather than a second filesystem implementation.
-`apps/lege-files` is therefore a first-party Pixelkit workspace member over `lege-client`; the
+`apps/templar-files` is therefore a first-party Pixelkit workspace member over `templar-client`; the
 portal and applets remain governed by this ADR's external-fork mechanism.

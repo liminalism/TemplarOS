@@ -1538,457 +1538,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
-name = "lege"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures-util",
- "lege-appd",
- "lege-associationd",
- "lege-build",
- "lege-client",
- "lege-file-index",
- "lege-filed",
- "lege-hwdetect",
- "lege-resourced",
- "lege-session-core",
- "lege-state",
- "lege-types",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "zbus",
-]
-
-[[package]]
-name = "lege-appd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "lege-client",
- "lege-state",
- "lege-types",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "zbus",
- "zbus_systemd",
-]
-
-[[package]]
-name = "lege-associationd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "lege-session-core",
- "lege-state",
- "lege-types",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "zbus",
-]
-
-[[package]]
-name = "lege-boot-health"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "lege-hwdetect",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "lege-build"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "lege-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "lege-file-index",
- "lege-treemap",
- "lege-types",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "zbus",
-]
-
-[[package]]
-name = "lege-comp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "lege-build",
- "lege-comp-integration",
- "lege-types",
- "lege-window",
- "libc",
- "pixelkit-raster",
- "pixelkit-text",
- "sd-notify",
- "smithay",
- "smithay-drm-extras",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-scanner",
- "wayland-server",
-]
-
-[[package]]
-name = "lege-comp-integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "lege-client",
- "lege-types",
- "lege-window",
- "parking_lot",
- "tempfile",
- "tokio",
- "tracing",
- "zbus",
-]
-
-[[package]]
-name = "lege-fanotify"
-version = "0.1.0"
-dependencies = [
- "inotify",
- "lege-file-index",
- "libc",
- "tempfile",
-]
-
-[[package]]
-name = "lege-field"
-version = "0.1.0"
-dependencies = [
- "lege-types",
- "proptest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "lege-file-index"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "inotify",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "lege-filed"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "image",
- "lege-build",
- "lege-client",
- "lege-file-index",
- "lege-state",
- "lege-types",
- "libc",
- "parking_lot",
- "png 0.17.16",
- "rusqlite",
- "serde",
- "serde_json",
- "still265",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zbus",
-]
-
-[[package]]
-name = "lege-files"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures-util",
- "lege-client",
- "lege-types",
- "pixelkit-raster",
- "pixelkit-shell",
- "pixelkit-text",
- "pixelkit-ui",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "lege-greeter"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "pixelkit-raster",
- "pixelkit-shell",
- "pixelkit-text",
- "pixelkit-ui",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "tracing-subscriber",
- "winit 0.30.13",
-]
-
-[[package]]
-name = "lege-hostd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "lege-build",
- "lege-hwdetect",
- "lege-types",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "lege-hwdetect"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
-]
-
-[[package]]
-name = "lege-resourced"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "lege-build",
- "lege-types",
- "libc",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "lege-session"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "lege-session-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "lege-field",
- "lege-state",
- "lege-types",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "lege-sessiond"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures-util",
- "lege-appd",
- "lege-associationd",
- "lege-build",
- "lege-client",
- "lege-field",
- "lege-session-core",
- "lege-state",
- "lege-types",
- "parking_lot",
- "rusqlite",
- "sd-notify",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
- "zbus_systemd",
-]
-
-[[package]]
-name = "lege-settings"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "lege-client",
- "lege-session-core",
- "lege-types",
- "pixelkit-raster",
- "pixelkit-shell",
- "pixelkit-text",
- "pixelkit-ui",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "lege-shell"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures-util",
- "lege-build",
- "lege-client",
- "lege-field",
- "lege-treemap",
- "lege-types",
- "lege-window",
- "libc",
- "pam-client",
- "pixelkit-raster",
- "pixelkit-shell",
- "pixelkit-text",
- "pixelkit-ui",
- "png 0.17.16",
- "raw-window-handle",
- "resvg",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-scanner",
- "winit 0.30.13",
- "xkbcommon",
- "zbus",
-]
-
-[[package]]
-name = "lege-state"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "parking_lot",
- "rusqlite",
- "tracing",
-]
-
-[[package]]
-name = "lege-treemap"
-version = "0.1.0"
-
-[[package]]
-name = "lege-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
-name = "lege-window"
-version = "0.1.0"
-dependencies = [
- "lege-types",
- "proptest",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3789,6 +3338,457 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-appd",
+ "templar-associationd",
+ "templar-build",
+ "templar-client",
+ "templar-file-index",
+ "templar-filed",
+ "templar-hwdetect",
+ "templar-resourced",
+ "templar-session-core",
+ "templar-state",
+ "templar-types",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "zbus",
+]
+
+[[package]]
+name = "templar-appd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-client",
+ "templar-state",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "zbus",
+ "zbus_systemd",
+]
+
+[[package]]
+name = "templar-associationd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-session-core",
+ "templar-state",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
+name = "templar-boot-health"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-hwdetect",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "templar-build"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "templar-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-file-index",
+ "templar-treemap",
+ "templar-types",
+ "thiserror 2.0.20",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "templar-comp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "pixelkit-raster",
+ "pixelkit-text",
+ "sd-notify",
+ "smithay",
+ "smithay-drm-extras",
+ "tempfile",
+ "templar-build",
+ "templar-comp-integration",
+ "templar-types",
+ "templar-window",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+ "wayland-server",
+]
+
+[[package]]
+name = "templar-comp-integration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "parking_lot",
+ "tempfile",
+ "templar-client",
+ "templar-types",
+ "templar-window",
+ "tokio",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
+name = "templar-fanotify"
+version = "0.1.0"
+dependencies = [
+ "inotify",
+ "libc",
+ "tempfile",
+ "templar-file-index",
+]
+
+[[package]]
+name = "templar-field"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "templar-types",
+]
+
+[[package]]
+name = "templar-file-index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inotify",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "templar-filed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "image",
+ "libc",
+ "parking_lot",
+ "png 0.17.16",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "still265",
+ "tempfile",
+ "templar-build",
+ "templar-client",
+ "templar-file-index",
+ "templar-state",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zbus",
+]
+
+[[package]]
+name = "templar-files"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures-util",
+ "pixelkit-raster",
+ "pixelkit-shell",
+ "pixelkit-text",
+ "pixelkit-ui",
+ "serde",
+ "serde_json",
+ "templar-client",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "templar-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pixelkit-raster",
+ "pixelkit-shell",
+ "pixelkit-text",
+ "pixelkit-ui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "winit 0.30.13",
+]
+
+[[package]]
+name = "templar-hostd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-build",
+ "templar-hwdetect",
+ "templar-types",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "templar-hwdetect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+]
+
+[[package]]
+name = "templar-resourced"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-build",
+ "templar-types",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "templar-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "templar-session-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-field",
+ "templar-state",
+ "templar-types",
+ "thiserror 2.0.20",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "templar-sessiond"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures-util",
+ "parking_lot",
+ "rusqlite",
+ "sd-notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-appd",
+ "templar-associationd",
+ "templar-build",
+ "templar-client",
+ "templar-field",
+ "templar-session-core",
+ "templar-state",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+ "zbus_systemd",
+]
+
+[[package]]
+name = "templar-settings"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pixelkit-raster",
+ "pixelkit-shell",
+ "pixelkit-text",
+ "pixelkit-ui",
+ "serde",
+ "serde_json",
+ "templar-client",
+ "templar-session-core",
+ "templar-types",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "templar-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures-util",
+ "libc",
+ "pam-client",
+ "pixelkit-raster",
+ "pixelkit-shell",
+ "pixelkit-text",
+ "pixelkit-ui",
+ "png 0.17.16",
+ "raw-window-handle",
+ "resvg",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "templar-build",
+ "templar-client",
+ "templar-field",
+ "templar-treemap",
+ "templar-types",
+ "templar-window",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+ "winit 0.30.13",
+ "xkbcommon",
+ "zbus",
+]
+
+[[package]]
+name = "templar-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "parking_lot",
+ "rusqlite",
+ "tracing",
+]
+
+[[package]]
+name = "templar-treemap"
+version = "0.1.0"
+
+[[package]]
+name = "templar-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "templar-window"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "templar-types",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5023,25 +5023,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
-name = "xdg-desktop-portal-lege"
+name = "xdg-desktop-portal-templar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
  "futures-util",
- "lege-build",
- "lege-client",
- "lege-filed",
- "lege-resourced",
- "lege-session-core",
- "lege-types",
  "pixelkit-raster",
  "pixelkit-shell",
  "pixelkit-text",
  "pixelkit-ui",
  "serde",
  "serde_json",
+ "templar-build",
+ "templar-client",
+ "templar-filed",
+ "templar-resourced",
+ "templar-session-core",
+ "templar-types",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5097,13 +5097,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "lege-build",
- "lege-file-index",
- "lege-state",
  "quick-xml",
  "serde",
  "serde_json",
  "tempfile",
+ "templar-build",
+ "templar-file-index",
+ "templar-state",
  "toml 0.9.12+spec-1.1.0",
 ]
 

@@ -5,16 +5,16 @@ the ADRs and AKR records. `ADOPTION.md` maps one to the other.
 Current focused assessments:
 
 - [`hotfixability-current-state.md`](hotfixability-current-state.md) — how far the installed desktop,
-  restartable services, compositor boundary, and boot deployments support developing LegeOS while it
+  restartable services, compositor boundary, and boot deployments support developing TemplarOS while it
   is in daily use.
 - [`window-groups-and-application-integration.md`](window-groups-and-application-integration.md) — the
   fourth hands-on run's findings, the window-group design (explicit, compositor-owned, one tile on Home,
   `Alt+Tab` inside and `Ctrl+Tab` across) and the interim application integration choices: the Home
   field as a launcher, fsearch for search, Kitty as the terminal, and the Files object's context menu.
 - [`shared-incremental-file-index.md`](shared-incremental-file-index.md) — replace the interim two-index
-  search arrangement with one persistent, incrementally maintained `lege-filed` index consumed by
-  LegeOS search, a remote-index FSearch fork, Silvaview-rs, the CLI, and future clients.
+  search arrangement with one persistent, incrementally maintained `templar-filed` index consumed by
+  TemplarOS search, a remote-index FSearch fork, Silvaview-rs, the CLI, and future clients.
 - [`ubuntu-derived-full-distribution-roadmap.md`](ubuntu-derived-full-distribution-roadmap.md) — the
-  Ubuntu components LegeOS should reuse, the distribution infrastructure it must own, a latest-qualified
+  Ubuntu components TemplarOS should reuse, the distribution infrastructure it must own, a latest-qualified
   Linux 7.2/7.3 kernel-channel plan, phased delivery gates, and a remaining-work estimate for a
   supportable amd64 OS.

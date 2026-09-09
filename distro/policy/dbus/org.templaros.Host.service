@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.templaros.Host
+Exec=/usr/libexec/templar-hostd
+User=root
+SystemdService=templar-hostd.service

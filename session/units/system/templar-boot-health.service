@@ -1,0 +1,19 @@
+[Unit]
+Description=TemplarOS boot health probe (gates systemd-bless-boot)
+Documentation=https://templaros.org/docs/updates
+DefaultDependencies=no
+After=graphical.target
+Before=boot-complete.target
+ConditionPathExists=/sys/firmware/efi
+# A black screen must not hang forever: fail after the timeout so the boot counter decrements
+# and the previous deployment is booted next time.
+FailureAction=reboot-force
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/templar-boot-health
+TimeoutStartSec=90
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=boot-complete.target

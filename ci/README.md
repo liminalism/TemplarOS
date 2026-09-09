@@ -3,5 +3,5 @@
 
 `ci/source-build.sh` builds the *source* package in a disposable Ubuntu 26.04 root (`mmdebstrap`, else
 `podman`), generating `debian/changelog` from the build-set id into the throwaway copy of the tree —
-the one version authority (`@legeos.decision.build-set-id-is-the-version-authority`). With neither backend
+the one version authority (`@templaros.decision.build-set-id-is-the-version-authority`). With neither backend
 installed it prints `NOT EXECUTED` and exits 0; that line is never a pass. `--plan` prints what it would do.

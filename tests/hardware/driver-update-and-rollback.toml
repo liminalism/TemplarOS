@@ -1,10 +1,10 @@
 id = "driver-update-and-rollback"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
-  "lege update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <candidate-userspace>",
+  "templar update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <candidate-userspace>",
   "reboot",
-  "lege-boot-health passes (module version matches userspace version) → entry blessed, Drivers1.Plan shows no violations",
-  "lege update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <mismatched-userspace> (simulated: userspace pinned to a different branch)",
+  "templar-boot-health passes (module version matches userspace version) → entry blessed, Drivers1.Plan shows no violations",
+  "templar update plan --nvidia-modules <candidate-lrm> --nvidia-userspace <mismatched-userspace> (simulated: userspace pinned to a different branch)",
   "reboot",
 ]
 expect = [

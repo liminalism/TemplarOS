@@ -1,10 +1,10 @@
 # ISO build 2026-09-09 — set 0.1.0~dev1788929296+gb82906a.dirty
 
-1. mmdebstrap resolute (unshare) → /var/tmp/legeos-build/@build/iso/casper/filesystem.squashfs
-2. archive → legeos/devrepo, tiers manifest
+1. mmdebstrap resolute (unshare) → /var/tmp/templaros-build/@build/iso/casper/filesystem.squashfs
+2. archive → templaros/devrepo, tiers manifest
 native 15, inherited 1507
 3. GRUB configuration and the EFI system partition image
-4. xorriso → /var/tmp/legeos-build/@build/legeos-0.1.0~dev1788929296+gb82906a.dirty.iso
+4. xorriso → /var/tmp/templaros-build/@build/templaros-0.1.0~dev1788929296+gb82906a.dirty.iso
 Written to medium : 2043899 sectors at LBA 0
 
-fa5f5bcb51ae75e61380a83c30cde58f07033bbfd8269aa89ca94fc94cb1ef78  legeos-0.1.0~dev1788929296+gb82906a.dirty.iso
+fa5f5bcb51ae75e61380a83c30cde58f07033bbfd8269aa89ca94fc94cb1ef78  templaros-0.1.0~dev1788929296+gb82906a.dirty.iso

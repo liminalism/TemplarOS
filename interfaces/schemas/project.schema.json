@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/project.schema.json",
-  "title": "LegeOS project",
-  "description": "A project session: the files, applications, directories and environment a person works in, instead of a numbered virtual desktop. Mirrors lege_session_core::projects::Project, and is the payload of Projects1.Describe and Projects1.ListDetailed. Stored as one JSON blob and read additively in both directions: an older binary ignores keys it does not know, and a newer one defaults keys an older writer omitted.",
+  "$id": "https://templaros.org/schemas/project.schema.json",
+  "title": "TemplarOS project",
+  "description": "A project session: the files, applications, directories and environment a person works in, instead of a numbered virtual desktop. Mirrors templar_session_core::projects::Project, and is the payload of Projects1.Describe and Projects1.ListDetailed. Stored as one JSON blob and read additively in both directions: an older binary ignores keys it does not know, and a newer one defaults keys an older writer omitted.",
   "type": "object",
   "required": ["id", "name", "root"],
   "properties": {

@@ -1,0 +1,66 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Host. Path: /org/templaros/Host.
+
+     Read-only @home checkpoints and the btrfs metadata delta between two of them, so the file
+     index can learn what changed while it was not watching without re-walking the tree. Snapshot
+     creation reuses the same Snapshotter the deployment path drives; the delta is
+     `btrfs send --no-data -p <from> <to>`, which reads no file data.
+
+     This lives in templar-hostd and not in the per-user templar-filed because BTRFS_IOC_SEND requires
+     CAP_SYS_ADMIN, and a per-user daemon does not get capabilities (ADR-0001, ADR-0003).
+
+     templar-filed calls DeltaOpen when a downtime repair finds a btrfs root and a checkpoint it
+     still holds; anything else falls back to a recursive reconcile. See
+     services/templar-filed/src/delta_catchup.rs.
+
+     Every argument is JSON on purpose (interfaces/README.md): a filter or a field can be added
+     later without a signature change, which is what the frozen-signature rule requires.
+
+     polkit: org.templaros.host.index-checkpoint on Create/Delta/DeltaOpen/Discard. List is an
+     unauthenticated read, like Storage1's Usage. -->
+<node>
+  <interface name="org.templaros.Host.IndexCheckpoint1">
+    <!-- CheckpointRequest JSON in ({"subvolume": "/home"}; empty means the configured default),
+         Checkpoint JSON out (id, path, subvolume, uuid, ctransid, created_ms). -->
+    <method name="Create">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="checkpoint_json" type="s" direction="out"/>
+    </method>
+    <!-- Every retained checkpoint, as JSON (Vec<Checkpoint>), oldest id first. -->
+    <method name="List">
+      <arg name="checkpoints_json" type="s" direction="out"/>
+    </method>
+    <!-- DeltaRequest JSON in ({"from": id, "to": id, "with-data": false, "subvolume": "/home"};
+         an empty subvolume means the configured default), DeltaStream JSON out
+         (from, to, subvolume, path, bytes, duration_ms).
+
+         `subvolume` is what the stream's paths are relative to, and it is not the consumer's
+         index root: a delta of @home names dk/notes.md, and @home is mounted at /home, so the
+         absolute path is /home/dk/notes.md. A consumer that joins onto its own root instead
+         addresses nothing that exists. -->
+    <method name="Delta">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="delta_json" type="s" direction="out"/>
+    </method>
+    <!-- The same delta, handed over as a descriptor instead of a path. Same DeltaRequest JSON in;
+         out is the open stream plus the DeltaStream JSON that describes it (its `path` is the
+         name the file *had*).
+
+         hostd writes the stream, opens it, and unlinks it before returning, so the bytes reach
+         exactly one caller and no path survives the call for anyone else to read. A metadata
+         delta names every path under @home, which is why the written file is 0600 root-owned and
+         why Delta's path form is not something an unprivileged consumer can use. This is the
+         pattern org.templaros.Files.Index1.OpenSnapshot already uses on the session bus; only the
+         bus is new. -->
+    <method name="DeltaOpen">
+      <arg name="request_json" type="s" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
+      <arg name="delta_json" type="s" direction="out"/>
+    </method>
+    <!-- Drop a checkpoint once its delta has been applied. -->
+    <method name="Discard">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

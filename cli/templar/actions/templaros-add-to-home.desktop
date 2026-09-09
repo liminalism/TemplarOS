@@ -1,0 +1,15 @@
+# A DES-EMA custom action, read by libfm-qt (pcmanfm-qt) from
+# /usr/share/file-manager/actions/. This is one of the two places pcmanfm-qt can reach TemplarOS's
+# own surfaces: there is no plugin API, so an action that shells out to `templar` is the integration.
+[Desktop Entry]
+Type=Action
+Name=Add to Home
+Tooltip=Place this folder on the Home Field
+Icon=user-home
+Profiles=folder
+
+[X-Action-Profile folder]
+Name=Add to Home
+MimeTypes=inode/directory;
+SelectionCount=1
+Exec=templar home place %f

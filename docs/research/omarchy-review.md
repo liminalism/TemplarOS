@@ -1,4 +1,4 @@
-# Omarchy, studied for what LegeOS should learn
+# Omarchy, studied for what TemplarOS should learn
 
 Method: cloned `basecamp/omarchy` at tag-equivalent `4.0.0.alpha` (this is a substantially
 rewritten version — an ISO installer and a Quickshell-based shell, not the older
@@ -78,23 +78,23 @@ downstream from motivation"* (`manual/01-welcome-to-omarchy.md`).
   and tells you how to override for a single transaction — nudging the safe path without removing
   the power-user one (`manual/30-updates.md`).
 
-## 3. What LegeOS should steal, ranked
+## 3. What TemplarOS should steal, ranked
 
 **1. A single action manifest that drives the keyboard cheat sheet, the menu, and the CLI —
 not three parallel implementations.**
 (a) *Practice:* define every user-facing action once (id, human label, optional chord, CLI verb)
-and generate the discoverability surface, the shell's menu, and `lege`'s subcommand table from
+and generate the discoverability surface, the shell's menu, and `templar`'s subcommand table from
 it — mirroring Omarchy's `o.bind(chord, label, command)` triple.
-(b) *Fit:* LegeOS already has the underlying discipline for this — M1 evidence states "every
+(b) *Fit:* TemplarOS already has the underlying discipline for this — M1 evidence states "every
 service is reachable from the CLI, the portal, the shell and Settings"
 (`docs/generated/CURRENT-STATE.md`, evidence `m1-clients-reachable`), and
 `docs/architecture/accessibility.md` already commits to "everything the shell shows is available
-through `lege` too." What's missing is Omarchy's fourth leg: a generated, always-current,
+through `templar` too." What's missing is Omarchy's fourth leg: a generated, always-current,
 **mouse-browsable** list of what a chord does, so a person never has to memorize or hunt a wiki.
-This is compositor/shell surface work, so it's M2-adjacent once `lege-comp`/`lege-shell`
+This is compositor/shell surface work, so it's M2-adjacent once `templar-comp`/`templar-shell`
 keybindings exist, but the manifest itself (which action, which label) can be drafted alongside
 the M2 dock/Home Surface work now.
-(c) *Cost:* low-medium — a manifest format plus one rendering path in `lege-shell`; no new daemon.
+(c) *Cost:* low-medium — a manifest format plus one rendering path in `templar-shell`; no new daemon.
 (d) *Conflicts:* the manifest must live in a service crate, not the shell, to respect "system
 behaviour belongs in services; ... shell only renders" (`CURRENT-STATE.md`,
 `services-not-indicators`) — doable, and actually *reinforces* that constraint rather than
@@ -112,49 +112,49 @@ expensive.
 **3. Snapshot-before-mutate as a blanket safety net *underneath* the precise kernel/driver
 transaction, for the things that transaction doesn't cover** (settings/state-DB migrations, shell
 config changes).
-(a) *Practice:* a coarse, cheap, automatic pre-change snapshot (LegeOS is already on btrfs per
-`ARCHITECTURE.md`) as a fallback, alongside `lege-state`'s existing SQLite migrations
-(`ARCHITECTURE.md`: "lege-state | sessiond, filed | SQLite migrations").
+(a) *Practice:* a coarse, cheap, automatic pre-change snapshot (TemplarOS is already on btrfs per
+`ARCHITECTURE.md`) as a fallback, alongside `templar-state`'s existing SQLite migrations
+(`ARCHITECTURE.md`: "templar-state | sessiond, filed | SQLite migrations").
 (b) *Fit:* this is explicitly **not M2** — the five first-release claims don't mention it, and
-`@legeos.constraint.first-release-scope` bounds what M1/M2 attempt. It's an M3+ or standing-track
+`@templaros.constraint.first-release-scope` bounds what M1/M2 attempt. It's an M3+ or standing-track
 candidate, and belongs behind an ADR, since it brushes against the already-decided, more rigorous
 kernel/driver transaction design (D12/ADR-0012 territory) rather than replacing it.
 (c) *Cost:* medium — mostly deploy/image policy, not new runtime code.
 (d) *Conflicts:* risk of scope creep against the explicit first-release boundary; should be logged
 as a track item, not started now.
 
-**4. "Omakase" as validation, not a new work item.** LegeOS has already independently arrived at,
+**4. "Omakase" as validation, not a new work item.** TemplarOS has already independently arrived at,
 and formalized more strictly than Omarchy, the opinionated-default philosophy: "exactly one
 selected provider per exclusive role may autostart" (`CURRENT-STATE.md`,
 `one-provider-per-role`) is omakase computing with an enforcement mechanism instead of a slogan.
 No action item — this is a philosophy note confirming a decision already made. Omarchy has no
 equivalent mechanism at all: it is a single-vendor stack (one shell, one bar, one notifier) so the
 conflicting-provider case it would address simply doesn't arise for its own components, which is
-a narrower problem than the one LegeOS's constraint actually solves.
+a narrower problem than the one TemplarOS's constraint actually solves.
 
-## 4. Where LegeOS is already ahead, or an Omarchy choice argues against itself
+## 4. Where TemplarOS is already ahead, or an Omarchy choice argues against itself
 
 - **Application identity.** Omarchy/Hyprland resolve window identity from the client's
   self-declared `app_id`/`WM_CLASS` (confirmed by grep: `shell/plugins/bar/widgets/ActiveWindow.qml`,
   `shell/plugins/menu/Menu.qml` both key off `app_id`). That is exactly the spoofable,
-  self-declared model LegeOS's constraint was written to reject: "Identity comes from the launch
+  self-declared model TemplarOS's constraint was written to reject: "Identity comes from the launch
   cgroup, never from a client's self-declared app_id" (`CURRENT-STATE.md`,
   `identity-and-launch-safety`). This isn't a style difference — it's a concrete case where
-  Omarchy's approach is a real argument *for* LegeOS's stricter model, because a malicious or
-  buggy client can lie about its `app_id` under Omarchy's model and cannot under LegeOS's.
+  Omarchy's approach is a real argument *for* TemplarOS's stricter model, because a malicious or
+  buggy client can lie about its `app_id` under Omarchy's model and cannot under TemplarOS's.
 - **Rollback precision.** Omarchy's update rollback is a whole-root Btrfs snapshot that explicitly
   does not touch `/home` and explicitly leaves config-format mismatches for the user to "sort out
-  manually" (`manual/47-system-snapshots.md`). LegeOS's paired kernel/driver transaction with a
-  system-scope health probe and `systemd-bless-boot` gating (`ARCHITECTURE.md`, `lege-boot-health`,
+  manually" (`manual/47-system-snapshots.md`). TemplarOS's paired kernel/driver transaction with a
+  system-scope health probe and `systemd-bless-boot` gating (`ARCHITECTURE.md`, `templar-boot-health`,
   M1 evidence `m1-update-transaction-resumes`) is a materially more precise mechanism for the one
-  case it covers. LegeOS is ahead here; the honest caveat is that its precision is currently scoped
+  case it covers. TemplarOS is ahead here; the honest caveat is that its precision is currently scoped
   to kernel+driver only, and everything else (settings, shell config) has no such story yet — see
   recommendation 3.
 - **Memory pressure.** I searched Omarchy's package lists and shell/config trees for any OOM or
   PSI-aware containment (`earlyoom`, `nohang`, `systemd-oomd`, PSI) and found none. Omarchy relies
-  on whatever the kernel/systemd do by default. LegeOS's staged, trace-reviewed governor
-  (`lege-resourced`, M1 evidence `m1-governor-staged`) has no analog in Omarchy at all — this is
-  claim 3 of LegeOS's five, and Omarchy simply doesn't compete on it. Not a criticism of Omarchy
+  on whatever the kernel/systemd do by default. TemplarOS's staged, trace-reviewed governor
+  (`templar-resourced`, M1 evidence `m1-governor-staged`) has no analog in Omarchy at all — this is
+  claim 3 of TemplarOS's five, and Omarchy simply doesn't compete on it. Not a criticism of Omarchy
   (it isn't trying to solve this), but confirms this differentiator is real and unclaimed.
 - **Personal taste baked into system defaults.** Two independent critiques (read via WebFetch
   summary): abyss.fish's *"your dotfiles are not a distro"* argues Omarchy bundles the author's own
@@ -162,14 +162,14 @@ a narrower problem than the one LegeOS's constraint actually solves.
   read myself: `default/hypr/bindings/applications.lua` binds `Super+Shift+C/E` to
   `https://app.hey.com/calendar` and `https://app.hey.com` (DHH's own company's product), and
   `Super+Shift+A`/`Super+Shift+Alt+A` to ChatGPT/Grok specifically. That's a company's own SaaS
-  wired into a distro's hotkeys, not neutral infrastructure. LegeOS's provider-role model
+  wired into a distro's hotkeys, not neutral infrastructure. TemplarOS's provider-role model
   (`one-provider-per-role`) is deliberately the opposite shape — a pluggable slot, not a hardcoded
   vendor — and this is a case where Omarchy's opinionation went further than its own "omakase"
-  argument requires, and where LegeOS's more restrained, infrastructure-only stance is the better
+  argument requires, and where TemplarOS's more restrained, infrastructure-only stance is the better
   call, not just a different one.
 - **stevedylan.dev's critique** (WebFetch summary): heavily opinionated distros become hard to
   customize once a user's needs diverge, because the pieces are bundled rather than composable.
-  This is a forward-looking caution for LegeOS more than a live problem — LegeOS is pre-GUI (M2),
+  This is a forward-looking caution for TemplarOS more than a live problem — TemplarOS is pre-GUI (M2),
   so there's no customization ossification yet, but it's worth keeping "one small policy daemon"
   from calcifying into "one way to do everything" as the shell grows past M2.
 
@@ -197,13 +197,13 @@ JSONC proves.
 Given the user's stated position — not a fan of doing everything by keyboard, while granting the
 appeal — the concrete recommendation is: **adopt the "declare once, reach three ways" pattern
 (recommendation 1), and make the keyboard layer strictly additive.** Concretely: every action
-LegeOS exposes should have a mouse/menu path that is not second-class (not smaller click targets,
+TemplarOS exposes should have a mouse/menu path that is not second-class (not smaller click targets,
 not fewer capabilities, not requiring the shortcut cheat-sheet to discover it exists) — the way
 Omarchy's panels genuinely are full UI, not shortcuts-in-disguise. A keyboard chord should be an
 *accelerator* recorded in the same manifest as the corresponding menu/dock entry, never the only
-way to reach a capability, and LegeOS should resist adding chords whose only justification is
+way to reach a capability, and TemplarOS should resist adding chords whose only justification is
 "faster for someone who already knows them" if that same someone can just as easily click a dock
-item that's always in the same place. Given LegeOS's actual population — accessibility invariants
+item that's always in the same place. Given TemplarOS's actual population — accessibility invariants
 already require every shell surface to have a high-contrast variant and be reachable without the
 shell (`docs/architecture/accessibility.md`) — a mouse/AT-SPI-first design discipline is already a
 stated requirement, not a gap; the keyboard-additive stance recommended here is consistent with,
@@ -239,11 +239,11 @@ triple is real, and so are the vendor keybindings. Three things need correcting,
 changes the headline finding.
 
 **Correction 1 — Omarchy does have provider indirection.** §3.4 says Omarchy "has no equivalent
-mechanism at all" to LegeOS's provider roles. It does. Bindings do not name binaries: they name
+mechanism at all" to TemplarOS's provider roles. It does. Bindings do not name binaries: they name
 capabilities — `o.bind("SUPER + SHIFT + RETURN", "Browser", { omarchy = "browser" })` — and
 `bin/omarchy-launch-browser` resolves that through `xdg-settings get default-web-browser`,
 falling back to `xdg-mime query default x-scheme-handler/https`. That is the standard XDG
-mechanism rather than nothing. LegeOS's `Providers1` is still meaningfully stricter — one selected
+mechanism rather than nothing. TemplarOS's `Providers1` is still meaningfully stricter — one selected
 provider per *exclusive* role, arbitrated by a daemon and enforced at autostart, rather than a
 per-scheme default anyone can overwrite — but the difference is degree and enforcement, not
 presence.
@@ -263,7 +263,7 @@ systemd units, and then discards that information.**
 systemd-run --user --quiet --collect --unit="omarchy-browser-$(date +%s%N)" …
 ```
 
-So Omarchy independently arrived at the same primitive LegeOS's launch model is built on: one
+So Omarchy independently arrived at the same primitive TemplarOS's launch model is built on: one
 transient systemd unit, and therefore one cgroup, per launch. Six scripts under `bin/` do this.
 
 What it does not do is use it. There is **no** reference to a cgroup, a unit, or `/proc/<pid>/cgroup`
@@ -271,11 +271,11 @@ anywhere under `shell/` — the shell identifies windows purely by the client's 
 `app_id` (12 references). The cgroup exists and is thrown away.
 
 That reframes §4's first bullet. The distance between the two projects is not "Omarchy trusts
-`app_id`, LegeOS uses cgroups" — it is that Omarchy has the cgroup already and cannot get from a
+`app_id`, TemplarOS uses cgroups" — it is that Omarchy has the cgroup already and cannot get from a
 window back to it, because the unit is named after a timestamp (`omarchy-browser-<nanos>`) and
-carries no identity. LegeOS's actual insight is narrower and sharper than the original framing
+carries no identity. TemplarOS's actual insight is narrower and sharper than the original framing
 suggests: it is not that a cgroup exists, it is that
-`app-legeos-<AppId>@<InstanceId>.service` **makes the cgroup name carry the identity**, so a
+`app-templaros-<AppId>@<InstanceId>.service` **makes the cgroup name carry the identity**, so a
 window's PID resolves to a cgroup, the cgroup name resolves to an `AppId`, and the governor,
 the dock and the notification router can all key off the same fact without asking the client
 anything.

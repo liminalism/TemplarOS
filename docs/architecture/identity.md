@@ -1,17 +1,17 @@
-# Application identity (`lege-appd`)
+# Application identity (`templar-appd`)
 One canonical `AppId`; aliases are evidence. Verified identity = PID's cgroup is a registered (or
 self-describing) launch unit. Confidence: unknown / claim-only / verified-launch / verified-launch-claim-mismatch.
-Compatibility fallback accepts only a *unique* claim match. Manifests: `/usr/share/legeos/apps`,
-`/etc/legeos/apps`, `$XDG_DATA_HOME/legeos/apps`. Desktop entries without a manifest are imported
-(`lege-appd::desktop_entry`), keyed per origin namespace so a Flatpak export and a distribution
+Compatibility fallback accepts only a *unique* claim match. Manifests: `/usr/share/templaros/apps`,
+`/etc/templaros/apps`, `$XDG_DATA_HOME/templaros/apps`. Desktop entries without a manifest are imported
+(`templar-appd::desktop_entry`), keyed per origin namespace so a Flatpak export and a distribution
 package sharing a desktop id stay two applications instead of one silently replacing the other.
 
 ## Variants and logical applications
 An `AppId` names a **variant**: one installed copy, from one origin. A person sees one Firefox; the
 system may hold the Debian package, the Flathub build and a `.desktop` file they wrote themselves.
-`AppProvenance` (`crates/lege-types/src/variant.rs`, `interfaces/schemas/app-variant.schema.json`)
+`AppProvenance` (`crates/templar-types/src/variant.rs`, `interfaces/schemas/app-variant.schema.json`)
 records where a copy came from — origin, trust tier, source path, package ref, version, launch
-mechanism, update owner — and `crates/lege-appd/src/variants.rs` groups copies under a
+mechanism, update owner — and `crates/templar-appd/src/variants.rs` groups copies under a
 `LogicalAppId` on evidence: a declared logical app or alias, a shared desktop-entry id across
 origins, a flatpak id named in another's aliases, a shared `StartupWMClass` *and* name, or a shared
 resolved executable. Minted logical ids are persisted, so they survive an uninstall.

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/provider-capability.schema.json",
+  "$id": "https://templaros.org/schemas/provider-capability.schema.json",
   "title": "Provider capability",
   "type": "object",
   "required": ["role"],

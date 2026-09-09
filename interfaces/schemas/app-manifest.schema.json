@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/app-manifest.schema.json",
-  "title": "LegeOS application manifest",
-  "description": "The application contract. Mirrors lege_types::AppManifest. Installed under /usr/share/legeos/apps/<AppId>.json (system), /etc/legeos/apps (admin), $XDG_DATA_HOME/legeos/apps (user).",
+  "$id": "https://templaros.org/schemas/app-manifest.schema.json",
+  "title": "TemplarOS application manifest",
+  "description": "The application contract. Mirrors templar_types::AppManifest. Installed under /usr/share/templaros/apps/<AppId>.json (system), /etc/templaros/apps (admin), $XDG_DATA_HOME/templaros/apps (user).",
   "type": "object",
   "required": ["id", "display_name", "primary_desktop_file_id", "executable", "resource_class"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$", "minLength": 3, "maxLength": 255,
-            "description": "Canonical reverse-DNS application ID, e.g. org.legeos.Files" },
+            "description": "Canonical reverse-DNS application ID, e.g. org.templaros.Files" },
     "display_name": { "type": "string" },
     "primary_desktop_file_id": { "type": "string", "pattern": "\\.desktop$" },
     "executable": { "type": "string", "description": "Absolute path launched by appd (never through a shell)" },

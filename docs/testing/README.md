@@ -1,4 +1,4 @@
-# Testing LegeOS
+# Testing TemplarOS
 
 There are four ways to run this, and they differ by how much you have to commit to. Start at the
 top; only go down when the thing you need to test requires it.
@@ -6,25 +6,25 @@ top; only go down when the thing you need to test requires it.
 The planning analysis (`docs/planning/01-initial-shape.md`) staged it this way deliberately. Stage
 1 is "a replacement session on Lubuntu 26.04", using an existing install "only as the development
 host". So the desktop-environment form below is **scaffolding, not the product** — it exists so
-the work is testable long before there is an installer, and it does not commit LegeOS to shipping
+the work is testable long before there is an installer, and it does not commit TemplarOS to shipping
 as a desktop environment on someone else's distribution.
 
 | | What | What it costs | What it can prove |
 |---|---|---|---|
 | 1 | Nested compositor in your current session | nothing | protocols, geometry, recovery, chrome |
-| 2 | Install the `.deb`s and pick **LegeOS** at the login screen | packages on your current Ubuntu | the whole session, greeter included |
+| 2 | Install the `.deb`s and pick **TemplarOS** at the login screen | packages on your current Ubuntu | the whole session, greeter included |
 | 3 | mkosi disk image in a VM | mkosi + network | the image, first boot, the installer path |
 | 4 | Real install on real hardware | a machine | DRM/KMS, both GPU paths, suspend, hotplug |
 
 There is also a fifth thing that is not a "way to run it" but catches more than any of them:
-`cargo test --workspace`, `tests/integration/run.sh`, and `lege-comp --check`. Those run anywhere,
+`cargo test --workspace`, `tests/integration/run.sh`, and `templar-comp --check`. Those run anywhere,
 including where there is no display at all, and they are what CI has.
 
 ## 1. Nested — no installation
 
 ```sh
 cargo build --workspace
-./target/debug/lege-comp --backend winit
+./target/debug/templar-comp --backend winit
 ```
 
 `--backend winit` is the default whenever `WAYLAND_DISPLAY` or `DISPLAY` is already set, so inside
@@ -37,9 +37,9 @@ It logs two socket names. Point a client at the first:
 WAYLAND_DISPLAY=wayland-N weston-terminal      # or cosmic-term, foot, alacritty…
 ```
 
-The second socket, `legeos-shell-wayland-N`, is the private one. Connecting there — and only there — is
-what makes a client the trusted shell, which is the sole way to see the `lege_shell_v1` and
-`lege_recovery_v1` protocols. Nothing a client can *say* grants that trust.
+The second socket, `templaros-shell-wayland-N`, is the private one. Connecting there — and only there — is
+what makes a client the trusted shell, which is the sole way to see the `templar_shell_v1` and
+`templar_recovery_v1` protocols. Nothing a client can *say* grants that trust.
 
 What to exercise by hand, because no test covers it:
 
@@ -53,8 +53,8 @@ What to exercise by hand, because no test covers it:
 * With two or three windows open, tap `Super` (or press `Ctrl+Alt+H`; `Super+D` remains a fallback).
   Every window must disappear behind the Home Surface with nothing else changing; `Escape`, the
   same key again, or clicking a window's entry must bring the exact prior stack back.
-* **Kill `lege-shell` while revealed.** The windows must reappear on their own.
-* On the Home Field (`WAYLAND_DISPLAY=legeos-shell-wayland-N lege-shell --surface`): click an application
+* **Kill `templar-shell` while revealed.** The windows must reappear on their own.
+* On the Home Field (`WAYLAND_DISPLAY=templaros-shell-wayland-N templar-shell --surface`): click an application
   tile's body — it launches; click an open window's tile — it comes to the front (and any reveal
   ends); press its `park` control — it vanishes from the screen and its tile reads *parked*; click
   the parked tile — it comes back at its old geometry. Drag a tile by its title band: a ghost shows
@@ -69,8 +69,8 @@ What to exercise by hand, because no test covers it:
   for now change `shell.home-field.tile-size`): tall, it shows a cushion treemap of `~/Downloads`
   with area proportional to bytes; compact, a colour band of its composition.
   Then do the same with the keyboard only: arrows, Enter, Space+arrows+Enter, Delete, Ctrl+Z.
-  `lege-shell --print field` must list the same tiles.
-* **Kill `lege-shell` and do it all again.** This is the point of the architecture: recovery is
+  `templar-shell --print field` must list the same tiles.
+* **Kill `templar-shell` and do it all again.** This is the point of the architecture: recovery is
   the compositor's job, not the shell's.
 
 | Keys | What it does | Works with the shell dead |
@@ -89,15 +89,15 @@ shelves nothing and moves nothing, so there is never anything to undo when it en
 
 ## 2. Installed packages — the easiest full session
 
-This is the "desktop environment" form. You install LegeOS's packages onto the Ubuntu you already
-have, and a **LegeOS** entry appears in your display manager's session list.
+This is the "desktop environment" form. You install TemplarOS's packages onto the Ubuntu you already
+have, and a **TemplarOS** entry appears in your display manager's session list.
 
-For repeat development installs, the repository script rebuilds nm-tray2 and every LegeOS package,
+For repeat development installs, the repository script rebuilds nm-tray2 and every TemplarOS package,
 installs the exact package set, repairs dependencies, reloads the user manager, and runs the installed
 doctor check:
 
 ```sh
-scripts/reinstall-legeos-desktop.sh
+scripts/reinstall-templaros-desktop.sh
 ```
 
 Use `--dry-run` to inspect the commands, `--skip-build` to reinstall existing artifacts, or
@@ -105,7 +105,7 @@ Use `--dry-run` to inspect the commands, `--skip-build` to reinstall existing ar
 as the desktop user, not through `sudo`; it elevates only the install commands and never restarts the
 live session.
 
-The equivalent manual LegeOS package steps are:
+The equivalent manual TemplarOS package steps are:
 
 ```sh
 just deb                                # builds target/debian/*.deb
@@ -121,22 +121,22 @@ unit definitions even though the corrected files are already present under `/usr
 Then check it before you log out, because the whole point is not to end up unable to log in:
 
 ```sh
-/usr/bin/lege doctor --root /
+/usr/bin/templar doctor --root /
 ```
 
 `unit-binaries` and `compositor-usable` are the two that matter here. The first resolves every
-LegeOS unit's `ExecStart` against what is actually installed; the second additionally checks
+TemplarOS unit's `ExecStart` against what is actually installed; the second additionally checks
 XWayland, which is a runtime lookup no build step can catch. If either fails, do not log out —
 fix it first. The absolute path is intentional: a development host may already have an unrelated
-`lege` in `~/.local/bin`, which commonly precedes `/usr/bin` in `PATH`.
+`templar` in `~/.local/bin`, which commonly precedes `/usr/bin` in `PATH`.
 
-Now log out and choose **LegeOS** from the session menu.
+Now log out and choose **TemplarOS** from the session menu.
 
 ### If it does not come up
 
-Switch to a TTY with `Ctrl+Alt+F3` and log in there. `journalctl --user -b -u lege-comp` and
-`journalctl --user -b -u lege-shell` have the current boot's story. After a forced restart, use
-`journalctl -b -1 _SYSTEMD_USER_UNIT=lege-comp.service` (and `lege-shell.service`) for the previous
+Switch to a TTY with `Ctrl+Alt+F3` and log in there. `journalctl --user -b -u templar-comp` and
+`journalctl --user -b -u templar-shell` have the current boot's story. After a forced restart, use
+`journalctl -b -1 _SYSTEMD_USER_UNIT=templar-comp.service` (and `templar-shell.service`) for the previous
 boot instead. To get back to your usual desktop, just pick it from the session menu at the next
 login — installing these packages changes nothing about your existing session.
 
@@ -145,10 +145,10 @@ login — installing these packages changes nothing about your existing session.
 * Your machine's Ubuntu version need not be 26.04 for this path. The distribution itself pins
   26.04 "resolute" (`distro/base.toml`), and paths 3 and 4 target that; these packages are Rust
   binaries and systemd units and are far less fussy.
-* `greetd` is only *recommended* by `legeos-session`, and reconfiguring your display manager to
+* `greetd` is only *recommended* by `templaros-session`, and reconfiguring your display manager to
   use it is a separate, riskier step. See `session/units/greetd/README.md` — including how to get
   back — before doing that. You do not need it for this path: your existing display manager will
-  list the LegeOS session perfectly well.
+  list the TemplarOS session perfectly well.
 
 ## 3. mkosi image in a VM
 
@@ -168,12 +168,12 @@ set, which is exactly the situation on a bare TTY. `tests/hardware/*.toml` is th
 ```sh
 cargo test --workspace                  # unit, integration and property tests
 tests/integration/run.sh                # the daemons' runtime smoke
-./target/debug/lege-comp --check        # the compositor, headlessly
+./target/debug/templar-comp --check        # the compositor, headlessly
 ```
 
 `--check` constructs every protocol global, binds both sockets and exits. It is the only
 compositor mode that runs where there is no seat and no host compositor to nest inside — CI, a
 build machine, a container. It says nothing about rendering or input, and does not claim to.
 
-`cargo test -p lege-comp` includes the one test that connects a real Wayland client over the real
+`cargo test -p templar-comp` includes the one test that connects a real Wayland client over the real
 socket and asserts the advertised protocol set — in both directions across the trust boundary.

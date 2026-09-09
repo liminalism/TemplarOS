@@ -1,9 +1,9 @@
 id = "wayland-and-xwayland-apps"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
-  "launch a native Wayland app (e.g. lege-settings)",
+  "launch a native Wayland app (e.g. templar-settings)",
   "launch an XWayland app (e.g. a legacy X11-only tool)",
-  "check identity resolution for both: org.legeos.AppIdentity1 shows verified-launch, correct cgroup and canonical AppId",
+  "check identity resolution for both: org.templaros.AppIdentity1 shows verified-launch, correct cgroup and canonical AppId",
   "check dock grouping: both appear as one entry each, no duplicates from XWayland's separate WM_CLASS",
 ]
 expect = [

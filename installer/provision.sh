@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a LegeOS Developer Edition target from an Ubuntu 26.04 base.
+# Provision a TemplarOS Developer Edition target from an Ubuntu 26.04 base.
 #
 # This is a *provisioner*, not an installer: one machine shape, no OEM flow, no arbitrary layouts,
 # no graphical pages. It reads distro/deploy/layout.toml (contract C3) so the partition table, the
@@ -15,42 +15,42 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
-# legeos-cli ships this script as /usr/libexec/legeos/provision with its data under
-# /usr/share/legeos, so the live medium can run it with no checkout. A checkout wins when present.
+# templaros-cli ships this script as /usr/libexec/templaros/provision with its data under
+# /usr/share/templaros, so the live medium can run it with no checkout. A checkout wins when present.
 if [ -f "$repo/distro/deploy/layout.toml" ]; then
     data_layout="$repo/distro/deploy/layout.toml"
-    data_grub_stub="$repo/distro/deploy/grub.d/09_legeos"
+    data_grub_stub="$repo/distro/deploy/grub.d/09_templaros"
     data_os_release="$repo/distro/branding/os-release"
     data_flatpak_refs="$repo/distro/seeds/flatpak-refs.list"
 else
-    # The live medium is itself a LegeOS: legeos-hostd ships the GRUB stub and the identity is
-    # the running system's own, so only the layout needs a home of its own (legeos-cli).
-    data_layout=/usr/share/legeos/layout.toml
-    data_grub_stub=/etc/grub.d/09_legeos
+    # The live medium is itself a TemplarOS: templaros-hostd ships the GRUB stub and the identity is
+    # the running system's own, so only the layout needs a home of its own (templaros-cli).
+    data_layout=/usr/share/templaros/layout.toml
+    data_grub_stub=/etc/grub.d/09_templaros
     data_os_release=/usr/lib/os-release
-    data_flatpak_refs=/usr/share/legeos/flatpak-refs.list
+    data_flatpak_refs=/usr/share/templaros/flatpak-refs.list
 fi
 
 # --- C1: package selection (D1 owns these names; they are variables so a rename is one edit) -----
-LEGEOS_KEYRING="${LEGEOS_KEYRING:-legeos-archive-keyring}"
-LEGEOS_DESKTOP="${LEGEOS_DESKTOP:-legeos-desktop}"
-LEGEOS_SESSION="${LEGEOS_SESSION:-legeos-session-meta}"     # D1 may rename to legeos-session-full
-LEGEOS_KERNEL="${LEGEOS_KERNEL:-legeos-kernel}"
-LEGEOS_NVIDIA="${LEGEOS_NVIDIA:-legeos-nvidia-open}"        # or legeos-nvidia-proprietary
-LEGEOS_DEV_RUST="${LEGEOS_DEV_RUST:-legeos-dev-rust}"
-LEGEOS_DEV_CUDA="${LEGEOS_DEV_CUDA:-legeos-dev-cuda}"
+TEMPLAROS_KEYRING="${TEMPLAROS_KEYRING:-templaros-archive-keyring}"
+TEMPLAROS_DESKTOP="${TEMPLAROS_DESKTOP:-templaros-desktop}"
+TEMPLAROS_SESSION="${TEMPLAROS_SESSION:-templaros-session-meta}"     # D1 may rename to templaros-session-full
+TEMPLAROS_KERNEL="${TEMPLAROS_KERNEL:-templaros-kernel}"
+TEMPLAROS_NVIDIA="${TEMPLAROS_NVIDIA:-templaros-nvidia-open}"        # or templaros-nvidia-proprietary
+TEMPLAROS_DEV_RUST="${TEMPLAROS_DEV_RUST:-templaros-dev-rust}"
+TEMPLAROS_DEV_CUDA="${TEMPLAROS_DEV_CUDA:-templaros-dev-cuda}"
 
-# --- C2: the local LegeOS archive (D2 owns this shape) -------------------------------------------
-# Where the set is read from: the live medium carries one at /legeos/devrepo; a development host
-# has its own. Where it ends up is always the target's /var/lib/legeos/devrepo, so the installed
-# system's `lege dev` finds the set it was installed from and reports itself converged.
+# --- C2: the local TemplarOS archive (D2 owns this shape) -------------------------------------------
+# Where the set is read from: the live medium carries one at /templaros/devrepo; a development host
+# has its own. Where it ends up is always the target's /var/lib/templaros/devrepo, so the installed
+# system's `templar dev` finds the set it was installed from and reports itself converged.
 if [ -z "${DEVREPO_ROOT:-}" ]; then
-    DEVREPO_ROOT=/var/lib/legeos/devrepo
-    for medium in /cdrom/legeos/devrepo /legeos/devrepo; do   # casper mounts the ISO at /cdrom
+    DEVREPO_ROOT=/var/lib/templaros/devrepo
+    for medium in /cdrom/templaros/devrepo /templaros/devrepo; do   # casper mounts the ISO at /cdrom
         [ -d "$medium" ] && { DEVREPO_ROOT="$medium"; break; }
     done
 fi
-TARGET_DEVREPO=/var/lib/legeos/devrepo
+TARGET_DEVREPO=/var/lib/templaros/devrepo
 DEVREPO_MARKER="${DEVREPO_MARKER:-current}"   # current | previous. `staged` is never installable.
 
 # --- Ubuntu base ---------------------------------------------------------------------------------
@@ -74,7 +74,7 @@ plan_out=""
 plan_in=""
 ignore_preflight=0
 # The live medium leaves the boot-time hardware report here (distro/iso/live/customize.sh).
-PREFLIGHT_REPORT="${PREFLIGHT_REPORT:-/run/legeos/preflight.txt}"
+PREFLIGHT_REPORT="${PREFLIGHT_REPORT:-/run/templaros/preflight.txt}"
 
 
 die() { printf 'provision: %s\n' "$*" >&2; exit 1; }
@@ -94,14 +94,14 @@ usage: provision.sh --image PATH [--apply] [options]
                       format these two existing partitions; the partition table is not touched.
   --device /dev/sdX   provision a whole block device. Requires --i-mean-it as well.
   --i-mean-it         acknowledge that --device destroys everything on that disk.
-  --archive DIR       the LegeOS archive to install from (default: /legeos/devrepo on the live
-                      medium, /var/lib/legeos/devrepo otherwise). Copied to the target.
+  --archive DIR       the TemplarOS archive to install from (default: /templaros/devrepo on the live
+                      medium, /var/lib/templaros/devrepo otherwise). Copied to the target.
   --apply             actually do it. Without this, the run prints the plan and changes nothing.
   --user NAME         the account to create. No password is baked in; see --password-stdin.
   --password-stdin    read the new user's password from stdin. Otherwise the account is created
                       with an expired password and the first login has to set one.
-  --nvidia PACKAGE    the NVIDIA metapackage variant (default: $LEGEOS_NVIDIA).
-  --set ID            install a specific LegeOS build set instead of the `current` marker.
+  --nvidia PACKAGE    the NVIDIA metapackage variant (default: $TEMPLAROS_NVIDIA).
+  --set ID            install a specific TemplarOS build set instead of the `current` marker.
   --layout PATH       an alternative layout declaration (testing).
   --data PART         an independent data filesystem (layout [data]). Reused, never formatted,
                       unless --format-data says otherwise.
@@ -128,7 +128,7 @@ while [ $# -gt 0 ]; do
         --apply) apply=1; shift ;;
         --user) username="${2:?--user needs a name}"; shift 2 ;;
         --password-stdin) read_password=1; shift ;;
-        --nvidia) LEGEOS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
+        --nvidia) TEMPLAROS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
         --set) DEVREPO_MARKER="${2:?--set needs an id}"; shift 2 ;;
         --layout) layout="${2:?--layout needs a path}"; shift 2 ;;
         --data) data_arg="${2:?--data needs a partition}"; shift 2 ;;
@@ -186,7 +186,7 @@ cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
 # Everything below this line is destructive. These are the conditions under which it must not run,
 # stated once, before any of it.
 
-# The live medium runs `lege doctor --preflight` once at boot and leaves its report behind.
+# The live medium runs `templar doctor --preflight` once at boot and leaves its report behind.
 # Installing onto a machine whose display or network the kernel could not drive is exactly how
 # somebody ends up with a system that boots to nothing, so a failed line refuses to write. Nothing
 # is probed again here: the report is the observation, and --ignore-preflight is the override.
@@ -254,7 +254,7 @@ if [ "$reuse" = 1 ]; then
 fi
 
 # Two filesystems with the same label are two filesystems the boot path cannot tell apart, and
-# `root=LABEL=legeos-root` would mount whichever the kernel saw first. Identity in fstab and in
+# `root=LABEL=templaros-root` would mount whichever the kernel saw first. Identity in fstab and in
 # the boot entry is by UUID for exactly this reason, but a duplicate label is still a machine
 # nobody should walk away from believing is fine.
 duplicate_label() { # label
@@ -276,8 +276,8 @@ case "$target_kind" in
     device) real_disk=1 ;;
     free-space|partitions) [ -b "${esp_arg:-$target}" ] && real_disk=1 ;;
 esac
-if [ "$real_disk" = 1 ] && [ "${LEGEOS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; then
-    die "writing to a real disk also needs LEGEOS_PROVISION_ALLOW_DEVICE=1 in the environment.
+if [ "$real_disk" = 1 ] && [ "${TEMPLAROS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; then
+    die "writing to a real disk also needs TEMPLAROS_PROVISION_ALLOW_DEVICE=1 in the environment.
      That second switch exists so a copied-and-pasted command line cannot reach a disk on its own."
 fi
 # The privilege check is deliberately *not* here, above the plan comparison: a stale plan is a
@@ -301,7 +301,7 @@ plan_out="${plan_out:-}"
 if [ -z "$plan_out" ]; then
     case "$target_kind" in
         image) plan_out="$target.plan.json" ;;
-        *) plan_out="${TMPDIR:-/tmp}/legeos-provision-plan.json" ;;
+        *) plan_out="${TMPDIR:-/tmp}/templaros-provision-plan.json" ;;
     esac
 fi
 plan_ops=""
@@ -426,9 +426,9 @@ if [ "$apply" = 1 ] && [ "$(id -u)" != 0 ]; then
     die "--apply needs root (loop devices, mkfs, mount, chroot). Run it in a disposable VM or with sudo, never on a machine you are using."
 fi
 
-mnt="${LEGEOS_PROVISION_MOUNT:-/mnt/legeos-provision}"
+mnt="${TEMPLAROS_PROVISION_MOUNT:-/mnt/templaros-provision}"
 
-printf 'LegeOS Developer Edition provisioner\n'
+printf 'TemplarOS Developer Edition provisioner\n'
 printf '  layout      %s\n' "$layout"
 printf '  target      %s (%s)\n' "$target" "$target_kind"
 printf '  mode        %s\n' "$([ "$apply" = 1 ] && echo APPLY || echo 'dry run — nothing is written')"
@@ -454,11 +454,11 @@ case "$target_kind" in
 image|device)
     step "Partition $target: GPT, ESP ($ESP_FORMAT, up to $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, label $ROOT_LABEL)"
     if [ "$target_kind" = image ] && [ ! -e "$target" ]; then
-        run truncate -s "${LEGEOS_IMAGE_SIZE:-32G}" "$target"
+        run truncate -s "${TEMPLAROS_IMAGE_SIZE:-32G}" "$target"
     fi
     run sgdisk --zap-all "$target"
-    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:LEGEOS_ESP "$target"
-    run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:legeos-root "$target"
+    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:TEMPLAROS_ESP "$target"
+    run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:templaros-root "$target"
     if [ "$target_kind" = image ]; then
         attach_loop
         esp_part="${loop}p1"; root_part="${loop}p2"
@@ -489,8 +489,8 @@ free-space)
     printf '%s\n' "$existing" | while read -r num start end _ _ _; do
         [ -n "$num" ] && note "  partition $num (sectors $start..$end)"
     done
-    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:LEGEOS_ESP" "$target"
-    run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:legeos-root" "$target"
+    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAROS_ESP" "$target"
+    run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:templaros-root" "$target"
     if [ -b "$target" ]; then
         run partx --update "$target"
         esp_part="$(part_node "$target" "$n_esp")"; root_part="$(part_node "$target" "$n_root")"
@@ -504,7 +504,7 @@ partitions)
     if [ "$reuse" = 1 ]; then
         # Preservation means preservation. The type code is metadata another operating system may
         # depend on, and rewriting it is a change to the disk however harmless it looks — which is
-        # why @legeos.decision.independent-storage-roles says the current mode "is not
+        # why @templaros.decision.independent-storage-roles says the current mode "is not
         # preservation".
         step "Preserve the existing partitions $esp_arg (ESP) and $root_arg (root): no type code is rewritten and no filesystem is made"
         for pair in "ESP:$esp_arg:vfat" "root:$root_arg:btrfs"; do
@@ -572,18 +572,18 @@ if [ -n "$data_arg" ]; then
     run mount ${DATA_MOUNT_OPTIONS:+-o "$DATA_MOUNT_OPTIONS"} "$data_arg" "$mnt$DATA_MOUNT"
 fi
 
-# --- Identity: /etc/fstab and /etc/legeos/install.toml, both by UUID ----------------------------
+# --- Identity: /etc/fstab and /etc/templaros/install.toml, both by UUID ----------------------------
 #
 # Two things were missing here and they are the same thing. There was no /etc/fstab at all — the
 # mounts above are made for the chroot and were never written down, so a provisioned machine had
 # nothing telling it how to mount @home, @var or the ESP on its own. And identity was by label:
-# `root=LABEL=legeos-root` is the same string on every LegeOS disk, so a machine with two of them
+# `root=LABEL=templaros-root` is the same string on every TemplarOS disk, so a machine with two of them
 # attached mounts whichever the kernel enumerated first.
 #
 # A UUID is per filesystem and is minted by mkfs, so it cannot collide. install.toml is where
-# lege-hostd reads it back (`boot_entries.rs`), and it falls back to the label when the file is
+# templar-hostd reads it back (`boot_entries.rs`), and it falls back to the label when the file is
 # absent — which is every machine provisioned before this and every mkosi image.
-step "Filesystem identity: /etc/fstab and /etc/legeos/install.toml, both by UUID"
+step "Filesystem identity: /etc/fstab and /etc/templaros/install.toml, both by UUID"
 # `|| true` throughout: in a dry run the partitions do not exist yet, and blkid failing to read a
 # device that has not been created is the expected case, not an error.
 uuid_of() { blkid -s UUID -o value "$1" 2>/dev/null || true; }
@@ -600,7 +600,7 @@ if [ "$apply" = 1 ]; then
     mkdir -p "$mnt/etc"
     {
         printf '# GENERATED by installer/provision.sh. Identity is by UUID, never by label:\n'
-        printf '# every LegeOS root carries the same label, and a machine with two of them\n'
+        printf '# every TemplarOS root carries the same label, and a machine with two of them\n'
         printf '# attached would mount whichever the kernel saw first.\n'
         printf 'UUID=%s  /  %s  %s,subvol=@  0 1\n' "$root_uuid" "$ROOT_FORMAT" "$(layout_value root mount_options)"
         for subvol in $SUBVOLUMES; do
@@ -620,19 +620,19 @@ if [ "$apply" = 1 ]; then
             "$data_uuid" "$DATA_MOUNT" "$DATA_FORMAT" "${DATA_MOUNT_OPTIONS:-defaults}"
     } > "$mnt/etc/fstab"
 fi
-note "writing $mnt/etc/legeos/install.toml — what lege-hostd reads to build a boot entry"
+note "writing $mnt/etc/templaros/install.toml — what templar-hostd reads to build a boot entry"
 if [ "$apply" = 1 ]; then
-    mkdir -p "$mnt/etc/legeos"
+    mkdir -p "$mnt/etc/templaros"
     {
-        printf '# GENERATED by installer/provision.sh. Read by services/lege-hostd/src/boot_entries.rs;\n'
+        printf '# GENERATED by installer/provision.sh. Read by services/templar-hostd/src/boot_entries.rs;\n'
         printf '# absent means fall back to LABEL=%s, which is what every earlier install has.\n' "$ROOT_LABEL"
         printf 'root_uuid = "%s"\n' "$root_uuid"
         printf 'esp_partuuid = "%s"\n' "$esp_partuuid"
         [ -n "$data_uuid" ] && printf 'data_uuid = "%s"\n' "$data_uuid"
-    } > "$mnt/etc/legeos/install.toml"
+    } > "$mnt/etc/templaros/install.toml"
 fi
 # The command line follows the same identity. Everything downstream — the GRUB entry seeded below
-# and every one lege-hostd writes after it — reads it from install.toml.
+# and every one templar-hostd writes after it — reads it from install.toml.
 if [ -n "$root_uuid" ]; then
     cmdline="${cmdline/root=LABEL=$ROOT_LABEL/root=UUID=$root_uuid}"
     note "boot command line: $cmdline"
@@ -653,38 +653,38 @@ else
     run debootstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
 fi
 
-step "Sources: Canonical archive plus the LegeOS archive ($DEVREPO_ROOT, marker $DEVREPO_MARKER)"
-note "the LegeOS archive is signed; the target trusts it through its key and nothing else"
-run lege dev --repo "$DEVREPO_ROOT" repo verify --set "$DEVREPO_MARKER"
+step "Sources: Canonical archive plus the TemplarOS archive ($DEVREPO_ROOT, marker $DEVREPO_MARKER)"
+note "the TemplarOS archive is signed; the target trusts it through its key and nothing else"
+run templar dev --repo "$DEVREPO_ROOT" repo verify --set "$DEVREPO_MARKER"
 note "the whole archive is copied to $TARGET_DEVREPO on the target: the set it installs from is"
-note "the set its own \`lege dev status\` will report, and \`lege dev rollback\` has something to go to"
+note "the set its own \`templar dev status\` will report, and \`templar dev rollback\` has something to go to"
 run mkdir -p "$mnt$(dirname "$TARGET_DEVREPO")"
 run cp -a "$DEVREPO_ROOT" "$mnt$TARGET_DEVREPO"
-run install -D -m 0644 "$DEVREPO_ROOT/legeos-dev.gpg" \
-    "$mnt/usr/share/keyrings/legeos-archive-keyring.gpg"
-note "writing $mnt/etc/apt/sources.list.d/legeos.sources"
+run install -D -m 0644 "$DEVREPO_ROOT/templaros-dev.gpg" \
+    "$mnt/usr/share/keyrings/templaros-archive-keyring.gpg"
+note "writing $mnt/etc/apt/sources.list.d/templaros.sources"
 if [ "$apply" = 1 ]; then
-    cat > "$mnt/etc/apt/sources.list.d/legeos.sources" <<EOF
+    cat > "$mnt/etc/apt/sources.list.d/templaros.sources" <<EOF
 Types: deb
 URIs: file://$TARGET_DEVREPO/sets/$DEVREPO_MARKER
 Suites: ./
-Signed-By: /usr/share/keyrings/legeos-archive-keyring.gpg
+Signed-By: /usr/share/keyrings/templaros-archive-keyring.gpg
 EOF
 fi
 
-step "Install the LegeOS package set (contract C1)"
+step "Install the TemplarOS package set (contract C1)"
 in_target apt-get update
-in_target apt-get install -y "$LEGEOS_KEYRING" "$LEGEOS_SESSION" "$LEGEOS_DESKTOP" \
-    "$LEGEOS_DEV_RUST" "$LEGEOS_DEV_CUDA"
+in_target apt-get install -y "$TEMPLAROS_KEYRING" "$TEMPLAROS_SESSION" "$TEMPLAROS_DESKTOP" \
+    "$TEMPLAROS_DEV_RUST" "$TEMPLAROS_DEV_CUDA"
 
 step "Kernel and NVIDIA modules: Ubuntu-signed only, previous kernel retained"
-note "$LEGEOS_KERNEL pulls Ubuntu's supported GA/HWE kernel; $LEGEOS_NVIDIA pulls the matching"
+note "$TEMPLAROS_KERNEL pulls Ubuntu's supported GA/HWE kernel; $TEMPLAROS_NVIDIA pulls the matching"
 note "Canonical-signed linux-modules-nvidia LRM. No DKMS, no self-built module, no MOK."
-in_target apt-get install -y "$LEGEOS_KERNEL" "$LEGEOS_NVIDIA"
+in_target apt-get install -y "$TEMPLAROS_KERNEL" "$TEMPLAROS_NVIDIA"
 note "keeping the previous kernel installable and selectable is policy, not luck:"
 if [ "$apply" = 1 ]; then
     printf 'APT::NeverAutoRemove { "^linux-image-.*"; "^linux-modules-nvidia-.*"; };\n' \
-        > "$mnt/etc/apt/apt.conf.d/01legeos-keep-kernels"
+        > "$mnt/etc/apt/apt.conf.d/01templaros-keep-kernels"
 fi
 
 step "OS identity"
@@ -713,11 +713,11 @@ in_target passwd --lock root
 
 step "Session units and greeter (the same steps distro/image/mkosi.postinst performs in the image)"
 in_target systemctl --global mask xdg-desktop-autostart.target
-in_target systemctl --global enable legeos-session.target
-in_target systemctl enable lege-hostd.service lege-boot-health.service
-in_target install -D -m 0644 /usr/share/legeos/greetd/config.toml /etc/greetd/config.toml
-in_target systemd-sysusers /usr/lib/sysusers.d/legeos-greeter.conf
-in_target systemd-tmpfiles --create /usr/lib/tmpfiles.d/legeos-greeter.conf
+in_target systemctl --global enable templaros-session.target
+in_target systemctl enable templar-hostd.service templar-boot-health.service
+in_target install -D -m 0644 /usr/share/templaros/greetd/config.toml /etc/greetd/config.toml
+in_target systemd-sysusers /usr/lib/sysusers.d/templaros-greeter.conf
+in_target systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf
 in_target systemctl disable getty@tty1.service
 in_target systemctl enable greetd.service
 
@@ -738,25 +738,25 @@ fi
 step "Boot path: Canonical-signed shim -> Canonical-signed GRUB -> Ubuntu-signed kernel (ADR-0004)"
 in_target apt-get install -y shim-signed grub-efi-amd64-signed
 note "--no-nvram: the firmware entry is registered below, on the host side, and appended rather"
-note "than put first. The firmware menu is how the first boots happen; making LegeOS the default"
+note "than put first. The firmware menu is how the first boots happen; making TemplarOS the default"
 note "is a person's decision after installer/CHECKLIST.md passes (efibootmgr -o)."
 in_target grub-install --target=x86_64-efi --efi-directory="$ESP_MOUNT" \
-    --bootloader-id=LegeOS --uefi-secure-boot --no-nvram
+    --bootloader-id=TemplarOS --uefi-secure-boot --no-nvram
 if [ "$target_kind" = image ] || [ -n "$loop" ]; then
-    note "no firmware entry for a file: the QEMU harness boots it through OVMF's menu (EFI/LegeOS/shimx64.efi)"
+    note "no firmware entry for a file: the QEMU harness boots it through OVMF's menu (EFI/TemplarOS/shimx64.efi)"
 else
     esp_disk="/dev/$(lsblk -no PKNAME "$esp_part" 2>/dev/null || echo DISK)"
     esp_partn="$(lsblk -no PARTN "$esp_part" 2>/dev/null || echo N)"
-    run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label LegeOS \
-        --loader '\EFI\LegeOS\shimx64.efi'
+    run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label TemplarOS \
+        --loader '\EFI\TemplarOS\shimx64.efi'
     if [ "$apply" = 1 ]; then
-        entry="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} LegeOS.*/\1/p' | tail -1)"
+        entry="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} TemplarOS.*/\1/p' | tail -1)"
         order="$(efibootmgr | sed -n 's/^BootOrder: //p')"
-        [ -n "$entry" ] || die "efibootmgr created no LegeOS entry"
+        [ -n "$entry" ] || die "efibootmgr created no TemplarOS entry"
         case ",$order," in *",$entry,"*) ;; *) efibootmgr --bootorder "${order:+$order,}$entry" >/dev/null ;; esac
         note "firmware entry Boot$entry appended to the boot order: $order,$entry"
     else
-        note "then: efibootmgr --bootorder <current order>,<the new LegeOS entry> — appended, not first"
+        note "then: efibootmgr --bootorder <current order>,<the new TemplarOS entry> — appended, not first"
     fi
 fi
 note "GRUB_DEFAULT=$GRUB_DEFAULT_MODE is what lets hostd select a deployment by name"
@@ -774,16 +774,16 @@ run mkdir -p "$mnt$ESP_MOUNT$esp_dir"
 run sh -c "cp \"$mnt\"/boot/vmlinuz-* \"$mnt$ESP_MOUNT$esp_dir/vmlinuz\""
 run sh -c "cp \"$mnt\"/boot/initrd.img-* \"$mnt$ESP_MOUNT$esp_dir/initrd.img\""
 note "record it as known-good so hostd's first staged candidate does not replace the only entry"
-run mkdir -p "$mnt/var/lib/legeos/hostd/grub"
-note "writing $GRUB_ENTRIES, in the exact shape lege-hostd regenerates it:"
-note "    menuentry 'LegeOS ($deployment_id) — known good' --id '$deployment_id'"
+run mkdir -p "$mnt/var/lib/templaros/hostd/grub"
+note "writing $GRUB_ENTRIES, in the exact shape templar-hostd regenerates it:"
+note "    menuentry 'TemplarOS ($deployment_id) — known good' --id '$deployment_id'"
 note "    linux $esp_dir/vmlinuz $cmdline"
 if [ "$apply" = 1 ]; then
-    printf '%s\n' "$deployment_id" > "$mnt/var/lib/legeos/hostd/grub/known-good"
+    printf '%s\n' "$deployment_id" > "$mnt/var/lib/templaros/hostd/grub/known-good"
     mkdir -p "$mnt$(dirname "$GRUB_ENTRIES")"
     cat > "$mnt$GRUB_ENTRIES" <<EOF
-# GENERATED by installer/provision.sh — lege-hostd rewrites this file from here on.
-menuentry 'LegeOS ($deployment_id) — known good' --id '$deployment_id' {
+# GENERATED by installer/provision.sh — templar-hostd rewrites this file from here on.
+menuentry 'TemplarOS ($deployment_id) — known good' --id '$deployment_id' {
     search --no-floppy --set=root --file $esp_dir/vmlinuz
     linux $esp_dir/vmlinuz $cmdline
     initrd $esp_dir/initrd.img
@@ -793,8 +793,8 @@ fi
 in_target update-grub
 
 step "Diagnostics"
-run lege doctor --root "$mnt"
-note "then, after the first real boot: lege doctor --hardware, and installer/CHECKLIST.md for the"
+run templar doctor --root "$mnt"
+note "then, after the first real boot: templar doctor --hardware, and installer/CHECKLIST.md for the"
 note "Secure Boot, module-trust and rollback checks that only a person at the machine can make."
 
 if [ "$apply" = 1 ]; then

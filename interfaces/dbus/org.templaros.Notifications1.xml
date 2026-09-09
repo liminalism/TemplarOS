@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node>
+  <interface name="org.templaros.Notifications1">
+    <method name="ListActive">
+      <arg name="notifications_json" type="as" direction="out"/>
+    </method>
+    <method name="Dismiss">
+      <arg name="id" type="u" direction="in"/>
+      <arg name="removed" type="b" direction="out"/>
+    </method>
+    <method name="ClearAll">
+      <arg name="removed" type="u" direction="out"/>
+    </method>
+    <!-- Invoke one of a notification's declared actions on the sender's behalf: emits
+         org.freedesktop.Notifications.ActionInvoked for the owning application, then closes
+         the notification (reason 2, dismissed by the user) unless it is resident. False when
+         the id or the action key does not exist. -->
+    <method name="Invoke">
+      <arg name="id" type="u" direction="in"/>
+      <arg name="action_key" type="s" direction="in"/>
+      <arg name="invoked" type="b" direction="out"/>
+    </method>
+    <signal name="Changed"/>
+  </interface>
+</node>

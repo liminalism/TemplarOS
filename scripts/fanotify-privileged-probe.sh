@@ -7,10 +7,10 @@
 #
 #   1. Does a single `FAN_MARK_FILESYSTEM` mark actually work, and what does it cost?
 #   2. Does it work on a **Btrfs subvolume**? Since Linux 6.8 a filesystem or mount mark on a
-#      subvolume whose fsid differs from the superblock root's returns EXDEV. LegeOS's declared
+#      subvolume whose fsid differs from the superblock root's returns EXDEV. TemplarOS's declared
 #      layout (distro/deploy/layout.toml) is @, @home, @var, @snapshots, @deployments — all
 #      separate subvolumes — so if @home cannot be marked, the privileged variant is dead for
-#      LegeOS whatever its merits elsewhere.
+#      TemplarOS whatever its merits elsewhere.
 #
 # What this script does, and nothing else:
 #   * builds the measurement harness AS THE INVOKING USER (never as root);
@@ -29,7 +29,7 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-BTRFS_FIXTURE=${LEGE_BTRFS_FIXTURE:-/tmp/legeos-btrfs-fixture}
+BTRFS_FIXTURE=${TEMPLAR_BTRFS_FIXTURE:-/tmp/templaros-btrfs-fixture}
 HARNESS="$REPO_ROOT/target/release/examples/fanotify-lab"
 DRY_RUN=0
 PATHS=()
@@ -81,7 +81,7 @@ fi
 
 say
 say "building the harness as $OWNER (root never runs cargo here)"
-as_owner cargo build --release -p lege-fanotify --examples
+as_owner cargo build --release -p templar-fanotify --examples
 
 say
 say "capability and mark matrix, as root"

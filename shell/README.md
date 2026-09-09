@@ -1,6 +1,6 @@
-# shell/ — the restartable shell (`lege-shell`)
+# shell/ — the restartable shell (`templar-shell`)
 
-The Home Field (`surface/field_screen.rs` over `field_model.rs` and `crates/lege-field`): the desktop
+The Home Field (`surface/field_screen.rs` over `field_model.rs` and `crates/templar-field`): the desktop
 surface as a bounded grid of tiles — every application, every window (open or parked), and the drawers
 (`home_surface.rs`) as tiles whose full bodies open in place. Windows collapse into tiles ("park") and
 expand back out; dragging a tile by its title band moves it with a ghost of where it will land and the
@@ -10,11 +10,11 @@ zooms the field into its interior grid — a view with a breadcrumb back, never 
 (`surface/dock_screen.rs`) groups by canonical AppId and carries the Home cell that reveals the field.
 Parked-session tiles carry a preview of their window, fetched over the standard capture protocols the
 compositor offers the trusted shell alone (`previews.rs`; `shell.home-field.previews` = off / static / live).
-A Downloads / Documents / Media tile tall enough shows its directory as a cushion treemap (`crates/lege-treemap`,
+A Downloads / Documents / Media tile tall enough shows its directory as a cushion treemap (`crates/templar-treemap`,
 scanned and rasterized off the event loop, refreshed every five minutes); compact, it shows a composition band.
 Throwing — a fast release projecting a tile along its velocity — is an experiment behind
 `shell.home-field.throw`, measured and judged as `docs/research/throw-spike.md` says.
 Every action has a keyboard route (arrows, Enter, Space, Escape, Delete, Ctrl+Z) and everything the field
-shows is `lege-shell --print field`. Never owns state: everything comes from `org.legeos.Session` /
-`org.legeos.Files` and the compositor's `lege_shell_v1`; the field's own layout is kept for the session
-until `org.legeos.HomeField1` persists it.
+shows is `templar-shell --print field`. Never owns state: everything comes from `org.templaros.Session` /
+`org.templaros.Files` and the compositor's `templar_shell_v1`; the field's own layout is kept for the session
+until `org.templaros.HomeField1` persists it.

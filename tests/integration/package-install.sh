@@ -10,7 +10,7 @@ if ! command -v cargo-deb >/dev/null 2>&1 || ! command -v dpkg-deb >/dev/null 2>
     exit 1
 fi
 
-packages=(lege-sessiond lege-session lege-comp lege-greeter lege-shell lege-settings)
+packages=(templar-sessiond templar-session templar-comp templar-greeter templar-shell templar-settings)
 build_args=()
 for package in "${packages[@]}"; do
     build_args+=(-p "$package")
@@ -20,35 +20,35 @@ for package in "${packages[@]}"; do
     cargo deb -p "$package" --no-build -q
 done
 
-install_root="$(mktemp -d /tmp/legeos-package-root.XXXXXX)"
+install_root="$(mktemp -d /tmp/templaros-package-root.XXXXXX)"
 cleanup() {
     case "$install_root" in
-        /tmp/legeos-package-root.*) rm -rf -- "$install_root" ;;
+        /tmp/templaros-package-root.*) rm -rf -- "$install_root" ;;
         *) echo "refusing to remove unexpected package root: $install_root" >&2 ;;
     esac
 }
 trap cleanup EXIT
 
-for package in legeos-sessiond legeos-session legeos-comp legeos-greeter legeos-shell legeos-settings; do
+for package in templaros-sessiond templaros-session templaros-comp templaros-greeter templaros-shell templaros-settings; do
     deb="$(find target/debian -maxdepth 1 -type f -name "${package}_*.deb" -print -quit)"
     [ -n "$deb" ] || { echo "package install: FAILED — no .deb for $package" >&2; exit 1; }
     dpkg-deb --extract "$deb" "$install_root"
 done
 
 required=(
-    usr/libexec/lege-sessiond
-    usr/bin/lege-session
-    usr/bin/lege-comp
-    usr/bin/lege-greeter
-    usr/bin/lege-shell
-    usr/bin/lege-settings
-    usr/lib/systemd/user/legeos-session.target
-    usr/lib/systemd/user/lege-comp.service
-    usr/lib/systemd/user/lege-shell.service
-    usr/share/wayland-sessions/legeos.desktop
-    usr/share/legeos/greetd/config.toml
-    usr/lib/sysusers.d/legeos-greeter.conf
-    usr/lib/tmpfiles.d/legeos-greeter.conf
+    usr/libexec/templar-sessiond
+    usr/bin/templar-session
+    usr/bin/templar-comp
+    usr/bin/templar-greeter
+    usr/bin/templar-shell
+    usr/bin/templar-settings
+    usr/lib/systemd/user/templaros-session.target
+    usr/lib/systemd/user/templar-comp.service
+    usr/lib/systemd/user/templar-shell.service
+    usr/share/wayland-sessions/templaros.desktop
+    usr/share/templaros/greetd/config.toml
+    usr/lib/sysusers.d/templaros-greeter.conf
+    usr/lib/tmpfiles.d/templaros-greeter.conf
 )
 for path in "${required[@]}"; do
     [ -e "$install_root/$path" ] || {
@@ -57,8 +57,8 @@ for path in "${required[@]}"; do
     }
 done
 
-grep -q '^ExecStart=/usr/bin/lege-comp ' "$install_root/usr/lib/systemd/user/lege-comp.service"
-grep -q '^ExecStart=/usr/bin/lege-shell ' "$install_root/usr/lib/systemd/user/lege-shell.service"
-grep -q '^u lege-greeter ' "$install_root/usr/lib/sysusers.d/legeos-greeter.conf"
+grep -q '^ExecStart=/usr/bin/templar-comp ' "$install_root/usr/lib/systemd/user/templar-comp.service"
+grep -q '^ExecStart=/usr/bin/templar-shell ' "$install_root/usr/lib/systemd/user/templar-shell.service"
+grep -q '^u templar-greeter ' "$install_root/usr/lib/sysusers.d/templaros-greeter.conf"
 
 echo "package install: ok (${#packages[@]} packages staged into a clean root)"

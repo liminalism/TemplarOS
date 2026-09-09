@@ -4,8 +4,8 @@ Lane F of the indexing campaign (`docs/planning/shared-incremental-file-index.md
 coverage tiers (`031c319`). Two things measured here: the cost of caching a recursive total for an
 `Opaque` directory, and the size/time difference between a `Summary` and a `Materialized`
 `OpenSnapshot`. Every number below is a live measurement on this machine, produced by
-`cargo test -p lege-file-index --release -- --ignored --nocapture progressive_snapshot_benchmark`
-(`crates/lege-file-index/src/lib.rs`) unless stated otherwise.
+`cargo test -p templar-file-index --release -- --ignored --nocapture progressive_snapshot_benchmark`
+(`crates/templar-file-index/src/lib.rs`) unless stated otherwise.
 
 ## Fixture
 
@@ -29,7 +29,7 @@ additionally removes: the 5,000 `Detailed` leaf rows a materialized snapshot sti
 nothing underneath it was ever a row to select. `home/target`'s row carries the cached aggregate:
 `recursive_bytes = 20_000 * 3_000 = 60,000,000`, `readable = true`, `stale = false`.
 
-A second, smaller fixture (500 + 500 files, `crates/lege-file-index/src/lib.rs`'s
+A second, smaller fixture (500 + 500 files, `crates/templar-file-index/src/lib.rs`'s
 `a_summary_snapshot_is_dramatically_smaller_than_a_materialized_one` test, which runs under
 `just check` on every build rather than only on request) measured **123.7x** at that scale —
 consistent with the ratio growing with the size of what `Summary` mode omits rather than being an
@@ -45,7 +45,7 @@ artefact of one fixture.
 ## `Opaque` aggregate correctness
 
 `an_opaque_directory_reports_a_recursive_aggregate_excluding_nested_ignored_names`
-(`crates/lege-file-index/src/lib.rs`) is the end-to-end proof, run on every `just check`:
+(`crates/templar-file-index/src/lib.rs`) is the end-to-end proof, run on every `just check`:
 
 - An `Opaque` directory with a nested `Trash/` holding 9,999 bytes and a non-trashed 1,234 bytes
   reports `recursive_bytes = 1234` — the trashed bytes are excluded at any depth, not just at the
@@ -69,7 +69,7 @@ covers the partial-permission case (`readable = false`, the readable half still 
 `a_subtree_snapshot_request_rebases_to_just_that_subtree` proves `SnapshotRequest::subtree`
 narrows the entries section to exactly the requested subtree (its own row plus everything under
 it) while leaving the roots section naming every selected root for context — the mechanism
-`crates/lege-client/src/tree_source.rs`'s `load_snapshot_tree` uses for a shell file tray, and the
+`crates/templar-client/src/tree_source.rs`'s `load_snapshot_tree` uses for a shell file tray, and the
 one a drive-wide visualiser would combine with `Summary` for a subtree's first frame.
 
 ## Format rejection
@@ -85,12 +85,12 @@ misreading its extra 36 bytes per entry as some other entry's fields.
 
 ## Treemap adapter vs direct scan
 
-`lege-client`'s `tree_source::tests::the_snapshot_adapter_matches_a_direct_scan_for_a_fixture_where_both_are_valid`
-builds an `Index` in-process (no `lege-filed`, no D-Bus), produces a `Materialized` subtree
+`templar-client`'s `tree_source::tests::the_snapshot_adapter_matches_a_direct_scan_for_a_fixture_where_both_are_valid`
+builds an `Index` in-process (no `templar-filed`, no D-Bus), produces a `Materialized` subtree
 snapshot rebased to a small fixture directory, and confirms the `RawEntry` rows the adapter
-produces (path, size, `is_dir`) are identical, once sorted, to what `lege_treemap::scan` reports
-for the same directory on disk. `shell/lege-shell/src/surface/app.rs`'s `spawn_treemap` now tries
-`lege_client::tree_source::load_snapshot_tree` first (an async D-Bus round trip) and falls back to
-`lege_treemap::scan` (`DirectScanSource`, off the event loop via `spawn_blocking`) only when no
-service answers or the call fails — the disk walk `lege-shell` paid on every file tray redraw is
+produces (path, size, `is_dir`) are identical, once sorted, to what `templar_treemap::scan` reports
+for the same directory on disk. `shell/templar-shell/src/surface/app.rs`'s `spawn_treemap` now tries
+`templar_client::tree_source::load_snapshot_tree` first (an async D-Bus round trip) and falls back to
+`templar_treemap::scan` (`DirectScanSource`, off the event loop via `spawn_blocking`) only when no
+service answers or the call fails — the disk walk `templar-shell` paid on every file tray redraw is
 now the explicit fallback, not the only path.

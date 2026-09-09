@@ -1,0 +1,51 @@
+[package]
+name = "templar-hostd"
+description = "TemplarOS privileged host daemon: staged kernel/driver update transactions, boot deployments and rollback, driver authority and GPU mode, storage reserve, hardware profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "templar-hostd"
+path = "src/main.rs"
+
+[dependencies]
+templar-build = { workspace = true }
+templar-types = { workspace = true }
+templar-hwdetect = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-hostd"
+section = "admin"
+priority = "optional"
+depends = "$auto, systemd, apt, polkitd"
+assets = [
+    ["target/release/templar-hostd", "usr/libexec/templar-hostd", "755"],
+    ["../../session/units/system/templar-hostd.service", "usr/lib/systemd/system/templar-hostd.service", "644"],
+    ["../../distro/policy/polkit/org.templaros.host.policy", "usr/share/polkit-1/actions/org.templaros.host.policy", "644"],
+    ["../../distro/policy/polkit/50-templaros-root-services.rules", "usr/share/polkit-1/rules.d/50-templaros-root-services.rules", "644"],
+    ["../../distro/policy/dbus/org.templaros.Host.conf", "usr/share/dbus-1/system.d/org.templaros.Host.conf", "644"],
+    ["../../distro/policy/dbus/org.templaros.Host.service", "usr/share/dbus-1/system-services/org.templaros.Host.service", "644"],
+    ["../../distro/policy/apparmor/usr.libexec.templar-hostd", "etc/apparmor.d/usr.libexec.templar-hostd", "644"],
+    ["../../distro/deploy/grub.d/09_templaros", "etc/grub.d/09_templaros", "755"],
+]

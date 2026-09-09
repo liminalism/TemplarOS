@@ -1,8 +1,8 @@
 # session/units — how the session is assembled
 
-* `user/` — `legeos-session.target` and the core user units with their protection values.
-* `system/` — `lege-hostd.service`, `lege-boot-health.service`.
-* `wayland-sessions/legeos.desktop` — what the greeter offers; runs `lege-session`.
+* `user/` — `templaros-session.target` and the core user units with their protection values.
+* `system/` — `templar-hostd.service`, `templar-boot-health.service`.
+* `wayland-sessions/templaros.desktop` — what the greeter offers; runs `templar-session`.
 * `greetd/` — greeter configuration.
 
 The Debian packaging (`debian/*.install`, `[package.metadata.deb]`) installs these; nothing is ever placed

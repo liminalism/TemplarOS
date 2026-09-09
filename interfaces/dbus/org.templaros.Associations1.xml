@@ -1,0 +1,78 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Associations.
+     The one authoritative "which application opens this?" broker. reason is one of
+     project-mime-default | explicit-extension-override | global-mime-default |
+     generic-extension-fallback | variant-substituted | ask-user. An empty canonical_app_id means
+     "ask". `variant-substituted` means the stored default named a variant that is no longer
+     installed and a sibling variant of the same logical application answered instead — the
+     Flatpak took over from the distribution package, and the file still opens. Defaults are
+     stored against a variant, always: a person chose that copy.
+     Implemented in crates/templar-associationd/src/dbus.rs. -->
+<node>
+  <interface name="org.templaros.Associations1">
+    <method name="ResolveFile">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="detected_mime" type="s" direction="out"/>
+      <arg name="reason" type="s" direction="out"/>
+    </method>
+    <!-- scheme is derived from a URI's leading `scheme:`; resolved against
+         x-scheme-handler/<scheme>, with no extension fallback (a scheme has no filename). -->
+    <method name="ResolveUri">
+      <arg name="uri" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="detected_mime" type="s" direction="out"/>
+      <arg name="reason" type="s" direction="out"/>
+    </method>
+    <method name="SetMimeDefault">
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <method name="SetExtensionDefault">
+      <arg name="extension" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <!-- When true, this rule wins over a detected specific MIME type too (the explicit
+           "always for this extension" choice); when false, it only applies as a fallback when
+           detection returns a generic type. -->
+      <arg name="override_specific_mime" type="b" direction="in"/>
+    </method>
+    <!-- Scoped to one project; wins over the global default while that project is current. -->
+    <method name="SetProjectDefault">
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <!-- Every installed application declaring support for `mime`, sorted by id: exactly the set
+         SetMimeDefault will accept, so a chooser built on this cannot offer a default the engine
+         would then refuse. ListMimeDefaults says what is chosen; this says what could be. -->
+    <method name="Handlers">
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="app_ids" type="as" direction="out"/>
+    </method>
+    <method name="ListMimeDefaults">
+      <arg name="defaults" type="a(ss)" direction="out"/>
+    </method>
+    <!-- One human sentence: why this file would (or would not) open with a given application. -->
+    <method name="Explain">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="explanation" type="s" direction="out"/>
+    </method>
+    <!-- scope is mime | extension | project-mime; for project-mime, project_id is required and
+         key is the MIME type. Returns whether a rule was actually removed. -->
+    <method name="Forget">
+      <arg name="scope" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="removed" type="b" direction="out"/>
+    </method>
+    <!-- scope is mime | extension | project-mime; key names what changed. -->
+    <signal name="DefaultsChanged">
+      <arg name="scope" type="s"/>
+      <arg name="key" type="s"/>
+    </signal>
+  </interface>
+</node>

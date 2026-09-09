@@ -1,0 +1,25 @@
+// TemplarOS's own root system services may take the actions they exist to take.
+//
+// `templar-boot-health` runs as a system-scope oneshot ordered before `boot-complete.target`, with
+// no session, no seat and no polkit agent anywhere on the machine. It is the thing that decides
+// whether a candidate deployment gets blessed or rolled back — and it has to do that
+// unattended, in the seconds after a possibly-broken kernel has come up. `auth_admin` is the
+// right default for a person at a terminal and impossible for that probe: with no agent to
+// answer the challenge, `CheckAuthorization` simply returns "no", and the promotion loop stays
+// open exactly as it has been.
+//
+// This grants `org.templaros.host.deploy` to uid 0 and nothing else. It widens no real boundary:
+// root can already write the ESP, the GRUB environment block and hostd's own state directory
+// directly, so a root process that wanted to change the boot default has never needed permission
+// from polkit to do it. What the polkit check on that action actually protects against is a
+// *non-root* caller on the system bus, and that is left exactly as it was.
+//
+// Deliberately not narrowed to the boot-health binary: polkit's `subject` carries the caller's
+// uid and pid, not a verified executable path, so a rule keyed on a path would look tighter and
+// be the same rule with an extra step someone could be misled by. ADR-0003 and ADR-0004.
+
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.templaros.host.deploy" && subject.user == "root") {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,70 @@
+[package]
+name = "templar"
+description = "The TemplarOS command line: one CLI over the OS services, including `templar doctor` — the single integration-check engine used at runtime, on images and on the hardware matrix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "templar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "templar"
+path = "src/main.rs"
+
+[dependencies]
+templar-build = { workspace = true }
+templar-types = { workspace = true }
+templar-client = { workspace = true }
+templar-hwdetect = { workspace = true }
+templar-appd = { workspace = true }
+templar-associationd = { workspace = true }
+templar-file-index = { workspace = true }
+templar-filed = { workspace = true }
+templar-resourced = { workspace = true }
+templar-session-core = { workspace = true }
+templar-state = { workspace = true }
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-cli"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+# The garden's terminal hook only reaches a graphical terminal's shell through /etc/bash.bashrc;
+# postinst adds the marker-guarded line and postrm takes it back out (see the scripts, and
+# `xtask check-packaging`, which fails if that delivery is ever dropped back to /etc/profile.d).
+maintainer-scripts = "../../packaging/templaros-cli"
+assets = [
+    ["target/release/templar", "usr/bin/templar", "755"],
+    # The component matrix travels with the tool that reads it.
+    # cargo-deb resolves asset paths relative to this crate's directory.
+    ["../../distro/deploy/components.toml", "usr/share/templaros/components.toml", "644"],
+    ["../../distro/seeds/flatpak-refs.list", "usr/share/templaros/flatpak-refs.list", "644"],
+    # The provisioner travels with the CLI so the live medium can install without a checkout.
+    ["../../installer/provision.sh", "usr/libexec/templaros/provision", "755"],
+    ["../../installer/templaros-install", "usr/bin/templaros-install", "755"],
+    ["../../distro/deploy/layout.toml", "usr/share/templaros/layout.toml", "644"],
+    ["../../installer/README.md", "usr/share/doc/templaros-cli/provision.md", "644"],
+    ["../../installer/CHECKLIST.md", "usr/share/doc/templaros-cli/CHECKLIST.md", "644"],
+    ["../../session/profile.d/60-templaros-garden.sh", "etc/profile.d/60-templaros-garden.sh", "644"],
+]

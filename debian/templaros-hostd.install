@@ -1,0 +1,10 @@
+target/release/templar-hostd usr/libexec/
+session/units/system/templar-hostd.service usr/lib/systemd/system/
+distro/policy/polkit/org.templaros.host.policy usr/share/polkit-1/actions/
+distro/policy/polkit/50-templaros-root-services.rules usr/share/polkit-1/rules.d/
+distro/policy/dbus/org.templaros.Host.conf usr/share/dbus-1/system.d/
+distro/policy/apparmor/usr.libexec.templar-hostd etc/apparmor.d/
+distro/policy/udev/60-templaros-nvidia-pm.rules usr/lib/udev/rules.d/
+distro/policy/coredump/coredump.conf.d/templaros.conf usr/lib/systemd/coredump.conf.d/
+distro/hardware/profiles/*.toml usr/share/templaros/hardware/profiles/
+interfaces/dbus/org.templaros.Host.*.xml usr/share/dbus-1/interfaces/

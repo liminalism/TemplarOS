@@ -1,0 +1,57 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Files (session bus, templar-filed). Path: /org/templaros/Files.
+
+     One bounded directory snapshot for file-manager, Home and portal clients. The service owns
+     ordering so clients cannot disagree: directories first, then natural filename order. -->
+<node>
+  <interface name="org.templaros.Files.Browse1">
+    <!-- BrowserSources JSON contains the XDG places and every user-visible mounted drive.
+         Drive roots carry the same reserve-aware VolumeInfo returned by Volumes1. -->
+    <method name="Roots">
+      <arg name="sources_json" type="s" direction="out"/>
+    </method>
+
+    <!-- DirectoryListing JSON contains directory, optional parent, entries, truncated and limit.
+         Each entry contains path, name, kind (directory|file|other), is_symlink, hidden,
+         size_bytes and mtime_ms. `limit` is clamped by the service to 500. -->
+    <!-- Bookmarks are shared by every Files client and included in Roots with bookmark: keys.
+         Removal is allowed even when a bookmarked volume is offline. -->
+    <method name="SetBookmark">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="bookmarked" type="b" direction="in"/>
+    </method>
+    <method name="ListDirectory">
+      <arg name="directory" type="s" direction="in"/>
+      <arg name="show_hidden" type="b" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="listing_json" type="s" direction="out"/>
+    </method>
+
+    <!-- FileInfo JSON for an explicitly requested properties pane. A regular file is one stat;
+         a directory also carries a recursive FolderSummary (regular-file count, descendant
+         directory count, logical and allocated byte totals, unreadable count and completeness).
+         The walk runs off the D-Bus executor and never follows symlinks. -->
+    <method name="Inspect">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="file_info_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Make a new directory under `parent` and return the name it actually got.
+
+         `preferred_name` is what to call it; when that name is taken the service picks the next
+         free one ("New folder 2") and says so in its answer, rather than failing and leaving a
+         surface to invent its own numbering — two file managers on one machine must not disagree
+         about what the next untitled folder is called.
+
+         Here rather than in Operations1 because there is nothing to journal: creating an empty
+         directory moves no data, has no progress and needs no undo beyond deleting it again.
+         `preferred_name` must be one ordinary filename component, and the service refuses a
+         traversal rather than resolving it. -->
+    <method name="CreateDirectory">
+      <arg name="parent" type="s" direction="in"/>
+      <arg name="preferred_name" type="s" direction="in"/>
+      <arg name="created_name" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

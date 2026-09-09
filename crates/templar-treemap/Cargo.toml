@@ -1,0 +1,15 @@
+[package]
+name = "templar-treemap"
+description = "Cushion treemaps for file trays: a file-tree arena, byte-proportional squarified layout, a category palette and a CPU rasterizer, lifted from Silvaview-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No dependencies at all: pure data and arithmetic, so it can be rasterized on any thread and
+# tested without a display. The scanner is std-only and bounded.
+[dependencies]
+
+[lints]
+workspace = true

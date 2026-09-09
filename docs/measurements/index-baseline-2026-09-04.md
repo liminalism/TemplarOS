@@ -3,7 +3,7 @@
 Lane A of the indexing campaign (`docs/planning/shared-incremental-file-index.md`). Nothing here
 is estimated: every number is either a live measurement from this machine (kernel 6.17, ext4
 end-to-end) or explicitly marked as not run. Produced by `cargo run -q -p xtask -- index-bench`
-(`tools/xtask/src/index_bench.rs`) and `lege doctor` (`cli/lege/src/doctor/checks.rs`,
+(`tools/xtask/src/index_bench.rs`) and `templar doctor` (`cli/templar/src/doctor/checks.rs`,
 `FileIndexHealth`).
 
 Reference machine: `$HOME` on `/dev/nvme0n1p3` (ext4), this repository's own working tree lives on
@@ -14,7 +14,7 @@ not fixtures.
 
 ## Why an xtask subcommand, not a `benches/` target
 
-`lege_file_index::watch::guard` (`crates/lege-file-index/src/watch.rs`) panics on any watch root
+`templar_file_index::watch::guard` (`crates/templar-file-index/src/watch.rs`) panics on any watch root
 outside the temp directory whenever the running executable's path has a `deps` component. Every
 `cargo bench` and integration-test binary lives under `target/<profile>/deps/`, so a `benches/`
 target physically cannot watch a real directory tree — verified directly: the guard's own
@@ -24,7 +24,7 @@ measured against a real filesystem.
 
 ## Directory-count finding — the 157,283 vs 189,089 discrepancy
 
-`crates/lege-file-index/src/watch.rs:10-13` and `.agent/scratch/de01/F2-plan.md` recorded
+`crates/templar-file-index/src/watch.rs:10-13` and `.agent/scratch/de01/F2-plan.md` recorded
 **157,283** post-skip `$HOME` directories as of 2026-09-03. Today, computed **from the index's own
 `RootPolicy`** (`count_directories` in `index_bench.rs`, which applies exactly
 `RootPolicy::is_skipped`/`cross_mount` the way `scan::walk_into` and
@@ -44,7 +44,7 @@ than the depth-clamp effect the plan already ruled out (189,089 vs 189,087). **F
 since 2026-09-03, most plausibly from build/cache growth under active development (this repository
 alone contains `target/` and sibling-repo build trees that are excluded from the *index* by
 `RootPolicy::skip_names` but still counted as raw directories, and from other projects under
-`$HOME` unrelated to LegeOS). It is not a measurement-methodology difference: depth clamping,
+`$HOME` unrelated to TemplarOS). It is not a measurement-methodology difference: depth clamping,
 `find` vs `RootPolicy`, and the skip list are all ruled out as causes. `watch.rs:10-13` is corrected
 to reflect this measurement in a separate commit (see below).
 
@@ -93,7 +93,7 @@ The five watched workloads (touch/rename/delete/build/clean) are each dominated 
 `drain_watcher`'s settle window (six consecutive 100 ms polls with nothing pending, ≈0.6 s), which
 this harness uses to prove the kernel's event queue has caught up — **this measures
 watcher-pump-apply latency without the production coalescing debounce window**
-(`services/lege-filed/src/watcher.rs`, owned by another lane): each pumped batch is applied
+(`services/templar-filed/src/watcher.rs`, owned by another lane): each pumped batch is applied
 immediately here, not held for quiet time, so these numbers are a different — and generally lower
 — quantity than end-to-end production latency (create/rename/delete to searchable). They are the
 right number for "does this crate's own watch-and-apply path keep up", not for the plan's p95 < 250
@@ -132,12 +132,12 @@ is otherwise changing.
 ## Idle cost — the headline number
 
 Sampled via `dbus-run-session` (an isolated D-Bus session; the user's real session bus is never
-touched), a fresh `lege-filed` pointed at its own 5,000-entry fixture, `/proc/<pid>/task/<tid>` for
-the `lege-index-watcher` thread specifically (not the process's leader thread — see the harness-bug
+touched), a fresh `templar-filed` pointed at its own 5,000-entry fixture, `/proc/<pid>/task/<tid>` for
+the `templar-index-watcher` thread specifically (not the process's leader thread — see the harness-bug
 note below), over a 60-second settled window after a 5-second startup grace period.
 
 **Before/after is a real commit boundary, not a hypothetical.** This session discovered mid-run
-that `services/lege-filed: an idle index watcher sleeps rather than wakes twice a second`
+that `services/templar-filed: an idle index watcher sleeps rather than wakes twice a second`
 (commit `6522e10`, landed today by the lane owning `watcher.rs`) was **already merged** to
 `developer-edition-0-1` by the time this measurement started — the shared working tree moves under
 every lane concurrently. "Before" below is therefore the true pre-fix binary, built from a
@@ -175,22 +175,22 @@ Reproduce a pair: build two binaries (e.g. two `git worktree` checkouts) and run
    (174,235 apparent "wakeups") before this was caught and fixed.
 2. **Wrong task for `voluntary_ctxt_switches`.** `/proc/<pid>/status`'s `voluntary_ctxt_switches`
    is per-*task*, not summed across a process's threads, even when `<pid>` is the thread-group
-   leader. Reading `/proc/<pid>/status` (the leader thread, `comm=lege-filed`) instead of
+   leader. Reading `/proc/<pid>/status` (the leader thread, `comm=templar-filed`) instead of
    `/proc/<pid>/task/<watcher-tid>/status` reported 0 regardless of watcher activity, because the
-   watcher runs on its own named thread (`lege-index-watcher`). Fixed to read the resolved
+   watcher runs on its own named thread (`templar-index-watcher`). Fixed to read the resolved
    watcher-thread status file, which now correlates with `schedstat` pcount as expected (121 vs
    120, both roughly the same real event count).
 3. **A leaked process from an earlier run was silently re-sampled.** `dbus-run-session`'s child
-   `lege-filed` does not reliably die when the parent is killed across a D-Bus disconnect; an
-   earlier run's daemon was still alive and `find_lege_filed_pid` (originally: "any process named
-   `lege-filed`") picked it instead of the freshly-spawned one, producing two identical "before"
+   `templar-filed` does not reliably die when the parent is killed across a D-Bus disconnect; an
+   earlier run's daemon was still alive and `find_templar_filed_pid` (originally: "any process named
+   `templar-filed`") picked it instead of the freshly-spawned one, producing two identical "before"
    samples that were actually both sampling the same leftover idle process. Fixed to match on a
    marker unique to each run's own scratch directory in `/proc/<pid>/cmdline`, and to explicitly
    `kill`/`kill -9` the sampled pid at the end of each run.
 
-## `lege doctor` extension
+## `templar doctor` extension
 
-`cli/lege/src/doctor/checks.rs`'s `FileIndexHealth` check (POR acceptance gate 10, unmet before
+`cli/templar/src/doctor/checks.rs`'s `FileIndexHealth` check (POR acceptance gate 10, unmet before
 this change) reports, per root: state, entry count, generation, completeness, why a root is stale
 (`RootStatus::reason`, verbatim), the watcher's backend/limits/armed/refused/overflow
 count/last-event time, and the last reconciliation's duration — plus the index's own schema
@@ -200,7 +200,7 @@ recorded); a root reporting `Stale` because the watch budget is exhausted is rep
 not treated as a check failure, consistent with the design fact this campaign has already
 established (a home root cannot stay `Current` under inotify on this machine, by construction, not
 by bug). It reads the index database directly — the same durable
-`$XDG_CACHE_HOME/legeos/file-index-v1.sqlite3` a running `lege-filed` has open — the same pattern
+`$XDG_CACHE_HOME/templaros/file-index-v1.sqlite3` a running `templar-filed` has open — the same pattern
 `AutostartProvidersResolved` already uses for the session state store, and never creates either
 database as a side effect: both must already exist or the check `Skip`s.
 
@@ -210,7 +210,7 @@ database as a side effect: both must already exist or the check `Skip`s.
 construction, not by a bug this session found.** `WatchBudget::max_watches` is 125,037; `$HOME`
 alone needs 189,094 watches — 1.51x the budget before any other application's inotify usage is
 counted, and 0.76x the *entire kernel's* per-user allowance on its own. `arm_tree`'s own budget
-check (`crates/lege-file-index/src/watch.rs`) will refuse roughly a third of the directories once
+check (`crates/templar-file-index/src/watch.rs`) will refuse roughly a third of the directories once
 the budget for this one root is exhausted, and every refused directory is unwatched — the
 watcher-exhausted `Stale` path this campaign already anticipated is not a corner case here, it is
 the default outcome for this specific machine's home directory. `Dormant` (in whichever form the

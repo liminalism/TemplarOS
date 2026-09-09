@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.impl.portal.desktop.legeos
-Exec=/usr/libexec/xdg-desktop-portal-lege
-SystemdService=xdg-desktop-portal-lege.service

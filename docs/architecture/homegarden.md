@@ -5,7 +5,7 @@ your stuff is: directories appear on it as **Places** because you opened them, l
 terminal or editor into them, opened files under them, or came back to them; they grow when
 activity concentrates there, hold their place while used, shrink and finally leave when you
 spend later sessions elsewhere, and regrow where they were. The decision is
-`@legeos.decision.homegarden-activity-grown-places`; the design conversation is `docs/garden/`.
+`@templaros.decision.homegarden-activity-grown-places`; the design conversation is `docs/garden/`.
 
 Every visual variable has one job: **shape = mode, material = identity, colour = state,
 size = relevance, position = memory.** Only size and presence are automatic. Position is the
@@ -15,12 +15,12 @@ user's.
 
 | Piece | Where | What it is |
 |---|---|---|
-| The ledger | `crates/lege-session-core/src/homegarden.rs` | Pure. `HomeActivity` in, `HomeContext` records with score, buckets, roles, an activity tree and a stage; root attribution behind `RootProbe`; the ignore list; the Garden Clock. |
-| The tender | `crates/lege-field/src/garden.rs` | Pure. `tend(document, contexts, corner)` → `Place` / `Resize` / `Remove`, each with a reason. Never `Move`. Property-tested in `tests/field.rs`. |
-| The host | `services/lege-sessiond/src/apis/homegarden.rs` | `org.legeos.HomeGarden1`. Persists the ledger (one JSON row, `home_garden`), applies each tending as one `HomeField1` batch (undoable, in `History1`), subscribes to the session edges and the launch channel. |
-| The view | `shell/lege-shell/src/garden.rs`, `surface/field_screen.rs::paint_place` | The shell tends at session start and on every Home reveal, draws a grown Folder tile by rung, and takes every change the daemon makes (`field_model::reconcile_remote`: adopt, resize, remove). It owns no garden state. |
-| The verbs | `crates/lege-types/src/action.rs` (`place.*`, `garden.*`) | One declaration → context menu, cheat sheet, `lege garden`. |
-| The levers | `shell.home-garden.*` in `crates/lege-session-core/src/settings.rs` | `enabled`, `half-life-hours`, `half-life-sessions`, `max-contexts`, `home-corner`, `ignore`. |
+| The ledger | `crates/templar-session-core/src/homegarden.rs` | Pure. `HomeActivity` in, `HomeContext` records with score, buckets, roles, an activity tree and a stage; root attribution behind `RootProbe`; the ignore list; the Garden Clock. |
+| The tender | `crates/templar-field/src/garden.rs` | Pure. `tend(document, contexts, corner)` → `Place` / `Resize` / `Remove`, each with a reason. Never `Move`. Property-tested in `tests/field.rs`. |
+| The host | `services/templar-sessiond/src/apis/homegarden.rs` | `org.templaros.HomeGarden1`. Persists the ledger (one JSON row, `home_garden`), applies each tending as one `HomeField1` batch (undoable, in `History1`), subscribes to the session edges and the launch channel. |
+| The view | `shell/templar-shell/src/garden.rs`, `surface/field_screen.rs::paint_place` | The shell tends at session start and on every Home reveal, draws a grown Folder tile by rung, and takes every change the daemon makes (`field_model::reconcile_remote`: adopt, resize, remove). It owns no garden state. |
+| The verbs | `crates/templar-types/src/action.rs` (`place.*`, `garden.*`) | One declaration → context menu, cheat sheet, `templar garden`. |
+| The levers | `shell.home-garden.*` in `crates/templar-session-core/src/settings.rs` | `enabled`, `half-life-hours`, `half-life-sessions`, `max-contexts`, `home-corner`, `ignore`. |
 
 ## Time is Garden time
 
@@ -44,7 +44,7 @@ several sessions with a terminal, an editor and a file manager outranks any burs
 | `placed-on-home` | 8 | `HomeField1.PlaceFolder` (also pins) |
 | `project-entered` | 5 | successful `Projects1.Open` and `Projects1.SetCurrent` |
 | `launched-here` | 3 | the launch channel: `--directory X`, `-d X`, or a bare directory argument; the role is the app's (Terminal, FileManager, CodeEditor) |
-| `terminal-entered` | 3 | an interactive LegeOS Bash prompt whose working directory changed; no resident observer or timer |
+| `terminal-entered` | 3 | an interactive TemplarOS Bash prompt whose working directory changed; no resident observer or timer |
 | `directory-opened` | 2 | successful Home folder-window and Files-object navigation |
 | `file-opened` | 1.5 | the shell's brokered `open_file` |
 | `created-or-renamed` | 1.5 | reserved for `Files.Operations1` |
@@ -120,13 +120,13 @@ from a manuscript one; anything finer waits for a signal that exists.
 5. A tile the user moved keeps its new cell as its landing; a tile the user resized becomes
    user-sized and is never resized again; a tile the tender never placed is the user's outright
    (pinned and kept); a pinned place is never removed by recession.
-6. Every op carries a reason (`grew legeos to 4x3: 14 opens, 3 launches, 4 sessions`); the
+6. Every op carries a reason (`grew templaros to 4x3: 14 opens, 3 launches, 4 sessions`); the
    batch is one `History1` event and one `HomeField1.Undo` step.
 
 ## The Place tile
 
 Same object as any folder tile. The name is the tile's own chrome; the body is one state line
-and then the **form** the place has earned (`shell/lege-shell/src/surface/place_forms.rs`) —
+and then the **form** the place has earned (`shell/templar-shell/src/surface/place_forms.rs`) —
 a branch (trunk at the left, the used descendants fanning off it, each band and stroke by share,
 twigs where the band has room), a shelf (the things it is looked at for, standing on a rule at
 heights by share), or nothing at all for a plain place, which falls back to the ordinary folder

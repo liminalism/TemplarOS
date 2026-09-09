@@ -1,0 +1,43 @@
+[package]
+name = "templar-settings"
+description = "TemplarOS Settings: typed settings schema, providers, background applications, associations, history and first-run conflicts in one place (skeleton)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "templar-settings"
+path = "src/main.rs"
+
+[dependencies]
+templar-client = { workspace = true }
+templar-session-core = { workspace = true }
+templar-types = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-settings"
+section = "x11"
+priority = "optional"
+depends = "$auto, templaros-sessiond"
+assets = [
+    ["target/release/templar-settings", "usr/bin/templar-settings", "755"],
+    ["org.templaros.Settings.desktop", "usr/share/applications/org.templaros.Settings.desktop", "644"],
+]

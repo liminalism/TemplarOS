@@ -2,14 +2,14 @@
 
 Every supported profile must pass, on real hardware, before a kernel/driver set is promoted.
 
-The matrix has two halves, and `lege doctor --hardware` keeps them apart on purpose. **Nothing in
+The matrix has two halves, and `templar doctor --hardware` keeps them apart on purpose. **Nothing in
 the manual half has ever been executed by the tool**: those rows are reported as `not-executed` with
 their steps, and only a supervised run on the reference laptop can turn one into a pass or a fail.
 
 ## Automated — bounded, read-only probes
 
-Run by `lege doctor --hardware` (implementation: `crates/lege-hwdetect/src/probes.rs`; the same
-probes back `lege-boot-health`'s boot verdict). Every one is read-only and killed at its timeout.
+Run by `templar doctor --hardware` (implementation: `crates/templar-hwdetect/src/probes.rs`; the same
+probes back `templar-boot-health`'s boot verdict). Every one is read-only and killed at its timeout.
 Each reports one of four outcomes: `pass`, `fail`, `skipped` (this machine cannot answer — no such
 tool, no such hardware) or `not-executed` (nobody asked — it timed out, or `--root` points at
 something that is not this machine, so running a host tool would describe the wrong system).
@@ -39,8 +39,8 @@ steps and expectations.
 | Check | What passes |
 |---|---|
 | intel-desktop-nvidia-offload | session on the iGPU; `__NV_PRIME_RENDER_OFFLOAD=1 vkcube` renders on the dGPU |
-| nvidia-desktop | session driven by the dGPU (mode `discrete`) reaches `lege-boot-health` healthy |
-| external-monitor-each-output-path | HDMI (dGPU-wired) and USB-C/DP (iGPU-wired) hotplug: no lost windows (`lege-window` invariant), correct scale |
+| nvidia-desktop | session driven by the dGPU (mode `discrete`) reaches `templar-boot-health` healthy |
+| external-monitor-each-output-path | HDMI (dGPU-wired) and USB-C/DP (iGPU-wired) hotplug: no lost windows (`templar-window` invariant), correct scale |
 | suspend-resume | s2idle/deep round trip; compositor, audio, network back within 5 s; no GPU reset |
 | kernel-update-and-rollback | hostd transaction: candidate boots, health probe passes → blessed; forced failure → rolled back automatically |
 | driver-update-and-rollback | same for the LRM + userspace pair |
@@ -48,12 +48,12 @@ steps and expectations.
 | cuda-and-vulkan-where-installed | `nvidia-smi`, `vulkaninfo`, a CUDA sample run |
 | hardware-video-decode | VA-API on the iGPU and NVDEC on the dGPU actually decode a video — **blocked** while the seeds declare no media player (X1/C6) |
 | brightness-and-audio-keys | XF86 keys route through the compositor to `Backlight1`/`Audio1` whatever has focus (X1/C6) |
-| removable-storage | insert, mount, copy, eject — **blocked in code**: `org.legeos.Files.Volumes1` has no mount or eject verb, so there is nothing to drive (X1/C6) |
+| removable-storage | insert, mount, copy, eject — **blocked in code**: `org.templaros.Files.Volumes1` has no mount or eject verb, so there is nothing to drive (X1/C6) |
 
 The three GPU modes (hybrid, integrated, discrete) are exercised by the first two rows plus a mode
-change, which is a user action: `lege doctor --hardware --check gpu-mode` only validates that the
-*declared* mode in `/etc/legeos/hardware/gpu-mode` is one the detected profile supports. It never
+change, which is a user action: `templar doctor --hardware --check gpu-mode` only validates that the
+*declared* mode in `/etc/templaros/hardware/gpu-mode` is one the detected profile supports. It never
 writes that file.
 
-Runner: `lege doctor --hardware` (`--json` for evidence, `--check <id>` for one probe or case,
+Runner: `templar doctor --hardware` (`--json` for evidence, `--check <id>` for one probe or case,
 `--profile <id>` to review another profile off-device).

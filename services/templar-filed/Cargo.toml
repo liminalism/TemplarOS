@@ -1,0 +1,57 @@
+[package]
+name = "templar-filed"
+description = "TemplarOS file service: structured browsing, transactional operations, volumes, recents and search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "templar-filed"
+path = "src/main.rs"
+
+[dependencies]
+templar-build = { workspace = true }
+templar-client = { workspace = true }
+templar-types = { workspace = true }
+templar-state = { workspace = true }
+templar-file-index = { workspace = true }
+anyhow = { workspace = true }
+bpg-decode = { workspace = true }
+clap = { workspace = true }
+futures-util = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+parking_lot = { workspace = true }
+png = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+zbus = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-filed"
+section = "admin"
+priority = "optional"
+depends = "$auto, ffmpeg, systemd, udisks2"
+assets = [
+    ["target/release/templar-filed", "usr/libexec/templar-filed", "755"],
+    ["../../target/preview-codecs/templar-preview-codecs", "usr/libexec/templar-preview-codecs", "755"],
+    ["../../target/preview-codecs/licenses/JPXL-LICENSE-MIT", "usr/share/doc/templaros-filed/preview-codecs/JPXL-LICENSE-MIT", "644"],
+    ["../../target/preview-codecs/licenses/LEGE-PDF-LICENSE", "usr/share/doc/templaros-filed/preview-codecs/LEGE-PDF-LICENSE", "644"],
+    ["../../session/units/user/templar-filed.service", "usr/lib/systemd/user/templar-filed.service", "644"],
+    ["../../interfaces/dbus/org.templaros.Files.Browse1.xml", "usr/share/dbus-1/interfaces/org.templaros.Files.Browse1.xml", "644"],
+    ["../../interfaces/dbus/org.templaros.Files.Index1.xml", "usr/share/dbus-1/interfaces/org.templaros.Files.Index1.xml", "644"],
+    ["../../interfaces/dbus/org.templaros.Files.Previews1.xml", "usr/share/dbus-1/interfaces/org.templaros.Files.Previews1.xml", "644"],
+    ["../../interfaces/dbus/org.templaros.Files.Volumes1.xml", "usr/share/dbus-1/interfaces/org.templaros.Files.Volumes1.xml", "644"],
+]

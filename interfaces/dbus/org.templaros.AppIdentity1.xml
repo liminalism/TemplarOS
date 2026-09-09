@@ -1,0 +1,69 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session (session bus). Path: /org/templaros/Session/AppIdentity.
+     Which application owns this PID/window? Verified through the launch cgroup, never through
+     the client's self-declared app_id. Implemented in crates/templar-appd/src/dbus.rs. -->
+<node>
+  <interface name="org.templaros.AppIdentity1">
+    <!-- confidence: 0 unknown, 1 claim-only, 2 verified-launch, 3 verified-launch-claim-mismatch -->
+    <method name="ResolveWindow">
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="wayland_app_id" type="s" direction="in"/>
+      <arg name="startup_wm_class" type="s" direction="in"/>
+      <arg name="sandbox_app_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="instance_id" type="s" direction="out"/>
+      <arg name="confidence" type="y" direction="out"/>
+      <arg name="claim_matches_manifest" type="b" direction="out"/>
+    </method>
+    <!-- (instance_id, app_id, systemd_unit, control_group) -->
+    <method name="ListInstances">
+      <arg name="instances" type="a(ssss)" direction="out"/>
+    </method>
+    <method name="ListApps">
+      <arg name="app_ids" type="as" direction="out"/>
+    </method>
+    <!-- What a launcher needs and ListApps cannot give: the name to show, the desktop file id
+         and icon name to draw with, the terms to match, and whether the entry is meant to be
+         offered at all. `no_display` mirrors the desktop entry's NoDisplay= — reported, not
+         filtered, so this one listing answers both "what is installed" and "what may I offer".
+         (app_id, display_name, desktop_file_id, icon, categories, keywords, no_display) -->
+    <method name="ListApplications">
+      <arg name="applications" type="a(ssssasasb)" direction="out"/>
+    </method>
+
+    <!-- Every id above names a *variant*: one installed copy of an application from one origin (a
+         distribution package, a Flatpak, a user's own .desktop file). A person sees one Firefox;
+         the system may hold three. These four members expose that second, logical layer.
+         ResolveWindow deliberately does not: a launch is a variant launch, and the cgroup names
+         which one ran. Rights key on the variant too — a grant belongs to the copy that earned
+         it, so a wrong grouping is a presentation mistake and never a privilege one.
+         See interfaces/schemas/app-variant.schema.json.
+
+         (logical_app_id, display_name, icon, variant_count, default_variant) -->
+    <method name="ListLogicalApps">
+      <arg name="applications" type="a(sssus)" direction="out"/>
+    </method>
+    <!-- The variants of one logical application, default first.
+         (variant_app_id, display_name, provenance_json) -->
+    <method name="ListVariants">
+      <arg name="logical_app_id" type="s" direction="in"/>
+      <arg name="variants" type="a(sss)" direction="out"/>
+    </method>
+    <!-- The logical application a variant belongs to. A variant with no grouping evidence is its
+         own logical application, so this is empty only for a variant that is not installed. -->
+    <method name="LogicalAppOf">
+      <arg name="variant_app_id" type="s" direction="in"/>
+      <arg name="logical_app_id" type="s" direction="out"/>
+    </method>
+    <!-- ListInstances with the logical id alongside the variant, so a caller grouping windows by
+         application does not ask LogicalAppOf once per instance.
+         (instance_id, variant_app_id, logical_app_id, systemd_unit, control_group) -->
+    <method name="ListInstancesDetailed">
+      <arg name="instances" type="a(sssss)" direction="out"/>
+    </method>
+
+    <!-- The installed set changed (an import, an uninstall, a re-scan); re-read the listings. -->
+    <signal name="ApplicationsChanged"/>
+  </interface>
+</node>

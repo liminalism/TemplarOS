@@ -1,7 +1,7 @@
 //! `cargo xtask index-bench` — measure the shared file index's runtime cost before anyone
 //! optimises it (`docs/measurements/`, Lane A of the indexing campaign).
 //!
-//! This cannot be a `benches/` target: `lege_file_index::watch::guard` panics on any watch root
+//! This cannot be a `benches/` target: `templar_file_index::watch::guard` panics on any watch root
 //! outside the temp directory whenever the running executable's path has a `deps` component, and
 //! every `cargo bench`/integration-test binary lives in `target/<profile>/deps/`. An `xtask`
 //! subcommand's binary does not, so it is the one place a real directory tree can be measured.
@@ -11,19 +11,19 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
-use lege_file_index::{
-    Index, IndexConfig, MutationBatch, MutationSource, NativePath, Query, RootPolicy, ScanOptions,
-    coalesce::{Clock, SystemClock},
-    model::EntryKind,
-    snapshot::SnapshotRequest,
-    watch::{InotifySource, WatchBudget, WatchLimits, WatchOwner},
-};
 use serde::Serialize;
 use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant},
+};
+use templar_file_index::{
+    Index, IndexConfig, MutationBatch, MutationSource, NativePath, Query, RootPolicy, ScanOptions,
+    coalesce::{Clock, SystemClock},
+    model::EntryKind,
+    snapshot::SnapshotRequest,
+    watch::{InotifySource, WatchBudget, WatchLimits, WatchOwner},
 };
 
 #[derive(Debug, Args)]
@@ -63,9 +63,9 @@ pub enum IndexBenchCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Idle-cost sampling of a real `lege-filed`, isolated on its own D-Bus session via
+    /// Idle-cost sampling of a real `templar-filed`, isolated on its own D-Bus session via
     /// `dbus-run-session` so it never touches the user's live session bus. Reports
-    /// `/proc/<pid>/schedstat` timeslices for the `lege-index-watcher` thread, voluntary context
+    /// `/proc/<pid>/schedstat` timeslices for the `templar-index-watcher` thread, voluntary context
     /// switches, and background read I/O, over a settled window.
     Idle {
         /// Settled sampling window, in seconds.
@@ -74,10 +74,10 @@ pub enum IndexBenchCommand {
         /// Entries in the fixture the daemon indexes while idle-sampled.
         #[arg(long, default_value_t = 5_000)]
         entries: u64,
-        /// Use the release binary (`target/release/lege-filed`) instead of debug.
+        /// Use the release binary (`target/release/templar-filed`) instead of debug.
         #[arg(long)]
         release: bool,
-        /// Sample this `lege-filed` binary instead of the one under this workspace's own
+        /// Sample this `templar-filed` binary instead of the one under this workspace's own
         /// `target/`. Lets a before/after pair be built from two different commits (e.g. two
         /// `git worktree` checkouts) rather than only two points in this tree's own history.
         #[arg(long)]
@@ -231,7 +231,7 @@ fn read_proc_sys_u64(path: &str) -> Option<u64> {
 }
 
 /// The post-skip directory count under `root`, computed exactly the way
-/// [`lege_file_index::scan::walk_into`] and [`lege_file_index::watch::WatchOwner::arm_tree`] walk
+/// [`templar_file_index::scan::walk_into`] and [`templar_file_index::watch::WatchOwner::arm_tree`] walk
 /// it: the root itself always counts, a child is skipped by `policy.is_skipped` before it is ever
 /// looked at (so a skipped subtree is never descended into), and `cross_mount` stops the walk at a
 /// mount boundary below the root. This is deliberately the same predicate the index runs, not a
@@ -321,7 +321,7 @@ fn build_fixture(root: &Path, target_entries: u64) -> Result<FixtureTree> {
                 break;
             }
             let file = dir.join(format!("f{file_index}.txt"));
-            fs::write(&file, b"legebench fixture content\n")?;
+            fs::write(&file, b"templarbench fixture content\n")?;
             created += 1;
             if files.len() < 2_000 {
                 files.push(file);
@@ -471,7 +471,7 @@ fn workloads(
         }
         for index_no in 0..downtime_ops {
             let new_file = home.join(format!("downtime-{index_no}.txt"));
-            fs::write(&new_file, b"legebench downtime content\n")?;
+            fs::write(&new_file, b"templarbench downtime content\n")?;
         }
         let start = Instant::now();
         let outcome = index.reconcile_root(root_id, ScanOptions::reconcile(policy.clone()))?;
@@ -594,7 +594,7 @@ fn workloads(
         for index_no in 0..burst_count {
             fs::write(
                 burst_dir.join(format!("obj{index_no}.o")),
-                b"legebench object\n",
+                b"templarbench object\n",
             )?;
         }
         let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
@@ -630,12 +630,12 @@ fn workloads(
     fs::create_dir_all(&needle_dir)?;
     for index_no in 0..150 {
         fs::write(
-            needle_dir.join(format!("legebenchneedle{index_no}.txt")),
+            needle_dir.join(format!("templarbenchneedle{index_no}.txt")),
             b"x",
         )?;
     }
     index.reconcile_root(root_id, ScanOptions::reconcile(policy.clone()))?;
-    let query = Query::new("legebenchneedle").with_page_size(100);
+    let query = Query::new("templarbenchneedle").with_page_size(100);
     let mut samples = Vec::with_capacity(search_queries as usize);
     for _ in 0..search_queries {
         let start = Instant::now();
@@ -793,7 +793,7 @@ fn touch_files(files: &[PathBuf]) -> Result<()> {
 /// of mutations applied.
 ///
 /// This measures the watcher-pump-apply latency directly, **without** the production coalescing
-/// debounce window (`services/lege-filed/src/watcher.rs`, owned by another lane in this
+/// debounce window (`services/templar-filed/src/watcher.rs`, owned by another lane in this
 /// campaign): each pumped batch is applied immediately rather than held for quiet time. That is a
 /// different, and generally lower, number than end-to-end production latency; it isolates what
 /// this crate's own watch-and-apply path costs.
@@ -850,7 +850,7 @@ fn walk_existing_files(root: &Path, limit: usize) -> Vec<PathBuf> {
 }
 
 // -------------------------------------------------------------------------------------------
-// Idle-cost sampling of a real `lege-filed`.
+// Idle-cost sampling of a real `templar-filed`.
 // -------------------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -880,11 +880,11 @@ fn idle(
         None => find_workspace_root()?
             .join("target")
             .join(profile)
-            .join("lege-filed"),
+            .join("templar-filed"),
     };
     if !binary.exists() {
         bail!(
-            "{} does not exist — build it first: cargo build{} -p lege-filed",
+            "{} does not exist — build it first: cargo build{} -p templar-filed",
             binary.display(),
             if release { " --release" } else { "" }
         );
@@ -915,10 +915,10 @@ fn idle(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("spawning an isolated lege-filed")?;
+        .context("spawning an isolated templar-filed")?;
 
-    // `dbus-run-session -- lege-filed` means the child we spawned is dbus-run-session itself,
-    // which execve's into a helper before lege-filed runs; wait for the index db to appear as a
+    // `dbus-run-session -- templar-filed` means the child we spawned is dbus-run-session itself,
+    // which execve's into a helper before templar-filed runs; wait for the index db to appear as a
     // simple, robust "it is up" signal instead of parsing process trees.
     let up_deadline = Instant::now() + Duration::from_secs(20);
     while !index_db.exists() && Instant::now() < up_deadline {
@@ -930,10 +930,12 @@ fn idle(
     std::thread::sleep(Duration::from_secs(5));
 
     let marker = scratch.path().to_string_lossy().into_owned();
-    let pid = find_lege_filed_pid(&marker);
+    let pid = find_templar_filed_pid(&marker);
     let sample = match pid {
         None => {
-            println!("could not find a running lege-filed process to sample (reporting nothing)");
+            println!(
+                "could not find a running templar-filed process to sample (reporting nothing)"
+            );
             IdleSample {
                 label,
                 seconds,
@@ -947,7 +949,7 @@ fn idle(
             }
         }
         Some(pid) => {
-            let tid = find_thread(pid, "lege-index-watc"); // comm is truncated to 15 bytes
+            let tid = find_thread(pid, "templar-index-watc"); // comm is truncated to 15 bytes
             let before = ProcSample::read(pid, tid);
             println!("sampling pid {pid} (watcher tid {tid:?}) for {seconds}s...");
             std::thread::sleep(Duration::from_secs(seconds));
@@ -1067,11 +1069,11 @@ fn find_thread(pid: u32, comm_prefix: &str) -> Option<u32> {
     None
 }
 
-/// The `lege-filed` process whose command line names `marker` (this run's scratch directory) —
-/// never just "any `lege-filed` on the machine". A prior run's process can outlive its
+/// The `templar-filed` process whose command line names `marker` (this run's scratch directory) —
+/// never just "any `templar-filed` on the machine". A prior run's process can outlive its
 /// `dbus-run-session` parent (killing the parent does not reliably kill the grandchild across a
 /// D-Bus disconnect), and sampling the wrong one silently reports someone else's idle window.
-fn find_lege_filed_pid(marker: &str) -> Option<u32> {
+fn find_templar_filed_pid(marker: &str) -> Option<u32> {
     let entries = fs::read_dir("/proc").ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -1079,7 +1081,7 @@ fn find_lege_filed_pid(marker: &str) -> Option<u32> {
             continue;
         };
         let comm = read_to_string(&format!("/proc/{pid}/comm")).unwrap_or_default();
-        if comm.trim() != "lege-filed" {
+        if comm.trim() != "templar-filed" {
             continue;
         }
         let Some(cmdline) = fs::read(format!("/proc/{pid}/cmdline")).ok() else {
@@ -1095,7 +1097,7 @@ fn find_lege_filed_pid(marker: &str) -> Option<u32> {
 
 /// `SIGTERM`, then `SIGKILL` after a short grace period if it did not exit — best-effort (via the
 /// `kill(1)` binary, so this needs no `libc`/`nix` dependency), so a benchmark run never leaves an
-/// idle `lege-filed` behind for the next one to accidentally sample.
+/// idle `templar-filed` behind for the next one to accidentally sample.
 fn kill_pid(pid: u32) {
     let _ = std::process::Command::new("kill")
         .arg(pid.to_string())

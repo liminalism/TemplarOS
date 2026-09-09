@@ -1,0 +1,46 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Background.
+
+     Background-activity permissions as a first-class service surface
+     (@templaros.constraint.services-not-indicators): planning doc 01 §7 and
+     docs/architecture/providers.md both say an application declares whether it needs login
+     autostart, continuous background activity, network while hidden, global shortcuts, screen
+     capture, input monitoring, notifications or removable-media access, and that "the settings
+     interface would show every currently running background application and why it is running."
+     Without this interface a client would have to reconstruct that story by correlating
+     AppIdentity1 instances, History1 autostart-decision events and Providers1 selections itself
+     — three unrelated interfaces joined in a view, exactly what the constraint forbids.
+
+     Implemented in services/templar-sessiond/src/apis/background.rs, over the declarations
+     `templar-sessiond`'s autostart runner persists each session-start scan
+     (crates/templar-session-core/src/autostart.rs) and the same `autostart_approvals` table
+     Providers1/the autostart planner already use — Grant/Revoke set exactly the approval
+     `autostart::plan` consults, so this is one source of truth, not a parallel one. -->
+<node>
+  <interface name="org.templaros.Background1">
+    <!-- (app_id, permissions_json, approval, running, reason_json).
+         permissions_json: a JSON array of the declared kebab-case permission names.
+         approval: "approved" | "denied" | "undecided".
+         reason_json: "" when the application is not currently running; otherwise a JSON object
+         {"instance_id","started_via":"autostart"|"launch","role":<role-name-or-null>,
+         "role_selected":<bool>} — the answer to "why is it running", not something the caller
+         must infer by joining other interfaces. -->
+    <method name="List">
+      <arg name="entries" type="a(sssbs)" direction="out"/>
+    </method>
+    <!-- Approve app_id's declared background activity (the same approval autostart planning
+         reads); recorded in history with an Undo action. -->
+    <method name="Grant">
+      <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <!-- Deny it. An application already running is not stopped by this call; it takes effect on
+         its next autostart decision (or immediately for a manual re-check by a client). -->
+    <method name="Revoke">
+      <arg name="app_id" type="s" direction="in"/>
+    </method>
+    <signal name="Changed">
+      <arg name="app_id" type="s"/>
+    </signal>
+  </interface>
+</node>

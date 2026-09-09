@@ -1,22 +1,22 @@
-# One file index for LegeOS, FSearch, and Silvaview-rs
+# One file index for TemplarOS, FSearch, and Silvaview-rs
 
 **Status:** implementation proposal  
 **Date:** 2026-09-03  
-**Scope:** `lege-filed`, LegeOS search surfaces, an FSearch client fork, Silvaview-rs, and future
+**Scope:** `templar-filed`, TemplarOS search surfaces, an FSearch client fork, Silvaview-rs, and future
 per-user filename/metadata consumers
 
 ## 1. Decision in one page
 
-LegeOS should have exactly one per-user process that walks indexed roots, owns filesystem watches,
-persists derived file metadata, and answers queries. That process should remain `lege-filed`. Its
+TemplarOS should have exactly one per-user process that walks indexed roots, owns filesystem watches,
+persists derived file metadata, and answers queries. That process should remain `templar-filed`. Its
 current `Files.Search1` implementation is already the right ownership boundary, but the current
 implementation is only a bounded snapshot prototype: it deletes and rebuilds a root, stores at most
 50,000 entries, performs no monitoring, and skips the default-root scan on subsequent startups once
 it finds a persisted root. It therefore avoids repeated startup work at the cost of becoming stale.
 
-The next implementation should extract the index core within the LegeOS workspace, put rebuildable
+The next implementation should extract the index core within the TemplarOS workspace, put rebuildable
 index data in a dedicated SQLite database, add one serialized writer plus WAL readers, and make
-`lege-filed` maintain the database continuously. Linux filesystem events make ordinary operation
+`templar-filed` maintain the database continuously. Linux filesystem events make ordinary operation
 incremental. A bounded reconciliation pass repairs watcher overflow, changes made while the daemon
 was stopped, unsupported filesystems, and removable volumes returning after absence. Applications
 must use a versioned D-Bus/client contract; they must not open the database file.
@@ -33,13 +33,13 @@ daemon or public library. Its database is a private, host-endian, versioned bina
 reader takes a non-blocking exclusive file lock, and saving replaces the entire file. The installed
 development host has FSearch 0.2.3, which predates upstream 0.3 filesystem monitoring.
 Forking FSearch is still worthwhile, but as a **remote-index UI fork**: remove its root scanner and
-private database ownership, preserve its mature query/results UX, and adapt it to LegeOS's index
+private database ownership, preserve its mature query/results UX, and adapt it to TemplarOS's index
 API. Starting by daemonizing the FSearch engine would import GTK/GLib threading, a private ABI, and a
 large C/GPL maintenance surface into the system service without solving durable multi-client
 storage.
 
 Silvaview-rs should likewise stop treating its display-oriented `FileTree` as the scanner's only
-output. On LegeOS it should request a consistent bulk snapshot from `lege-filed`, convert canonical
+output. On TemplarOS it should request a consistent bulk snapshot from `templar-filed`, convert canonical
 index entries through its existing tree builder, and retain its current scanner only as an explicit
 fallback and as a possible future ingestion backend on platforms without the service. Rebuilding a
 treemap projection in memory is acceptable; rereading every inode from storage on every Silvaview
@@ -52,10 +52,10 @@ filesystems and mounted volumes
              |
              | initial scan + watch events + reconciliation
              v
-  lege-filed / lege-file-index core
+  templar-filed / templar-file-index core
   (only DB writer and only watch owner)
              |
-             +-- Files.Search1 compatibility API --> Home / lege-files
+             +-- Files.Search1 compatibility API --> Home / templar-files
              +-- Files.Index1 query API ----------> FSearch fork / CLI / future clients
              +-- consistent snapshot FD ---------> Silvaview-rs treemap projection
              `-- generation/change signals ------> all live consumers
@@ -63,9 +63,9 @@ filesystems and mounted volumes
 
 ## 2. What exists today
 
-### 2.1 LegeOS already persists an index, but does not maintain it
+### 2.1 TemplarOS already persists an index, but does not maintain it
 
-`services/lege-filed/src/search.rs` defines an `Entry` with path, directory flag, logical size,
+`services/templar-filed/src/search.rs` defines an `Entry` with path, directory flag, logical size,
 modification time, and optional MIME type. `Index::index_root` walks synchronously, deletes all rows
 for the root, and inserts a replacement snapshot in one transaction. The walk does not follow
 symlinks, skips source-control/cache/build directories and trash, and is bounded to depth 24 and
@@ -77,7 +77,7 @@ The tables live in the general session database through the additive `0003-files
 whole-root reindexing, search, and saved queries over D-Bus. The shell parses returned JSON into the
 same actionable rows used for directory browsing.
 
-The startup policy in `services/lege-filed/src/main.rs` is important. If the default home root has
+The startup policy in `services/templar-filed/src/main.rs` is important. If the default home root has
 never been indexed, the daemon claims its bus name and scans home on a blocking worker. If the root
 is already present, startup logs that it is reusing the index and performs no scan. This is fast,
 and the database survives application restarts, but there is no watcher, event log, TTL, or periodic
@@ -86,12 +86,12 @@ explicit reindex. A successful old scan can consequently be served indefinitely.
 
 Other constraints are already correct and should be kept:
 
-- `lege-filed` is a per-user D-Bus service, so one user has one policy and one index owner.
+- `templar-filed` is a per-user D-Bus service, so one user has one policy and one index owner.
 - Its systemd unit already classifies it as heavy I/O (`IOWeight=300`) and keeps it available under
   memory pressure.
 - Search is names, paths, and metadata, not file contents. This keeps indexing useful without
   silently reading document contents or expanding the privacy and battery cost.
-- File operations already flow through `lege-filed`; successful rename, move, trash, restore, copy,
+- File operations already flow through `templar-filed`; successful rename, move, trash, restore, copy,
   and delete operations can update the index immediately instead of waiting for a watcher.
 
 ### 2.2 Silvaview-rs has a fast scanner, not an index
@@ -153,28 +153,28 @@ compatibility target after basic shared indexing works.
 
 ## 3. Target architecture
 
-### 3.1 Keep `lege-filed` as the one owner
+### 3.1 Keep `templar-filed` as the one owner
 
-Creating `lege-indexd` immediately would add a second service lifecycle, bus dependency, packaging
-unit, resource policy, and failure mode while `lege-filed` would still proxy most searches. Keep the
+Creating `templar-indexd` immediately would add a second service lifecycle, bus dependency, packaging
+unit, resource policy, and failure mode while `templar-filed` would still proxy most searches. Keep the
 daemon boundary and extract implementation structure inside it:
 
-1. Add a pure `crates/lege-file-index` crate for schema types, query planning, entry mutation,
+1. Add a pure `crates/templar-file-index` crate for schema types, query planning, entry mutation,
    reconciliation logic, and SQLite access.
-2. Keep root policy, saved queries, and user choices in the authoritative LegeOS state store.
+2. Keep root policy, saved queries, and user choices in the authoritative TemplarOS state store.
 3. Put derived entries, search acceleration data, root scan checkpoints, and the bounded change log
-   in `$XDG_CACHE_HOME/legeos/file-index-v1.sqlite3`. Add `CacheDirectory=legeos` to the systemd
+   in `$XDG_CACHE_HOME/templaros/file-index-v1.sqlite3`. Add `CacheDirectory=templaros` to the systemd
    unit. A deleted cache is rebuilt; a deleted state database is a loss of user choices.
 4. Give the derived database one writer task/thread and separate read connections in WAL mode.
-   The current `lege_state::Store` intentionally serializes every domain through one mutex, which
+   The current `templar_state::Store` intentionally serializes every domain through one mutex, which
    is excellent for authoritative desktop transactions but wrong for a million-row scan competing
    with file operations and interactive searches.
-5. Host scanning, monitoring, mount tracking, and the new D-Bus interface in `lege-filed`. Do not
+5. Host scanning, monitoring, mount tracking, and the new D-Bus interface in `templar-filed`. Do not
    allow clients to know or open the SQLite path.
 
-If a later non-LegeOS product needs the daemon, the pure crate can acquire a small Unix-socket or
-named-pipe host without changing the LegeOS contract. That extraction should follow a second real
-consumer, not precede the LegeOS and Silvaview integrations.
+If a later non-TemplarOS product needs the daemon, the pure crate can acquire a small Unix-socket or
+named-pipe host without changing the TemplarOS contract. That extraction should follow a second real
+consumer, not precede the TemplarOS and Silvaview integrations.
 
 ### 3.2 Canonical model and schema
 
@@ -233,7 +233,7 @@ For every online root:
    `current`.
 5. Coalesce ordinary events into small transactions (target 250–1000 ms) and advance the generation
    once per committed batch.
-6. Apply successful `lege-filed` operations directly after filesystem commit. Deduplicate the later
+6. Apply successful `templar-filed` operations directly after filesystem commit. Deduplicate the later
    watcher event by stable key/path and observed metadata.
 7. On queue overflow (including explicit `IN_Q_OVERFLOW`), ambiguous rename ordering, watcher
    failure, root disappearance, policy change, or detected inconsistency, mark the affected subtree
@@ -252,9 +252,9 @@ drive remains searchable, with hits visibly marked offline.
 
 ### 3.4 Client contract
 
-Keep `org.legeos.Files.Search1` unchanged initially. Its methods delegate to the new core; its JSON
+Keep `org.templaros.Files.Search1` unchanged initially. Its methods delegate to the new core; its JSON
 continues to be lossy/compatibility data for current clients. Add a versioned
-`org.legeos.Files.Index1` interface with four workloads:
+`org.templaros.Files.Index1` interface with four workloads:
 
 - `Roots` returns IDs, lossless locations, volume identity, policy, freshness, counts, and
   generation.
@@ -271,18 +271,18 @@ continues to be lossy/compatibility data for current clients. Add a versioned
   `RootStateChanged` signals tell live clients when to ask. If the requested sequence has aged out,
   the service says `SnapshotRequired` rather than inventing continuity.
 
-Add the same surface to `lege-client`, and add `lege files index status`, `lege files search`, and
-`lege files index reconcile` commands. Search should support human output, JSON, and NUL-delimited
+Add the same surface to `templar-client`, and add `templar files index status`, `templar files search`, and
+`templar files index reconcile` commands. Search should support human output, JSON, and NUL-delimited
 paths so scripts and future tools become ordinary clients instead of new index owners. Sandboxed
 applications should not receive the raw full index automatically; a future portal must filter roots
 against granted filesystem access.
 
 ## 4. Consumer integrations
 
-### 4.1 Existing LegeOS Files surfaces
+### 4.1 Existing TemplarOS Files surfaces
 
 Move the current `search::Index` behind the new core while retaining `SearchApi`. The Home Files
-object and `lege-files` should not need a flag-day change. Once Index1 is stable, move them to typed
+object and `templar-files` should not need a flag-day change. Once Index1 is stable, move them to typed
 hits, generation/freshness display, paging, and cancellation. Remove `IndexRoot` as an unrestricted
 client-triggered synchronous walk; root configuration should be policy, and reconciliation should
 be an asynchronous request with status/progress.
@@ -293,7 +293,7 @@ search over the user's default indexed roots.
 
 ### 4.2 FSearch fork
 
-Create a LegeOS-maintained fork only after Index1 search and paging pass performance gates. Keep the
+Create a TemplarOS-maintained fork only after Index1 search and paging pass performance gates. Keep the
 fork visibly based on FSearch and preserve upstream licensing per ADR-0013. GPL-2.0-or-later and the
 AGPL/GPL combination need release review and accurate source/package notices; do not silently copy C
 files into an AGPL-only crate.
@@ -304,7 +304,7 @@ The fork's purpose is UI reuse, not database reuse:
   actions, and FSearch search-language UX. FSearch also has predicates such as child count, content
   type, depth, parent, extension, regex, wildcard, size, and date; each saved filter/bookmark must be
   translated losslessly or shown as unsupported, never silently degraded to plain text.
-- Replace include/exclude root preferences with a view of Index1 roots and a link/action to LegeOS
+- Replace include/exclude root preferences with a view of Index1 roots and a link/action to TemplarOS
   Files indexing settings.
 - Introduce a remote provider/model layer, then migrate or emulate the existing database-work,
   lazy-row, paging, selection, signal, and sort contracts. FSearch windows and result views retain
@@ -312,7 +312,7 @@ The fork's purpose is UI reuse, not database reuse:
   not a one-function `FsearchDatabaseIndexStore` replacement. Choose explicitly between a
   compatibility `FsearchDatabase` facade backed by Index1 pages and a window/result-view rewrite.
 - After the replacement row model works, remove or disable scanning, fanotify/inotify ownership,
-  `fsearch.db`, update timers, and `--update-database` in the production LegeOS build. Retain a
+  `fsearch.db`, update timers, and `--update-database` in the production TemplarOS build. Retain a
   small test-only local fixture provider if it makes upstream UI regressions easier to isolate.
 - Keep `--search <query>` for the existing `ProviderRole::FileSearch` launch path. Add activation of
   an existing window without creating an index-owning second process.
@@ -320,9 +320,9 @@ The fork's purpose is UI reuse, not database reuse:
   negation, file/folder, size, and modified-time predicates. Gate regex/wildcards on measured
   candidate limits.
 
-Use a new desktop/application identity such as `org.legeos.FSearch` unless upstream accepts a
+Use a new desktop/application identity such as `org.templaros.FSearch` unless upstream accepts a
 generic remote-provider mode. Switch the default `FileSearch` provider only when the fork reaches
-feature parity for the workflows LegeOS advertises. Until then, upstream FSearch may remain an
+feature parity for the workflows TemplarOS advertises. Until then, upstream FSearch may remain an
 optional external application, but it cannot satisfy the one-index acceptance criteria.
 
 ### 4.3 Silvaview-rs
@@ -335,7 +335,7 @@ trait TreeSource {
 }
 ```
 
-The LegeOS implementation consumes `OpenSnapshot`, converts canonical rows into build records, and
+The TemplarOS implementation consumes `OpenSnapshot`, converts canonical rows into build records, and
 feeds `tree::build_tree`. A treemap snapshot is necessarily complete for the requested subtree: it
 identifies the selected logical root, includes every descendant and its parent relationship or
 lossless full path, includes directories, and carries an explicit complete-subtree marker. Ordinary
@@ -367,7 +367,7 @@ CPU/memory projection work, not drive enumeration, and it isolates risk. A later
 apply change batches to a mutable aggregation tree if profiles show that full projection is too
 slow. Preserve the existing direct NTFS MFT backend for Windows. A future shared Windows index host
 can refactor that backend to emit canonical entries and add USN Journal ingestion; it is not needed
-to prove the LegeOS shared index.
+to prove the TemplarOS shared index.
 
 ## 5. Delivery plan
 
@@ -375,7 +375,7 @@ to prove the LegeOS shared index.
 
 - Build deterministic fixture trees covering non-UTF-8 names, hard links, symlinks, mount
   boundaries, permission denial, rename storms, watcher overflow, and offline removable roots.
-- Record present cold/warm `lege-filed`, FSearch, and Silvaview scan times, I/O bytes, peak RSS,
+- Record present cold/warm `templar-filed`, FSearch, and Silvaview scan times, I/O bytes, peak RSS,
   database size, and search latency on at least 100k and 2m entries.
 - Confirm whether bundled SQLite exposes FTS5 trigram and benchmark exact, prefix, substring, path,
   size/time-filtered, and regex-candidate searches.
@@ -385,13 +385,13 @@ Exit: a checked-in benchmark/fixture harness and measured choice of search accel
 
 ### Phase 1 — durable index core without monitoring
 
-- Add `lege-file-index`, its independently versioned migrations, generation commits, native path
+- Add `templar-file-index`, its independently versioned migrations, generation commits, native path
   encoding, root status, streaming scan, query/paging, and snapshot framing.
-- Open a separate cache database from `lege-filed`; copy configured roots/saved queries from state,
+- Open a separate cache database from `templar-filed`; copy configured roots/saved queries from state,
   discard old `search_entries` only after compatibility queries use the new core.
 - Remove the 50,000-entry product cap. Replace it with configured storage/I/O budgets and explicit
   incomplete state; never return a truncated root as complete.
-- Implement Search1 compatibility and Index1 in `lege-client` and interface XML.
+- Implement Search1 compatibility and Index1 in `templar-client` and interface XML.
 
 Exit: warm daemon startup serves the prior committed snapshot without walking a root, and a failed
 or cancelled rebuild leaves that snapshot readable.
@@ -405,26 +405,26 @@ or cancelled rebuild leaves that snapshot readable.
 - Add deterministic backend tests that inject `IN_Q_OVERFLOW`, event loss during descendant-watch
   installation, and ambiguous cross-directory rename ordering; each must invalidate and reconcile
   rather than advancing a falsely current generation.
-- Add service resource limits/diagnostics and `lege doctor` checks for watcher exhaustion, stale
+- Add service resource limits/diagnostics and `templar doctor` checks for watcher exhaustion, stale
   roots, DB health, and last reconciliation.
 
 Exit: create/modify/rename/delete/move/trash/restore becomes searchable within two seconds; forced
 overflow and daemon downtime converge through reconciliation without blocking client startup.
 
-### Phase 3 — LegeOS clients and general CLI
+### Phase 3 — TemplarOS clients and general CLI
 
 - Move Files search to typed Index1 paging/cancellation and surface stale/offline state.
 - Add CLI status/search/reconcile with JSON and NUL output.
 - Add Settings controls for roots, excludes, mount-boundary behaviour, monitoring, and rebuild.
 
-Exit: no first-party LegeOS search client walks roots or opens the cache database.
+Exit: no first-party TemplarOS search client walks roots or opens the cache database.
 
 ### Phase 4 — remote-index FSearch fork
 
 - Establish the fork/packaging lane and provenance notices.
 - Introduce its remote result-provider/model seam and make result virtualization, paging, selection,
   sorting and actions work before deleting/disabling private scanning and database code in the
-  production LegeOS build.
+  production TemplarOS build.
 - Implement the agreed FSearch syntax subset and provider activation.
 
 Exit: Files search and the FSearch window return the same indexed population/generation, starting
@@ -438,7 +438,7 @@ FSearch creates no filesystem watches and causes no recursive scan, and no `fsea
 - Add optional live refresh, initially by rebuilding the projection after a debounced generation
   advance.
 
-Exit: on LegeOS, a warm Silvaview launch performs zero recursive filesystem enumeration and renders
+Exit: on TemplarOS, a warm Silvaview launch performs zero recursive filesystem enumeration and renders
 the same root totals/tree as a direct scan within the explicitly documented symlink, mount,
 exclusion, permission, hard-link, and unresolved-record semantics.
 
@@ -454,8 +454,8 @@ exclusion, permission, hard-link, and unresolved-record semantics.
 
 The shared-index work is complete only when all of these are true:
 
-1. Exactly one process per user owns watches and the derived database on LegeOS.
-2. Restarting `lege-filed`, FSearch, `lege-files`, Home, or Silvaview does not synchronously rescan a
+1. Exactly one process per user owns watches and the derived database on TemplarOS.
+2. Restarting `templar-filed`, FSearch, `templar-files`, Home, or Silvaview does not synchronously rescan a
    previously indexed root before showing useful results.
 3. All responses identify their generation and freshness; overflow/offline/partial states cannot be
    mistaken for current complete data.
@@ -467,11 +467,11 @@ The shared-index work is complete only when all of these are true:
 6. Non-UTF-8 paths survive index, snapshot, display, and open/copy actions without addressing the
    wrong file.
 7. Current Search1 clients continue to work through the migration.
-8. The LegeOS FSearch build owns neither watchers nor `fsearch.db`, and `--search` still activates a
+8. The TemplarOS FSearch build owns neither watchers nor `fsearch.db`, and `--search` still activates a
    useful full-window search.
 9. Silvaview's service mode reads an index snapshot and never falls through to a scan silently; its
    explicit direct mode remains available and is tested.
-10. `lege doctor` can explain index size, generation, root states, watcher backend/limits, last
+10. `templar doctor` can explain index size, generation, root states, watcher backend/limits, last
     event, last reconciliation, and why a root is stale.
 
 ## 7. Risks and decisions deliberately deferred
@@ -491,22 +491,22 @@ The shared-index work is complete only when all of these are true:
   it is not promised as an eternal document ID.
 - **Content search is out of scope.** The index may later carry opt-in extractors, but this plan does
   not read file contents or let FSearch integration smuggle content indexing into the service.
-- **Cross-platform daemon hosting is deferred.** Silvaview keeps its direct provider outside LegeOS.
+- **Cross-platform daemon hosting is deferred.** Silvaview keeps its direct provider outside TemplarOS.
   Windows sharing should use MFT plus USN Journal behind the same logical model when a second Windows
   consumer exists.
 
 ## 8. Source map for implementers
 
-LegeOS:
+TemplarOS:
 
-- `services/lege-filed/src/search.rs` — current schema-facing index, walker, ranking, and tests.
-- `services/lege-filed/src/main.rs:148-194` — current background startup scan/reuse policy.
-- `services/lege-filed/src/dbus.rs:730-790` — `Files.Search1` host.
-- `interfaces/dbus/org.legeos.Files.Search1.xml` and
-  `crates/lege-client/src/proxies/files.rs:148-166` — existing public contract/client.
-- `crates/lege-state/src/migrations/files.rs:44-69` — current tables to migrate away from derived
+- `services/templar-filed/src/search.rs` — current schema-facing index, walker, ranking, and tests.
+- `services/templar-filed/src/main.rs:148-194` — current background startup scan/reuse policy.
+- `services/templar-filed/src/dbus.rs:730-790` — `Files.Search1` host.
+- `interfaces/dbus/org.templaros.Files.Search1.xml` and
+  `crates/templar-client/src/proxies/files.rs:148-166` — existing public contract/client.
+- `crates/templar-state/src/migrations/files.rs:44-69` — current tables to migrate away from derived
   session state.
-- `session/units/user/lege-filed.service` — lifetime and resource policy.
+- `session/units/user/templar-filed.service` — lifetime and resource policy.
 - `docs/architecture/files.md:111-116` — adopted names/path/metadata-only search scope.
 
 Silvaview-rs:

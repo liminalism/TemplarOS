@@ -12,7 +12,7 @@
       "arch": "any",
       "layer": "bootstrap",
       "name": "systemd",
-      "reason": "init, the unit model every LegeOS service is written against",
+      "reason": "init, the unit model every TemplarOS service is written against",
       "role": null,
       "tier": "inherited"
     },
@@ -44,7 +44,7 @@
       "arch": "any",
       "layer": "bootstrap",
       "name": "udev",
-      "reason": "device enumeration for lege-hwdetect and the compositor's DRM backend",
+      "reason": "device enumeration for templar-hwdetect and the compositor's DRM backend",
       "role": null,
       "tier": "inherited"
     },
@@ -52,7 +52,7 @@
       "arch": "any",
       "layer": "bootstrap",
       "name": "kmod",
-      "reason": "module loading for the kernel/LRM set legeos-kernel version-locks",
+      "reason": "module loading for the kernel/LRM set templaros-kernel version-locks",
       "role": null,
       "tier": "inherited"
     },
@@ -108,7 +108,7 @@
       "arch": "any",
       "layer": "bootstrap",
       "name": "gnupg",
-      "reason": "verifying archive signatures, including the LegeOS archive key",
+      "reason": "verifying archive signatures, including the TemplarOS archive key",
       "role": null,
       "tier": "inherited"
     },
@@ -156,22 +156,22 @@
       "arch": "any",
       "layer": "bootstrap",
       "name": "linux-generic",
-      "reason": "Ubuntu's GA kernel; the image must boot before the LegeOS archive is present",
+      "reason": "Ubuntu's GA kernel; the image must boot before the TemplarOS archive is present",
       "role": null,
       "tier": "inherited"
     },
     {
       "arch": "any",
       "layer": "bootstrap",
-      "name": "legeos-archive-keyring",
-      "reason": "the LegeOS archive key, sources and pins; without it no LegeOS package installs",
+      "name": "templaros-archive-keyring",
+      "reason": "the TemplarOS archive key, sources and pins; without it no TemplarOS package installs",
       "role": null,
       "tier": "native"
     },
     {
       "arch": "any",
       "layer": "bootstrap",
-      "name": "legeos-kernel",
+      "name": "templaros-kernel",
       "reason": "version-locks kernel, LRM modules and firmware into one tested set (ADR-0007)",
       "role": null,
       "tier": "native"
@@ -196,7 +196,7 @@
       "arch": "any",
       "layer": "hardware",
       "name": "upower",
-      "reason": "battery and lid state for the shell and lege-sessiond's power policy",
+      "reason": "battery and lid state for the shell and templar-sessiond's power policy",
       "role": null,
       "tier": "inherited"
     },
@@ -204,7 +204,7 @@
       "arch": "any",
       "layer": "hardware",
       "name": "power-profiles-daemon",
-      "reason": "the profile switch lege-sessiond drives; the alternative is per-vendor sysfs guesswork",
+      "reason": "the profile switch templar-sessiond drives; the alternative is per-vendor sysfs guesswork",
       "role": null,
       "tier": "inherited"
     },
@@ -244,7 +244,7 @@
       "arch": "any",
       "layer": "graphics",
       "name": "vulkan-tools",
-      "reason": "vulkaninfo and vkcube are how `lege doctor` and the hardware probes name the actual output device",
+      "reason": "vulkaninfo and vkcube are how `templar doctor` and the hardware probes name the actual output device",
       "role": null,
       "tier": "inherited"
     },
@@ -300,7 +300,7 @@
       "arch": "any",
       "layer": "graphics",
       "name": "intel-media-va-driver",
-      "reason": "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml does not enable — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a LegeOS number",
+      "reason": "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml does not enable — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a TemplarOS number",
       "role": null,
       "tier": "inherited"
     },
@@ -331,7 +331,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-session",
+      "name": "templaros-session",
       "reason": "the session unit graph: what starts, in what order, under what target",
       "role": null,
       "tier": "native"
@@ -339,7 +339,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-sessiond",
+      "name": "templaros-sessiond",
       "reason": "the one policy daemon — identity, launch, associations, providers, settings (ADR-0001)",
       "role": null,
       "tier": "native"
@@ -347,7 +347,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-resourced",
+      "name": "templaros-resourced",
       "reason": "the resource governor, deliberately a separate crash unit (ADR-0002)",
       "role": null,
       "tier": "native"
@@ -355,7 +355,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-filed",
+      "name": "templaros-filed",
       "reason": "file operations and the shared file index, off the policy daemon's loop",
       "role": null,
       "tier": "native"
@@ -363,7 +363,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-hostd",
+      "name": "templaros-hostd",
       "reason": "the single privileged system-bus surface: updates, deployments, drivers (ADR-0003)",
       "role": null,
       "tier": "native"
@@ -371,7 +371,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-boot-health",
+      "name": "templaros-boot-health",
       "reason": "marks a deployment good or rolls it back; the reason a bad set is survivable",
       "role": null,
       "tier": "native"
@@ -379,7 +379,7 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-shell",
+      "name": "templaros-shell",
       "reason": "the Home Field and every decorative surface; restartable in half a second",
       "role": "shell",
       "tier": "native"
@@ -387,15 +387,15 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-nm-tray",
-      "reason": "the network control the Home information row launches; LegeOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)",
+      "name": "templaros-nm-tray",
+      "reason": "the network control the Home information row launches; TemplarOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)",
       "role": "network-control",
       "tier": "native"
     },
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-comp",
+      "name": "templaros-comp",
       "reason": "the compositor; nothing else provides a Wayland session (COMPOSITOR.md)",
       "role": "compositor",
       "tier": "native"
@@ -403,23 +403,23 @@
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-portal",
-      "reason": "the LegeOS portal backend: FileChooser, AppChooser, Background, Settings",
+      "name": "templaros-portal",
+      "reason": "the TemplarOS portal backend: FileChooser, AppChooser, Background, Settings",
       "role": "portal-backend",
       "tier": "native"
     },
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-cli",
-      "reason": "`lege` — doctor, dev, update; the CLI parity half of every declared action",
+      "name": "templaros-cli",
+      "reason": "`templar` — doctor, dev, update; the CLI parity half of every declared action",
       "role": null,
       "tier": "native"
     },
     {
       "arch": "any",
       "layer": "session",
-      "name": "legeos-greeter",
+      "name": "templaros-greeter",
       "reason": "the login surface; a session with no greeter is a session nobody can reach",
       "role": "greeter",
       "tier": "native"
@@ -428,7 +428,7 @@
       "arch": "any",
       "layer": "session",
       "name": "greetd",
-      "reason": "the daemon legeos-greeter is a client of; it owns the login transaction",
+      "reason": "the daemon templaros-greeter is a client of; it owns the login transaction",
       "role": null,
       "tier": "inherited"
     },
@@ -444,7 +444,7 @@
       "arch": "any",
       "layer": "session",
       "name": "xdg-desktop-portal-gtk",
-      "reason": "Print, Email, Notification and DynamicLauncher, which the LegeOS backend does not implement and which otherwise fail outright for Flatpak apps",
+      "reason": "Print, Email, Notification and DynamicLauncher, which the TemplarOS backend does not implement and which otherwise fail outright for Flatpak apps",
       "role": null,
       "tier": "inherited"
     },
@@ -460,7 +460,7 @@
       "arch": "any",
       "layer": "session",
       "name": "polkitd",
-      "reason": "authorisation for lege-hostd's privileged actions; the alternative is a setuid habit",
+      "reason": "authorisation for templar-hostd's privileged actions; the alternative is a setuid habit",
       "role": null,
       "tier": "inherited"
     },
@@ -475,15 +475,15 @@
     {
       "arch": "any",
       "layer": "desktop",
-      "name": "legeos-settings",
-      "reason": "the settings surface for the policy legeos-sessiond owns",
+      "name": "templaros-settings",
+      "reason": "the settings surface for the policy templaros-sessiond owns",
       "role": null,
       "tier": "native"
     },
     {
       "arch": "any",
       "layer": "desktop",
-      "name": "lege-files",
+      "name": "templar-files",
       "reason": "the file manager the shell's file surfaces and the Files context menu drive",
       "role": "file-manager",
       "tier": "native"
@@ -492,7 +492,7 @@
       "arch": "any",
       "layer": "desktop",
       "name": "kitty",
-      "reason": "the Terminal provider role's default (lege-session-core/src/providers.rs:157) and the terminal legeos-shell ships /etc/xdg/kitty/kitty.conf for",
+      "reason": "the Terminal provider role's default (templar-session-core/src/providers.rs:157) and the terminal templaros-shell ships /etc/xdg/kitty/kitty.conf for",
       "role": "terminal",
       "tier": "inherited"
     },
@@ -524,7 +524,7 @@
       "arch": "any",
       "layer": "desktop",
       "name": "xdg-utils",
-      "reason": "xdg-open is what non-LegeOS applications call to hand a file back to the session",
+      "reason": "xdg-open is what non-TemplarOS applications call to hand a file back to the session",
       "role": null,
       "tier": "inherited"
     },
@@ -540,7 +540,7 @@
       "arch": "any",
       "layer": "desktop",
       "name": "desktop-file-utils",
-      "reason": "the desktop-file database lege-sessiond imports applications from",
+      "reason": "the desktop-file database templar-sessiond imports applications from",
       "role": null,
       "tier": "inherited"
     },
@@ -644,7 +644,7 @@
       "arch": "any",
       "layer": "dev-rust",
       "name": "git",
-      "reason": "the build-set id is derived from the git description (lege-build)",
+      "reason": "the build-set id is derived from the git description (templar-build)",
       "role": null,
       "tier": "inherited"
     },
@@ -741,22 +741,22 @@
   "installed_size_bytes": 7227931648,
   "missing": [],
   "native": [
-    "legeos-archive-keyring",
-    "legeos-kernel",
-    "legeos-session",
-    "legeos-sessiond",
-    "legeos-resourced",
-    "legeos-filed",
-    "legeos-hostd",
-    "legeos-boot-health",
-    "legeos-shell",
-    "legeos-nm-tray",
-    "legeos-comp",
-    "legeos-portal",
-    "legeos-cli",
-    "legeos-greeter",
-    "legeos-settings",
-    "lege-files"
+    "templaros-archive-keyring",
+    "templaros-kernel",
+    "templaros-session",
+    "templaros-sessiond",
+    "templaros-resourced",
+    "templaros-filed",
+    "templaros-hostd",
+    "templaros-boot-health",
+    "templaros-shell",
+    "templaros-nm-tray",
+    "templaros-comp",
+    "templaros-portal",
+    "templaros-cli",
+    "templaros-greeter",
+    "templaros-settings",
+    "templar-files"
   ],
   "observed_at": "2026-09-05T07:47:11Z",
   "observed_at_unix": 1788594431,
@@ -1204,7 +1204,7 @@
         "resolute"
       ],
       "sources": [
-        "/tmp/claude-1000/-mnt-Samsung980-1TB-Rust-projects-LegeOS/3f9b48e4-74b0-4308-ae48-41d82c0d97c8/scratchpad/apt-resolute/state/status",
+        "/tmp/claude-1000/-mnt-Samsung980-1TB-Rust-projects-TemplarOS/3f9b48e4-74b0-4308-ae48-41d82c0d97c8/scratchpad/apt-resolute/state/status",
         "http://security.ubuntu.com/ubuntu resolute-security/restricted amd64 Packages",
         "http://security.ubuntu.com/ubuntu resolute-security/universe amd64 Packages",
         "http://security.ubuntu.com/ubuntu resolute-security/main amd64 Packages",
@@ -1223,17 +1223,17 @@
     "audio-server": "pipewire",
     "bluetooth": "bluez",
     "browser": "org.mozilla.firefox",
-    "compositor": "legeos-comp",
-    "file-manager": "lege-files",
-    "greeter": "legeos-greeter",
+    "compositor": "templaros-comp",
+    "file-manager": "templar-files",
+    "greeter": "templaros-greeter",
     "input-method": "fcitx5",
     "media-player": "mpv",
-    "network-control": "legeos-nm-tray",
+    "network-control": "templaros-nm-tray",
     "network-manager": "network-manager",
-    "portal-backend": "legeos-portal",
+    "portal-backend": "templaros-portal",
     "screen-reader": "orca",
     "secret-service": "gnome-keyring",
-    "shell": "legeos-shell",
+    "shell": "templaros-shell",
     "terminal": "kitty"
   },
   "transitive": [

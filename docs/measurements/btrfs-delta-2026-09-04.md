@@ -20,7 +20,7 @@ sudo scripts/btrfs-index-fixture.sh measure    # builds as you, runs the harness
 sudo scripts/btrfs-index-fixture.sh teardown
 ```
 
-The image goes on `/mnt/Samsung980_1TB`; the *mount point* is `/tmp/legeos-btrfs-fixture` on
+The image goes on `/mnt/Samsung980_1TB`; the *mount point* is `/tmp/templaros-btrfs-fixture` on
 purpose, because `watch::guard` panics on a watch root outside `std::env::temp_dir()` and that is
 what lets the harness run as an ordinary integration test. Raw harness output, rewritten by every
 run, is `docs/measurements/btrfs-delta-measured.md`.
@@ -227,7 +227,7 @@ the ledger.
 ## Correctness: what is already proven, and how
 
 The decoder and the namespace reducer are covered by 25 unit tests
-(`crates/lege-file-index/src/btrfs_delta.rs`), all passing. Three design decisions carry the
+(`crates/templar-file-index/src/btrfs_delta.rs`), all passing. Three design decisions carry the
 correctness argument:
 
 **The stream is a change oracle, not a metadata source.** Reconstructing an `EntryMeta` from the
@@ -270,7 +270,7 @@ back to a reconcile". A full send (no `-p`) is refused as a delta too: applying 
 The end-to-end gate — `baseline + delta` against a fresh scan, over create, delete, rename, chmod,
 truncate, rewrite-in-place, a 1 GiB file, hard link, symlink, whole-directory rename, a mass delete
 and an interrupted delta — is written
-(`crates/lege-file-index/tests/btrfs_delta_fixture.rs`) and runs against the fixture. **It passes**
+(`crates/templar-file-index/tests/btrfs_delta_fixture.rs`) and runs against the fixture. **It passes**
 — on the fifth run, after four failures that are worth reading before trusting it (above).
 
 ## What `btrfs send` actually costs (measured on the fixture)
@@ -339,9 +339,9 @@ index side only.
 
 ## The hostd surface
 
-`org.legeos.Host.IndexCheckpoint1` — `Create`, `List`, `Delta`, `Discard`, all JSON-argument so
+`org.templaros.Host.IndexCheckpoint1` — `Create`, `List`, `Delta`, `Discard`, all JSON-argument so
 they can grow without a signature change. `Create`/`Delta`/`Discard` check
-`org.legeos.host.index-checkpoint` through `require_authorized`, with the caller identity taken from
+`org.templaros.host.index-checkpoint` through `require_authorized`, with the caller identity taken from
 the D-Bus message header and never from an argument (ADR-0003). Snapshot creation and sealing reuse
 the existing `Snapshotter` that the deployment path already drives; nothing new shells out to btrfs.
 Checkpoints live in `@snapshots` (declared in `distro/deploy/layout.toml`, mounted at `/.snapshots`
@@ -349,14 +349,14 @@ by `installer/provision.sh`, and consumed by nothing until now). `@home` is chec
 specifically: btrfs snapshots stop at a nested subvolume boundary, so a snapshot of `@` would hold
 an empty `home/` and the delta would read as "the entire home directory was deleted".
 
-It is in hostd rather than in `lege-filed` because `BTRFS_IOC_SEND` needs `CAP_SYS_ADMIN` and a
+It is in hostd rather than in `templar-filed` because `BTRFS_IOC_SEND` needs `CAP_SYS_ADMIN` and a
 per-user daemon does not get capabilities.
 
 ## Getting the stream to the per-user daemon
 
 hostd writes the delta root-owned, mode 0600, because a metadata delta names every path under
 `@home` and a world-readable copy of that is a local information leak. `Delta` therefore returns a
-*path*, and the per-user `lege-filed` cannot open it.
+*path*, and the per-user `templar-filed` cannot open it.
 
 **A correction to what this report previously said, and to what I told the user.** I described this
 as blocked by ADR-0003. It is not: ADR-0003 (`docs/adr/0003-hostd-scope.md`, 20 lines) settles what
@@ -364,10 +364,10 @@ hostd *owns* — updates, deployments, drivers, storage reserve, hardware profil
 about file descriptors in either direction. There is no prohibition to amend, and the permission
 the user granted to amend one is not needed. The real facts are narrower:
 
-* no `org.legeos.Host.*` method takes or returns `type="h"` today, so this is new surface on the
+* no `org.templaros.Host.*` method takes or returns `type="h"` today, so this is new surface on the
   **system** bus and deserves a deliberate decision rather than an incremental one;
 * the project already passes descriptors in exactly this shape — `Index1.OpenSnapshot`
-  (`interfaces/dbus/org.legeos.Files.Index1.xml:50`) returns `type="h"` for a sealed snapshot on
+  (`interfaces/dbus/org.templaros.Files.Index1.xml:50`) returns `type="h"` for a sealed snapshot on
   the session bus. The pattern is established; only the bus is new.
 
 Three transports, in the order I would take them:
@@ -396,7 +396,7 @@ find out before this is enabled by default anywhere.
 ## Recommendation
 
 **Adopt as an opt-in backend for Btrfs `@home`; do not make it the default until it has run on a
-real LegeOS install and the checkpoint's disk cost has a number.**
+real TemplarOS install and the checkpoint's disk cost has a number.**
 
 What the measurements settle:
 
@@ -426,7 +426,7 @@ What holds the default back:
   There should be a cap above which the backend gives up and asks for a reconcile, and there is
   none.
 
-Concretely: keep `org.legeos.Host.IndexCheckpoint1` unadopted and documented as such, keep the
-decoder and its 25 unit tests in `lege-file-index`, keep the harness runnable from one script, and
-revisit when LegeOS installs on Btrfs on the reference machine — at which point the remaining
+Concretely: keep `org.templaros.Host.IndexCheckpoint1` unadopted and documented as such, keep the
+decoder and its 25 unit tests in `templar-file-index`, keep the harness runnable from one script, and
+revisit when TemplarOS installs on Btrfs on the reference machine — at which point the remaining
 questions are a day's work, not a lane's.

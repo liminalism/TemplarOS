@@ -1,13 +1,13 @@
-# The LegeOS component matrix — what a build set is made of, and what it takes to make each
+# The TemplarOS component matrix — what a build set is made of, and what it takes to make each
 # part of it actually run.
 #
 # This file is data, not code, because four different things needed the same list and each had
-# grown its own copy: the justfile's `deb` recipe, `lege doctor`'s LEGEOS_PACKAGES, the reinstall
+# grown its own copy: the justfile's `deb` recipe, `templar doctor`'s TEMPLAROS_PACKAGES, the reinstall
 # script's expected_packages, and the deployment tooling. `cargo xtask check-packaging` checks it
 # against debian/control and the workspace, so a package added in one place and forgotten here
 # fails the build rather than quietly dropping out of a deployment.
 #
-# Installed to /usr/share/legeos/components.toml; `lege dev` reads the repository copy when run
+# Installed to /usr/share/templaros/components.toml; `templar dev` reads the repository copy when run
 # from a checkout and the installed one otherwise.
 #
 # activation — what has to happen before a newly installed component is the one running:
@@ -23,7 +23,7 @@
 # exists (roadmap track B4). Shipping them as `restart` today would make the tool confidently
 # break a live desktop.
 #
-# The service audit's fields (@legeos.decision.event-driven-service-authorities: "each persistent
+# The service audit's fields (@templaros.decision.event-driven-service-authorities: "each persistent
 # daemon and polling exception records its authority, lifetime, activation, recovery, deadline
 # and justification"). `cargo run -q -p xtask -- check-packaging` fails when a component with a
 # unit leaves one blank, and `cargo run -q -p xtask -- components --field timer_exceptions`
@@ -48,10 +48,10 @@ version = 1
 
 [[component]]
 name = "sessiond"
-crate = "lege-sessiond"
-package = "legeos-sessiond"
-stamp = "lege-sessiond"
-unit = "lege-sessiond.service"
+crate = "templar-sessiond"
+package = "templaros-sessiond"
+stamp = "templar-sessiond"
+unit = "templar-sessiond.service"
 scope = "user"
 activation = "manual"
 depends_on = []
@@ -59,9 +59,9 @@ summary = "session policy daemon — identity, launching, associations, history,
 authority = "session policy: identity, launching, associations, providers, history, notifications, settings, projects, power, location — one state database, one crash unit (ADR-0001)"
 lifetime = "session-bound"
 consumer_interfaces = [
-    "org.legeos.AppIdentity1", "org.legeos.Launcher1", "org.legeos.Associations1",
-    "org.legeos.Providers1", "org.legeos.History1", "org.legeos.Notifications1",
-    "org.legeos.Settings1", "org.legeos.Projects1", "org.legeos.Lifecycle1",
+    "org.templaros.AppIdentity1", "org.templaros.Launcher1", "org.templaros.Associations1",
+    "org.templaros.Providers1", "org.templaros.History1", "org.templaros.Notifications1",
+    "org.templaros.Settings1", "org.templaros.Projects1", "org.templaros.Lifecycle1",
 ]
 recovery = "clients reconnect to the bus name and re-read; every interface answers a full current state, so there is no history to replay and nothing to resnapshot"
 deadlines = "a launch is acknowledged before the process is spawned; a settings write is durable before it returns"
@@ -76,17 +76,17 @@ timer_exceptions = [
 
 [[component]]
 name = "resourced"
-crate = "lege-resourced"
-package = "legeos-resourced"
-stamp = "lege-resourced"
-unit = "lege-resourced.service"
+crate = "templar-resourced"
+package = "templaros-resourced"
+stamp = "templar-resourced"
+unit = "templar-resourced.service"
 scope = "user"
 activation = "restart"
 depends_on = []
 summary = "resource governor"
 authority = "memory pressure policy: which instance is reclaimed, and what protection every session-critical unit keeps"
 lifetime = "session-bound"
-consumer_interfaces = ["org.legeos.Resources1"]
+consumer_interfaces = ["org.templaros.Resources1"]
 recovery = "stateless across restarts by design (ADR-0002): the governor re-reads cgroups and PSI on its first tick and owes no consumer any history"
 deadlines = "a pressure trigger is acted on within one tick; the loop touches no SQLite, no fsync and no D-Bus (ADR-0002)"
 timer_exceptions = [
@@ -96,10 +96,10 @@ timer_exceptions = [
 
 [[component]]
 name = "filed"
-crate = "lege-filed"
-package = "legeos-filed"
-stamp = "lege-filed"
-unit = "lege-filed.service"
+crate = "templar-filed"
+package = "templaros-filed"
+stamp = "templar-filed"
+unit = "templar-filed.service"
 scope = "user"
 activation = "manual"
 depends_on = []
@@ -107,8 +107,8 @@ summary = "file service"
 authority = "the per-user file index and every filesystem watch in the session; transactional file operations and their journals"
 lifetime = "session-bound"
 consumer_interfaces = [
-    "org.legeos.Files.Index1", "org.legeos.Files.Browse1", "org.legeos.Files.Search1",
-    "org.legeos.Files.Volumes1", "org.legeos.Files.Previews1",
+    "org.templaros.Files.Index1", "org.templaros.Files.Browse1", "org.templaros.Files.Search1",
+    "org.templaros.Files.Volumes1", "org.templaros.Files.Previews1",
 ]
 recovery = "generation identifies a committed view and a sequence identifies change-log position; ChangesSince(seq) below the retained floor answers SnapshotRequired and the consumer resnapshots through OpenSnapshot. Consumers never open the SQLite store."
 deadlines = "a query is answered from the last committed generation without waiting for a scan; no client start triggers a synchronous walk"
@@ -119,10 +119,10 @@ timer_exceptions = [
 
 [[component]]
 name = "hostd"
-crate = "lege-hostd"
-package = "legeos-hostd"
-stamp = "lege-hostd"
-unit = "lege-hostd.service"
+crate = "templar-hostd"
+package = "templaros-hostd"
+stamp = "templar-hostd"
+unit = "templar-hostd.service"
 scope = "system"
 activation = "restart"
 depends_on = []
@@ -130,9 +130,9 @@ summary = "privileged system-bus surface"
 authority = "the privileged system surface (ADR-0003): updates, deployments, driver authorisation, storage reserve, hardware profile, boot entries and index checkpoints"
 lifetime = "dbus-activated"
 consumer_interfaces = [
-    "org.legeos.Host.Updates1", "org.legeos.Host.Deployments1", "org.legeos.Host.Drivers1",
-    "org.legeos.Host.Storage1", "org.legeos.Host.Hardware1", "org.legeos.Host.Session1",
-    "org.legeos.Host.IndexCheckpoint1",
+    "org.templaros.Host.Updates1", "org.templaros.Host.Deployments1", "org.templaros.Host.Drivers1",
+    "org.templaros.Host.Storage1", "org.templaros.Host.Hardware1", "org.templaros.Host.Session1",
+    "org.templaros.Host.IndexCheckpoint1",
 ]
 recovery = "every transaction is journalled and resumable: a restart mid-pipeline reads the journal and continues or classifies the failure. Deployment identities persist across restarts."
 deadlines = "every mutating method checks polkit before doing anything; long work is journalled and polled rather than held open on the bus"
@@ -143,9 +143,9 @@ timer_exceptions = [
 
 [[component]]
 name = "boot-health"
-crate = "lege-boot-health"
-package = "legeos-boot-health"
-unit = "lege-boot-health.service"
+crate = "templar-boot-health"
+package = "templaros-boot-health"
+unit = "templar-boot-health.service"
 scope = "system"
 activation = "needs-reboot"
 depends_on = []
@@ -160,8 +160,8 @@ timer_exceptions = []
 
 [[component]]
 name = "session"
-crate = "lege-session"
-package = "legeos-session"
+crate = "templar-session"
+package = "templaros-session"
 scope = "none"
 activation = "needs-session"
 depends_on = []
@@ -169,17 +169,17 @@ summary = "session entry and the user units themselves"
 
 [[component]]
 name = "comp"
-crate = "lege-comp"
-package = "legeos-comp"
-stamp = "lege-comp"
-unit = "lege-comp.service"
+crate = "templar-comp"
+package = "templaros-comp"
+stamp = "templar-comp"
+unit = "templar-comp.service"
 scope = "user"
 activation = "needs-session"
 depends_on = []
 summary = "compositor — Restart=no by design, so a new one means a new session"
-authority = "surface composition, input routing and z-order (compositor/COMPOSITOR.md); lege-window is the sole visibility authority"
+authority = "surface composition, input routing and z-order (compositor/COMPOSITOR.md); templar-window is the sole visibility authority"
 lifetime = "session-bound"
-consumer_interfaces = ["lege_shell_v1"]
+consumer_interfaces = ["templar_shell_v1"]
 recovery = "none: Restart=no by design. A crash disconnects every client, so there is nothing to restart into — the compositor-drawn recovery band and a fresh session are the recovery path."
 deadlines = "one frame; the render thread takes no lock a service can hold"
 timer_exceptions = []
@@ -187,8 +187,8 @@ timer_exceptions = []
 
 [[component]]
 name = "greeter"
-crate = "lege-greeter"
-package = "legeos-greeter"
+crate = "templar-greeter"
+package = "templaros-greeter"
 scope = "none"
 activation = "manual"
 depends_on = ["comp"]
@@ -196,10 +196,10 @@ summary = "login surface; started by greetd, outside this session"
 
 [[component]]
 name = "shell"
-crate = "lege-shell"
-package = "legeos-shell"
-stamp = "lege-shell"
-unit = "lege-shell.service"
+crate = "templar-shell"
+package = "templaros-shell"
+stamp = "templar-shell"
+unit = "templar-shell.service"
 scope = "user"
 activation = "restart"
 depends_on = ["sessiond", "filed", "comp"]
@@ -218,8 +218,8 @@ timer_exceptions = [
 
 [[component]]
 name = "settings"
-crate = "lege-settings"
-package = "legeos-settings"
+crate = "templar-settings"
+package = "templaros-settings"
 scope = "none"
 activation = "relaunch"
 depends_on = ["sessiond"]
@@ -231,8 +231,8 @@ summary = "Settings application"
 # seeds, which are `distro/seeds/selection.toml` and no longer name it.
 [[component]]
 name = "files"
-crate = "lege-files"
-package = "lege-files"
+crate = "templar-files"
+package = "templar-files"
 scope = "none"
 activation = "relaunch"
 depends_on = ["sessiond", "filed"]
@@ -240,10 +240,10 @@ summary = "standalone file manager, out of the default composition"
 
 [[component]]
 name = "portal"
-crate = "xdg-desktop-portal-lege"
-package = "legeos-portal"
-stamp = "xdg-desktop-portal-lege"
-unit = "xdg-desktop-portal-lege.service"
+crate = "xdg-desktop-portal-templar"
+package = "templaros-portal"
+stamp = "xdg-desktop-portal-templar"
+unit = "xdg-desktop-portal-templar.service"
 scope = "user"
 activation = "manual"
 depends_on = ["sessiond", "filed"]
@@ -260,9 +260,9 @@ timer_exceptions = []
 
 [[component]]
 name = "cli"
-crate = "lege"
-package = "legeos-cli"
+crate = "templar"
+package = "templaros-cli"
 scope = "none"
 activation = "immediate"
 depends_on = []
-summary = "lege — the command line, including doctor and this tool"
+summary = "templar — the command line, including doctor and this tool"

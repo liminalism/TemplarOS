@@ -1,5 +1,5 @@
 # From X1's daily-driver matrix (C6). BLOCKED IN CODE, not merely untested:
-# interfaces/dbus/org.legeos.Files.Volumes1.xml exposes InfoForPath, List and CheckReserve and no
+# interfaces/dbus/org.templaros.Files.Volumes1.xml exposes InfoForPath, List and CheckReserve and no
 # mount or eject verb, so there is currently no surface for a user to drive. Record this case as
 # not executed with that reason; do not record it as a hardware failure.
 id = "removable-storage"

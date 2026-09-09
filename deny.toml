@@ -9,10 +9,10 @@ ignore = []
 # Own code is AGPL-3.0-only (ADR-0013, amending ADR-0008). Dependencies must be permissive or
 # weak-copyleft.
 #
-# GPL-3.0-only is allowed for exactly one crate: `lege-comp` (ADR-0012). The compositor is written
+# GPL-3.0-only is allowed for exactly one crate: `templar-comp` (ADR-0012). The compositor is written
 # against Smithay (MIT) but reads `cosmic-comp` (GPL-3.0-only) as an implementation reference for
 # driver, XWayland and protocol quirks, so it carries that licence deliberately. GPLv3 §13 and
-# AGPLv3 §13 each permit combining the two, every part keeping its own licence, so `lege-comp`
+# AGPLv3 §13 each permit combining the two, every part keeping its own licence, so `templar-comp`
 # links the rest of the workspace unchanged; nothing links it back.
 allow = [
     "AGPL-3.0",
@@ -34,7 +34,7 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# The compositor render thread must never block: lege-window must stay free of async runtimes and D-Bus.
+# The compositor render thread must never block: templar-window must stay free of async runtimes and D-Bus.
 # (Enforced structurally by `cargo xtask deps-check`; listed here for documentation.)
 deny = []
 

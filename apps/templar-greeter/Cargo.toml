@@ -1,0 +1,73 @@
+[package]
+name = "templar-greeter"
+description = "TemplarOS greeter: a greetd JSON-IPC client with a pixelkit full-screen login surface (ADR-0010, ADR-0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lib]
+name = "templar_greeter"
+path = "src/lib.rs"
+
+# One binary. `main.rs`'s module doc explains why: on a bare VT there is no compositor yet for a
+# plain Wayland client to connect to, and `templar-comp` (not ours to change) has no "run one kiosk
+# client" mode — so this binary is its own tiny session orchestrator when it discovers no display
+# is already available, and the ordinary greeter UI process otherwise. No second binary, no
+# untested shell wrapper script.
+[[bin]]
+name = "templar-greeter"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# pixelkit: this project's toolkit (root Cargo.toml's `[workspace.dependencies]` comment). Used
+# the same way `shell/templar-shell/src/surface` uses it — see `src/surface/app.rs`'s module doc for
+# the one place this crate's usage differs from the shell's.
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true }
+pixelkit-shell = { workspace = true }
+
+# Pinned to the same "0.30" line pixelkit's own Cargo.toml and templar-shell's manifest use, so Cargo
+# resolves one compiled winit rather than two. Unlike templar-shell, this crate never reaches for
+# winit's raw window handle — the greeter is a plain, single Wayland client with no private
+# protocol to speak — so it needs no `wayland-client`/`wayland-backend`/`raw-window-handle` of its
+# own the way `shell/templar-shell/Cargo.toml` does.
+winit = "0.30"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Deterministic glyphs for headless widget-state tests (`src/screen.rs`), the same reasoning as
+# `compositor/templar-comp/Cargo.toml`'s identical dev-dependency: never depend on whatever fonts (if
+# any) the host running `cargo test` happens to have installed.
+pixelkit-text = { workspace = true, features = ["test-fonts"] }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-greeter"
+section = "x11"
+priority = "optional"
+# `depends` names `greetd` because this binary is meaningless without it (ADR-0010: greetd owns
+# PAM, this crate links none of its own) and `xwayland`/DRM/libinput libs resolve through
+# `$auto`/`templaros-comp`'s own dependency the same way `templaros-comp.install` already does — this
+# package's `templar-greeter-session` orchestrator role (`src/main.rs`) spawns `templar-comp` itself, so
+# it depends on that package directly rather than assuming it is merely "recommended" alongside.
+depends = "$auto, greetd, templaros-comp"
+assets = [
+    ["target/release/templar-greeter", "usr/bin/templar-greeter", "755"],
+    ["../../session/units/greetd/config.toml", "usr/share/templaros/greetd/config.toml", "644"],
+    ["../../distro/policy/sysusers.d/templaros-greeter.conf", "usr/lib/sysusers.d/templaros-greeter.conf", "644"],
+    ["../../distro/policy/tmpfiles.d/templaros-greeter.conf", "usr/lib/tmpfiles.d/templaros-greeter.conf", "644"],
+]

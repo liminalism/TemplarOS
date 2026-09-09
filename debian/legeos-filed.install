@@ -1,8 +1,0 @@
-target/release/lege-filed usr/libexec/
-target/preview-codecs/lege-preview-codecs usr/libexec/
-target/preview-codecs/licenses/JPXL-LICENSE-MIT usr/share/doc/legeos-filed/preview-codecs/
-target/preview-codecs/licenses/LEGE-PDF-LICENSE usr/share/doc/legeos-filed/preview-codecs/
-session/units/user/lege-filed.service usr/lib/systemd/user/
-interfaces/dbus/org.legeos.Files.Browse1.xml usr/share/dbus-1/interfaces/
-interfaces/dbus/org.legeos.Files.Previews1.xml usr/share/dbus-1/interfaces/
-interfaces/dbus/org.legeos.Files.Volumes1.xml usr/share/dbus-1/interfaces/

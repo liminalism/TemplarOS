@@ -1,0 +1,2 @@
+target/release/templar-files usr/bin/
+apps/templar-files/org.templaros.Files.desktop usr/share/applications/

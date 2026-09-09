@@ -1,4 +1,0 @@
-target/release/lege-comp usr/bin/
-session/units/user/lege-comp.service usr/lib/systemd/user/
-interfaces/wayland/lege-shell-v1.xml usr/share/legeos/protocols/
-interfaces/wayland/lege-recovery-v1.xml usr/share/legeos/protocols/

@@ -1,0 +1,6 @@
+target/release/templar-session usr/bin/
+session/units/wayland-sessions/templaros.desktop usr/share/wayland-sessions/
+session/units/user/templaros-session.target usr/lib/systemd/user/
+session/units/user/templar-shell.service usr/lib/systemd/user/
+distro/branding/os-release usr/share/templaros/branding/
+distro/branding/lsb-release usr/share/templaros/branding/

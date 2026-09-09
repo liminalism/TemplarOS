@@ -16,7 +16,7 @@
 # Two deliberate choices about *where*:
 #   * The backing image lives on a filesystem with room (/mnt/Samsung980_1TB has ~80 GB free;
 #     / has ~8 GB, so it is never the default).
-#   * The mount point lives under /tmp, because crates/lege-file-index/src/watch.rs's fixture
+#   * The mount point lives under /tmp, because crates/templar-file-index/src/watch.rs's fixture
 #     guard panics when a test binary watches anything outside std::env::temp_dir(). Mounting the
 #     fixture inside /tmp is what makes the harness runnable as an ordinary integration test
 #     rather than a bespoke binary; the bytes still come from the image on the big disk.
@@ -29,9 +29,9 @@
 
 set -euo pipefail
 
-IMAGE=${LEGE_BTRFS_IMAGE:-/mnt/Samsung980_1TB/legeos-btrfs-fixture.img}
-MOUNT=${LEGE_BTRFS_FIXTURE:-/tmp/legeos-btrfs-fixture}
-SIZE=${LEGE_BTRFS_SIZE:-24G}
+IMAGE=${TEMPLAR_BTRFS_IMAGE:-/mnt/Samsung980_1TB/templaros-btrfs-fixture.img}
+MOUNT=${TEMPLAR_BTRFS_FIXTURE:-/tmp/templaros-btrfs-fixture}
+SIZE=${TEMPLAR_BTRFS_SIZE:-24G}
 DRY_RUN=0
 ASSUME_YES=0
 COMMAND=""
@@ -48,15 +48,15 @@ commands
              and hand @home/@snapshots to the invoking user. Idempotent.
   probe      report which btrfs operations the fixture allows unprivileged (snapshot, seal
              read-only, send, delete). This is the fact that decides whether the delta backend
-             can live in the per-user daemon or must go through lege-hostd.
+             can live in the per-user daemon or must go through templar-hostd.
   status     show what exists right now.
   measure    build the Lane E harness as the invoking user, run it against the fixture, and
              report what holding a retained checkpoint costs on disk.
   teardown   unmount, detach the loop device, and (with --remove-image) delete the image.
 
 options
-  --image PATH   backing file           (default: /mnt/Samsung980_1TB/legeos-btrfs-fixture.img)
-  --mount PATH   mount point            (default: /tmp/legeos-btrfs-fixture)
+  --image PATH   backing file           (default: /mnt/Samsung980_1TB/templaros-btrfs-fixture.img)
+  --mount PATH   mount point            (default: /tmp/templaros-btrfs-fixture)
   --size N       image size for mkfs    (default: 24G)
   --remove-image delete the image during teardown
   --dry-run      print the plan and stop
@@ -162,7 +162,7 @@ validate_mount_path() {
   local tmp=${TMPDIR:-/tmp}
   if [[ $MOUNT != "$tmp"/* ]]; then
     say "warning: the mount point $MOUNT is not under $tmp."
-    say "         crates/lege-file-index/src/watch.rs's fixture guard panics on a watch root"
+    say "         crates/templar-file-index/src/watch.rs's fixture guard panics on a watch root"
     say "         outside the temporary directory, so the integration harness will refuse to run."
   fi
 }
@@ -235,7 +235,7 @@ cmd_setup() {
   if [[ $DRY_RUN -eq 0 ]] && blkid -o value -s TYPE "$dev" 2>/dev/null | grep -qx btrfs; then
     step "$dev already carries a btrfs filesystem; not reformatting"
   else
-    run mkfs.btrfs -L legeos-fixture -f "$dev"
+    run mkfs.btrfs -L templaros-fixture -f "$dev"
   fi
 
   run mkdir -p "$MOUNT"
@@ -261,10 +261,10 @@ cmd_setup() {
   run chown "$OWNER_UID:$OWNER_GID" "$MOUNT/index-db" "$MOUNT/streams"
 
   say ""
-  say "Fixture ready. The harness reads LEGE_BTRFS_FIXTURE:"
-  say "  export LEGE_BTRFS_FIXTURE=$MOUNT"
+  say "Fixture ready. The harness reads TEMPLAR_BTRFS_FIXTURE:"
+  say "  export TEMPLAR_BTRFS_FIXTURE=$MOUNT"
   say "Then, from $REPO_ROOT:"
-  say "  cargo test -p lege-file-index --test btrfs_delta_fixture -- --ignored --nocapture"
+  say "  cargo test -p templar-file-index --test btrfs_delta_fixture -- --ignored --nocapture"
   say "(run 'sudo $0 probe' first — btrfs send may still require CAP_SYS_ADMIN)"
 }
 
@@ -326,7 +326,7 @@ cmd_probe() {
   say ""
   if [[ $unpriv_send == yes ]]; then
     say "=> send works unprivileged here; the harness can run as $OWNER:"
-    say "   LEGE_BTRFS_FIXTURE=$MOUNT cargo test -p lege-file-index \\"
+    say "   TEMPLAR_BTRFS_FIXTURE=$MOUNT cargo test -p templar-file-index \\"
     say "       --test btrfs_delta_fixture -- --ignored --nocapture"
   else
     say "=> send needs CAP_SYS_ADMIN. Use 'sudo $0 measure', which builds the harness as"
@@ -343,22 +343,22 @@ cmd_measure() {
 
   say "Plan:"
   step "build the harness as $OWNER (cargo never runs as root, so target/ stays yours)"
-  step "run the built test binary as root, with LEGE_BTRFS_FIXTURE=$MOUNT"
+  step "run the built test binary as root, with TEMPLAR_BTRFS_FIXTURE=$MOUNT"
   step "write the report to $REPO_ROOT/docs/measurements/"
   confirm || { say "aborted."; exit 0; }
 
   # sudo resets PATH to its secure_path, which does not include ~/.cargo/bin, so `cargo` must be
   # resolved through the owner's own login shell rather than assumed to be on this PATH.
   local cargo json binary
-  cargo=${LEGE_CARGO:-$(sudo -u "$OWNER" bash -lc 'command -v cargo' 2>/dev/null)}
+  cargo=${TEMPLAR_CARGO:-$(sudo -u "$OWNER" bash -lc 'command -v cargo' 2>/dev/null)}
   if [[ -z $cargo || ! -x $cargo ]]; then
     echo "error: could not find cargo as $OWNER." >&2
-    echo "       set LEGE_CARGO=/path/to/cargo, or check that $OWNER's shell puts it on PATH." >&2
+    echo "       set TEMPLAR_CARGO=/path/to/cargo, or check that $OWNER's shell puts it on PATH." >&2
     exit 1
   fi
   step "cargo: $cargo"
   json=$(sudo -u "$OWNER" env -C "$REPO_ROOT" \
-    "$cargo" test -p lege-file-index --test btrfs_delta_fixture --no-run --message-format=json)
+    "$cargo" test -p templar-file-index --test btrfs_delta_fixture --no-run --message-format=json)
   binary=$(printf '%s' "$json" | python3 -c '
 import json, sys
 for line in sys.stdin:
@@ -380,9 +380,9 @@ for line in sys.stdin:
   fi
   step "harness: $binary"
 
-  LEGE_BTRFS_FIXTURE="$MOUNT" \
-  LEGE_BTRFS_REPORT_DIR="$REPO_ROOT/docs/measurements" \
-  LEGE_BTRFS_REPORT_OWNER="$OWNER_UID:$OWNER_GID" \
+  TEMPLAR_BTRFS_FIXTURE="$MOUNT" \
+  TEMPLAR_BTRFS_REPORT_DIR="$REPO_ROOT/docs/measurements" \
+  TEMPLAR_BTRFS_REPORT_OWNER="$OWNER_UID:$OWNER_GID" \
     "$binary" --ignored --nocapture --test-threads=1
 
   say ""

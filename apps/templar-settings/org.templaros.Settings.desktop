@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Configure TemplarOS
+Exec=templar-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
+StartupNotify=true
+StartupWMClass=templar-settings

@@ -2,9 +2,9 @@
 
 *Planning document, 2026-09-03; revised the same day after the user's reading (§2 rules 6–7,
 §2.1, §4.2, §4.6, §6). The authoritative form is the AKR ledger:
-`@legeos.decision.window-groups-are-explicit-and-compositor-owned`,
-`@legeos.work.window-groups`, `@legeos.decision.the-home-field-is-a-launcher-not-a-search`
-and `@legeos.work.application-integration-interim`. This file is the readable version.*
+`@templaros.decision.window-groups-are-explicit-and-compositor-owned`,
+`@templaros.work.window-groups`, `@templaros.decision.the-home-field-is-a-launcher-not-a-search`
+and `@templaros.work.application-integration-interim`. This file is the readable version.*
 
 ## 1. What the fourth hands-on run found
 
@@ -12,14 +12,14 @@ The user ran the third build set in place and reported, in order of daily cost:
 
 | # | Report | Root cause | Where it is handled |
 |---|--------|-----------|---------------------|
-| 1 | `sudo lege dev deploy` failed: hostd would not restart, and every later component was "not attempted" | hostd has crash-looped since 2026-09-01 on `EACCES` connecting to the system bus socket; the deploy tool stops at the first failed activation even though every package is installed | Opus agent A: root cause hostd; make activation continue past a failure |
-| 2 | Firefox and Chromium: "no Wayland display, access denied" | snapd's AppArmor wayland rule allows only `/run/user/N/wayland-[0-9]*`; the compositor listens on `legeos-0` | Agent A: public socket named `wayland-N` |
+| 1 | `sudo templar dev deploy` failed: hostd would not restart, and every later component was "not attempted" | hostd has crash-looped since 2026-09-01 on `EACCES` connecting to the system bus socket; the deploy tool stops at the first failed activation even though every package is installed | Opus agent A: root cause hostd; make activation continue past a failure |
+| 2 | Firefox and Chromium: "no Wayland display, access denied" | snapd's AppArmor wayland rule allows only `/run/user/N/wayland-[0-9]*`; the compositor listens on `templaros-0` | Agent A: public socket named `wayland-N` |
 | 3 | Titles bleed through a translucent window at full opacity; windows "fight for focus" | every band and grip is rendered as one layer above every window (`backend/udev.rs`); focus behaviour under diagnosis | Opus agent B: interleave chrome per window in stacking order; diagnose focus |
 | 4 | No screen timeout | Power1 records an idle policy and nothing enforces it; there is no idle source | Agent B: compositor idle timer, outputs off, Settings control |
 | 5 | The search bar finds files for "firefox", never the browser; apps unreachable | sessiond imported desktop entries from four hard-coded directories and never `/var/lib/snapd/desktop/applications`, so the snap browsers were not in the registry; the bar federated files, projects and actions with applications | Fixed this session: `d391fc1` (registry scans every XDG data root and the snap directory), `dfa1fda` (the bar is an application launcher, labelled Apps; file search lives in the Files object) |
 | 6 | Kitty as the default terminal, integrated | no terminal role exists in Providers1; the manifest only reserves no chord | §4.3 |
 | 7 | The file manager has no right-click menu and needs to earn its keep | the Files object has verbs on a toolbar but no secondary-click route and no multi-file workflow | §4.4 |
-| 8 | fsearch for real search | lege-filed indexes roots for scoped search; fsearch 0.2.3 is installed on this host | §4.2 |
+| 8 | fsearch for real search | templar-filed indexes roots for scoped search; fsearch 0.2.3 is installed on this host | §4.2 |
 | 9 | Window groups | new capability | §2–3 |
 
 Writing text was reported snappier than COSMIC. Nothing in this plan touches the input path.
@@ -34,13 +34,13 @@ Seven rules, each with the reason it is a rule:
 
 1. **Groups are explicit.** A group exists only because the user made it, by dropping one
    window on another or by a chord. Nothing is grouped by proximity, by application, or by
-   time. `@legeos.decision.home-field-stable-bounded-semantic-grammar` forbids inferred relations ("do not infer hidden meaning
+   time. `@templaros.decision.home-field-stable-bounded-semantic-grammar` forbids inferred relations ("do not infer hidden meaning
    from proximity") and the existing `Super+Left/Right` spatial step deliberately stores
    nothing; groups are the stored, visible form that rule asks for.
-2. **The compositor owns groups, through `lege-window`.** `Alt+Tab` and `Super+Tab` must keep
+2. **The compositor owns groups, through `templar-window`.** `Alt+Tab` and `Super+Tab` must keep
    working with the shell dead (every reserved chord does), and the Home tile is a
    representation of the group, not its source of truth. So `WindowService` holds membership,
-   and the shell learns it over `lege_shell_v1`, exactly as it learns shelving today.
+   and the shell learns it over `templar_shell_v1`, exactly as it learns shelving today.
 3. **A group is one thing to stack.** Activating any member raises every member together,
    keeping their relative order, the activated one on top. This is what makes a group feel
    like one window set rather than a label; it is also the rule that keeps `is_recoverable`
@@ -62,7 +62,7 @@ Seven rules, each with the reason it is a rule:
    members' rectangles, two logical pixels in the group's accent colour, and a stripe of the
    same colour in each member's band; the Home tile takes the same colour for its edge. The
    colour is assigned from a short palette by the group's id and lives with the group in
-   `lege-window`, so the workspace, the switcher and Home can never disagree about it. The
+   `templar-window`, so the workspace, the switcher and Home can never disagree about it. The
    outline is compositor chrome, drawn per window in stacking order like the bands, so it
    survives the shell dying.
 
@@ -90,7 +90,7 @@ window. Their actions are renamed from `window.group-next/previous` to
 
 Five work items, in dependency order. Estimates are for one focused agent on this codebase.
 
-### WG1 — the model in `lege-window` (pure, property-tested)
+### WG1 — the model in `templar-window` (pure, property-tested)
 
 - `GroupId(u64)`; `WindowRecord.group: Option<GroupId>`;
   `WindowService.groups: BTreeMap<GroupId, GroupRecord { name: Option<String>, accent: u32,
@@ -137,15 +137,15 @@ Five work items, in dependency order. Estimates are for one focused agent on thi
 - `COMPOSITOR.md`: rows for group stacking, group chords, band drop, settings-driven chord.
 - No settings channel: the chords are fixed (§2.1). About 2 days.
 
-### WG3 — `lege_shell_v1`: toplevel version 3, manager version 5
+### WG3 — `templar_shell_v1`: toplevel version 3, manager version 5
 
-Declared in `interfaces/wayland/lege-shell-v1.xml` at `9d8e3f6`, additions only:
+Declared in `interfaces/wayland/templar-shell-v1.xml` at `9d8e3f6`, additions only:
 
-- `lege_shell_toplevel_v1.group` event since 3: `group_id uint` (0 = none), `name string`,
+- `templar_shell_toplevel_v1.group` event since 3: `group_id uint` (0 = none), `name string`,
   `accent uint` (0x00RRGGBB).
-- `lege_shell_toplevel_v1.join_group(other)`, `leave_group()`, `activate_group(token)`,
+- `templar_shell_toplevel_v1.join_group(other)`, `leave_group()`, `activate_group(token)`,
   `shelve_group()`, `unshelve_group()`, `set_group_name(string)` since 3.
-- `lege_shell_manager_v1.set_terminal(app_id)` request, `terminal_requested` and
+- `templar_shell_manager_v1.set_terminal(app_id)` request, `terminal_requested` and
   `group_cycle_binding` events since 5 (§4.6).
 - Both ends still speak version 4; raising `SHELL_PROTOCOL_VERSION` on each side is part of
   the implementation, and `ShellToplevel` gains `group: Option<GroupInfo>`. About half a day.
@@ -177,10 +177,10 @@ on the work record.
 
 ### 4.1 Hotfix path (in progress, agent A)
 
-hostd root cause and fix; `lege dev deploy` continues activation past a failed unit and
+hostd root cause and fix; `templar dev deploy` continues activation past a failed unit and
 reports every outcome; the shell is restarted even when a system unit fails. Until it lands:
 after a failed deploy the packages are installed, and `systemctl --user restart
-lege-shell.service` activates the shell by hand.
+templar-shell.service` activates the shell by hand.
 
 ### 4.2 Search: the Home field is a launcher, and fsearch is the search
 
@@ -193,7 +193,7 @@ the adaptive Files surface half stands.
 Real search gets a surface of its own, not a dropdown. The Files object's search field, once
 it has a query, expands into a **search panel**: a partial-screen sheet (the Large rung; about
 two thirds of the field's width and height, centred) listing directories then files from
-lege-filed's scoped index with the path, size and modification time per row, keyboard
+templar-filed's scoped index with the path, size and modification time per row, keyboard
 navigable, `Escape` back to the object. Its last row is always "Search everywhere with
 FSearch", and `Super+F` from anywhere opens the panel over the person's home root. FSearch
 itself is the Full rung: an application window, launched through the provider role below.
@@ -205,15 +205,15 @@ fsearch integration (interim):
 - The Files object's search field gets a last row "Search everywhere with FSearch", and the
   context menu a "Search here…" verb, both launching the provider with `--search <query>`
   through the launch chain (identity from the cgroup as for any application).
-- FSearch is a **launched client and nothing more**: LegeOS never reads, feeds or syncs its
+- FSearch is a **launched client and nothing more**: TemplarOS never reads, feeds or syncs its
   database, and does not share roots with it. The "two indexes for now, point fsearch's
   include list at `Files.Search1.Roots` later" step this section used to carry is superseded
   by the shared incremental index planned separately
-  (`docs/planning/shared-incremental-file-index.md`), which has FSearch consume lege-filed's
+  (`docs/planning/shared-incremental-file-index.md`), which has FSearch consume templar-filed's
   one index rather than keeping a second.
 - Not planned: reading fsearch's database format, or replacing `Files.Search1`.
 - **Superseded later on 2026-09-03:** do not implement the interim two-database arrangement. The
-  adopted direction is one persistent, incrementally maintained index owned by `lege-filed`, with
+  adopted direction is one persistent, incrementally maintained index owned by `templar-filed`, with
   FSearch and Silvaview-rs as clients. The investigation and delivery plan are in
   [`shared-incremental-file-index.md`](shared-incremental-file-index.md). `Files.Search1` remains as
   a compatibility facade while the new client-neutral index API lands; FSearch's private database
@@ -236,8 +236,8 @@ opens it on its own index rather than pretending to narrow it.
   two answers to one question, and one more key taken from every application.
 - Desktop entries with `Terminal=true` launch inside the selected terminal (appd launcher
   wraps `Exec` with the terminal's `-e`/`--` form declared per provider).
-- Ship `/etc/xdg/kitty/kitty.conf` from `legeos-shell` (kitty reads `XDG_CONFIG_DIRS`): the
-  LegeOS palette, `background_opacity` as the user has it, `remember_window_size no` so the
+- Ship `/etc/xdg/kitty/kitty.conf` from `templaros-shell` (kitty reads `XDG_CONFIG_DIRS`): the
+  TemplarOS palette, `background_opacity` as the user has it, `remember_window_size no` so the
   compositor's placement wins, `wayland_titlebar_color system`. The user's own
   `~/.config/kitty` overrides all of it.
 - Integration beyond that (a kitty remote-control socket for "reuse the terminal in this

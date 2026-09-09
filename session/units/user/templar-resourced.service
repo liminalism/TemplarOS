@@ -1,0 +1,40 @@
+[Unit]
+Description=TemplarOS resource governor (cgroup v2 + PSI, observe-only until enabled)
+Documentation=https://templaros.org/docs/resources
+PartOf=templaros-session.target
+After=templar-sessiond.service
+
+[Service]
+# Deliberately *not* Type=dbus: the governor's whole point is that it keeps deciding when
+# everything else is stalled, including the bus. It claims org.templaros.Resources for enrichment
+# and observation, but it must start, tick and contain a runaway application without one
+# (ADR-0002), so its readiness must not be defined as "the name appeared".
+Type=simple
+ExecStart=/usr/libexec/templar-resourced
+Restart=always
+RestartSec=200ms
+Slice=session.slice
+# The governor must keep ticking while everything else thrashes (ADR-0002).
+MemoryLow=96M
+CPUWeight=1000
+IOWeight=1000
+OOMScoreAdjust=-1000
+# systemd-oomd must look elsewhere first (ADR-0014): even where it is armed on a slice this unit
+# is visible in — a distribution default, a future slice reorganisation, someone's own drop-in —
+# this is the unit a session cannot lose.
+ManagedOOMPreference=avoid
+LimitMEMLOCK=96M
+Nice=-10
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Read-only, not hidden: resourced reads $XDG_CONFIG_HOME/templaros/resourced.toml (calibrated
+# thresholds) and needs the rest of $HOME visible for that lookup to work at all. StateDirectory
+# below still grants read-write access to its one write target regardless of this setting.
+ProtectHome=read-only
+# $XDG_STATE_HOME/templaros: the containment-stage setting (stage.toml) and the bounded trace ring
+# (traces.jsonl) — see docs/protocols and crate docs for `templar-resourced`. Shared with
+# templar-sessiond/templar-filed's StateDirectory=templaros; each daemon only touches its own files there.
+StateDirectory=templaros
+# cgroup control files of the user's own units (including compositor/shell/audio protection
+# writes under session.slice) are writable through the delegated subtree; ProtectSystem=strict
+# does not restrict /sys/fs/cgroup (that would be ProtectControlGroups=, deliberately unset).

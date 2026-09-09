@@ -1,0 +1,4 @@
+target/release/templar-comp usr/bin/
+session/units/user/templar-comp.service usr/lib/systemd/user/
+interfaces/wayland/templar-shell-v1.xml usr/share/templaros/protocols/
+interfaces/wayland/templar-recovery-v1.xml usr/share/templaros/protocols/

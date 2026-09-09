@@ -6,7 +6,7 @@
 
 ## Decision
 Stage 1: `cargo deb -p <bin>` (`[package.metadata.deb]` in every binary crate) into a local aptly repo.
-Stage 2: one source package `legeos` with `debian/` at the repo root, `vendor/` in the orig tarball,
-`dh_auto_build` → `cargo build --release --frozen --offline --workspace`; metapackages in `legeos-meta`;
-`legeos-archive-keyring` ships the key, deb822 `legeos.sources` and pins rejecting third-party driver repos.
+Stage 2: one source package `templaros` with `debian/` at the repo root, `vendor/` in the orig tarball,
+`dh_auto_build` → `cargo build --release --frozen --offline --workspace`; metapackages in `templaros-meta`;
+`templaros-archive-keyring` ships the key, deb822 `templaros.sources` and pins rejecting third-party driver repos.
 dh-cargo is not used (needs Debian-packaged crates).

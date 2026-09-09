@@ -900,7 +900,7 @@ kind = "required"
 image = true
 stage = "seeds"
 [[layer.package]]
-name = "legeos-comp"
+name = "templaros-comp"
 reason = "the compositor"
 role = "compositor"
 [[layer.package]]
@@ -921,13 +921,13 @@ name = "systemd"
 reason = "init"
 
 [[metapackage]]
-package = "legeos-session-full"
-directory = "legeos-session-meta"
+package = "templaros-session-full"
+directory = "templaros-session-meta"
 architecture = "all"
 layers = ["session"]
 conflicts = ["apport"]
 policy_conflicts = true
-description = "LegeOS session only"
+description = "TemplarOS session only"
 description_body = "The session and its daemons."
 "#;
 
@@ -954,13 +954,13 @@ description_body = "The session and its daemons."
         let base = by_path["distro/image/mkosi.conf.d/10-packages-base.conf"];
         let seeds = by_path["distro/image/mkosi.conf.d/50-seeds.conf"];
         assert!(base.starts_with(BANNER) && seeds.starts_with(BANNER));
-        assert!(base.contains("        systemd\n") && !base.contains("legeos-comp"));
-        assert!(seeds.contains("        legeos-comp\n") && !seeds.contains("systemd"));
+        assert!(base.contains("        systemd\n") && !base.contains("templaros-comp"));
+        assert!(seeds.contains("        templaros-comp\n") && !seeds.contains("systemd"));
         assert!(!seeds.contains("firefox"), "{seeds}");
         assert_eq!(
             by_path["distro/seeds/session.seed"],
             format!(
-                "{BANNER}\n# session — the session\nlegeos-comp\n# flatpak: org.mozilla.firefox\n"
+                "{BANNER}\n# session — the session\ntemplaros-comp\n# flatpak: org.mozilla.firefox\n"
             )
         );
     }
@@ -991,11 +991,11 @@ description_body = "The session and its daemons."
                 .filter(|value| !value.is_empty())
                 .collect()
         };
-        assert_eq!(field("Depends"), ["legeos-comp", "${misc:Depends}"]);
+        assert_eq!(field("Depends"), ["templaros-comp", "${misc:Depends}"]);
         // The declaration's own conflicts and the policy's, in that order, and nothing invented.
         assert_eq!(field("Conflicts"), ["apport", "snapd"]);
-        assert!(control.contains("Package: legeos-session-full\n"));
-        assert!(control.contains("Description: LegeOS session only\n"));
+        assert!(control.contains("Package: templaros-session-full\n"));
+        assert!(control.contains("Description: TemplarOS session only\n"));
         assert!(control.contains("\n The session and its daemons.\n"));
         // A Flatpak ref is not a Debian dependency.
         assert!(!control.contains("firefox"));

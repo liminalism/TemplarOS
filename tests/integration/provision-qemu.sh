@@ -19,10 +19,10 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 provision="$root/installer/provision.sh"
 layout="$root/distro/deploy/layout.toml"
 
-work="$(mktemp -d /tmp/legeos-provision-qemu.XXXXXX)"
+work="$(mktemp -d /tmp/templaros-provision-qemu.XXXXXX)"
 cleanup() {
     case "$work" in
-        /tmp/legeos-provision-qemu.*) rm -rf -- "$work" ;;
+        /tmp/templaros-provision-qemu.*) rm -rf -- "$work" ;;
         *) echo "refusing to remove unexpected work directory: $work" >&2 ;;
     esac
 }
@@ -53,19 +53,19 @@ done
 # declaration cannot quietly pass this test.
 grep -q '@deployments' "$plan" || fail "the plan does not create @deployments"
 
-grep -q 'legeos.deployment=install-' "$plan" \
-    || fail "the seeded deployment's command line carries no legeos.deployment= id"
+grep -q 'templaros.deployment=install-' "$plan" \
+    || fail "the seeded deployment's command line carries no templaros.deployment= id"
 grep -q "GRUB_DEFAULT=saved" "$plan" || fail "the plan does not set GRUB_DEFAULT=saved"
-grep -q "09_legeos" "$plan" || fail "the plan does not install the /etc/grub.d stub"
+grep -q "09_templaros" "$plan" || fail "the plan does not install the /etc/grub.d stub"
 grep -q "shim-signed grub-efi-amd64-signed" "$plan" \
     || fail "the plan does not install the Canonical-signed shim and GRUB (ADR-0004)"
 grep -q "repo verify" "$plan" \
     || fail "the plan installs from the local archive without verifying the set"
-grep -q "cp -a .*devrepo /.*var/lib/legeos/devrepo" "$plan" \
+grep -q "cp -a .*devrepo /.*var/lib/templaros/devrepo" "$plan" \
     || fail "the plan does not hand the archive over to the target"
 grep -q "grub-install .*--no-nvram" "$plan" \
     || fail "grub-install would write this host's firmware variables from inside the chroot"
-for package in legeos-archive-keyring legeos-desktop legeos-kernel; do
+for package in templaros-archive-keyring templaros-desktop templaros-kernel; do
     grep -q "$package" "$plan" || fail "the plan never installs $package"
 done
 # No fixed password, no autologin, root locked: the three things the dev image has and a
@@ -98,7 +98,7 @@ if command -v sgdisk >/dev/null 2>&1; then
     for kept in 1 2 3; do
         grep -q "partition $kept (sectors" "$free_plan" || fail "the plan does not name kept partition $kept"
     done
-    grep -q 'mkfs.btrfs -f -L legeos-root .*p5' "$free_plan" || fail "the root filesystem is not made on partition 5"
+    grep -q 'mkfs.btrfs -f -L templaros-root .*p5' "$free_plan" || fail "the root filesystem is not made on partition 5"
     grep -q '\$ efibootmgr' "$free_plan" && fail "a file target must not touch the firmware"
     # A hole between partitions is not a tail: fill the tail and leave a gap in the middle.
     holed="$work/holed.img"
@@ -143,11 +143,11 @@ echo "provision-qemu: --apply refuses to start without privileges"
 
 # Provisioning an image for real needs root (loop devices, mkfs, mount, chroot), which this script
 # will not take. So step 3 boots an image somebody else built — `just image`, or one passed in.
-bootable="${LEGE_PROVISION_IMAGE:-}"
+bootable="${TEMPLAR_PROVISION_IMAGE:-}"
 if [ -z "$bootable" ]; then
     bootable="$(find "$root/distro/image/mkosi.output" -maxdepth 1 -name '*.raw' -print -quit 2>/dev/null || true)"
 fi
-firmware="${LEGE_OVMF:-}"
+firmware="${TEMPLAR_OVMF:-}"
 if [ -z "$firmware" ]; then
     for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
                      /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/qemu/OVMF.fd; do
@@ -158,9 +158,9 @@ fi
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     not_executed "qemu-system-x86_64 is not installed"
 elif [ -z "$bootable" ]; then
-    not_executed "no image to boot (build one with 'just image', or set LEGE_PROVISION_IMAGE)"
+    not_executed "no image to boot (build one with 'just image', or set TEMPLAR_PROVISION_IMAGE)"
 elif [ -z "$firmware" ]; then
-    not_executed "no OVMF firmware found (set LEGE_OVMF); a BIOS boot is not the LegeOS boot path"
+    not_executed "no OVMF firmware found (set TEMPLAR_OVMF); a BIOS boot is not the TemplarOS boot path"
 else
     echo "provision-qemu: booting $bootable under QEMU (read-only snapshot, 120s)"
     serial="$work/serial.log"
@@ -173,12 +173,12 @@ else
     if [ ! -s "$serial" ]; then
         fail "QEMU produced no serial output at all from $bootable"
     fi
-    if grep -qi 'legeos.deployment=' "$serial"; then
+    if grep -qi 'templaros.deployment=' "$serial"; then
         echo "provision-qemu: the booted kernel command line carries a deployment id"
     else
-        # The mkosi image boots systemd-boot with no LegeOS deployment staged, so its first boot
+        # The mkosi image boots systemd-boot with no TemplarOS deployment staged, so its first boot
         # legitimately has no id on the command line. Say so rather than calling it a pass.
-        not_executed "the image booted but staged no LegeOS deployment, so no legeos.deployment= id was on its command line"
+        not_executed "the image booted but staged no TemplarOS deployment, so no templaros.deployment= id was on its command line"
     fi
     echo "provision-qemu: QEMU boot completed (serial log kept at $serial until cleanup)"
 fi

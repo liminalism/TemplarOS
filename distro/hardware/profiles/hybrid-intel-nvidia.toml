@@ -6,10 +6,10 @@ nvidia_flavour = "open"
 gpu_modes = ["hybrid", "integrated", "discrete"]
 default_gpu_mode = "hybrid"
 
-# See ../test-matrix.md; run with `lege doctor --hardware`. Must stay above the [[gpus]] tables
+# See ../test-matrix.md; run with `templar doctor --hardware`. Must stay above the [[gpus]] tables
 # below: TOML scopes bare `key = value` lines to the most recent table header, so a `test_matrix`
 # placed after `[[gpus]]` silently becomes a field of the *last* gpu entry instead of a top-level
-# field — exactly the bug `services/lege-hostd/tests/hardware_matrix.rs` now catches.
+# field — exactly the bug `services/templar-hostd/tests/hardware_matrix.rs` now catches.
 test_matrix = [
   "intel-desktop-nvidia-offload",
   "nvidia-desktop",

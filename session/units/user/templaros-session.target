@@ -1,0 +1,13 @@
+[Unit]
+Description=TemplarOS graphical session
+Documentation=https://templaros.org/docs/session
+Requires=basic.target templar-comp.service
+# If the compositor fails during startup or exits later, the graphical session is over.  This
+# makes `systemctl start --wait templaros-session.target` return to the display manager instead of
+# leaving a greeter freeze or a black VT behind.
+BindsTo=templar-comp.service
+Wants=templar-sessiond.service templar-resourced.service templar-filed.service templar-shell.service
+# The generic XDG autostart runner is masked by templar-session; sessiond arbitrates autostart
+# (one selected provider per exclusive role) and launches approved entries with identity + cgroups.
+Conflicts=xdg-desktop-autostart.target
+After=basic.target templar-comp.service

@@ -4,7 +4,7 @@
 id = "hardware-video-decode"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
-  "vainfo (also run automatically by lege doctor --hardware's vaapi probe)",
+  "vainfo (also run automatically by templar doctor --hardware's vaapi probe)",
   "play a H.264 and a HEVC file in the declared media player, windowed and fullscreen",
   "watch the decode engine while it plays: intel_gpu_top for the iGPU, nvidia-smi -q -d UTILIZATION for the dGPU",
 ]

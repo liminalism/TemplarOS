@@ -32,7 +32,7 @@ version = 1
 # crash handlers Ubuntu ships are not ours to run.
 conflicts = ["snapd", "apport", "whoopsie", "ubuntu-report"]
 # The image's recommends posture. The deployment path is already --no-install-recommends
-# (cli/lege/src/dev/install.rs:41-49); the image is not, and turning it off is a decision, not a
+# (cli/templar/src/dev/install.rs:41-49); the image is not, and turning it off is a decision, not a
 # generation detail. `cargo xtask seeds closure` reports what "off" would cost before anyone takes it.
 recommends = "on"
 
@@ -41,7 +41,7 @@ recommends = "on"
 # ---------------------------------------------------------------------------------------------
 [[layer]]
 id = "bootstrap"
-title = "bootable Ubuntu base, apt and the LegeOS archive"
+title = "bootable Ubuntu base, apt and the TemplarOS archive"
 kind = "required"
 image = true
 stage = "base"
@@ -52,7 +52,7 @@ reason = "Ubuntu's own definition of a working base system; the floor everything
 
 [[layer.package]]
 name = "systemd"
-reason = "init, the unit model every LegeOS service is written against"
+reason = "init, the unit model every TemplarOS service is written against"
 
 [[layer.package]]
 name = "systemd-boot"
@@ -68,11 +68,11 @@ reason = "clock correctness: apt signature validity and build-set ids both depen
 
 [[layer.package]]
 name = "udev"
-reason = "device enumeration for lege-hwdetect and the compositor's DRM backend"
+reason = "device enumeration for templar-hwdetect and the compositor's DRM backend"
 
 [[layer.package]]
 name = "kmod"
-reason = "module loading for the kernel/LRM set legeos-kernel version-locks"
+reason = "module loading for the kernel/LRM set templaros-kernel version-locks"
 
 [[layer.package]]
 name = "btrfs-progs"
@@ -100,7 +100,7 @@ reason = "HTTPS to the archive and to snapshot.ubuntu.com"
 
 [[layer.package]]
 name = "gnupg"
-reason = "verifying archive signatures, including the LegeOS archive key"
+reason = "verifying archive signatures, including the TemplarOS archive key"
 
 [[layer.package]]
 name = "iproute2"
@@ -124,14 +124,14 @@ reason = "editing a unit or a cmdline in a recovery shell without a desktop"
 
 [[layer.package]]
 name = "linux-generic"
-reason = "Ubuntu's GA kernel; the image must boot before the LegeOS archive is present"
+reason = "Ubuntu's GA kernel; the image must boot before the TemplarOS archive is present"
 
 [[layer.package]]
-name = "legeos-archive-keyring"
-reason = "the LegeOS archive key, sources and pins; without it no LegeOS package installs"
+name = "templaros-archive-keyring"
+reason = "the TemplarOS archive key, sources and pins; without it no TemplarOS package installs"
 
 [[layer.package]]
-name = "legeos-kernel"
+name = "templaros-kernel"
 reason = "version-locks kernel, LRM modules and firmware into one tested set (ADR-0007)"
 
 # ---------------------------------------------------------------------------------------------
@@ -175,11 +175,11 @@ reason = "Intel thermal management; a Recommends of linux-image-generic, and the
 
 [[layer.package]]
 name = "upower"
-reason = "battery and lid state for the shell and lege-sessiond's power policy"
+reason = "battery and lid state for the shell and templar-sessiond's power policy"
 
 [[layer.package]]
 name = "power-profiles-daemon"
-reason = "the profile switch lege-sessiond drives; the alternative is per-vendor sysfs guesswork"
+reason = "the profile switch templar-sessiond drives; the alternative is per-vendor sysfs guesswork"
 
 [[layer.package]]
 name = "fwupd"
@@ -209,7 +209,7 @@ reason = "GL for Xwayland clients and toolkit fallbacks"
 
 [[layer.package]]
 name = "vulkan-tools"
-reason = "vulkaninfo and vkcube are how `lege doctor` and the hardware probes name the actual output device"
+reason = "vulkaninfo and vkcube are how `templar doctor` and the hardware probes name the actual output device"
 
 [[layer.package]]
 name = "libvulkan1"
@@ -237,7 +237,7 @@ reason = "the VA-API driver set, so decode works on whichever GPU answered"
 
 [[layer.package]]
 name = "intel-media-va-driver"
-reason = "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml does not enable — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a LegeOS number"
+reason = "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml does not enable — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a TemplarOS number"
 
 [[layer.package]]
 name = "vainfo"
@@ -252,72 +252,72 @@ name = "mesa-utils-bin"
 reason = "eglinfo — the same question for EGL, which is the path the compositor takes"
 
 # ---------------------------------------------------------------------------------------------
-# session — the LegeOS session itself. Everything here is built from this repository or its forks.
+# session — the TemplarOS session itself. Everything here is built from this repository or its forks.
 # ---------------------------------------------------------------------------------------------
 [[layer]]
 id = "session"
-title = "the LegeOS session"
+title = "the TemplarOS session"
 kind = "required"
 image = true
 stage = "seeds"
 
 [[layer.package]]
-name = "legeos-session"
+name = "templaros-session"
 reason = "the session unit graph: what starts, in what order, under what target"
 
 [[layer.package]]
-name = "legeos-sessiond"
+name = "templaros-sessiond"
 reason = "the one policy daemon — identity, launch, associations, providers, settings (ADR-0001)"
 
 [[layer.package]]
-name = "legeos-resourced"
+name = "templaros-resourced"
 reason = "the resource governor, deliberately a separate crash unit (ADR-0002)"
 
 [[layer.package]]
-name = "legeos-filed"
+name = "templaros-filed"
 reason = "file operations and the shared file index, off the policy daemon's loop"
 
 [[layer.package]]
-name = "legeos-hostd"
+name = "templaros-hostd"
 reason = "the single privileged system-bus surface: updates, deployments, drivers (ADR-0003)"
 
 [[layer.package]]
-name = "legeos-boot-health"
+name = "templaros-boot-health"
 reason = "marks a deployment good or rolls it back; the reason a bad set is survivable"
 
 [[layer.package]]
-name = "legeos-shell"
+name = "templaros-shell"
 reason = "the Home Field and every decorative surface; restartable in half a second"
 role = "shell"
 
 [[layer.package]]
-name = "legeos-nm-tray"
-reason = "the network control the Home information row launches; LegeOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)"
+name = "templaros-nm-tray"
+reason = "the network control the Home information row launches; TemplarOS ships no system tray, so an applet that only draws an icon is useless here (distro/forks/manifest.toml)"
 role = "network-control"
 recommends = true   # the fork pin cannot be built yet (distro/forks/manifest.toml note); a set must still install
 
 [[layer.package]]
-name = "legeos-comp"
+name = "templaros-comp"
 reason = "the compositor; nothing else provides a Wayland session (COMPOSITOR.md)"
 role = "compositor"
 
 [[layer.package]]
-name = "legeos-portal"
-reason = "the LegeOS portal backend: FileChooser, AppChooser, Background, Settings"
+name = "templaros-portal"
+reason = "the TemplarOS portal backend: FileChooser, AppChooser, Background, Settings"
 role = "portal-backend"
 
 [[layer.package]]
-name = "legeos-cli"
-reason = "`lege` — doctor, dev, update; the CLI parity half of every declared action"
+name = "templaros-cli"
+reason = "`templar` — doctor, dev, update; the CLI parity half of every declared action"
 
 [[layer.package]]
-name = "legeos-greeter"
+name = "templaros-greeter"
 reason = "the login surface; a session with no greeter is a session nobody can reach"
 role = "greeter"
 
 [[layer.package]]
 name = "greetd"
-reason = "the daemon legeos-greeter is a client of; it owns the login transaction"
+reason = "the daemon templaros-greeter is a client of; it owns the login transaction"
 
 [[layer.package]]
 name = "xdg-desktop-portal"
@@ -325,7 +325,7 @@ reason = "the portal frontend every sandboxed app talks to; backends are chosen 
 
 [[layer.package]]
 name = "xdg-desktop-portal-gtk"
-reason = "Print, Email, Notification and DynamicLauncher, which the LegeOS backend does not implement and which otherwise fail outright for Flatpak apps"
+reason = "Print, Email, Notification and DynamicLauncher, which the TemplarOS backend does not implement and which otherwise fail outright for Flatpak apps"
 
 [[layer.package]]
 name = "xwayland"
@@ -333,7 +333,7 @@ reason = "X11 clients still exist and a developer machine meets them weekly"
 
 [[layer.package]]
 name = "polkitd"
-reason = "authorisation for lege-hostd's privileged actions; the alternative is a setuid habit"
+reason = "authorisation for templar-hostd's privileged actions; the alternative is a setuid habit"
 
 [[layer.package]]
 name = "dbus-broker"
@@ -350,12 +350,12 @@ image = true
 stage = "seeds"
 
 [[layer.package]]
-name = "legeos-settings"
-reason = "the settings surface for the policy legeos-sessiond owns"
+name = "templaros-settings"
+reason = "the settings surface for the policy templaros-sessiond owns"
 
 [[layer.package]]
 name = "pcmanfm-qt"
-reason = "the FileManager provider role's default (lege-session-core/src/providers.rs's DEFAULT_FILE_MANAGER); LegeOS's own Files is too rudimentary to be the session's file manager, so the composition ships a complete one and integrates it through filed (docs/architecture/files.md)"
+reason = "the FileManager provider role's default (templar-session-core/src/providers.rs's DEFAULT_FILE_MANAGER); TemplarOS's own Files is too rudimentary to be the session's file manager, so the composition ships a complete one and integrates it through filed (docs/architecture/files.md)"
 role = "file-manager"
 
 [[layer.package]]
@@ -364,12 +364,12 @@ reason = "the Qt 6 Wayland platform plugin pcmanfm-qt needs; without it a Qt app
 
 [[layer.package]]
 name = "kitty"
-reason = "the Terminal provider role's default (lege-session-core/src/providers.rs:157) and the terminal legeos-shell ships /etc/xdg/kitty/kitty.conf for"
+reason = "the Terminal provider role's default (templar-session-core/src/providers.rs:157) and the terminal templaros-shell ships /etc/xdg/kitty/kitty.conf for"
 role = "terminal"
 
 [[layer.package]]
 name = "gsimplecal"
-reason = "what the bar's clock opens (shell/lege-shell/src/surface/bar_screen.rs, action `clock.open-calendar`); LegeOS writes no calendar of its own, and this is the classic panel-clock calendar — a few hundred kilobytes of GTK that declares Categories=Calendar, which is how the shell finds it"
+reason = "what the bar's clock opens (shell/templar-shell/src/surface/bar_screen.rs, action `clock.open-calendar`); TemplarOS writes no calendar of its own, and this is the classic panel-clock calendar — a few hundred kilobytes of GTK that declares Categories=Calendar, which is how the shell finds it"
 
 [[layer.package]]
 name = "flatpak"
@@ -377,7 +377,7 @@ reason = "the sandboxed application route (ADR-0011); the browser layer is Flatp
 
 [[layer.package]]
 name = "papirus-icon-theme"
-reason = "the pictures. LegeOS draws no icons of its own: the shell resolves a .desktop file's Icon= name against the installed themes (shell/lege-shell/src/icons.rs), so an image with no icon theme draws every application, folder and device as its first letter. Papirus is the one theme carrying every stock freedesktop name this desktop asks for — system-file-manager, preferences-system, folder, user-trash — and is the first non-Yaru name icons.rs prefers"
+reason = "the pictures. TemplarOS draws no icons of its own: the shell resolves a .desktop file's Icon= name against the installed themes (shell/templar-shell/src/icons.rs), so an image with no icon theme draws every application, folder and device as its first letter. Papirus is the one theme carrying every stock freedesktop name this desktop asks for — system-file-manager, preferences-system, folder, user-trash — and is the first non-Yaru name icons.rs prefers"
 
 [[layer.package]]
 name = "hicolor-icon-theme"
@@ -397,7 +397,7 @@ reason = "emoji in filenames and chat clients render as glyphs rather than boxes
 
 [[layer.package]]
 name = "xdg-utils"
-reason = "xdg-open is what non-LegeOS applications call to hand a file back to the session"
+reason = "xdg-open is what non-TemplarOS applications call to hand a file back to the session"
 
 [[layer.package]]
 name = "shared-mime-info"
@@ -405,7 +405,7 @@ reason = "the MIME database detection is compared against; detected MIME beats e
 
 [[layer.package]]
 name = "desktop-file-utils"
-reason = "the desktop-file database lege-sessiond imports applications from"
+reason = "the desktop-file database templar-sessiond imports applications from"
 
 [[layer.package]]
 name = "gnome-keyring"
@@ -497,7 +497,7 @@ reason = "cc, ld and the headers every -sys crate in the graph links against"
 
 [[layer.package]]
 name = "git"
-reason = "the build-set id is derived from the git description (lege-build)"
+reason = "the build-set id is derived from the git description (templar-build)"
 
 [[layer.package]]
 name = "just"
@@ -517,7 +517,7 @@ reason = "how the -sys crates find the libraries build-essential can link"
 
 # ---------------------------------------------------------------------------------------------
 # live — the installation medium only (distro/iso/build.sh). Not in the image, not in any
-# metapackage: an installed LegeOS carries none of this. The live session's own autologin and
+# metapackage: an installed TemplarOS carries none of this. The live session's own autologin and
 # passwordless sudo are written by the ISO build, labelled LIVE MEDIUM ONLY, and never packaged.
 # ---------------------------------------------------------------------------------------------
 [[layer]]
@@ -541,7 +541,7 @@ reason = "sgdisk: the provisioner reads and extends GPT tables with it"
 
 [[layer.package]]
 name = "efibootmgr"
-reason = "registers the LegeOS firmware entry for the new ESP, appended to the boot order"
+reason = "registers the TemplarOS firmware entry for the new ESP, appended to the boot order"
 
 [[layer.package]]
 name = "shim-signed"
@@ -554,7 +554,7 @@ reason = "the Canonical-signed removable-media GRUB (gcdx64.efi.signed) that boo
 # ---------------------------------------------------------------------------------------------
 # dev-cuda — CUDA development, kept strictly apart from dev-rust so one can be absent.
 # Not in the image: the dev/VM image has no NVIDIA GPU. Selected on the reference laptop through
-# legeos-dev-cuda. D4 owns the exact pinned list and sends it by message (C4 -> C1).
+# templaros-dev-cuda. D4 owns the exact pinned list and sends it by message (C4 -> C1).
 # ---------------------------------------------------------------------------------------------
 [[layer]]
 id = "dev-cuda"
@@ -620,7 +620,7 @@ reason = "the Bluetooth stack the shell's status surface and audio routing talk 
 role = "bluetooth"
 
 # ---------------------------------------------------------------------------------------------
-# GPU variants — exactly one is selected, by lege-hwdetect at provisioning time. Neither is in the
+# GPU variants — exactly one is selected, by templar-hwdetect at provisioning time. Neither is in the
 # image: the dev/VM image has no NVIDIA GPU. D4 owns what is inside them.
 # ---------------------------------------------------------------------------------------------
 [[layer]]
@@ -633,7 +633,7 @@ image = false
 stage = "seeds"
 
 [[layer.package]]
-name = "legeos-nvidia-open"
+name = "templaros-nvidia-open"
 reason = "the open-module flavour for the reference laptop's RTX 4060; Canonical-signed LRM, never DKMS"
 role = "gpu-driver"
 arch = "amd64"
@@ -657,7 +657,7 @@ image = false
 stage = "seeds"
 
 [[layer.package]]
-name = "legeos-nvidia-proprietary"
+name = "templaros-nvidia-proprietary"
 reason = "the proprietary flavour for pre-Turing hardware; mutually exclusive with the open one"
 role = "gpu-driver"
 arch = "amd64"
@@ -677,36 +677,36 @@ arch = "amd64"
 # ${misc:Depends} is appended to every Depends automatically.
 # ---------------------------------------------------------------------------------------------
 [[metapackage]]
-package = "legeos-desktop"
-directory = "legeos-desktop"
+package = "templaros-desktop"
+directory = "templaros-desktop"
 architecture = "all"
 layers = ["session", "desktop", "hardware", "graphics", "media", "opt-ime", "opt-a11y", "opt-bluetooth"]
-recommends = ["legeos-kernel"]
+recommends = ["templaros-kernel"]
 policy_conflicts = true
-description = "LegeOS desktop (metapackage)"
-description_body = "Installs the complete LegeOS session and default applications on an Ubuntu 26.04 base."
+description = "TemplarOS desktop (metapackage)"
+description_body = "Installs the complete TemplarOS session and default applications on an Ubuntu 26.04 base."
 
 [[metapackage]]
-package = "legeos-session-full"
-directory = "legeos-session-meta"
+package = "templaros-session-full"
+directory = "templaros-session-meta"
 architecture = "all"
 layers = ["session"]
-description = "LegeOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)"
+description = "TemplarOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)"
 description_body = "The session and its daemons, without the default applications or the hardware stack."
 
 [[metapackage]]
-package = "legeos-kernel"
-directory = "legeos-kernel"
+package = "templaros-kernel"
+directory = "templaros-kernel"
 architecture = "amd64"
 extra_depends = ["linux-generic (>= @KERNEL_MIN@)", "linux-firmware"]
-description = "LegeOS kernel set (Ubuntu 26.04 kernel + version-locked NVIDIA modules)"
+description = "TemplarOS kernel set (Ubuntu 26.04 kernel + version-locked NVIDIA modules)"
 description_body = """
 One tested set: kernel, LRM modules and firmware move together and are updated only through
-lege-hostd's transactional path with automatic rollback."""
+templar-hostd's transactional path with automatic rollback."""
 
 [[metapackage]]
-package = "legeos-nvidia-open"
-directory = "legeos-nvidia-open"
+package = "templaros-nvidia-open"
+directory = "templaros-nvidia-open"
 architecture = "amd64"
 # Not nvidia-driver-*: Ubuntu's driver metapackage Depends on nvidia-dkms-*, the very thing this
 # package Conflicts with. The LRM route is the modules package plus the no-dkms userspace set.
@@ -720,13 +720,13 @@ extra_depends = [
 # Not `Conflicts: nvidia-dkms-*`: Ubuntu's LRM modules package *Provides* nvidia-dkms-<branch>, so
 # that conflict forbade the very package it was meant to protect. `dkms` itself is what ADR-0004
 # excludes - no locally built module, no MOK - and nothing in the closure needs it.
-conflicts = ["legeos-nvidia-proprietary", "dkms"]
+conflicts = ["templaros-nvidia-proprietary", "dkms"]
 description = "NVIDIA open kernel modules + userspace (Turing and newer), one driver authority"
-description_body = "The open-module flavour, version-locked to the kernel legeos-kernel selects."
+description_body = "The open-module flavour, version-locked to the kernel templaros-kernel selects."
 
 [[metapackage]]
-package = "legeos-nvidia-proprietary"
-directory = "legeos-nvidia-proprietary"
+package = "templaros-nvidia-proprietary"
+directory = "templaros-nvidia-proprietary"
 architecture = "amd64"
 extra_depends = [
   "linux-modules-nvidia-@NVIDIA_BRANCH@-generic (= @NVIDIA_LRM_VERSION@)",
@@ -735,38 +735,38 @@ extra_depends = [
   "nvidia-utils-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
   "xserver-xorg-video-nvidia-@NVIDIA_BRANCH@ (= @NVIDIA_USERSPACE_VERSION@)",
 ]
-conflicts = ["legeos-nvidia-open", "dkms"]
+conflicts = ["templaros-nvidia-open", "dkms"]
 description = "NVIDIA proprietary kernel modules + userspace (pre-Turing), one driver authority"
-description_body = "The proprietary flavour, version-locked to the kernel legeos-kernel selects."
+description_body = "The proprietary flavour, version-locked to the kernel templaros-kernel selects."
 
 [[metapackage]]
-package = "legeos-archive-keyring"
-directory = "legeos-archive-keyring"
+package = "templaros-archive-keyring"
+directory = "templaros-archive-keyring"
 architecture = "all"
-description = "LegeOS archive pinning"
+description = "TemplarOS archive pinning"
 description_body = """
-Installs /etc/apt/preferences.d/legeos-nvidia (third-party driver repositories pinned to -1) and
-legeos-priority. The archive key and the source stanza are written by the provisioner from the
-archive it installs from; until archive.legeos.org exists there is no public key to ship."""
+Installs /etc/apt/preferences.d/templaros-nvidia (third-party driver repositories pinned to -1) and
+templaros-priority. The archive key and the source stanza are written by the provisioner from the
+archive it installs from; until archive.templaros.org exists there is no public key to ship."""
 
 [[metapackage]]
-package = "legeos-dev-rust"
-directory = "legeos-dev-rust"
+package = "templaros-dev-rust"
+directory = "templaros-dev-rust"
 architecture = "all"
 layers = ["dev-rust"]
-description = "LegeOS Rust development set (metapackage)"
+description = "TemplarOS Rust development set (metapackage)"
 description_body = """
 Everything needed to build this workspace and its Debian packages on the machine it runs on.
 Ubuntu's rustc may lag the workspace MSRV; rustup remains the developer's route."""
 
 [[metapackage]]
-package = "legeos-dev-cuda"
-directory = "legeos-dev-cuda"
+package = "templaros-dev-cuda"
+directory = "templaros-dev-cuda"
 architecture = "amd64"
 layers = ["dev-cuda"]
-recommends = ["legeos-nvidia-open"]
-description = "LegeOS CUDA development set (metapackage)"
+recommends = ["templaros-nvidia-open"]
+description = "TemplarOS CUDA development set (metapackage)"
 description_body = """
-The CUDA toolchain, kept apart from legeos-dev-rust so a machine can have one without the other.
+The CUDA toolchain, kept apart from templaros-dev-rust so a machine can have one without the other.
 Requires an NVIDIA driver flavour to be selected; the package list is provisional until the
 hardware lane pins it to a driver branch."""

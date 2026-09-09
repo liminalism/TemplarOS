@@ -1,8 +1,0 @@
-target/release/lege-resourced usr/libexec/
-session/units/user/lege-resourced.service usr/lib/systemd/user/
-interfaces/dbus/org.legeos.Resources1.xml usr/share/dbus-1/interfaces/
-distro/policy/sysctl.d/60-legeos.conf usr/lib/sysctl.d/
-distro/policy/tmpfiles.d/legeos.conf usr/lib/tmpfiles.d/
-distro/policy/systemd/system/user.slice.d usr/lib/systemd/system/
-distro/policy/systemd/user/pipewire.service.d usr/lib/systemd/user/
-distro/policy/systemd/user/wireplumber.service.d usr/lib/systemd/user/

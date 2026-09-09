@@ -2,7 +2,7 @@
 # The reviewed operation plan: one sequence, drift refused, and preservation that preserves.
 #
 # `provision-qemu.sh` checks that the printed plan matches the layout declaration. This checks the
-# properties `@legeos.work.provisioning-storage-plan-and-reuse` asks for, which are about the plan
+# properties `@templaros.work.provisioning-storage-plan-and-reuse` asks for, which are about the plan
 # as an *artefact*:
 #
 #   1. a dry run writes plan.json, and every operation it will perform is in it;
@@ -22,10 +22,10 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 provision="$root/installer/provision.sh"
 
-work="$(mktemp -d /tmp/legeos-provision-plan.XXXXXX)"
+work="$(mktemp -d /tmp/templaros-provision-plan.XXXXXX)"
 cleanup() {
     case "$work" in
-        /tmp/legeos-provision-plan.*) rm -rf -- "$work" ;;
+        /tmp/templaros-provision-plan.*) rm -rf -- "$work" ;;
         *) echo "refusing to remove unexpected work directory: $work" >&2 ;;
     esac
 }
@@ -129,14 +129,14 @@ elif ! command -v blkid >/dev/null 2>&1; then
 else
     # Three filesystems in three files, exactly as a partition would hold them. `--esp/--root`
     # normally take block devices; the refusal for a plain file is checked below, and the
-    # preservation logic is exercised through the same code path with LEGEOS_PROVISION_FIXTURE.
+    # preservation logic is exercised through the same code path with TEMPLAROS_PROVISION_FIXTURE.
     esp="$work/esp.img"; rootfs="$work/root.img"; data="$work/data.img"
     truncate -s 512M "$esp"
     truncate -s 2G "$rootfs"
     truncate -s 1G "$data"
-    mkfs.vfat -F32 -n LEGEOS_ESP "$esp" >/dev/null 2>&1 || fail "mkfs.vfat on a file failed"
-    mkfs.btrfs -q -f -L legeos-root "$rootfs" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
-    mkfs.btrfs -q -f -L legeos-data "$data" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
+    mkfs.vfat -F32 -n TEMPLAROS_ESP "$esp" >/dev/null 2>&1 || fail "mkfs.vfat on a file failed"
+    mkfs.btrfs -q -f -L templaros-root "$rootfs" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
+    mkfs.btrfs -q -f -L templaros-data "$data" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
 
     root_uuid="$(blkid -p -s UUID -o value "$rootfs" 2>/dev/null || true)"
     [ -n "$root_uuid" ] || not_executed "blkid cannot read a filesystem in a plain file on this host"
@@ -167,12 +167,12 @@ ok "--reuse and --format-data refuse the combinations that would mean nothing"
 
 # --- 5. Identity is by UUID -----------------------------------------------------------------------
 
-grep -q 'Filesystem identity: /etc/fstab and /etc/legeos/install.toml, both by UUID' "$work/dry.txt" \
+grep -q 'Filesystem identity: /etc/fstab and /etc/templaros/install.toml, both by UUID' "$work/dry.txt" \
     || fail "the plan never writes /etc/fstab — a provisioned machine would not know how to mount itself"
-grep -q 'writing /mnt/legeos-provision/etc/fstab' "$work/dry.txt" \
+grep -q 'writing /mnt/templaros-provision/etc/fstab' "$work/dry.txt" \
     || fail "the plan does not name the fstab it writes"
-grep -q 'writing /mnt/legeos-provision/etc/legeos/install.toml' "$work/dry.txt" \
-    || fail "the plan does not write the installation identity lege-hostd reads"
+grep -q 'writing /mnt/templaros-provision/etc/templaros/install.toml' "$work/dry.txt" \
+    || fail "the plan does not write the installation identity templar-hostd reads"
 grep -q 'root=UUID=' "$work/dry.txt" || grep -q 'root=UUID=\${\|read at apply' "$work/dry.txt" \
     || fail "the plan does not say the boot command line will name the root by UUID"
 ok "the plan writes fstab and install.toml, and identity is by UUID"

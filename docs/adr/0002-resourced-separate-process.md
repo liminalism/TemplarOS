@@ -10,13 +10,13 @@ desktop-file imports (sessiond) can block on a full disk — the very storage-re
 unrelated domain.
 
 ## Decision
-`lege-resourced` is its own process: `mlockall`, `MemoryLow`, `OOMScoreAdjust=-1000`, high CPU/IO weight,
+`templar-resourced` is its own process: `mlockall`, `MemoryLow`, `OOMScoreAdjust=-1000`, high CPU/IO weight,
 `Nice=-10`, no SQLite. It needs **no D-Bus round-trip for emergency actions**: launch units are self-describing
-(`app-legeos-<AppId>@<InstanceId>.service`, `lege_types::unit`), so cgroup→instance comes from
+(`app-templaros-<AppId>@<InstanceId>.service`, `templar_types::unit`), so cgroup→instance comes from
 `/sys/fs/cgroup` alone; foreground/visibility arrive as compositor signals; sessiond only enriches. Policy
 is a pure engine (`policy::Governor`) separated from cgroup writes; **observe-only by default** until traces
 are reviewed, then cache-trim → throttle → checkpoint → kill are enabled in stages.
 
 ## Consequences
 Two user daemons for policy instead of one; the governor is testable in isolation and survives sessiond
-restarts. `lege doctor` verifies its protection values.
+restarts. `templar doctor` verifies its protection values.

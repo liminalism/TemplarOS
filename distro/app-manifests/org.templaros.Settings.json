@@ -1,0 +1,17 @@
+{
+  "id": "org.templaros.Settings",
+  "display_name": "Settings",
+  "primary_desktop_file_id": "org.templaros.Settings.desktop",
+  "executable": "/usr/bin/templar-settings",
+  "aliases": {
+    "desktop_file_ids": ["org.templaros.Settings.desktop"],
+    "wayland_app_ids": ["org.templaros.Settings"],
+    "startup_wm_classes": ["templar-settings"],
+    "flatpak_ids": [],
+    "executable_paths": ["/usr/bin/templar-settings"]
+  },
+  "mime_types": [],
+  "resource_class": "Interactive",
+  "supports_checkpoint": false,
+  "provides": []
+}

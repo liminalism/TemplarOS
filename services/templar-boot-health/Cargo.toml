@@ -1,0 +1,40 @@
+[package]
+name = "templar-boot-health"
+description = "System-scope boot health probe: satisfies boot-complete.target only when the graphics stack and session are healthy, so a candidate kernel/driver deployment is blessed or rolled back"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "templar-boot-health"
+path = "src/main.rs"
+
+[dependencies]
+templar-hwdetect = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-boot-health"
+section = "admin"
+priority = "optional"
+depends = "$auto, systemd"
+assets = [
+    ["target/release/templar-boot-health", "usr/libexec/templar-boot-health", "755"],
+    ["../../session/units/system/templar-boot-health.service", "usr/lib/systemd/system/templar-boot-health.service", "644"],
+]

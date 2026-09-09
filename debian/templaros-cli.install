@@ -1,0 +1,2 @@
+target/release/templar usr/bin/
+cli/templar/actions/*.desktop usr/share/file-manager/actions/

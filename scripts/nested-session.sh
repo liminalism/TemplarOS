@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A whole LegeOS session, nested inside whatever desktop is already running.
+# A whole TemplarOS session, nested inside whatever desktop is already running.
 #
 # Why this exists: every failure so far has been invisible. The units start, the journal says
 # nothing, and the only account of what went wrong is a screen that does not change. Nested, every
@@ -21,12 +21,12 @@ set -uo pipefail
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 root=$(CDPATH= cd -- "$here/.." && pwd -P)
 run="$root/.agent/scratch/nested-session"
-socket=legeos-nested
+socket=templaros-nested
 # The trusted-shell socket is named the way the compositor names it: a prefix, never a suffix.
 # A `wayland-0-shell` would fall inside snapd's `wayland-[0-9]*` permission, and that socket is
-# the one no confined application may ever open (compositor/lege-comp/src/shell_socket.rs).
-shell_socket="legeos-shell-$socket"
-profile=${LEGEOS_NESTED_PROFILE:-debug}
+# the one no confined application may ever open (compositor/templar-comp/src/shell_socket.rs).
+shell_socket="templaros-shell-$socket"
+profile=${TEMPLAROS_NESTED_PROFILE:-debug}
 bin="$root/target/$profile"
 
 mkdir -p "$run"
@@ -86,14 +86,14 @@ start_comp() {
         return 0
     fi
     refuse_over_live_session || return 1
-    [ -x "$bin/lege-comp" ] || { echo "missing $bin/lege-comp — build it first" >&2; return 1; }
+    [ -x "$bin/templar-comp" ] || { echo "missing $bin/templar-comp — build it first" >&2; return 1; }
     clear_stale_sockets
     : >"$(logfile comp)"
     echo "starting compositor (winit, socket $socket)"
     # The host's WAYLAND_DISPLAY is what winit nests *into*, so this one keeps it.
-    env -u DISPLAY WAYLAND_DISPLAY="${LEGEOS_HOST_WAYLAND:-$WAYLAND_DISPLAY}" \
+    env -u DISPLAY WAYLAND_DISPLAY="${TEMPLAROS_HOST_WAYLAND:-$WAYLAND_DISPLAY}" \
         RUST_LOG="${RUST_LOG:-info}" \
-        "$bin/lege-comp" --backend winit --socket-name "$socket" \
+        "$bin/templar-comp" --backend winit --socket-name "$socket" \
         >"$(logfile comp)" 2>&1 &
     echo $! >"$(pidfile comp)"
     wait_for_log "trusted-shell socket ready" \
@@ -104,17 +104,17 @@ start_comp() {
 }
 
 # The nested session shares the person's user bus. If the *installed* session daemon owns
-# org.legeos.Session, a nested one would fight it for the name and every launch it makes would
+# org.templaros.Session, a nested one would fight it for the name and every launch it makes would
 # land in the wrong session — refuse, rather than disturb a desktop somebody is working in.
 refuse_over_live_session() {
-    if systemctl --user is-active --quiet lege-sessiond.service 2>/dev/null \
-        || systemctl --user is-active --quiet lege-comp.service 2>/dev/null; then
-        echo "the installed LegeOS session is running (lege-sessiond/lege-comp user units are active);" >&2
+    if systemctl --user is-active --quiet templar-sessiond.service 2>/dev/null \
+        || systemctl --user is-active --quiet templar-comp.service 2>/dev/null; then
+        echo "the installed TemplarOS session is running (templar-sessiond/templar-comp user units are active);" >&2
         echo "a nested session would share its bus and disturb it. Not starting." >&2
         return 1
     fi
-    if ! alive sessiond && busctl --user status org.legeos.Session >/dev/null 2>&1; then
-        echo "org.legeos.Session already has an owner on the user bus that this script did not start;" >&2
+    if ! alive sessiond && busctl --user status org.templaros.Session >/dev/null 2>&1; then
+        echo "org.templaros.Session already has an owner on the user bus that this script did not start;" >&2
         echo "not starting a second session daemon against it." >&2
         return 1
     fi
@@ -126,20 +126,20 @@ start_sessiond() {
         return 0
     fi
     refuse_over_live_session || return 1
-    [ -x "$bin/lege-sessiond" ] || { echo "missing $bin/lege-sessiond" >&2; return 1; }
+    [ -x "$bin/templar-sessiond" ] || { echo "missing $bin/templar-sessiond" >&2; return 1; }
     echo "starting sessiond (state $run/session.db)"
     # An app launched from here must reach the nested compositor, not the host's. sessiond passes
     # its own environment down to every transient unit it starts, so this is where that is decided.
     nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
-        "$bin/lege-sessiond" --state-db "$run/session.db" \
+        "$bin/templar-sessiond" --state-db "$run/session.db" \
         >"$(logfile sessiond)" 2>&1 &
     echo $! >"$(pidfile sessiond)"
     for _ in $(seq 50); do
-        busctl --user status org.legeos.Session >/dev/null 2>&1 && break
+        busctl --user status org.templaros.Session >/dev/null 2>&1 && break
         sleep 0.1
     done
-    busctl --user status org.legeos.Session >/dev/null 2>&1 \
-        || echo "  warning: org.legeos.Session did not appear; see $(logfile sessiond)" >&2
+    busctl --user status org.templaros.Session >/dev/null 2>&1 \
+        || echo "  warning: org.templaros.Session did not appear; see $(logfile sessiond)" >&2
 }
 
 # The file service backs six of the eight drawers. Without it Home renders "service unavailable"
@@ -149,13 +149,13 @@ start_filed() {
         echo "filed already running"
         return 0
     fi
-    if [ ! -x "$bin/lege-filed" ]; then
-        echo "  no $bin/lege-filed — drawers will read \"service unavailable\"" >&2
+    if [ ! -x "$bin/templar-filed" ]; then
+        echo "  no $bin/templar-filed — drawers will read \"service unavailable\"" >&2
         return 0
     fi
     echo "starting filed"
     nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
-        "$bin/lege-filed" \
+        "$bin/templar-filed" \
         >"$(logfile filed)" 2>&1 &
     echo $! >"$(pidfile filed)"
     sleep 0.5
@@ -164,24 +164,24 @@ start_filed() {
 # The portal backend, so a nested browser or Flatpak application can be driven through the real
 # FileChooser and AppChooser rather than through a description of them. Unlike the daemons above
 # it claims a *freedesktop* well-known name on the shared user bus, so it starts only when nothing
-# else owns that name — the same courtesy `refuse_over_live_session` pays `org.legeos.Session`.
+# else owns that name — the same courtesy `refuse_over_live_session` pays `org.templaros.Session`.
 start_portal() {
     if alive portal; then
         echo "portal already running"
         return 0
     fi
-    if [ ! -x "$bin/xdg-desktop-portal-lege" ]; then
-        echo "  no $bin/xdg-desktop-portal-lege — portal journeys will not run" >&2
+    if [ ! -x "$bin/xdg-desktop-portal-templar" ]; then
+        echo "  no $bin/xdg-desktop-portal-templar — portal journeys will not run" >&2
         return 0
     fi
-    if busctl --user status org.freedesktop.impl.portal.desktop.legeos >/dev/null 2>&1; then
-        echo "  org.freedesktop.impl.portal.desktop.legeos already has an owner that this script" >&2
+    if busctl --user status org.freedesktop.impl.portal.desktop.templaros >/dev/null 2>&1; then
+        echo "  org.freedesktop.impl.portal.desktop.templaros already has an owner that this script" >&2
         echo "  did not start; not starting a second portal backend against it." >&2
         return 0
     fi
     echo "starting portal"
     nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
-        "$bin/xdg-desktop-portal-lege" \
+        "$bin/xdg-desktop-portal-templar" \
         >"$(logfile portal)" 2>&1 &
     echo $! >"$(pidfile portal)"
     sleep 0.5
@@ -189,10 +189,10 @@ start_portal() {
 
 start_shell() {
     stop_one shell
-    [ -x "$bin/lege-shell" ] || { echo "missing $bin/lege-shell" >&2; return 1; }
+    [ -x "$bin/templar-shell" ] || { echo "missing $bin/templar-shell" >&2; return 1; }
     echo "starting shell (trusted socket $shell_socket)"
     nested_env WAYLAND_DISPLAY="$shell_socket" RUST_LOG="${RUST_LOG:-info}" \
-        "$bin/lege-shell" --surface \
+        "$bin/templar-shell" --surface \
         >"$(logfile shell)" 2>&1 &
     echo $! >"$(pidfile shell)"
     sleep 1
@@ -206,15 +206,15 @@ start)
     ;;
 shell)
     # The hot-swap loop: rebuild only the shell and restart it against the live compositor.
-    ( cd "$root" && cargo build -p lege-shell ${profile:+$([ "$profile" = release ] && echo --release)} ) || exit 1
+    ( cd "$root" && cargo build -p templar-shell ${profile:+$([ "$profile" = release ] && echo --release)} ) || exit 1
     start_shell && echo "shell restarted"
     ;;
 launch)
     [ $# -ge 2 ] || { echo "usage: $0 launch <app-id>" >&2; exit 2; }
-    "$bin/lege" app launch "$2"
+    "$bin/templar" app launch "$2"
     ;;
 apps)
-    "$bin/lege" app list 2>/dev/null | head -40
+    "$bin/templar" app list 2>/dev/null | head -40
     ;;
 logs)
     for name in comp sessiond filed portal shell; do

@@ -6,12 +6,12 @@
 
 ## Decision
 
-Two things on a LegeOS desktop can decide that a process must lose memory: `lege-resourced` and
+Two things on a TemplarOS desktop can decide that a process must lose memory: `templar-resourced` and
 `systemd-oomd`. Until now nothing anywhere said which of them was in charge — the string `oomd`
 appears nowhere in the tree — so the answer was whatever the distribution's defaults happened to
 be. This settles it.
 
-* **Inside the session, `lege-resourced` is the only pressure actor.** It is the one that knows
+* **Inside the session, `templar-resourced` is the only pressure actor.** It is the one that knows
   which window has focus, which application has unsaved work, which instance belongs to the
   project the user is in the middle of, and which are disposable. `systemd-oomd` knows none of
   that: it picks by cgroup pressure and swap usage.
@@ -32,15 +32,15 @@ be. This settles it.
 
 ## Context
 
-`lege-resourced` ships observe-only (ADR-0002, planning doc 02 §8: only after recorded
+`templar-resourced` ships observe-only (ADR-0002, planning doc 02 §8: only after recorded
 playthroughs show sensible choices should it be allowed to act). That makes the question of who
 else may act urgent rather than theoretical, and it had no answer. Ubuntu 26.04 ships
-`systemd-oomd` enabled; without a stated posture, a LegeOS session would inherit whatever
+`systemd-oomd` enabled; without a stated posture, a TemplarOS session would inherit whatever
 `user@.service`'s defaults do, which on some configurations includes killing under swap pressure
 in a session slice this project spends considerable effort protecting.
 
 The two actors are not interchangeable and the difference is not a matter of tuning.
-`lege-resourced` refuses to consider protected instances at all, weighs foreground and visibility
+`templar-resourced` refuses to consider protected instances at all, weighs foreground and visibility
 and unsaved work, prefers trimming to throttling and throttling to termination, and records why.
 `systemd-oomd` applies one rule to a whole slice. As a *first* responder it would undo the work;
 as a *last* one it is exactly right, because by the time it fires the first responder has already
@@ -48,11 +48,11 @@ failed.
 
 ## Consequences
 
-* `distro/policy/systemd/user/app.slice.d/legeos.conf` arms oomd at 90%;
-  `session.slice.d/legeos.conf` explicitly does not, and says so rather than relying on a default.
-* `lege-comp`, `lege-shell`, `lege-sessiond`, `lege-filed` and `lege-resourced` carry
+* `distro/policy/systemd/user/app.slice.d/templaros.conf` arms oomd at 90%;
+  `session.slice.d/templaros.conf` explicitly does not, and says so rather than relying on a default.
+* `templar-comp`, `templar-shell`, `templar-sessiond`, `templar-filed` and `templar-resourced` carry
   `ManagedOOMPreference=avoid`.
-* `lege doctor`'s `oomd-ownership` check reads those files back on the installed system and warns
+* `templar doctor`'s `oomd-ownership` check reads those files back on the installed system and warns
   when the posture has drifted — a distribution upgrade replacing a drop-in is the realistic way
   that happens.
 * Disarming oomd on `session.slice` removes a backstop from the units that must survive. What

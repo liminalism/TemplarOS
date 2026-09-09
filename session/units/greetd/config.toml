@@ -1,8 +1,8 @@
-# greetd configuration for LegeOS (ADR-0010, as amended by ADR-0012: greetd + lege-greeter, not
-# cosmic-greeter — lege-greeter uses pixelkit, the same toolkit as the shell, and speaks greetd's
+# greetd configuration for TemplarOS (ADR-0010, as amended by ADR-0012: greetd + templar-greeter, not
+# cosmic-greeter — templar-greeter uses pixelkit, the same toolkit as the shell, and speaks greetd's
 # JSON IPC directly; greetd alone owns PAM).
 #
-# Installed as /usr/share/legeos/greetd/config.toml by the legeos-greeter package. The LegeOS image
+# Installed as /usr/share/templaros/greetd/config.toml by the templaros-greeter package. The TemplarOS image
 # build deliberately installs it as /etc/greetd/config.toml; an ordinary package install leaves an
 # administrator's existing display-manager configuration untouched.
 [terminal]
@@ -19,8 +19,8 @@ vt = 1
 #
 # GREETD_SOCK is inherited through the compositor to the greeter without either of them doing
 # anything about it.
-command = "lege-comp --backend udev --exec /usr/bin/lege-greeter"
+command = "templar-comp --backend udev --exec /usr/bin/templar-greeter"
 # A dedicated system account, not a real login — see README.md's "The greetd user" section for
 # exactly what it needs (a fresh XDG_RUNTIME_DIR from pam_systemd, and DRM/input device access for
 # the udev backend, which runs as this user) and how to create it.
-user = "lege-greeter"
+user = "templar-greeter"

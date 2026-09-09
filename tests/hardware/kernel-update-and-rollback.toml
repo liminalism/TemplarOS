@@ -1,10 +1,10 @@
 id = "kernel-update-and-rollback"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
-  "lege update plan --kernel <candidate>",
+  "templar update plan --kernel <candidate>",
   "reboot",
-  "lege-boot-health passes → entry blessed",
-  "lege update plan --kernel <broken-candidate> (simulated: missing nvidia module)",
+  "templar-boot-health passes → entry blessed",
+  "templar update plan --kernel <broken-candidate> (simulated: missing nvidia module)",
   "reboot",
 ]
 expect = [

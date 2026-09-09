@@ -1,0 +1,21 @@
+[package]
+name = "templar-window"
+description = "Compositor-side window service: geometry recovery invariants, one-scene window records, drag handling, identity cache trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately no tokio / zbus: this crate runs on the compositor render thread
+# (`cargo xtask deps-check` enforces it).
+[dependencies]
+templar-types = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

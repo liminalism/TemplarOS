@@ -1,0 +1,2 @@
+target/release/templar-boot-health usr/libexec/
+session/units/system/templar-boot-health.service usr/lib/systemd/system/

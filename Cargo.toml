@@ -1,42 +1,42 @@
-# LegeOS workspace.
+# TemplarOS workspace.
 #
 # Layout (see ARCHITECTURE.md):
 #   crates/      pure library crates — the testable cores of every OS domain
 #   services/    daemons (thin hosts over the crates)
 #   session/     session entry + systemd user units
-#   compositor/  lege-comp (the Smithay compositor) + lege-comp-integration
+#   compositor/  templar-comp (the Smithay compositor) + templar-comp-integration
 #   shell/ apps/ portals/ cli/  user-facing binaries
 #   tools/xtask  repository automation
 [workspace]
 resolver = "3"
 members = [
-    "crates/lege-types",
-    "crates/lege-appd",
-    "crates/lege-build",
-    "crates/lege-associationd",
-    "crates/lege-window",
-    "crates/lege-field",
-    "crates/lege-treemap",
-    "crates/lege-session-core",
-    "crates/lege-state",
-    "crates/lege-client",
-    "crates/lege-hwdetect",
-    "crates/lege-file-index",
-    "crates/lege-fanotify",
-    "services/lege-sessiond",
-    "services/lege-resourced",
-    "services/lege-filed",
-    "services/lege-hostd",
-    "services/lege-boot-health",
-    "session/lege-session",
-    "compositor/lege-comp-integration",
-    "compositor/lege-comp",
-    "shell/lege-shell",
-    "apps/lege-settings",
-    "apps/lege-greeter",
-    "apps/lege-files",
-    "portals/xdg-desktop-portal-lege",
-    "cli/lege",
+    "crates/templar-types",
+    "crates/templar-appd",
+    "crates/templar-build",
+    "crates/templar-associationd",
+    "crates/templar-window",
+    "crates/templar-field",
+    "crates/templar-treemap",
+    "crates/templar-session-core",
+    "crates/templar-state",
+    "crates/templar-client",
+    "crates/templar-hwdetect",
+    "crates/templar-file-index",
+    "crates/templar-fanotify",
+    "services/templar-sessiond",
+    "services/templar-resourced",
+    "services/templar-filed",
+    "services/templar-hostd",
+    "services/templar-boot-health",
+    "session/templar-session",
+    "compositor/templar-comp-integration",
+    "compositor/templar-comp",
+    "shell/templar-shell",
+    "apps/templar-settings",
+    "apps/templar-greeter",
+    "apps/templar-files",
+    "portals/xdg-desktop-portal-templar",
+    "cli/templar",
     "tools/xtask",
 ]
 
@@ -47,29 +47,29 @@ edition = "2024"
 # instead of advertising an archive baseline its resolved dependencies cannot build (ADR-0008).
 rust-version = "1.97"
 license = "AGPL-3.0-only"
-repository = "https://github.com/legeos/legeos"
-homepage = "https://legeos.org"
-authors = ["LegeOS contributors"]
+repository = "https://github.com/templaros/templaros"
+homepage = "https://templaros.org"
+authors = ["TemplarOS contributors"]
 
 [workspace.dependencies]
 # internal
-lege-types = { path = "crates/lege-types" }
-lege-appd = { path = "crates/lege-appd" }
-lege-build = { path = "crates/lege-build" }
-lege-associationd = { path = "crates/lege-associationd" }
-lege-window = { path = "crates/lege-window" }
-lege-field = { path = "crates/lege-field" }
-lege-treemap = { path = "crates/lege-treemap" }
-lege-session-core = { path = "crates/lege-session-core" }
-lege-state = { path = "crates/lege-state" }
-lege-client = { path = "crates/lege-client" }
-lege-hwdetect = { path = "crates/lege-hwdetect" }
-lege-file-index = { path = "crates/lege-file-index" }
-lege-fanotify = { path = "crates/lege-fanotify" }
-lege-comp-integration = { path = "compositor/lege-comp-integration" }
-lege-resourced = { path = "services/lege-resourced" }
-lege-filed = { path = "services/lege-filed" }
-lege = { path = "cli/lege" }
+templar-types = { path = "crates/templar-types" }
+templar-appd = { path = "crates/templar-appd" }
+templar-build = { path = "crates/templar-build" }
+templar-associationd = { path = "crates/templar-associationd" }
+templar-window = { path = "crates/templar-window" }
+templar-field = { path = "crates/templar-field" }
+templar-treemap = { path = "crates/templar-treemap" }
+templar-session-core = { path = "crates/templar-session-core" }
+templar-state = { path = "crates/templar-state" }
+templar-client = { path = "crates/templar-client" }
+templar-hwdetect = { path = "crates/templar-hwdetect" }
+templar-file-index = { path = "crates/templar-file-index" }
+templar-fanotify = { path = "crates/templar-fanotify" }
+templar-comp-integration = { path = "compositor/templar-comp-integration" }
+templar-resourced = { path = "services/templar-resourced" }
+templar-filed = { path = "services/templar-filed" }
+templar = { path = "cli/templar" }
 
 # external
 anyhow = "1"

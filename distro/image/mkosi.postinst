@@ -2,20 +2,20 @@
 # Runs inside the image after package installation.
 set -eu
 # Identity: os-release from distro/branding (rendered by `just image`).
-if [ -f /usr/lib/os-release.legeos ]; then
-    mv /usr/lib/os-release.legeos /usr/lib/os-release
+if [ -f /usr/lib/os-release.templaros ]; then
+    mv /usr/lib/os-release.templaros /usr/lib/os-release
 fi
-# The generic autostart runner is masked in the LegeOS session; sessiond arbitrates autostart.
+# The generic autostart runner is masked in the TemplarOS session; sessiond arbitrates autostart.
 systemctl --global mask xdg-desktop-autostart.target || true
 # Enable the session-scope core once packages ship their units.
-systemctl --global enable legeos-session.target 2>/dev/null || true
-systemctl enable lege-hostd.service lege-boot-health.service 2>/dev/null || true
+systemctl --global enable templaros-session.target 2>/dev/null || true
+systemctl enable templar-hostd.service templar-boot-health.service 2>/dev/null || true
 # This image owns its display-manager choice. The ordinary package keeps the template under
-# /usr/share so installing LegeOS alongside another desktop never overwrites an administrator's
+# /usr/share so installing TemplarOS alongside another desktop never overwrites an administrator's
 # greetd configuration; the image build is the deliberate point where it becomes live.
-install -D -m 0644 /usr/share/legeos/greetd/config.toml /etc/greetd/config.toml
-systemd-sysusers /usr/lib/sysusers.d/legeos-greeter.conf
-systemd-tmpfiles --create /usr/lib/tmpfiles.d/legeos-greeter.conf
+install -D -m 0644 /usr/share/templaros/greetd/config.toml /etc/greetd/config.toml
+systemd-sysusers /usr/lib/sysusers.d/templaros-greeter.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable greetd.service 2>/dev/null || true
 
@@ -25,7 +25,7 @@ systemctl enable greetd.service 2>/dev/null || true
 # packages — but it needs a network, so every step tolerates failure and says so. An image built
 # offline still boots; it just has no browser until `flatpak install` is run once.
 refs=""
-for candidate in /usr/share/legeos/flatpak-refs.list /work/src/distro/seeds/flatpak-refs.list; do
+for candidate in /usr/share/templaros/flatpak-refs.list /work/src/distro/seeds/flatpak-refs.list; do
     [ -f "$candidate" ] && { refs="$candidate"; break; }
 done
 if [ -z "$refs" ]; then

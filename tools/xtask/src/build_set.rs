@@ -1,7 +1,7 @@
 //! `cargo xtask build-set` — build all thirteen packages as one identified set.
 //!
-//! A *build set* is the whole of LegeOS built at one moment and labelled with one string, the
-//! [`BuildSetId`](lege_build::build_set_id), which is also the Debian version of every package in
+//! A *build set* is the whole of TemplarOS built at one moment and labelled with one string, the
+//! [`BuildSetId`](templar_build::build_set_id), which is also the Debian version of every package in
 //! it. That single string is what makes the rest of the deployment tooling possible: coherence is
 //! a string comparison, and rollback is `apt-get install --allow-downgrades pkg=<previous>`.
 //!
@@ -17,7 +17,6 @@
 //!   checked for the id it was supposed to have been given.
 
 use anyhow::{Context, Result, bail};
-use lege_build::{BuildSet, BuiltPackage, components::Matrix};
 use std::{
     fs,
     os::unix::fs::PermissionsExt as _,
@@ -25,6 +24,7 @@ use std::{
     process::Command as Process,
     time::{SystemTime, UNIX_EPOCH},
 };
+use templar_build::{BuildSet, BuiltPackage, components::Matrix};
 
 pub struct Options {
     /// Print the plan and exit without building.
@@ -52,7 +52,7 @@ pub fn current_id(root: &Path, epoch: Option<u64>) -> Result<(String, u64)> {
         .is_some_and(|status| !status.trim().is_empty());
     let epoch = epoch.unwrap_or_else(now_secs);
     Ok((
-        lege_build::build_set_id(&version, epoch, &git_sha, dirty),
+        templar_build::build_set_id(&version, epoch, &git_sha, dirty),
         epoch,
     ))
 }
@@ -75,7 +75,7 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
     println!("build set {id}");
     println!(
         "  changelog head: {}",
-        lege_build::changelog_entry(
+        templar_build::changelog_entry(
             &id,
             crate::archive::DISTRIBUTION,
             crate::archive::MAINTAINER,
@@ -144,9 +144,9 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
         interfaces: crate::signatures::parse_tree(root)?,
         schemas: [(
             "session".to_owned(),
-            lege_build::StoreSchema {
-                version: lege_state::schema_version(),
-                min_reader_version: lege_state::min_reader_version(),
+            templar_build::StoreSchema {
+                version: templar_state::schema_version(),
+                min_reader_version: templar_state::min_reader_version(),
             },
         )]
         .into_iter()
@@ -177,7 +177,7 @@ fn build_packages(
         let status = Process::new("cargo")
             .args(["deb", "-p", &component.crate_name, "--deb-version", id])
             .current_dir(root)
-            .env("LEGEOS_BUILD_SET_ID", id)
+            .env("TEMPLAROS_BUILD_SET_ID", id)
             .status()
             .with_context(|| format!("running cargo deb -p {}", component.crate_name))?;
         if !status.success() {
@@ -256,7 +256,7 @@ fn build_metapackages(
         // Staged under the system temp dir, not `target/`: a checkout on NTFS (this project's own
         // development host) reports 0777 for everything, which dpkg-deb refuses.
         let stage = std::env::temp_dir()
-            .join("legeos-metapackages")
+            .join("templaros-metapackages")
             .join(&package);
         let _ = fs::remove_dir_all(&stage);
         fs::create_dir_all(stage.join("DEBIAN"))
@@ -266,7 +266,7 @@ fn build_metapackages(
             fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
         }
         fs::write(stage.join("DEBIAN/control"), &control)?;
-        if package == "legeos-archive-keyring" {
+        if package == "templaros-archive-keyring" {
             // The archive pins ship with the keyring package; the key itself and the source stanza
             // are written by the provisioner from the archive it installs from.
             let pins = stage.join("etc/apt/preferences.d");
@@ -432,7 +432,7 @@ fn reject_stale_build_scripts(root: &Path, matrix: &Matrix, id: &str) -> Result<
     } else {
         bail!(
             "these binaries do not carry the build id they were built with, so their build script \
-             output was cached: {}. Run `cargo clean -p lege-build` and build again.",
+             output was cached: {}. Run `cargo clean -p templar-build` and build again.",
             stale.join(", ")
         )
     }
@@ -503,11 +503,11 @@ mod tests {
 
     #[test]
     fn metapackage_control_is_rendered_for_dpkg_deb() {
-        let template = "# GENERATED\nPackage: legeos-kernel\nArchitecture: amd64\nDepends: linux-generic (>= @KERNEL_MIN@), ${misc:Depends}\nDescription: k\n body\n";
+        let template = "# GENERATED\nPackage: templaros-kernel\nArchitecture: amd64\nDepends: linux-generic (>= @KERNEL_MIN@), ${misc:Depends}\nDescription: k\n body\n";
         let control =
             render_metapackage_control(template, "0.1.0~dev1", &[("@KERNEL_MIN@", "7.0".into())])
                 .unwrap();
-        assert!(control.starts_with("Package: legeos-kernel\nVersion: 0.1.0~dev1\n"));
+        assert!(control.starts_with("Package: templaros-kernel\nVersion: 0.1.0~dev1\n"));
         assert!(control.contains("Depends: linux-generic (>= 7.0)\n"));
         assert!(!control.contains("misc:Depends") && !control.contains('#'));
         let folded = "Package: p\nDepends: a, b,\n ${misc:Depends}\nDescription: d\n";
@@ -543,12 +543,12 @@ mod tests {
         assert!(
             built
                 .iter()
-                .any(|p| p.file == "legeos-kernel_0.0.0~test_amd64.deb")
+                .any(|p| p.file == "templaros-kernel_0.0.0~test_amd64.deb")
         );
         assert!(
             built
                 .iter()
-                .any(|p| p.file == "legeos-desktop_0.0.0~test_all.deb")
+                .any(|p| p.file == "templaros-desktop_0.0.0~test_all.deb")
         );
     }
 }

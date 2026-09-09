@@ -8,4 +8,4 @@ directory is where the evidence for it stays legible afterwards.
 
 | | |
 |---|---|
-| `omarchy-review.md` | Basecamp's Arch/Hyprland distribution, read for what LegeOS should adopt. Its §7 corrects three claims in the body against source — including that Omarchy already launches applications into transient systemd units and then identifies windows by `app_id` anyway. |
+| `omarchy-review.md` | Basecamp's Arch/Hyprland distribution, read for what TemplarOS should adopt. Its §7 corrects three claims in the body against source — including that Omarchy already launches applications into transient systemd units and then identifies windows by `app_id` anyway. |

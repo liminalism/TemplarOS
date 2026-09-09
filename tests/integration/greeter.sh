@@ -5,16 +5,16 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 
-cargo test -p lege-greeter
-cargo build -p lege-comp
+cargo test -p templar-greeter
+cargo build -p templar-comp
 bin="${CARGO_TARGET_DIR:-$root/target}/debug"
 
 config="session/units/greetd/config.toml"
-grep -q '^command = "lege-comp --backend udev --exec /usr/bin/lege-greeter"$' "$config"
-grep -q '^user = "lege-greeter"$' "$config"
+grep -q '^command = "templar-comp --backend udev --exec /usr/bin/templar-greeter"$' "$config"
+grep -q '^user = "templar-greeter"$' "$config"
 
 fake_socket="$root/tests/fixtures/fake-greetd.sock"
-inherited="$(GREETD_SOCK="$fake_socket" "$bin/lege-comp" --check --exec /usr/bin/env)"
+inherited="$(GREETD_SOCK="$fake_socket" "$bin/templar-comp" --check --exec /usr/bin/env)"
 grep -q "^GREETD_SOCK=$fake_socket$" <<<"$inherited"
 grep -q '^WAYLAND_DISPLAY=wayland-' <<<"$inherited"
 

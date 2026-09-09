@@ -1,0 +1,5 @@
+Types: deb
+URIs: https://archive.templaros.org/ubuntu
+Suites: templaros-26.04
+Components: main nvidia
+Signed-By: /usr/share/keyrings/templaros-archive-keyring.gpg

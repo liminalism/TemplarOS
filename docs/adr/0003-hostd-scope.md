@@ -1,4 +1,4 @@
-# ADR-0003: One privileged host daemon (lege-hostd) — and what it does not do
+# ADR-0003: One privileged host daemon (templar-hostd) — and what it does not do
 
 * **Status:** accepted
 * **Date:** 2026-08-17
@@ -9,12 +9,12 @@ Staged updates, driver authority, boot deployments, storage reserve and hardware
 policy over apt/systemd; each as its own root daemon multiplies polkit surfaces.
 
 ## Decision
-`lege-hostd` (system bus `org.legeos.Host`, one polkit policy `org.legeos.host.*`, AppArmor profile) hosts
+`templar-hostd` (system bus `org.templaros.Host`, one polkit policy `org.templaros.host.*`, AppArmor profile) hosts
 Updates, Deployments (`BootManager` trait), Drivers/GPU-mode, Storage reserve, Hardware profile. It keeps an
 on-disk transaction journal (resume mid-apt after restart) and runs apt as a child transient unit.
-**Timezone/location policy is not here**: it is network-facing (untrusted JSON) and lives in `lege-sessiond`,
+**Timezone/location policy is not here**: it is network-facing (untrusted JSON) and lives in `templar-sessiond`,
 setting the zone through polkit-gated `org.freedesktop.timedate1`.
 
 ## Consequences
-Fewer privileged surfaces; one place for `lege update`, `lege doctor` support-violation checks and the
+Fewer privileged surfaces; one place for `templar update`, `templar doctor` support-violation checks and the
 hardware profile.

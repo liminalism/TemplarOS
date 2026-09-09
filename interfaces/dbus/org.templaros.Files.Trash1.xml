@@ -1,0 +1,61 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Files (session bus, templar-filed). Path: /org/templaros/Files.
+
+     What is actually in the trash, and the three things a person does with it: put one item
+     back, remove one item for good, and empty the lot.
+
+     The service owns the freedesktop trash directories, so it is the only thing that can answer
+     "what is in the trash" without a second process growing its own idea of it. There is more
+     than one trash — the home trash under $XDG_DATA_HOME, and a per-volume trash on every other
+     mounted volume, because trashing must always be a rename — and List sweeps all of them, so
+     no client has to know that.
+
+     Restore, DeletePermanently and Empty are validating wrappers over Operations1.Start and
+     nothing else: the work runs as a journalled operation, with progress, crash-resume and (for
+     Restore) an undo. Emptying sweeps here rather than making a client list-then-delete, which
+     would race with anything else trashing a file in between. -->
+<node>
+  <interface name="org.templaros.Files.Trash1">
+
+    <!-- Every trash this user has, newest deletion first, as a JSON array of TrashEntry:
+         { name, trashed_path, info_path, original_path, deletion_date, trash_root,
+           is_directory, size_bytes }.
+         `deletion_date` is the specification's local `YYYY-MM-DDThh:mm:ss`. `size_bytes` is the
+         item's own size, not a directory's recursive total: a listing must not have to walk
+         every trashed folder to be drawn. -->
+    <method name="List">
+      <arg name="entries_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Put items back where they came from. Each path must be a top-level entry in one of this
+         user's trashes (a `trashed_path` from List); anything else is refused rather than
+         journalled. Returns the operation ID — watch Operations1.Progress and Finished. -->
+    <method name="Restore">
+      <arg name="trashed_paths" type="as" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="op_id" type="s" direction="out"/>
+    </method>
+
+    <!-- Remove items from the trash for good, with their .trashinfo records. Same validation as
+         Restore. There is no undo, and the UI is expected to have said so first. -->
+    <method name="DeletePermanently">
+      <arg name="trashed_paths" type="as" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="op_id" type="s" direction="out"/>
+    </method>
+
+    <!-- Empty every trash this user has. The sweep happens here, so nothing trashed between a
+         client's List and its delete is missed or caught by surprise. An already-empty trash is
+         not an error: the operation ID is then the empty string, and nothing is journalled. -->
+    <method name="Empty">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="op_id" type="s" direction="out"/>
+    </method>
+
+    <!-- The trash's contents changed: something was trashed, restored or deleted for good, by
+         any client. Emitted where operations finish, so a drawer and a file manager stay live
+         whichever of them did the mutating. Carries nothing — call List. -->
+    <signal name="Changed"/>
+  </interface>
+</node>

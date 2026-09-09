@@ -4,7 +4,7 @@
 |---|---|
 | `base.toml` | **the** declaration of the base: Ubuntu 26.04 "resolute", kernel flavour, NVIDIA source, image tool, identity |
 | `seeds/` | package lists composed into metapackages and images |
-| `metapackages/` | `legeos-desktop`, `legeos-kernel`, `legeos-nvidia-*`, `legeos-archive-keyring` |
+| `metapackages/` | `templaros-desktop`, `templaros-kernel`, `templaros-nvidia-*`, `templaros-archive-keyring` |
 | `image/` | mkosi dev/VM disk image (ESP + btrfs subvolumes) |
 | `iso/` | installer ISO (later stage) |
 | `apt/` | the archive: aptly layout, deb822 source, keyring, pins (one driver authority) |

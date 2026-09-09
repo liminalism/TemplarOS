@@ -1,0 +1,8 @@
+target/release/templar-filed usr/libexec/
+target/preview-codecs/templar-preview-codecs usr/libexec/
+target/preview-codecs/licenses/JPXL-LICENSE-MIT usr/share/doc/templaros-filed/preview-codecs/
+target/preview-codecs/licenses/LEGE-PDF-LICENSE usr/share/doc/templaros-filed/preview-codecs/
+session/units/user/templar-filed.service usr/lib/systemd/user/
+interfaces/dbus/org.templaros.Files.Browse1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.templaros.Files.Previews1.xml usr/share/dbus-1/interfaces/
+interfaces/dbus/org.templaros.Files.Volumes1.xml usr/share/dbus-1/interfaces/

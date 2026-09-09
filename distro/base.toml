@@ -1,6 +1,6 @@
 # The one place the base is declared. Everything else (mkosi, seeds, metapackages, CI) reads this.
 # ADR-0007: Ubuntu 26.04 LTS "resolute", Ubuntu's own kernel. Mainline 7.2 is *not* pinned; it is a
-# candidate for the transactional kernel/driver path in lege-hostd, never hand-installed.
+# candidate for the transactional kernel/driver path in templar-hostd, never hand-installed.
 
 [base]
 distribution = "ubuntu"
@@ -19,7 +19,7 @@ snapshot_serial = "20260905T011226Z"
 
 [kernel]
 flavour = "linux-generic"          # 7.0 GA at release; "linux-generic-hwe-26.04" once HWE ships
-metapackage = "legeos-kernel"      # version-locks kernel + LRM (linux-modules-nvidia-*) + firmware
+metapackage = "templaros-kernel"      # version-locks kernel + LRM (linux-modules-nvidia-*) + firmware
 mainline_candidate = "7.2"         # tracked only through hostd transactions
 # @KERNEL_MIN@ in the metapackage templates: the linux-generic version the closure resolved to.
 min_version = "7.0.0-31.31"
@@ -27,10 +27,10 @@ min_version = "7.0.0-31.31"
 [nvidia]
 source = "ubuntu-lrm"              # Canonical-signed prebuilt modules, never DKMS or the .run installer
 flavours = ["open", "proprietary"] # mutually exclusive on disk; one selected from detected hardware
-metapackages = { open = "legeos-nvidia-open", proprietary = "legeos-nvidia-proprietary" }
+metapackages = { open = "templaros-nvidia-open", proprietary = "templaros-nvidia-proprietary" }
 # @NVIDIA_BRANCH@ / @NVIDIA_LRM_VERSION@ / @NVIDIA_USERSPACE_VERSION@ in the metapackage templates,
 # from the resolved closure (distro/seeds/closures/). The LRM version is the kernel's; the two move
-# together, which is the point of legeos-kernel. Refresh them when the snapshot pin moves.
+# together, which is the point of templaros-kernel. Refresh them when the snapshot pin moves.
 branch = "580"
 lrm_version = "7.0.0-31.31"
 userspace_version = "580.173.02-0ubuntu0.26.04.1"
@@ -42,9 +42,9 @@ bootloader = "systemd-boot"        # dev/VM images; Secure-Boot posture per ADR-
 root_filesystem = "btrfs"          # subvolumes from day one so deployments can be snapshots (ADR-0004)
 
 [identity]
-name = "LegeOS"
-id = "legeos"
+name = "TemplarOS"
+id = "templaros"
 id_like = "ubuntu debian"
 version = "0.1"                    # distro/release/VERSIONING.md
 codename = "aurora"
-home_url = "https://legeos.org"
+home_url = "https://templaros.org"

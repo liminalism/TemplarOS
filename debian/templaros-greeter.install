@@ -1,0 +1,4 @@
+target/release/templar-greeter usr/bin/
+session/units/greetd/config.toml usr/share/templaros/greetd/
+distro/policy/sysusers.d/templaros-greeter.conf usr/lib/sysusers.d/
+distro/policy/tmpfiles.d/templaros-greeter.conf usr/lib/tmpfiles.d/

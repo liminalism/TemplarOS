@@ -1,4 +1,4 @@
-# LegeOS developer entry points. `just` (no args) lists recipes.
+# TemplarOS developer entry points. `just` (no args) lists recipes.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -42,9 +42,9 @@ check-interfaces:
     cargo run -q -p xtask -- check-assets
     cargo run -q -p xtask -- check-actions
 
-# `lege doctor` against this machine
+# `templar doctor` against this machine
 doctor *ARGS:
-    cargo run -q -p lege -- doctor {{ARGS}}
+    cargo run -q -p templar -- doctor {{ARGS}}
 
 # Measure the shared file index's runtime cost (docs/measurements/): dir count/watch limits,
 # then the timed-workload suite against a generated fixture. Idle-cost sampling and the
@@ -82,7 +82,7 @@ forks-fetch:
 
 # The installation medium: a live ISO carrying the archive's current set (distro/iso/build.sh).
 # Needs a non-NTFS build volume (ISO-PLAN.md P0.2) and a published set (`just deb`, then
-# `sudo lege dev repo publish`).
+# `sudo templar dev repo publish`).
 iso *args:
     ./distro/iso/build.sh {{args}}
 

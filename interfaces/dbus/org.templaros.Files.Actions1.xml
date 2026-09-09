@@ -1,0 +1,25 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Files (session bus, templar-filed). Path: /org/templaros/Files.
+
+     The small actions that are otherwise a service menu, a downloaded script or a local patch
+     in every file manager, each quoting and escaping slightly differently. They are small
+     enough to be exact, so the service owns them and every client gives the same answer. -->
+<node>
+  <interface name="org.templaros.Files.Actions1">
+    <!-- form is canonical | as-shown | uri | shell-quoted | parent-directory | name. -->
+    <method name="Render">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="form" type="s" direction="in"/>
+      <arg name="text" type="s" direction="out"/>
+    </method>
+    <method name="Forms">
+      <arg name="forms" type="as" direction="out"/>
+    </method>
+    <!-- Where "open a terminal here" should start. -->
+    <method name="TerminalDirectory">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="directory" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

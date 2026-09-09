@@ -3,7 +3,7 @@
 #
 # ADR-0005 says forks are pinned, never vendored, so the source is not in this repository. What is
 # in this repository is the *packaging*: distro/forks/<name>/debian/ holds the control file, the
-# rules and the changelog, so the package's name, dependencies and install paths are LegeOS facts
+# rules and the changelog, so the package's name, dependencies and install paths are TemplarOS facts
 # that `cargo xtask check-packaging` can see, while the code stays in the fork.
 #
 #   scripts/build-fork-deb.sh nm-tray-2                  # from forks/<name> (just forks-fetch)
@@ -76,8 +76,8 @@ if [ "$dry_run" = 1 ]; then
     exit 0
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/legeos-fork-$name.XXXXXX")"
-cleanup() { case "$work" in */legeos-fork-*) rm -rf -- "$work" ;; esac; }
+work="$(mktemp -d "${TMPDIR:-/tmp}/templaros-fork-$name.XXXXXX")"
+cleanup() { case "$work" in */templaros-fork-*) rm -rf -- "$work" ;; esac; }
 trap cleanup EXIT
 
 # Copy the source, never build in it: the checkout may be the user's own working tree.

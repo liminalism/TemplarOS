@@ -1,12 +1,12 @@
-# LegeOS storage and deployment layout — the single declaration (contract C3, ADR-0004).
+# TemplarOS storage and deployment layout — the single declaration (contract C3, ADR-0004).
 #
 # Three things consume this file and must agree with it:
 #   1. distro/image/mkosi.repart/*.conf — the dev/VM image's partitions and subvolumes.
 #      Not generated from here: repart's own syntax is the input mkosi understands, and
-#      `layout_declaration_parses_and_matches_repart` (services/lege-hostd/src/boot_entries.rs)
+#      `layout_declaration_parses_and_matches_repart` (services/templar-hostd/src/boot_entries.rs)
 #      fails the build when the two drift apart.
 #   2. installer/provision.sh — the narrow target-machine provisioner.
-#   3. services/lege-hostd/src/boot_entries.rs — the deployment id grammar, the kernel command
+#   3. services/templar-hostd/src/boot_entries.rs — the deployment id grammar, the kernel command
 #      line and the ESP directory are compiled in there and pinned to this file by the same test.
 #
 # Changing anything here is a C3 contract change: it goes through D3, not around it.
@@ -24,7 +24,7 @@ size_max = "1G"
 # partition label), so the mkosi image has none and is found by partition type; the provisioner
 # sets this one with `mkfs.vfat -n`. Nothing in the boot path depends on it: generated GRUB
 # entries locate the ESP with `search --file`, which works either way.
-label = "LEGEOS_ESP"
+label = "TEMPLAROS_ESP"
 # Where the ESP is mounted on a provisioned target. hostd also accepts `/efi` (a minimal mkosi
 # image) — `deploy::esp_root` is the one place that decides.
 mount = "/boot/efi"
@@ -34,30 +34,30 @@ type = "root"
 format = "btrfs"
 size_min = "8G"
 # Set by the provisioner (`mkfs.btrfs -L`). This one *is* load-bearing: every generated boot
-# entry says `root=LABEL=legeos-root`, because the label is identical for every deployment and
+# entry says `root=LABEL=templaros-root`, because the label is identical for every deployment and
 # the deployment id on the command line is what tells them apart.
-label = "legeos-root"
+label = "templaros-root"
 mount = "/"
 mount_options = "compress=zstd:1"
 # @deployments holds the read-only candidate snapshots the update engine stages
-# (services/lege-hostd/src/updates.rs). It is authoritative: the declaration follows the engine.
+# (services/templar-hostd/src/updates.rs). It is authoritative: the declaration follows the engine.
 subvolumes = ["/@", "/@home", "/@var", "/@snapshots", "/@deployments"]
 
 # --- An optional independent data role ---------------------------------------------------------
 
 # A second filesystem that is not the OS and is never assumed expendable
-# (@legeos.decision.independent-storage-roles). Absent from every machine provisioned so far; the
+# (@templaros.decision.independent-storage-roles). Absent from every machine provisioned so far; the
 # provisioner creates it only when `--data PART` names one, and `--reuse` never formats it.
 #
-# It is a *role*, not a mount of convenience: it has its own indexing policy (lege-filed registers
+# It is a *role*, not a mount of convenience: it has its own indexing policy (templar-filed registers
 # it as a second root with its own RootPolicy, so its freshness and its search visibility are
 # independent of @home's), its own preservation policy, and its own identity in
-# /etc/legeos/install.toml. Nothing in the boot path depends on it — a machine that loses its data
+# /etc/templaros/install.toml. Nothing in the boot path depends on it — a machine that loses its data
 # disk still boots.
 [data]
 type = "linux-generic"
 format = "btrfs"
-label = "legeos-data"
+label = "templaros-data"
 mount = "/data"
 mount_options = "compress=zstd:1"
 # Reuse what is there. `format` in this field is the explicit, destructive opt-in: the current
@@ -86,26 +86,26 @@ stamp_format = "%Y%m%dT%H%M%SZ"
 # The subvolume a deployment's root snapshot lives at, relative to the root subvolume set.
 subvolume_template = "@deployments/{id}"
 # The ESP directory hostd owns for a deployment: kernel, initramfs and (systemd-boot) its entry.
-esp_dir_template = "/EFI/legeos/{id}"
+esp_dir_template = "/EFI/templaros/{id}"
 
 [deployment.cmdline]
 # The one thing that distinguishes deployments after the fact. Read by
 # `state::booted_deployment_from_cmdline`; written identically by both boot backends.
-key = "legeos.deployment="
-template = "root=LABEL=legeos-root rw legeos.deployment={id}"
+key = "templaros.deployment="
+template = "root=LABEL=templaros-root rw templaros.deployment={id}"
 
 # --- Boot managers ------------------------------------------------------------------------------
 
 # Bare metal (Developer Edition 0.1): Canonical-signed shim -> Canonical-signed GRUB ->
-# Ubuntu-signed kernel -> Canonical-signed matching NVIDIA LRM. No LegeOS signing infrastructure
+# Ubuntu-signed kernel -> Canonical-signed matching NVIDIA LRM. No TemplarOS signing infrastructure
 # and no MOK enrolment.
 [boot.grub]
 # Written whole by hostd on every stage/promote/rollback. Never hand-edited, never produced by
 # grub-mkconfig.
-entries_file = "/boot/grub/legeos-entries.cfg"
-# Shipped as distro/deploy/grub.d/09_legeos, installed by the provisioner. It makes grub.cfg
+entries_file = "/boot/grub/templaros-entries.cfg"
+# Shipped as distro/deploy/grub.d/09_templaros, installed by the provisioner. It makes grub.cfg
 # source the generated file at boot, so hostd never has to run grub-mkconfig.
-stub = "/etc/grub.d/09_legeos"
+stub = "/etc/grub.d/09_templaros"
 # The menu entry id is the bare deployment id, which is exactly what hostd passes to
 # `grub-reboot` and `grub-set-default`.
 menuentry_id_template = "{id}"
@@ -117,6 +117,6 @@ tries_counter = "hostd"
 
 # Dev/VM images built by mkosi keep systemd-boot with Secure Boot off (ADR-0006, ADR-0004).
 [boot.systemd_boot]
-entry_template = "/loader/entries/legeos-{id}.conf"
+entry_template = "/loader/entries/templaros-{id}.conf"
 # The loader decrements the `+tries` suffix itself; hostd counts nothing there.
 tries_counter = "loader"

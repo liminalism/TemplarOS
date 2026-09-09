@@ -6,7 +6,7 @@ unhealthy rather than treating `--report-only`'s zero exit as a pass.
 
 `nested-session.sh` runs the real winit compositor and trusted graphical shell plus sessiond, filed,
 and resourced on a private bus. It drives app discovery, file search, settings mutation/history,
-provider resolution, and resource reporting through `lege`. Run it under an existing X display or
+provider resolution, and resource reporting through `templar`. Run it under an existing X display or
 with `xvfb-run -a`; CI uses Xvfb.
 
 `greeter.sh` covers the greetd framed-JSON conversation with the crate's fake peer and verifies the

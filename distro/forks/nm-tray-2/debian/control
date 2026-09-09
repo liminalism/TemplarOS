@@ -1,7 +1,7 @@
-Source: legeos-nm-tray
+Source: templaros-nm-tray
 Section: net
 Priority: optional
-Maintainer: LegeOS contributors <dev@legeos.org>
+Maintainer: TemplarOS contributors <dev@templaros.org>
 Build-Depends: debhelper-compat (= 13),
                cmake,
                qt6-base-dev,
@@ -12,18 +12,18 @@ Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://github.com/LegeApp/nm-tray-alt
 
-Package: legeos-nm-tray
+Package: templaros-nm-tray
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, network-manager
 Provides: nm-tray
 Conflicts: nm-tray
 Replaces: nm-tray
-Description: network control for the LegeOS Home Field
+Description: network control for the TemplarOS Home Field
  A Qt6 NetworkManager front end, forked from palinek/nm-tray so that it can be
- driven without a system tray: LegeOS has no taskbar to host an applet, so the
+ driven without a system tray: TemplarOS has no taskbar to host an applet, so the
  Home Field's network control launches this with --popup and an already-running
  instance takes the request over the session bus instead of duplicating itself.
  .
  The package installs nm-tray.desktop, which is the name the shell resolves when
- no application declares org.legeos.NetworkTray
- (shell/lege-shell/src/surface/app.rs).
+ no application declares org.templaros.NetworkTray
+ (shell/templar-shell/src/surface/app.rs).

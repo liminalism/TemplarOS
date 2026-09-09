@@ -1,0 +1,24 @@
+[package]
+name = "templar-comp-integration"
+description = "What the cosmic-comp fork links: an IdentityCache over D-Bus to templar-sessiond, the templar-window bridge, typed layers and private-protocol constants"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+templar-types = { workspace = true }
+templar-window = { workspace = true }
+templar-client = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

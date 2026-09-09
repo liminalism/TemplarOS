@@ -2,8 +2,8 @@
 
 These nine traces are **written by hand**. Nobody's desktop produced them. They are scenarios
 chosen to exercise the parts of the governor that are hard to reach otherwise, in the format
-`lege-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
-`lege-resourced --replay` can push them back through the current policy.
+`templar-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
+`templar-resourced --replay` can push them back through the current policy.
 
 That distinction is the whole point of this file. A green replay proves the policy makes the
 **same** decisions on the same inputs — that a refactor was a refactor, and that a deliberate
@@ -17,8 +17,8 @@ flags — are the hand-authored part. Each record's **outcome** — `level`, `vi
 whatever the policy decided when the fixture was last blessed:
 
 ```sh
-cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay          # diff
-cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay --bless  # re-record
+cargo run -p templar-resourced -- --replay tests/fixtures/resources/replay          # diff
+cargo run -p templar-resourced -- --replay tests/fixtures/resources/replay --bless  # re-record
 ```
 
 Blessing is how a deliberate policy change gets committed, *after* its diff has been read and
@@ -51,7 +51,7 @@ that isolates the *memory* leg of the classifier from the PSI leg: the other fou
 level through PSI, so they would decide the same thing whatever the reserve was. On the 48 GiB
 reference machine 2 GiB is below the 3 GiB reserve and reads as `severe`; replayed through a
 4 GiB laptop's scaled thresholds it reads as `normal`, because 2 GiB free on a 4 GiB machine is
-half the machine. `services/lege-resourced/tests/replay_fixtures.rs` asserts exactly that
+half the machine. `services/templar-resourced/tests/replay_fixtures.rs` asserts exactly that
 divergence, which is how the memory-scaling work is evidenced rather than asserted.
 
 **`06-attention-and-intent.jsonl`** — Severe pressure with three real candidates: a document the

@@ -1,26 +1,26 @@
 # Upstream forks pinned here, fetched into ../../forks/ (gitignored) by `just forks-fetch` (ADR-0005).
 #
-# The compositor is NOT here: `lege-comp` is written against Smithay and is an ordinary member of
-# this workspace, not a fork of cosmic-comp (ADR-0012). Nor is the greeter: `lege-greeter` is our
+# The compositor is NOT here: `templar-comp` is written against Smithay and is an ordinary member of
+# this workspace, not a fork of cosmic-comp (ADR-0012). Nor is the greeter: `templar-greeter` is our
 # own, so that logging in does not require a COSMIC toolkit stack.
-# Each remaining fork lives in its own repository with an `upstream` tracking branch and a `legeos` patch branch;
-# `pin` is the legeos-branch commit the distribution builds. Empty pin = tip of `branch` (dev only).
+# Each remaining fork lives in its own repository with an `upstream` tracking branch and a `templaros` patch branch;
+# `pin` is the templaros-branch commit the distribution builds. Empty pin = tip of `branch` (dev only).
 
 [xdg-desktop-portal-cosmic]
 upstream = "https://github.com/pop-os/xdg-desktop-portal-cosmic"
-fork = "https://github.com/legeos/xdg-desktop-portal-cosmic"
-branch = "legeos"
+fork = "https://github.com/templaros/xdg-desktop-portal-cosmic"
+branch = "templaros"
 pin = ""
-purpose = "ScreenCast/Screenshot backends until xdg-desktop-portal-lege covers them"
+purpose = "ScreenCast/Screenshot backends until xdg-desktop-portal-templar covers them"
 package = "xdg-desktop-portal-cosmic"
 
 
 [cosmic-applets]
 upstream = "https://github.com/pop-os/cosmic-applets"
-fork = "https://github.com/legeos/cosmic-applets"
-branch = "legeos"
+fork = "https://github.com/templaros/cosmic-applets"
+branch = "templaros"
 pin = ""
-purpose = "Indicators as views (network/bluetooth/audio) until lege-shell has its own"
+purpose = "Indicators as views (network/bluetooth/audio) until templar-shell has its own"
 package = "cosmic-applets"
 
 [nm-tray-2]
@@ -28,6 +28,6 @@ upstream = "https://github.com/palinek/nm-tray"
 fork = "https://github.com/LegeApp/nm-tray-alt"
 branch = "dbus‑fix‑web"
 pin = "0965344f1ddb79f874aa57e555b871e1b37ad696"
-purpose = "the network control the Home information row launches; LegeOS has no system tray to host an applet"
-package = "legeos-nm-tray"
-note = "Two deviations from the ADR-0005 shape, both the fork's to fix. (1) There is no `legeos` branch: the LegeOS work lives on the branch named above, whose two hyphens are U+2011 NON-BREAKING HYPHEN and cannot be typed. (2) The pin does NOT carry --popup, the session-bus forwarding slot or the X-LegeOS-* desktop keys: those exist only in a working tree at ../not-rust-projects/nm-tray-2 and have never been committed. scripts/build-fork-deb.sh refuses to package a binary without --popup rather than shipping one the shell cannot drive."
+purpose = "the network control the Home information row launches; TemplarOS has no system tray to host an applet"
+package = "templaros-nm-tray"
+note = "Two deviations from the ADR-0005 shape, both the fork's to fix. (1) There is no `templaros` branch: the TemplarOS work lives on the branch named above, whose two hyphens are U+2011 NON-BREAKING HYPHEN and cannot be typed. (2) The pin does NOT carry --popup, the session-bus forwarding slot or the X-TemplarOS-* desktop keys: those exist only in a working tree at ../not-rust-projects/nm-tray-2 and have never been committed. scripts/build-fork-deb.sh refuses to package a binary without --popup rather than shipping one the shell cannot drive."

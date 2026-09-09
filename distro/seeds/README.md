@@ -25,14 +25,14 @@ fails on it. Add the package to `selection.toml` instead, with a reason.
 `bootstrap` (a machine that boots and can install the rest of itself), `hardware`, `graphics`,
 `session`, `desktop`, `browser`, `media`, `dev-rust`, `dev-cuda`, and the optional `opt-a11y`,
 `opt-ime`, `opt-bluetooth`. `nvidia-open` and `nvidia-proprietary` are *variants* of one group:
-exactly one is selected, by `lege-hwdetect`, and neither is in the dev/VM image.
+exactly one is selected, by `templar-hwdetect`, and neither is in the dev/VM image.
 
 Every direct package carries a one-line `reason`. A `role` (`terminal`, `browser`,
 `input-method`, `secret-service`, `gpu-driver`, …) is exclusive — two selected packages claiming
 one role is an error, which is how "two input methods fighting over one protocol" fails here
 rather than on a user's desktop.
 
-Excluded on purpose (ADR-0011), and rendered as `Conflicts:` on `legeos-desktop`: `snapd`,
+Excluded on purpose (ADR-0011), and rendered as `Conflicts:` on `templaros-desktop`: `snapd`,
 `apport`, `whoopsie`, `ubuntu-report`, second desktop stacks.
 
 ## The closure report
@@ -51,7 +51,7 @@ lives in `distro/base.toml` (`snapshot_url`, `snapshot_serial`) and empty means 
 ## The `--no-recommends` experiment
 
 The deployment path already installs with `--no-install-recommends`
-(`cli/lege/src/dev/install.rs`); the image does not. `[policy].recommends = "on"` records that,
+(`cli/templar/src/dev/install.rs`); the image does not. `[policy].recommends = "on"` records that,
 and `seeds closure` reports `recommends.no_recommends_experiment.would_drop` — the packages that
 only a `Recommends:` pulls in — by simulating the install both ways. **This is a report, not a
 policy.** Turning recommends off for the image is a decision to take with that list in hand: it

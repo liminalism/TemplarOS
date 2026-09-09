@@ -15,7 +15,7 @@ use std::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "LegeOS repository automation")]
+#[command(name = "xtask", about = "TemplarOS repository automation")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -25,19 +25,19 @@ struct Cli {
 enum Command {
     /// Every component home in ARCHITECTURE.md exists and has a README.
     TreeCheck,
-    /// `lege-window` must not depend on tokio or zbus (compositor render-thread rule).
+    /// `templar-window` must not depend on tokio or zbus (compositor render-thread rule).
     DepsCheck,
     /// Every zbus interface name in the code has an XML file in interfaces/dbus/.
     CheckInterfaces,
     /// Every `debian/control` Package: has a matching `[package.metadata.deb]` crate.
     CheckPackaging,
-    /// Every client `#[proxy(interface = "org.legeos...")]` has a live `#[zbus::interface]`
+    /// Every client `#[proxy(interface = "org.templaros...")]` has a live `#[zbus::interface]`
     /// implementation somewhere in the workspace, not just an XML file.
     CheckProxies,
     /// Every vendored asset (a font, an icon set — anything not built from source in this
     /// repository) carries its own licence file, so `debian/copyright` can account for it.
     CheckAssets,
-    /// Every `ActionDecl` with a `cli_verb` names a real `lege` subcommand, every action a shell
+    /// Every `ActionDecl` with a `cli_verb` names a real `templar` subcommand, every action a shell
     /// surface performs is declared, and every action with a chord also has a pointer route.
     CheckActions,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
@@ -118,7 +118,7 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
     // rather than compositor chords — so without this needle the row would be invisible here and
     // a file verb could end up keyboard-only without the check noticing.
     "FileVerbRoute::new(\"",
-    // `lege_comp::window_groups::POINTER_GESTURES`: a pointer gesture the *compositor* performs
+    // `templar_comp::window_groups::POINTER_GESTURES`: a pointer gesture the *compositor* performs
     // (dropping one window's band on another's groups them). Not every pointer route is a shell
     // widget — some are gestures on the workspace, which the shell cannot see and which keep
     // working when it is dead — and a rule that only counted shell rows would push those actions
@@ -128,7 +128,7 @@ const POINTER_ROUTE_NEEDLES: &[&str] = &[
 
 /// Where a pointer route can be declared. The shell is where most of them are — menu rows,
 /// regions, verb buttons — and the compositor is where the workspace's own gestures are.
-const POINTER_ROUTE_ROOTS: &[&str] = &["shell/lege-shell/src", "compositor/lege-comp/src"];
+const POINTER_ROUTE_ROOTS: &[&str] = &["shell/templar-shell/src", "compositor/templar-comp/src"];
 
 /// Declared actions that carry a chord and, for now, legitimately have no pointer route.
 ///
@@ -141,7 +141,7 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
     // The compositor reserves Super+Tab and Super+Shift+Tab; a pointer route to moving between
     // groups (the switcher, or a menu row) is still owed by the shell. `window.group` needs no
     // entry: dropping one window's band on another's is its pointer route, declared in
-    // `lege_comp::window_groups::POINTER_GESTURES`; `window.ungroup` has the group tile's row.
+    // `templar_comp::window_groups::POINTER_GESTURES`; `window.ungroup` has the group tile's row.
     (
         "window.group-cycle-forward",
         "compositor chord; no surface offers moving between groups by pointer yet",
@@ -159,7 +159,7 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every declared action's `cli_verb` reaches a real `lege` subcommand, every action id a shell
+/// Every declared action's `cli_verb` reaches a real `templar` subcommand, every action id a shell
 /// surface performs is declared, and every action with an accelerator also has a pointer route.
 ///
 /// The point of one declaration driving three surfaces is that they cannot drift; nothing
@@ -167,15 +167,15 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
 /// are string ids. This is the check that notices. It reads sources rather than running anything,
 /// so it works in CI with no bus and no display.
 ///
-/// The third rule is the manifest's own (`lege_types::action`'s module doc: "a chord is an
+/// The third rule is the manifest's own (`templar_types::action`'s module doc: "a chord is an
 /// accelerator, never the only route... a chord with no pointer path is a bug"), and until this
 /// check existed it was aspirational: eight actions were reachable from a keyboard and nowhere
 /// else, and nothing said so.
 fn check_actions(root: &Path) -> Result<()> {
-    let manifest = std::fs::read_to_string(root.join("crates/lege-types/src/action.rs"))
+    let manifest = std::fs::read_to_string(root.join("crates/templar-types/src/action.rs"))
         .context("reading the action manifest")?;
-    let cli =
-        std::fs::read_to_string(root.join("cli/lege/src/main.rs")).context("reading lege's CLI")?;
+    let cli = std::fs::read_to_string(root.join("cli/templar/src/main.rs"))
+        .context("reading templar's CLI")?;
 
     // `cli_verb: Some("session poweroff")` -> the subcommand path it claims.
     let mut verbs = Vec::new();
@@ -200,9 +200,9 @@ fn check_actions(root: &Path) -> Result<()> {
         let group_variant = capitalise(group);
         let leaf_variant = capitalise(leaf);
         if !cli.contains(&format!("Command::{group_variant} ")) {
-            missing.push(format!("{verb} (no `lege {group}`)"));
+            missing.push(format!("{verb} (no `templar {group}`)"));
         } else if !cli.contains(&format!("{group_variant}Command::{leaf_variant}")) {
-            missing.push(format!("{verb} (no `{leaf}` under `lege {group}`)"));
+            missing.push(format!("{verb} (no `{leaf}` under `templar {group}`)"));
         }
     }
 
@@ -243,7 +243,7 @@ fn check_actions(root: &Path) -> Result<()> {
             eprintln!(
                 "check-actions: {id} has a chord and no pointer route — a chord is an \
                  accelerator, never the only route. Give it a menu row \
-                 (shell/lege-shell/src/surface/context_menu.rs) or a region, or add it to \
+                 (shell/templar-shell/src/surface/context_menu.rs) or a region, or add it to \
                  CHORD_WITHOUT_POINTER_ROUTE with a reason."
             );
         }
@@ -306,7 +306,7 @@ fn chord_route_problems(
 
 /// `(action id, has at least one chord)` for every `ActionDecl` in the manifest source.
 ///
-/// A line scanner rather than a link against `lege_types`: this check must be able to report that
+/// A line scanner rather than a link against `templar_types`: this check must be able to report that
 /// the manifest is wrong even when the workspace does not build, which is exactly the state a
 /// half-finished action leaves it in.
 fn declared_actions(manifest: &str) -> Vec<(String, bool)> {
@@ -469,11 +469,12 @@ fn main() -> Result<()> {
 }
 
 /// One field of every component, one per line. The shell scripts that install or reinstall
-/// LegeOS need the package list and nothing else; letting them ask keeps
+/// TemplarOS need the package list and nothing else; letting them ask keeps
 /// `distro/deploy/components.toml` the only place it is written down.
 fn components(root: &Path, field: &str) -> Result<()> {
-    let matrix = lege_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
-        .context("reading the component matrix")?;
+    let matrix =
+        templar_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
+            .context("reading the component matrix")?;
     for component in &matrix.components {
         let value = match field {
             "name" => component.name.clone(),
@@ -580,14 +581,14 @@ fn deps_check(root: &Path) -> Result<()> {
             .to_owned()
     };
 
-    // Which crates must stay pure, and what "pure" rules out for each. `lege-window` runs on
-    // the compositor render thread, so no async runtime and no D-Bus; `lege-field` is shared by
+    // Which crates must stay pure, and what "pure" rules out for each. `templar-window` runs on
+    // the compositor render thread, so no async runtime and no D-Bus; `templar-field` is shared by
     // the shell and sessiond as plain data and geometry, so the same, plus no toolkit;
-    // `lege-treemap` is arithmetic rasterized on any thread, so no toolkit and no GPU either.
+    // `templar-treemap` is arithmetic rasterized on any thread, so no toolkit and no GPU either.
     let rules: [(&str, &[&str]); 3] = [
-        ("lege-window", &["tokio", "zbus", "async-std", "smol"]),
+        ("templar-window", &["tokio", "zbus", "async-std", "smol"]),
         (
-            "lege-treemap",
+            "templar-treemap",
             &[
                 "tokio",
                 "zbus",
@@ -603,7 +604,7 @@ fn deps_check(root: &Path) -> Result<()> {
             ],
         ),
         (
-            "lege-field",
+            "templar-field",
             &[
                 "tokio",
                 "zbus",
@@ -670,7 +671,7 @@ fn deps_check(root: &Path) -> Result<()> {
 ///   - *server* names come from `#[zbus::interface(name = "...")]`, the trait a daemon actually
 ///     serves on the bus.
 ///   - *client* names come from `#[proxy(interface = "...")]` / `#[zbus::proxy(interface =
-///     "...")]`, the typed proxies `lege-client` hands to every consumer.
+///     "...")]`, the typed proxies `templar-client` hands to every consumer.
 ///
 /// This used to be one pass sharing a generic `"interface = \""` substring marker with the
 /// server-side one — a marker meant only for `#[zbus::interface(name = "...")]` that also
@@ -686,8 +687,8 @@ fn deps_check(root: &Path) -> Result<()> {
 fn check_interfaces(root: &Path) -> Result<()> {
     let mut server = BTreeSet::new();
     let mut client = BTreeSet::new();
-    // `cli/` only calls into `lege-client`'s already-scanned proxies and declares no interface
-    // name of its own today (checked: no `interface` literal anywhere under `cli/lege/src/`), so
+    // `cli/` only calls into `templar-client`'s already-scanned proxies and declares no interface
+    // name of its own today (checked: no `interface` literal anywhere under `cli/templar/src/`), so
     // scanning it is a no-op in practice — kept in the list so a future proxy or interface literal
     // written directly in the CLI is still caught by construction, not left uncovered by omission.
     for dir in [
@@ -736,8 +737,8 @@ fn check_interfaces(root: &Path) -> Result<()> {
     }
 }
 
-/// Walks `dir` recursively, adding every `org.legeos.*` server interface name it finds to
-/// `server` and every `org.legeos.*` client (proxy) interface name to `client`.
+/// Walks `dir` recursively, adding every `org.templaros.*` server interface name it finds to
+/// `server` and every `org.templaros.*` client (proxy) interface name to `client`.
 fn collect_interfaces(
     dir: &Path,
     server: &mut BTreeSet<String>,
@@ -762,24 +763,24 @@ fn collect_interfaces(
     Ok(())
 }
 
-/// Server-side interface names: `#[zbus::interface(name = "org.legeos...")]`.
+/// Server-side interface names: `#[zbus::interface(name = "org.templaros...")]`.
 fn server_interface_names(text: &str) -> BTreeSet<String> {
     attribute_string_args(text, &["#[zbus::interface("], "name")
 }
 
-/// Client-side interface names: `#[proxy(interface = "org.legeos...")]` and its
+/// Client-side interface names: `#[proxy(interface = "org.templaros...")]` and its
 /// `#[zbus::proxy(...)]` spelling.
 fn client_interface_names(text: &str) -> BTreeSet<String> {
     attribute_string_args(text, &["#[proxy(", "#[zbus::proxy("], "interface")
 }
 
-/// Every `org.legeos.*` value of the `key = "..."` argument of any attribute opened by one of
+/// Every `org.templaros.*` value of the `key = "..."` argument of any attribute opened by one of
 /// `openers`.
 ///
 /// Deliberately not a per-line scan with a fixed-spacing marker. Three shapes a line scan gets
 /// wrong, each of which turns a *green* check into one that is checking nothing:
 ///   * the attribute spanning several lines (`#[proxy(` on one, `interface = "..."` on the next),
-///     which is how every proxy in `crates/lege-client` is actually written;
+///     which is how every proxy in `crates/templar-client` is actually written;
 ///   * `key="value"` with no spaces around `=`, which rustfmt has no opinion about inside an
 ///     attribute and which a `key = "` marker silently misses;
 ///   * the attribute appearing verbatim inside a `//` or `///` comment — a doc example showing
@@ -802,7 +803,7 @@ fn attribute_string_args(text: &str, openers: &[&str], key: &str) -> BTreeSet<St
             let open_paren = at + opener.len() - 1;
             if let Some(body) = balanced_parenthesised(text, open_paren)
                 && let Some(value) = string_argument(body, key)
-                && value.starts_with("org.legeos.")
+                && value.starts_with("org.templaros.")
             {
                 values.insert(value);
             }
@@ -881,7 +882,7 @@ fn string_argument(body: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Every client `#[proxy(interface = "org.legeos...")]` must name an interface some
+/// Every client `#[proxy(interface = "org.templaros...")]` must name an interface some
 /// `#[zbus::interface(name = "...")]` in this workspace actually implements — a renamed or
 /// typo'd interface on the client side would otherwise only be caught the first time someone
 /// runs the client against a real bus. `check-interfaces` (above) already extracts `server` and
@@ -930,13 +931,13 @@ fn check_proxies(root: &Path) -> Result<()> {
 /// `debian/control` packages for which no workspace crate needs `[package.metadata.deb]`.
 ///
 /// Checked directly against every crate under `debian/control` as of this writing
-/// (legeos-sessiond, legeos-resourced, legeos-filed, legeos-hostd, legeos-boot-health,
-/// legeos-session, legeos-shell, legeos-settings, legeos-portal, legeos-cli): every one of them
+/// (templaros-sessiond, templaros-resourced, templaros-filed, templaros-hostd, templaros-boot-health,
+/// templaros-session, templaros-shell, templaros-settings, templaros-portal, templaros-cli): every one of them
 /// is built from exactly one `cargo-deb`-packaged crate and already carries a
 /// `[package.metadata.deb]` table whose `name` matches its `Package:` stanza — including
-/// legeos-session and legeos-boot-health, which read as though they might be hand-assembled
-/// metapackages but are each an ordinary single-binary crate (`session/lege-session`,
-/// `services/lege-boot-health`) with its own `[package.metadata.deb]`. So this list is empty
+/// templaros-session and templaros-boot-health, which read as though they might be hand-assembled
+/// metapackages but are each an ordinary single-binary crate (`session/templar-session`,
+/// `services/templar-boot-health`) with its own `[package.metadata.deb]`. So this list is empty
 /// today. It exists for the day a `debian/control` package genuinely has no `cargo-deb` crate of
 /// its own (for example a virtual/meta package assembled only from `debian/*.install` and
 /// `debian/rules`, never `cargo deb -p ...`) — add its `Package:` name here with a comment
@@ -979,8 +980,9 @@ fn check_packaging(root: &Path) -> Result<()> {
     } = deb_metadata(packages);
 
     let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
-    let matrix = lege_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
-        .context("reading the component matrix")?;
+    let matrix =
+        templar_build::components::Matrix::read(&root.join("distro/deploy/components.toml"))
+            .context("reading the component matrix")?;
     problems.extend(component_matrix_problems(
         &matrix,
         &control_packages,
@@ -1052,7 +1054,7 @@ fn check_packaging(root: &Path) -> Result<()> {
 
 /// The path the garden's terminal prompt hook is shipped to, and the one file a graphical
 /// terminal's shell will actually read it from.
-const GARDEN_HOOK_PAYLOAD: &str = "etc/profile.d/60-legeos-garden.sh";
+const GARDEN_HOOK_PAYLOAD: &str = "etc/profile.d/60-templaros-garden.sh";
 const GARDEN_HOOK_DELIVERY: &str = "/etc/bash.bashrc";
 
 /// The garden's terminal hook has to arrive in a file bash reads for an *interactive, non-login*
@@ -1096,7 +1098,7 @@ fn garden_hook_delivery_problems(packages: &[serde_json::Value]) -> Vec<String> 
     let scripts = manifest_dir.join(scripts);
     for (name, must_mention) in [
         ("postinst", GARDEN_HOOK_PAYLOAD),
-        ("postrm", "legeos garden hook"),
+        ("postrm", "templaros garden hook"),
     ] {
         let path = scripts.join(name);
         match std::fs::read_to_string(&path) {
@@ -1211,13 +1213,13 @@ fn unit_file_names(root: &Path) -> BTreeSet<String> {
 /// The component matrix must name exactly the build set, and name it correctly.
 ///
 /// `distro/deploy/components.toml` is what `cargo xtask build-set` builds, what the reinstall
-/// script installs, what `lege doctor` checks for coherence and what `lege dev` activates. Four
+/// script installs, what `templar doctor` checks for coherence and what `templar dev` activates. Four
 /// consumers of one list is only an improvement over four copies of it if the list cannot be
 /// wrong, so: every `debian/control` package is a matrix row, every matrix row is a
 /// `debian/control` package, and every row's `crate` is the crate that actually builds that
 /// package according to `[package.metadata.deb]`.
 fn component_matrix_problems(
-    matrix: &lege_build::components::Matrix,
+    matrix: &templar_build::components::Matrix,
     control_packages: &[String],
     deb_name_to_crate: &BTreeMap<String, String>,
     unit_files: &BTreeSet<String>,
@@ -1292,18 +1294,18 @@ fn manifest_executable_is_provided(
 
 /// Application manifests naming an executable that nothing provides.
 ///
-/// A manifest in `distro/app-manifests/` is shipped to `/usr/share/legeos/apps/` and registers its
+/// A manifest in `distro/app-manifests/` is shipped to `/usr/share/templaros/apps/` and registers its
 /// MIME types, so it is a live promise that opening one of those files will launch that binary.
-/// `org.legeos.Viewer.json` was a test fixture that had been copied into the packaged directory:
-/// byte-identical to `tests/fixtures/manifests/`, naming `/usr/bin/lege-viewer` for a crate that
+/// `org.templaros.Viewer.json` was a test fixture that had been copied into the packaged directory:
+/// byte-identical to `tests/fixtures/manifests/`, naming `/usr/bin/templar-viewer` for a crate that
 /// has never existed, and claiming `application/pdf`. Installed, it would have become the
 /// registered PDF handler and every PDF would have failed to open — against a system whose fourth
 /// stated claim is that file opening is predictable.
 ///
 /// An executable is provided if some package here installs it, or if its name is a remaining
-/// fork's package. `lege-files` is first-party and therefore takes the ordinary installed-file
+/// fork's package. `templar-files` is first-party and therefore takes the ordinary installed-file
 /// path through this check. A curated manifest for a third-party application the user has not
-/// installed is a runtime observation, not a build error — `lege doctor` warns about those.
+/// installed is a runtime observation, not a build error — `templar doctor` warns about those.
 fn dangling_manifest_executables(
     root: &Path,
     installed: &BTreeSet<String>,
@@ -1343,8 +1345,8 @@ fn dangling_manifest_executables(
 ///
 /// `dpkg` refuses this at unpack time — "trying to overwrite X, which is also in package Y" — so
 /// it is an install-blocking error found at the worst moment, on a user's machine, halfway
-/// through. It is trivially detectable here: legeos-session and legeos-comp both shipped
-/// `lege-comp.service` for exactly as long as it took to notice.
+/// through. It is trivially detectable here: templaros-session and templaros-comp both shipped
+/// `templar-comp.service` for exactly as long as it took to notice.
 ///
 /// Only genuinely different packages count. The same file appearing in both a package's
 /// `debian/*.install` and its own cargo-deb assets is the two build paths agreeing, which is
@@ -1396,7 +1398,7 @@ fn metapackage_controls(root: &Path) -> Result<Vec<(String, String)>> {
     Ok(controls)
 }
 
-/// LegeOS packages named in a metapackage's `Depends:`/`Recommends:` that nothing builds.
+/// TemplarOS packages named in a metapackage's `Depends:`/`Recommends:` that nothing builds.
 ///
 /// The seeds are one list of package names; a metapackage's dependency list is the other, and it
 /// had the same two wrong names in it. Substitution variables (`${misc:Depends}`) and version
@@ -1409,7 +1411,7 @@ fn metapackage_dependency_problems(
     for (path, text) in controls {
         // A folded continuation line only continues the field above it, so whether an indented
         // line is a dependency list depends on what came before. Without tracking that, a
-        // Description that mentions "lege-hostd's transactional path" reads as a dependency.
+        // Description that mentions "templar-hostd's transactional path" reads as a dependency.
         let mut in_dependency_field = false;
         for line in text.lines() {
             let body = match line.split_once(':') {
@@ -1432,9 +1434,9 @@ fn metapackage_dependency_problems(
             };
             for dependency in body.split(',') {
                 let name = dependency.split_whitespace().next().unwrap_or_default();
-                if name.starts_with("lege") && !built.contains(name) {
+                if name.starts_with("templar") && !built.contains(name) {
                     problems.push(format!(
-                        "{path}: depends on LegeOS package {name}, which nothing in this \
+                        "{path}: depends on TemplarOS package {name}, which nothing in this \
                          repository builds"
                     ));
                 }
@@ -1444,23 +1446,23 @@ fn metapackage_dependency_problems(
     problems
 }
 
-/// Seed entries naming a LegeOS package that nothing in this repository builds.
+/// Seed entries naming a TemplarOS package that nothing in this repository builds.
 ///
-/// The seeds are the image's package list, so a name that is almost right — `lege-comp` where the
-/// package is `legeos-comp` — is not a typo that shows up at build time here; it shows up as an
+/// The seeds are the image's package list, so a name that is almost right — `templar-comp` where the
+/// package is `templaros-comp` — is not a typo that shows up at build time here; it shows up as an
 /// unresolvable dependency when someone builds the image, far from the file that caused it. Only
-/// `lege`-prefixed entries are checked: the rest are Ubuntu's and not ours to know about.
+/// `templar`-prefixed entries are checked: the rest are Ubuntu's and not ours to know about.
 ///
-/// Three things build a LegeOS package, and a seed may name any of them: `debian/control`, a
+/// Three things build a TemplarOS package, and a seed may name any of them: `debian/control`, a
 /// metapackage directory under `distro/metapackages/`, and a fork's `package` in
 /// `distro/forks/manifest.toml`.
 fn seed_problems(seeds: &BTreeMap<String, Vec<String>>, built: &BTreeSet<String>) -> Vec<String> {
     let mut problems = Vec::new();
     for (seed, entries) in seeds {
         for entry in entries {
-            if entry.starts_with("lege") && !built.contains(entry) {
+            if entry.starts_with("templar") && !built.contains(entry) {
                 problems.push(format!(
-                    "{seed}: names LegeOS package {entry}, which nothing in this repository builds \
+                    "{seed}: names TemplarOS package {entry}, which nothing in this repository builds \
                      (not debian/control, distro/metapackages/ or a fork's package=)"
                 ));
             }
@@ -1469,11 +1471,11 @@ fn seed_problems(seeds: &BTreeMap<String, Vec<String>>, built: &BTreeSet<String>
     problems
 }
 
-/// Every LegeOS package name this repository produces, from all three sources.
+/// Every TemplarOS package name this repository produces, from all three sources.
 fn built_package_names(root: &Path, control_packages: &[String]) -> Result<BTreeSet<String>> {
     let mut built: BTreeSet<String> = control_packages.iter().cloned().collect();
     // Read each metapackage's own `Package:` rather than its directory name — they differ:
-    // `distro/metapackages/legeos-session-meta/` builds `legeos-session-full`.
+    // `distro/metapackages/templaros-session-meta/` builds `templaros-session-full`.
     for (_, text) in metapackage_controls(root)? {
         built.extend(parse_control_packages(&text));
     }
@@ -1592,7 +1594,7 @@ fn shipped_destinations(
 ///
 /// This is the leg `packaging_problems` cannot cover. That one checks `debian/control` and the
 /// crate metadata against *each other*, so a binary missing from both looks perfectly consistent —
-/// which is exactly how `lege-comp` came to have a unit pointing at `/usr/bin/lege-comp` that no
+/// which is exactly how `templar-comp` came to have a unit pointing at `/usr/bin/templar-comp` that no
 /// package shipped. A unit is a promise that a binary will be at a path; this checks the promise
 /// against what is actually installed there.
 fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String>) -> Vec<String> {
@@ -1608,7 +1610,7 @@ fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String
 /// Every service names its authority, its lifetime, its recovery and its deadlines, and its
 /// declared lifetime is supported by the way it is started.
 ///
-/// `@legeos.decision.event-driven-service-authorities` requires that "each persistent daemon and
+/// `@templaros.decision.event-driven-service-authorities` requires that "each persistent daemon and
 /// polling exception records its authority, lifetime, activation, recovery, deadline and
 /// justification". A hand-written inventory document goes stale the first time a unit changes;
 /// this is the same statement made where the build can check it.
@@ -1617,12 +1619,12 @@ fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String
 /// descriptor naming the unit, and an eagerly wanted unit is session-bound even if it uses the
 /// bus name as its readiness condition.
 fn service_inventory_problems(
-    matrix: &lege_build::components::Matrix,
+    matrix: &templar_build::components::Matrix,
     unit_types: &BTreeMap<String, String>,
     dbus_activated: &BTreeSet<String>,
     session_wanted: &BTreeSet<String>,
 ) -> Vec<String> {
-    use lege_build::components::Lifetime;
+    use templar_build::components::Lifetime;
 
     let mut problems = Vec::new();
     for component in &matrix.components {
@@ -1638,7 +1640,7 @@ fn service_inventory_problems(
             if value.trim().is_empty() {
                 problems.push(format!(
                     "{name}: has the unit {unit} but declares no {field}; every service records \
-                     one (@legeos.decision.event-driven-service-authorities)"
+                     one (@templaros.decision.event-driven-service-authorities)"
                 ));
             }
         }
@@ -1666,7 +1668,7 @@ fn service_inventory_problems(
                  descriptor names SystemdService={unit}"
             )),
             Lifetime::DbusActivated if session_wanted.contains(unit) => problems.push(format!(
-                "{name}: the matrix says lifetime = DbusActivated, but legeos-session.target \
+                "{name}: the matrix says lifetime = DbusActivated, but templaros-session.target \
                  eagerly Wants={unit}; declare it session-bound or stop eager activation"
             )),
             Lifetime::SessionBound if unit_type == "oneshot" => problems.push(format!(
@@ -1776,7 +1778,7 @@ fn dbus_activated_units(root: &Path) -> Result<BTreeSet<String>> {
 
 /// Services eagerly started by the graphical session target.
 fn session_wanted_units(root: &Path) -> Result<BTreeSet<String>> {
-    let path = root.join("session/units/user/legeos-session.target");
+    let path = root.join("session/units/user/templaros-session.target");
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     Ok(text
@@ -1948,7 +1950,7 @@ fn parse_depends_list(list: &str) -> BTreeSet<String> {
 ///
 /// The two are written by hand in two files and nothing else ties them together: `debian/rules`
 /// builds from `debian/control`, `cargo deb` builds from the crate table, and a release uses one
-/// or the other. `legeos-hostd` shipped with `policykit-1` in the crate table after the control
+/// or the other. `templaros-hostd` shipped with `policykit-1` in the crate table after the control
 /// file had moved to `polkitd` — the transitional package no longer exists on the 25.10/26.04
 /// base, so the `.deb` could not be configured at all.
 fn dependency_drift(
@@ -2104,11 +2106,11 @@ fn copyright(root: &Path) -> Result<()> {
         .output()?;
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     println!(
-        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: legeos\n"
+        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: templaros\n"
     );
     for package in metadata["packages"].as_array().unwrap_or(&vec![]) {
         println!(
-            "Files: {}/*\nCopyright: 2026 LegeOS contributors\nLicense: {}\n",
+            "Files: {}/*\nCopyright: 2026 TemplarOS contributors\nLicense: {}\n",
             package["manifest_path"]
                 .as_str()
                 .unwrap_or("?")
@@ -2188,7 +2190,7 @@ mod extraction_tests {
         assert_eq!(keyboard_only, vec!["field.undo".to_owned()]);
         assert!(stale.is_empty());
         // An action with no chord at all is not required to have one: `session.lock` reaches the
-        // user through `lege session lock` and a widget region, and neither is this rule's
+        // user through `templar session lock` and a widget region, and neither is this rule's
         // business.
         assert!(!keyboard_only.contains(&"session.lock".to_owned()));
     }
@@ -2217,17 +2219,17 @@ mod extraction_tests {
     fn vendored_assets_without_a_licence_are_reported() {
         let found = vec![
             VendoredAssets {
-                dir: "shell/lege-shell/assets".into(),
-                licence: Some("shell/lege-shell/assets/fonts/LICENSE".into()),
+                dir: "shell/templar-shell/assets".into(),
+                licence: Some("shell/templar-shell/assets/fonts/LICENSE".into()),
             },
             VendoredAssets {
-                dir: "apps/lege-greeter/assets".into(),
+                dir: "apps/templar-greeter/assets".into(),
                 licence: None,
             },
         ];
         let problems = unlicensed_assets(&found);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].starts_with("apps/lege-greeter/assets:"));
+        assert!(problems[0].starts_with("apps/templar-greeter/assets:"));
         assert!(unlicensed_assets(&found[..1]).is_empty());
     }
 
@@ -2237,35 +2239,36 @@ mod extraction_tests {
 
     #[test]
     fn a_single_line_server_attribute_is_found() {
-        let text = r#"#[zbus::interface(name = "org.legeos.Widgets1")]
+        let text = r#"#[zbus::interface(name = "org.templaros.Widgets1")]
             impl WidgetsApi {}"#;
         assert_eq!(
             names(&server_interface_names(text)),
-            ["org.legeos.Widgets1"]
+            ["org.templaros.Widgets1"]
         );
     }
 
     #[test]
     fn a_server_attribute_split_across_lines_is_found() {
         // The shape a line-based scan with a `name = "` marker silently misses.
-        let text = "#[zbus::interface(\n    name = \"org.legeos.Widgets1\"\n)]\nimpl WidgetsApi {}";
+        let text =
+            "#[zbus::interface(\n    name = \"org.templaros.Widgets1\"\n)]\nimpl WidgetsApi {}";
         assert_eq!(
             names(&server_interface_names(text)),
-            ["org.legeos.Widgets1"]
+            ["org.templaros.Widgets1"]
         );
     }
 
     #[test]
     fn server_and_client_attributes_tolerate_any_spacing_around_equals() {
-        let server = "#[zbus::interface(name=\"org.legeos.Widgets1\")]";
-        let client = "#[proxy(interface   =    \"org.legeos.Widgets1\")]";
+        let server = "#[zbus::interface(name=\"org.templaros.Widgets1\")]";
+        let client = "#[proxy(interface   =    \"org.templaros.Widgets1\")]";
         assert_eq!(
             names(&server_interface_names(server)),
-            ["org.legeos.Widgets1"]
+            ["org.templaros.Widgets1"]
         );
         assert_eq!(
             names(&client_interface_names(client)),
-            ["org.legeos.Widgets1"]
+            ["org.templaros.Widgets1"]
         );
     }
 
@@ -2276,35 +2279,40 @@ mod extraction_tests {
         // `check-proxies` reports a server that does not exist.
         let text = r#"
             /// Declare one like this:
-            /// #[zbus::interface(name = "org.legeos.Documented1")]
-            // #[proxy(interface = "org.legeos.CommentedOut1")]
-            #[zbus::interface(name = "org.legeos.Real1")]
+            /// #[zbus::interface(name = "org.templaros.Documented1")]
+            // #[proxy(interface = "org.templaros.CommentedOut1")]
+            #[zbus::interface(name = "org.templaros.Real1")]
             impl RealApi {}
         "#;
-        assert_eq!(names(&server_interface_names(text)), ["org.legeos.Real1"]);
+        assert_eq!(
+            names(&server_interface_names(text)),
+            ["org.templaros.Real1"]
+        );
         assert!(client_interface_names(text).is_empty());
     }
 
     #[test]
     fn a_multiline_proxy_attribute_is_found_and_both_spellings_work() {
-        let text = "#[proxy(\n    interface = \"org.legeos.Widgets1\",\n    default_service = \"org.legeos.Session\",\n    default_path = \"/org/legeos/Session/Widgets\"\n)]\npub trait Widgets {}";
+        let text = "#[proxy(\n    interface = \"org.templaros.Widgets1\",\n    default_service = \"org.templaros.Session\",\n    default_path = \"/org/templaros/Session/Widgets\"\n)]\npub trait Widgets {}";
         assert_eq!(
             names(&client_interface_names(text)),
-            ["org.legeos.Widgets1"]
+            ["org.templaros.Widgets1"]
         );
-        let qualified = "#[zbus::proxy(interface = \"org.legeos.Other1\")]";
+        let qualified = "#[zbus::proxy(interface = \"org.templaros.Other1\")]";
         assert_eq!(
             names(&client_interface_names(qualified)),
-            ["org.legeos.Other1"]
+            ["org.templaros.Other1"]
         );
     }
 
     #[test]
     fn an_interface_key_is_matched_as_a_whole_argument_name() {
         // `default_interface` must not be mistaken for `interface`.
-        let text =
-            r#"#[proxy(default_interface = "org.legeos.Wrong1", interface = "org.legeos.Right1")]"#;
-        assert_eq!(names(&client_interface_names(text)), ["org.legeos.Right1"]);
+        let text = r#"#[proxy(default_interface = "org.templaros.Wrong1", interface = "org.templaros.Right1")]"#;
+        assert_eq!(
+            names(&client_interface_names(text)),
+            ["org.templaros.Right1"]
+        );
     }
 
     #[test]
@@ -2312,15 +2320,15 @@ mod extraction_tests {
         // The boundary that makes this a real check of the attribute rather than a substring
         // scan over the whole file.
         let text = r#"
-            const DOCS: &str = "interface = \"org.legeos.NotReal1\"";
-            let name = "org.legeos.AlsoNotReal1";
+            const DOCS: &str = "interface = \"org.templaros.NotReal1\"";
+            let name = "org.templaros.AlsoNotReal1";
         "#;
         assert!(client_interface_names(text).is_empty());
         assert!(server_interface_names(text).is_empty());
     }
 
     #[test]
-    fn non_legeos_interfaces_are_ignored() {
+    fn non_templaros_interfaces_are_ignored() {
         let text = r#"#[zbus::interface(name = "org.freedesktop.impl.portal.Settings")]
             #[proxy(interface = "org.freedesktop.DBus")]"#;
         assert!(server_interface_names(text).is_empty());
@@ -2329,18 +2337,20 @@ mod extraction_tests {
 
     #[test]
     fn check_proxies_goes_green_when_every_client_has_a_server() {
-        let server = server_interface_names(r#"#[zbus::interface(name = "org.legeos.Widgets1")]"#);
-        let client = client_interface_names(r#"#[proxy(interface = "org.legeos.Widgets1")]"#);
+        let server =
+            server_interface_names(r#"#[zbus::interface(name = "org.templaros.Widgets1")]"#);
+        let client = client_interface_names(r#"#[proxy(interface = "org.templaros.Widgets1")]"#);
         let orphaned: Vec<&String> = client.iter().filter(|n| !server.contains(*n)).collect();
         assert!(orphaned.is_empty());
     }
 
     #[test]
     fn check_proxies_goes_red_for_a_client_interface_with_no_server() {
-        let server = server_interface_names(r#"#[zbus::interface(name = "org.legeos.Widgets1")]"#);
-        let client = client_interface_names(r#"#[proxy(interface = "org.legeos.Ghost1")]"#);
+        let server =
+            server_interface_names(r#"#[zbus::interface(name = "org.templaros.Widgets1")]"#);
+        let client = client_interface_names(r#"#[proxy(interface = "org.templaros.Ghost1")]"#);
         let orphaned: Vec<&String> = client.iter().filter(|n| !server.contains(*n)).collect();
-        assert_eq!(orphaned, [&"org.legeos.Ghost1".to_owned()]);
+        assert_eq!(orphaned, [&"org.templaros.Ghost1".to_owned()]);
     }
 
     #[test]
@@ -2349,13 +2359,13 @@ mod extraction_tests {
         // also eats the next line's leading whitespace, which would silently destroy the one
         // character that makes the continuation-line case a test at all.
         let control = concat!(
-            "Source: legeos\n",
+            "Source: templaros\n",
             "\n",
-            "Package: legeos-cli   \n", // trailing whitespace
+            "Package: templaros-cli   \n", // trailing whitespace
             "Architecture: any\n",
             "Description: one\n",
             "\n",
-            "Package:legeos-shell\n", // no space after the colon
+            "Package:templaros-shell\n", // no space after the colon
             "Architecture: any\n",
             "Description: two that continues\n",
             " Package: not-a-stanza-it-is-a-continuation-line\n", // leading space
@@ -2364,7 +2374,7 @@ mod extraction_tests {
         );
         assert_eq!(
             parse_control_packages(control),
-            ["legeos-cli".to_owned(), "legeos-shell".to_owned()],
+            ["templaros-cli".to_owned(), "templaros-shell".to_owned()],
         );
     }
 
@@ -2376,21 +2386,21 @@ mod extraction_tests {
     }
 
     fn service_row(
-        lifetime: Option<lege_build::components::Lifetime>,
-    ) -> lege_build::components::Component {
-        lege_build::components::Component {
+        lifetime: Option<templar_build::components::Lifetime>,
+    ) -> templar_build::components::Component {
+        templar_build::components::Component {
             name: "filed".to_owned(),
-            crate_name: "lege-filed".to_owned(),
-            package: "legeos-filed".to_owned(),
+            crate_name: "templar-filed".to_owned(),
+            package: "templaros-filed".to_owned(),
             stamp: None,
-            unit: Some("lege-filed.service".to_owned()),
-            scope: lege_build::components::Scope::User,
-            activation: lege_build::components::Activation::Manual,
+            unit: Some("templar-filed.service".to_owned()),
+            scope: templar_build::components::Scope::User,
+            activation: templar_build::components::Activation::Manual,
             depends_on: Vec::new(),
             summary: "file service".to_owned(),
             authority: "the per-user file index".to_owned(),
             lifetime,
-            consumer_interfaces: vec!["org.legeos.Files.Index1".to_owned()],
+            consumer_interfaces: vec!["org.templaros.Files.Index1".to_owned()],
             recovery: "SnapshotRequired, then resnapshot".to_owned(),
             deadlines: "answered from the last committed generation".to_owned(),
             timer_exceptions: Vec::new(),
@@ -2398,9 +2408,9 @@ mod extraction_tests {
     }
 
     fn matrix_of(
-        components: Vec<lege_build::components::Component>,
-    ) -> lege_build::components::Matrix {
-        lege_build::components::Matrix {
+        components: Vec<templar_build::components::Component>,
+    ) -> templar_build::components::Matrix {
+        templar_build::components::Matrix {
             version: 1,
             components,
         }
@@ -2410,12 +2420,12 @@ mod extraction_tests {
     fn a_service_that_declares_no_authority_is_a_packaging_failure() {
         // The whole point of putting the inventory here rather than in a document: a service that
         // stops describing itself fails the build instead of going quietly stale.
-        let mut row = service_row(Some(lege_build::components::Lifetime::DbusActivated));
+        let mut row = service_row(Some(templar_build::components::Lifetime::DbusActivated));
         row.authority.clear();
-        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
+        let types = [("templar-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
-        let activated = BTreeSet::from(["lege-filed.service".to_owned()]);
+        let activated = BTreeSet::from(["templar-filed.service".to_owned()]);
         let problems =
             service_inventory_problems(&matrix_of(vec![row]), &types, &activated, &BTreeSet::new());
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -2427,8 +2437,8 @@ mod extraction_tests {
 
     #[test]
     fn type_dbus_is_readiness_and_does_not_make_a_service_activation_driven() {
-        let row = service_row(Some(lege_build::components::Lifetime::SessionBound));
-        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
+        let row = service_row(Some(templar_build::components::Lifetime::SessionBound));
+        let types = [("templar-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
         assert!(
@@ -2444,8 +2454,8 @@ mod extraction_tests {
 
     #[test]
     fn dbus_activation_requires_a_descriptor_and_must_not_be_eagerly_wanted() {
-        let row = service_row(Some(lege_build::components::Lifetime::DbusActivated));
-        let types = [("lege-filed.service".to_owned(), "dbus".to_owned())]
+        let row = service_row(Some(templar_build::components::Lifetime::DbusActivated));
+        let types = [("templar-filed.service".to_owned(), "dbus".to_owned())]
             .into_iter()
             .collect();
         let problems = service_inventory_problems(
@@ -2460,7 +2470,7 @@ mod extraction_tests {
             "{problems:?}"
         );
 
-        let present = BTreeSet::from(["lege-filed.service".to_owned()]);
+        let present = BTreeSet::from(["templar-filed.service".to_owned()]);
         let problems =
             service_inventory_problems(&matrix_of(vec![row]), &types, &present, &present);
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -2490,13 +2500,13 @@ mod extraction_tests {
     /// regression it exists for: shipping the hook to `/etc/profile.d` and calling it delivered.
     #[test]
     fn the_garden_hook_must_reach_a_file_a_non_login_interactive_bash_reads() {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cli/lege/Cargo.toml");
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cli/templar/Cargo.toml");
         let real = serde_json::json!({
             "manifest_path": manifest.to_string_lossy(),
             "metadata": { "deb": {
-                "name": "legeos-cli",
-                "maintainer-scripts": "../../packaging/legeos-cli",
-                "assets": [["../../session/profile.d/60-legeos-garden.sh", GARDEN_HOOK_PAYLOAD, "644"]],
+                "name": "templaros-cli",
+                "maintainer-scripts": "../../packaging/templaros-cli",
+                "assets": [["../../session/profile.d/60-templaros-garden.sh", GARDEN_HOOK_PAYLOAD, "644"]],
             }},
         });
         assert!(garden_hook_delivery_problems(std::slice::from_ref(&real)).is_empty());
@@ -2519,24 +2529,27 @@ mod extraction_tests {
 
     #[test]
     fn check_packaging_goes_green_when_both_sides_match() {
-        let control = vec!["legeos-cli".to_owned(), "legeos-shell".to_owned()];
-        let debs = deb_names(&[("legeos-cli", "lege"), ("legeos-shell", "lege-shell")]);
+        let control = vec!["templaros-cli".to_owned(), "templaros-shell".to_owned()];
+        let debs = deb_names(&[
+            ("templaros-cli", "templar"),
+            ("templaros-shell", "templar-shell"),
+        ]);
         assert!(packaging_problems(&control, &debs).is_empty());
     }
 
     #[test]
     fn control_depends_parse_per_stanza_without_substitution_variables() {
-        let control = "Package: legeos-hostd\nArchitecture: any\n\
+        let control = "Package: templaros-hostd\nArchitecture: any\n\
                        Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd\n\n\
-                       Package: legeos-cli\nDepends: ${shlibs:Depends}, ${misc:Depends}\n\n\
-                       Package: legeos-bare\n";
+                       Package: templaros-cli\nDepends: ${shlibs:Depends}, ${misc:Depends}\n\n\
+                       Package: templaros-bare\n";
         let parsed = parse_control_depends(control);
         assert_eq!(
-            parsed["legeos-hostd"],
+            parsed["templaros-hostd"],
             BTreeSet::from(["systemd".to_owned(), "apt".to_owned(), "polkitd".to_owned()])
         );
-        assert!(parsed["legeos-cli"].is_empty());
-        assert!(parsed["legeos-bare"].is_empty());
+        assert!(parsed["templaros-cli"].is_empty());
+        assert!(parsed["templaros-bare"].is_empty());
         assert_eq!(
             parse_depends_list("$auto, polkitd|policykit-1 , xwayland"),
             BTreeSet::from(["polkitd | policykit-1".to_owned(), "xwayland".to_owned()])
@@ -2548,22 +2561,22 @@ mod extraction_tests {
         // The one that shipped: the crate table still named the transitional policykit-1 after
         // debian/control had moved to polkitd.
         let control = BTreeMap::from([(
-            "legeos-hostd".to_owned(),
+            "templaros-hostd".to_owned(),
             parse_depends_list("systemd, apt, polkitd"),
         )]);
         let deb = BTreeMap::from([(
-            "legeos-hostd".to_owned(),
+            "templaros-hostd".to_owned(),
             parse_depends_list("$auto, systemd, apt, policykit-1"),
         )]);
-        let names = deb_names(&[("legeos-hostd", "lege-hostd")]);
+        let names = deb_names(&[("templaros-hostd", "templar-hostd")]);
         let problems = dependency_drift(&control, &deb, &names);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("legeos-hostd (crate lege-hostd)"));
+        assert!(problems[0].contains("templaros-hostd (crate templar-hostd)"));
         assert!(problems[0].contains("only in debian/control: [\"polkitd\"]"));
         assert!(problems[0].contains("only in [package.metadata.deb] depends: [\"policykit-1\"]"));
 
         let deb = BTreeMap::from([(
-            "legeos-hostd".to_owned(),
+            "templaros-hostd".to_owned(),
             parse_depends_list("$auto, polkitd, apt, systemd"),
         )]);
         assert!(dependency_drift(&control, &deb, &names).is_empty());
@@ -2571,33 +2584,33 @@ mod extraction_tests {
 
     #[test]
     fn check_packaging_goes_red_for_a_control_package_with_no_deb_metadata() {
-        let control = vec!["legeos-cli".to_owned(), "legeos-orphan".to_owned()];
-        let debs = deb_names(&[("legeos-cli", "lege")]);
+        let control = vec!["templaros-cli".to_owned(), "templaros-orphan".to_owned()];
+        let debs = deb_names(&[("templaros-cli", "templar")]);
         let problems = packaging_problems(&control, &debs);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("legeos-orphan"));
+        assert!(problems[0].contains("templaros-orphan"));
         assert!(problems[0].contains("no crate [package.metadata.deb]"));
     }
 
     #[test]
     fn a_manifest_executable_counts_as_provided_only_when_something_provides_it() {
-        let installed = BTreeSet::from(["/usr/bin/lege-shell".to_owned()]);
-        let forks = BTreeSet::from(["lege-files".to_owned()]);
+        let installed = BTreeSet::from(["/usr/bin/templar-shell".to_owned()]);
+        let forks = BTreeSet::from(["templar-files".to_owned()]);
 
         assert!(manifest_executable_is_provided(
-            "/usr/bin/lege-shell",
+            "/usr/bin/templar-shell",
             &installed,
             &forks
         ));
         // From the cosmic-files fork, whose file list is not visible from this repository.
         assert!(manifest_executable_is_provided(
-            "/usr/bin/lege-files",
+            "/usr/bin/templar-files",
             &installed,
             &forks
         ));
         // The one that shipped: a fixture manifest for a crate that has never existed.
         assert!(!manifest_executable_is_provided(
-            "/usr/bin/lege-viewer",
+            "/usr/bin/templar-viewer",
             &installed,
             &forks
         ));
@@ -2605,47 +2618,53 @@ mod extraction_tests {
 
     #[test]
     fn check_packaging_goes_red_when_two_packages_install_the_same_path() {
-        // The real case: legeos-session and legeos-comp both shipped lege-comp.service.
+        // The real case: templaros-session and templaros-comp both shipped templar-comp.service.
         let shipped = vec![
             (
-                "/usr/lib/systemd/user/lege-comp.service".to_owned(),
-                "legeos-comp".to_owned(),
+                "/usr/lib/systemd/user/templar-comp.service".to_owned(),
+                "templaros-comp".to_owned(),
             ),
             (
-                "/usr/lib/systemd/user/lege-comp.service".to_owned(),
-                "legeos-session".to_owned(),
+                "/usr/lib/systemd/user/templar-comp.service".to_owned(),
+                "templaros-session".to_owned(),
             ),
             // One package listing a file in both of its own build paths is agreement, not a
             // collision.
-            ("/usr/bin/lege-shell".to_owned(), "legeos-shell".to_owned()),
-            ("/usr/bin/lege-shell".to_owned(), "legeos-shell".to_owned()),
+            (
+                "/usr/bin/templar-shell".to_owned(),
+                "templaros-shell".to_owned(),
+            ),
+            (
+                "/usr/bin/templar-shell".to_owned(),
+                "templaros-shell".to_owned(),
+            ),
         ];
         let problems = colliding_destinations(&shipped);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("lege-comp.service"));
-        assert!(problems[0].contains("legeos-comp"));
-        assert!(problems[0].contains("legeos-session"));
+        assert!(problems[0].contains("templar-comp.service"));
+        assert!(problems[0].contains("templaros-comp"));
+        assert!(problems[0].contains("templaros-session"));
     }
 
     #[test]
     fn check_packaging_goes_red_for_a_metapackage_depending_on_a_package_that_is_not_built() {
         let controls = vec![(
-            "distro/metapackages/legeos-desktop/control.in".to_owned(),
-            "Package: legeos-desktop\nDepends: legeos-shell, lege-comp, greetd, ${misc:Depends}\n \
-             legeos-cli, lege-greeter\nDescription: LegeOS desktop\n Uses lege-hostd's \
+            "distro/metapackages/templaros-desktop/control.in".to_owned(),
+            "Package: templaros-desktop\nDepends: templaros-shell, templar-comp, greetd, ${misc:Depends}\n \
+             templaros-cli, templar-greeter\nDescription: TemplarOS desktop\n Uses templar-hostd's \
              transactional path with automatic rollback.\n"
                 .to_owned(),
         )];
         let built = BTreeSet::from([
-            "legeos-shell".to_owned(),
-            "legeos-cli".to_owned(),
-            "legeos-comp".to_owned(),
+            "templaros-shell".to_owned(),
+            "templaros-cli".to_owned(),
+            "templaros-comp".to_owned(),
         ]);
         let problems = metapackage_dependency_problems(&controls, &built);
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("lege-comp")));
+        assert!(problems.iter().any(|p| p.contains("templar-comp")));
         // Found on a folded continuation line, which is how the real file is written.
-        assert!(problems.iter().any(|p| p.contains("lege-greeter")));
+        assert!(problems.iter().any(|p| p.contains("templar-greeter")));
         // Neither Ubuntu's packages nor substitution variables are ours to judge.
         assert!(!problems.iter().any(|p| p.contains("greetd")));
         assert!(!problems.iter().any(|p| p.contains("misc:Depends")));
@@ -2659,57 +2678,60 @@ mod extraction_tests {
 
     #[test]
     fn check_packaging_goes_red_for_a_seed_naming_a_package_that_is_not_built() {
-        // The real case: every other line in session.seed is `legeos-*`, and these two were
-        // `lege-*` — the binary's name, not the package's.
+        // The real case: every other line in session.seed is `templaros-*`, and these two were
+        // `templar-*` — the binary's name, not the package's.
         let seeds = BTreeMap::from([(
             "session.seed".to_owned(),
             vec![
-                "legeos-shell".to_owned(),
-                "lege-comp".to_owned(),
+                "templaros-shell".to_owned(),
+                "templar-comp".to_owned(),
                 "greetd".to_owned(),
             ],
         )]);
-        let built = BTreeSet::from(["legeos-shell".to_owned(), "legeos-comp".to_owned()]);
+        let built = BTreeSet::from(["templaros-shell".to_owned(), "templaros-comp".to_owned()]);
         let problems = seed_problems(&seeds, &built);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("lege-comp"));
+        assert!(problems[0].contains("templar-comp"));
         // greetd is Ubuntu's, not ours, and must not be judged.
         assert!(!problems[0].contains("greetd"));
     }
 
     #[test]
     fn check_packaging_goes_red_for_a_unit_whose_binary_no_package_ships() {
-        // The lege-comp case: a unit promising /usr/bin/lege-comp while debian/control and the
+        // The templar-comp case: a unit promising /usr/bin/templar-comp while debian/control and the
         // crate metadata agree with each other perfectly, because neither mentions it at all.
         let units = vec![(
-            "lege-comp.service".to_owned(),
-            "/usr/bin/lege-comp".to_owned(),
+            "templar-comp.service".to_owned(),
+            "/usr/bin/templar-comp".to_owned(),
         )];
-        let shipped = BTreeSet::from(["/usr/bin/lege-shell".to_owned()]);
+        let shipped = BTreeSet::from(["/usr/bin/templar-shell".to_owned()]);
         let problems = unshipped_unit_binaries(&units, &shipped);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("lege-comp.service"));
-        assert!(problems[0].contains("/usr/bin/lege-comp"));
+        assert!(problems[0].contains("templar-comp.service"));
+        assert!(problems[0].contains("/usr/bin/templar-comp"));
     }
 
     #[test]
     fn check_packaging_accepts_a_unit_whose_binary_is_shipped() {
         let units = vec![(
-            "lege-sessiond.service".to_owned(),
-            "/usr/libexec/lege-sessiond".to_owned(),
+            "templar-sessiond.service".to_owned(),
+            "/usr/libexec/templar-sessiond".to_owned(),
         )];
-        let shipped = BTreeSet::from(["/usr/libexec/lege-sessiond".to_owned()]);
+        let shipped = BTreeSet::from(["/usr/libexec/templar-sessiond".to_owned()]);
         assert!(unshipped_unit_binaries(&units, &shipped).is_empty());
     }
 
     #[test]
     fn check_packaging_goes_red_for_deb_metadata_with_no_control_stanza() {
-        let control = vec!["legeos-cli".to_owned()];
-        let debs = deb_names(&[("legeos-cli", "lege"), ("legeos-ghost", "lege-ghost")]);
+        let control = vec!["templaros-cli".to_owned()];
+        let debs = deb_names(&[
+            ("templaros-cli", "templar"),
+            ("templaros-ghost", "templar-ghost"),
+        ]);
         let problems = packaging_problems(&control, &debs);
         assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("legeos-ghost"));
-        assert!(problems[0].contains("crate lege-ghost"));
+        assert!(problems[0].contains("templaros-ghost"));
+        assert!(problems[0].contains("crate templar-ghost"));
     }
 
     #[test]
@@ -2720,18 +2742,18 @@ mod extraction_tests {
         std::fs::write(dir.path().join("present.conf"), "x").unwrap();
         let manifest_path = dir.path().join("Cargo.toml").display().to_string();
         let packages = vec![serde_json::json!({
-            "name": "lege-ghost",
+            "name": "templar-ghost",
             "manifest_path": manifest_path,
-            "authors": ["LegeOS"],
-            "metadata": { "deb": { "name": "legeos-ghost", "assets": [
-                ["target/release/lege-ghost", "usr/bin/lege-ghost", "755"],
-                ["present.conf", "etc/legeos/present.conf", "644"],
-                ["distro/deploy/components.toml", "usr/share/legeos/components.toml", "644"],
+            "authors": ["TemplarOS"],
+            "metadata": { "deb": { "name": "templaros-ghost", "assets": [
+                ["target/release/templar-ghost", "usr/bin/templar-ghost", "755"],
+                ["present.conf", "etc/templaros/present.conf", "644"],
+                ["distro/deploy/components.toml", "usr/share/templaros/components.toml", "644"],
             ]}},
         })];
         let missing = crate::deb_metadata(&packages).missing_asset_sources;
         assert_eq!(missing.len(), 1);
         assert!(missing[0].contains("distro/deploy/components.toml"));
-        assert!(missing[0].contains("legeos-ghost"));
+        assert!(missing[0].contains("templaros-ghost"));
     }
 }

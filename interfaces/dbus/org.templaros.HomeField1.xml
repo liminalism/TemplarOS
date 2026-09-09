@@ -1,0 +1,60 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/HomeField.
+     The Home Field's persisted document, one per output (crates/templar-field's FieldDocument as
+     JSON), edited only through templar_field ops so the shell — a restartable view — owns no layout
+     state of its own. Every applied op's exact inverse is kept; Undo applies the last one.
+     Implemented in services/templar-sessiond/src/apis/homefield.rs. -->
+<node>
+  <interface name="org.templaros.HomeField1">
+    <!-- The document for `output`, created empty at `cols`x`rows` if none is stored yet. -->
+    <method name="Get">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="cols" type="q" direction="in"/>
+      <arg name="rows" type="q" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
+    <!-- Apply one `templar_field::FieldOp` (JSON) to `output`'s document; returns the new revision.
+         Refused, and nothing stored, when the op does not apply (FieldError as the message). -->
+    <method name="Apply">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="op_json" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
+    <!-- Apply the inverse of the most recent op; returns the document afterwards, or an empty
+         string when there was nothing to undo. -->
+    <method name="Undo">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
+    <!-- Discard `output`'s stored document and its undo log, and return a fresh empty one at
+         `cols`x`rows`; the shell's next merge fills it with the current default layout. The one
+         way to adopt a changed default, because merge is add-only and never moves a tile that
+         already has a place. Not undoable: the document and the undo log are discarded together,
+         which is why the action declaring it confirms first. -->
+    <method name="Reset">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="cols" type="q" direction="in"/>
+      <arg name="rows" type="q" direction="in"/>
+      <arg name="document_json" type="s" direction="out"/>
+    </method>
+    <!-- Place `path` on `output`'s field as a folder object at the first free cell, exactly as
+         the shell would; returns the revision (unchanged when that folder is already there). The
+         route a client without the shell's grid knowledge — a Files window — uses to add a folder
+         to Home. -->
+    <method name="PlaceFolder">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="path" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
+    <method name="GetRevision">
+      <arg name="output" type="s" direction="in"/>
+      <arg name="revision" type="t" direction="out"/>
+    </method>
+    <!-- The document for `output` changed (an Apply or Undo, from any client). -->
+    <signal name="Changed">
+      <arg name="output" type="s"/>
+      <arg name="revision" type="t"/>
+    </signal>
+  </interface>
+</node>

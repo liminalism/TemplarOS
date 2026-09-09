@@ -1,103 +1,103 @@
-Source: legeos
+Source: templaros
 Section: admin
 Priority: optional
-Maintainer: LegeOS contributors <dev@legeos.org>
+Maintainer: TemplarOS contributors <dev@templaros.org>
 Rules-Requires-Root: no
 Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, just, libpam0g-dev, libclang-dev
 Standards-Version: 4.7.0
-Homepage: https://legeos.org
-Vcs-Git: https://github.com/legeos/legeos.git
-Vcs-Browser: https://github.com/legeos/legeos
+Homepage: https://templaros.org
+Vcs-Git: https://github.com/templaros/templaros.git
+Vcs-Browser: https://github.com/templaros/templaros
 
-Package: legeos-sessiond
+Package: templaros-sessiond
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, xdg-utils
-Description: LegeOS session policy daemon
+Description: TemplarOS session policy daemon
  One user-session daemon hosting application identity and launching (appd), the association
  broker, provider/autostart arbitration, history, notifications, typed settings, projects,
- power and location policy under the bus name org.legeos.Session.
+ power and location policy under the bus name org.templaros.Session.
 
-Package: legeos-resourced
+Package: templaros-resourced
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
-Description: LegeOS resource governor
+Description: TemplarOS resource governor
  Desktop-aware cgroup v2 + PSI pressure containment as a small, protected process.
  Observe-only until enabled.
 
-Package: legeos-filed
+Package: templaros-filed
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, ffmpeg, systemd, udisks2
-Description: LegeOS file service
+Description: TemplarOS file service
  Structured browsing and bounded native-codec previews, transactional file operations with
  journal and undo, storage information and reserve, recents, last-used directories and search
  behind the file manager, Home Surface and file-chooser portal.
 
-Package: legeos-hostd
+Package: templaros-hostd
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd
-Description: LegeOS host daemon
+Description: TemplarOS host daemon
  Staged kernel/driver update transactions, boot deployments and rollback, driver authority and
- GPU mode, storage reserve and hardware profile on the system bus (org.legeos.Host).
+ GPU mode, storage reserve and hardware profile on the system bus (org.templaros.Host).
 
-Package: legeos-boot-health
+Package: templaros-boot-health
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
-Description: LegeOS boot health probe
+Description: TemplarOS boot health probe
  System-scope probe gating systemd-bless-boot so a candidate deployment is promoted only when the
  graphics stack and session are healthy.
 
-Package: legeos-session
+Package: templaros-session
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, legeos-sessiond, legeos-resourced, legeos-filed, legeos-comp, legeos-shell
-Recommends: greetd, legeos-greeter
-Description: LegeOS session entry and units
- wayland-sessions entry, legeos-session.target and the core user units with their protection values.
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, templaros-sessiond, templaros-resourced, templaros-filed, templaros-comp, templaros-shell
+Recommends: greetd, templaros-greeter
+Description: TemplarOS session entry and units
+ wayland-sessions entry, templaros-session.target and the core user units with their protection values.
 
-Package: legeos-comp
+Package: templaros-comp
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, xwayland
-Description: LegeOS compositor
+Description: TemplarOS compositor
  The display server: one continuous scene across every output, typed overlay layers, a
  compositor-owned recovery band on every window, and the geometry invariants that make a window
- impossible to lose. Window-management policy lives in lege-window; this is what drives it.
- Licensed GPL-3.0-only (ADR-0012); the rest of LegeOS is AGPL-3.0-only (ADR-0013).
+ impossible to lose. Window-management policy lives in templar-window; this is what drives it.
+ Licensed GPL-3.0-only (ADR-0012); the rest of TemplarOS is AGPL-3.0-only (ADR-0013).
 
-Package: legeos-greeter
+Package: templaros-greeter
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, legeos-comp
-Description: LegeOS greeter
+Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, templaros-comp
+Description: TemplarOS greeter
  The graphical login surface, on the same toolkit as the shell. It speaks greetd's JSON IPC over
  its socket, so greetd performs the authentication and this package links no PAM, no shadow and
  nothing setuid (ADR-0010 as amended by ADR-0012).
 
-Package: legeos-shell
+Package: templaros-shell
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed, wl-clipboard
-Description: LegeOS shell
+Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond, templaros-filed, wl-clipboard
+Description: TemplarOS shell
  Restartable shell: Home Field, integrated file browser, panel/dock, launcher and window overview.
 
-Package: legeos-settings
+Package: templaros-settings
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond
-Description: LegeOS Settings
+Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond
+Description: TemplarOS Settings
  Settings over the typed schema, providers, background applications, associations and history.
 
-Package: lege-files
+Package: templar-files
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, legeos-sessiond, legeos-filed, wl-clipboard
-Description: LegeOS standalone file manager
- Pixelkit file manager over the LegeOS browsing, storage, journalled-operation, association and
+Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond, templaros-filed, wl-clipboard
+Description: TemplarOS standalone file manager
+ Pixelkit file manager over the TemplarOS browsing, storage, journalled-operation, association and
  launcher services. Closing the window never interrupts an accepted copy or move.
 
-Package: legeos-portal
+Package: templaros-portal
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, legeos-sessiond, legeos-filed
+Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, templaros-sessiond, templaros-filed
 Provides: xdg-desktop-portal-backend
-Description: LegeOS xdg-desktop-portal backend
+Description: TemplarOS xdg-desktop-portal backend
  One backend for FileChooser, AppChooser, Background and Settings, all clients of the same services.
 
-Package: legeos-cli
+Package: templaros-cli
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: LegeOS command line
- lege: one CLI over the OS services, including lege doctor.
+Description: TemplarOS command line
+ templar: one CLI over the OS services, including templar doctor.

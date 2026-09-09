@@ -1,0 +1,12 @@
+# PAM configuration for templar-unlock, the TemplarOS lock screen's authenticator.
+#
+# `templar-unlock` runs unprivileged, as the person whose session is locked, and asks one question:
+# is this their password? It never changes a credential, opens a session or sets a limit, so
+# only the `auth` and `account` stacks are here — the `session` and `password` stacks would be
+# claims this program has no business making.
+#
+# Delegated to the distribution's own common stacks rather than spelled out, so a machine that
+# has fingerprint, smartcard or a directory server configured for every other login has them
+# here too, and a security update to those files reaches the lock screen without editing this.
+auth       include      common-auth
+account    include      common-account

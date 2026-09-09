@@ -1,12 +1,12 @@
-legeos (0.1.0~dev0+g0000000) resolute; urgency=medium
+templaros (0.1.0~dev0+g0000000) resolute; urgency=medium
 
   * Placeholder. This entry is GENERATED: run `cargo xtask archive changelog --write
     <tree>/debian/changelog` against a disposable copy of the source tree before building the
     source package, and the head entry becomes the build-set id every .deb already carries.
   * Do not edit by hand and do not commit a generated entry: the id contains `.dirty` when the
     working tree has uncommitted changes, so writing it into the checkout would change the id it
-    was derived from. See @legeos.decision.build-set-id-is-the-version-authority and ci/source-build.sh.
+    was derived from. See @templaros.decision.build-set-id-is-the-version-authority and ci/source-build.sh.
   * The project's history up to this point is the git history; M0 shipped the workspace, daemons,
     session units and distro layer.
 
- -- LegeOS contributors <dev@legeos.org>  Mon, 17 Aug 2026 12:00:00 +0000
+ -- TemplarOS contributors <dev@templaros.org>  Mon, 17 Aug 2026 12:00:00 +0000

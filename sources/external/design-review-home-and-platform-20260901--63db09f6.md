@@ -26,7 +26,7 @@ That is where most of the current density can be recovered.
 
 # 1. The Home screen should stop being a collection of destinations
 
-The biggest current problem is in `shell/lege-shell/src/field_model.rs`.
+The biggest current problem is in `shell/templar-shell/src/field_model.rs`.
 
 The default Home gets eight drawer objects:
 
@@ -186,7 +186,7 @@ This also means the Launcher system tile can disappear from the normal default f
 
 # 5. The current representation ladder should become the design language
 
-`crates/lege-field/src/tile.rs` already has the important primitive:
+`crates/templar-field/src/tile.rs` already has the important primitive:
 
 `Micro → Small → Wide → Large`
 
@@ -194,7 +194,7 @@ with different tile kinds allowed different spans.
 
 That is more interesting than Windows 8 tiles.
 
-I would make this the defining visual/interaction concept of LegeOS:
+I would make this the defining visual/interaction concept of TemplarOS:
 
 > **Objects reveal capability as physical area becomes available.**
 
@@ -226,7 +226,7 @@ Large: controls and diagnostics.
 
 The important missing piece is **state continuity**. If I navigate Files to:
 
-`Projects/Lege/src/shell`
+`Projects/Templar/src/shell`
 
 and then enlarge it, I should still be at that exact location with the same selection. Shrinking it should preserve it again.
 
@@ -301,7 +301,7 @@ That distinction will keep it from becoming another tile dashboard.
 
 ---
 
-# 9. A distinct LegeOS design language
+# 9. A distinct TemplarOS design language
 
 I would borrow only three things from Windows 8:
 
@@ -309,7 +309,7 @@ stable rectangular regions, information at a glance, and direct manipulation.
 
 I would not borrow the sea of equally assertive colored tiles or the application-centric hierarchy.
 
-LegeOS can instead use **calm rectangular instruments**:
+TemplarOS can instead use **calm rectangular instruments**:
 
 Neutral substrate, restrained boundaries, low corner radius, consistent narrow gutters, typography doing much of the hierarchy, and accent/color primarily communicating *state* rather than application branding.
 
@@ -319,7 +319,7 @@ Likewise, the interesting visual texture should be **inside** objects. Your plan
 
 Then the Home surface stays visually calm while its objects can be internally rich.
 
-Most importantly, expansion should be spatial. A tile should visibly grow from where it was, and collapse back into precisely that location. That continuity can become far more identifiable as “LegeOS” than copying a recognizable tile skin.
+Most importantly, expansion should be spatial. A tile should visibly grow from where it was, and collapse back into precisely that location. That continuity can become far more identifiable as “TemplarOS” than copying a recognizable tile skin.
 
 ---
 
@@ -382,7 +382,7 @@ and let the user choose.
 
 Running instances should record both logical app and launch variant.
 
-This matters enormously for security. You should **not** unify permissions merely because two executables represent the same human concept. A trusted LegeOS package and an arbitrary user-installed `.desktop` file must not automatically inherit each other's provider rights or permissions.
+This matters enormously for security. You should **not** unify permissions merely because two executables represent the same human concept. A trusted TemplarOS package and an arbitrary user-installed `.desktop` file must not automatically inherit each other's provider rights or permissions.
 
 So:
 
@@ -398,7 +398,7 @@ This is cleaner than letting `desktop-import.*` effectively become the permanent
 
 I would **not** replace the current resource architecture.
 
-Keeping `lege-resourced` tiny, separate and capable of operating without SQLite, filesystem writes or D-Bus dependencies in its emergency loop is the right design.
+Keeping `templar-resourced` tiny, separate and capable of operating without SQLite, filesystem writes or D-Bus dependencies in its emergency loop is the right design.
 
 The current progression:
 
@@ -422,9 +422,9 @@ Fourth, reconsider Severe treatment of the foreground application. The scoring p
 
 Fifth, the fixed global 3 GiB reserve/1 GiB critical thresholds need trace-based scaling across machine sizes. A 4/8 GiB machine and a 64 GiB workstation shouldn't use identical absolute policy. PSI already helps, but total-memory-aware bounds would make the policy less hardware-specific.
 
-Sixth, explicitly decide what happens with **systemd-oomd**. I did not see coordination with it in this tree. You do not want two independent PSI-driven mechanisms racing, with systemd-oomd killing something before the carefully explainable LegeOS path completes. Either divide ownership of slices deliberately or configure one as a defined last-resort backstop.
+Sixth, explicitly decide what happens with **systemd-oomd**. I did not see coordination with it in this tree. You do not want two independent PSI-driven mechanisms racing, with systemd-oomd killing something before the carefully explainable TemplarOS path completes. Either divide ownership of slices deliberately or configure one as a defined last-resort backstop.
 
-And consider modest `memory.low` protection for the state/file infrastructure needed to recover from pressure, particularly `lege-sessiond` and `lege-filed`, assuming their slice arrangement makes that useful. They're not candidates in the `app.slice` victim scan, but kernel reclaim is a separate issue.
+And consider modest `memory.low` protection for the state/file infrastructure needed to recover from pressure, particularly `templar-sessiond` and `templar-filed`, assuming their slice arrangement makes that useful. They're not candidates in the `app.slice` victim scan, but kernel reclaim is a separate issue.
 
 The current observe-only posture before trace validation is correct. I would keep termination disabled until replay tests demonstrate predictable behavior.
 
@@ -442,7 +442,7 @@ A subtle system indication at Elevated pressure.
 
 A visible status on an app/session if it is being throttled.
 
-A checkpoint indicator if LegeOS preserved state.
+A checkpoint indicator if TemplarOS preserved state.
 
 A concise explanation after intervention:
 
@@ -483,15 +483,15 @@ Then an activation tool can know:
 > running sessiond: A
 > candidate set: B
 
-Each long-lived LegeOS component should expose its running build identifier.
+Each long-lived TemplarOS component should expose its running build identifier.
 
 A deployment can then deliberately activate components according to boundary:
 
 | Component/change               | Normal activation                                    |
 | ------------------------------ | ---------------------------------------------------- |
-| `lege-shell`                   | Restart shell, health-check                          |
+| `templar-shell`                   | Restart shell, health-check                          |
 | Ordinary applications          | Next launch/restart                                  |
-| `lege-resourced`               | Controlled service restart                           |
+| `templar-resourced`               | Controlled service restart                           |
 | `sessiond`, `filed`, portal    | Restart only after reconnect/version-skew guarantees |
 | compositor / Wayland protocol  | New session/logout-login                             |
 | kernel, NVIDIA, firmware, boot | Boot deployment/reboot                               |
@@ -502,7 +502,7 @@ The shell is particularly well positioned for this because `HomeField1` now pers
 
 ### Boot deployment
 
-The `lege-hostd` deployment lifecycle and Btrfs planning are the correct second lane for risky changes.
+The `templar-hostd` deployment lifecycle and Btrfs planning are the correct second lane for risky changes.
 
 The fresh installation should create a **known-good factory/base deployment** that subsequent development never destroys.
 
@@ -510,7 +510,7 @@ Home and mutable state live separately. New root deployments are staged and veri
 
 That gets you to the thing you're actually asking for:
 
-> install LegeOS once, then use LegeOS itself as the development environment for improving LegeOS.
+> install TemplarOS once, then use TemplarOS itself as the development environment for improving TemplarOS.
 
 Not because `/usr` is mutable forever, but because the machine has a reliable path for applying both lightweight and heavyweight changes.
 
@@ -536,13 +536,13 @@ Likewise, D-Bus evolution should be additive. Breaking interfaces get a new inte
 
 # 16. The existing reinstall script is not yet this update system
 
-`scripts/reinstall-legeos-desktop.sh` is useful development scaffolding, but it currently:
+`scripts/reinstall-templaros-desktop.sh` is useful development scaffolding, but it currently:
 
 builds a package batch, installs it with `dpkg`, lets apt repair dependencies, reloads systemd, and runs the doctor.
 
 That isn't atomic and it doesn't tell you which installed binaries are actually executing afterward.
 
-I would evolve that workflow into a real `lege dev deploy`/`lege update` mechanism instead of accumulating shell-script special cases.
+I would evolve that workflow into a real `templar dev deploy`/`templar update` mechanism instead of accumulating shell-script special cases.
 
 A successful activation should end with something equivalent to:
 
@@ -576,4 +576,4 @@ The sequencing matters because there is a temptation here to add more widget typ
 
 6. **Turn package replacement into an actual activation system.** Build-set IDs, local package repository, installed-versus-running convergence, service-specific restart rules, state/API compatibility tests, and Btrfs boot deployments for everything that cannot safely activate live. In parallel, keep `resourced` observe-only, add trace/replay testing, define systemd-oomd ownership, and gradually enable active memory policy.
 
-The most significant point is that **the project is much closer architecturally than the present Home UI makes it appear**. `lege-field`, `HomeField1`, the file service and the widget contract already contain most of the primitives I would have proposed from scratch. I would therefore avoid a frontend rewrite. The next iteration should mostly delete redundant concepts, extract the legacy file-browser content from its old navigation shell, and make the existing field's representation ladder the organizing principle of the entire interface.
+The most significant point is that **the project is much closer architecturally than the present Home UI makes it appear**. `templar-field`, `HomeField1`, the file service and the widget contract already contain most of the primitives I would have proposed from scratch. I would therefore avoid a frontend rewrite. The next iteration should mostly delete redundant concepts, extract the legacy file-browser content from its old navigation shell, and make the existing field's representation ladder the organizing principle of the entire interface.

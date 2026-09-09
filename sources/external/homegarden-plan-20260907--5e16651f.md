@@ -38,10 +38,10 @@ roles and children as it grows.
 | `garden.md`, first half (reviewer, on a screenshot of the current Home) | The diagnosis: no visual centre of gravity, boxes around everything, widgets answering "what is the machine doing" instead of "what am I doing", a permanent Desktop listing, a permanent Session box, a Notifications box that says *All caught up*, running windows on Home, an app-icon strip, four type sizes, scarce state colour. Its proposed fix assumed a declared "current project". |
 | `garden.md`, the user's response | The correction that shapes this plan: do not assume a main project; do not fabricate first-boot content; rule out performance statistics on the front page and *widgets that could be menus* (Settings named explicitly); Home needs **closer integration with the file system, not one disparate part of it**; tiled access to important parts that grow when more relevant; an organic system that notices when you opened and ran things in a folder, keeps that folder on Home in its own spot, and removes it after disuse — "a garden that gets tended". |
 | `garden.md`, second half (reviewer, reworked) | The model: three object kinds (roots, growths, pinned); activity breadth over raw count; roles not application names; contexts without declared projects; mathematical decay with zero polling; spatial persistence; three visibility states; material belongs to places; a four-word vocabulary (Place, Context, Action, Group); build the activity model before any visual polish. |
-| `@legeos.assessment.home-vision-review-20260905` | "The mostly-empty cold Home layout remains an unresolved product choice. Filling all space would conflict with stable placement and useful drop space." Two proposals were parked, both explicitly forbidding automatic inference. This document is the third answer to that finding, and it argues the two forbidden things were forbidden for reasons the garden respects (§3). |
-| `@legeos.observation.hands-on-run-5-findings-20260904` | "(3) Home is mostly empty space, against the rule that there is to be no useless space; the largest object on it, a folder tile, drew its path in dim text and nothing else." The Folder tile is the object this plan grows; its emptiness at Large is the first thing to fix (§7). |
-| `@legeos.decision.representation-ladder-is-the-organizing-principle` | "One object, one canonical route, many sizes of representation." A grown directory is a Folder tile at a higher rung — never a different UI. |
-| `@legeos.decision.home-field-stable-bounded-semantic-grammar` | The constitution of the field. §3 and §6 are written against it clause by clause. |
+| `@templaros.assessment.home-vision-review-20260905` | "The mostly-empty cold Home layout remains an unresolved product choice. Filling all space would conflict with stable placement and useful drop space." Two proposals were parked, both explicitly forbidding automatic inference. This document is the third answer to that finding, and it argues the two forbidden things were forbidden for reasons the garden respects (§3). |
+| `@templaros.observation.hands-on-run-5-findings-20260904` | "(3) Home is mostly empty space, against the rule that there is to be no useless space; the largest object on it, a folder tile, drew its path in dim text and nothing else." The Folder tile is the object this plan grows; its emptiness at Large is the first thing to fix (§7). |
+| `@templaros.decision.representation-ladder-is-the-organizing-principle` | "One object, one canonical route, many sizes of representation." A grown directory is a Folder tile at a higher rung — never a different UI. |
+| `@templaros.decision.home-field-stable-bounded-semantic-grammar` | The constitution of the field. §3 and §6 are written against it clause by clause. |
 
 ---
 
@@ -84,7 +84,7 @@ reasons (spatial memory, honesty, no background crawling) that the garden also d
 The recorded prohibitions are on **content-driven** reflow and **proximity** semantics:
 
 > "content changes never move tiles, global repacking never destroys spatial memory,
-> proximity never creates hidden relations" — `@legeos.decision.home-field-stable-bounded-semantic-grammar`
+> proximity never creates hidden relations" — `@templaros.decision.home-field-stable-bounded-semantic-grammar`
 
 A folder gaining files is content. A drive gaining space is content. A widget refreshing is
 content. Those must never move a tile, and the garden agrees: the index change log is at most
@@ -118,7 +118,7 @@ object whose *presence* is earned rather than declared.
 | Reject proximity semantics | same | **Kept** | — |
 | Status updates never move tiles | home-projects-and-tool-actions | **Kept** | Status (building, failed) changes colour inside the tile, never geometry. |
 | Repository discovery never runs commands or hooks | same | **Kept** | Root attribution reads directory entries (`.git` exists?) and Projects1; it never runs `git`, never crawls, never reads file contents (§5.2). |
-| Never scan repositories automatically, infer projects from proximity, repack on activity | `@legeos.work.home-developer-setup-preview` | **Superseded in part** | No scan (kept). No projects inferred — a *context* is not a project (§5.7, kept). "Repack on activity" becomes "resize in place at tending moments" (revised). The setup-preview proposal can stay as an orthogonal, explicit route. |
+| Never scan repositories automatically, infer projects from proximity, repack on activity | `@templaros.work.home-developer-setup-preview` | **Superseded in part** | No scan (kept). No projects inferred — a *context* is not a project (§5.7, kept). "Repack on activity" becomes "resize in place at tending moments" (revised). The setup-preview proposal can stay as an orthogonal, explicit route. |
 | Neither authorizes background repository commands, automatic project inference or live repacking | home-vision-review-20260905 | **Honoured** | All three remain unauthorised: no commands, no project inference, and no *live* repacking — tending happens only at reveal (§6 rule 1). |
 | Loose files are never Home tiles | home-is-momentary-and-placeable-objects-are-containers | **Kept** | The garden grows folders only. Files surface as children *inside* them. |
 | The Desktop directory is a default folder/shortcut pane | same | **Kept, questioned** | It stays. §14 asks whether it should be a garden Place subject to decay instead of a permanent default. |
@@ -238,12 +238,12 @@ build from becoming the centre of Home.
 |---|---|---|---|
 | Home's `Launch Tool` (`project.open-terminal` etc.) | Launches `--directory <root>` through `Launcher1` with a provider-resolved role (`surface/app.rs`) | `LaunchedHere` + role, for project roots | Only for projects; §4's `place.*` actions extend it to any Place |
 | Brokered file open (`data.rs::brokered_file_open` → `Recents1.Record`) | Shell records every open it brokers | `FileOpened` with `app_id` | Only what Home/Files brokers; apps opening files themselves are invisible |
-| `lege-files` backend | Records opens to `Recents1` | `FileOpened` | pcmanfm-qt is the file manager and does *not* record (`docs/architecture/files.md`: recents not integrated, writes xbel) |
+| `templar-files` backend | Records opens to `Recents1` | `FileOpened` | pcmanfm-qt is the file manager and does *not* record (`docs/architecture/files.md`: recents not integrated, writes xbel) |
 | Folder windows / Files object navigation (`BrowseDirectory`) | Not recorded anywhere | `DirectoryOpened` | One call to add |
 | `Projects1.SetCurrent` | Persisted, signalled | `ProjectEntered` | — |
 | `Files.Operations1` journal + `History1` file-operation events | Recorded | `CreatedOrRenamed` | Needs the path, which the event carries |
-| `Files.Index1.ChangesSince` | Implemented, bounded, pageable | `HumanFileModified`, `ArrivedHere` | Signals never wired (`@legeos.observation.index-change-signals-never-fire`); read on demand until they are |
-| `HomeField1.PlaceFolder` / `lege home place` | Exists | `PlacedOnHome` | — |
+| `Files.Index1.ChangesSince` | Implemented, bounded, pageable | `HumanFileModified`, `ArrivedHere` | Signals never wired (`@templaros.observation.index-change-signals-never-fire`); read on demand until they are |
+| `HomeField1.PlaceFolder` / `templar home place` | Exists | `PlacedOnHome` | — |
 | FileChooser portal | X1 work item, in progress | `FileOpened`, `FileSaved` for every portal-using app | Blocked on X1 |
 | Terminal cwd changes after launch | Nothing | — | Deliberately none: no `ptrace`, no shell hooks. The launch directory is the signal; the ledger is honest that it is *launch*, not *cwd*. |
 | pcmanfm-qt browsing | Nothing, and no plugin API | — | Custom actions ("Add to Home", "Create project here") are the outbound route; browsing itself cannot be observed. Recorded as a known blind spot, not patched around. |
@@ -255,7 +255,7 @@ starts there and widens.
 ### 5.2 Root attribution
 
 An event names a path; the ledger attributes it to a **context root**, so that work under
-`Lege/renderer/` and `Lege/distro/` accumulates on `Lege`. Attribution is a walk up the
+`Templar/renderer/` and `Templar/distro/` accumulates on `Templar`. Attribution is a walk up the
 ancestors, stopping at the first that is:
 
 1. the root of a `Projects1` project (a declared place beats every heuristic);
@@ -272,7 +272,7 @@ else the directory itself, and the walk is capped at a depth of eight above the 
 
 Rule 3 reads *directory entries*, never file contents and never a command; it is
 `stat`-class work on at most eight ancestors per event, done once per unique path and cached
-against the index generation. `@legeos.decision.home-projects-and-tool-actions` ("repository
+against the index generation. `@templaros.decision.home-projects-and-tool-actions` ("repository
 discovery never runs commands or hooks") is kept to the letter.
 
 A path attributed to a root also records itself as a **child candidate** of that root — the
@@ -373,7 +373,7 @@ at the next tending moment — *inside* the tile, which the constitution permits
 (`Terminal`, `FileManager`, `CodeEditor`), plus `FileManager` always, because every Place can
 be opened. The shell resolves a role through `Providers1` at press time, exactly as
 `project.open-terminal` does today; Home never hardcodes kitty or pcmanfm-qt. The
-`CodeEditor` role — settled as additive in `@legeos.work.home-project-tool-actions` but not
+`CodeEditor` role — settled as additive in `@templaros.work.home-project-tool-actions` but not
 built — is a dependency for the third action and a blank space until then.
 
 ### 5.6 Roots — the soil
@@ -413,7 +413,7 @@ Two bridges, neither a wizard:
 
 1. A project's root is *always* a context, pinned, so `Launch Tool` and `Enter Project`
    activity accrues to it and its tile shows children like any Expanded place. The Project
-   tile's Large rung can draw the same roles-and-children body (`@legeos.decision.representation-ladder…`:
+   tile's Large rung can draw the same roles-and-children body (`@templaros.decision.representation-ladder…`:
    one body, many objects).
 2. A Folder context that has been Expanded for seven days gains one row in its context menu:
    **Make this a project** → `project.create-here` with the root already filled in. No banner,
@@ -426,7 +426,7 @@ A context is never turned into a project by the system. Ever.
 ## 6. The tender — layout rules
 
 The **planner** is a pure function: `(contexts, document, now, output) → Vec<FieldOp>`. It
-lives beside `reflow` in `lege-field` (§9) and is property-tested there. Eight rules, each with
+lives beside `reflow` in `templar-field` (§9) and is property-tested there. Eight rules, each with
 its reason:
 
 1. **Tending happens only at tending moments: Home reveal, session start, and the explicit
@@ -470,13 +470,13 @@ its reason:
    design and `home-refresh` migrations show the pattern.
 
 8. **Every op the tender emits carries a reason string, and the shell keeps the last tending
-   report.** `grew Lege to 5×4: 14 opens, 3 terminals, 4 days` / `removed jp2lam: no activity
+   report.** `grew Templar to 5×4: 14 opens, 3 terminals, 4 days` / `removed jp2lam: no activity
    for 9 days`. Reason: the project's culture is that interventions explain themselves
    (`resourced`'s traces, the deploy's convergence report); a Home that rearranges without
    saying why would be resented within a week. The report is one `History1` event per tending
    moment that changed something, so it appears in the history the user already has.
 
-**Testable invariants** (added to `crates/lege-field/tests/field.rs` as proptests):
+**Testable invariants** (added to `crates/templar-field/tests/field.rs` as proptests):
 
 - `tend` never produces a `Move`/`MoveMany`.
 - After `tend`, every tile that was user-owned has the same `Located` and `Span` as before.
@@ -503,7 +503,7 @@ says how: one object, four rungs, same state model.
 |---|---|---|
 | **Small** (trace) | 2×2 | Name in the tile's own material; one state line (`4 days ago`, `growing`, `3 new`). Manipulation controls on hover/focus only (WS3). |
 | **Wide** (tile) | ≥3×2 | Name; a roles row of up to three text-led actions: `>_ Terminal  ▤ Files  <> Edit`. Symbolic glyphs, not application icons — "a project should look like the project, not a collage of the applications used to manipulate it". |
-| **Large** (expanded) | ≥3×3 | Name (the 20–22px project-title size); roles row; a two-column children list (up to six, directories first, each a single-click open through the same brokered route as today); state line. Optionally, at ≥5×4, a treemap band across the bottom drawn by `lege-treemap` for the root — inside the object, as the constitution requires. |
+| **Large** (expanded) | ≥3×3 | Name (the 20–22px project-title size); roles row; a two-column children list (up to six, directories first, each a single-click open through the same brokered route as today); state line. Optionally, at ≥5×4, a treemap band across the bottom drawn by `templar-treemap` for the root — inside the object, as the constitution requires. |
 | **Full** | zoomed | The existing folder window over the same root, with the Files surface state (`location, selection, sort`) preserved, as the ladder decision demands. |
 
 Children in the Large body are references: pressing one opens it; dragging one out of the tile
@@ -546,7 +546,7 @@ identifies*: not the tile's kind, but **the place**. `material_seed` is derived 
 `EntryId` when the root is indexed (so it survives a rename) and from the path bytes
 otherwise. The theme maps the seed to a subtle deterministic pattern within its palette
 (monotone: paper grain; Temple: mineral). `Tile.accent: Option<u32>` already exists and can
-carry the seed's hue offset until a `material` field is added. `Lege` looks like `Lege` when it
+carry the seed's hue offset until a `material` field is added. `Templar` looks like `Templar` when it
 regrows in six weeks. The surrounding field stays a plain mineral-paper substrate — "quiet OS
 + distinctive projects".
 
@@ -557,8 +557,8 @@ first; material only once §12 Phase 4 has proven the philosophy.
 
 ## 8. Manual gardening
 
-Every Place has, in its context menu and the cheat sheet and the `lege` CLI (one declaration
-in `lege-types/src/action.rs` drives all three, as the existing gate enforces):
+Every Place has, in its context menu and the cheat sheet and the `templar` CLI (one declaration
+in `templar-types/src/action.rs` drives all three, as the existing gate enforces):
 
 | Action | Effect on the context record | Effect on the tile |
 |---|---|---|
@@ -572,7 +572,7 @@ in `lege-types/src/action.rs` drives all three, as the existing gate enforces):
 | `garden.tend` (field-level) | — | runs the planner now |
 | `garden.forget-all` (field-level, confirmed) | ledger cleared except pinned | — |
 
-Settings (`lege-session-core/src/settings.rs`, `shell.home-garden.*`):
+Settings (`templar-session-core/src/settings.rs`, `shell.home-garden.*`):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -600,30 +600,30 @@ signatures frozen; no new process.
 
 | Location | Contents | Rules it obeys |
 |---|---|---|
-| `crates/lege-session-core/src/homegarden.rs` | `HomeActivity`, `HomeContext`, the ledger (`observe`, `effective`, `stage_for`, root attribution given a `RootProbe` trait, ignore list, coalescing, bounds) | I/O-free policy core like its siblings; the daemon supplies a `RootProbe` that does the `stat`-class checks and a `ProjectRoots` lookup |
-| `crates/lege-field/src/garden.rs` | The planner: `tend(&FieldDocument, &[ContextView], GardenConfig, now) -> Vec<(FieldOp, Reason)>`; `ContextView` is the small projection the planner needs (root, stage, landing, pinned, user_span) so `lege-field` does not depend on session-core | Toolkit-free, async-free (`deps-check` already guards `lege-field`); property tests in `tests/field.rs` |
-| `crates/lege-state/src/migrations/` | One additive migration: `home_garden_contexts` (root bytes, JSON record) and `home_garden_events` (bucketed) tables | Backward-readable: an older sessiond ignores the tables |
-| `services/lege-sessiond/src/apis/homegarden.rs` | `org.legeos.HomeGarden1`; runs the planner at tending moments and applies its ops through the existing `homefield.rs` apply path so undo covers them | Same crash unit as `HomeField1` (ADR-0001), same store, no cross-daemon race |
-| `services/lege-filed/src/` (small) | At `HomeGarden1.Tend`, sessiond asks filed for `ChangesSince(seq)`; filed does not learn about the garden. When the index signals are wired (`@legeos.observation.index-change-signals-never-fire`), sessiond subscribes instead of asking. | filed stays ignorant of Home; the dependency runs one way |
-| `shell/lege-shell/src/field_model.rs` | `merge` gains nothing garden-specific: the tender's ops arrive through `HomeField1.Changed` like any other client's. The shell records `DirectoryOpened` from folder windows and `LaunchedHere` from `place.*` actions by calling `HomeGarden1.Observe`. | The shell owns no layout state (HomeField1's design) |
-| `shell/lege-shell/src/surface/field_screen.rs` | The Folder tile's Wide/Large bodies; the `garden.*` verbs; the tending report row in `field.help` | WS3's hover-revealed controls |
-| `crates/lege-types/src/action.rs` | `place.open-terminal`, `place.open-files`, `place.open-editor`, `garden.*` | one declaration, three surfaces |
-| `interfaces/dbus/org.legeos.HomeGarden1.xml` | new interface (additive; nothing shipped changes) | `check-interfaces`, `interface-baseline` |
+| `crates/templar-session-core/src/homegarden.rs` | `HomeActivity`, `HomeContext`, the ledger (`observe`, `effective`, `stage_for`, root attribution given a `RootProbe` trait, ignore list, coalescing, bounds) | I/O-free policy core like its siblings; the daemon supplies a `RootProbe` that does the `stat`-class checks and a `ProjectRoots` lookup |
+| `crates/templar-field/src/garden.rs` | The planner: `tend(&FieldDocument, &[ContextView], GardenConfig, now) -> Vec<(FieldOp, Reason)>`; `ContextView` is the small projection the planner needs (root, stage, landing, pinned, user_span) so `templar-field` does not depend on session-core | Toolkit-free, async-free (`deps-check` already guards `templar-field`); property tests in `tests/field.rs` |
+| `crates/templar-state/src/migrations/` | One additive migration: `home_garden_contexts` (root bytes, JSON record) and `home_garden_events` (bucketed) tables | Backward-readable: an older sessiond ignores the tables |
+| `services/templar-sessiond/src/apis/homegarden.rs` | `org.templaros.HomeGarden1`; runs the planner at tending moments and applies its ops through the existing `homefield.rs` apply path so undo covers them | Same crash unit as `HomeField1` (ADR-0001), same store, no cross-daemon race |
+| `services/templar-filed/src/` (small) | At `HomeGarden1.Tend`, sessiond asks filed for `ChangesSince(seq)`; filed does not learn about the garden. When the index signals are wired (`@templaros.observation.index-change-signals-never-fire`), sessiond subscribes instead of asking. | filed stays ignorant of Home; the dependency runs one way |
+| `shell/templar-shell/src/field_model.rs` | `merge` gains nothing garden-specific: the tender's ops arrive through `HomeField1.Changed` like any other client's. The shell records `DirectoryOpened` from folder windows and `LaunchedHere` from `place.*` actions by calling `HomeGarden1.Observe`. | The shell owns no layout state (HomeField1's design) |
+| `shell/templar-shell/src/surface/field_screen.rs` | The Folder tile's Wide/Large bodies; the `garden.*` verbs; the tending report row in `field.help` | WS3's hover-revealed controls |
+| `crates/templar-types/src/action.rs` | `place.open-terminal`, `place.open-files`, `place.open-editor`, `garden.*` | one declaration, three surfaces |
+| `interfaces/dbus/org.templaros.HomeGarden1.xml` | new interface (additive; nothing shipped changes) | `check-interfaces`, `interface-baseline` |
 | `interfaces/schemas/settings.schema.json` | `shell.home-garden.*` | — |
 | `docs/architecture/homegarden.md` | the readable architecture note | tree-check |
 
 No new crate is proposed. If `homegarden.rs` grows past the size of `projects.rs` it can become
-`crates/lege-garden` later; the planner stays in `lege-field` regardless, because it emits
+`crates/templar-garden` later; the planner stays in `templar-field` regardless, because it emits
 `FieldOp`s and must share the field's invariants and tests.
 
 ### 9.2 The interface
 
 ```xml
-<!-- Bus: org.legeos.Session. Path: /org/legeos/Session/HomeGarden.
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/HomeGarden.
      The activity ledger behind Home's grown places (docs/architecture/homegarden.md).
      Observation is fire-and-forget; tending is explicit; every change to the field goes
      through HomeField1 so it is undoable there. -->
-<interface name="org.legeos.HomeGarden1">
+<interface name="org.templaros.HomeGarden1">
   <!-- kind is one of the ActivityKind strings; role may be "". path_b64 is native bytes. -->
   <method name="Observe">
     <arg name="kind" type="s" direction="in"/>
@@ -694,7 +694,7 @@ The garden does not depend on them, but the *feel* the user is after does.
 |---|---|---|
 | Running windows leave Home; the taskbar owns them | Decided (`home-projects-and-tool-actions`); the bottom bar exists (Lane B); `home-taskbar-migration` acceptance is open | Dependency: the garden's home corner competes with parked-session tiles for the same slack until they migrate. Finish the migration first, keeping explicit park/group relationships. |
 | The permanent Desktop listing | Replaced by the Desktop folder tray (decided) | Kept; §14 question. |
-| The Session box | `session` is the first of three system widgets, kept because "an empty shelf has no route to logging out" | **Proposed:** the bar gains a power glyph opening Lock/Suspend/Restart/Shut down/Log out (the existing `session.*` actions), and the Session widget is migrated off the default field by the same mechanism `migrate_launcher_tile` used. Requires the user's decision (§14) and a revision of `@legeos.work.home-widgets`'s "every capability arrives as a widget". |
+| The Session box | `session` is the first of three system widgets, kept because "an empty shelf has no route to logging out" | **Proposed:** the bar gains a power glyph opening Lock/Suspend/Restart/Shut down/Log out (the existing `session.*` actions), and the Session widget is migrated off the default field by the same mechanism `migrate_launcher_tile` used. Requires the user's decision (§14) and a revision of `@templaros.work.home-widgets`'s "every capability arrives as a widget". |
 | The Settings card | The Settings widget (battery/volume/brightness + a door to the app) is the "third and last" system widget | **Proposed:** the three readings move to the bar's indicator row (Lane B already declares indicators; nm-tray2 already lives there); Settings remains an application reached from the bar and Apps. The widget contract stays for notifications and any future *information-first* instrument. The user named this exact case. |
 | Notifications "All caught up" | The notifications widget renders sessiond's server | **Proposed:** default state is absence: no tile when the queue is empty; a transient card at the top-right on arrival; history behind a bar indicator. Requires revising the widget's descriptor, not the contract. |
 | The app-icon strip | Retired (`migrate_launcher_tile`); the Apps bar is the launcher | Done. |
@@ -711,7 +711,7 @@ the user pinned — and the garden.
 Each phase is one AKR work item; acceptance checks use the ledger's three methods. Phases 1–3
 are pure and testable without a display. Phase 4 is where the philosophy is judged.
 
-### Phase 0 — Decisions and subtraction (`@legeos.decision.homegarden-activity-grown-places`)
+### Phase 0 — Decisions and subtraction (`@templaros.decision.homegarden-activity-grown-places`)
 
 - Record the decision in §3.1's words; `knowledge.revise` the consequences of
   `home-field-stable-bounded-semantic-grammar` to define "content-driven" as index/content
@@ -724,17 +724,17 @@ are pure and testable without a display. Phase 4 is where the philosophy is judg
 Acceptance: `decision-recorded` (observation); `contradictions-resolved` (command:
 `knowledge.validate` clean).
 
-### Phase 1 — The activity ledger (`@legeos.work.homegarden-ledger`)
+### Phase 1 — The activity ledger (`@templaros.work.homegarden-ledger`)
 
-- `lege-session-core::homegarden`: types, ignore list, coalescing, root attribution behind
+- `templar-session-core::homegarden`: types, ignore list, coalescing, root attribution behind
   `RootProbe`, effective score, stage machine.
 - `HomeGarden1` interface and sessiond host; state migration.
 - Sources: `Launcher1` launches whose arguments name a directory (`--directory`, a bare path
   argument that is a directory); `Projects1.SetCurrent`; `Recents1.Record` forwarded in
   sessiond? — no: Recents lives in filed. Instead the shell's `brokered_file_open` and
-  `lege-files` call `Observe` beside `Record`. Folder windows call `Observe(DirectoryOpened)`
+  `templar-files` call `Observe` beside `Record`. Folder windows call `Observe(DirectoryOpened)`
   on navigation. `PlaceFolder` records `PlacedOnHome`.
-- `lege garden contexts` / `lege garden why <path>` in the CLI, so the ledger can be read
+- `templar garden contexts` / `templar garden why <path>` in the CLI, so the ledger can be read
   without the shell.
 
 Acceptance: `ledger-is-pure` (command: `deps-check`, no I/O in the core); `breadth-beats-count`
@@ -743,9 +743,9 @@ Acceptance: `ledger-is-pure` (command: `deps-check`, no I/O in the core); `bread
 registers no interval); `ignore-list-holds` (command: 40,000 `target/` changes produce no
 context); `bounded` (command: 65th context evicts the lowest Dormant).
 
-### Phase 2 — The planner (`@legeos.work.homegarden-planner`)
+### Phase 2 — The planner (`@templaros.work.homegarden-planner`)
 
-- `lege-field::garden::tend` and `ContextView`.
+- `templar-field::garden::tend` and `ContextView`.
 - Every invariant in §6 as a proptest.
 - `Tend` on sessiond applies through the `HomeField1` path; undo covers it; the tending report
   is a `History1` event.
@@ -754,7 +754,7 @@ Acceptance: `never-moves` (command); `user-tiles-untouched` (command); `idempote
 `dwell-respected` (command); `resize-yields-garden-only` (command); `undoable` (command: a
 tended field undone is byte-identical to before).
 
-### Phase 3 — Tending moments and the shell (`@legeos.work.homegarden-shell`)
+### Phase 3 — Tending moments and the shell (`@templaros.work.homegarden-shell`)
 
 - Reveal and session start call `Tend` for the revealed output before paint.
 - `garden.*` and `place.*` actions in the manifest; context menu, cheat sheet, CLI.
@@ -766,7 +766,7 @@ Acceptance: `render-fixtures` (command); `one-declaration-three-surfaces` (comma
 gate); `reveal-cost` (command: tending adds < 5 ms measured with the existing profile method);
 `no-idle-wakeups` (command: `scripts/idle-wakeups.sh` unchanged with the garden enabled).
 
-### Phase 4 — Hands-on: does the philosophy work? (`@legeos.work.homegarden-hands-on`)
+### Phase 4 — Hands-on: does the philosophy work? (`@templaros.work.homegarden-hands-on`)
 
 The test `garden.md` proposes: build the model, three sizes, let thresholds choose, and see.
 
@@ -782,7 +782,7 @@ Acceptance: `garden-matches-the-day` (manual — the user's verdict); `nothing-m
 If this fails, the plan stops here and the reasons go into the ledger. Nothing in Phases 5–6
 is worth building on a model that does not match a day.
 
-### Phase 5 — Widening the sources (`@legeos.work.homegarden-sources`)
+### Phase 5 — Widening the sources (`@templaros.work.homegarden-sources`)
 
 - The index change log at tending moments (`HumanFileModified`, `ArrivedHere`), with the
   Downloads `3 new` state line.
@@ -793,7 +793,7 @@ is worth building on a model that does not match a day.
 Acceptance: `index-never-moves` (command: a burst of index changes yields no `Place`/`Resize`
 above the medium-weight cap); `portal-observes` (command, after X1).
 
-### Phase 6 — Identity and bridges (`@legeos.work.homegarden-identity`)
+### Phase 6 — Identity and bridges (`@templaros.work.homegarden-identity`)
 
 - Material seed per place (§7.4), theme-owned rendering, regrowth restores it.
 - The seven-day **Make this a project** row.
@@ -807,12 +807,12 @@ Acceptance: `material-survives-rename` (command); `promotion-is-a-row-not-a-prom
 
 | This plan needs | From |
 |---|---|
-| Parked sessions migrated to the bar so the home corner has slack | `@legeos.work.home-project-tool-actions` (`home-taskbar-migration`) |
-| Hover-revealed manipulation on Small tiles | `@legeos.work.representation-chrome-and-continuity` (WS3, mostly done) |
+| Parked sessions migrated to the bar so the home corner has slack | `@templaros.work.home-project-tool-actions` (`home-taskbar-migration`) |
+| Hover-revealed manipulation on Small tiles | `@templaros.work.representation-chrome-and-continuity` (WS3, mostly done) |
 | Folder windows reusing the Files surface state | `home-vision-review-20260905`'s carried priority |
-| Index change signals wired | `@legeos.observation.index-change-signals-never-fire` |
-| FileChooser portal | `@legeos.work.developer-edition-daily-driver` (X1) |
-| `CodeEditor` role | `@legeos.work.home-project-tool-actions` |
+| Index change signals wired | `@templaros.observation.index-change-signals-never-fire` |
+| FileChooser portal | `@templaros.work.developer-edition-daily-driver` (X1) |
+| `CodeEditor` role | `@templaros.work.home-project-tool-actions` |
 | Bar indicators for battery/volume/brightness and a power menu | Lane B, plus the §14 decision |
 
 ---
@@ -853,7 +853,7 @@ To be recorded as `knowledge.question`s if not answered:
    into empty space makes it calmer and more predictable. The plan leans to the former with
    a strict garden-only yield set; the user may prefer the latter.
 4. **Session and Settings: widget or bar?** §11's proposal moves both to the bar. This is the
-   user's own stated preference in `garden.md`, but it revises `@legeos.work.home-widgets`.
+   user's own stated preference in `garden.md`, but it revises `@templaros.work.home-widgets`.
 5. **Half-life.** Three days is a guess for a person who works in a few repositories for
    weeks. A writer moving between many documents may want seven; a person with a weekly
    rhythm may want ten.
@@ -890,11 +890,11 @@ Nothing else.
 
 09:10 — The user presses Super, types `kitty`, launches it. No directory argument: no event.
 
-09:12 — In kitty they `cd ~/src/legeos` and build. The garden sees nothing (no cwd tracing;
+09:12 — In kitty they `cd ~/src/templaros` and build. The garden sees nothing (no cwd tracing;
 `target/` ignored). Honest.
 
-09:40 — They open a folder window on `~/src/legeos/docs/planning` from Files.
-`DirectoryOpened(~/src/legeos/docs/planning)` → attributed to `~/src/legeos` (rule 3: `.git`
+09:40 — They open a folder window on `~/src/templaros/docs/planning` from Files.
+`DirectoryOpened(~/src/templaros/docs/planning)` → attributed to `~/src/templaros` (rule 3: `.git`
 present) → context created, score 2.0, child candidate `docs/`.
 
 09:41 — They open `homegarden.md` from that window. `FileOpened` → +1.5, child `docs/`.
@@ -903,11 +903,11 @@ present) → context created, score 2.0, child candidate `docs/`.
 `Terminal` → +3.0, roles += Terminal. Effective ≈ 6.5. Stage: Trace (≥3.0). No tile yet: no
 tending moment has passed.
 
-10:31 — They press Super. **Tending moment.** `tend` emits `Place { Folder ~/src/legeos, Small
+10:31 — They press Super. **Tending moment.** `tend` emits `Place { Folder ~/src/templaros, Small
 2×2 }` at the home corner, reason `new: 2 opens, 1 terminal today`. Home now has a fourth
-object: `legeos`, in its own material, state line `today`.
+object: `templaros`, in its own material, state line `today`.
 
-11:00–17:00 — Twenty more opens under `crates/lege-field` and `docs/`, two more terminals, one
+11:00–17:00 — Twenty more opens under `crates/templar-field` and `docs/`, two more terminals, one
 editor launch on a file (role CodeEditor, once that role exists). Score grows past 20 but the
 day-count is 1, so Tile requires the second day.
 
@@ -923,15 +923,15 @@ now user-touched: it can still grow (no `user_span`), never shrink.
 
 Day five — They open `~/Downloads` once to fetch an ISO. `DirectoryOpened` on an XDG dir
 (rule 5) → Trace; two `ArrivedHere` from the index. Next Super: a 2×2 `Downloads` beside
-`legeos`, state line `2 new`.
+`templaros`, state line `2 new`.
 
 Day twelve — `Downloads` untouched since day five: effective < 1.0, dwell 5 days passed →
-Dormant → `Remove`, reason `no activity for 7 days`. `legeos` still Expanded. The context menu
-on `legeos` has gained **Make this a project**. The user ignores it. Fine.
+Dormant → `Remove`, reason `no activity for 7 days`. `templaros` still Expanded. The context menu
+on `templaros` has gained **Make this a project**. The user ignores it. Fine.
 
-Six weeks later — The user returns from a trip. `legeos` decayed to Trace on day 20 and
-Dormant on day 27; Home is Files, Desktop, and nothing. They open a terminal in `~/src/legeos`
-from Files. Next Super: `legeos` regrows, 2×2, *in the left-centre cell they moved it to*, in
+Six weeks later — The user returns from a trip. `templaros` decayed to Trace on day 20 and
+Dormant on day 27; Home is Files, Desktop, and nothing. They open a terminal in `~/src/templaros`
+from Files. Next Super: `templaros` regrows, 2×2, *in the left-centre cell they moved it to*, in
 the same paper grain. The garden remembered.
 
 ---

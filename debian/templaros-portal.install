@@ -1,0 +1,3 @@
+target/release/xdg-desktop-portal-templar usr/libexec/
+portals/xdg-desktop-portal-templar/templaros.portal usr/share/xdg-desktop-portal/portals/
+portals/xdg-desktop-portal-templar/templaros-portals.conf usr/share/xdg-desktop-portal/

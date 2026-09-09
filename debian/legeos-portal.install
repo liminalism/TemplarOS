@@ -1,3 +1,0 @@
-target/release/xdg-desktop-portal-lege usr/libexec/
-portals/xdg-desktop-portal-lege/legeos.portal usr/share/xdg-desktop-portal/portals/
-portals/xdg-desktop-portal-lege/legeos-portals.conf usr/share/xdg-desktop-portal/

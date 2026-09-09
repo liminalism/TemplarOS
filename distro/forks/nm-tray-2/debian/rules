@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 # The autostart entry belongs in /etc/xdg/autostart, not $prefix/etc; and nothing
-# LegeOS ships may land under /usr/local (ARCHITECTURE.md).
+# TemplarOS ships may land under /usr/local (ARCHITECTURE.md).
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:

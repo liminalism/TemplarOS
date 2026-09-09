@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# What each LegeOS daemon costs while nothing is happening.
+# What each TemplarOS daemon costs while nothing is happening.
 #
 # `cargo xtask index-bench idle` answers this for one process it starts itself, against a fixture
 # tree. This answers it for the daemons actually running on this machine, which is the measurement
-# @legeos.work.event-driven-service-audit's `idle-activity` check asks for: "native Lubuntu
+# @templaros.work.event-driven-service-audit's `idle-activity` check asks for: "native Lubuntu
 # measurements show reduced or justified idle wakeups without missed state changes or recovery
 # regressions".
 #
@@ -33,9 +33,9 @@ esac
 
 # The daemons this repository owns. Matched against /proc/<pid>/comm, which is the truncated
 # binary name and cannot be confused with a command line that merely mentions one.
-# `LEGE_IDLE_DAEMONS` overrides the list so a nested session (scripts/nested-session.sh) or a
+# `TEMPLAR_IDLE_DAEMONS` overrides the list so a nested session (scripts/nested-session.sh) or a
 # single process can be measured without editing this file.
-DAEMONS=${LEGE_IDLE_DAEMONS:-"lege-sessiond lege-resourced lege-filed lege-hostd lege-comp lege-shell"}
+DAEMONS=${TEMPLAR_IDLE_DAEMONS:-"templar-sessiond templar-resourced templar-filed templar-hostd templar-comp templar-shell"}
 
 # The one field of /proc/<pid>/status or /proc/<pid>/io named $2, or empty.
 field() { sed -n "s/^$2:[[:space:]]*//p" "/proc/$1/$3" 2>/dev/null | head -1; }
@@ -72,7 +72,7 @@ done
 
 if [ ${#BEFORE[@]} -eq 0 ]; then
     printf '{\n  "seconds": %s,\n  "daemons": [],\n' "$SECONDS_TO_WATCH"
-    printf '  "note": "NOT EXECUTED: none of the LegeOS daemons (%s) is running on this host"\n}\n' "$DAEMONS"
+    printf '  "note": "NOT EXECUTED: none of the TemplarOS daemons (%s) is running on this host"\n}\n' "$DAEMONS"
     exit 0
 fi
 
@@ -84,7 +84,7 @@ delta() { # before after -> after-before, or null when either reading is missing
 }
 
 printf '{\n'
-printf '  "label": "%s",\n' "${LEGE_IDLE_LABEL:-$(uname -sr) $(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+printf '  "label": "%s",\n' "${TEMPLAR_IDLE_LABEL:-$(uname -sr) $(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 printf '  "seconds": %s,\n' "$SECONDS_TO_WATCH"
 printf '  "daemons": [\n'
 first=1

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=TemplarOS
+Comment=TemplarOS desktop session
+Exec=templar-session
+Type=Application
+DesktopNames=TemplarOS

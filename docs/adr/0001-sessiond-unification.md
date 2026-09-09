@@ -1,4 +1,4 @@
-# ADR-0001: One user session policy daemon (lege-sessiond)
+# ADR-0001: One user session policy daemon (templar-sessiond)
 
 * **Status:** accepted
 * **Date:** 2026-08-17
@@ -11,13 +11,13 @@ and applets, each with private state and no shared identity key. Cross-daemon D-
 themselves flag (launch registration vs first window; a governor blocking on identity lookups).
 
 ## Decision
-`lege-sessiond` hosts application identity + launching, the association broker, provider/autostart
+`templar-sessiond` hosts application identity + launching, the association broker, provider/autostart
 arbitration, history, notifications (`org.freedesktop.Notifications` when selected), typed settings, project
 sessions, power policy and timezone/location policy — as **separate library crates** wired by a thin daemon,
-over **one** SQLite state store (`lege-state`). Bus name `org.legeos.Session`; domain-scoped, versioned
-interfaces (`org.legeos.AppIdentity1`, …) at separate object paths so a later split only relocates a bus name.
+over **one** SQLite state store (`templar-state`). Bus name `org.templaros.Session`; domain-scoped, versioned
+interfaces (`org.templaros.AppIdentity1`, …) at separate object paths so a later split only relocates a bus name.
 `Type=notify`, `Restart=on-failure`, `WatchdogSec`; instances persisted and re-derived from
-`ListUnitsByPatterns app-legeos-*` on restart; history writes non-fatal.
+`ListUnitsByPatterns app-templaros-*` on restart; history writes non-fatal.
 
 ## Consequences
 One crash/restart unit and one place to explain decisions; cross-domain updates are transactions. The file

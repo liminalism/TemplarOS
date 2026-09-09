@@ -1,26 +1,26 @@
-LegeOS live medium
+TemplarOS live medium
   set      0.1.0~dev1788777276+ged81cb9.dirty
-  archive  /var/tmp/legeos-build/@build/archive-l3
+  archive  /var/tmp/templaros-build/@build/archive-l3
   mirror   https://snapshot.ubuntu.com/ubuntu/20260905T011226Z
-  work     /var/tmp/legeos-build/@build
-  out      /var/tmp/legeos-build/@build/legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso
-1. mmdebstrap resolute (unshare) → /var/tmp/legeos-build/@build/iso/casper/filesystem.squashfs
+  work     /var/tmp/templaros-build/@build
+  out      /var/tmp/templaros-build/@build/templaros-0.1.0~dev1788777276+ged81cb9.dirty.iso
+1. mmdebstrap resolute (unshare) → /var/tmp/templaros-build/@build/iso/casper/filesystem.squashfs
 I: chroot architecture amd64 is equal to the host's architecture
 I: finding correct signed-by value...
 I: automatically chosen format: tar
 I: using /tmp/mmdebstrap.QbzVIyFCpp as tempdir
-I: running special hook: upload /var/tmp/legeos-build/@build/legeos-set.pref /etc/apt/preferences.d/legeos-set
+I: running special hook: upload /var/tmp/templaros-build/@build/templaros-set.pref /etc/apt/preferences.d/templaros-set
 I: running apt-get update...
 [/                                                                   ] 0/0 100%I: downloading packages with apt...
 I: extracting archives...
 I: installing essential packages...
 I: installing remaining packages inside the chroot...
-I: running special hook: upload /mnt/Samsung980_1TB/Rust-projects/LegeOS/distro/branding/os-release /usr/lib/os-release.legeos
-I: running special hook: upload /mnt/Samsung980_1TB/Rust-projects/LegeOS/distro/image/mkosi.postinst /tmp/legeos-postinst
-I: running --customize-hook in shell: sh -c 'chroot "$1" sh /tmp/legeos-postinst; rm -f "$1/tmp/legeos-postinst"' exec /tmp/mmdebstrap.QbzVIyFCpp
+I: running special hook: upload /mnt/Samsung980_1TB/Rust-projects/TemplarOS/distro/branding/os-release /usr/lib/os-release.templaros
+I: running special hook: upload /mnt/Samsung980_1TB/Rust-projects/TemplarOS/distro/image/mkosi.postinst /tmp/templaros-postinst
+I: running --customize-hook in shell: sh -c 'chroot "$1" sh /tmp/templaros-postinst; rm -f "$1/tmp/templaros-postinst"' exec /tmp/mmdebstrap.QbzVIyFCpp
 Created symlink '/etc/systemd/user/xdg-desktop-autostart.target' → '/dev/null'.
-Creating group 'lege-greeter' with GID 980.
-Creating user 'lege-greeter' (LegeOS greeter) with UID 980 and GID 980.
+Creating group 'templar-greeter' with GID 980.
+Creating user 'templar-greeter' (TemplarOS greeter) with UID 980 and GID 980.
 Installing runtime/org.freedesktop.Platform.GL.default/x86_64/25.08
 Installing runtime/org.freedesktop.Platform.GL.default/x86_64/25.08-extra
 Installing runtime/org.freedesktop.Platform.GL.nvidia-610-43-02/x86_64/1.4
@@ -34,7 +34,7 @@ Installing app/org.mozilla.firefox/x86_64/stable
 bwrap: Failed to make / slave: Invalid argument
 bwrap: Failed to make / slave: Invalid argument
 bwrap: Failed to make / slave: Invalid argument
-I: running --customize-hook directly: /mnt/Samsung980_1TB/Rust-projects/LegeOS/distro/iso/live/customize.sh /tmp/mmdebstrap.QbzVIyFCpp
+I: running --customize-hook directly: /mnt/Samsung980_1TB/Rust-projects/TemplarOS/distro/iso/live/customize.sh /tmp/mmdebstrap.QbzVIyFCpp
 update-initramfs: Generating /boot/initrd.img-7.0.0-31-generic
 I: waiting for background processes to finish...
 I: cleaning package lists and apt cache...
@@ -49,14 +49,14 @@ I: removing tempdir /tmp/mmdebstrap.QbzVIyFCpp...
 I: success in 1550.4068 seconds
 
 [=========================================================-] 227787/227787 100%
-2. archive → legeos/devrepo, tiers manifest
+2. archive → templaros/devrepo, tiers manifest
 native 15, inherited 1506
 3. GRUB configuration and the EFI system partition image
-4. xorriso → /var/tmp/legeos-build/@build/legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso
+4. xorriso → /var/tmp/templaros-build/@build/templaros-0.1.0~dev1788777276+ged81cb9.dirty.iso
 Written to medium : 1954101 sectors at LBA 0
-Writing to 'stdio:/var/tmp/legeos-build/@build/legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso' completed successfully.
+Writing to 'stdio:/var/tmp/templaros-build/@build/templaros-0.1.0~dev1788777276+ged81cb9.dirty.iso' completed successfully.
 
 
-/var/tmp/legeos-build/@build/legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso
-944a08241df6502b2271e1910cc966c34c2bb31eed45cd6ad01d7d3de3efdd0d  legeos-0.1.0~dev1788777276+ged81cb9.dirty.iso
+/var/tmp/templaros-build/@build/templaros-0.1.0~dev1788777276+ged81cb9.dirty.iso
+944a08241df6502b2271e1910cc966c34c2bb31eed45cd6ad01d7d3de3efdd0d  templaros-0.1.0~dev1788777276+ged81cb9.dirty.iso
 exit=0

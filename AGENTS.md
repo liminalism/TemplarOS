@@ -1,8 +1,8 @@
 # Memory
 
-Your memory is OptMem. LegeOS is developed and validated from the machine's native
+Your memory is OptMem. TemplarOS is developed and validated from the machine's native
 Lubuntu installation; WSL is only an agent-side helper when a request starts from
-Windows and must not be treated as the LegeOS build environment.
+Windows and must not be treated as the TemplarOS build environment.
 
 - On Lubuntu, the tool is `~/.optmem/memo` and its storage is
   `~/.optmem/memory`.
@@ -77,12 +77,12 @@ Durable project knowledge lives in `.akr/` as typed records, not in Markdown.
 
 **Never**
 - Never touch the person's live desktop session. That means no `systemctl --user`
-  start/stop/restart/kill of any `lege-*` unit, no `loginctl`, no `pkill`/`killall` by
-  a name that can match an installed `lege-*` binary (`pkill -f lege-sessiond` matches
-  `/usr/libexec/lege-sessiond` and once ended the person's session), no `lege dev
+  start/stop/restart/kill of any `templar-*` unit, no `loginctl`, no `pkill`/`killall` by
+  a name that can match an installed `templar-*` binary (`pkill -f templar-sessiond` matches
+  `/usr/libexec/templar-sessiond` and once ended the person's session), no `templar dev
   deploy` (dry runs excepted), and no development service started on the live user bus
   while the installed one owns its name. Test with `cargo test`, the headless renders
-  (`lege-shell --render`, `lege-comp --check`) and `scripts/nested-session.sh`, which
+  (`templar-shell --render`, `templar-comp --check`) and `scripts/nested-session.sh`, which
   refuses to start over a live session. Deploys and logouts are the person's to run.
 - Never edit `docs/generated/` — it is regenerated and CI checks it.
 - Never read `.akr/cache/` — it is a private cache.

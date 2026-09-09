@@ -1,6 +1,6 @@
-# Files (`lege-filed`)
+# Files (`templar-filed`)
 
-The file manager is a client, not the owner of file state. `lege-filed` holds the parts that
+The file manager is a client, not the owner of file state. `templar-filed` holds the parts that
 three different UIs would otherwise each reimplement — and disagree about.
 
 ## Browsing is structured service data
@@ -13,7 +13,7 @@ descendants on a blocking worker and returns regular-file and subfolder counts p
 allocated byte totals. It never follows symlinks; if a descendant cannot be read, the totals are
 marked partial rather than silently presented as exact. The service applies folder-first natural
 name ordering (`file2` before `file10`) and caps a listing response at 500 entries. Home,
-`lege-files` and future chooser panes therefore render the same roots and contents without any
+`templar-files` and future chooser panes therefore render the same roots and contents without any
 shell view walking the filesystem or inventing a private sort policy. This list ordering is
 deliberately different from the Silvaview-derived treemap: treemap area and ordering describe
 bytes, while a file list is for finding names.
@@ -24,7 +24,7 @@ a folder or resolves a file with `Associations1` and launches it with `Launcher1
 does not fall back to `xdg-open` or execute a path itself. Search hits use those same rows and
 actions.
 
-`lege-files` is the standalone client. It keeps only view state: back/forward history, selection,
+`templar-files` is the standalone client. It keeps only view state: back/forward history, selection,
 clipboard intent and rename/location dialogs. Copy, cut/move, paste, rename and Trash are forwarded
 to `Files.Operations1`; active journal progress and cancellation remain visible, and Ctrl+Z asks
 the service whether the completed operation still has an undo. The persistent right-hand inspector
@@ -45,11 +45,11 @@ decodes every returned PNG again and verifies that its dimensions match the meta
 painting it.
 
 The still/PDF routes are first-party Rust code. `bpg-rs` decodes BPG and HEIC/HEIF with dimension,
-pixel and memory limits; image-rs decodes ordinary rasters; JPXL decodes JPEG XL; and the Lege CPU
-renderer compiles and paints page zero of a PDF. JPXL and the Lege renderer declare Rust 1.97, so
-`scripts/build-preview-codecs.sh` compiles them into one bounded `lege-preview-codecs` process and
-stages it beside `lege-filed`; the main workspace now shares their honest Rust 1.97 floor.
-`LEGEOS_PREVIEW_CODECS` selects an alternate development binary.
+pixel and memory limits; image-rs decodes ordinary rasters; JPXL decodes JPEG XL; and the Templar CPU
+renderer compiles and paints page zero of a PDF. JPXL and the Templar renderer declare Rust 1.97, so
+`scripts/build-preview-codecs.sh` compiles them into one bounded `templar-preview-codecs` process and
+stages it beside `templar-filed`; the main workspace now shares their honest Rust 1.97 floor.
+`TEMPLAROS_PREVIEW_CODECS` selects an alternate development binary.
 
 Video thumbnails intentionally use ffmpeg because it has the broadest reliable container and
 codec coverage. The service obtains the selected video stream's duration from ffprobe, calculates
@@ -81,7 +81,7 @@ sources, a real destination directory, a single-component rename, unique paths, 
 removal, and no copy/move of a directory into itself. A caller cannot bypass those invariants by
 speaking D-Bus directly.
 
-`lege-filed` resumes unfinished operations at start. That is the whole reason the journal is in
+`templar-filed` resumes unfinished operations at start. That is the whole reason the journal is in
 the service rather than the GUI.
 
 ## Storage information is unavoidable
@@ -128,16 +128,16 @@ an optional development convenience.
 
 ## pcmanfm-qt is the file manager
 
-The session's file manager is `pcmanfm-qt` (libfm-qt, Qt 6), not `lege-files`. `lege-files` was
+The session's file manager is `pcmanfm-qt` (libfm-qt, Qt 6), not `templar-files`. `templar-files` was
 built as a client of the interfaces above, and as a client it works; as a file manager it is too
 rudimentary to be the one a person has to use. It stays a workspace member and a buildable
 `.deb` — it exercises `Browse1`, `Operations1`, `Previews1` and `Actions1` against a real UI —
-but it is no longer in `distro/seeds/selection.toml`, in `legeos-desktop`, or the default for the
+but it is no longer in `distro/seeds/selection.toml`, in `templaros-desktop`, or the default for the
 `file-manager` role.
 
 `ProviderRole::FileManager` is derived the way `Terminal` is: from `Categories=FileManager` in the
 installed entry, at priority 100 when the executable is `pcmanfm-qt` and 50 otherwise
-(`lege-session-core/src/providers.rs`). Nothing in the shell names an application: Home's folder
+(`templar-session-core/src/providers.rs`). Nothing in the shell names an application: Home's folder
 tiles, "Open folder window", the browse pane's door and `project.open-files` all resolve the role.
 `inode/directory` is `pcmanfm-qt.desktop`'s own `MimeType=`, so the association broker seeds it
 with no curated manifest. pcmanfm-qt must never be started with `--desktop`: Home is the desktop.
@@ -145,7 +145,7 @@ with no curated manifest. pcmanfm-qt must never be started with `--desktop`: Hom
 Qt 6 selects the Wayland platform plugin on its own when `WAYLAND_DISPLAY` is set and
 `qt6-wayland` is installed — verified against the nested compositor, `qt.qpa.wayland` with no
 `QT_QPA_PLATFORM` in the environment — and the compositor forces server-side xdg-decoration, so a
-pcmanfm-qt window wears LegeOS chrome like any other.
+pcmanfm-qt window wears TemplarOS chrome like any other.
 
 ### What integrates, and what cannot
 
@@ -153,14 +153,14 @@ There is no plugin API in libfm-qt, so integration is exactly what a file manage
 distribution from outside:
 
 - **Custom actions** (DES-EMA, `/usr/share/file-manager/actions/*.desktop`, shipped by
-  `legeos-cli`): "Add to Home" runs `lege home place %f` over `HomeField1.PlaceFolder`, and
-  "Create project here" runs `lege project create-here %f` over `Projects1.Create` with the id
+  `templaros-cli`): "Add to Home" runs `templar home place %f` over `HomeField1.PlaceFolder`, and
+  "Create project here" runs `templar project create-here %f` over `Projects1.Create` with the id
   derived from the folder name. This is the whole of the outbound route.
 - **Bookmarks**: filed is the authority. Every `Files.Bookmarks` mutation rewrites
   `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`, which is the file libfm-qt's Places sidebar reads. One
   way, deliberately: importing it would make two writers of one list with no answer to which is
   right.
-- **Trash**: nothing to do. `lege-filed`'s `Trash1` already implements the freedesktop Trash
+- **Trash**: nothing to do. `templar-filed`'s `Trash1` already implements the freedesktop Trash
   specification on the same directories libfm-qt uses — `$XDG_DATA_HOME/Trash`, the administrator
   `$topdir/.Trash/$uid` when it passes the sticky/non-symlink gate, and `$topdir/.Trash-$uid`
   otherwise — so Home's Trash drawer and pcmanfm-qt's Trash are the same trash.

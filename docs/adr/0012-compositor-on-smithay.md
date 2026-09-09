@@ -16,7 +16,7 @@ Planning doc 01 §3 offered two routes to a compositor and picked the first:
 > The first path is more likely to produce a usable system. The second may eventually provide a
 > cleaner core, but it has a much larger initial correctness surface.
 
-That was written before `crates/lege-window` existed. The "much larger initial correctness
+That was written before `crates/templar-window` existed. The "much larger initial correctness
 surface" the second path was charged with — geometry, recovery, stacking, drag across mixed
 scales — is precisely what M1 built and property-tested: 2,730 lines, 55 tests plus eight
 2000-case property tests, no async runtime, no D-Bus. The premise has changed, so the conclusion
@@ -53,7 +53,7 @@ Against that, Smithay already implements every protocol this project's own docum
 12,297-line DRM/KMS backend with atomic modesetting, plane assignment, direct scanout and VRR.
 Its `anvil` example (9,650 lines, MIT) demonstrates both KMS and winit backends, XWayland, output
 hotplug, multi-GPU and damage-tracked rendering, and has no workspaces, tiling or window rules —
-which is the shape LegeOS wants.
+which is the shape TemplarOS wants.
 
 The founding document's own motivation for this project was that maintaining COSMIC forks had
 become the problem: "four separately maintained submodules … rebase and detached-submodule
@@ -62,19 +62,19 @@ kind of fork, not the cheapest.
 
 ## Decision
 
-`lege-comp` is written against Smithay directly and lives at `compositor/lege-comp` as an
+`templar-comp` is written against Smithay directly and lives at `compositor/templar-comp` as an
 ordinary member of this workspace. It is not a fork and has no upstream tracking branch.
 
-* `crates/lege-window` supplies the entire window-management policy;
+* `crates/templar-window` supplies the entire window-management policy;
   `compositor/COMPOSITOR.md` is the binding event-to-call contract for the render-thread loop.
 * Two backends behind one trait: **winit** for development, CI and automated tests, and
   **udev/KMS** for hardware. The winit backend is what makes a compositor testable without a
   display, and is not an afterthought.
 * `cosmic-comp` may be **read freely** as an implementation reference for driver, XWayland and
-  protocol quirks. Consequently `lege-comp` is licensed **GPL-3.0-only**; every other crate in
+  protocol quirks. Consequently `templar-comp` is licensed **GPL-3.0-only**; every other crate in
   the workspace is AGPL-3.0-only (ADR-0013, which replaced ADR-0008's MPL-2.0). GPLv3 §13 and
-  AGPLv3 §13 permit combining the two, each part keeping its own licence, so `lege-comp` may link
-  `lege-window` and `lege-comp-integration` unchanged.
+  AGPLv3 §13 permit combining the two, each part keeping its own licence, so `templar-comp` may link
+  `templar-window` and `templar-comp-integration` unchanged.
 * No `cosmic-*` crate appears in the dependency graph. `cosmic-comp` and `cosmic-greeter` leave
   `distro/forks/manifest.toml`; the manifest model (ADR-0005) still governs the remaining forks.
 * Compositor-drawn chrome uses `pixelkit-raster` and `pixelkit-text`, which have no dependencies
@@ -87,7 +87,7 @@ GPL-3.0-only crate, which `deny.toml` must now allow. There is no upstream to in
 driver quirks that cosmic-comp has already solved must be re-solved, informed by reading it.
 
 In exchange there is no rebase treadmill, no 17,600 lines of tiling and workspace code shipped
-disabled, and the one-workspace invariant is structural rather than configured — `lege-window`
+disabled, and the one-workspace invariant is structural rather than configured — `templar-window`
 has no workspace type to hide.
 
 `wlr-output-management` and real screencopy capture are not in Smithay and are ours to write;

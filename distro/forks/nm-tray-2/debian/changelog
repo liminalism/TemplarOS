@@ -1,8 +1,8 @@
-legeos-nm-tray (0.5.1+legeos1) resolute; urgency=medium
+templaros-nm-tray (0.5.1+templaros1) resolute; urgency=medium
 
-  * First LegeOS package of the nm-tray-alt fork. Built from the pin in
+  * First TemplarOS package of the nm-tray-alt fork. Built from the pin in
     distro/forks/manifest.toml by scripts/build-fork-deb.sh, which stamps the
     fork's short commit onto this version and refuses to package a binary that
     does not understand --popup.
 
- -- LegeOS contributors <dev@legeos.org>  Fri, 04 Sep 2026 12:00:00 +0000
+ -- TemplarOS contributors <dev@templaros.org>  Fri, 04 Sep 2026 12:00:00 +0000

@@ -1,4 +1,4 @@
-# LegeOS
+# TemplarOS
 
 **A tightly integrated desktop operating system on an Ubuntu 26.04 LTS core** — with its own compositor policy,
 shell, file layer, application identity system, resource governor, driver/update transaction system and
@@ -23,15 +23,15 @@ what evidence, `docs/planning/` for the founding analysis, and `docs/adr/` for e
 
 ## What is different
 
-* **One application contract.** `org.legeos.AppIdentity1`: a canonical `AppId`, one cgroup per launch
-  (`app-legeos-<AppId>@<InstanceId>.service`), identity verified through the cgroup — never through the
+* **One application contract.** `org.templaros.AppIdentity1`: a canonical `AppId`, one cgroup per launch
+  (`app-templaros-<AppId>@<InstanceId>.service`), identity verified through the cgroup — never through the
   client's self-declared `app_id`. Dock grouping, associations, resource accounting, notifications and
   session restore all key on it.
-* **One policy daemon** (`lege-sessiond`) instead of a dozen applets and helpers; **one small protected
-  governor** (`lege-resourced`); **one file service** (`lege-filed`); **one privileged host daemon**
-  (`lege-hostd`). One state store, one event history ("why did that happen? undo."), one typed settings
-  schema, one CLI (`lege`), one portal backend, one selected provider per exclusive system role.
-* **Compositor core vs shell.** A conservative single-scene compositor (`lege-comp`, on Smithay) with typed overlay
+* **One policy daemon** (`templar-sessiond`) instead of a dozen applets and helpers; **one small protected
+  governor** (`templar-resourced`); **one file service** (`templar-filed`); **one privileged host daemon**
+  (`templar-hostd`). One state store, one event history ("why did that happen? undo."), one typed settings
+  schema, one CLI (`templar`), one portal backend, one selected provider per exclusive system role.
+* **Compositor core vs shell.** A conservative single-scene compositor (`templar-comp`, on Smithay) with typed overlay
   layers and a compositor-owned recovery band on every window; everything decorative restarts freely.
 * **Transactional kernel/NVIDIA updates** on btrfs deployments with systemd boot assessment and a
   system-scope health probe.
@@ -52,14 +52,14 @@ Full map: `ARCHITECTURE.md`. Every directory has a `README.md`.
 
 ```sh
 just check          # fmt + clippy -D warnings + tests + msrv
-cargo run -p lege -- doctor --root /   # the integration-check engine
-cargo run -p lege-sessiond -- --dry-run
-cargo run -p lege-resourced -- --once
+cargo run -p templar -- doctor --root /   # the integration-check engine
+cargo run -p templar-sessiond -- --dry-run
+cargo run -p templar-resourced -- --once
 just deb            # cargo-deb packages into target/debian/
 ```
 
 Toolchain: Rust 1.97.1 for development, MSRV 1.97 (ADR-0008). Licence: AGPL-3.0-only for this
-repository (`lege-comp` is GPL-3.0-only, ADR-0012); forks keep their upstream licences.
+repository (`templar-comp` is GPL-3.0-only, ADR-0012); forks keep their upstream licences.
 
 ## Project knowledge
 

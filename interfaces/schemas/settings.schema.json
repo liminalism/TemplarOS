@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://legeos.org/schemas/settings.schema.json",
-  "title": "LegeOS typed settings schema entry",
-  "description": "One SettingSpec (crates/lege-session-core/src/settings.rs). Values are stored as TOML under ~/.config/legeos/; every change is recorded in history.",
+  "$id": "https://templaros.org/schemas/settings.schema.json",
+  "title": "TemplarOS typed settings schema entry",
+  "description": "One SettingSpec (crates/templar-session-core/src/settings.rs). Values are stored as TOML under ~/.config/templaros/; every change is recorded in history.",
   "type": "object",
   "required": ["key", "description", "default"],
   "additionalProperties": false,

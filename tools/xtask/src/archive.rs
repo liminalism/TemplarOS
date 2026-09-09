@@ -1,7 +1,7 @@
 //! `cargo xtask archive` — the archive-side half of build identity.
 //!
-//! One decision, recorded as `@legeos.decision.build-set-id-is-the-version-authority`: the
-//! build-set id is the only version LegeOS has. `cargo deb` already receives it as
+//! One decision, recorded as `@templaros.decision.build-set-id-is-the-version-authority`: the
+//! build-set id is the only version TemplarOS has. `cargo deb` already receives it as
 //! `--deb-version`; the *source* package reads its version from `debian/changelog`, which used to
 //! be maintained by hand and said something else entirely. This command closes that gap by
 //! generating the changelog head entry from the same id.
@@ -14,18 +14,18 @@
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use lege_build::Provenance;
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command as Process,
 };
+use templar_build::Provenance;
 
 /// The distribution the generated stanza targets — Ubuntu 26.04, per
-/// `@legeos.decision.base-ubuntu-2604-kernel-70`.
+/// `@templaros.decision.base-ubuntu-2604-kernel-70`.
 pub const DISTRIBUTION: &str = "resolute";
 /// The changelog trailer's maintainer, matching `debian/control`.
-pub const MAINTAINER: &str = "LegeOS contributors <dev@legeos.org>";
+pub const MAINTAINER: &str = "TemplarOS contributors <dev@templaros.org>";
 
 #[derive(Debug, Subcommand)]
 pub enum ArchiveCommand {
@@ -54,12 +54,12 @@ pub fn run(root: &Path, command: &ArchiveCommand) -> Result<()> {
     match command {
         ArchiveCommand::Changelog { write, epoch } => {
             let (id, epoch) = crate::build_set::current_id(root, *epoch)?;
-            let stanza = lege_build::changelog_entry(&id, DISTRIBUTION, MAINTAINER, epoch);
+            let stanza = templar_build::changelog_entry(&id, DISTRIBUTION, MAINTAINER, epoch);
             match write {
                 None => print!("{stanza}"),
                 Some(path) => {
                     let existing = fs::read_to_string(path).unwrap_or_default();
-                    fs::write(path, lege_build::changelog_with_head(&existing, &stanza))
+                    fs::write(path, templar_build::changelog_with_head(&existing, &stanza))
                         .with_context(|| format!("writing {}", path.display()))?;
                     println!("{}: head entry is now {id}", path.display());
                 }

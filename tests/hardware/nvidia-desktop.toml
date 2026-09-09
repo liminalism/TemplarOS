@@ -1,13 +1,13 @@
 id = "nvidia-desktop"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
-  "lege-hostd Hardware1.SetGpuMode discrete",
+  "templar-hostd Hardware1.SetGpuMode discrete",
   "reboot",
-  "lege doctor --hardware --check gpu-mode (confirms /etc/legeos/hardware/gpu-mode == discrete)",
+  "templar doctor --hardware --check gpu-mode (confirms /etc/templaros/hardware/gpu-mode == discrete)",
   "log in; confirm the session is driven by the NVIDIA GPU (glxinfo | grep 'OpenGL renderer' shows the dGPU)",
 ]
 expect = [
-  "lege-boot-health passes with the dGPU as the sole output driver: drm-connected-output,",
+  "templar-boot-health passes with the dGPU as the sole output driver: drm-connected-output,",
   "nvidia-module (loaded, version matches the installed userspace) and graphics-probe all pass",
   "no Intel GPU render offload is needed or attempted",
 ]

@@ -12,9 +12,9 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
-lege-build = { workspace = true }
-lege-file-index = { workspace = true }
-lege-state = { workspace = true }
+templar-build = { workspace = true }
+templar-file-index = { workspace = true }
+templar-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 quick-xml = { workspace = true }

@@ -1,0 +1,20 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Files (session bus, templar-filed). Path: /org/templaros/Files.
+
+     Preview decoding is kept out of shell and application processes. Native decoders and video
+     tools run on blocking workers with source-size, output-size, dimension and wall-clock limits. -->
+<node>
+  <interface name="org.templaros.Files.Previews1">
+    <!-- Supported image, first-page PDF and 3%-seek video selections return PreviewMetadata JSON
+         plus PNG bytes. The requested edge is clamped to 32..768 pixels and both output
+         dimensions are verified. Unsupported types return an empty string and byte array;
+         malformed supported files return a D-Bus error. -->
+    <method name="Render">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="max_edge" type="u" direction="in"/>
+      <arg name="metadata_json" type="s" direction="out"/>
+      <arg name="png" type="ay" direction="out"/>
+    </method>
+  </interface>
+</node>

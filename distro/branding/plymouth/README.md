@@ -1,1 +1,1 @@
-Plymouth theme 'legeos' — placeholder (spinner-based, palette colours).
+Plymouth theme 'templaros' — placeholder (spinner-based, palette colours).

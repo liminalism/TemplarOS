@@ -7,13 +7,13 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 bin="${CARGO_TARGET_DIR:-$root/target}/debug"
 
-if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
+if [ "${TEMPLAR_NESTED_ISOLATED:-0}" != 1 ]; then
     if [ -z "${DISPLAY:-}" ]; then
         echo "nested session: FAILED — an X11 display is required (use xvfb-run -a)" >&2
         exit 1
     fi
     cargo build --workspace
-    nested_root="$(mktemp -d /tmp/legeos-nested.XXXXXX)"
+    nested_root="$(mktemp -d /tmp/templaros-nested.XXXXXX)"
     nested_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
     nested_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
     status=0
@@ -28,7 +28,7 @@ if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
             return
         fi
         case "$nested_root" in
-            /tmp/legeos-nested.*) rm -rf -- "$nested_root" ;;
+            /tmp/templaros-nested.*) rm -rf -- "$nested_root" ;;
             *) echo "refusing to remove unexpected nested path: $nested_root" >&2 ;;
         esac
     }
@@ -36,8 +36,8 @@ if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
     mkdir -p "$nested_root"/{home,config,data,state,cache,runtime,logs}
     chmod 700 "$nested_root/runtime"
     dbus-run-session -- env \
-        LEGE_NESTED_ISOLATED=1 \
-        LEGE_NESTED_ROOT="$nested_root" \
+        TEMPLAR_NESTED_ISOLATED=1 \
+        TEMPLAR_NESTED_ROOT="$nested_root" \
         CARGO_HOME="$nested_cargo_home" \
         RUSTUP_HOME="$nested_rustup_home" \
         HOME="$nested_root/home" \
@@ -53,7 +53,7 @@ if [ "${LEGE_NESTED_ISOLATED:-0}" != 1 ]; then
     [ "${status:-0}" -eq 0 ] || keep=1
     exit "${status:-0}"
 fi
-: "${LEGE_NESTED_ROOT:?isolated wrapper did not provide LEGE_NESTED_ROOT}"
+: "${TEMPLAR_NESTED_ROOT:?isolated wrapper did not provide TEMPLAR_NESTED_ROOT}"
 
 pids=()
 cleanup_processes() {
@@ -70,7 +70,7 @@ trap cleanup_processes EXIT
 start_service() {
     local name="$1"
     shift
-    "$@" >"$LEGE_NESTED_ROOT/logs/$name.log" 2>&1 &
+    "$@" >"$TEMPLAR_NESTED_ROOT/logs/$name.log" 2>&1 &
     pids+=("$!")
 }
 
@@ -100,57 +100,57 @@ wait_for_name() {
 
 # Force the host side to X11. WAYLAND_DISPLAY belongs to the caller's runtime directory, which is
 # deliberately hidden from this isolated session.
-start_service compositor env -u WAYLAND_DISPLAY "$bin/lege-comp" \
-    --backend winit --socket-name legeos-integration
-wait_for_path "$XDG_RUNTIME_DIR/legeos-integration"
+start_service compositor env -u WAYLAND_DISPLAY "$bin/templar-comp" \
+    --backend winit --socket-name templaros-integration
+wait_for_path "$XDG_RUNTIME_DIR/templaros-integration"
 # The trusted-shell socket is a *prefix* of the main socket's name, not a suffix — a trailing
 # `-shell` on `wayland-0` would land inside snapd's `wayland-[0-9]*` permission, which is the one
-# socket no confined application may open (compositor/lege-comp/src/shell_socket.rs).
-wait_for_path "$XDG_RUNTIME_DIR/legeos-shell-legeos-integration"
+# socket no confined application may open (compositor/templar-comp/src/shell_socket.rs).
+wait_for_path "$XDG_RUNTIME_DIR/templaros-shell-templaros-integration"
 
-start_service sessiond env WAYLAND_DISPLAY=legeos-integration "$bin/lege-sessiond" \
+start_service sessiond env WAYLAND_DISPLAY=templaros-integration "$bin/templar-sessiond" \
     --manifest-dir "$root/tests/fixtures/manifests" \
-    --application-dir "$LEGE_NESTED_ROOT/data/applications" \
+    --application-dir "$TEMPLAR_NESTED_ROOT/data/applications" \
     --no-default-discovery \
-    --state-db "$LEGE_NESTED_ROOT/state/session.db"
-start_service filed "$bin/lege-filed" --reserve-percent 0 \
-    --state-db "$LEGE_NESTED_ROOT/state/session.db" \
+    --state-db "$TEMPLAR_NESTED_ROOT/state/session.db"
+start_service filed "$bin/templar-filed" --reserve-percent 0 \
+    --state-db "$TEMPLAR_NESTED_ROOT/state/session.db" \
     --index-root "$root/tests/fixtures"
-start_service resourced "$bin/lege-resourced" --interval-ms 250 \
-    --state-dir "$LEGE_NESTED_ROOT/state/resources"
+start_service resourced "$bin/templar-resourced" --interval-ms 250 \
+    --state-dir "$TEMPLAR_NESTED_ROOT/state/resources"
 # The portal backend belongs in the journey for the same reason the daemons do: a sandboxed
 # application reaches this system through it. Safe here where it would not be on a shared bus —
 # this session's bus is private (dbus-run-session, above), so claiming the freedesktop name
 # cannot collide with a portal the person is using.
-start_service portal env WAYLAND_DISPLAY=legeos-integration "$bin/xdg-desktop-portal-lege"
+start_service portal env WAYLAND_DISPLAY=templaros-integration "$bin/xdg-desktop-portal-templar"
 
-wait_for_name org.legeos.Session
-wait_for_name org.legeos.Files
-wait_for_name org.legeos.Resources
-wait_for_name org.freedesktop.impl.portal.desktop.legeos
+wait_for_name org.templaros.Session
+wait_for_name org.templaros.Files
+wait_for_name org.templaros.Resources
+wait_for_name org.freedesktop.impl.portal.desktop.templaros
 
 # Exercise typed state over D-Bus and verify the read-after-write/history path.
-"$bin/lege" app list --json | grep -q 'org.legeos.Viewer'
-"$bin/lege" files search image-root --json | grep -q 'image-root'
-"$bin/lege" settings set shell.wallpaper.enabled '{"type":"bool","value":true}' >/dev/null
-"$bin/lege" settings get shell.wallpaper.enabled --json | grep -q 'true'
-"$bin/lege" history search wallpaper --json | grep -q 'shell.wallpaper.enabled'
-"$bin/lege" providers report --json | grep -q 'notification-server'
-"$bin/lege" res --json | grep -q 'observe-only'
+"$bin/templar" app list --json | grep -q 'org.templaros.Viewer'
+"$bin/templar" files search image-root --json | grep -q 'image-root'
+"$bin/templar" settings set shell.wallpaper.enabled '{"type":"bool","value":true}' >/dev/null
+"$bin/templar" settings get shell.wallpaper.enabled --json | grep -q 'true'
+"$bin/templar" history search wallpaper --json | grep -q 'shell.wallpaper.enabled'
+"$bin/templar" providers report --json | grep -q 'notification-server'
+"$bin/templar" res --json | grep -q 'observe-only'
 
 # The graphical shell connects through the compositor's trusted socket and must survive long
 # enough to fetch its D-Bus-backed model and present frames. Its log is retained on failure.
-start_service shell env WAYLAND_DISPLAY=legeos-shell-legeos-integration "$bin/lege-shell" --surface
+start_service shell env WAYLAND_DISPLAY=templaros-shell-templaros-integration "$bin/templar-shell" --surface
 shell_pid="${pids[$((${#pids[@]} - 1))]}"
 sleep 3
 if ! kill -0 "$shell_pid" 2>/dev/null; then
     echo "nested session: FAILED — graphical shell exited during startup" >&2
-    cat "$LEGE_NESTED_ROOT/logs/shell.log" >&2
+    cat "$TEMPLAR_NESTED_ROOT/logs/shell.log" >&2
     exit 1
 fi
 if ! kill -0 "${pids[0]}" 2>/dev/null; then
     echo "nested session: FAILED — compositor exited during the journey" >&2
-    cat "$LEGE_NESTED_ROOT/logs/compositor.log" >&2
+    cat "$TEMPLAR_NESTED_ROOT/logs/compositor.log" >&2
     exit 1
 fi
 

@@ -1,0 +1,42 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Power.
+
+     The stored idle and lid policy for each power source (crates/templar-session-core/src/power.rs),
+     as a document to get, set and reset. Implemented in
+     services/templar-sessiond/src/apis/power.rs.
+
+     This records policy. One field of it is now enforced, and only one: `screen_off_after` is
+     read by templar-shell and relayed to the compositor over templar_shell_v1.set_idle_timeout, and
+     templar-comp turns the outputs off after that much idle time and back on at the next input
+     (compositor/templar-comp/src/idle.rs). The compositor is the only process in the session that
+     can see the seat go quiet, which is why the enforcement lives there and the policy lives
+     here.
+
+     Nothing else here is enforced. `dim_after` needs a backlight ramp through
+     org.templaros.Backlight1; `lock_after` needs a lock surface, and Session.Lifecycle1.Lock is
+     still a NotSupported stub; `suspend_after` and the two lid actions store an interval and an
+     intention and call neither logind nor upower. Those are deliberate remaining scope, and
+     saying so is better than describing an intended feature as though it were the code.
+
+     Battery state and brightness are NOT this interface: they are org.templaros.Battery1 and
+     org.templaros.Backlight1, hardware readings rather than stored policy. -->
+<node>
+  <interface name="org.templaros.Power1">
+    <!-- source is "battery" or "mains". Returns the effective PowerProfile as JSON (a stored
+         override if one was set, otherwise the distribution default). -->
+    <method name="GetProfile">
+      <arg name="source" type="s" direction="in"/>
+      <arg name="profile_json" type="s" direction="out"/>
+    </method>
+    <!-- profile_json must parse as a PowerProfile; persisted as this source's override. -->
+    <method name="SetProfile">
+      <arg name="source" type="s" direction="in"/>
+      <arg name="profile_json" type="s" direction="in"/>
+    </method>
+    <!-- Remove a stored override, returning to the distribution default for that source. -->
+    <method name="ResetProfile">
+      <arg name="source" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

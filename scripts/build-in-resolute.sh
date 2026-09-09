@@ -2,10 +2,10 @@
 # Build the native package set inside an Ubuntu 26.04 (resolute) chroot, without root.
 #
 # Why: `just deb` on the development host links against the host's libraries. The host is not
-# resolute, and the first bootstrap of the medium found the consequence: legeos-comp depended on
+# resolute, and the first bootstrap of the medium found the consequence: templaros-comp depended on
 # libdisplay-info2, which resolute does not have (it ships libdisplay-info3). A native package is a
 # package for the target release, so it is built in the target release. This is also the shape a
-# self-hosting LegeOS uses for the rebuilt tier later (ISO-PLAN.md §5).
+# self-hosting TemplarOS uses for the rebuilt tier later (ISO-PLAN.md §5).
 #
 # The chroot is made once by mmdebstrap in unshare mode and re-entered with its --unshare-helper;
 # the source tree (and its sibling path dependencies) are bind-mounted at their host paths, an
@@ -20,7 +20,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 projects="$(cd "$root/.." && pwd)"   # ../pixelkit, ../bpg-rs, ../jpegXL-rs, ../Lege-ecosystem live here
 
-work="${LEGEOS_BUILD_DIR:-/var/tmp/legeos-build/@build}"
+work="${TEMPLAROS_BUILD_DIR:-/var/tmp/templaros-build/@build}"
 keep_target=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,8 +44,8 @@ out_dir="$build_dir/debs"
 
 # Everything the workspace links, as -dev packages. debian/control's Build-Depends names only
 # sqlite; the rest are what the built packages' own Depends resolve to, as -dev.
-# libclang-dev and libpam0g-dev are not linked libraries: lege-shell's PAM binding (pam-sys) runs
-# bindgen over PAM's headers at build time. Without them `cargo deb -p lege-shell` fails in the
+# libclang-dev and libpam0g-dev are not linked libraries: templar-shell's PAM binding (pam-sys) runs
+# bindgen over PAM's headers at build time. Without them `cargo deb -p templar-shell` fails in the
 # chroot while succeeding on a developer host that happens to have clang and the PAM headers.
 dev_packages="build-essential pkgconf rustup just git curl ca-certificates libsqlite3-dev
     libclang-dev libpam0g-dev libdisplay-info-dev libgbm-dev libinput-dev libpixman-1-dev libseat-dev
@@ -79,7 +79,7 @@ cd "$root"
 rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install "\$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal -c rustfmt,clippy
 command -v cargo-deb >/dev/null || cargo install --locked cargo-deb
 # The preview-codecs helper re-resolves its lockfile offline; populate the registry first.
-cargo fetch --manifest-path helpers/lege-preview-codecs/Cargo.toml
+cargo fetch --manifest-path helpers/templar-preview-codecs/Cargo.toml
 echo "build-in-resolute: \$(rustc --version) on \$(. /etc/os-release && echo \$PRETTY_NAME)"
 just deb
 cp -a target/debian/. /build/debs/

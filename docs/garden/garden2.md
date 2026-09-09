@@ -50,11 +50,11 @@ Your tree idea is better than the current two-column children list.
 If activity is concentrated in:
 
 ```text
-Lege/
+Templar/
 ├── crates/
-│   ├── lege-file-index/
-│   ├── lege-window/
-│   └── lege-field/
+│   ├── templar-file-index/
+│   ├── templar-window/
+│   └── templar-field/
 ├── docs/
 │   └── planning/
 └── installer/
@@ -63,7 +63,7 @@ Lege/
 and those directories have actually been used, Home should reflect that **real containment hierarchy**:
 
 ```text
-                    LEGE
+                    TEMPLAR
                      │
            ┌─────────┼────────┐
            │         │        │
@@ -79,7 +79,7 @@ Not literally with ASCII connector lines, necessarily, but visually as a trunk w
 This is safe philosophically because it isn't inferring a secret relationship. The relationship:
 
 ```text
-Lege → crates → lege-window
+Templar → crates → templar-window
 ```
 
 already exists in the filesystem.
@@ -95,7 +95,7 @@ Only draw a branch when that path has earned it through interaction.
 So:
 
 ```text
-Lege/
+Templar/
 ├── crates/          frequently entered
 ├── docs/            frequently entered
 ├── target/          enormous build churn
@@ -106,7 +106,7 @@ Lege/
 becomes:
 
 ```text
-             LEGE
+             TEMPLAR
             /    \
         crates   docs
 ```
@@ -114,7 +114,7 @@ becomes:
 Not:
 
 ```text
-             LEGE
+             TEMPLAR
        /   /   |   \    \
  crates docs target assets packaging
 ```
@@ -132,7 +132,7 @@ A heavily used branch can simply occupy more visual weight.
 For example:
 
 ```text
-              LEGE
+              TEMPLAR
           _____|_____
          /           \
       crates         docs
@@ -142,12 +142,12 @@ For example:
 window     file-index
 ```
 
-If `crates/lege-window` has dominated the current working session, that leaf could be larger.
+If `crates/templar-window` has dominated the current working session, that leaf could be larger.
 
 You don't need:
 
 ```text
-lege-window
+templar-window
 activity score: 17.4
 ```
 
@@ -477,7 +477,7 @@ Inside that allocated space, draw the foreground structure irregularly:
 ```text
 allocated rectangle
 ┌─────────────────────────────┐
-│           LEGE              │
+│           TEMPLAR              │
 │            │                │
 │      ┌─────┴──────┐         │
 │   crates        docs        │
@@ -844,7 +844,7 @@ This may be the visual concept you're looking for.
 Represent persistent/repeated structure.
 
 ```text
-LEGE
+TEMPLAR
 ├── crates
 │   ├── window
 │   └── field
@@ -1009,13 +1009,13 @@ Then do mineral/glass/material identity.
 Not:
 
 ```text
-[Lege card] [Downloads card] [Videos card] [Documents card]
+[Templar card] [Downloads card] [Videos card] [Documents card]
 ```
 
 but more like:
 
 ```text
-                   LEGE
+                   TEMPLAR
                     │
               ┌─────┴─────┐
            crates         docs

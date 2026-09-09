@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  The one polkit action set for the one privileged daemon (ADR-0003). One action per
+  org.templaros.Host.* interface's mutating surface; every action here is checked in-process by
+  templar-hostd itself (crates/templar-hostd/src/polkit.rs: require_authorized), on every call, against
+  the caller's system-bus name — read-only methods (profiles, plans, usage reports, history) need
+  no action and are open to any bus peer, same as `systemctl status` needs no privilege while
+  `systemctl restart` does.
+-->
+<policyconfig>
+  <vendor>TemplarOS</vendor>
+  <vendor_url>https://templaros.org</vendor_url>
+
+  <action id="org.templaros.host.update">
+    <description>Plan or apply a kernel/driver update transaction</description>
+    <message>Authentication is required to update the system</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.templaros.host.deploy">
+    <description>Stage, bless or roll back a boot deployment</description>
+    <message>Authentication is required to change boot deployments</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.templaros.host.driver">
+    <description>Repair the NVIDIA driver version lock</description>
+    <message>Authentication is required to change the driver version lock</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.templaros.host.storage">
+    <description>Enforce the storage reserve (trim caches, drop old deployments)</description>
+    <message>Authentication is required to reclaim disk space</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Read-only @home checkpoints and the btrfs metadata delta between two of them, so the file
+       index can bridge a dormant period without re-walking the tree. Snapshotting and
+       BTRFS_IOC_SEND both need CAP_SYS_ADMIN, which is why this is a host action at all.
+
+       allow_active is `yes`, and it is the only action here that is. The caller is templar-filed,
+       a daemon in the user's own session: it has no polkit agent, nothing would ever answer a
+       prompt, and a repair that silently never happens is worse than one that does. What is
+       being authorised is bounded to match: a read-only snapshot of the user's own @home, a
+       metadata-only send between two of them, and a discard of one by an id that must be a
+       single safe path segment (`index_checkpoint::is_safe_id`). No file contents are read and
+       nothing outside the configured subvolume is reachable.
+
+       ponytail: one action for every local user. On a machine with a second user, scope the ids
+       per uid — hostd already knows the caller's uid from the bus — so one session cannot
+       discard another's checkpoint. Not built while the reference machine has one account. -->
+  <action id="org.templaros.host.index-checkpoint">
+    <description>Take, compare or drop a file-index checkpoint of the home subvolume</description>
+    <message>Authentication is required to snapshot the home subvolume</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.templaros.host.hardware">
+    <description>Change the GPU mode (hybrid / integrated / discrete)</description>
+    <message>Authentication is required to change the graphics mode</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

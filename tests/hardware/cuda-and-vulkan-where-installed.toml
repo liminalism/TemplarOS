@@ -2,12 +2,12 @@ id = "cuda-and-vulkan-where-installed"
 profiles = ["hybrid-intel-nvidia"]
 steps = [
   "nvidia-smi",
-  "vulkaninfo --summary (also exercised automatically by lege-boot-health's graphics-probe check)",
+  "vulkaninfo --summary (also exercised automatically by templar-boot-health's graphics-probe check)",
   "run a CUDA sample (e.g. deviceQuery from the CUDA toolkit, if installed)",
 ]
 expect = [
   "nvidia-smi reports the dGPU and the driver version matching the installed userspace package",
   "vulkaninfo reports at least one Vulkan-capable device (the dGPU; the iGPU too in hybrid mode)",
   "the CUDA sample runs to completion where the CUDA toolkit is installed — this case is skipped,",
-  "not failed, on a system without it (mirrors lege-boot-health's graphics-probe Skipped state)",
+  "not failed, on a system without it (mirrors templar-boot-health's graphics-probe Skipped state)",
 ]
