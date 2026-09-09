@@ -1512,6 +1512,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.window_service.presentation(),
             templar_window::Presentation::Taskfield(_)
         ) {
+            // Unless the shell's own overview chrome wants it: its surface covers the output but
+            // accepts input only where it drew something (its `wl_surface` input region), so a
+            // press its region takes is its query field or its menu, not a card.
+            if self.surface_under(location).is_some() {
+                return false;
+            }
             if button == BTN_LEFT {
                 self.leave_taskfield();
                 if let PressTarget::Window(window_id) = target {

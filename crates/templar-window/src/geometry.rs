@@ -301,7 +301,11 @@ pub fn shell_surface_placement(
             }
         };
     }
-    if layer == Layer::HomeSurface {
+    if layer == Layer::HomeSurface || layer == Layer::Presentation {
+        // Both are backdrops for a whole screen: Home is the desktop, and the window overview's
+        // chrome has to reach every card on the output. Neither reserves anything — the
+        // overview's surface holds no exclusive zone at all — so the whole output is a placement,
+        // not a claim, and nothing reflows when it appears or goes away.
         return full;
     }
     if layer == Layer::Notification {

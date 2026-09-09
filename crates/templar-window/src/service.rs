@@ -701,6 +701,14 @@ impl<I: IdentityCache> WindowService<I> {
         if !window.mapped || window.shelved {
             return false;
         }
+        // `Layer::Presentation` exists only while the mode it draws does: the shell's overview
+        // surface is configured to the whole output and reserves nothing, so leaving it mapped
+        // outside the mode would put an invisible sheet over the desktop that takes every click.
+        // Here, in the one predicate `space_sync`, the hit-test and the chrome all consult, so
+        // the three cannot disagree about it.
+        if self.layer_of(window_id) == Some(Layer::Presentation) {
+            return matches!(self.presentation, Presentation::Taskfield(_));
+        }
         if self.layer_of(window_id) == Some(Layer::HomeSurface) {
             return self.home_revealed() || !self.home_is_covered(window.geometry);
         }
