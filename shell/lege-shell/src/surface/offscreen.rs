@@ -501,10 +501,10 @@ mod tests {
 
     /// Fixed-pixel baseline for the default Home Field.
     ///
-    /// Last reviewed 2026-09-07, when the palette refactor landed: the only change was the Home
-    /// plate's label ink, `0x00f2_f4f6` to the palette's `strong_ink` (`0x00ff_ffff` on the light
-    /// palette). Imperceptible on light, and the reason the dark palette's Home plate is legible
-    /// at all — it was a hardcoded near-white on a light plate. Unlike `render_field`, this fixture reads
+    /// Last reviewed 2026-09-09, when the growth forms landed: the light palette's ground moved
+    /// from a cool grey to a warm mineral off-white (`0x00ec_eef0` to `0x00ee_ebe4`), which is
+    /// the substrate a garden is grown on. Nothing else in the resting field changed — the forms
+    /// themselves are reviewed through `LEGE_BASELINE_GARDEN`, which returns before this hash. Unlike `render_field`, this fixture reads
     /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
     /// therefore be reviewed and deliberately update this hash; environment changes cannot make
     /// it flicker.
@@ -824,7 +824,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xa386_f28b_037c_e53e,
+            hash, 0x203f_b173_d7a5_b672,
             "review the Home Field pixels before updating this baseline"
         );
     }
@@ -846,10 +846,10 @@ mod tests {
 
         let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
         for (presence, open_row, name, expected) in [
-            (Presence::Open, false, "open", 0xfc19_5fb8_f4de_5ae0u64),
-            (Presence::Hint, false, "hint", 0x090f_a0c5_682c_df95),
-            (Presence::Revealed, false, "revealed", 0xe1e8_7ec6_b7a2_cf8a),
-            (Presence::Open, true, "row", 0x00ae_baf7_72b7_549a),
+            (Presence::Open, false, "open", 0xdf8b_aa7d_07cd_7cf0u64),
+            (Presence::Hint, false, "hint", 0xe0c9_dac0_7b3a_e3a5),
+            (Presence::Revealed, false, "revealed", 0xe226_b28f_4194_158a),
+            (Presence::Open, true, "row", 0x60e6_9f1e_9ce2_6e7a),
         ] {
             let buffer = bar_frame(presence, open_row, 1.0);
             if let Some(dir) = &dump {
