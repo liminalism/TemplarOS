@@ -140,17 +140,13 @@ const POINTER_ROUTE_ROOTS: &[&str] = &["shell/templar-shell/src", "compositor/te
 /// re-creating the keyboard-only set this check was written to eliminate. Each entry is
 /// `(action id, why)` and every one of them is a bug with a date on it.
 const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
-    // 2026-09-09, the task system (docs/task-system-taskfield-island-peek.md §6, §7.3). Both are
-    // owed a pointer route by work already in flight, and both entries are deleted by the commit
-    // that lands it: `taskfield.open` by the Peek corner's promotion gesture in the compositor
-    // (`PointerGesture("taskfield.open")`), `window.within-unit-*` by the island's fan, which is
-    // the pointer's way to the other windows of one unit. `window.group` needs no entry: dropping
+    // 2026-09-09, the task system (docs/task-system-taskfield-island-peek.md §6, §7.3).
+    // `taskfield.open`'s entry is gone: the Peek corner's promotion gesture is its pointer route
+    // (`PointerGesture("taskfield.open")`). `window.within-unit-*` is owed one by the island's
+    // fan, which is the pointer's way to the other windows of one unit, and its two entries are
+    // deleted by the commit that lands it. `window.group` needs no entry: dropping
     // one window's band on another's is its pointer route, declared in
     // `templar_comp::window_groups::POINTER_GESTURES`; `window.ungroup` has the group tile's row.
-    (
-        "taskfield.open",
-        "compositor chord; the Peek corner's promotion gesture is the pointer route, not yet built",
-    ),
     (
         "window.within-unit-forward",
         "compositor chord; the island's fan is the pointer route, not yet built",

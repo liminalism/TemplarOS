@@ -29,7 +29,14 @@ pub struct PointerGesture(pub &'static str);
 /// [`group_windows`]). It is the *primary* route — the plan's rule 6 — with `Super+G` as its
 /// accelerator, which is exactly the shape the action manifest asks for.
 #[allow(dead_code)]
-pub const POINTER_GESTURES: &[PointerGesture] = &[PointerGesture("window.group")];
+pub const POINTER_GESTURES: &[PointerGesture] = &[
+    PointerGesture("window.group"),
+    // The Peek corner's promotion: a first dwell in the bottom-left raises the island under a
+    // screen-filling window, a second one opens the overview (`src/input.rs`'s `finish_dwell`).
+    // The pointer's whole route out of a fullscreen window, in one corner, drawn by the
+    // compositor because under a fullscreen window the shell is not on screen to draw anything.
+    PointerGesture("taskfield.open"),
+];
 
 fn trusted_ctx<B: Backend + 'static>(state: &TemplarCompState<B>) -> CommandContext {
     CommandContext {

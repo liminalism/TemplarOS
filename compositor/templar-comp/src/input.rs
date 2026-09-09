@@ -1301,7 +1301,18 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // the keyboard moved somewhere visible, exactly as reaching it from `Super+H` does.
             DwellIntent::HomeCorner => self.reveal_home(RevealHome::Show),
             DwellIntent::BarPeek(output) => {
-                if self.window_service.set_peek_output(Some(output)) {
+                // A first dwell raises the island; resting there again asks for the rest. The
+                // promotion is the same corner and the same gesture at two depths — reach once
+                // for "what is running", reach again for "show me" — so the pointer never has to
+                // learn a second place. `set_peek_output` answering `false` *is* "the island is
+                // already up for this output", which is what makes the second dwell recognisable
+                // without a second piece of state.
+                let changed = if self.window_service.set_peek_output(Some(output)) {
+                    true
+                } else {
+                    self.enter_taskfield(templar_window::TaskFilter::All)
+                };
+                if changed {
                     crate::space_sync::sync_after_change(self);
                 }
             }
