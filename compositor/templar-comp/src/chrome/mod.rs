@@ -80,8 +80,14 @@ pub struct ChromeState {
     control_tags: HashMap<WindowId, CachedWidget>,
     pressure: CachedWidget,
     lock: CachedWidget,
-    scatter_cards: HashMap<WindowId, CachedWidget>,
-    scatter_labels: HashMap<WindowId, CachedWidget>,
+    /// One title band per card in the window overview.
+    taskfield_labels: HashMap<WindowId, CachedWidget>,
+    /// One band per section header, by position: sections have no stable identity across a
+    /// re-entry and the layout is frozen for the length of the mode, so the index *is* the key.
+    taskfield_headers: Vec<CachedWidget>,
+    /// The scrim the overview's cards sit on, and the four bars ringing the selected one.
+    taskfield_scrim: CachedWidget,
+    taskfield_ring: Vec<CachedWidget>,
     switcher_rows: HashMap<WindowId, CachedWidget>,
     switcher_heading: CachedWidget,
     /// The two-pixel corner mark that says where Peek is (`peek_affordance`).
@@ -95,7 +101,7 @@ impl std::fmt::Debug for ChromeState {
         f.debug_struct("ChromeState")
             .field("has_font", &self.fonts.is_some())
             .field("name_tags", &self.name_tags.len())
-            .field("scatter_cards", &self.scatter_cards.len())
+            .field("taskfield_labels", &self.taskfield_labels.len())
             .finish_non_exhaustive()
     }
 }
@@ -124,8 +130,10 @@ impl ChromeState {
             control_tags: HashMap::new(),
             pressure: CachedWidget::new(),
             lock: CachedWidget::new(),
-            scatter_cards: HashMap::new(),
-            scatter_labels: HashMap::new(),
+            taskfield_labels: HashMap::new(),
+            taskfield_headers: Vec::new(),
+            taskfield_scrim: CachedWidget::new(),
+            taskfield_ring: Vec::new(),
             switcher_rows: HashMap::new(),
             switcher_heading: CachedWidget::new(),
             peek: CachedWidget::new(),
@@ -165,7 +173,6 @@ pub struct ChromeInputs<'a> {
     pub space: &'a Space<Window>,
     pub window_service: &'a WindowService<DbusIdentityCache>,
     pub recovery_protocol: &'a crate::protocols_recovery::RecoveryProtocolState,
-    pub show_all_windows: Option<&'a [(WindowId, Rect)]>,
     pub session_lock: &'a crate::session_lock::SessionLockState,
     pub switcher: Option<&'a SwitcherState>,
     /// The window whose band a band drag is currently hovering, if any: it draws as a drop
@@ -187,6 +194,7 @@ pub fn collect_output_chrome(
     inputs: &ChromeInputs<'_>,
     output: &Output,
     renderer: &mut GlesRenderer,
+    background: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) -> (Vec<MemoryRenderBufferRenderElement<GlesRenderer>>, bool) {
     let Some(output_geometry) = inputs.space.output_geometry(output) else {
         return (Vec::new(), false);
@@ -246,20 +254,26 @@ pub fn collect_output_chrome(
         chrome.switcher_rows.clear();
     }
 
-    if let Some(layout) = inputs.show_all_windows {
-        collect_scatter(
+    if let templar_window::Presentation::Taskfield(taskfield) = inputs.window_service.presentation()
+    {
+        collect_taskfield(
             chrome,
             inputs.window_service,
-            layout,
+            taskfield,
             output_rect,
             output_scale,
             renderer,
             &mut elements,
+            background,
         );
-    } else {
-        chrome.scatter_cards.clear();
-        chrome.scatter_labels.clear();
+        // Windows wear no bands in the overview: a card is a picture of a window, and a title bar
+        // painted across it at its real size would be the one thing on screen not pulled back.
+        // The overview draws its own title under each card instead.
+        return (elements, false);
     }
+    chrome.taskfield_labels.clear();
+    chrome.taskfield_headers.clear();
+    chrome.taskfield_ring.clear();
 
     collect_peek_affordance(
         chrome,
@@ -601,82 +615,187 @@ fn collect_switcher_heading(
     }
 }
 
+/// The window overview's own chrome (`templar_window::Presentation::Taskfield`): the scrim the
+/// cards sit on, one header per section, a title band under each card, and the four bars ringing
+/// the selected one.
+///
+/// Everything but the scrim goes in `elements`, above every window, and the scrim goes in
+/// `background`, which `src/scene.rs` appends *last* — beneath the cards, because a card is the
+/// window's own live surface drawn small (`WindowService::presentation_rect`) and not a
+/// placeholder. That is the whole difference between this and the recovery scatter it replaces:
+/// there the tiles were coloured rectangles, here they are the windows.
+///
+/// Drawn by the compositor whether or not a shell is running. When one is, it puts icons and
+/// richer labels over the same rectangles from its own `Layer::Presentation` surface, having run
+/// `templar_window::taskfield::layout` over the same bytes.
 #[allow(clippy::too_many_arguments)]
-fn collect_scatter(
+fn collect_taskfield(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
-    layout_rects: &[(WindowId, Rect)],
+    taskfield: &templar_window::TaskfieldState,
     output_rect: Rect,
     output_scale: f64,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+    background: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    let mut live = std::collections::HashSet::new();
-    for (window_id, tile) in layout_rects {
-        // `scatter_layout` guarantees every tile is fully contained in the output it was
-        // assigned to (its own doc/proptest) — this output pass only draws the tiles that landed
-        // on *this* output, so a multi-monitor "show every window" does not duplicate a tile onto
-        // every screen.
-        if output_rect.intersection(*tile) != Some(*tile) {
+    let origin = Point::from((output_rect.x, output_rect.y));
+
+    // The scrim, over this whole output. It is what makes the mode read as a mode: the desktop
+    // behind the cards is still being drawn, and without it a card would sit on whatever window
+    // happened to be underneath.
+    if let Some(element) = chrome.taskfield_scrim.ensure(
+        WidgetKey::new("taskfield-scrim", paint::TASKFIELD_SCRIM_COLOR),
+        (output_rect.width, output_rect.height),
+        output_scale,
+        to_physical(output_rect, origin, output_scale),
+        &mut chrome.scratch,
+        renderer,
+        |painter, pixel_w, pixel_h| {
+            paint::group_outline_bar(painter, pixel_w, pixel_h, paint::TASKFIELD_SCRIM_COLOR);
+        },
+    ) {
+        background.push(element);
+    }
+
+    // The query, when there is one, in the band the first section header would otherwise start
+    // at. `taskfield::layout` never re-runs for a query — a card must not move out from under the
+    // pointer as the user types — so this says what was typed and nothing moves.
+    //
+    // ponytail: the compositor shows the query but does not dim the non-matches
+    // (`templar_window::task::matches`); dimming a live surface needs a per-element alpha the
+    // widget cache does not carry. The shell's `Layer::Presentation` surface is where the dim
+    // belongs anyway. Add the alpha to `CachedWidget::ensure` if the shell-dead case ever needs it.
+    let mut sections: Vec<(Rect, String, Option<u32>)> = Vec::new();
+    if !taskfield.query.is_empty() {
+        // Along the bottom edge, which `taskfield::layout` leaves clear by its own margin — and
+        // where a person looks for what they are typing.
+        let band = Rect::new(
+            output_rect.x,
+            output_rect.bottom() - SCATTER_LABEL_HEIGHT,
+            output_rect.width,
+            SCATTER_LABEL_HEIGHT,
+        );
+        sections.push((band, format!("“{}”", taskfield.query), None));
+    }
+    for section in &taskfield.sections {
+        if output_rect.intersection(section.header) != Some(section.header) {
             continue;
         }
-        live.insert(*window_id);
-        let focused = window_service
-            .window(*window_id)
-            .is_some_and(|w| w.activated);
-        let title = window_service
-            .window(*window_id)
-            .map(|w| w.title.clone())
-            .unwrap_or_default();
-        let (card, label) = layout::scatter_label_band(*tile, SCATTER_LABEL_HEIGHT);
+        let overflow = if section.overflow > 0 {
+            format!(" (+{} more)", section.overflow)
+        } else {
+            String::new()
+        };
+        sections.push((
+            section.header,
+            format!("{} — {}{overflow}", section.label, section.cards.len()),
+            section.accent,
+        ));
+    }
 
-        let card_key = WidgetKey::new(String::new(), paint::SCATTER_CARD_COLOR)
-            .with_variant(u32::from(focused));
-        let card_location = to_physical(
-            card,
-            Point::from((output_rect.x, output_rect.y)),
+    taskfield_headers(chrome, &sections, origin, output_scale, renderer, elements);
+    taskfield_labels(
+        chrome,
+        window_service,
+        taskfield,
+        output_rect,
+        origin,
+        output_scale,
+        renderer,
+        elements,
+    );
+    taskfield_ring(
+        chrome,
+        taskfield,
+        output_rect,
+        origin,
+        output_scale,
+        renderer,
+        elements,
+    );
+}
+
+/// One band per section header, and the query when there is one, in the section's own accent.
+fn taskfield_headers(
+    chrome: &mut ChromeState,
+    sections: &[(Rect, String, Option<u32>)],
+    origin: Point<i32, Logical>,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    chrome
+        .taskfield_headers
+        .resize_with(sections.len(), CachedWidget::new);
+    for (widget, (rect, label, accent)) in chrome.taskfield_headers.iter_mut().zip(sections) {
+        let colour = accent.map_or(paint::SCATTER_LABEL_COLOR, paint::opaque);
+        let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
+        let text = label.clone();
+        if let Some(element) = widget.ensure(
+            WidgetKey::new(label.clone(), colour),
+            (rect.width, rect.height),
             output_scale,
-        );
-        let card_widget = chrome.scatter_cards.entry(*window_id).or_default();
-        if let Some(element) = card_widget.ensure(
-            card_key,
-            (card.width, card.height),
-            output_scale,
-            card_location,
+            to_physical(*rect, origin, output_scale),
             &mut chrome.scratch,
             renderer,
             move |painter, pixel_w, pixel_h| {
-                paint::scatter_card(
+                paint::switcher_heading(
                     painter,
                     pixel_w,
                     pixel_h,
-                    focused,
-                    scale_factor(pixel_w, card.width),
+                    &text,
+                    colour,
+                    fonts,
+                    scale_factor(pixel_w, rect.width),
                 );
             },
         ) {
             elements.push(element);
         }
+    }
+}
 
-        let label_background = if focused {
+/// One title band per card, inside the bottom of the card itself.
+#[allow(clippy::too_many_arguments)]
+fn taskfield_labels(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    taskfield: &templar_window::TaskfieldState,
+    output_rect: Rect,
+    origin: Point<i32, Logical>,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    // One title band per card, inside the bottom of the card itself: the card *is* the window, so
+    // there is no tile below it to hang a strip off, and a strip outside it would overlap the next
+    // row. `scatter_label_band` splits the rectangle the same way it always did.
+    let mut live = std::collections::HashSet::new();
+    for card in taskfield.cards() {
+        if output_rect.intersection(card.rect) != Some(card.rect) {
+            continue;
+        }
+        live.insert(card.window);
+        let selected = taskfield.selected == Some(card.window);
+        let title = window_service
+            .window(card.window)
+            .map(|window| window.title.clone())
+            .unwrap_or_default();
+        let (_, label) = layout::scatter_label_band(card.rect, SCATTER_LABEL_HEIGHT);
+        let background_colour = if selected {
             paint::SCATTER_FOCUS_ACCENT
         } else {
             paint::SCATTER_LABEL_COLOR
         };
-        let label_key = WidgetKey::new(title.clone(), label_background);
-        let label_location = to_physical(
-            label,
-            Point::from((output_rect.x, output_rect.y)),
-            output_scale,
-        );
         let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
-        let label_widget = chrome.scatter_labels.entry(*window_id).or_default();
+        let widget = chrome.taskfield_labels.entry(card.window).or_default();
         let title_for_paint = title.clone();
-        if let Some(element) = label_widget.ensure(
-            label_key,
+        if let Some(element) = widget.ensure(
+            WidgetKey::new(title, background_colour),
             (label.width, label.height),
             output_scale,
-            label_location,
+            to_physical(label, origin, output_scale),
             &mut chrome.scratch,
             renderer,
             move |painter, pixel_w, pixel_h| {
@@ -685,7 +804,7 @@ fn collect_scatter(
                     pixel_w,
                     pixel_h,
                     &title_for_paint,
-                    focused,
+                    selected,
                     fonts,
                     scale_factor(pixel_w, label.width),
                 );
@@ -694,8 +813,51 @@ fn collect_scatter(
             elements.push(element);
         }
     }
-    chrome.scatter_cards.retain(|id, _| live.contains(id));
-    chrome.scatter_labels.retain(|id, _| live.contains(id));
+    chrome.taskfield_labels.retain(|id, _| live.contains(id));
+}
+
+/// The four bars ringing the selected card.
+#[allow(clippy::too_many_arguments)]
+fn taskfield_ring(
+    chrome: &mut ChromeState,
+    taskfield: &templar_window::TaskfieldState,
+    output_rect: Rect,
+    origin: Point<i32, Logical>,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    // The selection ring, four bars just *outside* the selected card so none of the window's own
+    // pixels are covered — the same construction, and the same reason, as a group's outline.
+    let ring = taskfield
+        .selected
+        .and_then(|id| taskfield.card(id))
+        .map(|card| card.rect)
+        .filter(|rect| output_rect.intersection(*rect).is_some());
+    let Some(ring) = ring else {
+        chrome.taskfield_ring.clear();
+        return;
+    };
+    chrome.taskfield_ring.resize_with(4, CachedWidget::new);
+    for (widget, bar) in chrome
+        .taskfield_ring
+        .iter_mut()
+        .zip(layout::outline_bars(ring, GROUP_OUTLINE_THICKNESS))
+    {
+        if let Some(element) = widget.ensure(
+            WidgetKey::new("taskfield-ring", paint::SCATTER_FOCUS_ACCENT),
+            (bar.width, bar.height),
+            output_scale,
+            to_physical(bar, origin, output_scale),
+            &mut chrome.scratch,
+            renderer,
+            |painter, pixel_w, pixel_h| {
+                paint::group_outline_bar(painter, pixel_w, pixel_h, paint::SCATTER_FOCUS_ACCENT);
+            },
+        ) {
+            elements.push(element);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

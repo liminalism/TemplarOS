@@ -171,7 +171,6 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                                         space: &state.space,
                                         window_service: &state.window_service,
                                         recovery_protocol: &state.recovery_protocol,
-                                        show_all_windows: state.show_all_windows.as_deref(),
                                         session_lock: &state.session_lock,
                                         switcher: state.switcher.as_ref(),
                                         drop_target: state.drop_target,

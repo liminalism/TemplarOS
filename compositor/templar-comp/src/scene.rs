@@ -9,12 +9,15 @@
 //! The order is:
 //!
 //! 1. the pointer cursor (the backend prepends it; it is above everything by definition);
-//! 2. **output chrome** — the lock screen, the pressure overlay, the fallback switcher, the "show
-//!    every window" scatter (`chrome::collect_output_chrome`). These belong to the screen, not to
-//!    any window, and stay above every window there is;
+//! 2. **output chrome** — the lock screen, the pressure overlay, the fallback switcher, the window
+//!    overview's headers and labels (`chrome::collect_output_chrome`). These belong to the screen,
+//!    not to any window, and stay above every window there is;
 //! 3. then, for each window in `WindowService::stacking_order()` **top first**: that window's own
 //!    band and grip (`chrome::collect_window_chrome`), immediately followed by that window's
-//!    surface elements.
+//!    surface elements;
+//! 4. finally the output chrome's **background** — today just the window overview's scrim — which
+//!    is the one piece of chrome that belongs *under* the windows, because in that mode the
+//!    windows are the interface and the scrim is the ground they stand on.
 //!
 //! Step 3 is the fix for the fault this module was extracted for. Chrome used to be collected as
 //! one flat list and pushed ahead of *all* of `space_render_elements`, which put every window's
@@ -117,8 +120,9 @@ pub fn collect(
     );
     let output_scale = output.current_scale().fractional_scale();
 
+    let mut background = Vec::new();
     let (overlay, windows_get_chrome) =
-        crate::chrome::collect_output_chrome(chrome, inputs, output, renderer);
+        crate::chrome::collect_output_chrome(chrome, inputs, output, renderer, &mut background);
     let mut elements: Vec<SceneElement> = overlay.into_iter().map(SceneElement::Chrome).collect();
 
     let plan: Vec<(WindowId, bool, bool)> = inputs
@@ -175,6 +179,7 @@ pub fn collect(
                     inputs.space,
                     output_geometry,
                     output_scale,
+                    inputs.window_service.presentation_rect(window_id),
                     renderer,
                     &mut elements,
                 );
@@ -201,16 +206,22 @@ pub fn collect(
             inputs.space,
             output_geometry,
             output_scale,
+            None,
             renderer,
             &mut elements,
         );
     }
 
+    // Last, so it is bottom-most: the overview's scrim is the only chrome the windows are drawn
+    // *on top of*.
+    elements.extend(background.into_iter().map(SceneElement::Chrome));
+
     chrome.retain_window_chrome(&live_chrome);
     elements
 }
 
-/// One window's surface elements, positioned exactly as `Space` would have positioned them.
+/// One window's surface elements, positioned exactly as `Space` would have positioned them —
+/// unless `presentation` says this window is being drawn somewhere else at some other size.
 ///
 /// This is `Space::render_elements_for_region`'s per-element body, spelled out for one element:
 /// a window's render origin is its `Space` location minus its own `geometry().loc` (the client's
@@ -218,18 +229,86 @@ pub fn collect(
 /// output's rectangle. Deriving it here rather than calling `space_render_elements` is what
 /// allows the interleaving in [`collect`]; deriving it the *same* way is what keeps a window in
 /// exactly the pixels it was in before.
+///
+/// `presentation` is `WindowService::presentation_rect` — `Some` only in the window overview,
+/// where the whole surface tree is drawn into its card. That is a *render* change and nothing
+/// else: no `xdg_toplevel.configure` is sent, `Space` is not touched, and the client goes on
+/// painting at its real size, which is why leaving the mode restores the previous frame exactly
+/// and why an unresponsive client's card is as live as anyone else's. The arithmetic is
+/// `src/screencopy.rs`'s `render_one`: one uniform scale, and the content origin moved to the
+/// card. XWayland comes free, because a `smithay::desktop::Window` is a surface tree either way.
+/// Where a window's surface tree starts, in this output's physical pixels, and by how much it is
+/// shrunk, when it is being drawn into `card` instead of at its real geometry.
+///
+/// `k` is the smaller of the two ratios so the card never crops — the card rectangle already
+/// carries the window's own aspect (`taskfield::card_in`), so the two agree to within a rounding
+/// pixel. The origin is the card's position relative to the output in physical pixels, less the
+/// client's own `geometry().loc` (its shadow/decoration offset inside the surface) at the *scaled*
+/// size, which is `src/screencopy.rs`'s `render_one` arithmetic: the content, not the buffer,
+/// lands on the card.
+///
+/// Pure, so the one piece of this that can be wrong by a pixel can be exercised without a
+/// renderer, a display or a `Space`.
+fn card_placement(
+    card: Rect,
+    geometry: Rect,
+    output_loc: (i32, i32),
+    output_scale: f64,
+) -> ((f64, f64), f64) {
+    let k = (f64::from(card.width) / f64::from(geometry.width.max(1)))
+        .min(f64::from(card.height) / f64::from(geometry.height.max(1)));
+    (
+        (
+            f64::from(card.x - output_loc.0) * output_scale
+                - f64::from(geometry.x) * output_scale * k,
+            f64::from(card.y - output_loc.1) * output_scale
+                - f64::from(geometry.y) * output_scale * k,
+        ),
+        k,
+    )
+}
+
 fn surface_elements(
     window: &Window,
     space: &Space<Window>,
     output_geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     output_scale: f64,
+    presentation: Option<Rect>,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<SceneElement>,
 ) {
     let Some(location) = space.element_location(window) else {
         return;
     };
-    let render_location = location - window.geometry().loc;
+    let geometry = window.geometry();
+    if let Some(card) = presentation {
+        let (origin, k) = card_placement(
+            card,
+            Rect::new(
+                geometry.loc.x,
+                geometry.loc.y,
+                geometry.size.w,
+                geometry.size.h,
+            ),
+            (output_geometry.loc.x, output_geometry.loc.y),
+            output_scale,
+        );
+        elements.extend(
+            AsRenderElements::<GlesRenderer>::render_elements::<
+                WaylandSurfaceRenderElement<GlesRenderer>,
+            >(
+                window,
+                renderer,
+                smithay::utils::Point::from((origin.0.round() as i32, origin.1.round() as i32)),
+                Scale::from(output_scale * k),
+                1.0,
+            )
+            .into_iter()
+            .map(SceneElement::Surface),
+        );
+        return;
+    }
+    let render_location = location - geometry.loc;
     let mut bbox = window.bbox();
     bbox.loc += render_location;
     if !output_geometry.overlaps(bbox) {
@@ -252,6 +331,56 @@ mod tests {
 
     fn id(raw: u64) -> WindowId {
         WindowId(raw)
+    }
+
+    /// A card is the window shrunk to fit and put where the layout said, in this output's own
+    /// pixels — and nothing about the client changes to make it happen.
+    #[test]
+    fn a_card_places_the_window_content_exactly_where_the_layout_put_it() {
+        // A 1600x900 window with no shadow offset, on the second output, into a 320x180 card.
+        let (origin, k) = card_placement(
+            Rect::new(2020, 130, 320, 180),
+            Rect::new(0, 0, 1600, 900),
+            (1920, 0),
+            1.0,
+        );
+        assert!((k - 0.2).abs() < 1e-9, "uniform fifth-size, got {k}");
+        assert_eq!(
+            origin,
+            (100.0, 130.0),
+            "card position, less the output's origin"
+        );
+
+        // The client's own shadow offset is subtracted at the *scaled* size, so its content —
+        // not its buffer — lands on the card.
+        let (shadowed, _) = card_placement(
+            Rect::new(2020, 130, 320, 180),
+            Rect::new(50, 20, 1600, 900),
+            (1920, 0),
+            1.0,
+        );
+        assert_eq!(shadowed, (100.0 - 10.0, 130.0 - 4.0));
+
+        // On a 2x output every physical number doubles and the scale does not: `k` is the
+        // window's shrink, `output_scale * k` is what the renderer is handed.
+        let (hidpi, k2) = card_placement(
+            Rect::new(20, 30, 320, 180),
+            Rect::new(0, 0, 1600, 900),
+            (0, 0),
+            2.0,
+        );
+        assert_eq!(hidpi, (40.0, 60.0));
+        assert!((k2 - 0.2).abs() < 1e-9);
+
+        // The smaller ratio wins, so a card that is proportionally wider than the window still
+        // fits inside it rather than cropping.
+        let (_, squat) = card_placement(
+            Rect::new(0, 0, 400, 100),
+            Rect::new(0, 0, 1600, 900),
+            (0, 0),
+            1.0,
+        );
+        assert!((squat - 100.0 / 900.0).abs() < 1e-9);
     }
 
     /// The fault the user reported: a buried window's title bar painted over the translucent

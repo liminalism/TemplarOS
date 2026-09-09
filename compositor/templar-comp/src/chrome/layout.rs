@@ -553,13 +553,13 @@ mod tests {
         // constants (not re-typed hex) so this test cannot silently drift from the real palette.
         use crate::chrome::paint::{
             LOCK_SCREEN_COLOR, PRESSURE_OVERLAY_COLOR, RECOVERY_BAND_COLOR, RECOVERY_TAB_COLOR,
-            SCATTER_CARD_COLOR,
+            TASKFIELD_SCRIM_COLOR,
         };
         for background in [
             RECOVERY_BAND_COLOR,
             RECOVERY_TAB_COLOR,
             PRESSURE_OVERLAY_COLOR,
-            SCATTER_CARD_COLOR,
+            TASKFIELD_SCRIM_COLOR,
             LOCK_SCREEN_COLOR,
         ] {
             let ink = text_ink_for(background);

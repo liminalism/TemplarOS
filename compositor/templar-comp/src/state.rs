@@ -195,9 +195,6 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// Window previews for the Home Field over the standard capture protocols
     /// (`src/screencopy.rs`): globals, sessions, and the frames queued for the next render pass.
     pub screencopy: crate::screencopy::ScreencopyState,
-    /// Non-`None` while the "show every window" recovery view is active: the scattered layout to
-    /// draw and hit-test against instead of `window_service`'s ordinary geometry.
-    pub show_all_windows: Option<Vec<(templar_window::WindowId, templar_window::Rect)>>,
     /// Non-`None` while the compositor-drawn fallback switcher (`src/keybindings.rs`) is showing.
     pub switcher: Option<crate::chrome::SwitcherState>,
     /// The list `Alt+Tab` / `Super+Tab` is walking, frozen at the first press and dropped when
@@ -363,7 +360,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             session_lock: crate::session_lock::SessionLockState::default(),
             foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
             screencopy: crate::screencopy::ScreencopyState::new::<B>(dh),
-            show_all_windows: None,
             switcher: None,
             switch_ring: None,
             chord_held: false,

@@ -143,32 +143,7 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                 filter,
                 key,
                 windows,
-            } => {
-                let ids: Vec<WindowId> = windows
-                    .chunks_exact(4)
-                    .filter_map(|raw| <[u8; 4]>::try_from(raw).ok())
-                    .map(|raw| WindowId(u64::from(u32::from_ne_bytes(raw))))
-                    .collect();
-                let filter = match filter.into_result() {
-                    Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
-                        match templar_window::TaskKey::from_wire(&key) {
-                            Some(unit) => TaskFilter::Unit(unit),
-                            None => return,
-                        }
-                    }
-                    Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => {
-                        TaskFilter::Windows(ids)
-                    }
-                    Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
-                    Ok(templar_shell_manager_v1::TaskfieldFilter::All) => TaskFilter::All,
-                    // A filter this compositor does not know is not a protocol error: the shell
-                    // ships from this repository and may be a version ahead during a hot swap.
-                    Err(_) => return,
-                };
-                state.shell_protocol.taskfield_key = key;
-                state.enter_taskfield(filter);
-                crate::space_sync::sync_after_change(state);
-            }
+            } => open_taskfield(state, filter, key, &windows),
             templar_shell_manager_v1::Request::EscapeFullscreenOrModal { toplevel } => {
                 let window_id =
                     toplevel.and_then(|resource| window_id_for_toplevel(state, &resource));
@@ -933,6 +908,43 @@ pub fn sync_toplevels<B: Backend + 'static>(
             manager.bar_peeked(peeked.clone());
         }
     }
+}
+
+/// `open_taskfield`: the shell's routes into the window overview — a chip whose fan is too small,
+/// a launcher result's arrow, a HomeGarden place's "N windows active" line, the shelf band.
+///
+/// The compositor never learns what a place is: for the `windows` filter the shell sends the ids
+/// and `key` carries only the header's text, which is kept here to be echoed back in
+/// `taskfield_state` because it is the one string of the mode `WindowService` cannot derive.
+fn open_taskfield<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    filter: WEnum<templar_shell_manager_v1::TaskfieldFilter>,
+    key: String,
+    windows: &[u8],
+) {
+    let filter = match filter.into_result() {
+        Ok(templar_shell_manager_v1::TaskfieldFilter::All) => TaskFilter::All,
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => TaskFilter::Windows(
+            windows
+                .chunks_exact(4)
+                .filter_map(|raw| <[u8; 4]>::try_from(raw).ok())
+                .map(|raw| WindowId(u64::from(u32::from_ne_bytes(raw))))
+                .collect(),
+        ),
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
+            match templar_window::TaskKey::from_wire(&key) {
+                Some(unit) => TaskFilter::Unit(unit),
+                None => return,
+            }
+        }
+        // A filter this compositor does not know is not a protocol error: both peers ship from
+        // this repository and the shell may be a version ahead during a hot swap.
+        Err(_) => return,
+    };
+    state.shell_protocol.taskfield_key = key;
+    state.enter_taskfield(filter);
+    crate::space_sync::sync_after_change(state);
 }
 
 /// `taskfield_state`'s five arguments for whatever the compositor is presenting right now — the

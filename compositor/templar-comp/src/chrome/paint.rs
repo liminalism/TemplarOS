@@ -33,7 +33,9 @@ pub type Fonts<'a> = Option<(&'a mut TextCache, FaceId)>;
 pub const RECOVERY_BAND_COLOR: u32 = pixelkit_raster::color::from_rgb(0x2E, 0x33, 0x3D);
 pub const RECOVERY_TAB_COLOR: u32 = pixelkit_raster::color::from_rgb(0xD9, 0x8C, 0x1A);
 pub const PRESSURE_OVERLAY_COLOR: u32 = pixelkit_raster::color::from_rgb(0x73, 0x14, 0x14);
-pub const SCATTER_CARD_COLOR: u32 = pixelkit_raster::color::from_rgb(0x1F, 0x1F, 0x29);
+/// The window overview's scrim: what the cards sit on, and the one thing that makes the mode
+/// read as a mode rather than as windows that shrank.
+pub const TASKFIELD_SCRIM_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x15, 0x1B);
 pub const SCATTER_LABEL_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x15, 0x1B);
 pub const SCATTER_FOCUS_ACCENT: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
 pub const SWITCHER_PANEL_COLOR: u32 = pixelkit_raster::color::from_rgb(0x1A, 0x1C, 0x22);
@@ -294,23 +296,6 @@ fn draw_buttons(
     }
 }
 
-/// One "show every window" tile's card (the placeholder standing in for the window) and, drawn
-/// separately by [`scatter_label`], its title strip underneath.
-pub fn scatter_card(
-    painter: &mut Painter<'_>,
-    pixel_w: i32,
-    pixel_h: i32,
-    focused: bool,
-    scale: f32,
-) {
-    let area = canvas(pixel_w, pixel_h);
-    painter.fill_rect(area, SCATTER_CARD_COLOR);
-    if focused {
-        let thickness = (3.0 * scale).round().max(1.0) as i32;
-        painter.stroke_rect(area, thickness, SCATTER_FOCUS_ACCENT);
-    }
-}
-
 /// The label strip under a scatter tile's card — the window's title, elided to fit, so tiles "can
 /// be told apart" (planning doc 01 §3) even before pixelkit landed here.
 pub fn scatter_label(
@@ -539,25 +524,6 @@ mod tests {
         // unselected button's centre is not.
         assert_eq!(pixel_at(&buffer, 230, 220), BUTTON_SELECTED_COLOR);
         assert_eq!(pixel_at(&buffer, 50, 220), BUTTON_COLOR);
-    }
-
-    #[test]
-    fn scatter_card_draws_a_focus_border_only_when_focused() {
-        let mut unfocused = WindowBuffer::new(100, 100);
-        {
-            let mut painter = Painter::new(&mut unfocused);
-            scatter_card(&mut painter, 100, 100, false, 1.0);
-        }
-        assert_eq!(pixel_at(&unfocused, 0, 50), SCATTER_CARD_COLOR);
-
-        let mut focused = WindowBuffer::new(100, 100);
-        {
-            let mut painter = Painter::new(&mut focused);
-            scatter_card(&mut painter, 100, 100, true, 1.0);
-        }
-        assert_eq!(pixel_at(&focused, 0, 50), SCATTER_FOCUS_ACCENT);
-        // Interior stays the card colour — the border is a stroke, not a full refill.
-        assert_eq!(pixel_at(&focused, 50, 50), SCATTER_CARD_COLOR);
     }
 
     #[test]
