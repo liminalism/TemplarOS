@@ -178,6 +178,36 @@ impl Coalescer {
         Some(until_quiet.min(until_aged).max(0))
     }
 
+    /// Take one root's pending mutations, however far its window still had to run.
+    ///
+    /// A repair answers the same question the pending mutations do — "what does this tree hold
+    /// now" — and it answers it from the filesystem rather than from a window of events. Left in
+    /// the coalescer they land *after* the repair, and an `Invalidate` that arrives after the
+    /// pass it was queued alongside marks the root stale again with nothing left to repair it.
+    /// Settling the root first is what makes the recovery ordered: the invalidation is applied,
+    /// then the repair proves the root, and nothing older is waiting to contradict it.
+    ///
+    /// Other roots keep their window: this is not a flush.
+    pub fn take_for_root(
+        &mut self,
+        root: crate::RootId,
+        source: MutationSource,
+    ) -> Option<MutationBatch> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let (mine, rest): (Vec<Mutation>, Vec<Mutation>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|mutation| mutation.root() == root);
+        self.pending = rest;
+        if self.pending.is_empty() {
+            self.first_ms = None;
+            self.last_ms = None;
+        }
+        let mutations = collapse(mine);
+        (!mutations.is_empty()).then_some(MutationBatch { source, mutations })
+    }
+
     /// Take the window's net effect. `None` when nothing is pending or everything collapsed away.
     pub fn take(&mut self, source: MutationSource) -> Option<MutationBatch> {
         if self.pending.is_empty() {
