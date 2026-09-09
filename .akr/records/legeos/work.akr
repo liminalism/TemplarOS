@@ -7318,6 +7318,120 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
     part_of [ @legeos.work.home-surface-usability-next ]
 }
 
+record legeos.work.task-system/1 : work {
+    title "The Task System campaign — TaskModel, Taskfield, Task Island fan, Peek, launcher and HomeGarden bridges, and the machine cluster's two sliders"
+    state proposed
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-types/src/action.rs",
+        path "crates/templar-window/**",
+        path "docs/architecture/task-system.md",
+        path "interfaces/dbus/org.templaros.Backlight1.xml",
+        path "interfaces/dbus/org.templaros.HomeGarden1.xml",
+        path "interfaces/wayland/**",
+        path "services/templar-sessiond/src/apis/backlight.rs",
+        path "shell/templar-shell/**",
+        path "tests/integration/task-system.sh",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Implement @legeos.decision.task-system-four-scales-one-model in three lanes on the tree at 2983371. Lane A (templar-window, interfaces, actions, xtask): task::units as the one grouping, taskfield::layout as the pure per-output sectioned layout, Presentation on WindowService with the fullscreen-only-while-Normal rule, Layer::Presentation, manager v8 (open_taskfield, taskfield_state, launcher_focus), the chord swap (Super+Tab opens Taskfield, Alt+` within unit, group-cycle retired), check-wayland-versions. Lane B (compositor): surfaces drawn at presentation rects with no configure, collect_taskfield chrome, in-mode input and keys, Peek at the bottom-left corner with Home's corner moved top-left, Layer::Presentation placement, drag-to-group, tests/integration/task-system.sh. Lane C (shell, sessiond): the account popover's volume slider on wpctl's cubic dB scale with a -60 dB cutoff and mute zone and its brightness slider over a 10% service floor, replacing the five stepper rows; chips without titles with counts and shelved dimming; a four-card fan replacing the hover row; taskfield_screen.rs on Layer::Presentation; launcher running counts with Enter/Ctrl+Enter/arrow; HomeGarden instance_id association and the 'N windows active' line.
+        """
+    note """
+        Not built, by design: TaskModel/TaskWindow structs, mapped_seq/urgent/transient_for/output fields, Zoom, the weighted packer and layout generation, settings keys, the one-model grep gate, and Phase 6 preview re-send (screencopy is client-pull). The pull-back animation is the last optional commit. Hands-on checks need the user's deploy and logout; the runbook is .agent/scratch/task-system-1/RUNBOOK.md.
+        """
+    acceptance {
+        check backlight-floor {
+            statement """
+                Backlight1 clamps every caller to 10..=100 while a one-step panel still gets its one raw step.
+                """
+            method command
+            command "cargo test -p templar-sessiond backlight"
+        }
+        check fan-and-chips {
+            statement """
+                The fan caps at four cards and chip order is stable under activation.
+                """
+            method command
+            command "cargo test -p templar-shell fan_caps_at_four chip_order_stable_under_activation"
+        }
+        check fullscreen-only-while-normal {
+            statement """
+                A fullscreen window covers passive chrome only while Presentation::Normal.
+                """
+            method command
+            command "cargo test -p templar-window fullscreen_covers_chrome_only_while_normal"
+        }
+        check gate {
+            statement """
+                The full repository gate is green on the merged tree.
+                """
+            method command
+            command "just check"
+        }
+        check hands-on {
+            statement """
+                After the user's deploy and logout: the sliders are usable, the island shows chips with counts and a fan, Super+Tab shows every window from fullscreen and a click returns, the bottom-left corner peeks and promotes, Alt+Tab is recent.
+                """
+            method manual
+        }
+        check layout-is-a-view {
+            statement """
+                Every Taskfield card lies inside its output, never exceeds its window, never falls below the floor, and a query change never moves a card.
+                """
+            method command
+            command "cargo test -p templar-window taskfield::"
+        }
+        check no-row-anywhere {
+            statement """
+                The hover row is gone; the fan replaced it.
+                """
+            method command
+            command "! grep -rn ROW_BAND shell/templar-shell/src"
+        }
+        check one-model {
+            statement """
+                task::units is the only grouping of windows: groups first in id order, then applications first-seen, stable under activation; unverified identity never merges; chip_action hands over above four.
+                """
+            method command
+            command "cargo test -p templar-window task::"
+        }
+        check protocol-in-step {
+            statement """
+                Every versioned member of the Wayland XML has its version guard on both ends.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-wayland-versions"
+        }
+        check recency-not-stacking {
+            statement """
+                Alt+Tab's order survives raises, pins and fullscreen; it is activation recency, never stacking.
+                """
+            method command
+            command "cargo test -p templar-window recency_survives_raises_pins_and_fullscreen"
+        }
+        check sliders {
+            statement """
+                The volume slider maps its track to dB with a -60 dB cutoff and a mute zone and round-trips percent; the brightness slider never reaches below the floor.
+                """
+            method command
+            command "cargo test -p templar-shell cluster_screen"
+        }
+        check taskfield-acceptances {
+            statement """
+                Entering and leaving Taskfield over a fullscreen Wayland and an XWayland window restores the scene, sends no xdg_toplevel.configure, and survives the shell dying mid-mode.
+                """
+            method command
+            command "tests/integration/task-system.sh"
+        }
+    }
+    depends_on [ @legeos.work.semantic-window-registry-20260909 ]
+    implements [ @legeos.decision.task-system-four-scales-one-model ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908/1 : work {
     title "The island floats: an Argb8888 buffer on the bar's surface, its alpha from a coverage mask, with the opaque present as the fallback"
     state proposed

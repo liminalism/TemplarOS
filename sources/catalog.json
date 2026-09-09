@@ -577,5 +577,17 @@
     "origin": "external",
     "path": "sources/external/planning-subsequent-shape--36db3454.md",
     "title": "Planning: subsequent shape — integrated Rust service samples (appd, associationd, resourced, window service)"
+  },
+  {
+    "added_at": "2026-09-09",
+    "availability": "full",
+    "byte_len": 61132,
+    "content_hash": "sha256:ee84cf64e8ad1bd545121c42416e7d22fb6847dbd494698c4101189361803ea8",
+    "id": "task-system-taskfield-island-peek-20260909",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/task-system-taskfield-island-peek-20260909--ee84cf64.md",
+    "scope": "crates/templar-window/**",
+    "title": "The Task System — one window model, four scales, and Taskfield (planning document, 2026-09-09, with the reviewer's place-versus-view appendix)"
   }
 ]
