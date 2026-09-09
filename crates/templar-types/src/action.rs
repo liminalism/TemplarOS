@@ -791,7 +791,7 @@ pub const MANIFEST: &[ActionDecl] = &[
         label: "Show all applications",
         control: None,
         category: ActionCategory::System,
-        chords: &[],
+        chords: &[Chord::new(Modifiers::LOGO, Key::Space)],
         cli_verb: None,
         confirm: false,
         requires: Requires::Always,
