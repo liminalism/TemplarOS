@@ -107,22 +107,33 @@ pub struct ReconcileReport {
 /// The walk is the watcher's, not the scanner's: every directory is watched before it is read, so
 /// a change made during the pass produces an event rather than disappearing into the gap between
 /// "scanned" and "watched".
-#[allow(clippy::needless_pass_by_value)] // `scope` also seeds `options`'s clone at each call site
+#[allow(clippy::needless_pass_by_value)] // `scope` is moved into `options` below
 pub fn reconcile<S: EventSource>(
     index: &Index,
     owner: &mut WatchOwner<S>,
     root: RootId,
     scope: ScanScope,
     trigger: &Trigger,
-    options: ScanOptions,
+    mut options: ScanOptions,
 ) -> Result<(ScanOutcome, ReconcileReport), IndexError> {
+    // The walk's scope is the commit's scope, by construction: a caller that set only the
+    // argument used to walk a subtree and commit with `Root`, and a "complete" pass then collected
+    // tombstones across everything it had not walked.
+    options.scope = scope.clone();
     let status = index.root_status(root)?;
     // `Empty` has nothing to protect and cannot transition straight to `Stale` (only `Building`
     // or `Offline`): a first-ever scan just begins. `Offline`/`Building` are already mid-repair.
-    if !matches!(
-        status.state,
-        RootState::Empty | RootState::Offline | RootState::Building
-    ) {
+    //
+    // Only a whole-root pass stamps the root. A subtree pass answers a question the watcher
+    // already decided the scope of (`RepairRequest::mark_root_stale`), and the commit puts back
+    // whatever the root said before the pass began — so stamping it here would be stamping the
+    // trigger's own reason over the root for good.
+    if scope == ScanScope::Root
+        && !matches!(
+            status.state,
+            RootState::Empty | RootState::Offline | RootState::Building
+        )
+    {
         // Say what is wrong before starting to fix it: a client that queries mid-repair sees
         // "stale, because the daemon was not running", not a confident wrong answer.
         index.mark_stale(root, &trigger.stale_reason())?;

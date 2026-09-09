@@ -410,3 +410,57 @@ fn a_subtree_repair_does_not_complete_a_root_a_budget_left_unfinished() {
     assert_eq!(done.reason, None);
     assert!(done.complete);
 }
+
+/// A subtree repair on a root that is current ends current, and touches nothing outside its
+/// subtree.
+///
+/// Two ways it used to go wrong. `reconcile` stamped the root stale with the trigger's reason
+/// before the pass, and a subtree commit restores what the root said before the pass — so the
+/// stamp was what it restored, and an ordinary rename-ambiguity repair left the root stale until
+/// the next whole-root pass. And the `scope` argument only seeded the walk's start, not the
+/// commit's scope: a caller setting one and not the other walked a subtree and committed as a
+/// complete whole-root pass, which tombstoned every entry it had not walked.
+#[test]
+fn a_subtree_repair_on_a_current_root_leaves_it_current_and_leaves_the_rest_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+    fs::create_dir_all(tree.join("other")).unwrap();
+    fs::write(tree.join("other/keep.txt"), b"outside the subtree").unwrap();
+    let policy = index.root_policy(root).unwrap();
+    reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Root,
+        &Trigger::Requested,
+        ScanOptions::reconcile(policy.clone()),
+    )
+    .expect("the pass that indexes the other directory");
+    let keep = NativePath::from_path(&tree.join("other/keep.txt"));
+    assert!(index.entry(root, &keep).unwrap().is_some());
+
+    // Only the argument, the way a caller naturally writes it.
+    let (outcome, _) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Subtree(NativePath::from_path(&tree.join("notes"))),
+        &Trigger::RenameAmbiguous,
+        ScanOptions::reconcile(policy),
+    )
+    .expect("the scoped repair");
+    assert!(outcome.complete);
+
+    let status = index.root_status(root).unwrap();
+    assert_eq!(
+        status.state,
+        RootState::Current,
+        "a repair that found nothing wrong must not leave its own stamp behind: {:?}",
+        status.reason
+    );
+    assert_eq!(status.reason, None);
+    assert!(
+        index.entry(root, &keep).unwrap().is_some(),
+        "a subtree pass tombstoned an entry outside its subtree"
+    );
+}
