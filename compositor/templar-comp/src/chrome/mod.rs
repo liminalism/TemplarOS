@@ -84,6 +84,8 @@ pub struct ChromeState {
     scatter_labels: HashMap<WindowId, CachedWidget>,
     switcher_rows: HashMap<WindowId, CachedWidget>,
     switcher_heading: CachedWidget,
+    /// The two-pixel corner mark that says where Peek is (`peek_affordance`).
+    peek: CachedWidget,
     /// The four bars of one group's outline, kept against the member that draws them.
     outlines: HashMap<WindowId, Vec<CachedWidget>>,
 }
@@ -126,6 +128,7 @@ impl ChromeState {
             scatter_labels: HashMap::new(),
             switcher_rows: HashMap::new(),
             switcher_heading: CachedWidget::new(),
+            peek: CachedWidget::new(),
             outlines: HashMap::new(),
         }
     }
@@ -258,7 +261,85 @@ pub fn collect_output_chrome(
         chrome.scatter_labels.clear();
     }
 
+    collect_peek_affordance(
+        chrome,
+        inputs.window_service,
+        output_rect,
+        local_rect,
+        output_scale,
+        renderer,
+        &mut elements,
+    );
+
     (elements, true)
+}
+
+/// Whether `output_rect` is filled by a visible client window — maximized or fullscreen
+/// (`WindowRecord::covers_screen`) — which is exactly when the shell's island is not on screen
+/// and Peek is the only pointer route to it.
+///
+/// The same condition `input::dwell_intent_at` computes for its `covering` window, spelled once
+/// here for the mark and once there for the region, because chrome takes the pieces of
+/// `TemplarCompState` it needs rather than the state itself and cannot call it.
+fn screen_filled_by_a_window(
+    window_service: &WindowService<DbusIdentityCache>,
+    output_rect: Rect,
+) -> bool {
+    window_service
+        .stacking_order()
+        .into_iter()
+        .any(|window_id| {
+            window_service.is_client_window(window_id)
+                && window_service.is_visible(window_id)
+                && window_service.window(window_id).is_some_and(|window| {
+                    window.covers_screen() && window.geometry.intersection_area(output_rect) > 0
+                })
+        })
+}
+
+/// The corner mark for Peek: two logical pixels in the recovery tab's colour at the bottom-left of
+/// an output whose screen a window is filling (planning doc §6, stage 0).
+///
+/// Drawn by the compositor rather than the shell for the same reason the recovery band is: it has
+/// to survive the shell dying, and under a fullscreen window the shell is not on screen to draw
+/// anything at all. Drawn *only* then: on an ordinary desktop the island is right there, and a
+/// permanent mark under it would be furniture for a route nobody needs. It also goes while the
+/// window's own chrome is showing (that strip covers this corner) and while a peek is already up
+/// (the island is what is being reached for now, not the mark).
+#[allow(clippy::too_many_arguments)]
+fn collect_peek_affordance(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    output_rect: Rect,
+    local_rect: Rect,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    if window_service.covering_chrome().is_some()
+        || window_service.peek_output().is_some()
+        || !screen_filled_by_a_window(window_service, output_rect)
+    {
+        return;
+    }
+    let mark = crate::input::peek_affordance(local_rect);
+    if mark.width <= 0 || mark.height <= 0 {
+        return;
+    }
+    let colour = paint::RECOVERY_TAB_COLOR;
+    if let Some(element) = chrome.peek.ensure(
+        WidgetKey::new("peek-affordance", colour),
+        (mark.width, mark.height),
+        output_scale,
+        local_physical(mark, output_scale),
+        &mut chrome.scratch,
+        renderer,
+        move |painter, pixel_w, pixel_h| {
+            paint::group_outline_bar(painter, pixel_w, pixel_h, colour);
+        },
+    ) {
+        elements.push(element);
+    }
 }
 
 /// One window's own chrome, front-to-back: its name tag then its control tags, both laid out on

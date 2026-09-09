@@ -1135,10 +1135,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.show_compositor_cursor(shape);
     }
 
-    /// A dwell at the bottom of the screen: the bottom-left corner is Home
-    /// ([`DwellIntent::HomeCorner`]), either corner of a window filling the screen is that
-    /// window's own chrome ([`DwellIntent::CoveringChrome`]), and the edge between them asks for
-    /// the shell's bar ([`DwellIntent::BarPeek`]).
+    /// A dwell at a screen edge: the **top-left** corner is Home ([`DwellIntent::HomeCorner`]),
+    /// the bottom-right corner of a window filling the screen is that window's own chrome
+    /// ([`DwellIntent::CoveringChrome`]), and the whole bottom edge — bottom-left corner included
+    /// — is Peek ([`DwellIntent::BarPeek`]).
     ///
     /// Both have to be the compositor's rule rather than the shell's: whatever is under the
     /// pointer owns it, so under a maximized or fullscreen window the shell never learns the
@@ -1259,21 +1259,25 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// What a dwell at `pos` would be about, if anything.
     ///
-    /// The three regions are disjoint by construction (`in_peek_band` excludes both corner
-    /// squares), so there is never a precedence question between them: each region has one rule.
+    /// The three regions are disjoint by construction (`in_peek_band` excludes both squares it
+    /// could otherwise meet), so there is never a precedence question between them: each region
+    /// has one rule.
     ///
-    /// - the bottom-left square is **Home**, whatever is on the screen. The bar has no Home chip,
+    /// - the **top-left** square is **Home**, whatever is on the screen. The bar has no Home chip,
     ///   so this is the only pointer route there, and a window filling the screen is exactly when
-    ///   it is needed most — giving the corner to the window would leave Home reachable only from
-    ///   the keyboard for as long as anything was maximized, which is most of the time.
-    /// - the bottom-right square is a screen-filling window's **own chrome**, shown over it. One
-    ///   dwell shows the whole strip, tag included, because it *is* one strip.
-    /// - the edge between them asks for the shell's bar back.
+    ///   it is needed most. It moved here from the bottom-left because Peek needs that corner:
+    ///   the affordance has to be where the island starts, or the pointer travels away from the
+    ///   thing it is reaching for.
+    /// - the **bottom-right** square is a screen-filling window's **own chrome**, shown over it.
+    ///   One dwell shows the whole strip, tag included, because it *is* one strip.
+    /// - the **bottom edge**, its left corner included, is **Peek**: raise the island over a
+    ///   window filling the screen, and say so with `bar_peeked`.
     ///
-    /// The one state-dependent part: while that chrome is already showing, neither corner asks
-    /// for anything. The strip is under the pointer and the strip is what is being reached for —
-    /// without this, moving onto the window's name tag, which lands in the left-hand square,
-    /// would reveal Home out from under the click.
+    /// The one state-dependent part: while that chrome is already showing, neither the
+    /// bottom-right corner nor the bottom edge asks for anything. The strip is under the pointer
+    /// and the strip is what is being reached for — the strip is `TAG_HEIGHT` tall and the peek
+    /// band is its bottom ten pixels, so without this, resting on the close tag long enough to aim
+    /// at it opens the island underneath the thing being aimed at.
     fn dwell_intent_at(&self, pos: TemplarPoint) -> Option<DwellIntent> {
         let output = self
             .window_service
@@ -1295,29 +1299,33 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 })
         });
 
-        if in_home_corner(output.logical, pos) || in_controls_corner(output.logical, pos) {
+        // The top-left square is Home, whatever is on the screen — it is nowhere near the tag
+        // strip a screen-filling window shows along its bottom edge, so unlike the other two it
+        // needs no "already showing" guard.
+        if in_home_corner(output.logical, pos) {
             // Not while the shell's own chrome is under the pointer: whatever it is showing there
-            // is what the person is reaching for, and it gets the press. This is why the island
-            // is centred (`templar-shell-v1.xml`'s `set_edge_alignment`) — a bottom-anchored surface
-            // at the start of its edge sits exactly on top of the left-hand square.
+            // is what the person is reaching for, and it gets the press.
             if self.over_shell_overlay(pos) {
                 return None;
-            }
-            // Already showing: the strip is the thing under the pointer, and neither corner is
-            // asking for anything else while it is.
-            if self.window_service.covering_chrome().is_some() {
-                return None;
-            }
-            // The user's rule: "close/maximize/minimize should appear on hover in the bottom
-            // right, over the full screen window, not adjacent to it. same for the tag in the
-            // bottom left." One dwell shows both — they are one strip.
-            if in_controls_corner(output.logical, pos) {
-                return covering.map(DwellIntent::CoveringChrome);
             }
             // Nothing to ask for if Home is already showing. Without this, a pointer resting in
             // the corner re-fires the reveal on every twitch inside the rest slop, and each one
             // costs a re-sync and a refocus for a state that has not changed.
             return (!self.window_service.home_revealed()).then_some(DwellIntent::HomeCorner);
+        }
+        // The user's rule: "close/maximize/minimize should appear on hover in the bottom
+        // right, over the full screen window, not adjacent to it." One dwell shows the whole
+        // strip, name tag included — they are one strip.
+        if in_controls_corner(output.logical, pos) {
+            if self.over_shell_overlay(pos) {
+                return None;
+            }
+            // Already showing: the strip is the thing under the pointer, and the corner is not
+            // asking for anything else while it is.
+            if self.window_service.covering_chrome().is_some() {
+                return None;
+            }
+            return covering.map(DwellIntent::CoveringChrome);
         }
         // The strip a covering window's chrome puts on screen is `TAG_HEIGHT` tall and the peek
         // band is its bottom ten pixels, so without this, resting on the close tag long enough to
@@ -1352,9 +1360,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let Some(window) = self.window_service.window(window_id) else {
             return false;
         };
-        if in_home_corner(window.geometry, pos) || in_controls_corner(window.geometry, pos) {
+        if in_controls_corner(window.geometry, pos) {
             return true;
         }
+        // The strip is `TAG_HEIGHT` tall and spans the window, so it already contains both bottom
+        // corner squares — including the bottom-left one, which is Peek's now and must not end the
+        // chrome the person is reaching across.
         self.window_service
             .recovery_affordance(window_id)
             .is_some_and(|affordance| rect_contains(affordance.strip, pos))
@@ -1666,13 +1677,14 @@ fn rect_contains(rect: templar_window::Rect, point: TemplarPoint) -> bool {
     point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
 }
 
-/// The square at the bottom-left of an output that is the route to the Home Surface, in logical
-/// pixels.
+/// The side of each of the three corner squares an output reserves, in logical pixels: Home at the
+/// top-left, a screen-filling window's own chrome at the bottom-right, and Peek at the bottom-left
+/// (which is simply the near end of [`PEEK_BAND`], not a square of its own).
 ///
-/// A calibration knob rather than a constant of nature: a person pushing a real mouse into the
-/// bottom-left of a real screen has to be able to land on it, and a fractional scale eats a pixel
-/// or two of it. Widen it if the corner is hard to hit; narrow it if it fires on its own.
-const HOME_CORNER: i32 = 8;
+/// A calibration knob rather than a constant of nature: a person pushing a real mouse into a
+/// corner of a real screen has to be able to land on it, and a fractional scale eats a pixel or
+/// two of it. Widen it if a corner is hard to hit; narrow it if one fires on its own.
+const CORNER_SQUARE: i32 = 8;
 /// How close to an output's bottom edge the pointer must come to *start* a peek, in logical
 /// pixels. Same knob, same reasoning.
 ///
@@ -1683,6 +1695,10 @@ const HOME_CORNER: i32 = 8;
 /// a touchpad. It is the tab's height plus the rest slop, so reaching the thing that appeared can
 /// never dismiss it.
 const PEEK_BAND: i32 = 10;
+/// Thickness of the corner affordance Peek draws under a screen-filling window, in logical pixels
+/// (`chrome::collect_output_chrome`). It marks the corner; the region that answers a dwell is the
+/// whole of [`PEEK_BAND`], which is five times taller.
+pub const PEEK_AFFORDANCE: i32 = 2;
 /// How long the pointer must rest before either dwell fires.
 ///
 /// The same number as the shell's own reveal (`templar_shell::surface::bar_screen::HINT_OPEN_MS`),
@@ -1709,9 +1725,10 @@ fn is_click(pressed: TemplarPoint, released: TemplarPoint) -> bool {
 /// What the pointer resting at the bottom of the screen is asking for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DwellIntent {
-    /// The bottom-left corner: reveal the Home Surface.
+    /// The top-left corner: reveal the Home Surface.
     HomeCorner,
-    /// The rest of the bottom edge of a named output carrying a window that fills the screen:
+    /// The bottom edge of a named output carrying a window that fills the screen, its left corner
+    /// (where the affordance is drawn) included:
     /// raise the shell's overlay over it (fullscreen, which outranks it) and tell the shell the
     /// edge has been asked for (`bar_peeked`, either way). The shell cannot see this for itself —
     /// whatever is under the pointer owns it — so it is the compositor that has to notice.
@@ -1756,28 +1773,38 @@ fn dwell_after_motion(
     })
 }
 
-/// Whether `pos` is in the square at `output`'s bottom-left corner that reveals Home.
+/// Whether `pos` is in the square at `output`'s **top-left** corner that reveals Home.
+///
+/// It used to be the bottom-left one. Peek took that corner (planning doc §6: the corner
+/// affordance is where the island starts, so Peek reveals it in place), and two dwells cannot
+/// share a square. The top-left is the only other corner nothing owns — the bottom-right is a
+/// screen-filling window's own chrome — and Home's primary route was never this anyway: it is the
+/// bare `Super` tap, of which this is the pointer spelling.
 fn in_home_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
     pos.x >= output.x
-        && pos.x < output.x + HOME_CORNER
-        && pos.y >= output.bottom() - HOME_CORNER
-        && pos.y < output.bottom()
+        && pos.x < output.x + CORNER_SQUARE
+        && pos.y >= output.y
+        && pos.y < output.y + CORNER_SQUARE
 }
 
-/// The bottom-*right* square, mirroring [`in_home_corner`]. It is where a fullscreen window's
-/// controls appear, and it means nothing when no window is fullscreen — a corner that does
-/// something only sometimes is better than one that does two things.
+/// The bottom-*right* square. It is where a screen-filling window's own controls appear, and it
+/// means nothing when no window fills the screen — a corner that does something only sometimes is
+/// better than one that does two things.
 fn in_controls_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
-    pos.x >= output.right() - HOME_CORNER
+    pos.x >= output.right() - CORNER_SQUARE
         && pos.x < output.right()
-        && pos.y >= output.bottom() - HOME_CORNER
+        && pos.y >= output.bottom() - CORNER_SQUARE
         && pos.y < output.bottom()
 }
 
-/// Whether `pos` is in the band along `output`'s bottom edge that opens a peek.
+/// Whether `pos` is in the band along `output`'s bottom edge that opens a peek — the bottom-left
+/// corner **included**, which is the corner the affordance is drawn in
+/// (`chrome::collect_output_chrome`).
 ///
-/// Disjoint from [`in_home_corner`] by construction rather than by a precedence rule: the corner
-/// is Home and the rest of the edge is the bar, so one pointer position never means two things.
+/// Disjoint from the other two squares by construction rather than by a precedence rule: Home is
+/// at the top-left and a screen-filling window's chrome at the bottom-right, so one pointer
+/// position never means two things. The `in_home_corner` exclusion is kept for an output shorter
+/// than `CORNER_SQUARE + PEEK_BAND`, where the two would otherwise meet.
 fn in_peek_band(output: templar_window::Rect, pos: TemplarPoint) -> bool {
     pos.x >= output.x
         && pos.x < output.right()
@@ -1785,6 +1812,22 @@ fn in_peek_band(output: templar_window::Rect, pos: TemplarPoint) -> bool {
         && pos.y < output.bottom()
         && !in_home_corner(output, pos)
         && !in_controls_corner(output, pos)
+}
+
+/// The affordance Peek draws in `output`'s bottom-left corner: [`PEEK_AFFORDANCE`] logical pixels
+/// tall and [`CORNER_SQUARE`] wide, flush with the corner.
+///
+/// Two logical pixels, because it has to be visible without being furniture: a person watching a
+/// fullscreen video is not being shown a bar, they are being shown where the bar is. Pure so the
+/// rectangle chrome paints and the region [`in_peek_band`] answers for are derived from the same
+/// corner rather than from two independent readings of "bottom-left".
+pub fn peek_affordance(output: templar_window::Rect) -> templar_window::Rect {
+    templar_window::Rect::new(
+        output.x,
+        output.bottom() - PEEK_AFFORDANCE,
+        CORNER_SQUARE.min(output.width),
+        PEEK_AFFORDANCE.min(output.height),
+    )
 }
 
 #[cfg(test)]
@@ -1806,28 +1849,25 @@ mod tests {
     /// makes "the corner works under a fullscreen window too" a rule rather than a precedence
     /// argument — the peek never gets a chance to claim it.
     #[test]
-    fn the_corner_and_the_peek_band_divide_the_bottom_edge_between_them() {
+    fn home_is_the_top_left_corner_and_peek_owns_the_whole_bottom_edge() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        // The band is taller than the corner square (it has to be crossed to reach a six-pixel
-        // tab), so the two pixels directly above the square are band, not nothing. That is
-        // deliberate and still disjoint: only one of the two ever answers for a given point.
-        for (x, y, corner, band) in [
-            (0, 1079, true, false),    // the true corner
-            (7, 1072, true, false),    // the far edge of the square
-            (8, 1079, false, true),    // one pixel past it, along the bottom
-            (0, 1071, false, true),    // directly above the square, inside the band
-            (0, 1069, false, false),   // and one pixel above the band
-            (7, 1079, true, false),    // inside the square, on the bottom row
+        // Home moved to the top-left so Peek could have the bottom-left: the affordance has to be
+        // where the island starts, or the pointer travels away from what it is reaching for. The
+        // bottom-left corner is now simply the near end of the peek band, not a square of its own.
+        for (x, y, home, band) in [
+            (0, 0, true, false),       // the top-left corner itself
+            (7, 7, true, false),       // the far edge of the square
+            (8, 0, false, false),      // one pixel past it, along the top: nothing
+            (0, 8, false, false),      // one pixel below it, down the left edge: nothing
+            (0, 1079, false, true),    // the bottom-left corner is Peek now
+            (7, 1072, false, true),    // and so is the square that used to be Home
+            (8, 1079, false, true),    // and the edge beside it
+            (0, 1069, false, false),   // one pixel above the band
             (960, 1079, false, true),  // the middle of the edge
             (1900, 1076, false, true), // the other end of it, short of the controls' corner
-            (960, 1069, false, false), // above the band
             (960, 1080, false, false), // off the output
         ] {
-            assert_eq!(
-                in_home_corner(screen, at(x, y)),
-                corner,
-                "corner at {x},{y}"
-            );
+            assert_eq!(in_home_corner(screen, at(x, y)), home, "home at {x},{y}");
             assert_eq!(in_peek_band(screen, at(x, y)), band, "band at {x},{y}");
             assert!(
                 !(in_home_corner(screen, at(x, y)) && in_peek_band(screen, at(x, y))),
@@ -1836,23 +1876,45 @@ mod tests {
         }
     }
 
+    /// The mark chrome paints and the region the dwell answers for come from the same corner: the
+    /// affordance is inside the band it advertises, flush with the bottom-left, and two logical
+    /// pixels tall so it says where the island is without becoming furniture over a video.
+    #[test]
+    fn the_peek_affordance_sits_inside_the_band_it_advertises() {
+        let screen = Rect::new(0, 0, 1920, 1080);
+        let mark = peek_affordance(screen);
+        assert_eq!(mark, Rect::new(0, 1078, CORNER_SQUARE, PEEK_AFFORDANCE));
+        for x in mark.x..mark.right() {
+            for y in mark.y..mark.bottom() {
+                assert!(in_peek_band(screen, at(x, y)), "mark pixel {x},{y} is band");
+            }
+        }
+        // On an output offset in the global scene it follows the output, not the origin.
+        let second = Rect::new(1920, -200, 1280, 720);
+        assert_eq!(
+            peek_affordance(second),
+            Rect::new(1920, 518, CORNER_SQUARE, PEEK_AFFORDANCE)
+        );
+    }
+
     /// A fullscreen window owns both bottom corners: the tag at the left, the controls at the
     /// right, drawn over it rather than beside it. The user's rule, and the reason for it is that
     /// there is otherwise no pointer route to closing a fullscreen window at all — it wears no
     /// frame, and the island carries no copy of its controls.
     #[test]
-    fn a_fullscreen_window_owns_both_bottom_corners_and_the_bar_owns_the_edge_between_them() {
+    fn a_fullscreen_window_owns_the_bottom_right_corner_and_peek_owns_the_rest_of_the_edge() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        for (x, y, left, right, band) in [
-            (0, 1079, true, false, false),     // the tag's corner
+        for (x, y, home, right, band) in [
+            (0, 0, true, false, false),        // Home, out of the way at the top
+            (0, 1079, false, false, true),     // the bottom-left corner is Peek's
             (1919, 1079, false, true, false),  // the controls' corner
             (1912, 1072, false, true, false),  // the far edge of that square
             (1911, 1079, false, false, true),  // one pixel inside it, along the bottom
-            (960, 1079, false, false, true),   // the middle of the edge is the switcher's
+            (960, 1079, false, false, true),   // the middle of the edge is Peek's
             (960, 1069, false, false, false),  // above the band
             (1919, 1069, false, false, false), // and above the right-hand square
         ] {
-            assert_eq!(in_home_corner(screen, at(x, y)), left, "left at {x},{y}");
+            assert_eq!(in_home_corner(screen, at(x, y)), home, "home at {x},{y}");
             assert_eq!(
                 in_controls_corner(screen, at(x, y)),
                 right,

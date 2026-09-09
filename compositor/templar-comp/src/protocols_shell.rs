@@ -341,9 +341,12 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
 /// Where along its edge an anchored surface sits (`templar-shell-v1.xml`'s `set_edge_alignment`).
 ///
 /// Placement, never reservation: `work_area_for` reads the claim's size and never its alignment,
-/// so a surface sliding along its edge reflows nothing — which is what lets the shell move its
-/// island off the bottom-left corner the compositor's hot corner owns
-/// (`input::in_home_corner`) without touching a single window.
+/// so a surface sliding along its edge reflows nothing — which is what lets the shell put its
+/// island anywhere along the bottom without touching a single window. It was added so the island
+/// could clear the bottom-left corner a hot corner then owned; that corner is Peek's now
+/// (`input::in_peek_band`, `input::peek_affordance`), and Peek is the gesture that *raises* the
+/// island, so an island sitting over it is no longer a conflict — the request stays because where
+/// along an edge a surface sits is the shell's to say either way.
 ///
 /// The alignment only means anything for a live claim on the same edge; an alignment for an edge
 /// the surface does not claim is remembered but not applied, so the two requests may arrive in
