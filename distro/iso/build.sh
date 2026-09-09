@@ -113,7 +113,13 @@ else
     pref="$work/legeos-set.pref"
     printf 'Package: legeos-* lege-files\nPin: version %s\nPin-Priority: 1001\n' "$set_id" > "$pref"
     rm -f "$squashfs"
-    LEGEOS_ISO_OUT="$tree" LEGEOS_ISO_SET="$set_id" \
+    # TMPDIR on the build volume, never the default /tmp: mmdebstrap assembles the whole rootfs
+    # in its tempdir, and /tmp here is a 16 GB tmpfs — RAM. The 2026-09-09 build put 8.4 GB of
+    # chroot into it, left the machine 268 MB free and 3.9 GB into swap, and came within a couple
+    # of gigabytes of the OOM killer reaching the session running the build. The build volume is
+    # the thing that exists for this (ISO-PLAN.md P0.2) and it is not NTFS, so it can hold a root.
+    mkdir -p "$work/tmp"
+    LEGEOS_ISO_OUT="$tree" LEGEOS_ISO_SET="$set_id" TMPDIR="$work/tmp" \
     mmdebstrap --mode="$mode" --variant=minbase --architectures=amd64 --components="$components" \
         --include="$includes" \
         --aptopt='Apt::Install-Recommends "true"' \
