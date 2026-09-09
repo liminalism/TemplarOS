@@ -42,6 +42,24 @@ impl Inner {
     fn monotonic_ms(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
+
+    /// The moment now, with the clock brought up to it first. Every path that stamps an activity
+    /// or writes the ledger goes through here, so what lands in the store is never behind what
+    /// was just recorded.
+    fn now(&mut self) -> homegarden::GardenMoment {
+        let monotonic_ms = self.monotonic_ms();
+        advance(&mut self.ledger.clock, monotonic_ms)
+    }
+}
+
+/// Fold the open interval into the clock's total and read the moment.
+///
+/// The daemon's only other way to close an interval is a lock or a sleep edge, and a session
+/// that ends without one — a logout, or sessiond stopping — emits no edge at all. Doing this
+/// before every write is what makes garden time survive a session boundary.
+fn advance(clock: &mut homegarden::GardenClock, monotonic_ms: u64) -> homegarden::GardenMoment {
+    clock.checkpoint(monotonic_ms);
+    clock.now(monotonic_ms)
 }
 
 #[derive(Clone)]
@@ -104,7 +122,10 @@ impl HomeGardenApi {
         }
     }
 
-    fn persist(&self, inner: &Inner) {
+    fn persist(&self, inner: &mut Inner) {
+        // The clock first: `interval_started` is deliberately not persisted, so an interval that
+        // is not folded in here is lost outright when the session ends without a lock edge.
+        let _ = inner.now();
         if let Err(error) = homegarden::save(&self.store, &inner.ledger) {
             tracing::warn!(%error, "failed to persist the Homegarden ledger");
         }
@@ -141,7 +162,7 @@ impl HomeGardenApi {
         }
         let role = role.or_else(|| app_id.as_ref().and_then(|app| self.role_of(app)));
         let mut inner = self.inner.lock().expect("garden lock");
-        let at = inner.ledger.clock.now(inner.monotonic_ms());
+        let at = inner.now();
         let activity = HomeActivity {
             path,
             kind,
@@ -154,7 +175,7 @@ impl HomeGardenApi {
             .observe(&activity, self.probe.as_ref(), &config)
         {
             tracing::info!(kind = kind.as_str(), root = %root.display(), "garden observed");
-            self.persist(&inner);
+            self.persist(&mut inner);
         }
     }
 
@@ -179,7 +200,7 @@ impl HomeGardenApi {
             SessionEdge::Unlocked | SessionEdge::Sleeping(false) => inner.ledger.clock.resume(now),
             SessionEdge::Locked | SessionEdge::Sleeping(true) => inner.ledger.clock.pause(now),
         }
-        self.persist(&inner);
+        self.persist(&mut inner);
     }
 
     /// One tending moment for `output`: stages, then the field.
@@ -190,10 +211,10 @@ impl HomeGardenApi {
         }
         let corner = self.corner();
         let mut inner = self.inner.lock().expect("garden lock");
-        let now = inner.ledger.clock.now(inner.monotonic_ms());
+        let now = inner.now();
         let changes = inner.ledger.tend(now, &config);
         let Some(doc) = homefield::load(&self.store, output)? else {
-            self.persist(&inner);
+            self.persist(&mut inner);
             return Ok(TendReport::default());
         };
         // The user's hand since last time: a moved tile updates its landing; a resized tile
@@ -271,7 +292,7 @@ impl HomeGardenApi {
             );
             self.record(message);
         }
-        self.persist(&inner);
+        self.persist(&mut inner);
         Ok(report)
     }
 
@@ -503,7 +524,7 @@ impl HomeGardenApi {
         if !inner.ledger.set_pinned(&path, pinned) {
             return Err(not_a_place(&path));
         }
-        self.persist(&inner);
+        self.persist(&mut inner);
         Ok(())
     }
 
@@ -524,7 +545,7 @@ impl HomeGardenApi {
         if !known {
             return Err(not_a_place(&path));
         }
-        self.persist(&inner);
+        self.persist(&mut inner);
         Ok(())
     }
 
@@ -535,7 +556,7 @@ impl HomeGardenApi {
             if !inner.ledger.set_hidden(&path, hidden) {
                 return Err(not_a_place(&path));
             }
-            self.persist(&inner);
+            self.persist(&mut inner);
         }
         if hidden {
             self.remove_tile_everywhere(&path, "hidden").await;
@@ -548,7 +569,7 @@ impl HomeGardenApi {
         {
             let mut inner = self.inner.lock().expect("garden lock");
             inner.ledger.forget(&path);
-            self.persist(&inner);
+            self.persist(&mut inner);
         }
         self.remove_tile_everywhere(&path, "removed").await;
         Ok(())
@@ -557,7 +578,7 @@ impl HomeGardenApi {
     async fn forget_all(&self) -> fdo::Result<()> {
         let mut inner = self.inner.lock().expect("garden lock");
         inner.ledger.forget_all();
-        self.persist(&inner);
+        self.persist(&mut inner);
         Ok(())
     }
 
@@ -755,6 +776,29 @@ mod tests {
             None
         );
         assert_eq!(launch_directory(&["--new-window".into()]), None);
+    }
+
+    /// The ordering every recording and every write uses: fold the open interval in, *then* read
+    /// the moment. Before this, `pause` was reached only from a lock or a sleep edge and a
+    /// logout emits neither, so seven real sessions persisted `active_ms: 0` while the running
+    /// daemon's own `now()` — which adds the open interval — looked perfectly healthy.
+    #[test]
+    fn advancing_folds_the_open_interval_in_before_the_moment_is_read() {
+        let mut clock = homegarden::GardenClock::default();
+        clock.start_session(0);
+        let at = advance(&mut clock, 3_600_000);
+        assert_eq!(at.active_ms, 3_600_000);
+        assert_eq!(
+            clock.active_ms, at.active_ms,
+            "the stamped moment is exactly what a write would store"
+        );
+
+        // The session ends here — no lock, no sleep, no edge. What was folded in survives.
+        let json = serde_json::to_string(&clock).unwrap();
+        let mut next: homegarden::GardenClock = serde_json::from_str(&json).unwrap();
+        assert_eq!(next.active_ms, 3_600_000);
+        next.start_session(0);
+        assert_eq!(advance(&mut next, 60_000).active_ms, 3_660_000);
     }
 
     #[test]
