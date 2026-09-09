@@ -22,6 +22,10 @@ pub struct TreeNode {
 pub struct GardenPlace {
     pub root: PathBuf,
     pub stage: String,
+    /// The form the place draws in — `plain`, `branch`, `shelf`, `folio` — as the ledger settled
+    /// it. A string rather than an enum: the shell draws what the daemon reports and must keep
+    /// working against a daemon that has learned a form this build has never heard of.
+    pub form: String,
     pub effective: f32,
     pub roles: Vec<String>,
     pub tree: Vec<TreeNode>,
@@ -213,11 +217,12 @@ mod tests {
         let place: GardenPlace = serde_json::from_str(
             r#"{"root":"/home/dk/x","stage":"tile","effective":9.5,"roles":["terminal"],
                 "tree":[{"name":"src","is_dir":true,"score":3.0,"last":{"session":1,"active_ms":0}}],
-                "summary":"3 opens, 1 session","material_seed":7,"tile":42}"#,
+                "summary":"3 opens, 1 session","form":"branch","material_seed":7,"tile":42}"#,
         )
         .unwrap();
         assert_eq!(place.stage, "tile");
         assert_eq!(place.tree[0].name, "src");
+        assert_eq!(place.form, "branch");
         assert_eq!(place.state_line(), "3 opens, 1 session");
     }
 }

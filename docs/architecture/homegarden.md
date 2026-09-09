@@ -76,6 +76,22 @@ is never removed by recession, but may grow; **kept** is pinned and frozen at it
 never grows, and its tile leaves Home at once. A folder the user placed or resized by hand is
 kept without asking: the tender only prunes what it grew.
 
+## Forms
+
+Shape is the *mode of use*, and the ledger settles it. Each context carries a `form` — `plain`,
+`branch`, `shelf` or `folio` — derived at a tending moment from the activity tree it has already
+earned: directories worked *through* are branch evidence (weighted by depth, and half again when
+a Terminal or CodeEditor role has been seen there), file leaves are shelf or folio evidence
+according to their extension. A form must clear a floor of 2 and lead the next form by half
+again, and it must have led for **two sessions** before the drawing changes — a place that
+changed shape every time a photo was opened under it would be noise, not identity.
+
+Extension, not MIME: `Observe(kind, path, app_id, role)` is a shipped signature and there is no
+media or reader `ProviderRole` to ask either, so a file's name is the whole of the evidence.
+`created-or-renamed` and `file-saved` are still unemitted, and the tree is three deep, so a
+library organised more deeply than that under-reports. Good enough to tell a photo directory
+from a manuscript one; anything finer waits for a signal that exists.
+
 | Verb | Record | Tile |
 |---|---|---|
 | `garden.pin` | `pinned` | never removed by recession; may still grow |
@@ -111,7 +127,7 @@ listing until any structure has been earned. **Full** is the folder window.
 
 ## What is deliberately not here yet
 
-Growth forms and facets (Hierarchy/Media/Documents/Gallery), blooms (`2 new`, `unwatched`),
+The folio drawing (the form is derived but nothing draws it yet), blooms (`2 new`, `unwatched`),
 material identity, sibling grouping, a Wide-vs-Tall geometry axis, bloom consumption of the
 index change log, and portal sources. Each waits on Phase 4: a day's use, judged by
 `lege garden why` on every place.

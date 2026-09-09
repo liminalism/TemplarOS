@@ -397,6 +397,7 @@ fn context_json(
     serde_json::json!({
         "root": context.root,
         "stage": context.stage.as_str(),
+        "form": context.form.as_str(),
         "effective": context.effective(now, config),
         "score": context.score,
         "sessions_seen": context.sessions_seen(),
