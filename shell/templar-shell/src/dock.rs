@@ -88,6 +88,7 @@ mod tests {
             title: title.to_owned(),
             verified_identity: true,
             activated: false,
+            mru_rank: 0,
             fullscreen: false,
             shelved: false,
             maximized: false,

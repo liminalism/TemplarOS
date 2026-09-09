@@ -179,9 +179,41 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// Visibility is `WindowService::is_visible`'s verdict and nothing else: a window it says is
 /// hidden (shelved, or a client window behind a "go home" reveal) is *unmapped* from `Space`, so
 /// it neither renders nor receives pointer input — `Space` is the render/hit-test mirror, and a
-/// window that is in it is on screen. The governor is told `visible = !shelved`, deliberately not
-/// the same predicate: a reveal is a momentary view, and must not suspend every application.
+/// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
+/// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    // Reconcile existence before order. A toplevel may be temporarily unmapped while retaining
+    // its semantic record, and a broken/missing layer assignment must never leave an old Space
+    // element visible even though stacking_order cannot name it.
+    let records: Vec<(WindowId, bool)> = state
+        .window_service
+        .windows()
+        .map(|record| (record.id, record.mapped))
+        .collect();
+    for (window_id, mapped) in records {
+        let layer = state.window_service.layer_of(window_id);
+        let element = element_for_window(state, window_id);
+        if mapped && layer.is_none() {
+            tracing::error!(
+                ?window_id,
+                role = ?state.window_service.window(window_id).map(|record| record.role),
+                "mapped toplevel has no layer; removing it from the render mirror"
+            );
+        }
+        if mapped && element.is_none() {
+            tracing::error!(
+                ?window_id,
+                role = ?state.window_service.window(window_id).map(|record| record.role),
+                "mapped toplevel has no Smithay element"
+            );
+        }
+        if (!state.window_service.is_visible(window_id) || layer.is_none())
+            && let Some(element) = element
+        {
+            state.space.unmap_elem(&element);
+        }
+    }
+
     // Bottom-to-top so each `raise_element` call leaves the most-recently-processed (i.e.
     // topmost, per `stacking_order`'s top-first contract) window on top of `Space`'s own order.
     for window_id in state.window_service.stacking_order().into_iter().rev() {
@@ -207,9 +239,11 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
 
     for record in state.window_service.windows() {
         if let Some(instance_id) = record.identity.instance_id {
-            state
-                .governor
-                .set_instance_state(instance_id, record.activated, !record.shelved);
+            state.governor.set_instance_state(
+                instance_id,
+                record.activated,
+                record.mapped && !record.shelved,
+            );
         }
     }
 

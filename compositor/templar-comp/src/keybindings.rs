@@ -426,11 +426,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// One `Alt+Tab` (`groups: false`) or `Super+Tab` (`groups: true`) step.
     ///
     /// The list is built at the first press and *frozen* until the modifier is released
-    /// (`src/input.rs::on_keyboard` drops the ring), because every step activates, activation
-    /// raises, and the list is the stacking order — rebuilt per press it can only ever swap the
-    /// top two windows, which is what made a third window unreachable no matter how many times
-    /// Tab was pressed. `Alt+Tab` walks *every* unshelved client window, in
-    /// most-recently-activated order; it used to be scoped to the focused window's group, which
+    /// (`src/input.rs::on_keyboard` drops the ring), because every step records activation and
+    /// changes the order a newly built semantic MRU list would expose. `Alt+Tab` walks *every*
+    /// mapped, unshelved application window in most-recently-activated order; it used to be
+    /// scoped to the focused window's group, which
     /// meant a group was a place Alt+Tab could not leave.
     ///
     /// ponytail: each step activates as it goes, so walking past three windows raises three. The
@@ -443,7 +442,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 let targets = if groups {
                     self.window_service.group_cycle_targets()
                 } else {
-                    self.window_service.switch_order()
+                    let targets = self.window_service.switch_order();
+                    for window in self.window_service.windows() {
+                        if let Some(reason) = self.window_service.switch_exclusion_reason(window.id)
+                        {
+                            tracing::debug!(
+                                window_id = window.id.0,
+                                ?window.role,
+                                mapped = window.mapped,
+                                shelved = window.shelved,
+                                fullscreen = window.fullscreen,
+                                layer = ?self.window_service.layer_of(window.id),
+                                reason,
+                                "toplevel excluded from Alt-Tab"
+                            );
+                        }
+                    }
+                    tracing::debug!(?targets, "froze Alt-Tab targets in semantic MRU order");
+                    targets
                 };
                 templar_window::SwitchRing::new(targets, self.activated_window())
             }

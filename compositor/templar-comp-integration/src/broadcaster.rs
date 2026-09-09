@@ -9,7 +9,7 @@
 //! and calls a [`ShellStateSink`] the fork implements over the real protocol object.
 
 use templar_window::{IdentityCache, ShellToplevel, WindowId, WindowService};
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 /// Everything the shell needs to redraw the dock, switcher and Window Shelf after one state
 /// change. Cloned from `WindowService` — no PIDs, no raw claims (`ShellToplevel` is already
@@ -51,19 +51,20 @@ pub trait ShellStateSink: Send + 'static {
 /// background task, so a slow shell client can never stall the compositor.
 #[derive(Clone, Debug)]
 pub struct ShellStateBroadcaster {
-    tx: mpsc::UnboundedSender<ShellStateSnapshot>,
+    tx: watch::Sender<Option<ShellStateSnapshot>>,
 }
 
 impl ShellStateBroadcaster {
-    /// Spawn the sink task on `handle`. Snapshots are delivered in publish order; a sink that
-    /// falls behind only delays the shell's view, never the compositor (the channel is
-    /// unbounded because a snapshot is small and infrequent — bounded by window-state changes,
-    /// not by frames).
+    /// Spawn the sink task on `handle`. The pending slot keeps only the newest snapshot: every
+    /// snapshot describes the complete shell-visible state, so replaying intermediate states
+    /// after a burst would add latency without adding information.
     pub fn spawn<S: ShellStateSink>(handle: &tokio::runtime::Handle, mut sink: S) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<ShellStateSnapshot>();
+        let (tx, mut rx) = watch::channel::<Option<ShellStateSnapshot>>(None);
         handle.spawn(async move {
-            while let Some(snapshot) = rx.recv().await {
-                sink.send(snapshot);
+            while rx.changed().await.is_ok() {
+                if let Some(snapshot) = rx.borrow_and_update().clone() {
+                    sink.send(snapshot);
+                }
             }
         });
         Self { tx }
@@ -71,7 +72,14 @@ impl ShellStateBroadcaster {
 
     /// Called from the render thread; never blocks.
     pub fn publish(&self, snapshot: ShellStateSnapshot) {
-        let _ = self.tx.send(snapshot);
+        self.tx.send_if_modified(|pending| {
+            if pending.as_ref() == Some(&snapshot) {
+                false
+            } else {
+                *pending = Some(snapshot);
+                true
+            }
+        });
     }
 }
 
@@ -152,9 +160,38 @@ mod tests {
         };
         broadcaster.publish(snap.clone());
 
-        // publish() itself never awaits (it's an unbounded send); yield so the background task
-        // gets a turn before we assert.
+        // publish() itself never awaits; yield so the background task gets a turn before we
+        // assert.
         tokio::task::yield_now().await;
         assert_eq!(received.lock().unwrap().as_slice(), &[snap]);
+    }
+
+    #[tokio::test]
+    async fn a_burst_keeps_only_the_latest_complete_snapshot() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let broadcaster = ShellStateBroadcaster::spawn(
+            &tokio::runtime::Handle::current(),
+            RecordingSink {
+                received: Arc::clone(&received),
+            },
+        );
+
+        for rank in 1..=3 {
+            broadcaster.publish(ShellStateSnapshot {
+                toplevels: Vec::new(),
+                shelf: Vec::new(),
+                stacking_order: vec![WindowId(rank)],
+                home_revealed: false,
+            });
+        }
+
+        // The background task cannot run on this current-thread runtime until this first await,
+        // so all three writes contend for the same pending slot deterministically.
+        tokio::task::yield_now().await;
+        assert_eq!(received.lock().unwrap().len(), 1);
+        assert_eq!(
+            received.lock().unwrap()[0].stacking_order,
+            vec![WindowId(3)]
+        );
     }
 }

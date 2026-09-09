@@ -4735,6 +4735,7 @@ mod tests {
             title: "kitty".to_owned(),
             verified_identity: false,
             activated: true,
+            mru_rank: 0,
             fullscreen,
             shelved,
             maximized,

@@ -24,6 +24,8 @@ pub struct ShellToplevel {
     pub title: String,
     pub verified_identity: bool,
     pub activated: bool,
+    /// Zero-based activation recency among mapped application windows; zero is newest.
+    pub mru_rank: u32,
     pub fullscreen: bool,
     pub shelved: bool,
     /// Filling its output's work area at the client's request (`xdg_toplevel.set_maximized`).
@@ -87,6 +89,7 @@ mod tests {
             title: String::new(),
             verified_identity: true,
             activated: false,
+            mru_rank: 0,
             fullscreen: false,
             shelved: false,
             maximized: false,

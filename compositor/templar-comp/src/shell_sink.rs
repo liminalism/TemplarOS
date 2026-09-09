@@ -16,17 +16,28 @@ use smithay::reexports::calloop::{
     LoopHandle,
     channel::{self, Event},
 };
+use std::sync::{Arc, Mutex};
 use templar_comp_integration::{ShellStateSink, ShellStateSnapshot};
 
 pub struct RenderThreadSink {
-    tx: channel::Sender<ShellStateSnapshot>,
+    latest: Arc<Mutex<Option<ShellStateSnapshot>>>,
+    wake: channel::Sender<()>,
 }
 
 impl ShellStateSink for RenderThreadSink {
     fn send(&mut self, snapshot: ShellStateSnapshot) {
-        // A full channel/closed receiver only happens once the render thread itself is gone, at
-        // which point there is nothing left to tell anyway.
-        let _ = self.tx.send(snapshot);
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let needs_wake = latest.is_none();
+        *latest = Some(snapshot);
+        drop(latest);
+        if needs_wake {
+            // A closed receiver only happens once the render thread itself is gone, at which
+            // point there is nothing left to tell anyway.
+            let _ = self.wake.send(());
+        }
     }
 }
 
@@ -35,10 +46,17 @@ impl ShellStateSink for RenderThreadSink {
 pub fn install<B: Backend + 'static>(
     loop_handle: &LoopHandle<'static, TemplarCompState<B>>,
 ) -> RenderThreadSink {
-    let (tx, rx) = channel::channel::<ShellStateSnapshot>();
+    let latest = Arc::new(Mutex::new(None::<ShellStateSnapshot>));
+    let callback_latest = Arc::clone(&latest);
+    let (wake, rx) = channel::channel::<()>();
     loop_handle
-        .insert_source(rx, |event, (), state: &mut TemplarCompState<B>| {
-            if let Event::Msg(snapshot) = event {
+        .insert_source(rx, move |event, (), state: &mut TemplarCompState<B>| {
+            if let Event::Msg(()) = event
+                && let Some(snapshot) = callback_latest
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            {
                 // Foreign handles first: `sync_toplevels` relays each window's
                 // `ext_foreign_toplevel_handle_v1.identifier`, which only exists once its handle does.
                 crate::foreign_toplevel::sync(state);
@@ -46,5 +64,5 @@ pub fn install<B: Backend + 'static>(
             }
         })
         .expect("inserting the shell-state channel source");
-    RenderThreadSink { tx }
+    RenderThreadSink { latest, wake }
 }

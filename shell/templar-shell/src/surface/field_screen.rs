@@ -4897,6 +4897,7 @@ mod tests {
             title: format!("win {id}"),
             verified_identity: true,
             activated: false,
+            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
             fullscreen: false,
             shelved,
             maximized: false,

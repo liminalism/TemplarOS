@@ -33,7 +33,8 @@ pub use geometry::{
 pub use group::{GROUP_ACCENTS, GroupId, GroupRecord, accent_for};
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};
 pub use service::{
-    CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowService,
+    CachedIdentity, Decoration, EscapeAction, IdentityCache, WindowId, WindowRecord, WindowRole,
+    WindowService,
 };
 pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
 pub use switch::SwitchRing;

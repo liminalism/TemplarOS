@@ -890,6 +890,7 @@ mod tests {
             title: title.to_owned(),
             verified_identity: app.is_some(),
             activated: false,
+            mru_rank: 0,
             fullscreen: false,
             shelved,
             maximized: false,

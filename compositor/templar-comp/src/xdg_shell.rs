@@ -21,6 +21,7 @@ use smithay::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
         wayland_server::{
             Client, Resource,
+            backend::ObjectId,
             protocol::{wl_output, wl_seat, wl_surface::WlSurface},
         },
     },
@@ -291,6 +292,43 @@ fn ensure_initial_popup_configure(popups: &mut PopupManager, surface: &WlSurface
 }
 
 impl<B: Backend + 'static> TemplarCompState<B> {
+    fn unmap_existing_toplevel(&mut self, object_id: &ObjectId, window: &Window) {
+        let Some(window_id) = self.windows.mark_unmapped(object_id) else {
+            return;
+        };
+        let was_activated = self
+            .window_service
+            .window(window_id)
+            .is_some_and(|record| record.activated);
+        self.window_service.set_mapped(window_id, false);
+        self.space.unmap_elem(window);
+        tracing::info!(?window_id, backend = "wayland", "toplevel unmapped");
+        if was_activated {
+            crate::input::refocus_after_window_hidden(self);
+        } else {
+            crate::space_sync::sync_after_change(self);
+        }
+    }
+
+    fn remap_existing_toplevel(
+        &mut self,
+        surface: &WlSurface,
+        object_id: &ObjectId,
+        window: &Window,
+    ) -> bool {
+        let Some(window_id) = self.windows.window_id_for(object_id) else {
+            return false;
+        };
+        self.window_service.set_mapped(window_id, true);
+        self.windows.mark_mapped(surface.clone(), window_id);
+        let client = crate::space_sync::client_area(self, window_id);
+        self.space
+            .map_element(window.clone(), (client.x, client.y), false);
+        tracing::info!(?window_id, backend = "wayland", "toplevel remapped");
+        crate::space_sync::sync_after_change(self);
+        true
+    }
+
     /// The one place a toplevel's mapped-ness is decided (`window_bridge::should_map_toplevel`),
     /// and the one place its title is kept in sync once mapped (`xdg_toplevel.set_title`'s row in
     /// COMPOSITOR.md — Smithay delivers this as [`XdgShellHandler::title_changed`] instead, which
@@ -313,21 +351,29 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
 
         let object_id = surface.id();
-        if self.windows.is_mapped(&object_id) {
-            self.adopt_client_size(surface, &window);
-            return;
-        }
-        self.windows.track_pending(object_id.clone());
-
         let has_buffer =
             smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| {
                 s.buffer().is_some()
             })
             .unwrap_or(false);
+        if self.windows.is_mapped(&object_id) {
+            if !has_buffer {
+                self.unmap_existing_toplevel(&object_id, &window);
+                return;
+            }
+            self.adopt_client_size(surface, &window);
+            return;
+        }
+        self.windows.track_pending(object_id.clone());
+
         if !self
             .windows
             .ready_to_map(&object_id, has_buffer, toplevel.is_initial_configure_sent())
         {
+            return;
+        }
+
+        if self.remap_existing_toplevel(surface, &object_id, &window) {
             return;
         }
 

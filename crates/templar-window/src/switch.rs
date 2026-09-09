@@ -1,15 +1,11 @@
 //! The switcher's frozen list.
 //!
-//! `Alt+Tab` activates as it steps, activation raises ([`crate::WindowService::activate`]), and
-//! the list a switcher walks is the stacking order — so a list rebuilt on every press only ever
-//! swaps the top two windows, and the third window is unreachable no matter how many times Tab is
-//! pressed. The fix is to build the list once, at the first press, and walk *that* until the
-//! modifier comes up: this type is that list, and the compositor drops it on the release
-//! (`templar-comp/src/input.rs`).
-//!
-//! Which is also why there is no recency stamp on [`crate::WindowRecord`]: `LayerStack`'s rank is
-//! a monotonic counter bumped on every raise, so the stacking order of `Layer::Normal` already
-//! *is* most-recently-activated first, and a second copy of it could only drift.
+//! `Alt+Tab` activates as it steps, and that activation changes both semantic MRU and visual
+//! stacking. Rebuilding the list on every press can therefore make the gesture chase its own
+//! mutations. The list is built once at the first press and walked until the modifier comes up;
+//! this type is that frozen list, and the compositor drops it on release
+//! (`templar-comp/src/input.rs`). Window eligibility and order come from semantic records, never
+//! from `LayerStack`.
 
 use crate::WindowId;
 

@@ -204,8 +204,8 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// the modifier comes up (`src/input.rs::on_keyboard`). The flag is `true` for the group
     /// walk, so pressing the other chord rebuilds the list instead of continuing this one.
     ///
-    /// Frozen because every step activates and activation raises: the list is the stacking order,
-    /// so rebuilding it per press only ever swaps the top two windows (`templar_window::SwitchRing`).
+    /// Frozen because every step records activation and changes the semantic MRU order a newly
+    /// built list would expose (`templar_window::SwitchRing`).
     pub switch_ring: Option<(templar_window::SwitchRing, bool)>,
     /// Whether `Alt` or `Super` was still held at the last key event — the release that ends a
     /// switcher walk. Read from the keyboard filter's modifier state rather than tracked by

@@ -137,6 +137,7 @@ struct ToplevelState {
     title: String,
     verified_identity: bool,
     activated: bool,
+    mru_rank: u32,
     fullscreen: bool,
     shelved: bool,
     maximized: bool,
@@ -166,6 +167,7 @@ impl Default for ToplevelState {
             title: String::new(),
             verified_identity: false,
             activated: false,
+            mru_rank: u32::MAX,
             fullscreen: false,
             shelved: false,
             maximized: false,
@@ -251,6 +253,7 @@ impl ToplevelState {
             } => {
                 self.group = group_from_wire(group_id, name, accent);
             }
+            templar_shell_toplevel_v1::Event::MruRank { rank } => self.mru_rank = rank,
             templar_shell_toplevel_v1::Event::Closed => unreachable!("handled by the dispatcher"),
         }
     }
@@ -263,6 +266,7 @@ impl ToplevelState {
             title: self.title.clone(),
             verified_identity: self.verified_identity,
             activated: self.activated,
+            mru_rank: self.mru_rank,
             fullscreen: self.fullscreen,
             shelved: self.shelved,
             maximized: self.maximized,
@@ -1551,6 +1555,13 @@ mod tests {
                 accent: 0x0033_88ff,
             })
         );
+    }
+
+    #[test]
+    fn an_mru_rank_event_reaches_the_shell_toplevel() {
+        let mut state = ToplevelState::default();
+        state.apply(templar_shell_toplevel_v1::Event::MruRank { rank: 3 });
+        assert_eq!(state.snapshot(WindowId(1)).mru_rank, 3);
     }
 
     #[test]

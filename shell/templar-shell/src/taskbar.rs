@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use templar_window::{DockGrouping, Layer, ShellToplevel, WindowId};
+use templar_window::{DockGrouping, ShellToplevel, WindowId};
 
 /// One window of an entry, as the hover row needs it.
 ///
@@ -33,7 +33,7 @@ pub struct Entry {
     pub accent: Option<u32>,
     /// The application whose icon this entry wears, when it is one.
     pub app_id: Option<String>,
-    /// Every window in the entry, in encounter order.
+    /// Every window in the entry, most-recently activated first.
     pub windows: Vec<EntryWindow>,
     /// Which of [`Self::windows`] are parked on the shelf.
     ///
@@ -70,17 +70,17 @@ impl Entry {
 pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
     let mut groups: BTreeMap<u64, Vec<&ShellToplevel>> = BTreeMap::new();
     let mut loose: Vec<ShellToplevel> = Vec::new();
-    for toplevel in toplevels
-        .iter()
-        .filter(|t| matches!(t.layer, Layer::Normal | Layer::AppOnTop))
-    {
+    // The compositor's semantic application view is this module's interface. Do not infer
+    // application identity again from visual layers here.
+    for toplevel in toplevels {
         match &toplevel.group {
             Some(info) => groups.entry(info.group_id).or_default().push(toplevel),
             None => loose.push(toplevel.clone()),
         }
     }
     let mut out = Vec::new();
-    for (id, members) in groups {
+    for (id, mut members) in groups {
+        members.sort_by_key(|window| (window.mru_rank, window.window_id));
         let info = members[0].group.as_ref().expect("bucketed by its group");
         out.push(Entry {
             key: format!("group:{id}"),
@@ -96,6 +96,7 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
             active: members.iter().any(|member| member.activated),
         });
     }
+    loose.sort_by_key(|window| (window.mru_rank, window.window_id));
     for entry in crate::dock::group(&loose, DockGrouping::ByApplication) {
         let windows: Vec<EntryWindow> = entry
             .window_ids
@@ -166,7 +167,7 @@ fn title_of(toplevel: &ShellToplevel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use templar_window::{GroupInfo, Rect};
+    use templar_window::{GroupInfo, Layer, Rect};
 
     fn window(id: u64, app: &str, title: &str, group: Option<u64>) -> ShellToplevel {
         ShellToplevel {
@@ -176,6 +177,7 @@ mod tests {
             title: title.to_owned(),
             verified_identity: true,
             activated: false,
+            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
             fullscreen: false,
             shelved: false,
             maximized: false,
@@ -234,14 +236,15 @@ mod tests {
     }
 
     #[test]
-    fn grouped_windows_never_double_as_application_entries_and_shell_layers_are_skipped() {
-        let mut home = window(7, "org.templaros.Shell", "Home", None);
-        home.layer = Layer::HomeSurface;
-        let toplevels = vec![window(4, "org.example.Term", "sh", Some(9)), home];
+    fn grouped_windows_never_double_as_application_entries() {
+        let toplevels = vec![
+            window(4, "org.example.Term", "sh", Some(9)),
+            window(7, "org.example.Browser", "docs", Some(9)),
+        ];
         let entries = entries(&toplevels);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key, "group:9");
-        assert_eq!(entries[0].label, "1 window");
+        assert_eq!(entries[0].label, "2 windows");
     }
 
     #[test]
@@ -341,5 +344,22 @@ mod tests {
         let mut b = a.clone();
         b.reverse();
         assert_eq!(entries(&a), entries(&b));
+    }
+
+    #[test]
+    fn windows_inside_an_entry_follow_semantic_mru() {
+        let mut older = window(1, "org.example.Browser", "older", None);
+        older.mru_rank = 4;
+        let mut newest = window(2, "org.example.Browser", "newest", None);
+        newest.mru_rank = 0;
+        let entry = entries(&[older, newest]).pop().unwrap();
+        assert_eq!(
+            entry
+                .windows
+                .iter()
+                .map(|window| window.id)
+                .collect::<Vec<_>>(),
+            vec![WindowId(2), WindowId(1)]
+        );
     }
 }

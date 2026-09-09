@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use templar_comp_integration::ShellStateSnapshot;
 use templar_window::{
     ActivationGrant, ClientKind, CommandContext, Layer, Rect, RevealHome, WindowCommand, WindowId,
+    WindowRole,
     geometry::{Alignment, Edge, Exclusive, shell_surface_placement},
 };
 
@@ -429,6 +430,16 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     {
         tracing::warn!(%error, ?window_id, ?layer, "rejecting trusted-shell layer claim");
         return;
+    }
+    if claimed_layer.is_some() {
+        let role = match layer {
+            Layer::HomeSurface => WindowRole::Shell,
+            Layer::Notification => WindowRole::Notification,
+            Layer::SecureLock => WindowRole::LockScreen,
+            Layer::Recovery | Layer::SystemModal | Layer::ShellOverlay => WindowRole::Overlay,
+            Layer::AppOnTop | Layer::Normal => WindowRole::Application,
+        };
+        state.window_service.set_role(window_id, role);
     }
 
     let preferred_output = exclusive_claim.as_ref().map(|(name, _)| name.as_str());
@@ -846,6 +857,9 @@ pub fn sync_toplevels<B: Backend + 'static>(
         );
         object.layer(wire_layer(toplevel.layer));
         send_v2_toplevel_events(state, &object, toplevel);
+        if object.version() >= 4 {
+            object.mru_rank(toplevel.mru_rank);
+        }
     }
 
     state
@@ -961,6 +975,16 @@ mod tests {
             .expect("every preset has a wire value");
             assert_eq!(preset_from_wire(wire), preset);
         }
+    }
+
+    /// A list creates each child at the list object's negotiated version. If the list's maximum
+    /// version falls behind the child interface, newer child events silently become unreachable.
+    #[test]
+    fn toplevel_list_can_create_the_latest_toplevel_version() {
+        assert!(
+            TemplarShellToplevelListV1::interface().version
+                >= TemplarShellToplevelV1::interface().version
+        );
     }
 
     /// `dynamic-window-set` as the compositor drives it: a closed window is ignored, a newly

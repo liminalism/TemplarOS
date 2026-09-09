@@ -80,6 +80,26 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
             .client()
             .is_some_and(|client| crate::state::client_is_trusted_shell(&client));
         let peer_pid = window.pid().unwrap_or(0);
+        let x11_id = window.window_id();
+
+        let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
+        if let Some(window_id) = self
+            .windows
+            .window_id_for_x11(x11_id)
+            .or_else(|| self.windows.window_id_for(&object_id))
+        {
+            self.window_service.set_mapped(window_id, true);
+            self.window_service.set_title(window_id, window.title());
+            self.windows.mark_x11_mapped(x11_id, surface, window_id);
+            let client = crate::space_sync::client_area(self, window_id);
+            let _ = window.configure(Some(rect_to_smithay(client)));
+            let element = Window::new_x11_window(window);
+            self.windows.track_element(object_id, element.clone());
+            self.space.map_element(element, (client.x, client.y), false);
+            tracing::info!(?window_id, backend = "xwayland", "toplevel remapped");
+            crate::space_sync::sync_after_change(self);
+            return;
+        }
 
         let window_id = self.window_service.on_toplevel_mapped(
             peer_pid,
@@ -88,8 +108,7 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
             window.title(),
             requested,
         );
-        let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
-        self.windows.mark_mapped(surface, window_id);
+        self.windows.mark_x11_mapped(x11_id, surface, window_id);
 
         let client = crate::space_sync::client_area(self, window_id);
         let _ = window.configure(Some(rect_to_smithay(client)));
@@ -118,7 +137,22 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
             return;
         }
         let _ = window.set_mapped(false);
-        self.remove_x11_window(&window);
+        if let Some(window_id) = self.windows.mark_x11_unmapped(window.window_id()) {
+            let was_activated = self
+                .window_service
+                .window(window_id)
+                .is_some_and(|record| record.activated);
+            if let Some(element) = window_element(self, &window) {
+                self.space.unmap_elem(&element);
+            }
+            self.window_service.set_mapped(window_id, false);
+            tracing::info!(?window_id, backend = "xwayland", "toplevel unmapped");
+            if was_activated {
+                crate::input::refocus_after_window_hidden(self);
+            } else {
+                crate::space_sync::sync_after_change(self);
+            }
+        }
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -317,11 +351,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     }
 
     fn remove_x11_window(&mut self, window: &X11Surface) {
-        let Some(surface) = window.wl_surface() else {
-            return;
-        };
-        let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
-        if let Some(window_id) = self.windows.remove(&object_id) {
+        if let Some(window_id) = self.windows.remove_x11(window.window_id()) {
             crate::space_sync::on_window_destroyed(self, window_id);
         }
     }

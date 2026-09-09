@@ -160,18 +160,41 @@ pub fn refocus_after_reveal<B: Backend + 'static>(state: &mut TemplarCompState<B
     }
     let top = state
         .window_service
-        .stacking_order()
+        .switch_order()
         .into_iter()
-        .find(|id| {
-            state.window_service.is_visible(*id)
-                && matches!(
-                    state.window_service.layer_of(*id),
-                    Some(templar_window::Layer::Normal | templar_window::Layer::AppOnTop)
-                )
-        });
+        .find(|id| state.window_service.is_visible(*id));
     if let Some(window_id) = top {
         activate_window(state, window_id);
     }
+}
+
+/// Move keyboard focus away from an application that just became unmapped. The semantic MRU is
+/// authoritative here too: visual stacking may include shell chrome and may have changed while
+/// the surface was disappearing. If no application remains, Home becomes the keyboard target.
+pub fn refocus_after_window_hidden<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    if let Some(window_id) = state
+        .window_service
+        .switch_order()
+        .into_iter()
+        .find(|id| state.window_service.is_visible(*id))
+    {
+        activate_window(state, window_id);
+        return;
+    }
+
+    let home = state
+        .window_service
+        .stacking_order()
+        .into_iter()
+        .find(|id| {
+            state.window_service.layer_of(*id) == Some(templar_window::Layer::HomeSurface)
+                && state.window_service.is_visible(*id)
+        });
+    let surface = home.and_then(|id| state.windows.surface_for(id).cloned());
+    if let Some(keyboard) = state.seat.get_keyboard() {
+        keyboard.set_focus(state, surface, SERIAL_COUNTER.next_serial());
+    }
+    crate::space_sync::sync_after_change(state);
 }
 
 /// Focus the Home surface when it is the only usable desktop, or while a reveal explicitly owns

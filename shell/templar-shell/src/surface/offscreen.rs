@@ -376,6 +376,7 @@ mod tests {
             title: title.to_owned(),
             verified_identity: true,
             activated: false,
+            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
             fullscreen: false,
             shelved: false,
             maximized: false,

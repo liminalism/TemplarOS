@@ -26,6 +26,20 @@ pub struct CachedIdentity {
     pub claim_mismatch: bool,
 }
 
+/// What a toplevel means to window-management policy, independently of where it is drawn.
+///
+/// A role is deliberately not a [`Layer`]: moving a window in Z-order, promoting fullscreen
+/// content over shell chrome, or pinning an application must never change whether Alt-Tab and
+/// the taskbar consider it an application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum WindowRole {
+    Application,
+    Shell,
+    Notification,
+    Overlay,
+    LockScreen,
+}
+
 impl CachedIdentity {
     pub const UNKNOWN: Self = Self {
         app_id: None,
@@ -69,12 +83,19 @@ impl Decoration {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowRecord {
     pub id: WindowId,
+    pub role: WindowRole,
     pub peer_pid: u32,
     pub claims: WindowClaims,
     pub identity: CachedIdentity,
     pub title: String,
     pub geometry: Rect,
+    /// Whether the client currently presents this toplevel. Temporary protocol unmaps retain
+    /// the record and [`WindowId`]; only destruction removes them.
+    pub mapped: bool,
     pub activated: bool,
+    /// Monotonic application-activation order. Visual raises have their own counter in
+    /// [`LayerStack`] and never alter this value.
+    pub last_activated: u64,
     pub fullscreen: bool,
     /// Holds an exclusive input grab (a dialog, a permission prompt). See
     /// [`WindowService::escape`].
@@ -117,7 +138,7 @@ impl WindowRecord {
     /// was told, not in how much of the screen is left over.
     #[must_use]
     pub fn covers_screen(&self) -> bool {
-        !self.shelved && (self.fullscreen || self.maximized)
+        self.mapped && !self.shelved && (self.fullscreen || self.maximized)
     }
 }
 
@@ -156,6 +177,7 @@ pub struct WindowService<I> {
     windows: HashMap<WindowId, WindowRecord>,
     next_window_id: u64,
     next_shelf_rank: u64,
+    activation_serial: u64,
     drag: Option<DragState>,
     resize: Option<ResizeState>,
     layers: LayerStack<WindowId>,
@@ -199,6 +221,7 @@ impl<I: IdentityCache> WindowService<I> {
             windows: HashMap::new(),
             next_window_id: 1,
             next_shelf_rank: 0,
+            activation_serial: 0,
             drag: None,
             resize: None,
             layers: LayerStack::new(),
@@ -255,7 +278,7 @@ impl<I: IdentityCache> WindowService<I> {
         let existing_clients = self
             .windows
             .values()
-            .filter(|window| self.is_client_window(window.id))
+            .filter(|window| window.mapped && self.is_client_window(window.id))
             .count();
         let geometry =
             crate::geometry::place_new_window(requested_geometry, existing_clients, &self.outputs);
@@ -264,12 +287,15 @@ impl<I: IdentityCache> WindowService<I> {
             id,
             WindowRecord {
                 id,
+                role: WindowRole::Application,
                 peer_pid,
                 claims: claims.clone(),
                 identity,
                 title,
                 geometry,
+                mapped: true,
                 activated: false,
+                last_activated: 0,
                 fullscreen: false,
                 modal: false,
                 decoration: Decoration::ServerSide,
@@ -312,6 +338,34 @@ impl<I: IdentityCache> WindowService<I> {
         if let Some(window) = self.windows.get_mut(&window_id) {
             window.title = title;
         }
+    }
+
+    /// Change the semantic role declared for a toplevel. This changes no layer, geometry,
+    /// visibility or activation history; callers that also need a visual layer set it through
+    /// [`Self::set_layer`].
+    pub fn set_role(&mut self, window_id: WindowId, role: WindowRole) -> bool {
+        let Some(window) = self.windows.get_mut(&window_id) else {
+            return false;
+        };
+        window.role = role;
+        true
+    }
+
+    /// Record a protocol map or temporary unmap without changing the toplevel's identity.
+    /// Destruction remains [`Self::on_toplevel_destroyed`]'s job.
+    pub fn set_mapped(&mut self, window_id: WindowId, mapped: bool) -> bool {
+        let Some(window) = self.windows.get_mut(&window_id) else {
+            return false;
+        };
+        if window.mapped == mapped {
+            return false;
+        }
+        window.mapped = mapped;
+        if !mapped {
+            window.activated = false;
+        }
+        self.forget_stale_covering_chrome();
+        true
     }
 
     /// `xdg_toplevel.set_fullscreen` / `unset_fullscreen`: fill the *whole* output —
@@ -474,7 +528,10 @@ impl<I: IdentityCache> WindowService<I> {
             .windows
             .values()
             .filter(|window| {
-                self.is_client_window(window.id) && !window.shelved && !window.fullscreen
+                self.is_client_window(window.id)
+                    && window.mapped
+                    && !window.shelved
+                    && !window.fullscreen
             })
             .map(|window| (window.activated, window.id))
             .collect();
@@ -601,7 +658,7 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
-        if window.shelved {
+        if !window.mapped || window.shelved {
             return false;
         }
         if self.layer_of(window_id) == Some(Layer::HomeSurface) {
@@ -633,6 +690,7 @@ impl<I: IdentityCache> WindowService<I> {
             .then(|| choose_target_output(home, &self.outputs).name.as_str());
         self.windows.values().any(|window| {
             (window.maximized || window.fullscreen)
+                && window.mapped
                 && !window.shelved
                 && self.is_client_window(window.id)
                 && home_output.is_none_or(|name| {
@@ -830,12 +888,12 @@ impl<I: IdentityCache> WindowService<I> {
         let mut shelved: Vec<&WindowRecord> = self
             .windows
             .values()
-            .filter(|window| self.is_client_window(window.id) && window.shelved)
+            .filter(|window| self.is_client_window(window.id) && window.mapped && window.shelved)
             .collect();
         shelved.sort_by_key(|window| std::cmp::Reverse(window.shelf_rank.unwrap_or(0)));
         shelved
             .into_iter()
-            .map(|window| self.to_shell_toplevel(window))
+            .map(|window| self.to_shell_toplevel(window, self.mru_rank(window)))
             .collect()
     }
 
@@ -1037,7 +1095,7 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
-        if !self.is_client_window(window_id) {
+        if !window.mapped || !self.is_client_window(window_id) {
             return false;
         }
         let output = (!self.outputs.is_empty()).then(|| {
@@ -1064,7 +1122,11 @@ impl<I: IdentityCache> WindowService<I> {
     /// behave as one set of windows rather than as a label — and it is also why it is safe:
     /// raising changes rank, never geometry, so the recovery invariant cannot notice it.
     pub fn activate(&mut self, window_id: WindowId) -> bool {
-        if !self.windows.contains_key(&window_id) {
+        if !self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.mapped && !window.shelved)
+        {
             return false;
         }
         for window in self.windows.values_mut() {
@@ -1084,6 +1146,16 @@ impl<I: IdentityCache> WindowService<I> {
             }
         } else {
             self.layers.raise(window_id);
+        }
+        if self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.role == WindowRole::Application)
+        {
+            self.activation_serial = self.activation_serial.saturating_add(1);
+            if let Some(window) = self.windows.get_mut(&window_id) {
+                window.last_activated = self.activation_serial;
+            }
         }
         // Activating a window (a click on its tile from the Home Field, say) is the user asking
         // for it: a reveal that was hiding it ends here, for free, with nothing else to undo.
@@ -1381,14 +1453,14 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// The rectangle the compositor draws a group's outline around: the union of its
-    /// **unshelved** members' geometries (planning doc §2 rule 7). `None` for an unknown group or
-    /// one whose members are all shelved.
+    /// mapped, **unshelved** members' geometries (planning doc §2 rule 7). `None` for an unknown
+    /// group or one whose members are all shelved or temporarily unmapped.
     pub fn group_outline(&self, group: GroupId) -> Option<Rect> {
         let rects: Vec<Rect> = self
             .group_members(group)
             .into_iter()
             .filter_map(|id| self.windows.get(&id))
-            .filter(|window| !window.shelved)
+            .filter(|window| window.mapped && !window.shelved)
             .map(|window| window.geometry)
             .collect();
         bounding_rect(&rects)
@@ -1412,7 +1484,10 @@ impl<I: IdentityCache> WindowService<I> {
                         .map(|record| record.last_active)
                         .filter(|member| {
                             self.group_of(*member) == Some(group)
-                                && self.windows.get(member).is_some_and(|w| !w.shelved)
+                                && self
+                                    .windows
+                                    .get(member)
+                                    .is_some_and(|w| w.mapped && !w.shelved)
                         })
                         .unwrap_or(id);
                     targets.push(landing);
@@ -1428,21 +1503,41 @@ impl<I: IdentityCache> WindowService<I> {
         targets
     }
 
-    /// Every window a switcher may land on, top-most first: client windows that are not shelved.
-    ///
-    /// This is *also* the most-recently-activated order, and not by accident:
-    /// [`crate::LayerStack`]'s rank is a monotonic counter bumped on every raise, and
-    /// [`Self::activate`] raises. So the switcher needs no recency stamp of its own — see
-    /// [`crate::SwitchRing`], which freezes this list for the length of one `Alt+Tab` hold.
+    /// Every window a switcher may land on, most-recently activated first. Semantic role,
+    /// protocol mapping and shelving are the only eligibility inputs; visual stacking,
+    /// fullscreen, geometry and pinning are intentionally absent.
     pub fn switch_order(&self) -> Vec<WindowId> {
-        self.layers
-            .order()
-            .into_iter()
-            .filter(|id| {
-                self.is_client_window(*id)
-                    && self.windows.get(id).is_some_and(|window| !window.shelved)
+        let mut windows: Vec<&WindowRecord> = self
+            .windows
+            .values()
+            .filter(|window| {
+                window.role == WindowRole::Application && window.mapped && !window.shelved
             })
-            .collect()
+            .collect();
+        windows.sort_by_key(|window| {
+            (
+                std::cmp::Reverse(window.last_activated),
+                std::cmp::Reverse(window.id),
+            )
+        });
+        windows.into_iter().map(|window| window.id).collect()
+    }
+
+    /// Why a known toplevel is not an Alt-Tab target. `None` means it is eligible.
+    pub fn switch_exclusion_reason(&self, window_id: WindowId) -> Option<&'static str> {
+        let Some(window) = self.windows.get(&window_id) else {
+            return Some("unknown-window");
+        };
+        if window.role != WindowRole::Application {
+            return Some("non-application-role");
+        }
+        if !window.mapped {
+            return Some("unmapped");
+        }
+        if window.shelved {
+            return Some("shelved");
+        }
+        None
     }
 
     pub fn window(&self, window_id: WindowId) -> Option<&WindowRecord> {
@@ -1453,14 +1548,12 @@ impl<I: IdentityCache> WindowService<I> {
         self.windows.values()
     }
 
-    /// Whether `window_id` belongs to the normal application workspace. Trusted-shell dialogs
-    /// may deliberately live here too; the distinction is the layer, not which process mapped
-    /// it. Shell chrome, notifications, system modals and the Home Surface are excluded.
+    /// Whether `window_id` is semantically an application window. This compatibility name is
+    /// retained for geometry and input callers; the answer no longer comes from visual layers.
     pub fn is_client_window(&self, window_id: WindowId) -> bool {
-        matches!(
-            self.layer_of(window_id),
-            Some(Layer::Normal | Layer::AppOnTop)
-        )
+        self.windows
+            .get(&window_id)
+            .is_some_and(|window| window.role == WindowRole::Application)
     }
 
     /// Sanitized application-window view for the shell (dock, switcher, window shelf): no PIDs,
@@ -1470,14 +1563,28 @@ impl<I: IdentityCache> WindowService<I> {
         let mut list: Vec<ShellToplevel> = self
             .windows
             .values()
-            .filter(|window| self.is_client_window(window.id))
-            .map(|window| self.to_shell_toplevel(window))
+            .filter(|window| window.role == WindowRole::Application && window.mapped)
+            .map(|window| self.to_shell_toplevel(window, self.mru_rank(window)))
             .collect();
         list.sort_by_key(|toplevel| toplevel.window_id);
         list
     }
 
-    fn to_shell_toplevel(&self, window: &WindowRecord) -> ShellToplevel {
+    fn mru_rank(&self, window: &WindowRecord) -> u32 {
+        self.windows
+            .values()
+            .filter(|candidate| candidate.role == WindowRole::Application && candidate.mapped)
+            .filter(|candidate| {
+                candidate.last_activated > window.last_activated
+                    || (candidate.last_activated == window.last_activated
+                        && candidate.id > window.id)
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX)
+    }
+
+    fn to_shell_toplevel(&self, window: &WindowRecord, mru_rank: u32) -> ShellToplevel {
         ShellToplevel {
             window_id: window.id,
             canonical_app_id: window.identity.app_id.clone(),
@@ -1485,6 +1592,7 @@ impl<I: IdentityCache> WindowService<I> {
             title: window.title.clone(),
             verified_identity: window.identity.verified,
             activated: window.activated,
+            mru_rank,
             fullscreen: window.fullscreen,
             shelved: window.shelved,
             maximized: window.maximized,
@@ -1591,6 +1699,7 @@ mod tests {
         service
             .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
             .unwrap();
+        service.set_role(home, WindowRole::Shell);
         assert!(!service.should_activate_on_map(home));
         assert!(!service.should_activate_on_map(WindowId(9999)));
     }
@@ -1798,6 +1907,16 @@ mod tests {
         service
             .set_layer(id, layer, ClientKind::TrustedShell)
             .expect("the trusted shell may claim its own layer");
+        service.set_role(
+            id,
+            match layer {
+                Layer::HomeSurface => WindowRole::Shell,
+                Layer::Notification => WindowRole::Notification,
+                Layer::SecureLock => WindowRole::LockScreen,
+                Layer::Recovery | Layer::SystemModal | Layer::ShellOverlay => WindowRole::Overlay,
+                Layer::AppOnTop | Layer::Normal => WindowRole::Application,
+            },
+        );
         service.set_geometry(id, geometry);
         id
     }
@@ -2217,9 +2336,66 @@ mod tests {
         assert_eq!(ring.step(false), c);
     }
 
-    /// The defect the frozen list exists for: every step activates, activation raises, and the
-    /// list is the stacking order — so a list rebuilt on each press swaps the top two windows
-    /// forever and the third is unreachable. Frozen once, the walk reaches all three.
+    #[test]
+    fn switching_uses_semantic_mru_not_visual_stacking() {
+        let (mut service, ids) = service_with(3);
+        service.activate(ids[0]);
+        service.activate(ids[1]);
+        assert_eq!(service.switch_order(), vec![ids[1], ids[0], ids[2]]);
+
+        service.toggle_always_on_top(ids[2]);
+        service.raise(ids[0]);
+        service.set_fullscreen(ids[1], true);
+        assert_eq!(
+            service.switch_order(),
+            vec![ids[1], ids[0], ids[2]],
+            "fullscreen, pinning and raises are visual state, not switching policy"
+        );
+    }
+
+    #[test]
+    fn temporary_unmap_retains_identity_but_excludes_the_window() {
+        let (mut service, ids) = service_with(2);
+        service.activate(ids[0]);
+        let serial = service.window(ids[0]).unwrap().last_activated;
+
+        assert!(service.set_mapped(ids[0], false));
+        assert_eq!(service.switch_exclusion_reason(ids[0]), Some("unmapped"));
+        assert!(!service.switch_order().contains(&ids[0]));
+        assert!(
+            !service
+                .shell_toplevels()
+                .iter()
+                .any(|window| window.window_id == ids[0])
+        );
+
+        assert!(service.set_mapped(ids[0], true));
+        assert_eq!(service.window(ids[0]).unwrap().last_activated, serial);
+        assert!(service.switch_order().contains(&ids[0]));
+    }
+
+    #[test]
+    fn a_shell_role_is_not_an_application_even_on_the_normal_layer() {
+        let mut service = WindowService::new(FakeCache::default(), outputs());
+        let id = service.on_toplevel_mapped(
+            1,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "shell".into(),
+            Rect::new(0, 0, 100, 100),
+        );
+        service.set_role(id, WindowRole::Shell);
+        assert_eq!(service.layer_of(id), Some(Layer::Normal));
+        assert!(!service.is_client_window(id));
+        assert_eq!(
+            service.switch_exclusion_reason(id),
+            Some("non-application-role")
+        );
+        assert!(service.shell_toplevels().is_empty());
+    }
+
+    /// Every step activates and changes semantic MRU. A frozen ring must keep walking the list
+    /// the hold began with rather than observing those mutations midway through the gesture.
     #[test]
     fn a_frozen_list_reaches_the_third_window_where_a_rebuilt_one_never_could() {
         let (mut service, ids) = service_with(3);
@@ -2322,6 +2498,7 @@ mod tests {
         service
             .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
             .unwrap();
+        service.set_role(home, WindowRole::Shell);
         let on_top = service.on_toplevel_mapped(
             3,
             ClientKind::Application,
@@ -2470,6 +2647,7 @@ mod tests {
         service
             .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
             .unwrap();
+        service.set_role(home, WindowRole::Shell);
 
         assert_eq!(service.switch_order(), vec![app]);
         assert!(service.recovery_affordance(home).is_none());

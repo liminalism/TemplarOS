@@ -438,7 +438,7 @@ impl<I: IdentityCache> WindowService<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientKind, Layer, Output, WindowClaims};
+    use crate::{ClientKind, Layer, Output, WindowClaims, WindowRole};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -693,6 +693,7 @@ mod tests {
         service
             .set_layer(home, Layer::HomeSurface, ClientKind::TrustedShell)
             .unwrap();
+        service.set_role(home, WindowRole::Shell);
         service.set_home_revealed(true);
 
         let result = service.handle_command(WindowCommand::ShowAllWindows, trusted(0));

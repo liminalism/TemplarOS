@@ -68,10 +68,9 @@ pub fn claims_from_x11(wm_class: Option<String>) -> WindowClaims {
 /// — a client is free to commit before that point (Smithay itself defers sending the initial
 /// configure until first commit; see `src/xdg_shell.rs::handle_toplevel_commit`), and neither
 /// commit should be mistaken for "the window is now showing content the user asked to see". Once
-/// mapped, later buffer attach/detach cycles (a client hiding then showing the same toplevel) are
-/// not remapping events — `templar_window::WindowService` has no concept of a window temporarily
-/// losing its buffer, only shelved/unshelved and fullscreen/modal — so this function is never
-/// consulted again for a toplevel once it has returned `true` once (see [`WindowIndex::mark_mapped`]).
+/// mapped, later buffer attach/detach cycles use the same predicate after
+/// [`WindowIndex::mark_unmapped`] puts the surface back into the pending set. The semantic record
+/// and its `WindowId` survive that cycle.
 pub fn should_map_toplevel(has_buffer_now: bool, initial_configure_sent: bool) -> bool {
     has_buffer_now && initial_configure_sent
 }
@@ -85,8 +84,13 @@ pub fn should_map_toplevel(has_buffer_now: bool, initial_configure_sent: bool) -
 /// `keyboard.set_focus`) never have to reconstruct a resource from a bare id.
 #[derive(Debug, Default)]
 pub struct WindowIndex {
-    mapped: HashMap<ObjectId, WindowId>,
+    ids: HashMap<ObjectId, WindowId>,
+    mapped: HashSet<ObjectId>,
     reverse: HashMap<WindowId, WlSurface>,
+    /// X11 identity is independent of the bridge's current `wl_surface`: XWayland may detach or
+    /// replace that resource across an unmap/remap cycle while the X11 window itself survives.
+    x11_ids: HashMap<u32, WindowId>,
+    x11_surfaces: HashMap<u32, ObjectId>,
     /// Surfaces with a role but not yet mapped, so repeated pre-content commits don't re-evaluate
     /// anything expensive.
     pending: HashSet<ObjectId>,
@@ -136,7 +140,7 @@ impl WindowIndex {
     }
 
     pub fn is_mapped(&self, surface: &ObjectId) -> bool {
-        self.mapped.contains_key(surface)
+        self.mapped.contains(surface)
     }
 
     /// Whether `surface` should map right now, given it just attached a buffer on this commit and
@@ -156,11 +160,48 @@ impl WindowIndex {
         let object_id = surface.id();
         self.pending.remove(&object_id);
         self.reverse.insert(window_id, surface);
-        self.mapped.insert(object_id, window_id);
+        self.ids.insert(object_id.clone(), window_id);
+        self.mapped.insert(object_id);
+    }
+
+    /// Map an X11 window through its current Wayland surface while retaining the X11 id as the
+    /// lifecycle-stable join key.
+    pub fn mark_x11_mapped(&mut self, x11_id: u32, surface: WlSurface, window_id: WindowId) {
+        let object_id = surface.id();
+        if let Some(previous) = self.x11_surfaces.insert(x11_id, object_id.clone())
+            && previous != object_id
+        {
+            self.pending.remove(&previous);
+            self.mapped.remove(&previous);
+            self.elements.remove(&previous);
+            self.ids.remove(&previous);
+        }
+        self.x11_ids.insert(x11_id, window_id);
+        self.mark_mapped(surface, window_id);
+    }
+
+    /// Mark a temporary protocol unmap while retaining both directions of the stable identity
+    /// join. A later `mark_mapped` reuses the same record; only [`Self::remove`] destroys it.
+    pub fn mark_unmapped(&mut self, surface: &ObjectId) -> Option<WindowId> {
+        self.mapped.remove(surface);
+        self.pending.insert(surface.clone());
+        self.ids.get(surface).copied()
+    }
+
+    pub fn mark_x11_unmapped(&mut self, x11_id: u32) -> Option<WindowId> {
+        if let Some(surface) = self.x11_surfaces.get(&x11_id).cloned() {
+            self.mapped.remove(&surface);
+            self.pending.insert(surface);
+        }
+        self.x11_ids.get(&x11_id).copied()
     }
 
     pub fn window_id_for(&self, surface: &ObjectId) -> Option<WindowId> {
-        self.mapped.get(surface).copied()
+        self.ids.get(surface).copied()
+    }
+
+    pub fn window_id_for_x11(&self, x11_id: u32) -> Option<WindowId> {
+        self.x11_ids.get(&x11_id).copied()
     }
 
     pub fn surface_for(&self, window_id: WindowId) -> Option<&WlSurface> {
@@ -169,8 +210,29 @@ impl WindowIndex {
 
     pub fn remove(&mut self, surface: &ObjectId) -> Option<WindowId> {
         self.pending.remove(surface);
+        self.mapped.remove(surface);
         self.elements.remove(surface);
-        let window_id = self.mapped.remove(surface)?;
+        let window_id = self.ids.remove(surface)?;
+        self.x11_surfaces.retain(|x11_id, object_id| {
+            if object_id == surface {
+                self.x11_ids.remove(x11_id);
+                false
+            } else {
+                true
+            }
+        });
+        self.reverse.remove(&window_id);
+        Some(window_id)
+    }
+
+    pub fn remove_x11(&mut self, x11_id: u32) -> Option<WindowId> {
+        let window_id = self.x11_ids.remove(&x11_id)?;
+        if let Some(surface) = self.x11_surfaces.remove(&x11_id) {
+            self.pending.remove(&surface);
+            self.mapped.remove(&surface);
+            self.elements.remove(&surface);
+            self.ids.remove(&surface);
+        }
         self.reverse.remove(&window_id);
         Some(window_id)
     }
