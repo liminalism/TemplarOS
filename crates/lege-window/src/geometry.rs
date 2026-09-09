@@ -327,6 +327,25 @@ pub fn shell_surface_placement(
 /// reachability on an output, not visibility above other windows, which is the switcher's job.
 pub const PLACEMENT_CASCADE_STEP: i32 = 32;
 
+/// The largest frame `area` can hold and still leave a [`RESIZE_MARGIN`] band outside every side.
+///
+/// [`resize_edges_at`] puts a window's resize zone strictly *outside* its frame, so a frame flush
+/// with the edge of the usable area has no grabbable side there — the band is off-screen and the
+/// pointer can never reach it. A client asking for more than the screen (a great many do: a
+/// remembered size from a larger monitor, a toolkit default) was clamped to exactly the usable
+/// rectangle, which is that case on every side at once; clamped on one axis only, it is the
+/// window that resizes from the left and the right and from neither the top nor the bottom.
+///
+/// Never below the minimum: an output smaller than two margins plus a minimum window yields the
+/// minimum, and such a window simply overhangs.
+fn graspable_size(area: Rect) -> (i32, i32) {
+    let inset = RESIZE_MARGIN.saturating_mul(2);
+    (
+        area.width.saturating_sub(inset).max(MIN_WINDOW_WIDTH),
+        area.height.saturating_sub(inset).max(MIN_WINDOW_HEIGHT),
+    )
+}
+
 /// Where a newly mapped client window goes.
 ///
 /// xdg-shell gives a client no way to position itself, so the location of `requested` carries no
@@ -336,7 +355,8 @@ pub const PLACEMENT_CASCADE_STEP: i32 = 32;
 /// origin-located request is centred in the first output's usable area, stepped down-right by
 /// [`PLACEMENT_CASCADE_STEP`] per window already open so consecutive windows stay individually
 /// visible, wrapping back to centre before the cascade could reach the area's edge. The size is
-/// the client's, clamped to the usable area so nothing maps bigger than the screen.
+/// the client's, clamped by [`graspable_size`] so nothing maps bigger than the screen and every
+/// window keeps a resize band on all four sides.
 ///
 /// A request located *away* from the origin is a real position — a restored session window
 /// mapping with its saved geometry, or an X11 client that placed itself — and is honoured,
@@ -349,8 +369,9 @@ pub fn place_new_window(requested: Rect, existing_windows: usize, outputs: &[Out
         return repair_window(requested, outputs);
     }
     let usable = output.usable();
-    let width = requested.width.clamp(1, usable.width.max(1));
-    let height = requested.height.clamp(1, usable.height.max(1));
+    let (widest, tallest) = graspable_size(usable);
+    let width = requested.width.clamp(1, widest);
+    let height = requested.height.clamp(1, tallest);
     let centered_x = usable.x + (usable.width - width) / 2;
     let centered_y = usable.y + (usable.height - height) / 2;
     // Room below-right of centre before the window's far edge would leave the usable area; the
@@ -1152,11 +1173,45 @@ mod tests {
         }
     }
 
-    /// A request bigger than the screen is clamped to the usable area, not mapped hanging off.
+    /// A request bigger than the screen is clamped into the usable area, not mapped hanging off —
+    /// and never flush with it, so the resize zone outside the frame stays on screen.
     #[test]
     fn an_oversized_window_is_clamped_to_the_usable_area() {
         let placed = place_new_window(Rect::new(0, 0, 5000, 4000), 0, &edp());
-        assert_eq!(placed, Rect::new(0, 0, 1920, 1080));
+        assert_eq!(
+            placed,
+            Rect::new(
+                RESIZE_MARGIN,
+                RESIZE_MARGIN,
+                1920 - 2 * RESIZE_MARGIN,
+                1080 - 2 * RESIZE_MARGIN
+            )
+        );
+    }
+
+    /// The regression this rule exists for: a client whose remembered height exceeds the screen
+    /// used to be clamped to exactly the usable height, which put its top and bottom edges flush
+    /// with the output. `resize_edges_at` only ever answers *outside* a frame, so those two sides
+    /// had no reachable band and the window resized from the left and the right alone.
+    #[test]
+    fn a_window_as_tall_as_the_screen_still_has_a_top_and_a_bottom_to_grab() {
+        let outputs = edp();
+        let placed = place_new_window(Rect::new(0, 0, 1200, 1700), 0, &outputs);
+        let usable = outputs[0].usable();
+        assert!(
+            placed.y >= usable.y + RESIZE_MARGIN,
+            "no band above {placed:?}"
+        );
+        assert!(
+            placed.bottom() <= usable.bottom() - RESIZE_MARGIN,
+            "no band below {placed:?}"
+        );
+        let middle_x = placed.x + placed.width / 2;
+        for y in [placed.y - 1, placed.bottom()] {
+            let edges = resize_edges_at(placed, Point { x: middle_x, y })
+                .expect("a point beside the top or the bottom is that side's");
+            assert!(edges.top || edges.bottom, "{edges:?} at y={y}");
+        }
     }
 
     /// A located request is a real position — a restored session window — and is honoured,
