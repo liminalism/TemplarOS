@@ -838,8 +838,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// overview of nothing is indistinguishable from a black screen.
     pub(crate) fn enter_taskfield(&mut self, filter: templar_window::TaskFilter) -> bool {
         if !self.window_service.enter_taskfield(filter) {
+            tracing::debug!("Taskfield refused: the filter selects no window");
             return false;
         }
+        let cards = match self.window_service.presentation() {
+            templar_window::Presentation::Taskfield(taskfield) => taskfield.cards().count(),
+            _ => 0,
+        };
+        tracing::info!(cards, "entering Taskfield");
         self.switcher = None;
         self.switch_ring = None;
         crate::protocols_shell::send_taskfield_state(self);
@@ -853,6 +859,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if !self.window_service.leave_taskfield() {
             return false;
         }
+        tracing::info!("leaving Taskfield");
         self.shell_protocol.taskfield_key.clear();
         crate::protocols_shell::send_taskfield_state(self);
         true
