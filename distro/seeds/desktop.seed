@@ -6,6 +6,9 @@ qt6-wayland
 kitty
 gsimplecal
 flatpak
+papirus-icon-theme
+hicolor-icon-theme
+adwaita-icon-theme
 fonts-noto
 fonts-noto-color-emoji
 xdg-utils

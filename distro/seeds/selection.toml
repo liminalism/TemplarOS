@@ -376,6 +376,18 @@ name = "flatpak"
 reason = "the sandboxed application route (ADR-0011); the browser layer is Flatpak refs, not debs"
 
 [[layer.package]]
+name = "papirus-icon-theme"
+reason = "the pictures. LegeOS draws no icons of its own: the shell resolves a .desktop file's Icon= name against the installed themes (shell/lege-shell/src/icons.rs), so an image with no icon theme draws every application, folder and device as its first letter. Papirus is the one theme carrying every stock freedesktop name this desktop asks for — system-file-manager, preferences-system, folder, user-trash — and is the first non-Yaru name icons.rs prefers"
+
+[[layer.package]]
+name = "hicolor-icon-theme"
+reason = "the base theme the specification requires and the directory an application installs its own icon into; every other theme inherits from it"
+
+[[layer.package]]
+name = "adwaita-icon-theme"
+reason = "the GTK stack's fallback: gsimplecal and the portal dialogs draw their own stock icons from it, and without it they render blank"
+
+[[layer.package]]
 name = "fonts-noto"
 reason = "text that renders in more than Latin; the shell rasterises what the system has"
 

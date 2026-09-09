@@ -101,6 +101,87 @@ pub trait IconRoots {
     fn theme_dirs(&self) -> Vec<PathBuf>;
     /// Flat pixmap directories (`<name>.png` directly inside), searched after theme directories.
     fn pixmap_dirs(&self) -> Vec<PathBuf>;
+
+    /// Every directory an icon file could sit in, best first: each theme's own subdirectories,
+    /// discovered rather than assumed. See [`ranked_icon_dirs`] for why they cannot be assumed.
+    fn icon_dirs(&self) -> Vec<PathBuf> {
+        self.theme_dirs()
+            .iter()
+            .flat_map(|theme| ranked_icon_dirs(theme))
+            .collect()
+    }
+}
+
+/// How deep inside a theme an icon directory is allowed to be. Two is the common shape
+/// (`Papirus/48x48/apps`, and `breeze/apps/48` with the two the other way round); `oxygen` puts a
+/// `base` in front of it and needs three.
+const MAX_THEME_DEPTH: usize = 3;
+
+/// The directories inside one icon theme that hold icon files, largest and most scalable first.
+///
+/// Discovered by reading the theme, not composed from a table of sizes and contexts: the four
+/// themes on this developer's machine alone use `48x48/apps`, `apps/48`, `base/128x128/apps` and
+/// `symbolic/apps`, and a fixed `<size>/<context>` product finds icons in the first of those and
+/// in none of the others. That product is why 82 of 206 installed applications — including
+/// LegeOS's own Files (`system-file-manager`) and Settings (`preferences-system`) — resolved to
+/// nothing and were drawn as their first letter.
+///
+/// Ordering is by what the drawing code wants: a vector first, then the raster bucket nearest
+/// [`SVG_RENDER_SIZE`] (a down-sampled 256 beats an up-sampled 16), then by context so an
+/// application icon is preferred to a mimetype of the same name. Ties keep `read_dir` order,
+/// which is arbitrary but stable enough for a cache built once.
+fn ranked_icon_dirs(theme: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    collect_dirs(theme, MAX_THEME_DEPTH, &mut found);
+    found.sort_by_key(|dir| dir_rank(theme, dir));
+    found
+}
+
+fn collect_dirs(dir: &Path, depth: usize, into: &mut Vec<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dirs(&path, depth - 1, into);
+            into.push(path);
+        }
+    }
+}
+
+/// `(size distance, context preference)` for one directory inside `theme`, smallest first.
+fn dir_rank(theme: &Path, dir: &Path) -> (i64, usize) {
+    let mut size = None;
+    let mut context = ICON_CONTEXTS.len();
+    for segment in dir
+        .strip_prefix(theme)
+        .unwrap_or(dir)
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+    {
+        if segment == "scalable" || segment == "symbolic" {
+            size = Some(-1);
+        } else if let Some(pixels) = bucket_size(segment) {
+            size = size.or(Some(i64::from(pixels.abs_diff(SVG_RENDER_SIZE))));
+        }
+        if let Some(position) = ICON_CONTEXTS.iter().position(|known| *known == segment) {
+            context = context.min(position);
+        }
+    }
+    // A directory that names no size at all sorts after every one that does: `hicolor/apps` is
+    // real, and so is a theme's stray `cursors`.
+    (size.unwrap_or(i64::MAX), context)
+}
+
+/// The pixel size a bucket name states — `48x48`, `48x48@2x` and a bare `48` all say 48. `None`
+/// for a name that is not a size at all.
+fn bucket_size(segment: &str) -> Option<u32> {
+    let head = segment.split(['x', '@']).next()?;
+    head.parse().ok().filter(|pixels| *pixels > 0)
 }
 
 /// The real filesystem, following `$XDG_DATA_HOME`/`$XDG_DATA_DIRS` (falling back to the usual
@@ -137,18 +218,48 @@ impl IconRoots for SystemIconRoots {
             .collect()
     }
 
-    /// Ubuntu's own theme first, then Adwaita, then `hicolor` — the freedesktop fallback of last
-    /// resort. Place and device icons (`folder-documents`, `drive-harddisk`, `user-trash`) live in
-    /// the named themes and almost never in `hicolor`, so searching `hicolor` alone is why the
-    /// Files object had words where every other desktop has pictures.
+    /// [`THEME_NAMES`] first, in that order, then every other theme installed, alphabetically.
+    ///
+    /// The preferred list is a preference, not the search: a LegeOS image installs Yaru, a GNOME
+    /// host leaves Adwaita, and this developer's machine has neither's application icons but does
+    /// have Papirus, Pop, breeze and oxygen. Naming three themes and stopping there is how stock
+    /// freedesktop names — `system-file-manager`, `preferences-system`, `utilities-terminal` —
+    /// resolved to nothing on a machine that had every one of them.
     fn theme_dirs(&self) -> Vec<PathBuf> {
-        Self::data_dirs()
-            .into_iter()
-            .flat_map(|dir| {
-                let icons = dir.join("icons");
-                THEME_NAMES.iter().map(move |theme| icons.join(theme))
-            })
-            .collect()
+        let mut dirs = Vec::new();
+        for data in Self::data_dirs() {
+            let icons = data.join("icons");
+            for name in THEME_NAMES {
+                dirs.push(icons.join(name));
+            }
+            let Ok(entries) = std::fs::read_dir(&icons) else {
+                continue;
+            };
+            let mut rest: Vec<PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && !dirs.contains(path))
+                .collect();
+            rest.sort();
+            dirs.extend(rest);
+        }
+        dirs
+    }
+
+    /// Walked once per process and kept. The walk is ~2000 directories on a machine with a dozen
+    /// themes installed; every application on the field asks for an icon, and re-walking for each
+    /// of them is the difference between a few milliseconds and a few seconds of the blocking
+    /// pool. A theme installed after the shell started is picked up by restarting it, which is
+    /// what the shell is built to survive.
+    fn icon_dirs(&self) -> Vec<PathBuf> {
+        static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+        DIRS.get_or_init(|| {
+            self.theme_dirs()
+                .iter()
+                .flat_map(|theme| ranked_icon_dirs(theme))
+                .collect()
+        })
+        .clone()
     }
 
     fn pixmap_dirs(&self) -> Vec<PathBuf> {
@@ -156,21 +267,26 @@ impl IconRoots for SystemIconRoots {
     }
 }
 
-/// Size buckets tried, in order. `scalable` leads because an SVG is re-rendered at the size we
-/// want rather than resampled; after it, largest raster first — a tile would rather down-sample a
-/// 128px icon than up-sample a 16px one into a blur.
-const SIZE_BUCKETS: &[&str] = &[
-    "scalable", "256x256", "128x128", "64x64", "48x48", "32x32", "24x24", "22x22", "16x16",
+/// Icon themes preferred, in order. Yaru is Ubuntu's and the one a LegeOS image installs; Papirus
+/// is the one with a picture for every stock freedesktop name; Adwaita is what a GNOME stack
+/// leaves behind; `hicolor` is both the specified fallback every theme inherits from and where an
+/// application installs its *own* icon, so it comes before any theme not named here.
+const THEME_NAMES: &[&str] = &["Yaru", "Papirus", "Adwaita", "Humanity", "hicolor"];
+
+/// Icon-theme context directories, in preference order — the tie-break in [`dir_rank`], not a
+/// filter: a directory naming none of these is still searched, last. `apps` leads because the
+/// overwhelming majority of lookups are application icons, and `categories` is here because that
+/// is where a settings icon (`preferences-system`) lives in half the themes that ship one.
+const ICON_CONTEXTS: &[&str] = &[
+    "apps",
+    "categories",
+    "places",
+    "mimetypes",
+    "devices",
+    "status",
+    "actions",
+    "emblems",
 ];
-
-/// Icon themes searched, in order. Yaru is Ubuntu's and the one a LegeOS image installs; Adwaita
-/// is what a stock GNOME stack leaves behind and is present on every dev host; `hicolor` is the
-/// specified fallback every theme inherits from.
-const THEME_NAMES: &[&str] = &["Yaru", "Adwaita", "hicolor"];
-
-/// Icon-theme context directories searched inside one size bucket, in order. `apps` leads because
-/// the overwhelming majority of lookups are application icons.
-const ICON_CONTEXTS: &[&str] = &["apps", "places", "mimetypes", "devices", "status"];
 
 /// File extensions tried within one bucket, in order of preference.
 const ICON_EXTENSIONS: &[&str] = &["svg", "png"];
@@ -293,17 +409,15 @@ pub fn resolve_icon_path(icon: &str, roots: &impl IconRoots) -> Option<PathBuf> 
         }
         _ => icon.to_owned(),
     };
-    for theme_dir in roots.theme_dirs() {
-        for size in SIZE_BUCKETS {
-            for context in ICON_CONTEXTS {
-                for extension in ICON_EXTENSIONS {
-                    let path = theme_dir
-                        .join(size)
-                        .join(context)
-                        .join(format!("{stem}.{extension}"));
-                    if path.is_file() {
-                        return Some(path);
-                    }
+    let dirs = roots.icon_dirs();
+    // The plain name everywhere first, and only then the monochrome variant everywhere: a
+    // symbolic glyph from the best theme is still worse than the real icon from the worst.
+    for name in [stem.as_str(), &format!("{stem}-symbolic")] {
+        for dir in &dirs {
+            for extension in ICON_EXTENSIONS {
+                let path = dir.join(format!("{name}.{extension}"));
+                if path.is_file() {
+                    return Some(path);
                 }
             }
         }
@@ -535,6 +649,48 @@ mod tests {
         fs::write(roots.theme.join("128x128/apps/editor.png"), b"large").unwrap();
         let path = resolve_icon_path("editor", &roots).unwrap();
         assert!(path.ends_with("128x128/apps/editor.png"), "{path:?}");
+    }
+
+    /// The regression the fixed `<size>/<context>` product caused: `breeze` writes
+    /// `apps/48/`, `oxygen` writes `base/128x128/apps/` and `Adwaita` now ships application
+    /// icons only under `symbolic/apps/`. None of those is `<size>/<context>`, so on a machine
+    /// carrying all of them the stock names resolved to nothing and every tile was a letter.
+    #[test]
+    fn every_theme_layout_in_the_wild_is_searched_not_just_size_over_context() {
+        let (_dir, roots) = fixture();
+        for (dir, file) in [
+            ("apps/48", "breeze-shaped.png"),
+            ("base/128x128/apps", "oxygen-shaped.png"),
+            ("scalable/categories", "preferences-system.svg"),
+        ] {
+            fs::create_dir_all(roots.theme.join(dir)).unwrap();
+            fs::write(roots.theme.join(dir).join(file), b"icon").unwrap();
+        }
+        for name in ["breeze-shaped", "oxygen-shaped", "preferences-system"] {
+            assert!(
+                resolve_icon_path(name, &roots).is_some(),
+                "{name} was not found"
+            );
+        }
+    }
+
+    /// A monochrome glyph is a last resort, not a preference: the real icon wins wherever it is,
+    /// and `-symbolic` is tried only once every theme has been asked for the plain name.
+    #[test]
+    fn a_symbolic_glyph_answers_only_when_no_theme_has_the_plain_name() {
+        let (_dir, roots) = fixture();
+        fs::create_dir_all(roots.theme.join("symbolic/apps")).unwrap();
+        fs::create_dir_all(roots.theme.join("128x128/apps")).unwrap();
+        fs::write(roots.theme.join("symbolic/apps/mapped-symbolic.svg"), b"g").unwrap();
+        assert!(
+            resolve_icon_path("mapped", &roots)
+                .is_some_and(|path| path.ends_with("mapped-symbolic.svg"))
+        );
+
+        fs::write(roots.theme.join("symbolic/apps/both-symbolic.svg"), b"g").unwrap();
+        fs::write(roots.theme.join("128x128/apps/both.png"), b"real").unwrap();
+        let path = resolve_icon_path("both", &roots).unwrap();
+        assert!(path.ends_with("128x128/apps/both.png"), "{path:?}");
     }
 
     #[test]
