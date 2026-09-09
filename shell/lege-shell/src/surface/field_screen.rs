@@ -3711,8 +3711,8 @@ impl FieldScreen {
             return;
         }
         match place.form.as_str() {
-            "branch" => place_forms::branch(ui, body, path, &place.tree, actions),
-            "shelf" => place_forms::shelf(ui, body, path, &place.tree, actions),
+            "branch" => place_forms::branch(ui, body, path, place, actions),
+            "shelf" => place_forms::shelf(ui, body, path, place, actions),
             // Plain, and every form this build has not learned: a place with nothing earned is
             // quiet, and a place with room to be browsed is browsable.
             _ if rung >= Representation::Large => {

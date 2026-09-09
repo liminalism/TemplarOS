@@ -20,7 +20,7 @@ use pixelkit_raster::Rect;
 use pixelkit_text::Align;
 use pixelkit_ui::Ui;
 
-use crate::garden::TreeNode;
+use crate::garden::{GardenPlace, TreeNode};
 use crate::surface::design;
 use crate::surface::field_screen::FieldAction;
 
@@ -87,9 +87,10 @@ pub fn branch(
     ui: &mut Ui<'_>,
     rect: Rect,
     root: &Path,
-    tree: &[TreeNode],
+    place: &GardenPlace,
     actions: &mut Vec<FieldAction>,
 ) {
+    let tree = &place.tree;
     let band = ui.px(BAND);
     if rect.h < band || rect.w < ui.px(80) {
         return;
@@ -153,7 +154,9 @@ pub fn branch(
             label,
             &node.name,
             style,
-            if node.is_dir {
+            if place.is_bloomed(&path) {
+                design::accent()
+            } else if node.is_dir {
                 design::text()
             } else {
                 design::text_dim()
@@ -260,9 +263,10 @@ pub fn shelf(
     ui: &mut Ui<'_>,
     rect: Rect,
     root: &Path,
-    tree: &[TreeNode],
+    place: &GardenPlace,
     actions: &mut Vec<FieldAction>,
 ) {
+    let tree = &place.tree;
     let band = ui.px(BAND);
     let cell_floor = ui.px(SHELF_CELL);
     if rect.h < band * 2 || rect.w < cell_floor {
@@ -290,7 +294,7 @@ pub fn shelf(
         ui.painter.fill_rounded_rect(
             cell,
             ui.px(design::CHIP_RADIUS),
-            if ui.input.hovering(cell) {
+            if ui.input.hovering(cell) || place.is_bloomed(&root.join(&node.name)) {
                 design::accent_soft()
             } else {
                 design::well_fill()
