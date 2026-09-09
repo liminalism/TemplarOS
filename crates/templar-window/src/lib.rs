@@ -19,6 +19,7 @@ pub mod layers;
 mod service;
 mod shell;
 mod switch;
+pub mod task;
 
 pub use arrangement::{ArrangementPreset, preset_rects};
 pub use commands::{
@@ -38,6 +39,7 @@ pub use service::{
 };
 pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
 pub use switch::SwitchRing;
+pub use task::{ChipAction, TaskKey, TaskUnit};
 
 // Re-exported so `WindowClaims::default()` and friends stay reachable as `templar_window::WindowClaims`
 // for crates that otherwise only need this crate.

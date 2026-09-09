@@ -1570,6 +1570,14 @@ impl<I: IdentityCache> WindowService<I> {
         list
     }
 
+    /// Every task unit — the one grouping the island, Taskfield, `` Alt+` `` and the launcher all
+    /// read ([`crate::task::units`]). It is deliberately the same pure function the shell runs over
+    /// the toplevels it receives, so the two cannot compute different answers.
+    #[must_use]
+    pub fn task_units(&self) -> Vec<crate::TaskUnit> {
+        crate::task::units(&self.shell_toplevels())
+    }
+
     fn mru_rank(&self, window: &WindowRecord) -> u32 {
         self.windows
             .values()
