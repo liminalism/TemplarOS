@@ -713,16 +713,18 @@ fn covers(wide: &ScanScope, narrow: &ScanScope) -> bool {
 /// How little the index can prove, so that a collapse keeps the trigger that asks for the most.
 ///
 /// The order matters in one place only: `repair` answers `Downtime` from a btrfs delta where one
-/// exists, and every trigger above it describes something a difference between two snapshots
-/// cannot repair.
+/// exists, and a delta answers "what changed while nobody looked" and nothing else. Every other
+/// trigger but `NamespaceOnly` is a full walk, and a full walk covers a downtime — so `Downtime`
+/// must lose to all of them, or a collapse would answer a request, a rename ambiguity or a
+/// periodic pass with a difference between two snapshots that was never meant to answer it.
 fn repair_weight(trigger: &Trigger) -> u8 {
     match trigger {
-        Trigger::Periodic => 0,
-        Trigger::NamespaceOnly => 1,
-        Trigger::RenameAmbiguous => 2,
-        Trigger::Requested => 3,
-        Trigger::MountReturned => 4,
-        Trigger::Downtime => 5,
+        Trigger::NamespaceOnly => 0,
+        Trigger::Downtime => 1,
+        Trigger::Periodic => 2,
+        Trigger::RenameAmbiguous => 3,
+        Trigger::Requested => 4,
+        Trigger::MountReturned => 5,
         Trigger::PolicyChanged => 6,
         Trigger::Exhausted { .. } => 7,
         Trigger::Overflow => 8,
@@ -1090,6 +1092,27 @@ mod tests {
             Trigger::Overflow,
             "and inherits what the repairs it swallowed were queued for"
         );
+    }
+
+    /// A collapse must never turn a full walk into the delta shortcut.
+    ///
+    /// `Downtime` is the one trigger `repair` may answer from a btrfs delta, and a delta answers
+    /// only "what changed while nobody looked". A request, a rename ambiguity or a periodic pass
+    /// that collapses with a downtime has to come out as the walk, whichever arrived first.
+    #[test]
+    fn a_downtime_never_absorbs_a_repair_that_needs_the_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, _clock) = loop_fixture(dir.path());
+
+        loop_.enqueue_repair(root, ScanScope::Root, Trigger::Downtime);
+        loop_.enqueue_repair(root, ScanScope::Root, Trigger::Requested);
+        assert_eq!(loop_.repairs.len(), 1);
+        assert_eq!(loop_.repairs[0].2, Trigger::Requested);
+
+        loop_.repairs.clear();
+        loop_.enqueue_repair(root, ScanScope::Root, Trigger::Periodic);
+        loop_.enqueue_repair(root, ScanScope::Root, Trigger::Downtime);
+        assert_eq!(loop_.repairs[0].2, Trigger::Periodic);
     }
 
     /// Collapsing repairs must not turn into starving a root.
