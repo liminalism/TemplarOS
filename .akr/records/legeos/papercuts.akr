@@ -211,6 +211,18 @@ record legeos.papercut.agents-md-and-the-global-instructions-describe/1 : paperc
     created_at 2026-09-07
 }
 
+record legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 : papercut {
+    title "`akr build` could not refresh the ledger after this window-management…"
+    state verified
+    statement """
+        `akr build` could not refresh the ledger after this window-management update because registered source `design-review-home-and-platform-20260901` no longer matches its stored content hash. This unrelated source drift leaves generated views stale until its original bytes are restored or a superseding source is registered.
+        """
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    about "akr"
+    author "codex"
+    created_at 2026-09-09
+}
+
 record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
     title "AKR MCP failed to connect this session, so knowledge.start/context had…"
     state verified
@@ -223,6 +235,18 @@ record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
     created_at 2026-09-02
 }
 
+record legeos.papercut.akr-requires-a-resolves-edge-before-a-question/1 : papercut {
+    title "akr requires a resolves edge before a question may move to resolved…"
+    state verified
+    statement """
+        akr requires a resolves edge before a question may move to resolved (AKR-T031), but rejects a resolves edge that names the question by revision once the question is resolved (AKR-L021, 'may not reference .../2, which is resolved'). Proposing the answering observation with resolves [ @legeos.question.x/1 ] therefore succeeds, and then the akr revise that resolves the question fails, with nothing indicating that the revision suffix is the problem. The unversioned form resolves [ @legeos.question.x ] tracks the head and works, which is what the existing records in this ledger use — but propose accepted the pinned form without a word, so the failure surfaces one command later on a different record.
+        """
+    observed_at git:e6e1b1c3523004f2eef22aa3bfd2dc2abae4a06a
+    about "akr"
+    author "opus"
+    created_at 2026-09-08
+}
+
 record legeos.papercut.all-three-pre-iso-lanes-were-told-to-keep-a/1 : papercut {
     title "All three pre-ISO lanes were told to keep a running COMMITS.md in…"
     state verified
@@ -232,6 +256,18 @@ record legeos.papercut.all-three-pre-iso-lanes-were-told-to-keep-a/1 : papercut 
     observed_at git:3f796cf218ad2416629d9c5f793b1bf483e91505
     author "claude"
     created_at 2026-09-07
+}
+
+record legeos.papercut.an-acceptance-check-whose-method-is-command-is/1 : papercut {
+    title "An acceptance check whose method is command is satisfied by the…"
+    state verified
+    statement """
+        An acceptance check whose method is command is satisfied by the command's exit status alone, so a check that runs nothing is indistinguishable from a check that passed. cargo test -p <crate> <filter> exits 0 when the filter matches no test ('running 0 tests ... ok. 0 passed; 0 failed; 373 filtered out'), and a sweep of this workspace at e6e1b1c3 found 12 of 104 distinct test-name filters on live records naming a test that exists nowhere in the tracked source — 11.5 percent of the command gates could not fail, two of them backing verified evidence records that record result pass. This is the same species as AKR-G022/G023 unmatched globs, one layer up: a check that is unfalsifiable by construction. akr cannot parse every command, but it could ask evidence with method command to record what the command reported, or warn when a check's command has never been paired with evidence whose summary shows a non-zero count. Detecting it externally took eleven lines of Python over .akr/records plus git grep, which suggests a cheap built-in sweep for the cargo case at least.
+        """
+    observed_at git:e6e1b1c3523004f2eef22aa3bfd2dc2abae4a06a
+    about "akr"
+    author "opus"
+    created_at 2026-09-08
 }
 
 record legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 : papercut {
@@ -457,6 +493,17 @@ record legeos.papercut.during-final-verification-the-external-path/1 : papercut 
     created_at 2026-09-08
 }
 
+record legeos.papercut.during-independent-review-fff-grep-accepted/1 : papercut {
+    title "During independent review, FFF grep accepted query/path fields but…"
+    state verified
+    statement """
+        During independent review, FFF grep accepted query/path fields but ignored the intended scope and returned ledger/generated matches for a source-only search; used rg for precise scoped discovery. Tool argument schema was not surfaced in deferred-tool metadata.
+        """
+    observed_at git:fb992300dcb5fa49f92b44af8761e91d1c281175
+    author "astra-advisor"
+    created_at 2026-09-09
+}
+
 record legeos.papercut.every-reported-home-field-failure-slow-lossy/1 : papercut {
     title "Every reported Home Field failure — slow/lossy typing, a dead…"
     state verified
@@ -670,6 +717,18 @@ record legeos.papercut.knowledge-context-on-legeos-work-home-surface/1 : papercu
     about "akr"
     author "claude"
     created_at 2026-09-07
+}
+
+record legeos.papercut.knowledge-context-suggested-retrying-its-31k/1 : papercut {
+    title "knowledge.context suggested retrying its 31k-token preview with…"
+    state verified
+    statement """
+        knowledge.context suggested retrying its 31k-token preview with budget_tokens=2000, but that exact continuation failed AKR-X021 because mandatory sections need 3991 tokens; continuation advice should never recommend an invalid budget.
+        """
+    observed_at git:fb992300dcb5fa49f92b44af8761e91d1c281175
+    about "akr"
+    author "codex"
+    created_at 2026-09-09
 }
 
 record legeos.papercut.knowledge-evidence-add-many-returned-wrote/1 : papercut {

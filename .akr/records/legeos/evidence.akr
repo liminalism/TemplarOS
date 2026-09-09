@@ -296,6 +296,32 @@ record legeos.evidence.bottom-bar-tags-app-groups-gate-20260907/1 : evidence {
         """
 }
 
+record legeos.evidence.bottom-edge-gates-20260908/1 : evidence {
+    title "The bottom-edge work's four command gates pass at e6e1b1c3"
+    state verified
+    result pass
+    method command
+    observed_at git:e6e1b1c3523004f2eef22aa3bfd2dc2abae4a06a
+    command "just check && cargo test -p lege-window a_window_that_fills_the_screen_has_no_frame && cargo test -p lege-window a_pinned_window_sorts_above_the_others_without_changing_layer && cargo test -p lege-shell the_switcher_hides_only_under_a_window_that_fills_the_screen"
+    summary """
+        `just check` exits 0 on the full gate, including check-assets and check-actions (23 CLI
+        verbs all reach a subcommand, 71 surface-named actions all declared, 19 chorded actions all
+        have a pointer route). The three focused tests pass: 1 passed each.
+
+        One correction landed with this run. The #switcher-waits-and-returns check named
+        `the_switcher_hides_under_a_window_that_fills_the_screen_and_comes_back_on_a_peek`, which
+        does not exist. `cargo test -p lege-shell <that name>` reports "running 0 tests ... test
+        result: ok. 0 passed; 0 failed; 373 filtered out" and exits 0, so the gate was passing
+        without executing anything — a check that could not fail. The real test is
+        `the_switcher_hides_only_under_a_window_that_fills_the_screen`
+        (shell/lege-shell/src/surface/app.rs:4765), which does cover both the hide-under and the
+        reveal-shows cases, and the check now names it.
+
+        The two hands-on checks are deliberately not covered here: scripts/nested-session.sh refuses
+        while the installed session is running, and the compositor half needs a logout.
+        """
+}
+
 record legeos.evidence.bottom-edge-peek-deleted-from-the-compositor/1 : evidence {
     title "The bottom-edge bar peek is deleted; the fullscreen stacking exception is unconditional"
     state verified
@@ -405,6 +431,41 @@ record legeos.evidence.content-changes-still-cannot-grow-a-place/1 : evidence {
     command "cargo test -p lege-session-core homegarden && cargo test -p lege-field garden"
     summary """
         12 ledger tests and 2 tender tests pass with the new terminal-entered kind in place: only the declared semantic kinds carry weight, a burst in one session stays a Trace against a mixed multi-session context, and tending still emits only Place/Resize/Remove at a tending moment.
+        """
+}
+
+record legeos.evidence.critical-grace-policy-accepted-20260909/1 : evidence {
+    title "The user reviewed the behaviour change in session and delegated the call, saying they did not see what choice there was to make and trusted the judgement. Accepted: the emergency kill delay is now a property of the selected victim's instance identity rather than of the Critical episode. What changes is that a newly selected victim always gets the full checkpoint deadline before KillCgroup, so a long Critical episode whose victim keeps changing can terminate nothing for as long as the ranking keeps moving; what it removes is a victim being asked to checkpoint and killed on the same tick, having inherited an already-expired countdown. The governor stays observe-only under @legeos.constraint.identity-and-launch-safety, so the change is proven by replay, not on the live machine, and no user data was ever at risk from either behaviour."
+    state verified
+    result pass
+    method manual
+    observed_at git:b82906a2e82077f580c9b2111d4539a928d62d89
+    summary """
+        The user reviewed the behaviour change in session and delegated the call, saying they did not see what choice there was to make and trusted the judgement. Accepted: the emergency kill delay is now a property of the selected victim's instance identity rather than of the Critical episode. What changes is that a newly selected victim always gets the full checkpoint deadline before KillCgroup, so a long Critical episode whose victim keeps changing can terminate nothing for as long as the ranking keeps moving; what it removes is a victim being asked to checkpoint and killed on the same tick, having inherited an already-expired countdown. The governor stays observe-only under @legeos.constraint.identity-and-launch-safety, so the change is proven by replay, not on the live machine, and no user data was ever at risk from either behaviour.
+        """
+}
+
+record legeos.evidence.critical-grace-replay-20260909/1 : evidence {
+    title "6 replay fixtures pass at b82906a, including 09-critical-victim-change.jsonl: a persistent Critical episode whose selected victim changes after the emergency kill delay replays to the recorded decisions, and the eight pre-existing fixtures replay unchanged."
+    state verified
+    result pass
+    method command
+    observed_at git:b82906a2e82077f580c9b2111d4539a928d62d89
+    command "cargo test -p lege-resourced --test replay_fixtures"
+    summary """
+        6 replay fixtures pass at b82906a, including 09-critical-victim-change.jsonl: a persistent Critical episode whose selected victim changes after the emergency kill delay replays to the recorded decisions, and the eight pre-existing fixtures replay unchanged.
+        """
+}
+
+record legeos.evidence.critical-grace-victim-transition-20260909/1 : evidence {
+    title "39 policy tests pass at b82906a. With Critical pressure held and victim A replaced by B after the delay has elapsed, B is contained with SetMemoryHigh and asked to RequestCheckpoint but is not killed until its own delay has run; the single-victim critical-delay tests are unchanged."
+    state verified
+    result pass
+    method command
+    observed_at git:b82906a2e82077f580c9b2111d4539a928d62d89
+    command "cargo test -p lege-resourced policy"
+    summary """
+        39 policy tests pass at b82906a. With Critical pressure held and victim A replaced by B after the delay has elapsed, B is contained with SetMemoryHigh and asked to RequestCheckpoint but is not killed until its own delay has run; the single-victim critical-delay tests are unchanged.
         """
 }
 
@@ -761,6 +822,68 @@ record legeos.evidence.edge-alignment-placement-and-interfaces-20260908/1 : evid
         """
 }
 
+record legeos.evidence.effectiveness-1-full-gate-20260909/1 : evidence {
+    title "Effectiveness 1 — just check green at the merged tip"
+    state verified
+    result pass
+    method command
+    observed_at git:00099bcf664af8002bf2a5427717c67f6a50daf6
+    command "just check"
+    artifact ".agent/scratch/effectiveness-1/just-check.log"
+    summary """
+        The whole repository gate (fmt, clippy pedantic with warnings denied, 2042 workspace tests with 0 failures, MSRV, tree/deps/interfaces/signatures/proxies/packaging/assets/actions checks) exits 0 at the effectiveness-1 tip.
+        """
+}
+
+record legeos.evidence.effectiveness-1-replay-fidelity-20260909/1 : evidence {
+    title "Effectiveness 1 — replay fidelity after the governor changes"
+    state verified
+    result pass
+    method command
+    observed_at git:00099bcf664af8002bf2a5427717c67f6a50daf6
+    command "cargo test -p lege-resourced --test replay_fixtures --test fixture_report"
+    artifact "tests/fixtures/resources/replay/09-critical-victim-change.jsonl"
+    summary """
+        Six replay tests and the fixture report pass; fixtures 01-08 replay unchanged through the victim-bound grace policy, and the new 09-critical-victim-change fixture diverges from the old policy on exactly records 5-7 (the second victim killed on its first selected ticks).
+        """
+}
+
+record legeos.evidence.effectiveness-1-scoped-clippy-20260909/1 : evidence {
+    title "Effectiveness 1 — scoped clippy clean"
+    state verified
+    result pass
+    method command
+    observed_at git:00099bcf664af8002bf2a5427717c67f6a50daf6
+    command "cargo clippy -p lege-resourced -p lege-file-index -p lege-filed --all-targets -- -D warnings"
+    summary """
+        Clean with warnings denied; the only output is the two pre-existing still265 i32x8::blend deprecation warnings from a sibling crate.
+        """
+}
+
+record legeos.evidence.effectiveness-1-scoped-tests-20260909/1 : evidence {
+    title "Effectiveness 1 — the three scoped crates pass with every new regression test"
+    state verified
+    result pass
+    method command
+    observed_at git:00099bcf664af8002bf2a5427717c67f6a50daf6
+    command "cargo test -p lege-resourced -p lege-file-index -p lege-filed"
+    summary """
+        378 passed, 0 failed, 9 ignored across lege-resourced, lege-file-index and lege-filed at the fixup tip, including the regression tests the three lanes and the integration fixups added (psi hang-up and scheduling, signal outbox, trace byte budget, victim-bound grace, subtree truth, one-view snapshot, bounded handoff, repair supersession, ordered recovery, reconcile scope, Downtime collapse).
+        """
+}
+
+record legeos.evidence.effectiveness-1-signatures-frozen-20260909/1 : evidence {
+    title "Effectiveness 1 — no shipped D-Bus signature changed"
+    state verified
+    result pass
+    method command
+    observed_at git:00099bcf664af8002bf2a5427717c67f6a50daf6
+    command "cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        204 shipped members across 35 interfaces, all unchanged: the bounded signal channel and the one-transaction snapshot changed no D-Bus surface.
+        """
+}
+
 record legeos.evidence.fanotify-against-inotify-20260904/1 : evidence {
     title "fanotify measured against inotify — the numbers behind keeping inotify"
     state verified
@@ -1010,6 +1133,18 @@ record legeos.evidence.focus-and-switching-window-model-20260908/1 : evidence {
     command "cargo test -p lege-window"
     summary """
         145 tests pass with should_activate_on_map, SwitchRing and switch_order in and cycle_focus/cycle_within_group/cycle_groups deleted; includes a_frozen_list_reaches_the_third_window_where_a_rebuilt_one_never_could, which fails on the pre-change rebuild-per-press behaviour.
+        """
+}
+
+record legeos.evidence.four-sided-resize-20260909/1 : evidence {
+    title "151 lege-window tests pass at b82906a. a_window_as_tall_as_the_screen_still_has_a_top_and_a_bottom_to_grab places a 1200x1700 request on a 1920x1080 output and asserts resize_edges_at answers for a point above the frame and below it; an_oversized_window_is_clamped_to_the_usable_area now expects the usable rectangle inset by one resize margin on each side. The perimeter property test, the half-side edge rule and the recovery invariants are unchanged."
+    state verified
+    result pass
+    method command
+    observed_at git:b82906a2e82077f580c9b2111d4539a928d62d89
+    command "cargo test -p lege-window"
+    summary """
+        151 lege-window tests pass at b82906a. a_window_as_tall_as_the_screen_still_has_a_top_and_a_bottom_to_grab places a 1200x1700 request on a 1920x1080 output and asserts resize_edges_at answers for a point above the frame and below it; an_oversized_window_is_clamped_to_the_usable_area now expects the usable rectangle inset by one resize margin on each side. The perimeter property test, the half-side edge rule and the recovery invariants are unchanged.
         """
 }
 
@@ -1832,6 +1967,19 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.homegarden-5-gate-20260909/1 : evidence {
+    title "Homegarden 5 merged: just check green at fb99230 with 2023 tests"
+    state verified
+    result pass
+    method command
+    observed_at git:fb992300dcb5fa49f92b44af8761e91d1c281175
+    command "just check"
+    artifact ".agent/scratch/homegarden-5/just-check-2.log"
+    summary """
+        fmt, clippy -D warnings, 2023 workspace tests, MSRV and every xtask check pass on the merge of lanes A, B and C plus the bloom mark and the Desktop tray migration. Per-lane command checks (clock-accumulates, hook-loads-in-kitty, home-does-not-feed-itself, desktop-is-an-ordinary-place, form-is-earned, no-roles-row, three-forms-render, a-line-and-a-block, content-never-grows-a-place, bloom-resolves-on-open, one-read-per-tending, files-app-observes, no-calendar-left, root-survives-rename) are subsets of this run; the manual checks await the user's deploy and logout.
+        """
+}
+
 record legeos.evidence.homegarden-phases-0-3-tests-20260908/1 : evidence {
     title "Homegarden Phases 0–3: unit, property and gate evidence"
     state verified
@@ -1865,6 +2013,18 @@ record legeos.evidence.hot-corner-and-peek-dwell-tests-20260908/1 : evidence {
     command "cargo test -p lege-comp -p lege-window"
     summary """
         117 lege-comp and 149 lege-window tests pass on the working tree. New: input::the_corner_and_the_peek_band_divide_the_bottom_edge_between_them (the two regions are disjoint at every sampled point), input::sweeping_through_the_corner_never_completes_a_dwell (a pointer moving further than DWELL_REST_SLOP resets the clock every step and never reaches DWELL_MS; one that arrives and stops does), input::a_dwell_ends_with_its_intent_and_restarts_with_a_new_one, and the two restored service tests a_peek_puts_the_overlay_back_on_top_and_nothing_else_moves (both rectangles and the usable area unchanged across a peek) and a_peek_is_one_output_at_a_time. Run on the uncommitted working tree at this commit; hardware behaviour was not observed, the session being in use.
+        """
+}
+
+record legeos.evidence.icon-lookup-finds-real-themes-20260909/1 : evidence {
+    title "25 icon tests pass at b82906a, two of them new: every_theme_layout_in_the_wild_is_searched_not_just_size_over_context covers the breeze, oxygen and scalable/categories shapes, and a_symbolic_glyph_answers_only_when_no_theme_has_the_plain_name pins the fallback order. Measured against the 206 installed .desktop entries on dk-82y3 the lookup goes from 124 resolved to 204; the two remaining are an .xpm and a path that does not exist. just check exits 0 with 2045 tests."
+    state verified
+    result pass
+    method command
+    observed_at git:b82906a2e82077f580c9b2111d4539a928d62d89
+    command "cargo test -p lege-shell --lib icons"
+    summary """
+        25 icon tests pass at b82906a, two of them new: every_theme_layout_in_the_wild_is_searched_not_just_size_over_context covers the breeze, oxygen and scalable/categories shapes, and a_symbolic_glyph_answers_only_when_no_theme_has_the_plain_name pins the fallback order. Measured against the 206 installed .desktop entries on dk-82y3 the lookup goes from 124 resolved to 204; the two remaining are an .xpm and a path that does not exist. just check exits 0 with 2045 tests.
         """
 }
 
@@ -1967,6 +2127,19 @@ record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence 
     command "PREFLIGHT_REPORT=<report with a fail line> installer/provision.sh --image /tmp/t.img --apply --user dk"
     summary """
         With a report containing 'fail preflight-network', --apply dies naming the line before any write or the root check; with --ignore-preflight it proceeds to the root requirement.
+        """
+}
+
+record legeos.evidence.iso-refreshed-and-booted-20260909/1 : evidence {
+    title "The medium is current again. scripts/build-in-resolute.sh built 21 native packages at b82906a in an Ubuntu 26.04 chroot as set 0.1.0~dev1788929296+gb82906a.dirty; published and verified into the unprivileged archive-l3 with ed81cb9 retained for rollback; the 2026-09-07 squashfs deleted so the bootstrap could not be skipped again; distro/iso/build.sh produced a 4.19 GB ISO (sha256 fa5f5bcb51ae75e61380a83c30cde58f07033bbfd8269aa89ca94fc94cb1ef78) carrying 1522 packages, 15 native and 1507 inherited. iso-qemu.sh: OK under Secure-Boot OVMF with KVM — shim to GRUB to kernel, live userspace reached, preflight network pass. papirus-icon-theme 20250501+git20260316-0ubuntu1, adwaita-icon-theme 50.0-1 and hicolor-icon-theme 0.18-2build1 are in the rootfs manifest alongside legeos-shell and legeos-comp at gb82906a, so the widened icon lookup and the themes it needs arrived together."
+    state verified
+    result pass
+    method command
+    observed_at git:91c89d8aad1d0b8f569db8e1c575bb7a779c2061
+    command "tests/integration/iso-qemu.sh"
+    artifact "docs/measurements/iso-build-20260909.txt"
+    summary """
+        The medium is current again. scripts/build-in-resolute.sh built 21 native packages at b82906a in an Ubuntu 26.04 chroot as set 0.1.0~dev1788929296+gb82906a.dirty; published and verified into the unprivileged archive-l3 with ed81cb9 retained for rollback; the 2026-09-07 squashfs deleted so the bootstrap could not be skipped again; distro/iso/build.sh produced a 4.19 GB ISO (sha256 fa5f5bcb51ae75e61380a83c30cde58f07033bbfd8269aa89ca94fc94cb1ef78) carrying 1522 packages, 15 native and 1507 inherited. iso-qemu.sh: OK under Secure-Boot OVMF with KVM — shim to GRUB to kernel, live userspace reached, preflight network pass. papirus-icon-theme 20250501+git20260316-0ubuntu1, adwaita-icon-theme 50.0-1 and hicolor-icon-theme 0.18-2build1 are in the rootfs manifest alongside legeos-shell and legeos-comp at gb82906a, so the widened icon lookup and the themes it needs arrived together.
         """
 }
 
@@ -2685,6 +2858,78 @@ record legeos.evidence.rust-1-97-baseline-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.semantic-window-clippy-20260909/1 : evidence {
+    title "The four changed crates passed Clippy across all targets with warnings denied."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo clippy -p templar-window -p templar-comp-integration -p templar-shell -p templar-comp --all-targets -- -D warnings"
+    summary """
+        The four changed crates passed Clippy across all targets with warnings denied.
+        """
+}
+
+record legeos.evidence.semantic-window-compositor-20260909/1 : evidence {
+    title "All 122 templar-comp tests passed, including the toplevel list/child protocol-version regression."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo test -p templar-window -p templar-comp-integration -p templar-shell -p templar-comp"
+    summary """
+        All 122 templar-comp tests passed, including the toplevel list/child protocol-version regression.
+        """
+}
+
+record legeos.evidence.semantic-window-headless-check-20260909/1 : evidence {
+    title "The compositor self-check created isolated Wayland and trusted-shell sockets, initialized the seat, advertised both private protocols, and returned ok."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo run -p templar-comp -- --check"
+    summary """
+        The compositor self-check created isolated Wayland and trusted-shell sockets, initialized the seat, advertised both private protocols, and returned ok.
+        """
+}
+
+record legeos.evidence.semantic-window-model-20260909/1 : evidence {
+    title "All 154 templar-window tests passed, including semantic MRU, role independence, and temporary-unmap retention regressions."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo test -p templar-window -p templar-comp-integration -p templar-shell -p templar-comp"
+    summary """
+        All 154 templar-window tests passed, including semantic MRU, role independence, and temporary-unmap retention regressions.
+        """
+}
+
+record legeos.evidence.semantic-window-shell-20260909/1 : evidence {
+    title "All 15 integration tests and 381 shell library tests passed, including latest-snapshot coalescing and MRU taskbar-row propagation."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo test -p templar-window -p templar-comp-integration -p templar-shell -p templar-comp"
+    summary """
+        All 15 integration tests and 381 shell library tests passed, including latest-snapshot coalescing and MRU taskbar-row propagation.
+        """
+}
+
+record legeos.evidence.semantic-window-workspace-check-20260909/1 : evidence {
+    title "Every workspace target type-checked; only two pre-existing deprecation warnings were emitted by the external still265 dependency."
+    state verified
+    result pass
+    method command
+    observed_at git:c61e1ae54460d7725e67a1fdafdcc4bb14fac9bf
+    command "cargo check --workspace --all-targets"
+    summary """
+        Every workspace target type-checked; only two pre-existing deprecation warnings were emitted by the external still265 dependency.
+        """
+}
+
 record legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1 : evidence {
     title "The service inventory is checked by the build, and the governor loop is event-driven"
     state verified
@@ -2762,6 +3007,76 @@ record legeos.evidence.shelf-reset-and-drawer-ladder-20260831/1 : evidence {
     command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- tree-check deps-check check-interfaces check-proxies check-packaging check-assets check-actions"
     summary """
         Workspace gates and all seven xtask checks green for the three gaps the reshape work opened. field.restore brings every shelved tile back through a batch of Move ops whose landings are chosen by dry-run, covered by a test that stashes three tiles and restores them; the menu row appears only when the shelf is occupied. field.reset discards the stored document and its undo log via the new HomeField1.Reset, verified against a live sessiond on a throwaway output: one tile at revision 1, then an empty document at revision 0 with nothing left to undo. Drawer tiles carry a DrawerFeed with a headline shown at every rung and a listing from Representation::Wide up; verified by rendering the field against live lege-filed and lege-sessiond, where all eight drawers show a fitting figure or count instead of a truncated path.
+        """
+}
+
+record legeos.evidence.stale-observation-triage-20260908/1 : evidence {
+    title "2026-09-08 triage of the 28 stale observations"
+    state verified
+    result pass
+    method manual
+    observed_at git:e6e1b1c3523004f2eef22aa3bfd2dc2abae4a06a
+    summary """
+        Every observation the review queue had marked stale was re-read against the source at HEAD
+        e6e1b1c3 and given one of three dispositions.
+
+        SUPERSEDED, because the defect each reported has since been fixed:
+        a-pass-that-could-not-read-every-directory-still-commits-current — generation.rs:381 now
+        requires limited.is_none() and unreadable_dirs == 0 and unwatched_dirs == 0 (commit f6e8961).
+        trash-undo-reported-a-restore-it-did-not-perform — Step::MoveToTrash{trashed} and
+        Step::RestoreFromTrash{restored_to} record the executed paths and undo_of reads them back
+        (services/lege-filed/src/operations.rs:848-868). the-provisioner-wrote-no-fstab-at-all —
+        installer/provision.sh:586-621 writes /etc/fstab by UUID.
+        a-snapshot-did-not-say-which-change-position-it-was-consistent-with — SnapshotManifest
+        carries snapshot_seq (crates/lege-file-index/src/snapshot.rs:106,134,205).
+        a-send-stream-names-paths-relative-to-the-subvolume-not-the-index-root — DeltaTarget carries
+        subvolume_path and root_path separately with a component-bounded containment check
+        (btrfs_delta.rs:961-968,1166). fresh-store-wal-switch-races-without-a-busy-handler — the WAL
+        pragma retries through retry_while_locked for 5s (crates/lege-state/src/lib.rs:92-114).
+        two-daemons-opening-one-fresh-state-db-raced-its-migrations — migration runs under BEGIN
+        IMMEDIATE with the applied-check repeated inside the transaction (lib.rs:227).
+        index-change-signals-never-fire — main.rs:228-230 installs Index1Signals as the change sink
+        and it captures a runtime Handle (index_host.rs:383,388).
+        deployments-subvolume-not-declared-by-repart — 10-root.conf:11 declares
+        Subvolumes=/@ /@home /@var /@snapshots /@deployments. hands-on-run-4-findings-20260903 —
+        every diagnosed cause addressed: ProtectHome=yes gone from lege-hostd.service, the Wayland
+        socket is literally wayland-0 (compositor/lege-comp/src/main.rs:67) so snapd's AppArmor
+        allowance matches, and /var/lib/snapd/desktop is in application_dirs()
+        (desktop_import.rs:48). home-hands-on-failures-diagnosed — SmolStr multi-character handling
+        fixed (surface/window.rs:105-117), XkbConfig::default() no longer used (state.rs:298), icon
+        resolution rate-limited per frame (app.rs:340), the inverted rung rule corrected so
+        session.poweroff is Large and session.logout Small (widgets/mod.rs:142-146), and Lifecycle1
+        registration is unconditional (sessiond main.rs:429,454).
+
+        WATCHES REMOVED, because the claim is time-invariant and no code change can falsify it: a
+        fixed-commit profiling result, a kernel or btrfs behaviour, or a fact about how Ubuntu 26.04
+        packages firmware. These had been going stale repeatedly for reasons unrelated to what they
+        claim. Their observed_at is deliberately left at the commit they were measured against,
+        which is what makes them meaningful, and each was given a review_after instead.
+
+        RE-OBSERVED at e6e1b1c3, still true: home-tree-exceeds-the-inotify-watch-budget
+        (WatchBudget::from_limits still halves max_user_watches, watch.rs:157);
+        home-refresh-costs-profiled-20260902 (audio.rs still spawns wpctl per Get, lifecycle.rs
+        Can* still calls logind uncached); openuri-is-the-frontends-portal (AssociationApi::new
+        still does not export mimeapps.list, crates/lege-associationd/src/dbus.rs:43-57);
+        the-nvidia-lrm-cannot-be-installed-in-an-unshared-bootstrap-chroot (distro/iso/build.sh:71-74
+        unchanged); release-debs-ship-unstripped-line-tables (Cargo.toml:139 still
+        debug = "line-tables-only", no separate-debug-symbols in any of the 13 deb blocks);
+        homegarden-produced-no-visible-place-or-bloom (garden::observe is still called only for
+        directory-opened and the path-bearing CLI launch; no Bloom implementation exists anywhere).
+        Two are partly fixed and re-observed on that basis: hands-on-run-20260831-findings (tile
+        drag-move and corner resize now exist with tests, the rest needs a hardware pass) and
+        hands-on-run-3-findings-20260903 (copy-path now really copies via copy_text_to_clipboard,
+        window minimize/close controls exist, resize covers full edge zones; band-over-client-content
+        remains deliberate design per COMPOSITOR.md).
+        this-machines-partition-table-cannot-hold-legeos-as-it-stands is likewise partly fixed: the
+        provisioner now has a --free-space mode that consumes a disk's free tail without zapping it
+        (commit 0627367), while the disk measurements themselves are hardware facts.
+
+        NOT DISPOSITIONED: hardware-home-loads-but-file-panes-empty. The file browser has been
+        extensively built out since the 2026-08-24 report, but whether the panes render on the
+        reference laptop cannot be established by reading code. It is deliberately left in the
+        review queue as the one item that genuinely needs a hardware run.
         """
 }
 
@@ -2904,6 +3219,19 @@ record legeos.evidence.taskbar-free-home-visual-20260824/1 : evidence {
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     summary """
         An isolated 2560x1600 nested capture showed one full-size Home surface, the six standard drawer widgets, a top information row with clock/network/live counts, no bottom taskbar, and no repeated 'desktop' tiles; runtime logs mapped exactly one HomeSurface and no ShellOverlay.
+        """
+}
+
+record legeos.evidence.templaros-medium-built-and-booted-20260909/1 : evidence {
+    title "The first medium carrying the Templar name. 21 native packages built in an Ubuntu 26.04 chroot at c2403fa as set 0.1.0~dev1788945442+gc2403fa.dirty, published and verified into a fresh archive so no legeos-named set shares its index; a 4.37 GB ISO (sha256 aae24d622428a1c4333adb9b73564cc29bcf1f07ba77988953350ed046a488ee) carrying 1522 packages, 15 native and 1507 inherited, with templaros-shell, templaros-comp and templaros-desktop alongside papirus-icon-theme. iso-qemu.sh: OK under Secure-Boot OVMF with KVM — shim to GRUB to kernel, live userspace reached, preflight network pass. The bootstrap assembled on the build volume rather than in tmpfs and the machine held 25 GiB available throughout, where the 2026-09-07 build left it with 268 MB."
+    state verified
+    result pass
+    method command
+    observed_at git:c2403fa22668d545a1d73bf6bcd64b274b64e6c5
+    command "tests/integration/iso-qemu.sh"
+    artifact "docs/measurements/iso-build-templar-20260909.txt"
+    summary """
+        The first medium carrying the Templar name. 21 native packages built in an Ubuntu 26.04 chroot at c2403fa as set 0.1.0~dev1788945442+gc2403fa.dirty, published and verified into a fresh archive so no legeos-named set shares its index; a 4.37 GB ISO (sha256 aae24d622428a1c4333adb9b73564cc29bcf1f07ba77988953350ed046a488ee) carrying 1522 packages, 15 native and 1507 inherited, with templaros-shell, templaros-comp and templaros-desktop alongside papirus-icon-theme. iso-qemu.sh: OK under Secure-Boot OVMF with KVM — shim to GRUB to kernel, live userspace reached, preflight network pass. The bootstrap assembled on the build volume rather than in tmpfs and the machine held 25 GiB available throughout, where the 2026-09-07 build left it with 268 MB.
         """
 }
 
