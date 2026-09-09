@@ -190,7 +190,21 @@ impl ToplevelState {
                 instance_id,
                 verified,
             } => {
-                self.canonical_app_id = canonical_app_id.as_deref().and_then(|id| id.parse().ok());
+                // A string the compositor resolved that this side cannot parse is dropped, and
+                // the window then has no application at all: no icon on its bar chip, and a
+                // grouping key of `unknown-window-<n>`. That used to happen in silence, which is
+                // one of the two things the all-initials bar could be; say it instead.
+                self.canonical_app_id = canonical_app_id.as_deref().and_then(|id| {
+                    let parsed = id.parse().ok();
+                    if parsed.is_none() && !id.is_empty() {
+                        tracing::warn!(
+                            app_id = id,
+                            "the compositor resolved an identity this shell cannot parse; the \
+                             window will have no application"
+                        );
+                    }
+                    parsed
+                });
                 self.instance_id = instance_id.as_deref().and_then(InstanceId::parse);
                 self.verified_identity = verified != 0;
             }

@@ -1335,6 +1335,16 @@ impl ShellApp {
                 desktop_file_ids: &desktop_file_ids,
             };
             let bitmap = icons::load_app_icon_hinted(&key, hints, &SystemIconRoots);
+            if bitmap.is_none() {
+                // The one thing a bar chip drawn as an initial cannot tell anybody: which of the
+                // key, the `Icon=` value and the theme search came up empty.
+                tracing::debug!(
+                    key,
+                    icon = icon.as_deref().unwrap_or("<none>"),
+                    desktop_file = desktop_file_ids.first().map_or("<none>", String::as_str),
+                    "no icon resolved for an application"
+                );
+            }
             // A miss is sent too: `icon_attempted` already recorded it, so the receiver has
             // nothing to do, but sending unconditionally keeps the two sides symmetric.
             let _ = tx.send(DataUpdate::Icon(key, bitmap));
