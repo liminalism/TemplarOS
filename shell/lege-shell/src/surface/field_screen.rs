@@ -3531,7 +3531,7 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
-        let collapsed = data.field.tile(id).map(|tile| tile.spans.min);
+        let collapsed = data.field.tile(id).map(folder_collapsed_span);
         let expanded = data
             .field
             .location(id)
@@ -4567,9 +4567,19 @@ fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Opti
 /// A tray is a door; the expanded size is the one at which the room behind it is worth looking at,
 /// clamped to the kind's ceiling. Both directions go through the field's own resize, so both undo
 /// and both yield to their neighbours like any other resize.
+/// What a folder window collapses to: the tile's own floor, but never one row.
+///
+/// The Folder class floor is a *line* — the shape a barely used garden Place takes, where the
+/// name and a state line are the whole of the drawing. A folder *window* at one row has nowhere
+/// to put the listing that this toggle exists to show, so it is not somewhere the toggle may
+/// send it.
+fn folder_collapsed_span(tile: &Tile) -> Span {
+    Span::new(tile.spans.min.cols, tile.spans.min.rows.max(2))
+}
+
 fn folder_toggle_op(doc: &FieldDocument, id: TileId) -> Option<FieldOp> {
     let tile = doc.tile(id)?;
-    let collapsed = tile.spans.min;
+    let collapsed = folder_collapsed_span(tile);
     let expanded = Span::new(
         tile.spans
             .max

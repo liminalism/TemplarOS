@@ -250,6 +250,9 @@ pub enum Stage {
     Trace,
     Tile,
     Expanded,
+    /// A place that has taken several sessions: about a quarter of the field, and its form at
+    /// full size.
+    Dominant,
 }
 
 impl Stage {
@@ -260,18 +263,25 @@ impl Stage {
             Self::Trace => "trace",
             Self::Tile => "tile",
             Self::Expanded => "expanded",
+            Self::Dominant => "dominant",
         }
     }
 
-    /// The span a garden-owned Folder tile has at this stage (Folder class floors: Small 2×2,
-    /// Wide ≥3×2, Large ≥3×3).
+    /// The span a garden-owned Folder tile has at this stage.
+    ///
+    /// The range is deliberately aggressive: a lightly relevant place is a *line* — a name and a
+    /// state line, nothing more — and one that has dominated several sessions is twelve times its
+    /// area with its form drawn at size. "The same rectangle with more text" is not a
+    /// representation stage; the test is whether a person can see from two metres which places
+    /// currently matter (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
     #[must_use]
     pub fn span(self) -> Option<Span> {
         match self {
             Self::Dormant => None,
-            Self::Trace => Some(Span::new(2, 2)),
-            Self::Tile => Some(Span::new(3, 2)),
+            Self::Trace => Some(Span::new(2, 1)),
+            Self::Tile => Some(Span::new(2, 2)),
             Self::Expanded => Some(Span::new(4, 3)),
+            Self::Dominant => Some(Span::new(6, 4)),
         }
     }
 
@@ -280,6 +290,7 @@ impl Stage {
             Self::Dormant | Self::Trace => Self::Dormant,
             Self::Tile => Self::Trace,
             Self::Expanded => Self::Tile,
+            Self::Dominant => Self::Expanded,
         }
     }
 }
@@ -746,6 +757,16 @@ fn threshold(stage: Stage) -> Threshold {
             demote_idle_sessions: 3,
             demote_idle_hours: 6.0,
         },
+        // A quarter of the field is a claim on the user's attention, so the floor is high and
+        // the place gives it back quickly: one session away and it is an Expanded again.
+        Stage::Dominant => Threshold {
+            promote_effective: 45.0,
+            promote_sessions: 5,
+            promote_breadth: 3,
+            demote_effective: 22.0,
+            demote_idle_sessions: 2,
+            demote_idle_hours: 4.0,
+        },
     }
 }
 
@@ -1068,7 +1089,8 @@ fn next_stage(context: &HomeContext, now: GardenMoment, config: &GardenConfig) -
         Stage::Dormant => Stage::Trace,
         Stage::Trace => Stage::Tile,
         Stage::Tile => Stage::Expanded,
-        Stage::Expanded => return demoted(context, now, effective),
+        Stage::Expanded => Stage::Dominant,
+        Stage::Dominant => return demoted(context, now, effective),
     };
     let t = threshold(up);
     if effective >= t.promote_effective
@@ -1431,6 +1453,10 @@ mod tests {
 
     #[test]
     fn one_terminal_entry_becomes_a_trace_at_the_next_tending_moment() {
+        // The ladder the stages ask for: a line, a block, a quarter of the field.
+        assert_eq!(Stage::Trace.span(), Some(Span::new(2, 1)));
+        assert_eq!(Stage::Dominant.span(), Some(Span::new(6, 4)));
+        assert_eq!(Stage::Dominant.down(), Stage::Expanded);
         let probe = Probe::new();
         let config = GardenConfig::default();
         let mut ledger = Ledger::default();

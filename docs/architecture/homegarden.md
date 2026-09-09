@@ -67,9 +67,15 @@ Place; the walk stops beneath it and is capped at eight ancestors. Only `stat`-c
 | Stage | Tile | Promotion needs | Demotion needs (both) |
 |---|---|---|---|
 | Dormant | none | — | — |
-| Trace | 2×2 | relevance ≥ 3 | 10 later sessions and 30 garden-hours idle, relevance < 1 |
-| Tile | 3×2 | ≥ 8, 2 sessions | 6 sessions and 15 hours, < 4 |
+| Trace | 2×1 | relevance ≥ 3 | 10 later sessions and 30 garden-hours idle, relevance < 1 |
+| Tile | 2×2 | ≥ 8, 2 sessions | 6 sessions and 15 hours, < 4 |
 | Expanded | 4×3 | ≥ 20, 3 sessions, 2 kinds/roles | 3 sessions and 6 hours, < 10 |
+| Dominant | 6×4 | ≥ 45, 5 sessions, 3 kinds/roles | 2 sessions and 4 hours, < 22 |
+
+The range is deliberately aggressive: a Trace is a *line* (a name and a state line, which is all
+the Small rung draws), and a Dominant is twelve times its area with its form drawn at size. The
+Folder class floor is 2×1 so a line is a shape a folder may have; nothing else about the class
+moved, and `GROWTH_ROOM` follows the top stage so a first landing still leaves room to reach it.
 
 One step per tending moment: a place recedes visibly, never vanishes. Pinned never recedes and
 is never removed by recession, but may grow; **kept** is pinned and frozen at its size; hidden
@@ -119,11 +125,17 @@ from a manuscript one; anything finer waits for a signal that exists.
 
 ## The Place tile
 
-Same object as any folder tile, drawn by rung: **Small** — name in the place's colour, one
-state line; **Wide** — the roles row `>_ Terminal  ▤ Files  <> Edit`, resolved through
-`Providers1` at press; **Large** — the branch body: the used structure beneath the root as a
-trunk with the branches that earned it, heavier branches thicker, files dimmer; the ordinary
-listing until any structure has been earned. **Full** is the folder window.
+Same object as any folder tile. The name is the tile's own chrome; the body is one state line
+and then the **form** the place has earned (`shell/lege-shell/src/surface/place_forms.rs`) —
+a branch (trunk at the left, the used descendants fanning off it, each band and stroke by share,
+twigs where the band has room), a shelf (the things it is looked at for, standing on a rule at
+heights by share), or nothing at all for a plain place, which falls back to the ordinary folder
+listing once it is large enough to browse. **Small** is the state line alone; the form starts at
+**Wide**; **Full** is the folder window.
+
+There is no roles row: `place.open-terminal`, `place.open-files` and `place.open-editor` are
+rows of the Place context menu, which reaches the same providers by the same route. Drawn into
+the body they made every place look like a collage of the applications used to manipulate it.
 
 ## What is deliberately not here yet
 

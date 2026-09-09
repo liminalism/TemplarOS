@@ -193,8 +193,11 @@ impl SpanRange {
             }
             TileKind::Tray { .. } => Self::new(Span::new(2, 2), Span::new(3, 3), Span::new(6, 4)),
             // A folder is many things behind one door: the same class as a tray, with a larger
-            // ceiling because a real directory can earn a treemap.
-            TileKind::Folder { .. } => Self::new(Span::new(2, 2), Span::new(3, 3), Span::new(8, 6)),
+            // ceiling because a real directory can earn a treemap. Its floor is one row rather
+            // than two, because a lightly used garden Place is a *line* — a name and a state
+            // line — and the Folder rung floors already keep that at Small, where a line is all
+            // that is drawn.
+            TileKind::Folder { .. } => Self::new(Span::new(2, 1), Span::new(3, 3), Span::new(8, 6)),
             // A widget is an instrument, and some of them (a launcher, a notification list) are
             // only useful large — so the ceiling is well above the preferred size rather than
             // equal to it, which is what used to make widgets the one kind that could shrink but

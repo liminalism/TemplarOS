@@ -463,7 +463,7 @@ mod tests {
         // variant, so the two extremes are always reviewed against each other.
         let line = (
             PathBuf::from("/home/fixture/Downloads"),
-            Span::new(2, 2),
+            Span::new(2, 1),
             Cell::new(7, 8),
             "trace",
             Vec::new(),
