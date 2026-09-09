@@ -168,6 +168,9 @@ pub struct ScanSession {
     /// Recursive totals found under an `Opaque` directory by a raw filesystem walk
     /// (`aggregate::sum_subtree`), waiting for `entries` to hold a row to attach them to.
     pending_aggregates: Vec<(NativePath, SubtreeTotals)>,
+    /// What the root said about itself before this pass marked it `building`. A subtree pass may
+    /// only make that answer worse, so it has to carry the answer it started from.
+    prior: RootStatus,
     started: Instant,
     finished: bool,
 }
@@ -527,7 +530,22 @@ impl ScanSession {
             |row| row.get(0),
         )?;
 
+        // The namespace axis, under the rule the metadata axis below already follows. A subtree
+        // pass looked at part of the root: it may report that part broken, and it may never
+        // certify the rest. So it keeps whatever the root already said unless what it found is
+        // worse — a whole-root overflow, watcher exhaustion or budget stop survives a clean
+        // scoped repair, and only a whole-root pass restores `current` and `complete`.
         let (state, state_reason) = self.committed_state(complete);
+        let (state, state_reason, root_complete) =
+            if matches!(scope, ScanScope::Root) || worsens(self.prior.state, state) {
+                (state, state_reason, complete)
+            } else {
+                (
+                    self.prior.state,
+                    self.prior.reason.clone(),
+                    self.prior.complete,
+                )
+            };
 
         transaction.execute(
             "UPDATE roots
@@ -538,7 +556,7 @@ impl ScanSession {
             rusqlite::params![
                 root.0,
                 generation_id,
-                i64::from(complete),
+                i64::from(root_complete),
                 entries,
                 now_ms()
             ],
@@ -647,8 +665,9 @@ impl crate::Index {
         if options.base.is_none() {
             options.base = Some(self.root_status(root)?.path);
         }
-        let generation = self.with_write(|connection| {
+        let (generation, prior) = self.with_write(|connection| {
             let transaction = connection.transaction()?;
+            let prior = crate::read_root(&transaction, root)?;
             let generation = crate::next_generation(&transaction)?;
             crate::set_state(
                 &transaction,
@@ -666,7 +685,7 @@ impl crate::Index {
                 rusqlite::params![root.0, generation.0 as i64, now_ms()],
             )?;
             transaction.commit()?;
-            Ok(generation)
+            Ok((generation, prior))
         })?;
         let status = self.root_status(root)?;
         self.notify_root(&status);
@@ -686,6 +705,7 @@ impl crate::Index {
             watches_armed: 0,
             unverified_children: 0,
             pending_aggregates: Vec::new(),
+            prior,
             started: Instant::now(),
             finished: false,
         })
@@ -774,6 +794,24 @@ impl crate::Index {
 /// covers the scanner, the reconciler and every live watcher mutation. The delete above it is
 /// unconditional on purpose — a row demoted out of `Detailed` by a policy change has to leave the
 /// accelerator, and it leaves by not being re-inserted.
+/// Whether `next` is a worse answer about a root's namespace than `current` is.
+///
+/// Only the three states a commit can produce are on the scale, and the order is the one a person
+/// reads: `current` is the claim, `permission-limited` is a named hole in it, `stale` is the
+/// admission that the claim no longer holds. `Empty`, `Offline` and the transient states are not
+/// answers a scoped pass is entitled to overwrite, so nothing worsens them.
+fn worsens(current: RootState, next: RootState) -> bool {
+    fn rank(state: RootState) -> Option<u8> {
+        match state {
+            RootState::Current => Some(0),
+            RootState::PermissionLimited => Some(1),
+            RootState::Stale => Some(2),
+            _ => None,
+        }
+    }
+    matches!((rank(current), rank(next)), (Some(current), Some(next)) if next > current)
+}
+
 pub(crate) fn refresh_fts(
     transaction: &Transaction<'_>,
     root: RootId,

@@ -295,3 +295,118 @@ fn reconcile_downtime_keeps_old_generation_visible() {
     );
     assert!(outcome.generation.0 > generation_before);
 }
+
+/// A subtree repair sees part of a root. Clearing a whole-root fault because that part came back
+/// clean is the same lie the metadata axis already refuses to tell: the pass never looked at the
+/// rest of the root, so it has nothing to say about it.
+#[test]
+fn a_subtree_repair_does_not_clear_a_whole_root_overflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+
+    // The kernel queue overflowed: nothing anywhere in this root is trustworthy until a whole-root
+    // pass re-derives it.
+    index
+        .mark_stale(root, &lege_file_index::StaleReason::WatcherOverflow)
+        .unwrap();
+
+    // Both halves of the scope, exactly as `lege-filed`'s repair loop sets them: the walk starts
+    // at the subtree, and the commit collects only inside it.
+    let subtree = ScanScope::Subtree(NativePath::from_path(&tree.join("notes")));
+    let scoped = ScanOptions {
+        scope: subtree.clone(),
+        ..ScanOptions::reconcile(index.root_policy(root).unwrap())
+    };
+    let (outcome, _) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        subtree,
+        &Trigger::Overflow,
+        scoped,
+    )
+    .expect("the scoped repair");
+
+    assert!(outcome.complete, "the pass did cover its own scope");
+    assert_ne!(
+        outcome.state,
+        RootState::Current,
+        "and covering a subtree is not covering the root"
+    );
+    let status = index.root_status(root).unwrap();
+    assert_eq!(status.state, RootState::Stale);
+    assert_eq!(
+        status.reason.as_deref(),
+        Some("watcher-overflow"),
+        "a scoped pass may not answer a whole-root question"
+    );
+
+    // The whole-root pass is the only thing that may.
+    let (outcome, _) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Root,
+        &Trigger::Overflow,
+        ScanOptions::reconcile(index.root_policy(root).unwrap()),
+    )
+    .expect("the whole-root repair");
+    assert!(outcome.complete);
+    let status = index.root_status(root).unwrap();
+    assert_eq!(status.state, RootState::Current);
+    assert_eq!(status.reason, None);
+    assert!(status.complete);
+}
+
+/// The same rule for the other whole-root fault. A budget stopped the pass somewhere the scoped
+/// repair never goes, so the scoped repair cannot report the root complete — and the `complete`
+/// column is what tells a reader whether the committed generation covered the whole root.
+///
+/// Driven through `scan_root` rather than `reconcile`, because `reconcile` re-stamps the root's
+/// reason with its trigger's before it starts; here the commit is the only writer.
+#[test]
+fn a_subtree_repair_does_not_complete_a_root_a_budget_left_unfinished() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, _owner) = seeded(&temp);
+    let policy = index.root_policy(root).unwrap();
+
+    let mut budgeted = ScanOptions::reconcile(policy.clone());
+    budgeted.budget = ScanBudget::unlimited().with_max_entries(1);
+    let partial = index.scan_root(root, budgeted).expect("the budgeted pass");
+    assert!(!partial.complete, "a budget stopped it");
+    let stopped = index.root_status(root).unwrap();
+    assert_eq!(stopped.state, RootState::Stale);
+    assert_eq!(stopped.reason.as_deref(), Some("budget:entries"));
+    assert!(!stopped.complete);
+
+    let scoped = index
+        .scan_root(
+            root,
+            ScanOptions {
+                scope: ScanScope::Subtree(NativePath::from_path(&tree.join("notes"))),
+                ..ScanOptions::reconcile(policy.clone())
+            },
+        )
+        .expect("the scoped pass");
+    assert!(scoped.complete);
+    let after = index.root_status(root).unwrap();
+    assert_eq!(after.state, RootState::Stale);
+    assert_eq!(
+        after.reason.as_deref(),
+        Some("budget:entries"),
+        "a scoped pass may not replace a whole-root reason"
+    );
+    assert!(
+        !after.complete,
+        "nor may it report the root's generation complete"
+    );
+
+    let whole = index
+        .scan_root(root, ScanOptions::reconcile(policy))
+        .expect("the whole-root pass");
+    assert!(whole.complete);
+    let done = index.root_status(root).unwrap();
+    assert_eq!(done.state, RootState::Current);
+    assert_eq!(done.reason, None);
+    assert!(done.complete);
+}

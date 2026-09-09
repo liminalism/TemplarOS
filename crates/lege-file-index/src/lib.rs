@@ -366,17 +366,7 @@ impl Index {
     }
 
     pub fn roots(&self) -> Result<Vec<RootStatus>> {
-        self.with_read(|connection| {
-            let mut statement = connection.prepare(&format!(
-                "SELECT {ROOT_COLUMNS} FROM roots ORDER BY root_id"
-            ))?;
-            let rows = statement.query_map([], root_status_from_row)?;
-            let mut roots = Vec::new();
-            for row in rows {
-                roots.push(row?);
-            }
-            Ok(roots)
-        })
+        self.with_read(read_roots)
     }
 
     pub fn root_status(&self, root: RootId) -> Result<RootStatus> {
@@ -632,13 +622,7 @@ impl Index {
 
     /// The database-wide committed generation.
     pub fn generation(&self) -> Result<Generation> {
-        self.with_read(|connection| {
-            Ok(Generation(
-                schema::read_meta(connection, "committed_generation")?
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(0),
-            ))
-        })
+        self.with_read(read_generation)
     }
 
     pub fn diagnostics(&self) -> Result<Diagnostics> {
@@ -766,6 +750,30 @@ pub(crate) fn entry_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<En
             .map(|value| Generation(value as u64)),
         coverage: Coverage::from_i64(row.get(21)?),
     })
+}
+
+/// Every root, on a caller-supplied connection — so a reader that must see the roots and the rows
+/// they describe in *one* view (`Index::write_snapshot`) reads them inside its own transaction
+/// rather than through a second pooled connection.
+pub(crate) fn read_roots(connection: &Connection) -> Result<Vec<RootStatus>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROOT_COLUMNS} FROM roots ORDER BY root_id"
+    ))?;
+    let rows = statement.query_map([], root_status_from_row)?;
+    let mut roots = Vec::new();
+    for row in rows {
+        roots.push(row?);
+    }
+    Ok(roots)
+}
+
+/// The published generation, on a caller-supplied connection. Same reason as [`read_roots`].
+pub(crate) fn read_generation(connection: &Connection) -> Result<Generation> {
+    Ok(Generation(
+        schema::read_meta(connection, "committed_generation")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+    ))
 }
 
 pub(crate) fn read_root(connection: &Connection, root: RootId) -> Result<RootStatus> {
