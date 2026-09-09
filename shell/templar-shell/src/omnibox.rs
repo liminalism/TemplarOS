@@ -133,6 +133,13 @@ pub struct Sources<'a> {
     pub files: Option<FileResults<'a>>,
     /// The user's home directory, so a query beginning `~/` names somewhere real.
     pub home: Option<&'a Path>,
+    /// What is already running, as [`templar_window::task::units`] sees it.
+    ///
+    /// A launcher that says nothing about the eight windows of Firefox already open is a launcher
+    /// that opens a ninth, which is the single most common way a person loses a window they were
+    /// using. The count is the *visible* one: a parked window is not somewhere the Enter key can
+    /// usefully go.
+    pub running: &'a [templar_window::task::TaskUnit],
 }
 
 /// How many rows each file source may contribute before the merge.
@@ -211,7 +218,12 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
     }
 
     match scope {
-        Scope::Applications => rows.extend(apps(sources.apps, &needle, sources.recents)),
+        Scope::Applications => rows.extend(apps(
+            sources.apps,
+            &needle,
+            sources.recents,
+            sources.running,
+        )),
         Scope::Location(_) => {
             let (directories, files) = files_split(sources.files, &needle);
             rows.extend(capped(directories, DIRECTORY_CAP));
@@ -289,19 +301,44 @@ fn capped(mut rows: Vec<Row>, cap: usize) -> Vec<Row> {
     rows
 }
 
-fn apps(entries: &[AppEntry], needle: &str, recents: &[String]) -> Vec<Row> {
+fn apps(
+    entries: &[AppEntry],
+    needle: &str,
+    recents: &[String],
+    running: &[templar_window::task::TaskUnit],
+) -> Vec<Row> {
     crate::app_search::search(entries, needle, recents)
         .into_iter()
-        .map(|row| Row {
-            hit: Hit::App {
-                id: row.entry.id.clone(),
-            },
-            label: row.entry.label().to_owned(),
-            detail: app_detail(row.entry),
-            kind: row.kind,
-            extra: RowExtra::None,
+        .map(|row| {
+            let open = running_windows(running, &row.entry.id);
+            Row {
+                hit: Hit::App {
+                    id: row.entry.id.clone(),
+                },
+                label: row.entry.label().to_owned(),
+                detail: match open {
+                    0 => app_detail(row.entry),
+                    1 => format!("1 running \u{b7} {}", app_detail(row.entry)),
+                    n => format!("{n} running \u{b7} {}", app_detail(row.entry)),
+                },
+                kind: row.kind,
+                extra: RowExtra::None,
+            }
         })
         .collect()
+}
+
+/// How many windows of this application are on screen right now.
+///
+/// Only an application's own unit counts. A window the user has put in an explicit group belongs
+/// to the group, not to the application (`task::units`), and Enter must not send them somewhere
+/// they did not ask about — the group has its own chip and its own section.
+#[must_use]
+pub fn running_windows(running: &[templar_window::task::TaskUnit], id: &AppId) -> usize {
+    running
+        .iter()
+        .find(|unit| unit.key == templar_window::task::TaskKey::App(id.clone()))
+        .map_or(0, templar_window::task::TaskUnit::visible)
 }
 
 /// The second line of an application row: the `.desktop` name it is installed under, which is
@@ -528,7 +565,40 @@ mod tests {
             recents: &[],
             files,
             home: None,
+            running: &[],
         }
+    }
+
+    /// A result for something already running says so, because a launcher that does not is a
+    /// launcher that opens a ninth Firefox.
+    #[test]
+    fn a_running_application_says_how_many_windows_it_has() {
+        let firefox = app("org.mozilla.firefox", "Firefox");
+        let apps = vec![firefox.clone()];
+        let unit = templar_window::task::TaskUnit {
+            key: templar_window::task::TaskKey::App(firefox.id.clone()),
+            label: firefox.id.to_string(),
+            accent: None,
+            windows: (1..=8).map(templar_window::WindowId).collect(),
+            shelved: vec![templar_window::WindowId(8)],
+        };
+        let running = vec![unit];
+        let mut with_running = sources(&apps, None);
+        with_running.running = &running;
+        let rows = federate(with_running, "fire", &Scope::Applications, TOTAL_CAP);
+        assert!(
+            rows[0].detail.starts_with("7 running \u{b7} "),
+            "the parked window is not somewhere Enter can go: {}",
+            rows[0].detail
+        );
+        // Nothing running says nothing at all: an application is not annotated with a zero.
+        let rows = federate(
+            sources(&apps, None),
+            "fire",
+            &Scope::Applications,
+            TOTAL_CAP,
+        );
+        assert!(!rows[0].detail.contains("running"), "{}", rows[0].detail);
     }
 
     /// The second line names the application the way it is installed, never the shell's own id.

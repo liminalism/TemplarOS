@@ -37,6 +37,23 @@ pub enum OmniboxOutcome {
     Chose(Hit),
 }
 
+/// What the person asked of the row they picked.
+///
+/// One launcher object, three answers — a result for something already running is not a request
+/// to start a second copy of it. Only an application row can be anything but [`Intent::Open`];
+/// a file has one thing to do and does it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Intent {
+    /// Enter, and every pointer click: go to it. For a running application that means its most
+    /// recently used window, and for everything else it means open it.
+    #[default]
+    Open,
+    /// Ctrl+Enter: a *new* window, however many are already open.
+    LaunchNew,
+    /// The right arrow or Tab: show every window of it, in the overview.
+    ShowAll,
+}
+
 /// The dropdown's own cursor. Kept by the caller so it survives a frame, and reset whenever the
 /// query changes — a highlight that stays on row four while the list underneath it changes is a
 /// highlight that launches the wrong thing.
@@ -51,7 +68,12 @@ impl OmniboxState {
     /// Move the highlight for this frame's keys, and report whether a row was committed to.
     ///
     /// Returns the index committed, if any. The caller owns what committing means.
-    pub fn handle_keys(&mut self, ui: &Ui<'_>, query: &str, rows: usize) -> Option<usize> {
+    pub fn handle_keys(
+        &mut self,
+        ui: &Ui<'_>,
+        query: &str,
+        rows: usize,
+    ) -> Option<(usize, Intent)> {
         if query != self.seen_query {
             query.clone_into(&mut self.seen_query);
             self.highlighted = 0;
@@ -62,13 +84,29 @@ impl OmniboxState {
         }
         self.highlighted = self.highlighted.min(rows - 1);
         let mut committed = None;
+        // Ctrl is read from the frame's modifier state rather than from the key itself: the
+        // field takes the keys, and what is held while Enter arrives is the only way to tell
+        // "go to it" from "give me another one".
+        let control = ui.input.modifiers().control;
         for key in ui.input.keys() {
             match key {
                 KeyInput::Down => self.highlighted = (self.highlighted + 1).min(rows - 1),
                 KeyInput::Up => self.highlighted = self.highlighted.saturating_sub(1),
                 KeyInput::Home => self.highlighted = 0,
                 KeyInput::End => self.highlighted = rows - 1,
-                KeyInput::Enter => committed = Some(self.highlighted),
+                KeyInput::Enter => {
+                    let intent = if control {
+                        Intent::LaunchNew
+                    } else {
+                        Intent::Open
+                    };
+                    committed = Some((self.highlighted, intent));
+                }
+                // Sideways out of the list and into the overview: the row says how many windows
+                // are open, and this is the question that follows — *which* of them.
+                KeyInput::Right | KeyInput::Tab => {
+                    committed = Some((self.highlighted, Intent::ShowAll));
+                }
                 _ => {}
             }
         }

@@ -1830,6 +1830,9 @@ impl ShellApp {
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
+            FieldAction::Taskfield(key) => {
+                self.open_taskfield(&templar_window::taskfield::TaskFilter::Unit(key), "");
+            }
             FieldAction::SetVolume(percent) => self.spawn_volume_set(percent),
             FieldAction::SetMuted(muted) => self.spawn_volume_muted(muted),
             FieldAction::SetBrightness(percent) => self.spawn_brightness_set(percent),
@@ -3151,9 +3154,7 @@ impl ShellApp {
                 }
                 BarAction::Field(action) => self.perform(action),
                 // A chip with more windows than its fan can hold hands the question over.
-                BarAction::Taskfield(key) => {
-                    self.open_taskfield(&templar_window::taskfield::TaskFilter::Unit(key), "");
-                }
+                BarAction::Taskfield(key) => self.perform(FieldAction::Taskfield(key)),
             }
         }
     }
@@ -4818,6 +4819,18 @@ impl ApplicationHandler<Wake> for ShellApp {
         // compositor.
         if self.drain_lock_keys() {
             self.paint_lock();
+        }
+        // The same, for `Super+Space`: the compositor revealed Home and said so, and the caret
+        // has to be in the Apps bar by the time the person's next keystroke arrives.
+        if self
+            .bridge
+            .as_mut()
+            .is_some_and(|bridge| bridge.take_launcher_focus() > 0)
+        {
+            self.field_screen.focus_search();
+            if let Some(home) = &self.home {
+                home.request_redraw();
+            }
         }
         // Answered here rather than on the next paint: the terminal chord is a keypress a person
         // is waiting on, and Home is only redrawn when something asks it to be.

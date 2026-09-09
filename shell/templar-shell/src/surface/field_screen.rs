@@ -122,6 +122,9 @@ pub enum FieldAction {
     SetMuted(bool),
     /// Put the backlight at this percentage. `Backlight1` clamps it to its own floor.
     SetBrightness(u32),
+    /// Show every window of one unit in the compositor's overview, filtered to it
+    /// (`launcher.show-all`, and a chip with more windows than its fan can hold).
+    Taskfield(templar_window::task::TaskKey),
     /// The same, for an action about a project: `project.enter`, `project.restore` and the three
     /// tools. The project id is the one the menu was opened over, carried from there rather than
     /// looked up again — the field reflows while a menu is open, and "which project" must not be
@@ -347,7 +350,7 @@ pub struct FieldScreen {
     omnibox_rows: Vec<crate::omnibox::Row>,
     omnibox_anchor: Rect,
     omnibox_files: crate::omnibox::FileState,
-    omnibox_committed: Option<usize>,
+    omnibox_committed: Option<(usize, crate::surface::omnibox_screen::Intent)>,
     /// The query the file service was last asked for, so a redraw does not ask again.
     asked_for: String,
     /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
@@ -1234,12 +1237,15 @@ impl FieldScreen {
         // launcher, and inside the expanded Files object it searches that location.
         let scope = self.scope();
         let query = self.search.text().to_owned();
+        // The one task model, so the launcher counts what the island counts.
+        let running = templar_window::task::units(data.toplevels);
         let rows = crate::omnibox::federate(
             crate::omnibox::Sources {
                 apps: data.apps,
                 recents: data.recent_ids,
                 files: data.file_search,
                 home: data.browser.home,
+                running: &running,
             },
             &query,
             &scope,
@@ -1420,15 +1426,17 @@ impl FieldScreen {
             data.icons,
             self.omnibox_files,
         );
+        // A pointer click is always "go to it"; the keyboard is where the other two answers are.
         let chosen = match outcome {
             crate::surface::omnibox_screen::OmniboxOutcome::None => self
                 .omnibox_committed
-                .and_then(|index| rows.get(index))
-                .map(crate::surface::omnibox_screen::commit),
-            chose @ crate::surface::omnibox_screen::OmniboxOutcome::Chose(_) => Some(chose),
+                .and_then(|(index, intent)| Some((rows.get(index)?.hit.clone(), intent))),
+            crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit) => {
+                Some((hit, crate::surface::omnibox_screen::Intent::Open))
+            }
         };
-        if let Some(crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit)) = chosen {
-            self.choose(hit, actions);
+        if let Some((hit, intent)) = chosen {
+            self.choose(hit, intent, data, actions);
         }
     }
 
@@ -1545,6 +1553,16 @@ impl FieldScreen {
         if data.reduced_motion { 0 } else { EXPAND_MS }
     }
 
+    /// Put the caret in the Apps bar, empty, ready to be typed into.
+    ///
+    /// `Super+Space` is not a second launcher: the Apps bar on Home is the one launcher object
+    /// (`@templaros.decision.the-home-field-is-a-launcher-not-a-search`), and this is one more
+    /// route into it. The compositor has already revealed Home by the time it says so.
+    pub fn focus_search(&mut self) {
+        self.search_focused = true;
+        self.search.set_text("");
+    }
+
     /// Where the question is being asked from. Derived, never chosen.
     fn scope(&self) -> crate::omnibox::Scope {
         if self.files_expanded {
@@ -1555,12 +1573,39 @@ impl FieldScreen {
     }
 
     /// Act on one omnibox row.
-    fn choose(&mut self, hit: crate::omnibox::Hit, actions: &mut Vec<FieldAction>) {
+    ///
+    /// An application row has three answers rather than one, because a result for something
+    /// already running is not a request to start a second copy of it: Enter goes to its most
+    /// recently used window, Ctrl+Enter asks for a new one outright, and the arrow hands the
+    /// question — *which* window — to the overview. An application with nothing running answers
+    /// all three the same way, by launching, which is the only thing any of them can mean.
+    fn choose(
+        &mut self,
+        hit: crate::omnibox::Hit,
+        intent: crate::surface::omnibox_screen::Intent,
+        data: &FieldData<'_>,
+        actions: &mut Vec<FieldAction>,
+    ) {
         use crate::omnibox::Hit;
+        use crate::surface::omnibox_screen::Intent;
         self.search_focused = false;
         match hit {
             Hit::App { id } => {
-                actions.push(FieldAction::Launch(id));
+                let unit = templar_window::task::units(data.toplevels)
+                    .into_iter()
+                    .find(|unit| unit.key == templar_window::task::TaskKey::App(id.clone()))
+                    .filter(|unit| unit.visible() > 0);
+                match (intent, unit) {
+                    (Intent::LaunchNew, _) | (_, None) => actions.push(FieldAction::Launch(id)),
+                    (Intent::Open, Some(unit)) => {
+                        if let Some(window) = unit.visible_windows().next() {
+                            actions.push(FieldAction::Activate(window));
+                        }
+                    }
+                    (Intent::ShowAll, Some(unit)) => {
+                        actions.push(FieldAction::Taskfield(unit.key));
+                    }
+                }
                 self.search.set_text("");
             }
             Hit::File { path } => actions.push(FieldAction::OpenFile(path)),
@@ -2317,7 +2362,12 @@ impl FieldScreen {
                 self.pending = None;
                 if let Some(row) = self.omnibox_rows.get(index) {
                     let hit = row.hit.clone();
-                    self.choose(hit, actions);
+                    self.choose(
+                        hit,
+                        crate::surface::omnibox_screen::Intent::Open,
+                        data,
+                        actions,
+                    );
                 }
             }
             return;
@@ -5370,12 +5420,53 @@ mod tests {
             h.screen.omnibox.highlighted, 1,
             "the pointer did not move the highlight"
         );
+        // The harness has a Files window open, so Enter on that row is "go to it": a launcher
+        // result for something already running is not a request for a second copy.
         let actions = h.key(KeyInput::Enter);
         assert_eq!(
             actions,
-            vec![FieldAction::Launch("org.templaros.Files".parse().unwrap())],
+            vec![FieldAction::Activate(WindowId(1))],
             "Enter opened a row other than the one that looked chosen"
         );
+    }
+
+    /// One launcher object, three answers. Enter goes to the window that is already open,
+    /// Ctrl+Enter asks for another one outright, and the arrow hands "which window?" to the
+    /// overview. An application with nothing running answers all three by launching.
+    #[test]
+    fn a_running_result_answers_enter_control_enter_and_the_arrow_differently() {
+        let files: templar_types::AppId = "org.templaros.Files".parse().unwrap();
+        let focus = |h: &mut Harness| {
+            h.screen.search_focused = true;
+            h.screen.search.set_text("files");
+            h.frame();
+        };
+
+        let mut h = Harness::new();
+        focus(&mut h);
+        h.input.modifiers_changed(Modifiers {
+            control: true,
+            ..Modifiers::default()
+        });
+        let actions = h.key(KeyInput::Enter);
+        h.input.modifiers_changed(Modifiers::default());
+        assert_eq!(actions, vec![FieldAction::Launch(files.clone())]);
+
+        let mut h = Harness::new();
+        focus(&mut h);
+        assert_eq!(
+            h.key(KeyInput::Right),
+            vec![FieldAction::Taskfield(templar_window::task::TaskKey::App(
+                files.clone()
+            ))]
+        );
+
+        // Nothing of it running: every answer is the same one, because it is the only one that
+        // means anything.
+        let mut h = Harness::new();
+        h.toplevels.clear();
+        focus(&mut h);
+        assert_eq!(h.key(KeyInput::Enter), vec![FieldAction::Launch(files)]);
     }
 
     /// Typing narrows the same list, and Enter commits the highlighted row — which with a fresh
