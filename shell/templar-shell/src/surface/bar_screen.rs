@@ -103,19 +103,23 @@ const HINT_REST_SLOP: i32 = 4;
 /// Grace after the pointer leaves the revealed bar before it collapses to the hint. The same
 /// number as the open dwell, on purpose: "it should hide as easily as it appears".
 pub const HINT_CLOSE_MS: u64 = 120;
-/// The hover row's height, plus the gap between it and the bar.
+/// The fan's height above the bar, plus the gap between it and the chips.
 ///
-/// The row used to be a list of names 40 pixels tall. It is a strip of the windows themselves
-/// now, so it needs the height a picture needs — and it costs it only while the pointer rests on
-/// a chip. The width is what went down: an item is [`ROW_ITEM_WIDTH`] rather than 220, because
-/// the surface is a content-width island and the row shares its width, not the screen's.
-pub const ROW_BAND: i32 = 104;
-/// One row item's pitch. The item itself is [`ROW_GAP`] narrower, so two previews side by side
-/// read as two windows rather than one strip — and on the ARGB surface that gutter is desktop.
-const ROW_ITEM_WIDTH: i32 = 132;
-const ROW_GAP: i32 = 4;
-/// The title line under a row item's preview.
-const ROW_TITLE: i32 = 16;
+/// The row this replaced was a *strip*: one item per window, side by side, so four windows cost
+/// four items' width and twelve cost the screen. A fan overlaps them instead — each card
+/// [`FAN_OFFSET`] to the right of the one below it, most recent on top — so its width grows by a
+/// sliver per window rather than by a card, and the thing being chosen from looks like a handful
+/// of windows rather than a menu. Above [`templar_window::task::FAN_MAX`] it stops being either,
+/// which is what Taskfield is for.
+pub const FAN_BAND: i32 = 116;
+/// One card of the fan.
+const FAN_CARD_W: i32 = 152;
+/// How far each card sits from the one beneath it. Enough that the card below reads as a card and
+/// not as a shadow; little enough that four of them still hang off one chip.
+const FAN_OFFSET: i32 = 24;
+/// The title line under a fan card's picture. Drawn only on the card under the pointer: the
+/// others are mostly covered, and a title on a covered card is two characters and an ellipsis.
+const FAN_TITLE: i32 = 16;
 /// A chip's height, and the compositor's tag height: the same object on the bar as on the window.
 pub const CHIP_H: i32 = templar_window::geometry::TAG_HEIGHT;
 pub const CHIP_GAP: i32 = 8;
@@ -132,10 +136,10 @@ const TOOLTIP_HEIGHT: i32 = 22;
 const TOOLTIP_PAD: i32 = 6;
 const TOOLTIP_GAP: i32 = 6;
 
-/// Dwell before hovering an entry opens its row: long enough that sweeping the pointer across
+/// Dwell before hovering an entry opens its fan: long enough that sweeping the pointer across
 /// the bar opens nothing.
 pub const HOVER_OPEN_MS: u64 = 400;
-/// Grace after leaving both the entry and its row before the row closes.
+/// Grace after leaving both the entry and its fan before the fan closes.
 pub const HOVER_CLOSE_MS: u64 = 200;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +153,10 @@ pub enum BarAction {
     /// A field action with no window of its own (`network.open-control`), spelled as the field
     /// spells it so the action manifest's pointer-route check sees this bar as a route.
     Field(FieldAction),
+    /// More windows than a fan can hold: hand the question to the compositor's overview, filtered
+    /// to this unit. A linear strip is intrinsically bad at thirty windows, and this is the chip
+    /// admitting it rather than growing.
+    Taskfield(templar_window::task::TaskKey),
 }
 
 /// How much of the bar is on screen: the whole of it, a hint of it, or the whole of it because
@@ -196,9 +204,9 @@ pub struct BarData<'a> {
 pub struct BarScreen {
     /// The entry under the pointer and when it arrived there.
     hover: Option<(usize, u64)>,
-    /// The entry whose row is open.
-    pub open_row: Option<usize>,
-    /// When the pointer left both the open entry and its row.
+    /// The entry whose fan is open.
+    pub open_fan: Option<usize>,
+    /// When the pointer left both the open entry and its fan.
     left_at: Option<u64>,
     /// While covered: whether the pointer has revealed the bar out from under the window.
     revealed: bool,
@@ -220,8 +228,11 @@ pub struct BarScreen {
 struct Layout {
     bar: Rect,
     cells: Vec<Rect>,
-    /// The open row's items, one rect per window of the open entry.
-    row: Vec<Rect>,
+    /// The open fan's cards, in [`fan_of`]'s order: most recently activated first, which is the
+    /// one on top and the rightmost. Painting runs backwards so the top card is painted last;
+    /// hit-testing runs forwards so the first rectangle a point is in is the card a person can
+    /// actually see there.
+    fan: Vec<Rect>,
 }
 
 /// The surface size the host should ask for, in logical pixels.
@@ -237,7 +248,7 @@ struct Layout {
 /// (`interfaces/wayland/templar-shell-v1.xml`, `set_exclusive_zone`).
 pub fn wanted_size(
     presence: Presence,
-    row_windows: Option<usize>,
+    fan_cards: Option<usize>,
     tooltip: bool,
     entries: usize,
     full_width: i32,
@@ -247,22 +258,23 @@ pub fn wanted_size(
         // for here, and the tab is only as wide as a chevron needs.
         return (HINT_WIDTH.min(widest(full_width)), HINT_HEIGHT);
     }
-    // An open row is wider than the island it hangs off — an island of one chip is 72 pixels and
-    // a window's picture is 132. The surface grows to hold it and shrinks again when it closes;
+    // An open fan is wider than the island it hangs off — an island of one chip is 72 pixels and
+    // a window's picture is 152. The surface grows to hold it and shrinks again when it closes;
     // the zone is 0 throughout, so neither move reflows anything. This is the one thing that ever
     // makes the surface wider than its own chips, and it is transient by construction.
-    let row = row_windows.map_or(0, |windows| {
-        2 * CHIP_PAD + i32::try_from(windows).unwrap_or(1).max(1) * (ROW_ITEM_WIDTH + ROW_GAP)
+    let fan = fan_cards.map_or(0, |cards| {
+        let cards = i32::try_from(cards).unwrap_or(1).max(1);
+        2 * CHIP_PAD + FAN_CARD_W + (cards - 1) * FAN_OFFSET
     });
-    let band = if row_windows.is_some() {
-        ROW_BAND
+    let band = if fan_cards.is_some() {
+        FAN_BAND
     } else if tooltip {
         TOOLTIP_HEIGHT + TOOLTIP_GAP
     } else {
         0
     };
     (
-        island_width(entries).max(row).min(widest(full_width)),
+        island_width(entries).max(fan).min(widest(full_width)),
         BAR_HEIGHT + band,
     )
 }
@@ -330,6 +342,25 @@ fn first_letter(text: &str) -> Option<char> {
     text.chars().find(|letter| letter.is_alphanumeric())
 }
 
+/// The windows a chip's fan shows: the unit's on-screen windows, most recently activated first,
+/// capped at [`templar_window::task::FAN_MAX`].
+///
+/// Parked windows are not among them. A card is a picture of a window, and a parked window is not
+/// on screen to have one; the chip says how many are, and the shelf is where the rest are.
+fn fan_of(entry: &Entry) -> Vec<&EntryWindow> {
+    entry
+        .unit
+        .visible_windows()
+        .filter_map(|id| entry.windows.iter().find(|window| window.id == id))
+        .take(templar_window::task::FAN_MAX)
+        .collect()
+}
+
+/// Whether hovering this chip opens a fan at all — two to four windows on screen.
+fn fannable(entry: &Entry) -> bool {
+    templar_window::task::chip_action(&entry.unit) == templar_window::task::ChipAction::Fan
+}
+
 /// One chip's ground: the compositor's tag, rounded the way every other small shell object is.
 pub fn chip(ui: &mut Ui<'_>, rect: Rect, fill: u32) {
     if rect.w <= 0 || rect.h <= 0 {
@@ -340,40 +371,40 @@ pub fn chip(ui: &mut Ui<'_>, rect: Rect, fill: u32) {
 }
 
 impl BarScreen {
-    /// Whether the host should make room for a row above the bar.
-    pub fn row_open(&self) -> bool {
-        self.open_row.is_some()
+    /// Whether the host should make room for a fan above the bar.
+    pub fn fan_open(&self) -> bool {
+        self.open_fan.is_some()
     }
 
     /// Whether a hovered chip is naming itself, so the host makes room above the island for it.
     /// A tooltip needs less room than a row and is not one: a chip's name is a line of text.
     #[must_use]
     pub fn tooltip_open(&self, now_ms: u64) -> bool {
-        self.open_row.is_none()
+        self.open_fan.is_none()
             && self
                 .hover
                 .is_some_and(|(_, since)| now_ms.saturating_sub(since) >= TOOLTIP_MS)
     }
 
-    /// How many windows the open row holds, for the surface size the host asks for. `None` when
-    /// no row is open.
+    /// How many cards the open fan holds, for the surface size the host asks for. `None` when no
+    /// fan is open.
     #[must_use]
-    pub fn row_windows(&self, entries: &[Entry]) -> Option<usize> {
-        let index = self.open_row?;
-        Some(entries.get(index)?.windows.len())
+    pub fn fan_cards(&self, entries: &[Entry]) -> Option<usize> {
+        let index = self.open_fan?;
+        Some(fan_of(entries.get(index)?).len())
     }
 
-    /// The windows whose previews the row wants captured: the open row's, and nothing else.
+    /// The windows whose previews the fan wants captured: the open fan's, and nothing else.
     ///
     /// Home stops capturing the moment a window covers it (`app::previews_covered`), which is
-    /// exactly when this row is the thing being looked at — so the row asks on its own behalf.
-    /// It is a slice of the open entry rather than a policy: empty means "ask for nothing", which
-    /// is every frame in which no row is open.
+    /// exactly when this fan is the thing being looked at — so the fan asks on its own behalf.
+    /// Empty means "ask for nothing", which is every frame in which no fan is open.
     #[must_use]
-    pub fn preview_wants<'a>(&self, entries: &'a [Entry]) -> &'a [EntryWindow] {
-        self.open_row
+    pub fn preview_wants(&self, entries: &[Entry]) -> Vec<WindowId> {
+        self.open_fan
             .and_then(|index| entries.get(index))
-            .map_or(&[], |entry| entry.windows.as_slice())
+            .map(|entry| fan_of(entry).iter().map(|window| window.id).collect())
+            .unwrap_or_default()
     }
 
     /// How much of the bar is on screen, given what the host says covers the strip. The host
@@ -391,18 +422,15 @@ impl BarScreen {
     /// then and nothing else.
     pub fn next_deadline_ms(&self, entries: &[Entry], covered: bool, now_ms: u64) -> Option<u64> {
         let open = self.hover.and_then(|(index, since)| {
-            (self.open_row != Some(index)
-                && entries
-                    .get(index)
-                    .is_some_and(|entry| entry.windows.len() > 1))
-            .then_some(since + HOVER_OPEN_MS)
+            (self.open_fan != Some(index) && entries.get(index).is_some_and(fannable))
+                .then_some(since + HOVER_OPEN_MS)
         });
         let close = self.left_at.map(|left| left + HOVER_CLOSE_MS);
         // Only while it is still coming: a deadline already in the past is a wake-up that
         // arrives, changes nothing and asks for itself again.
         let name = self
             .hover
-            .filter(|_| self.open_row.is_none() && !self.tooltip_open(now_ms))
+            .filter(|_| self.open_fan.is_none() && !self.tooltip_open(now_ms))
             .map(|(_, since)| since + TOOLTIP_MS);
         let reveal = self
             .hint_since
@@ -425,14 +453,14 @@ impl BarScreen {
         &self.opaque
     }
 
-    /// Back to the hint: the row and the popover go with it, because a menu hanging off a bar
+    /// Back to the hint: the fan and the popover go with it, because a menu hanging off a bar
     /// that is no longer there is a menu over somebody's window.
     fn collapse(&mut self) {
         self.revealed = false;
         self.hint_since = None;
         self.away_since = None;
         self.hover = None;
-        self.open_row = None;
+        self.open_fan = None;
         self.left_at = None;
     }
 
@@ -526,7 +554,7 @@ impl BarScreen {
         }
     }
 
-    fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_row: Option<usize>) -> Layout {
+    fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_fan: Option<usize>) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
         let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
         let chip_h = ui.px(CHIP_H).min(bar.h);
@@ -558,35 +586,35 @@ impl BarScreen {
         // copy of it down here says nothing new and costs 220 pixels of the switcher's room.
         let cells: Vec<Rect> = data.entries.iter().map(|_| chip(ui.px(CELL))).collect();
 
-        let row =
-            match open_row.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
+        let fan =
+            match open_fan.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
                 Some((cell, entry)) if area.h > bar_height => {
-                    let item_h = (area.h - bar_height - ui.px(8)).min(ui.px(ROW_BAND - 8));
-                    let count = i32::try_from(entry.windows.len()).unwrap_or(1).max(1);
-                    // The island is only as wide as its chips, so a long row shares that width
-                    // rather than stretching the surface back across the screen.
-                    let pitch = ui.px(ROW_ITEM_WIDTH).min(area.w / count).max(ui.px(CELL));
-                    let start = cell.x.min(area.right() - pitch * count).max(area.x);
-                    // The pitch is the item plus its gutter; the item is what is painted and what
-                    // is clicked, so the gutter belongs to neither.
-                    let item_w = (pitch - ui.px(ROW_GAP)).max(1);
+                    let card_h = (area.h - bar_height - ui.px(8)).min(ui.px(FAN_BAND - 8));
+                    let count = i32::try_from(fan_of(entry).len()).unwrap_or(1).max(1);
+                    let offset = ui.px(FAN_OFFSET);
+                    // The island is only as wide as its chips, so a fan that would hang off the
+                    // end of the surface slides left until it does not, rather than stretching it.
+                    let card_w = ui.px(FAN_CARD_W).min(area.w).max(ui.px(CELL));
+                    let span = card_w + (count - 1) * offset;
+                    let start = cell.x.min(area.right() - span).max(area.x);
+                    let y = bar.y - ui.px(4) - card_h;
+                    // The most recent is the rightmost and the topmost; each older card sits one
+                    // offset to its left, exposing exactly that sliver of itself.
                     (0..count)
-                        .map(|i| {
-                            Rect::new(start + i * pitch, bar.y - ui.px(4) - item_h, item_w, item_h)
-                        })
+                        .map(|i| Rect::new(start + (count - 1 - i) * offset, y, card_w, card_h))
                         .collect()
                 }
                 _ => Vec::new(),
             };
 
-        Layout { bar, cells, row }
+        Layout { bar, cells, fan }
     }
 
     fn update_hover(&mut self, ui: &Ui<'_>, layout: &Layout, data: &BarData<'_>) {
         let cursor = ui.input.cursor();
         let over_cell =
             cursor.and_then(|(x, y)| layout.cells.iter().position(|c| c.contains(x, y)));
-        let over_row = cursor.is_some_and(|(x, y)| layout.row.iter().any(|r| r.contains(x, y)));
+        let over_fan = cursor.is_some_and(|(x, y)| layout.fan.iter().any(|r| r.contains(x, y)));
         match over_cell {
             Some(index) => {
                 if self.hover.is_none_or(|(hovered, _)| hovered != index) {
@@ -596,42 +624,44 @@ impl BarScreen {
             None => self.hover = None,
         }
         if let Some((index, since)) = self.hover
-            && self.open_row != Some(index)
+            && self.open_fan != Some(index)
             && data.now_ms.saturating_sub(since) >= HOVER_OPEN_MS
-            && data.entries.get(index).is_some_and(|e| e.windows.len() > 1)
+            && data.entries.get(index).is_some_and(fannable)
         {
-            self.open_row = Some(index);
+            self.open_fan = Some(index);
             self.left_at = None;
         }
-        if let Some(open) = self.open_row {
-            if over_cell == Some(open) || over_row {
+        if let Some(open) = self.open_fan {
+            if over_cell == Some(open) || over_fan {
                 self.left_at = None;
             } else {
                 let left = *self.left_at.get_or_insert(data.now_ms);
                 if data.now_ms.saturating_sub(left) >= HOVER_CLOSE_MS {
-                    self.open_row = None;
+                    self.open_fan = None;
                     self.left_at = None;
                 }
             }
         }
     }
 
-    /// One row item's picture: the window itself once a capture has arrived, and until then the
-    /// application's icon — which is what the row was before previews, so a preview in flight is
-    /// a legible item rather than an empty box.
-    fn draw_row_preview(
+    /// One fan card's picture: the window itself once a capture has arrived, and until then the
+    /// application's icon — which is what the fan was before previews, so a preview in flight is
+    /// a legible card rather than an empty box.
+    fn draw_card_preview(
         ui: &mut Ui<'_>,
         rect: Rect,
         entry: &Entry,
         window: &EntryWindow,
         data: &BarData<'_>,
+        titled: bool,
     ) {
         let pad = ui.px(4);
+        let title_h = if titled { ui.px(FAN_TITLE) } else { 0 };
         let well = Rect::new(
             rect.x + pad,
             rect.y + pad,
             rect.w - 2 * pad,
-            rect.h - 2 * pad - ui.px(ROW_TITLE),
+            rect.h - 2 * pad - title_h,
         );
         if well.w <= 0 || well.h <= 0 {
             return;
@@ -682,9 +712,9 @@ impl BarScreen {
             self.draw_hint(ui, area);
             return actions;
         }
-        let layout = Self::layout(ui, area, data, self.open_row);
+        let layout = Self::layout(ui, area, data, self.open_fan);
         self.update_hover(ui, &layout, data);
-        let layout = Self::layout(ui, area, data, self.open_row);
+        let layout = Self::layout(ui, area, data, self.open_fan);
 
         // Every pixel of the surface, first, and the shapes that are actually solid recorded
         // beside it. The colour buffer has no alpha to give (pixelkit holds `0x00RRGGBB`), so the
@@ -703,20 +733,28 @@ impl BarScreen {
         self.opaque
             .extend(layout.cells.iter().map(|cell| (*cell, radius)));
 
-        // The row next: it floats over whatever is above the bar and claims its clicks before
+        // The fan next: it floats over whatever is above the bar and claims its clicks before
         // the bar's own cells can.
-        if let Some(index) = self.open_row
+        if let Some(index) = self.open_fan
             && let Some(entry) = data.entries.get(index)
         {
-            for (rect, window) in layout.row.iter().zip(&entry.windows) {
+            let windows = fan_of(entry);
+            // The cards overlap, so "which one is under the pointer" has one answer and it is the
+            // topmost — the last one painted. Everything below it is a sliver the person can see
+            // but is not choosing.
+            let hovered = ui
+                .input
+                .cursor()
+                .and_then(|(x, y)| layout.fan.iter().position(|rect| rect.contains(x, y)));
+            // Backwards: the oldest card is painted first and the most recent last, on top.
+            for (position, (rect, window)) in layout.fan.iter().zip(&windows).enumerate().rev() {
                 // `design::shell` again: the tile's own radius, or its corners keep the shadow.
                 self.opaque.push((*rect, ui.px(design::TILE_RADIUS)));
-                let parked = entry.is_parked(window.id);
-                let hovered = ui.input.hovering(*rect);
+                let lifted = hovered == Some(position);
                 design::shell(
                     ui,
                     *rect,
-                    if hovered {
+                    if lifted {
                         design::accent_soft()
                     } else {
                         design::shell_fill()
@@ -724,31 +762,35 @@ impl BarScreen {
                     design::edge_strong(),
                     Elevation::Lifted,
                 );
-                Self::draw_row_preview(ui, *rect, entry, window, data);
-                let title = Rect::new(
-                    rect.x,
-                    rect.bottom() - ui.px(ROW_TITLE + 4),
-                    rect.w,
-                    ui.px(ROW_TITLE),
-                );
-                ui.label_styled(
-                    title.inset(ui.px(6)),
-                    &window.title,
-                    design::state_style(ui),
-                    if parked {
-                        design::text_faint()
-                    } else {
-                        design::text()
-                    },
-                    Align::Left,
-                );
-                if ui.input.take_click(*rect) {
-                    if parked {
-                        actions.push(BarAction::Field(FieldAction::Restore(window.id)));
-                    }
+                Self::draw_card_preview(ui, *rect, entry, window, data, lifted);
+                // Only the card under the pointer is named. The rest are mostly covered by the
+                // card above them, and a title on a covered card is two letters and an ellipsis.
+                if lifted {
+                    let title = Rect::new(
+                        rect.x,
+                        rect.bottom() - ui.px(FAN_TITLE + 4),
+                        rect.w,
+                        ui.px(FAN_TITLE),
+                    );
+                    ui.label_styled(
+                        title.inset(ui.px(6)),
+                        &window.title,
+                        design::state_style(ui),
+                        design::text(),
+                        Align::Left,
+                    );
+                }
+            }
+            // Claimed from the top down, for the same reason: a click on the overlap belongs to
+            // the card that is visible there.
+            for (position, rect) in layout.fan.iter().enumerate() {
+                if ui.input.take_click(*rect)
+                    && let Some(window) = windows.get(position)
+                {
                     actions.push(BarAction::Activate(window.id));
-                    self.open_row = None;
+                    self.open_fan = None;
                     self.left_at = None;
+                    break;
                 }
             }
         }
@@ -756,7 +798,7 @@ impl BarScreen {
         // The taskbar: one chip per entry, in the same colours the compositor gives that window's
         // own name tag, so the two read as the same object.
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
-            let hovered = ui.input.hovering(*cell) || self.open_row == Some(index);
+            let hovered = ui.input.hovering(*cell) || self.open_fan == Some(index);
             let (fill, ink) = match (entry.active, hovered) {
                 (true, _) => (design::accent_soft(), design::text()),
                 (false, true) => (design::accent(), design::TAG_INK),
@@ -771,9 +813,19 @@ impl BarScreen {
                 ink
             };
             chip(ui, *cell, fill);
+            // Active is an underline rather than a box around the whole chip: the box read as a
+            // second chip, and this is the same two pixels the window's own tag wears.
             if entry.active {
-                ui.painter
-                    .stroke_rect(*cell, ui.px(2).max(1), design::accent());
+                let thick = ui.px(2).max(1);
+                ui.painter.fill_rect(
+                    Rect::new(
+                        cell.x + ui.px(6),
+                        cell.bottom() - thick,
+                        (cell.w - ui.px(12)).max(1),
+                        thick,
+                    ),
+                    design::accent(),
+                );
             }
             let icon_side = ui.px(ICON).min(cell.h - ui.px(6));
             let icon = Rect::new(
@@ -785,29 +837,37 @@ impl BarScreen {
             if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
                 ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
             } else {
+                // A group has no application icon — it is more than one application by
+                // definition — so it wears its accent and its own initial.
                 let plate = entry.accent().unwrap_or(fill);
                 ui.painter
                     .fill_rounded_rect(icon, ui.px(design::CHIP_RADIUS), plate);
-                let mark = if entry.accent().is_some() {
-                    entry.windows.len().to_string()
-                } else {
-                    chip_initial(entry)
-                };
-                ui.label(icon, &mark, ink, Align::Centre);
+                ui.label(icon, &chip_initial(entry), ink, Align::Centre);
             }
-            // How many windows are behind this chip. One entry per application is deliberate
-            // (@templaros.decision.one-persistent-bottom-bar-tags-not-bands) and the row above the
-            // bar is how the rest are reached — but a chip that says nothing about the second
-            // window is a window the person can only find by moving the one on top of it. Groups
-            // already carry their count as the icon mark, so this is the loose-entry case.
-            if entry.accent().is_none() && entry.windows.len() > 1 {
+            // How many windows are behind this chip, groups included. One chip per unit is
+            // deliberate (@templaros.decision.one-persistent-bottom-bar-tags-not-bands) and the
+            // fan above the bar is how the rest are reached — but a chip that says nothing about
+            // the second window is a window the person can only find by moving the one on top of
+            // it. The count is what is *on screen*: a parked window is not behind this chip in
+            // any sense a person can point at, and the dimming is what says some are.
+            if entry.visible() > 1 {
                 let side = ui.px(12).min(cell.h);
                 let badge = Rect::new(icon.right() - side / 2, icon.y, side.min(cell.w), side);
-                ui.painter
-                    .fill_rounded_rect(badge, ui.px(design::CHIP_RADIUS), design::accent());
+                // Muted while some of the unit is parked: a chip reading 2 with three windows
+                // behind it is telling the truth about the screen, and the colour says so.
+                let some_parked = !entry.unit.shelved.is_empty();
+                ui.painter.fill_rounded_rect(
+                    badge,
+                    ui.px(design::CHIP_RADIUS),
+                    if some_parked {
+                        design::edge_strong()
+                    } else {
+                        design::accent()
+                    },
+                );
                 ui.label(
                     badge,
-                    &entry.windows.len().to_string(),
+                    &entry.visible().to_string(),
                     design::TAG_INK,
                     Align::Centre,
                 );
@@ -826,21 +886,33 @@ impl BarScreen {
                 );
             }
             if ui.input.take_click(*cell) {
-                if let Some(window) = (entry.windows.len() == 1)
-                    .then(|| entry.most_recent())
-                    .flatten()
-                {
-                    if entry.is_parked(window) {
-                        actions.push(BarAction::Field(FieldAction::Restore(window)));
+                match templar_window::task::chip_action(&entry.unit) {
+                    // Nothing to choose between. A chip whose windows are all parked is this case
+                    // too: the click brings the most recent of them back, which is the only thing
+                    // "go to it" can mean when none of it is on screen.
+                    templar_window::task::ChipAction::Direct => {
+                        if let Some(window) = entry.most_recent() {
+                            if entry.is_parked(window) {
+                                actions.push(BarAction::Field(FieldAction::Restore(window)));
+                            }
+                            actions.push(BarAction::Activate(window));
+                        }
                     }
-                    actions.push(BarAction::Activate(window));
-                } else {
-                    self.open_row = if self.open_row == Some(index) {
-                        None
-                    } else {
-                        Some(index)
-                    };
-                    self.left_at = None;
+                    templar_window::task::ChipAction::Fan => {
+                        self.open_fan = if self.open_fan == Some(index) {
+                            None
+                        } else {
+                            Some(index)
+                        };
+                        self.left_at = None;
+                    }
+                    // More than a fan can hold. The chip does not grow a menu: the compositor's
+                    // overview shows them at the size they actually are.
+                    templar_window::task::ChipAction::Taskfield => {
+                        actions.push(BarAction::Taskfield(entry.unit.key.clone()));
+                        self.open_fan = None;
+                        self.left_at = None;
+                    }
                 }
             }
         }
@@ -852,11 +924,24 @@ impl BarScreen {
         // answer to both: nothing is written until the pointer asks, and then it is written in
         // words. A chip whose row is open needs none, because the row is already saying it.
         if let Some((index, since)) = self.hover
-            && self.open_row.is_none()
+            && self.open_fan.is_none()
             && data.now_ms.saturating_sub(since) >= TOOLTIP_MS
             && let Some((cell, entry)) = layout.cells.get(index).zip(data.entries.get(index))
         {
-            let text = entry.label.as_str();
+            // A chip with more windows than a fan can hold says how many, and says what clicking
+            // it will do — the one chip on the bar whose click goes somewhere else entirely.
+            let named = if templar_window::task::chip_action(&entry.unit)
+                == templar_window::task::ChipAction::Taskfield
+            {
+                format!(
+                    "{} \u{b7} {} windows \u{2014} show all",
+                    entry.label,
+                    entry.visible()
+                )
+            } else {
+                entry.label.clone()
+            };
+            let text = named.as_str();
             let style = design::state_style(ui);
             let width = ui.text.measure(text, style) + ui.px(2 * TOOLTIP_PAD);
             let height = ui.px(TOOLTIP_HEIGHT);
@@ -914,11 +999,11 @@ mod tests {
     /// no room to be tested in.
     const W: i32 = 1920;
 
-    /// The tallest the island ever gets: the bar plus an open hover row. The harness buffer is
+    /// The tallest the island ever gets: the bar plus an open fan. The harness buffer is
     /// this tall so every state fits in one buffer, and the island is always drawn at the bottom
     /// of it, exactly as the host's surface is.
     fn tallest() -> i32 {
-        BAR_HEIGHT + ROW_BAND
+        BAR_HEIGHT + FAN_BAND
     }
 
     fn window(id: u64, app: &str, title: &str, activated: bool, maximized: bool) -> ShellToplevel {
@@ -987,7 +1072,7 @@ mod tests {
         fn wanted(&self) -> (i32, i32) {
             wanted_size(
                 self.screen.presence(self.covered),
-                self.screen.row_windows(&taskbar::entries(&self.toplevels)),
+                self.screen.fan_cards(&taskbar::entries(&self.toplevels)),
                 self.screen.tooltip_open(self.now),
                 taskbar::entries(&self.toplevels).len(),
                 W,
@@ -1083,7 +1168,7 @@ mod tests {
                 &ui,
                 Rect::new(0, top, self.width, self.height),
                 &data,
-                self.screen.open_row,
+                self.screen.open_fan,
             )
         }
 
@@ -1138,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_one_window_entry_activates_on_click_and_a_two_window_entry_opens_its_row() {
+    fn a_one_window_entry_activates_on_click_and_a_two_window_entry_opens_its_fan() {
         let mut h = Harness::new(vec![
             window(1, "org.example.Editor", "notes", false, false),
             window(2, "org.templaros.Files", "Downloads", false, false),
@@ -1152,19 +1237,19 @@ mod tests {
         let files = cells[1];
         let actions = h.click(files.x + files.w / 2, files.y + files.h / 2);
         assert!(actions.is_empty(), "{actions:?}");
-        assert_eq!(h.screen.open_row, Some(1));
+        assert_eq!(h.screen.open_fan, Some(1));
         // The host has already made room (the harness resizes exactly where `app.rs` does); the
-        // row's first item activates its window and closes the row.
-        assert_eq!(h.wanted().1, BAR_HEIGHT + ROW_BAND);
+        // top card is the most recent window, and clicking it activates it and closes the fan.
+        assert_eq!(h.wanted().1, BAR_HEIGHT + FAN_BAND);
         h.frame();
-        let row_y = h.rects().row[0].y + 8;
-        let actions = h.click(files.x + 20, row_y);
+        let top = h.rects().fan[0];
+        let actions = h.click(top.x + top.w / 2, top.y + top.h / 2);
         assert_eq!(actions, vec![BarAction::Activate(WindowId(2))]);
-        assert_eq!(h.screen.open_row, None);
+        assert_eq!(h.screen.open_fan, None);
     }
 
     #[test]
-    fn hovering_a_multi_window_entry_opens_its_row_after_the_dwell_and_leaving_closes_it() {
+    fn hovering_a_multi_window_entry_opens_its_fan_after_the_dwell_and_leaving_closes_it() {
         let mut h = Harness::new(vec![
             window(2, "org.templaros.Files", "Downloads", false, false),
             window(3, "org.templaros.Files", "Pictures", false, false),
@@ -1174,7 +1259,7 @@ mod tests {
         h.input
             .cursor_moved((cell.x + 10) as f32, (cell.y + 10) as f32);
         h.frame();
-        assert_eq!(h.screen.open_row, None);
+        assert_eq!(h.screen.open_fan, None);
         let entries = taskbar::entries(&h.toplevels);
         // The name comes first: a chip says what it is a quarter of a second before it offers
         // its windows.
@@ -1187,35 +1272,34 @@ mod tests {
         assert_eq!(
             h.screen.next_deadline_ms(&entries, false, h.now),
             Some(HOVER_OPEN_MS),
-            "and the row's dwell is what is left to wait for"
+            "and the fan's dwell is what is left to wait for"
         );
         h.now = HOVER_OPEN_MS;
         h.frame();
-        assert_eq!(h.screen.open_row, Some(0));
+        assert_eq!(h.screen.open_fan, Some(0));
         // Off the bar entirely: a grace period, then closed.
         h.input.cursor_left();
         h.frame();
-        assert_eq!(h.screen.open_row, Some(0));
+        assert_eq!(h.screen.open_fan, Some(0));
         assert_eq!(
             h.screen.next_deadline_ms(&entries, false, h.now),
             Some(HOVER_OPEN_MS + HOVER_CLOSE_MS)
         );
         h.now += HOVER_CLOSE_MS;
         h.frame();
-        assert_eq!(h.screen.open_row, None);
+        assert_eq!(h.screen.open_fan, None);
     }
 
-    /// Open the row of the first entry the way a person does: rest on its chip until the dwell
-    /// elapses. The host has resized by the time this returns, so the row's rectangles are the
-    /// ones a real click would land on.
-    /// Hover a chip until its row opens, re-aiming at it after every frame.
+    /// Open the fan of an entry the way a person does: rest on its chip until the dwell elapses.
+    /// The host has resized by the time this returns, so the fan's rectangles are the ones a real
+    /// click would land on. Re-aims at the chip after every frame.
     ///
     /// The re-aim is not modelling anything: the harness lays its chips from the buffer's own
     /// origin, so a chip's coordinates do not move when the surface resizes. On hardware they do,
     /// in both axes — the host answers with `follow_bottom_anchored_resize` for the height, and
     /// centring the chip strip (`layout`) is what holds them still in the width. Neither is
     /// visible from here, which is why both are named in the runbook.
-    fn open_row_of(h: &mut Harness, index: usize) {
+    fn open_fan_of(h: &mut Harness, index: usize) {
         for now in [0, 0, HOVER_OPEN_MS, HOVER_OPEN_MS] {
             h.now = now;
             let cell = h.cells()[index];
@@ -1223,14 +1307,14 @@ mod tests {
                 .cursor_moved((cell.x + 10) as f32, (cell.y + 10) as f32);
             h.frame();
         }
-        assert_eq!(h.screen.open_row, Some(index));
+        assert_eq!(h.screen.open_fan, Some(index));
     }
 
-    /// A row item is the window, not its name — and when the capture has not arrived it is still
-    /// legible, because that is what the row was before previews. Both halves in one frame: the
+    /// A fan card is the window, not its name — and when the capture has not arrived it is still
+    /// legible, because that is what the fan was before previews. Both halves in one frame: the
     /// first window has a preview and the second has not.
     #[test]
-    fn a_row_item_shows_its_window_preview_and_falls_back_without_one() {
+    fn a_fan_card_shows_its_window_preview_and_falls_back_without_one() {
         const CAPTURE: u32 = 0x0012_3456;
         let mut h = Harness::new(vec![
             window(2, "org.templaros.Files", "Downloads", false, false),
@@ -1246,37 +1330,36 @@ mod tests {
                 pixels: vec![0xff00_0000 | CAPTURE; 64],
             },
         );
-        open_row_of(&mut h, 0);
-        let row = h.rects().row;
-        assert_eq!(row.len(), 2);
+        open_fan_of(&mut h, 0);
+        let fan = h.rects().fan;
+        assert_eq!(fan.len(), 2);
         let stride = h.buffer.width as usize;
-        // The middle of each item's well: above the title line, inside the preview.
-        let well_centre = |rect: Rect| {
-            let (x, y) = (
-                rect.x + rect.w / 2,
-                rect.y + 4 + (rect.h - 8 - ROW_TITLE) / 2,
-            );
+        // The first card is the most recent window — id 2, the one with the capture — and it is
+        // the topmost, so its whole face shows. The one behind it shows only the sliver on its
+        // left that the top card does not cover.
+        let at = |rect: Rect, from_left: i32| {
+            let (x, y) = (rect.x + from_left, rect.y + 4 + (rect.h - 8) / 2);
             h.buffer.pixels[y as usize * stride + x as usize] & 0x00ff_ffff
         };
         assert_eq!(
-            well_centre(row[0]),
+            at(fan[0], fan[0].w / 2),
             CAPTURE,
             "the window with a capture shows it"
         );
         assert_ne!(
-            well_centre(row[1]),
+            at(fan[1], FAN_OFFSET / 2),
             CAPTURE,
             "the window without one shows its own fallback, not the other window"
         );
-        // And the fallback is not the raw surface either: the well is painted.
-        assert_ne!(well_centre(row[1]), 0, "an empty box is not an item");
+        // And the fallback is not the raw surface either: the card is painted.
+        assert_ne!(at(fan[1], FAN_OFFSET / 2), 0, "an empty box is not a card");
     }
 
-    /// The island is only as wide as its chips and the row shares that width, so a row that
-    /// reached past it would be a strip of previews hanging off the end of the surface.
+    /// The island is only as wide as its chips and the fan shares that width, so a fan that
+    /// reached past it would be cards hanging off the end of the surface.
     #[test]
-    fn the_open_row_fits_inside_the_island() {
-        for titles in [vec!["Downloads", "Pictures"], vec!["a", "b", "c", "d", "e"]] {
+    fn the_open_fan_fits_inside_the_island() {
+        for titles in [vec!["Downloads", "Pictures"], vec!["a", "b", "c", "d"]] {
             let toplevels = titles
                 .iter()
                 .enumerate()
@@ -1285,11 +1368,11 @@ mod tests {
                 })
                 .collect();
             let mut h = Harness::new(toplevels);
-            open_row_of(&mut h, 0);
+            open_fan_of(&mut h, 0);
             let surface = h.wanted().0;
-            let row = h.rects().row;
-            assert_eq!(row.len(), titles.len());
-            for rect in &row {
+            let fan = h.rects().fan;
+            assert_eq!(fan.len(), titles.len());
+            for rect in &fan {
                 assert!(
                     rect.x >= 0 && rect.right() <= surface,
                     "{rect:?} leaves the surface ({surface} wide) with {} windows",
@@ -1298,15 +1381,15 @@ mod tests {
             }
             assert!(
                 surface >= h.island(),
-                "an open row widens the surface rather than squeezing its own tiles"
+                "an open fan widens the surface rather than squeezing its own cards"
             );
         }
     }
 
-    /// The row is the only thing that asks for a capture while a window covers Home, so it must
+    /// The fan is the only thing that asks for a capture while a window covers Home, so it must
     /// ask for exactly the windows it is showing and stop the moment it closes.
     #[test]
-    fn previews_are_asked_for_only_while_a_row_is_open() {
+    fn previews_are_asked_for_only_while_a_fan_is_open() {
         let mut h = Harness::new(vec![
             window(2, "org.templaros.Files", "Downloads", false, false),
             window(3, "org.templaros.Files", "Pictures", false, false),
@@ -1316,21 +1399,15 @@ mod tests {
         let entries = taskbar::entries(&h.toplevels);
         assert!(
             h.screen.preview_wants(&entries).is_empty(),
-            "a closed row asks for nothing"
+            "a closed fan asks for nothing"
         );
         // The Files entry is first: applications are in first-seen order, and its windows are
         // the low ids. `org.example.Editor` is the one-window entry that opens no row at all.
-        open_row_of(&mut h, 0);
-        let wants: Vec<WindowId> = h
-            .screen
-            .preview_wants(&entries)
-            .iter()
-            .map(|window| window.id)
-            .collect();
+        open_fan_of(&mut h, 0);
         assert_eq!(
-            wants,
+            h.screen.preview_wants(&entries),
             vec![WindowId(2), WindowId(3)],
-            "the open row's windows, and not the editor that is not in it"
+            "the open fan's windows, and not the editor that is not in it"
         );
         h.input.cursor_left();
         h.frame();
@@ -1338,7 +1415,7 @@ mod tests {
         h.frame();
         assert!(
             h.screen.preview_wants(&entries).is_empty(),
-            "the row closed, so nothing is being looked at"
+            "the fan closed, so nothing is being looked at"
         );
     }
 
@@ -1372,7 +1449,7 @@ mod tests {
     /// `TEMPLAR_BAR_BASELINE_DUMP=<path>` writes the bar with its row open as a PNG for review, the
     /// way `offscreen`'s Home baseline does; without it this only checks the frame draws.
     #[test]
-    fn the_bar_renders_with_its_row_open() {
+    fn the_bar_renders_with_its_fan_open() {
         let mut active = window(1, "org.example.Editor", "notes — draft.md", true, true);
         active.group = None;
         let mut term = window(4, "org.example.Term", "sh", false, false);
@@ -1387,8 +1464,8 @@ mod tests {
             window(3, "org.templaros.Files", "Pictures", false, false),
             term,
         ]);
-        h.screen.open_row = Some(2);
-        // One frame to let the harness take the size the open row asks for, then the render.
+        h.screen.open_fan = Some(1);
+        // One frame to let the harness take the size the open fan asks for, then the render.
         h.frame();
         h.frame();
         if let Ok(path) = std::env::var("TEMPLAR_BAR_BASELINE_DUMP") {
@@ -1403,7 +1480,7 @@ mod tests {
     /// the popover, and the exclusive zone is 0 through all of it, so nothing here reflows a
     /// window.
     #[test]
-    fn the_island_is_its_contents_wide_and_grows_upward_for_a_row_or_the_popover() {
+    fn the_island_is_its_contents_wide_and_grows_upward_for_a_fan_or_the_popover() {
         let open = Presence::Open;
         let empty = island_width(0);
         assert!(
@@ -1413,13 +1490,14 @@ mod tests {
         assert_eq!(island_width(3) - empty, 3 * (CELL + CHIP_GAP));
 
         assert_eq!(wanted_size(open, None, false, 0, W), (empty, BAR_HEIGHT));
-        // A row is wider than the island it hangs off, so it is the row that sets the width.
-        let one_row = wanted_size(open, Some(1), false, 0, W);
-        assert_eq!(one_row.1, BAR_HEIGHT + ROW_BAND);
-        assert!(one_row.0 > empty, "an open row widens the surface");
-        assert!(
-            wanted_size(open, Some(3), false, 0, W).0 > one_row.0,
-            "and a longer row widens it further"
+        // A fan is wider than the island it hangs off, so it is the fan that sets the width.
+        let one_card = wanted_size(open, Some(1), false, 0, W);
+        assert_eq!(one_card.1, BAR_HEIGHT + FAN_BAND);
+        assert!(one_card.0 > empty, "an open fan widens the surface");
+        // And each further card costs an offset rather than a whole card: that is what a fan is.
+        assert_eq!(
+            wanted_size(open, Some(4), false, 0, W).0 - one_card.0,
+            3 * FAN_OFFSET
         );
         // An output narrower than the island clamps to the output *less its two corners*, which
         // belong to the compositor's hot corner rather than to the bar; a width of nothing is
@@ -1436,8 +1514,8 @@ mod tests {
         // Revealed is the island, in full; the hint is a tab, band or no band.
         assert_eq!(
             wanted_size(Presence::Revealed, Some(1), false, 0, W),
-            one_row,
-            "revealed is the island in full, row and all"
+            one_card,
+            "revealed is the island in full, fan and all"
         );
         assert_eq!(
             wanted_size(Presence::Hint, Some(1), false, 0, W),
@@ -1499,15 +1577,15 @@ mod tests {
         let plate = shapes[0].0;
         assert_eq!(plate.h, CHIP_H, "a chip's height, not the bar's");
 
-        // Open a hover row: its tiles are solid too, and they are the only things above the
-        // chips that are — the band they grow into is otherwise desktop.
-        open_row_of(&mut h, 0);
+        // Open a fan: its cards are solid too, and they are the only things above the chips
+        // that are — the band they grow into is otherwise desktop.
+        open_fan_of(&mut h, 0);
         let shapes = h.screen.opaque_shapes().to_vec();
         assert!(shapes.len() > h.cells().len(), "{shapes:?}");
-        let tile = shapes.last().expect("a row tile is recorded last").0;
+        let card = shapes.last().expect("a fan card is recorded last").0;
         assert!(
-            tile.bottom() <= plate.y,
-            "a row tile sits above the chips, not on them"
+            card.bottom() <= plate.y,
+            "a fan card sits above the chips, not on them"
         );
 
         // The hint covers its whole tab and nothing else: a six-pixel surface has no room for a
@@ -1543,7 +1621,7 @@ mod tests {
         let closed = on_screen(&mut h);
         let narrow = h.wanted().0;
 
-        open_row_of(&mut h, 1);
+        open_fan_of(&mut h, 1);
         assert!(
             h.wanted().0 > narrow,
             "the row is what makes the surface wider"
@@ -1617,7 +1695,7 @@ mod tests {
     /// "it should hide as easily as it appears, if moused away from" — and the row and the
     /// popover go with it, because a menu hanging off a bar that is gone is a menu over a window.
     #[test]
-    fn leaving_the_revealed_bar_collapses_it_and_closes_the_row_and_the_popover() {
+    fn leaving_the_revealed_bar_collapses_it_and_closes_the_fan_and_the_popover() {
         let mut h = Harness::new(vec![
             window(2, "org.templaros.Files", "Downloads", false, false),
             window(3, "org.templaros.Files", "Pictures", false, false),
@@ -1629,7 +1707,7 @@ mod tests {
         h.now = HINT_OPEN_MS;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Revealed);
-        h.screen.open_row = Some(0);
+        h.screen.open_fan = Some(0);
         h.frame();
 
         h.input.cursor_left();
@@ -1648,7 +1726,7 @@ mod tests {
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Hint);
         assert_eq!(h.wanted(), (HINT_WIDTH, HINT_HEIGHT));
-        assert_eq!(h.screen.open_row, None, "the row closed with it");
+        assert_eq!(h.screen.open_fan, None, "the fan closed with it");
     }
 
     /// Nothing covers the strip: the bar is simply there, whatever the pointer does and however
@@ -1708,6 +1786,93 @@ mod tests {
         h.now += HINT_CLOSE_MS;
         h.frame();
         assert_eq!(h.screen.presence(true), Presence::Hint);
+    }
+
+    /// A fan is at most four cards. Above that a strip stops being a way to choose — the fifth
+    /// window is a sliver of a sliver — so the chip stops offering one and hands the question to
+    /// the compositor's overview instead.
+    #[test]
+    fn fan_caps_at_four() {
+        use templar_window::task::{ChipAction, FAN_MAX, chip_action};
+
+        for count in 2..=6u64 {
+            let toplevels: Vec<ShellToplevel> = (0..count)
+                .map(|i| window(i + 1, "org.templaros.Files", "a window", false, false))
+                .collect();
+            let mut h = Harness::new(toplevels);
+            h.frame();
+            let entries = taskbar::entries(&h.toplevels);
+            let over_four = count as usize > FAN_MAX;
+            assert_eq!(
+                chip_action(&entries[0].unit) == ChipAction::Taskfield,
+                over_four,
+                "{count} windows"
+            );
+
+            let cell = h.cells()[0];
+            let (x, y) = Harness::centre(cell);
+            let actions = h.click(x, y);
+            if over_four {
+                // No fan at all: the click is the handover, and the surface never grew.
+                assert_eq!(
+                    actions,
+                    vec![BarAction::Taskfield(entries[0].unit.key.clone())],
+                    "{count} windows"
+                );
+                assert_eq!(h.screen.open_fan, None);
+                assert_eq!(h.screen.fan_cards(&entries), None);
+                assert_eq!(
+                    h.wanted().1,
+                    BAR_HEIGHT,
+                    "no band for a fan that never opened"
+                );
+            } else {
+                assert!(actions.is_empty(), "{count} windows: {actions:?}");
+                assert_eq!(h.screen.open_fan, Some(0));
+                assert_eq!(h.screen.fan_cards(&entries), Some(count as usize));
+                h.frame();
+                assert_eq!(h.rects().fan.len(), count as usize);
+            }
+        }
+    }
+
+    /// The chips are spatial memory. Using a window changes what is *inside* a chip — the fan's
+    /// order, the badge, the underline — and must never change where the chips are: a strip that
+    /// resorts itself on every click is a strip nobody can aim at.
+    #[test]
+    fn chip_order_stable_under_activation() {
+        let mut h = Harness::new(vec![
+            window(1, "org.templaros.Files", "Downloads", false, false),
+            window(2, "org.example.Editor", "notes", true, false),
+            window(3, "org.templaros.Files", "Pictures", false, false),
+        ]);
+        h.frame();
+        let before: Vec<String> = taskbar::entries(&h.toplevels)
+            .iter()
+            .map(crate::taskbar::Entry::key)
+            .collect();
+        let cells = h.cells();
+
+        // The editor loses activation to the second Files window, which also becomes the most
+        // recent thing on the machine.
+        h.toplevels[1].activated = false;
+        h.toplevels[2].activated = true;
+        h.toplevels[2].mru_rank = 0;
+        h.frame();
+        let entries = taskbar::entries(&h.toplevels);
+        assert_eq!(
+            entries
+                .iter()
+                .map(crate::taskbar::Entry::key)
+                .collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(h.cells(), cells, "a chip moved");
+        // Inside the chip, though, recency moved: the fan offers the newest window first.
+        assert_eq!(
+            fan_of(&entries[0]).first().map(|window| window.id),
+            Some(WindowId(3))
+        );
     }
 
     /// A click on the hint is a person asking for the bar now, not in a hundred milliseconds.

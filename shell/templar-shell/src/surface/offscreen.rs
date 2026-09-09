@@ -167,12 +167,12 @@ pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
 ///
 /// `Revealed` is *driven* rather than set: the fixture puts the pointer on the hint and lets the
 /// dwell elapse, so this renders the state a person actually reaches rather than one only a test
-/// can construct. `open_row` is driven the same way: the pointer rests on the group's chip until
-/// the hover dwell elapses, which is the only way a row opens in the running shell.
+/// can construct. `open_fan` is driven the same way: the pointer rests on the group's chip until
+/// the hover dwell elapses, which is the only way a fan opens in the running shell.
 #[allow(clippy::too_many_lines)]
 pub(super) fn bar_frame(
     presence: crate::surface::bar_screen::Presence,
-    open_row: bool,
+    open_fan: bool,
     scale: f64,
 ) -> WindowBuffer {
     use crate::surface::bar_screen::{
@@ -220,7 +220,7 @@ pub(super) fn bar_frame(
     ]);
     let logical = wanted_size(
         presence,
-        open_row.then(|| entries[0].windows.len()),
+        open_fan.then(|| entries[0].visible()),
         false,
         entries.len(),
         2560,
@@ -287,10 +287,10 @@ pub(super) fn bar_frame(
             input.cursor_moved(width as f32 / 2.0, height as f32 - 1.0);
         }
     }
-    if open_row {
-        // The row is opened the way a person opens it: the pointer comes to the first chip and
+    if open_fan {
+        // The fan is opened the way a person opens it: the pointer comes to the first chip and
         // stays there until the hover dwell elapses. This frame is the chip merely hovered; the
-        // final paint below is the one with the row on it.
+        // final paint below is the one with the fan on it.
         //
         // 32 is the island's 8-pixel margin plus half a 48-pixel cell — the middle of the first
         // chip, which is the group with two windows.
@@ -298,7 +298,7 @@ pub(super) fn bar_frame(
         paint(&mut buffer, &mut input, &data);
     }
     let now = BarData {
-        now_ms: match (presence, open_row) {
+        now_ms: match (presence, open_fan) {
             (Presence::Revealed, _) => HINT_OPEN_MS,
             (_, true) => HOVER_OPEN_MS,
             _ => 0,
@@ -827,8 +827,8 @@ mod tests {
     ///
     /// The bar has no reservation any more, so what it looks like *is* the whole of how it
     /// behaves: open over Home, a six-pixel chevron under a window, and the bar back out again
-    /// when the pointer asks. The fourth is the row a dwell opens — one item with a capture and
-    /// one without, which is the whole of the fallback rule in one image. One hash each, reviewed
+    /// when the pointer asks. The fourth is the fan a dwell opens — the most recent window on top
+    /// with its capture, the one behind it showing the sliver the top card does not cover. One hash each, reviewed
     /// by eye through the dump below. Fails on any pixel change — read it as "look at the render",
     /// not as "something is broken".
     ///
@@ -839,18 +839,18 @@ mod tests {
         use crate::surface::bar_screen::Presence;
 
         let dump = std::env::var("TEMPLAR_BAR_PRESENCE_DUMP").ok();
-        for (presence, open_row, name, expected) in [
-            (Presence::Open, false, "open", 0xdf8b_aa7d_07cd_7cf0u64),
+        for (presence, open_fan, name, expected) in [
+            (Presence::Open, false, "open", 0x7314_af6e_8b30_7d6eu64),
             (Presence::Hint, false, "hint", 0xe0c9_dac0_7b3a_e3a5),
-            (Presence::Revealed, false, "revealed", 0xe226_b28f_4194_158a),
-            (Presence::Open, true, "row", 0x60e6_9f1e_9ce2_6e7a),
+            (Presence::Revealed, false, "revealed", 0x02ef_54cf_0ea3_3b74),
+            (Presence::Open, true, "fan", 0x1b4f_7c23_d972_3b1d),
         ] {
-            let buffer = bar_frame(presence, open_row, 1.0);
+            let buffer = bar_frame(presence, open_fan, 1.0);
             if let Some(dir) = &dump {
                 let dir = std::path::Path::new(dir);
                 std::fs::create_dir_all(dir).expect("the dump directory");
                 write_png(&dir.join(format!("bar-{name}.png")), &buffer).expect("dumping");
-                let at_2x = bar_frame(presence, open_row, 2.0);
+                let at_2x = bar_frame(presence, open_fan, 2.0);
                 write_png(&dir.join(format!("bar-{name}@2x.png")), &at_2x).expect("dumping");
                 continue;
             }

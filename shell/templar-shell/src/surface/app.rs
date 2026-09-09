@@ -1469,11 +1469,11 @@ impl ShellApp {
     /// asks at the preview rate for every session tile. Arrived previews are filed under the
     /// tile's own identifier. The compositor's own floor of four frames a second per window
     /// holds whatever this asks.
-    /// Capture the windows of the bar's open hover row, at most twice a second each. The rate
-    /// policy is `preview_requested`, the same map Home's tiles use — a row that is open is a
-    /// deliberate look, so it refreshes; a row that is closed asks for nothing. Draining is
+    /// Capture the windows of the bar's open fan, at most twice a second each. The rate policy
+    /// is `preview_requested`, the same map Home's tiles use — a fan that is open is a deliberate
+    /// look, so it refreshes; a fan that is closed asks for nothing. Draining is
     /// Home's (`drain_previews`), woken by `has_previews_ready`.
-    fn refresh_row_previews(
+    fn refresh_fan_previews(
         &mut self,
         toplevels: &[templar_window::ShellToplevel],
         wants: &[templar_window::WindowId],
@@ -1936,6 +1936,19 @@ impl ShellApp {
             && let Err(error) = call(bridge)
         {
             tracing::warn!(%error, "{what} request failed");
+        }
+    }
+
+    /// Open the compositor's window overview, filtered (manager v8).
+    ///
+    /// Not through [`Self::bridge_call`]: the bridge remembers which windows a `Windows` filter
+    /// named, because `taskfield_state` says only *that* the filter is a list and this is the one
+    /// side that knows what a place is.
+    fn open_taskfield(&mut self, filter: &templar_window::taskfield::TaskFilter, label: &str) {
+        if let Some(bridge) = &mut self.bridge
+            && let Err(error) = bridge.open_taskfield(filter, label)
+        {
+            tracing::warn!(%error, "open_taskfield request failed");
         }
     }
 
@@ -2761,23 +2774,18 @@ impl ShellApp {
         if !presented {
             bar.present();
         }
-        // The hover row shows the window, not its name, so the windows in the open row are
-        // captured while it is open — and nothing else is. Home's own policy stops at
-        // `previews_covered`, which is exactly when this row is the thing being looked at.
-        let wants: Vec<templar_window::WindowId> = self
-            .bar_screen
-            .preview_wants(&entries)
-            .iter()
-            .map(|window| window.id)
-            .collect();
-        self.refresh_row_previews(&toplevels, &wants);
+        // A fan card shows the window, not its name, so the windows in the open fan are captured
+        // while it is open — and nothing else is. Home's own policy stops at `previews_covered`,
+        // which is exactly when this fan is the thing being looked at.
+        let wants = self.bar_screen.preview_wants(&entries);
+        self.refresh_fan_previews(&toplevels, &wants);
         // The surface is the output's width, and its height is whatever the presence the draw
         // just settled on asks for: the hint under a window, the bar over Home, plus whatever
         // band an open hover row or the account popover needs. The exclusive zone is 0 through
         // all of it, so no size this surface takes reflows anything.
         let wanted = crate::surface::bar_screen::wanted_size(
             self.bar_screen.presence(covered),
-            self.bar_screen.row_windows(&entries),
+            self.bar_screen.fan_cards(&entries),
             self.bar_screen.tooltip_open(now_ms),
             entries.len(),
             output_width,
@@ -2790,16 +2798,7 @@ impl ShellApp {
                     .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
             }
         }
-        for action in actions {
-            use crate::surface::bar_screen::BarAction;
-            match action {
-                BarAction::Activate(window) => self.perform(FieldAction::Activate(window)),
-                BarAction::Window { id, window } => {
-                    self.perform(FieldAction::RunWindowAction { id, window });
-                }
-                BarAction::Field(action) => self.perform(action),
-            }
-        }
+        self.perform_bar(actions);
     }
 
     /// Create, resize or destroy the cluster's surface.
@@ -2975,14 +2974,24 @@ impl ShellApp {
                     .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
             }
         }
+        self.perform_bar(actions);
+    }
+
+    /// What the island and the cluster ask for. One place for both: they answer with the same
+    /// `BarAction`, and a second match over it is a second chance to forget a variant.
+    fn perform_bar(&mut self, actions: Vec<crate::surface::bar_screen::BarAction>) {
+        use crate::surface::bar_screen::BarAction;
         for action in actions {
-            use crate::surface::bar_screen::BarAction;
             match action {
                 BarAction::Activate(window) => self.perform(FieldAction::Activate(window)),
                 BarAction::Window { id, window } => {
                     self.perform(FieldAction::RunWindowAction { id, window });
                 }
                 BarAction::Field(action) => self.perform(action),
+                // A chip with more windows than its fan can hold hands the question over.
+                BarAction::Taskfield(key) => {
+                    self.open_taskfield(&templar_window::taskfield::TaskFilter::Unit(key), "");
+                }
             }
         }
     }
