@@ -6,7 +6,7 @@
 <protocol name="templar_shell_v1">
   <copyright>Copyright 2026 TemplarOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="templar_shell_manager_v1" version="7">
+  <interface name="templar_shell_manager_v1" version="8">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -220,18 +220,84 @@
       <arg name="edge" type="uint" enum="edge"/>
       <arg name="alignment" type="uint" enum="alignment"/>
     </request>
+    <request name="open_taskfield" since="8">
+      <description summary="open the window overview, filtered">
+        Taskfield is the compositor's window overview: the scene pulls back and the live windows
+        become the interface. It is a **view, not a place** — HomeGarden is the desktop, and this
+        is a temporary projection of the windows that already exist. It is laid out when it opens
+        and thrown away when it closes; no card position is ever stored against a window, and
+        there is deliberately no request to save one.
+
+        The chord (`taskfield.open`), the Peek corner and `window.show-all` open it from the
+        compositor with `all`. This request is the shell's routes into it: a chip with more
+        windows than its fan can hold (`unit`, `key` naming the application or `group:&lt;id&gt;`), a
+        launcher result's arrow (`unit`), a HomeGarden place's "N windows active" line
+        (`windows`, `key` carrying the place's name for the header), and the shelf band
+        (`shelved`). The compositor never learns what a place is — the shell sends the ids.
+
+        `key` is empty for `all` and `shelved`; `windows` is empty unless `filter` is `windows`.
+        Ignored while the session is locked or the recovery overlay is up, and ignored when the
+        filter selects nothing: an overview of no windows is indistinguishable from a black
+        screen, so there is nothing to enter.
+      </description>
+      <arg name="filter" type="uint" enum="taskfield_filter"/>
+      <arg name="key" type="string" summary="application id, group:&lt;id&gt;, or a place's name; empty for all and shelved"/>
+      <arg name="windows" type="array" summary="window ids as uint32, for the windows filter only"/>
+    </request>
     <event name="terminal_requested" since="5">
       <description summary="the terminal chord was pressed and no terminal window exists">
         The shell answers by launching the `terminal` provider. Sent at most once per press.
       </description>
     </event>
     <event name="group_cycle_binding" since="5">
-      <description summary="the chord that moves between window groups, for the cheat sheet">
+      <description summary="the chord that opens the window overview, for the cheat sheet">
         Sent on connect: 0 is `Super+Tab` (the default). Reserved so a future setting can move
         the chord without a protocol change; the shell renders whatever it is told.
+
+        Since version 8 that chord opens Taskfield rather than cycling between window groups —
+        the overview shows every group as a section, which is the same question asked properly.
+        The name is the shipped one and does not change; only what the chord does did.
       </description>
       <arg name="binding" type="uint"/>
     </event>
+    <event name="taskfield_state" since="8">
+      <description summary="the window overview opened, changed or closed">
+        Sent on entry, on every query or selection change, and on leave (`active` 0). The mode's
+        state lives in `templar_window` and the compositor owns its keys, so this event is the
+        shell's whole view of it: it maps its `presentation` layer surface while `active`, draws
+        the header for `filter`/`key`, echoes `query` into its search field and rings `selected`.
+
+        The shell does not receive the cards' rectangles. It computes them by running the same
+        `templar_window::taskfield::layout` over the toplevels it already holds and the outputs it
+        already knows — the same function on the same bytes, so the labels cannot land anywhere
+        but on the cards. A shell that is not running changes none of this: the compositor draws
+        its own labels and the mode works exactly as well.
+      </description>
+      <arg name="active" type="uint" summary="1 while the overview is up, 0 when it closes"/>
+      <arg name="filter" type="uint" enum="taskfield_filter"/>
+      <arg name="key" type="string"/>
+      <arg name="query" type="string"/>
+      <arg name="selected" type="uint" summary="the selected window id, or 0 for none"/>
+    </event>
+    <event name="launcher_focus" since="8">
+      <description summary="reveal Home with the Apps bar focused and armed">
+        `Super+Space` does not open a second launcher: the Apps bar on Home is the one launcher
+        object (`@templaros.decision.the-home-field-is-a-launcher-not-a-search`), and this is one
+        more route into it. The compositor has already revealed Home when it sends this; the shell
+        moves the caret into the Apps bar. Under a fullscreen window the reveal hides client
+        windows without unfullscreening any of them, so the route out of fullscreen to starting
+        something is `Super+Space`, type, Enter — and the fullscreen window is undisturbed.
+      </description>
+    </event>
+    <enum name="taskfield_filter" since="8">
+      <description summary="which windows the overview shows">
+        Mirrors `templar_window::taskfield::TaskFilter`.
+      </description>
+      <entry name="all" value="0" summary="every window on screen"/>
+      <entry name="unit" value="1" summary="one application or window group, named by key"/>
+      <entry name="windows" value="2" summary="an explicit list, in the windows array"/>
+      <entry name="shelved" value="3" summary="parked windows only"/>
+    </enum>
     <enum name="edge">
       <entry name="top" value="0"/>
       <entry name="bottom" value="1"/>
@@ -257,6 +323,19 @@
       <entry name="notification" value="4"/>
       <entry name="app_on_top" value="5"/>
       <entry name="normal" value="6"/>
+      <!-- Appended because a wire value can only be appended; its place *on screen* is between
+           system_modal and shell_overlay, which is `templar_window::Layer::ALL`'s order and the
+           only order that means anything. The discriminant and the depth are deliberately no
+           longer the same number. -->
+      <entry name="presentation" value="8" since="8">
+        <description summary="the window overview's chrome">
+          Titles, section headers, the query field and `+n more`, drawn over the windows the
+          compositor is presenting. Mapped only while the overview is up and unmapped the moment
+          it closes; it is configured to the whole output and reserves nothing. Above
+          `shell_overlay`, and above the half step a fullscreen window takes over it, because the
+          overview is explicit navigation and a fullscreen window may not cover it.
+        </description>
+      </entry>
       <entry name="home_surface" value="7">
         <description summary="the bottom layer: the Home Field itself">
           Visible by default, because it is the desktop. The compositor hides it only while a

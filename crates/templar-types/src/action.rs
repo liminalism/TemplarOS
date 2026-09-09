@@ -352,12 +352,37 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Window,
     },
-    // Super+Tab crosses between groups, and there is deliberately no Ctrl+Tab and no setting:
-    // Ctrl+Tab is the tab-cycling chord in every browser, terminal and editor, and a
-    // compositor-reserved chord wins (planning doc §2.1).
+    // Alt+` is "this one": the windows of the unit the focused window belongs to — its group when
+    // it is grouped, its application otherwise — so the group feature costs nothing until a group
+    // exists, and Alt+Tab is never scoped to a place it cannot leave.
     ActionDecl {
-        id: "window.group-cycle-forward",
-        label: "Next window group",
+        id: "window.within-unit-forward",
+        label: "Next window here",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::ALT, Key::Grave)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "window.within-unit-backward",
+        label: "Previous window here",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[Chord::new(Modifiers::ALT_SHIFT, Key::Grave)],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    // Super+Tab is the window overview: every window, in its unit's section, laid out on entry and
+    // thrown away on exit. It replaces "cycle between window groups", whose question — which group
+    // is next — the overview answers by showing them all. There is deliberately still no Ctrl+Tab
+    // and no setting: Ctrl+Tab is the tab-cycling chord in every browser, terminal and editor, and
+    // a compositor-reserved chord wins (planning doc §2.1).
+    ActionDecl {
+        id: "taskfield.open",
+        label: "Windows",
         control: None,
         category: ActionCategory::Navigation,
         chords: &[Chord::new(Modifiers::LOGO, Key::Tab)],
@@ -365,12 +390,14 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Window,
     },
+    // Leaving the overview. No chord: Escape inside the mode is the compositor's own modal key
+    // handling, not a reserved accelerator — and a mode nobody is in has nothing to leave.
     ActionDecl {
-        id: "window.group-cycle-backward",
-        label: "Previous window group",
-        control: None,
+        id: "taskfield.back",
+        label: "Leave the window overview",
+        control: Some("Back"),
         category: ActionCategory::Navigation,
-        chords: &[Chord::new(Modifiers::LOGO_SHIFT, Key::Tab)],
+        chords: &[],
         cli_verb: None,
         confirm: false,
         requires: Requires::Window,
@@ -736,6 +763,29 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
+    // A launcher result for something already running does not start a second copy: Enter goes to
+    // its most recently used window, Ctrl+Enter is how you ask for a new one, and the arrow opens
+    // the overview filtered to it. One launcher object, three answers.
+    ActionDecl {
+        id: "launcher.activate-recent",
+        label: "Go to the most recent window",
+        control: Some("Go to"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
+        id: "launcher.launch-new",
+        label: "Open a new window",
+        control: Some("New"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
     ActionDecl {
         id: "launcher.show-all",
         label: "Show all applications",
@@ -855,6 +905,19 @@ pub const MANIFEST: &[ActionDecl] = &[
     // A Place's tools (@templaros.decision.homegarden-activity-grown-places): the same three roles
     // a project offers, for any folder Home has grown or the user placed. Resolved through
     // Providers1 at press time; Home never names kitty or pcmanfm-qt.
+    // A place knows which live windows came out of it (launched there, or opened a file under it).
+    // Pressing its "N windows active" line does not expand cards inside Home — Home asks what work
+    // exists — it opens the overview filtered to those windows.
+    ActionDecl {
+        id: "place.show-windows",
+        label: "Show this place's windows",
+        control: Some("Windows"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
     ActionDecl {
         id: "place.open-terminal",
         label: "Open terminal here",
