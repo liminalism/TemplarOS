@@ -1,0 +1,60 @@
+# memory snapshot
+when              2026-09-09T19:11:09+08:00
+host              dk-82y3
+kernel            Linux 6.17.0-41-generic
+os                Ubuntu 25.10
+desktop           LegeOS
+uptime            2.4 hours
+
+MemTotal           31815 MiB
+MemAvailable       27045 MiB   <- what a new program can have without swapping
+MemFree            10893 MiB   <- not a useful number on its own; cache is reclaimable
+Buffers+Cached     15184 MiB
+Shmem                568 MiB   <- tmpfs, /dev/shm, graphics buffers
+Slab                2248 MiB   <- kernel structures
+SwapTotal/Free      7953 / 5326 MiB
+
+in use, excluding reclaimable cache:
+  MemTotal - MemAvailable    4770 MiB
+
+session processes by PSS (this user):
+     564.1 MiB  firefox
+     527.8 MiB  Isolated
+     349.1 MiB  claude
+     259.5 MiB  Isolated
+     196.4 MiB  Isolated
+     139.0 MiB  Isolated
+     108.6 MiB  lege-filed
+     101.5 MiB  Isolated
+      85.3 MiB  WebExtensions
+      78.0 MiB  kitty
+      55.6 MiB  RDD
+      48.2 MiB  lege-comp
+      43.4 MiB  lege-shell
+      37.8 MiB  Isolated
+      37.0 MiB  fff-mcp
+      28.3 MiB  kitty
+      20.2 MiB  Isolated
+      20.2 MiB  Isolated
+      16.1 MiB  Privileged
+      15.1 MiB  snap
+  ---
+      2931 MiB  TOTAL PSS over 61 processes owned by dk
+
+the desktop itself (compositor, shell, session services):
+      48.2 MiB  lege-comp
+      43.4 MiB  lege-shell
+      13.1 MiB  lege-sessiond
+       4.9 MiB  lege-resourced
+     108.6 MiB  lege-filed
+  ---
+       218 MiB  DESKTOP TOTAL PSS
+
+# conditions this was taken under
+session           the Templar desktop (still running the pre-rename lege-* binaries) on a Lubuntu 25.10 base,
+                  NOT LXQt: XDG_CURRENT_DESKTOP=LegeOS. An LXQt figure needs an LXQt login.
+not idle          Firefox, Claude Code, kitty and an MCP server were open, and this machine had just
+                  built an ISO, so Buffers+Cached is dominated by build output and says nothing useful.
+excluded          templar-hostd runs as root on the system bus; its smaps_rollup is unreadable as this
+                  user, so the DESKTOP TOTAL is a floor, not a ceiling.
+apps open         yes
