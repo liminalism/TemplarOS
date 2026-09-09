@@ -558,6 +558,22 @@ pub const IDLE_HEARTBEAT: Duration = Duration::from_secs(60);
 const TRIGGER_STALL: Duration = Duration::from_millis(150);
 const TRIGGER_WINDOW: Duration = Duration::from_secs(1);
 
+/// How long to wait before the next tick.
+///
+/// The long heartbeat is only allowed while the kernel is going to interrupt it: with no usable
+/// trigger — a kernel without PSI, an undelegated cgroup, or a descriptor that hung up while the
+/// governor was running — waiting a minute at `Normal` would mean an application could appear,
+/// grow and be killed by the kernel's own OOM killer between two samples. Without a trigger the
+/// loop samples at the interval it was configured with, exactly as it did before it was
+/// event-driven.
+fn next_wait(level: PressureLevel, event_driven: bool, interval: Duration) -> Duration {
+    if level == PressureLevel::Normal && event_driven {
+        IDLE_HEARTBEAT
+    } else {
+        interval
+    }
+}
+
 /// The long-running loop: wake on memory pressure or on the heartbeat, forever, on its own
 /// thread.
 ///
@@ -580,11 +596,17 @@ pub fn run_loop(
     interval: Duration,
     events: tokio::sync::mpsc::UnboundedSender<SignalEvent>,
 ) {
+    // Both slices, not just `session.slice`: the governor governs `app.slice`, which is
+    // `session.slice`'s *sibling* — a trigger armed on one of them is not crossed by the
+    // pressure the other one is under, so an application eating the machine woke nothing at all.
+    let app = crate::cgroup::Cgroup::from_directory(ctx.paths.app_slice.clone());
     let session = crate::cgroup::Cgroup::from_directory(ctx.paths.session_slice.clone());
-    let wait = crate::psi::PressureWait::for_cgroup(&session, TRIGGER_STALL, TRIGGER_WINDOW);
+    let mut wait =
+        crate::psi::PressureWait::for_cgroups(&[&app, &session], TRIGGER_STALL, TRIGGER_WINDOW);
     tracing::info!(
         event_driven = wait.is_event_driven(),
-        pressure = %session.directory().join("memory.pressure").display(),
+        app_pressure = %app.directory().join("memory.pressure").display(),
+        session_pressure = %session.directory().join("memory.pressure").display(),
         "governor loop armed"
     );
 
@@ -629,11 +651,8 @@ pub fn run_loop(
         // and a trigger that has already fired says nothing more until the stall clears. Calm,
         // wait for the kernel — and the heartbeat is the backstop for the one thing PSI cannot
         // report, which is an instance appearing in or leaving the slice.
-        wakeup = if outcome.level == PressureLevel::Normal {
-            wait.wait(IDLE_HEARTBEAT)
-        } else {
-            wait.wait(interval)
-        };
+        let timeout = next_wait(outcome.level, wait.is_event_driven(), interval);
+        wakeup = wait.wait(timeout);
     }
 }
 
@@ -784,6 +803,39 @@ mod tests {
     use super::*;
     use lege_types::{AppId, unit};
     use std::fs;
+
+    /// The scheduling the loop actually performs, without running the loop: a healthy trigger
+    /// earns the long heartbeat, and everything else — no trigger on this kernel, or a trigger
+    /// that died while the governor was running — samples at the configured interval. Waiting a
+    /// minute without a trigger is not "event-driven", it is blind.
+    #[test]
+    fn only_a_healthy_trigger_earns_the_idle_heartbeat() {
+        let interval = Duration::from_secs(1);
+        assert_eq!(
+            next_wait(PressureLevel::Normal, true, interval),
+            IDLE_HEARTBEAT
+        );
+        assert_eq!(next_wait(PressureLevel::Normal, false, interval), interval);
+        for level in [
+            PressureLevel::Elevated,
+            PressureLevel::Severe,
+            PressureLevel::Critical,
+        ] {
+            assert_eq!(next_wait(level, true, interval), interval);
+            assert_eq!(next_wait(level, false, interval), interval);
+        }
+
+        // And the two halves meet: a cgroup that cannot register a trigger reports itself as not
+        // event-driven, which is what turns the heartbeat back into the interval.
+        let dir = tempfile::tempdir().unwrap();
+        let cgroup = crate::cgroup::Cgroup::from_directory(dir.path().to_path_buf());
+        let wait = crate::psi::PressureWait::for_cgroups(&[&cgroup], TRIGGER_STALL, TRIGGER_WINDOW);
+        assert!(!wait.is_event_driven());
+        assert_eq!(
+            next_wait(PressureLevel::Normal, wait.is_event_driven(), interval),
+            interval
+        );
+    }
 
     #[test]
     fn locking_current_pages_does_not_poison_future_allocations() {
