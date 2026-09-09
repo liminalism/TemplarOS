@@ -359,6 +359,8 @@ pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lege_field::{Cell, Span};
+    use std::path::PathBuf;
 
     /// One window, exactly as the compositor would report it, with no clock or host in it.
     fn baseline_toplevel(
@@ -381,6 +383,115 @@ mod tests {
             layer: lege_window::Layer::Normal,
             group,
         }
+    }
+
+    /// The Places `LEGE_BASELINE_GARDEN` grows into the baseline field: the named form at the
+    /// top span, and a lightly used place at the smallest one, so every variant reviews the
+    /// scale range as well as the form. Fixed roots, trees and scores — what is under review is
+    /// the drawing, not the ledger's arithmetic, which has its own tests in `lege-session-core`.
+    fn garden_fixture(
+        form: &str,
+    ) -> (
+        Vec<lege_field::garden::ContextView>,
+        HashMap<PathBuf, crate::garden::GardenPlace>,
+    ) {
+        fn dir(
+            name: &str,
+            score: f32,
+            children: Vec<crate::garden::TreeNode>,
+        ) -> crate::garden::TreeNode {
+            crate::garden::TreeNode {
+                name: name.to_owned(),
+                is_dir: true,
+                score,
+                children,
+            }
+        }
+        fn leaf(name: &str, score: f32) -> crate::garden::TreeNode {
+            crate::garden::TreeNode {
+                name: name.to_owned(),
+                is_dir: false,
+                score,
+                children: Vec::new(),
+            }
+        }
+        // A folder of projects whose branches are the repositories: the shape the activity tree
+        // already records, and the one the branch form has to read as at a glance.
+        let (root, tree, summary) = match form {
+            "shelf" => (
+                "/home/fixture/Pictures",
+                vec![
+                    leaf("2026-trip.jpg", 9.0),
+                    leaf("sunset.png", 7.0),
+                    leaf("workshop.mp4", 6.0),
+                    leaf("portrait.webp", 4.0),
+                    leaf("scan.avif", 2.0),
+                ],
+                "21 opens, 5 sessions",
+            ),
+            "plain" => ("/home/fixture/Documents", Vec::new(), "9 opens, 3 sessions"),
+            _ => (
+                "/home/fixture/Rust-projects",
+                vec![
+                    dir(
+                        "legeos",
+                        14.0,
+                        vec![
+                            dir("crates", 8.0, Vec::new()),
+                            dir("shell", 5.0, Vec::new()),
+                        ],
+                    ),
+                    dir("pixelkit", 6.0, vec![dir("crates", 3.0, Vec::new())]),
+                    dir("Silvaview-rs", 3.0, Vec::new()),
+                    dir("bpg-rs", 1.0, Vec::new()),
+                ],
+                "34 opens, 11 launches, 7 sessions",
+            ),
+        };
+        // Fixed landings: the bottom-left of the baseline field is open, and a fixture whose
+        // Places land wherever the search happens to reach is a fixture that stops showing the
+        // form the day another object moves.
+        let grown = (
+            PathBuf::from(root),
+            Span::new(6, 4),
+            Cell::new(0, 5),
+            "expanded",
+            tree,
+            summary,
+        );
+        // The other end of the ladder: a place used lightly enough to be a line, in every
+        // variant, so the two extremes are always reviewed against each other.
+        let line = (
+            PathBuf::from("/home/fixture/Downloads"),
+            Span::new(2, 2),
+            Cell::new(7, 8),
+            "trace",
+            Vec::new(),
+            "3 opens, 1 session",
+        );
+        let mut views = Vec::new();
+        let mut places = HashMap::new();
+        for (root, span, landing, stage, tree, summary) in [grown, line] {
+            views.push(lege_field::garden::ContextView {
+                root: root.clone(),
+                wanted: Some(span),
+                landing: Some(landing),
+                pinned: false,
+                user_span: None,
+                summary: summary.to_owned(),
+            });
+            places.insert(
+                root.clone(),
+                crate::garden::GardenPlace {
+                    root,
+                    stage: stage.to_owned(),
+                    tree,
+                    summary: summary.to_owned(),
+                    ..crate::garden::GardenPlace::default()
+                },
+            );
+        }
+        (views, places)
     }
 
     /// Fixed-pixel baseline for the default Home Field.
@@ -445,6 +556,25 @@ mod tests {
         // the chrome reduction is its own drawing path: no heading, the name as the body's first
         // line, and the controls only on hover or focus.
         field_model::pin_app(&mut field, &"org.legeos.Files".parse().unwrap());
+        // `LEGE_BASELINE_GARDEN=branch|shelf|plain` grows two Places into the field through the
+        // real tender, so each growth form can be reviewed as a PNG with no compositor, no
+        // daemon and no day of use. Like the other variants it returns before the hash.
+        let garden = match std::env::var("LEGE_BASELINE_GARDEN") {
+            Ok(form) => {
+                let (views, places) = garden_fixture(&form);
+                for tended in lege_field::garden::tend(
+                    &field,
+                    &views,
+                    lege_field::garden::HomeCorner::BottomLeft,
+                ) {
+                    field = lege_field::apply(&field, &tended.op)
+                        .expect("the fixture field has room for the garden")
+                        .0;
+                }
+                places
+            }
+            Err(_) => HashMap::new(),
+        };
 
         let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
@@ -605,7 +735,7 @@ mod tests {
             widgets: &widgets,
             variants: &HashMap::new(),
             projects: &projects,
-            garden: &HashMap::new(),
+            garden: &garden,
             actions: lege_types::action::MANIFEST,
             file_search: None,
             recents: &recents,
@@ -672,6 +802,7 @@ mod tests {
             write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
         }
         if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok()
+            || std::env::var("LEGE_BASELINE_GARDEN").is_ok()
             || std::env::var("LEGE_BASELINE_FILES").is_ok()
             || std::env::var("LEGE_BASELINE_HELP").is_ok()
             || std::env::var("LEGE_BASELINE_MENU").is_ok()
