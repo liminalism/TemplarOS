@@ -109,9 +109,27 @@ state line; **Wide** — the roles row `>_ Terminal  ▤ Files  <> Edit`, resolv
 trunk with the branches that earned it, heavier branches thicker, files dimmer; the ordinary
 listing until any structure has been earned. **Full** is the folder window.
 
+## Blooms
+
+An earned Place says what arrived in it. At each tending moment the daemon reads one bounded
+page of the shared index's change log (`Files.Index1.ChangesSince`) from a cursor kept in the
+ledger — **never a subscription**, because a bloom is only ever drawn and drawing only happens
+at a tending moment. Each arriving path is *looked up* against the contexts that already exist
+(the deepest one above it at `Tile` or better, not hidden) and nothing is ever inserted: content
+may alter what an earned Place shows, and may never create, resize, move or promote one.
+
+`Bloom { kind, since, items, total }` sits on the context and shows as `2 new ·` in front of the
+state line. It ends where it started, on the brokered open the ledger already hears: `file-opened`
+on a bloomed item drops it, the last one clears the bloom, and a bloom nobody answers for five
+later sessions is dropped as stale. Below the log's retained floor there is no continuity to
+prove, so the cursor moves to the head and that moment shows nothing.
+
+The same read carries a rename: a move whose source is a context root brings the place to its
+new name with its score, buckets and material seed intact.
+
 ## What is deliberately not here yet
 
-Growth forms and facets (Hierarchy/Media/Documents/Gallery), blooms (`2 new`, `unwatched`),
-material identity, sibling grouping, a Wide-vs-Tall geometry axis, bloom consumption of the
-index change log, and portal sources. Each waits on Phase 4: a day's use, judged by
-`lege garden why` on every place.
+Growth forms and facets (Hierarchy/Media/Documents/Gallery), material identity drawn from the
+seed, sibling grouping, a Wide-vs-Tall geometry axis, and portal sources. There is deliberately
+no media consumption signal — no started/progress/completed and no `Resume` bloom: *arrived and
+never opened* is the only claim this system can make honestly (`docs/garden/…§5.8`).

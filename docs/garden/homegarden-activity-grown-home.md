@@ -223,12 +223,12 @@ pub enum ActivityKind {
 | `HumanFileModified` | 0.3, capped per bucket | An editor was here, probably. |
 | `ArrivedHere` | 0.05, capped per bucket | Downloads gained a file. |
 
-**Breadth beats count.** Raw weight is not the score. Per context and per day, the ledger
+**Breadth beats count.** Raw weight is not the score. Per context and per session, the ledger
 keeps *which kinds* and *which roles* were seen; the score's breadth term (§5.4) rewards a
-day with a terminal, an editor and three opens far above a day with three hundred saves.
+session with a terminal, an editor and three opens far above a session with three hundred saves.
 
-**Coalescing.** Events are bucketed by `(root, kind, hour)`. Forty saves in an hour are one
-bucket with a count; a `cargo build` touching forty thousand files under `target/` is *no*
+**Coalescing.** Events are bucketed by `(root, kind, role, session)`. Forty saves in a session
+are one bucket with a count; a `cargo build` touching forty thousand files under `target/` is *no*
 bucket because `target/` is ignored (§5.3). This is what keeps the ledger bounded and keeps a
 build from becoming the centre of Home.
 
@@ -302,24 +302,23 @@ Per context root, the ledger stores:
 
 ```rust
 pub struct HomeContext {
-    pub root: NativePath,
-    /// Identity that survives a rename: the index EntryId when the root is indexed.
-    pub entry: Option<EntryId>,
-    /// Raw accumulated score at `last_event`. Never decayed in storage.
+    pub root: PathBuf,
+    /// Raw accumulated score at `last`. Never decayed in storage.
     pub score: f32,
-    pub last_event_ms: i64,
-    /// Per-day breadth: which kinds and roles were seen, for the last 14 days, as bitsets.
-    pub days: [DayBreadth; 14],
+    pub last: GardenMoment,          // (session, active_ms) — never a wall-clock instant
+    /// Coalesced weight per (kind, role, session); breadth reads the recent ones.
+    pub buckets: Vec<Bucket>,
     pub stage: Stage,                // Dormant | Trace | Tile | Expanded
-    pub stage_since_ms: i64,
-    /// Where it was last placed, and at what span, so it regrows there.
-    pub landing: Option<(String /*output*/, Cell, Span)>,
-    pub roles: RoleSet,              // Terminal, FileManager, CodeEditor observed here
-    pub children: Vec<ChildCandidate>, // path, score, last_event — capped at 12
+    pub stage_since: GardenMoment,
+    /// Where it was last placed, so it regrows there.
+    pub landing: Option<Cell>,
+    pub roles: BTreeSet<ProviderRole>, // Terminal, FileManager, CodeEditor observed here
+    pub tree: Vec<TreeNode>,         // the used structure beneath the root, depth ≤ 3, ≤ 32 nodes
     pub pinned: bool,                // never decays, never removed
     pub hidden: bool,                // never grows; ledger keeps the record for the Hide list
     pub user_span: Option<Span>,     // set when the user resized it; the tender stops resizing
-    pub material_seed: u64,          // deterministic from `entry` or root bytes
+    pub material_seed: u64,          // deterministic from the root bytes
+    pub bloom: Option<Bloom>,        // what arrived here and has not been opened (§5.8)
 }
 ```
 
@@ -327,33 +326,39 @@ pub struct HomeContext {
 
 ```
 effective(ctx, now) =
-    ctx.score × exp(−ln2 × (now − ctx.last_event) / HALF_LIFE)
-  × (1 + BREADTH_BONUS × breadth(ctx.days))
+    ctx.score
+  × 0.5^(garden_hours_idle / HALF_LIFE_HOURS)
+  × 0.5^(sessions_idle    / HALF_LIFE_SESSIONS)
+  × (1 + BREADTH_BONUS × breadth(ctx.buckets))
 ```
 
-with `HALF_LIFE` = 3 days (lever `shell.home-garden.half-life`) and `breadth` = the number of
-distinct `(kind, role)` pairs seen in the last 7 days, normalised to `[0, 1]`. A place used
-every day for a week with mixed tools has a breadth near 1; a place that received one burst of
-saves has a breadth near 0.15.
+with `HALF_LIFE_HOURS` = 12 garden-hours and `HALF_LIFE_SESSIONS` = 4 later sessions (levers
+`shell.home-garden.half-life-hours` and `half-life-sessions`), and `breadth` = the number of
+distinct `(kind, role)` pairs seen in the last 6 sessions, normalised to `[0, 1]`. A place used
+across several sessions with mixed tools has a breadth near 1; a place that received one burst
+of saves has a breadth near 0.15. Both halvings are in Garden time: a machine that is off ages
+nothing.
 
-**Stage thresholds with hysteresis** — the reason a place does not flicker between sizes:
+**Stage thresholds with hysteresis** — the reason a place does not flicker between sizes. A
+place recedes because the user *kept using the machine* without returning to it, so both legs
+of a demotion must be met: later sessions **and** garden-hours idle.
 
-| Transition | Condition | Minimum dwell in current stage |
+| Transition | Condition | Also needs |
 |---|---|---|
-| Dormant → Trace | effective ≥ 3.0 (one launch, or two opens) | — |
-| Trace → Tile | effective ≥ 8.0 **and** activity on ≥ 2 distinct days | 1 hour |
-| Tile → Expanded | effective ≥ 20.0 **and** ≥ 2 roles or kinds **and** ≥ 3 distinct days | 6 hours |
-| Expanded → Tile | effective < 10.0 | 24 hours |
-| Tile → Trace | effective < 4.0 | 48 hours |
-| Trace → Dormant | effective < 1.0 (about a week of silence from Trace) | 5 days |
+| Dormant → Trace | effective ≥ 3.0 (one launch, or two opens) | 1 session |
+| Trace → Tile | effective ≥ 8.0 | 2 sessions |
+| Tile → Expanded | effective ≥ 20.0 **and** ≥ 2 kinds or roles | 3 sessions |
+| Expanded → Tile | effective < 10.0 | 3 later sessions **and** 6 garden-hours idle |
+| Tile → Trace | effective < 4.0 | 6 later sessions **and** 15 garden-hours idle |
+| Trace → Dormant | effective < 1.0 | 10 later sessions **and** 30 garden-hours idle |
 
-Demotion thresholds sit well below promotion thresholds, and demotion dwell is long, so
-"a context should only disappear after a fairly long period of disuse" holds arithmetically.
-A pinned context never demotes. A hidden context never promotes.
+Demotion thresholds sit well below promotion thresholds, and demotion needs idleness on both
+legs, so "a context should only disappear after a fairly long period of disuse" holds
+arithmetically. A pinned context never demotes. A hidden context never promotes.
 
 **Zero polling.** Nothing evaluates this on a timer. The ledger updates one context on each
-event (add weight, set `last_event`, update the day's breadth). Stages are recomputed for all
-contexts only at **tending moments** (§6 rule 1). Three days without opening Home costs
+event (add weight, set `last`, extend the session's bucket). Stages are recomputed for all
+contexts only at **tending moments** (§6 rule 1). Sessions spent without opening Home cost
 nothing.
 
 **Bounds.** At most 64 contexts are retained (`shell.home-garden.max-contexts`); beyond that,
@@ -409,17 +414,60 @@ The distinction `garden.md` draws is kept exactly:
 | Tile | `TileKind::Folder` | `TileKind::Project` |
 | Decays | yes | never |
 
-Two bridges, neither a wizard:
+One bridge, and it is not a wizard: a project's root is *always* a context, pinned, so
+`Launch Tool` and `Enter Project` activity accrues to it and its tile shows children like any
+Expanded place. The Project tile's Large rung can draw the same roles-and-children body
+(`@legeos.decision.representation-ladder…`: one body, many objects).
 
-1. A project's root is *always* a context, pinned, so `Launch Tool` and `Enter Project`
-   activity accrues to it and its tile shows children like any Expanded place. The Project
-   tile's Large rung can draw the same roles-and-children body (`@legeos.decision.representation-ladder…`:
-   one body, many objects).
-2. A Folder context that has been Expanded for seven days gains one row in its context menu:
-   **Make this a project** → `project.create-here` with the root already filled in. No banner,
-   no notification, no first-run prompt. If the user ignores it, it stays a row.
+The other direction — a **Make this a project** row offered to a folder the garden has grown —
+was written here as a rule counted in calendar time and is now dropped. The Garden Clock has no
+calendar, and a rule stated in a unit the model does not have is a rule that can never fire. `project.create-here` remains what it always was: a row the user reaches when the
+user wants it.
 
 A context is never turned into a project by the system. Ever.
+
+### 5.8 Blooms — what an earned Place has to say about content
+
+A **bloom** is the one thing content is allowed to do. It is a projection *over* a context,
+never evidence *for* one: it carries no weight, never touches `score`, `stage`, `landing` or
+`material_seed`, and is only ever raised on a place that has already reached Tile. Content
+changes may alter what an earned Place shows; they may not create, resize, move or promote one
+(`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
+
+```rust
+pub struct Bloom {
+    pub kind: BloomKind,   // Arrived — the only kind today
+    pub since: GardenMoment,
+    pub items: Vec<PathBuf>, // as many as the body can mark, ≤ 8
+    pub total: u32,          // unresolved arrivals, which is what the state line counts
+}
+```
+
+**Where it comes from.** One `Files.Index1.ChangesSince` call per tending moment, from a cursor
+persisted in the ledger. Never a subscription: a bloom is only ever *drawn*, and drawing only
+happens at a tending moment, so a resident listener would be a background wakeup per index
+generation for news nobody is looking at. Below the retained floor the log cannot prove
+continuity, so there is nothing honest to show — the cursor moves to the log's head, every
+bloom is cleared, and that moment shows nothing. A cursor of zero is a garden that has never
+read the log: it takes the position and shows nothing, so a first tending moment does not
+announce every file already on the disk as news.
+
+**Where it goes.** Each arriving path is *looked up* against the contexts that already exist —
+the deepest one above it that reached Tile and is not hidden — and nothing is ever inserted.
+A path under a directory nobody has earned is dropped, exactly like a path under `target/`.
+That lookup is the whole of the rule.
+
+**How it ends.** The brokered open the ledger already hears: `file-opened` on a bloomed item
+drops it, and the last one clears the bloom, so `2 new` becomes `1 new` becomes nothing. A
+removal ends it too, and a bloom nobody answers for five later sessions is dropped as stale —
+sessions, not days.
+
+**What it is not.** There is no media consumption signal: no started, no progress, no
+completed, no `Resume`. There is no media provider role, the seeded player is mpv while a real
+desktop may be running anything, and MPRIS cannot give progress without polling — `Position`
+does not appear in `PropertiesChanged`, and by `NameOwnerChanged` the player is gone. *Arrived
+and never opened* is the only claim this system can make honestly, and it is the claim the
+state line makes.
 
 ---
 
@@ -460,8 +508,8 @@ its reason:
    or removes it. `PlaceFolder` sets `pinned`. Reason: the automatic system treats user
    choices as constraints; that is what makes it tolerable.
 
-6. **Shrinking precedes removal, and removal takes days.** A context steps down one rung per
-   tending moment at most, subject to §5.4's dwell times. Reason: the user should watch a
+6. **Shrinking precedes removal, and removal takes later sessions.** A context steps down one
+   rung per tending moment at most, subject to §5.4's idle thresholds. Reason: the user should watch a
    place recede, not find it gone.
 
 7. **The tender is add-only across shell versions.** A saved document that predates the
@@ -470,8 +518,8 @@ its reason:
    design and `home-refresh` migrations show the pattern.
 
 8. **Every op the tender emits carries a reason string, and the shell keeps the last tending
-   report.** `grew Lege to 5×4: 14 opens, 3 terminals, 4 days` / `removed jp2lam: no activity
-   for 9 days`. Reason: the project's culture is that interventions explain themselves
+   report.** `grew to expanded: 14 opens, 3 terminals, 4 sessions` / `receded to tile:
+   3 later sessions, 7 garden-hours without activity`. Reason: the project's culture is that interventions explain themselves
    (`resourced`'s traces, the deploy's convergence report); a Home that rearranges without
    saying why would be resented within a week. The report is one `History1` event per tending
    moment that changed something, so it appears in the history the user already has.
@@ -501,7 +549,7 @@ says how: one object, four rungs, same state model.
 
 | Rung | Span | Body |
 |---|---|---|
-| **Small** (trace) | 2×2 | Name in the tile's own material; one state line (`4 days ago`, `growing`, `3 new`). Manipulation controls on hover/focus only (WS3). |
+| **Small** (trace) | 2×2 | Name in the tile's own material; one state line — what arrived first, then how it is held and what earned it (`3 new · pinned · 4 opens, 2 sessions`). Manipulation controls on hover/focus only (WS3). |
 | **Wide** (tile) | ≥3×2 | Name; a roles row of up to three text-led actions: `>_ Terminal  ▤ Files  <> Edit`. Symbolic glyphs, not application icons — "a project should look like the project, not a collage of the applications used to manipulate it". |
 | **Large** (expanded) | ≥3×3 | Name (the 20–22px project-title size); roles row; a two-column children list (up to six, directories first, each a single-click open through the same brokered route as today); state line. Optionally, at ≥5×4, a treemap band across the bottom drawn by `lege-treemap` for the root — inside the object, as the constitution requires. |
 | **Full** | zoomed | The existing folder window over the same root, with the Files surface state (`location, selection, sort`) preserved, as the ladder decision demands. |
@@ -666,8 +714,10 @@ directory whose name is not UTF-8 is still a Place.
   garden-owned tile is recognised by the ledger (its root is a context), not by a flag in the
   document, so `DOCUMENT_VERSION` stays 1 and no migration of saved Homes is needed.
 - A context whose root no longer exists (index `Removed`, or `stat` fails at a tending moment)
-  goes grey for one tending moment and is removed at the next, with the record retained
-  Dormant for 30 days so a re-mounted drive brings its places back.
+  goes grey for one tending moment and is removed at the next. There is no timed retention of
+  the record: keeping it Dormant for a month of calendar time was a rule the Garden Clock cannot
+  express, and it is not needed — a Dormant record costs about a kilobyte and is evicted only when the
+  ledger is full (§10), so a re-mounted drive brings its places back on its own.
 
 ---
 
@@ -676,8 +726,8 @@ directory whose name is not UTF-8 is still a Place.
 | Concern | Rule |
 |---|---|
 | Idle wakeups | Zero. No timer anywhere. Observation is push; tending is on reveal. The `idle-wakeups.sh` measurement must show no change with the garden enabled. |
-| Cost at reveal | `Contexts` is ≤64 records; `tend` is O(contexts × candidate spans) through `find_resize`; `ChangesSince` is one bounded page per tending moment (`limit` 2,000), and if `more` is true the rest waits for the next moment. Target: tending adds < 5 ms to a reveal on the reference laptop, measured the way `home-refresh-costs-profiled` did. |
-| Storage | ≤64 contexts × ~1 KiB; event buckets pruned at 14 days. |
+| Cost at reveal | `Contexts` is ≤64 records; `tend` is O(contexts × candidate spans) through `find_resize`; `ChangesSince` is one bounded page per tending moment (`limit` 512), and if `more` is true the rest waits for the next moment. Target: tending adds < 5 ms to a reveal on the reference laptop, measured the way `home-refresh-costs-profiled` did. |
+| Storage | ≤64 contexts × ~1 KiB; each context keeps a bounded tail of 64 buckets, so a long-lived place does not grow without limit. |
 | I/O | `stat`-class checks on ≤8 ancestors per *new* unique path, cached per index generation. No file contents, ever. No directory walks. |
 | Privacy | The ledger records paths and app ids the user already produced elsewhere (Recents, History, the index). Three per-source switches; per-path Hide; Forget-all. The ledger is in the same per-user store as Recents, with the same protection. Nothing leaves the machine. |
 | Failure | Sessiond down: no observations, no tending, Home is the last saved field. Filed down: index source silent, others unaffected. Planner refused by `HomeField1.Apply` (a `FieldError`): the op is dropped and the reason logged; the field is never left half-tended because each op is independent. |
@@ -738,7 +788,7 @@ Acceptance: `decision-recorded` (observation); `contradictions-resolved` (comman
   without the shell.
 
 Acceptance: `ledger-is-pure` (command: `deps-check`, no I/O in the core); `breadth-beats-count`
-(command: a test where 300 saves score below 3 opens + 1 launch across 2 days);
+(command: a test where 300 saves score below 3 opens + 1 launch across 2 sessions);
 `decay-is-arithmetic` (command: no timer, no spawned task in the host — a test that the host
 registers no interval); `ignore-list-holds` (command: 40,000 `target/` changes produce no
 context); `bounded` (command: 65th context evicts the lowest Dormant).
@@ -782,26 +832,53 @@ Acceptance: `garden-matches-the-day` (manual — the user's verdict); `nothing-m
 If this fails, the plan stops here and the reasons go into the ledger. Nothing in Phases 5–6
 is worth building on a model that does not match a day.
 
-### Phase 5 — Widening the sources (`@legeos.work.homegarden-sources`)
+### Phase 5 — Blooms (`@legeos.work.homegarden-blooms-20260909`)
 
-- The index change log at tending moments (`HumanFileModified`, `ArrivedHere`), with the
-  Downloads `3 new` state line.
-- The FileChooser portal (after X1) calling `Observe`.
-- The `CodeEditor` role, so the third action exists.
-- Index signals, once wired, replacing the on-demand read.
+An earned Place says what arrived in it, and forgets when you open it (§5.8).
 
-Acceptance: `index-never-moves` (command: a burst of index changes yields no `Place`/`Resize`
-above the medium-weight cap); `portal-observes` (command, after X1).
+- One `Files.Index1.ChangesSince` read per tending moment from a persisted cursor; no
+  subscription, and a `SnapshotRequired` rebases the cursor and shows nothing.
+- Arrivals attributed by lookup against existing contexts of stage Tile or above, never
+  inserted; the same ignore list as every other path.
+- `Bloom { kind, since, items, total }` on the context; `N new` on the state line and a mark on
+  the arrived rows in the body.
+- Resolution through the `file-opened` `Observe` that already exists — which means the Files
+  application must make that call, which it never did.
+- The rename path, which rides the same read: a move whose source is a context root carries the
+  place to its new name with its score, buckets and material seed intact. That is Phase 6's
+  `material-survives-rename`, landing here because it costs one branch inside a loop this phase
+  already writes.
 
-### Phase 6 — Identity and bridges (`@legeos.work.homegarden-identity`)
+**What this phase does not do.** It does not create, resize, move or promote a Place from
+content. It does not watch the index. It does not know what "watched" means: no media role, no
+MPRIS, no `Resume` bloom, no progress fraction (§5.8).
+
+Acceptance: `content-never-grows-a-place` (command); `bloom-resolves-on-open` (command);
+`root-survives-rename` (command); `one-read-per-tending` (command); `files-app-observes`
+(command); `no-calendar-left` (command).
+
+Deferred out of this phase, unchanged: the FileChooser portal calling `Observe` (after X1), and
+the `CodeEditor` role so the third action resolves.
+
+### Phase 6 — Material identity (`@legeos.work.homegarden-identity`)
+
+A Place looks like itself. Last, and smallest.
 
 - Material seed per place (§7.4), theme-owned rendering, regrowth restores it.
-- The seven-day **Make this a project** row.
-- The Project tile's Large body shares the roles-and-children renderer.
-- A treemap band inside a ≥5×4 place.
+- The shell reads the seed the daemon already publishes; the theme owns the seed → pattern map.
+- Established places only, never the field substrate, and grain only — never hue, because
+  colour is state and material is identity.
 
-Acceptance: `material-survives-rename` (command); `promotion-is-a-row-not-a-prompt`
-(observation).
+**What this phase does not do.** It does not touch the layout engine, put texture on anything
+below Expanded, or add a colour. It does not query the index for an `EntryId`: rename survival
+landed in Phase 5. It does not add a **Make this a project** row — that rule was a calendar
+rule and is gone (§5.7).
+
+Acceptance: `material-survives-rename` (command, satisfied in Phase 5);
+`deterministic-and-quiet` (command); `established-only` (command).
+
+The Project tile's shared roles-and-children body and the treemap band inside a ≥5×4 place are
+representation work, not identity; they belong with §7.1 and wait on nothing here.
 
 ### Dependencies on existing work
 
@@ -810,7 +887,6 @@ Acceptance: `material-survives-rename` (command); `promotion-is-a-row-not-a-prom
 | Parked sessions migrated to the bar so the home corner has slack | `@legeos.work.home-project-tool-actions` (`home-taskbar-migration`) |
 | Hover-revealed manipulation on Small tiles | `@legeos.work.representation-chrome-and-continuity` (WS3, mostly done) |
 | Folder windows reusing the Files surface state | `home-vision-review-20260905`'s carried priority |
-| Index change signals wired | `@legeos.observation.index-change-signals-never-fire` |
 | FileChooser portal | `@legeos.work.developer-edition-daily-driver` (X1) |
 | `CodeEditor` role | `@legeos.work.home-project-tool-actions` |
 | Bar indicators for battery/volume/brightness and a power menu | Lane B, plus the §14 decision |
@@ -854,9 +930,10 @@ To be recorded as `knowledge.question`s if not answered:
    a strict garden-only yield set; the user may prefer the latter.
 4. **Session and Settings: widget or bar?** §11's proposal moves both to the bar. This is the
    user's own stated preference in `garden.md`, but it revises `@legeos.work.home-widgets`.
-5. **Half-life.** Three days is a guess for a person who works in a few repositories for
-   weeks. A writer moving between many documents may want seven; a person with a weekly
-   rhythm may want ten.
+5. **Half-life.** Twelve garden-hours and four later sessions are guesses for a person who
+   works in a few repositories for weeks. A writer moving between many documents may want a
+   longer session half-life; someone who works in one place all day may want a shorter one.
+   Neither number can be judged while the clock's `active_ms` stays at zero.
 6. **Home corner.** Bottom-left, opposite Files? Or should the first growth land beside the
    Desktop tray?
 7. **Naming.** "Homegarden" is the internal name for the model and the work items. Does the
@@ -883,56 +960,62 @@ stops placing folders on Home by hand, because the ones they need are already th
 
 ---
 
-## Appendix A — A worked day
+## Appendix A — A worked session
 
-Cold Home, morning: Apps bar; Files (top-left, 3×3); Desktop tray (2×2, top-right); bar below.
-Nothing else.
+Told in sessions and garden-hours, because that is the only clock the model has. A session is
+one login; a garden-hour is an hour of *unlocked* session runtime. A machine that is off ages
+nothing here.
 
-09:10 — The user presses Super, types `kitty`, launches it. No directory argument: no event.
+Cold Home, session 1: Apps bar; Files (top-left, 3×3); Desktop tray (2×2, top-right); bar
+below. Nothing else.
 
-09:12 — In kitty they `cd ~/src/legeos` and build. The garden sees nothing (no cwd tracing;
-`target/` ignored). Honest.
+**Session 1, +0.0 h** — The user presses Super, types `kitty`, launches it. No directory
+argument: no event.
 
-09:40 — They open a folder window on `~/src/legeos/docs/planning` from Files.
-`DirectoryOpened(~/src/legeos/docs/planning)` → attributed to `~/src/legeos` (rule 3: `.git`
-present) → context created, score 2.0, child candidate `docs/`.
+**+0.1 h** — In kitty they `cd ~/src/legeos` and build. The prompt hook reports the directory
+it entered; `target/` is ignored, so the build itself is invisible. Honest either way.
 
-09:41 — They open `homegarden.md` from that window. `FileOpened` → +1.5, child `docs/`.
+**+0.5 h** — They open a folder window on `~/src/legeos/docs/planning` from Files.
+`DirectoryOpened` → attributed to `~/src/legeos` (rule 3: `.git` present) → context created,
+score 2.0, tree node `docs/`.
 
-10:30 — They right-click the folder window → Open terminal here. `LaunchedHere` with role
-`Terminal` → +3.0, roles += Terminal. Effective ≈ 6.5. Stage: Trace (≥3.0). No tile yet: no
-tending moment has passed.
+**+0.6 h** — They open `homegarden.md` from that window. `FileOpened` → +1.5, tree `docs/`.
 
-10:31 — They press Super. **Tending moment.** `tend` emits `Place { Folder ~/src/legeos, Small
-2×2 }` at the home corner, reason `new: 2 opens, 1 terminal today`. Home now has a fourth
-object: `legeos`, in its own material, state line `today`.
+**+1.3 h** — Open terminal here from the folder window. `LaunchedHere` with role `Terminal` →
++3.0, roles += Terminal. Effective ≈ 6.5, one session: Trace (≥ 3.0, 1 session). No tile yet —
+no tending moment has passed.
 
-11:00–17:00 — Twenty more opens under `crates/lege-field` and `docs/`, two more terminals, one
-editor launch on a file (role CodeEditor, once that role exists). Score grows past 20 but the
-day-count is 1, so Tile requires the second day.
+**+1.4 h** — They press Super. **Tending moment.** `tend` emits `Place { Folder ~/src/legeos,
+Small 2×2 }` at the home corner, reason `grew to trace: 2 opens, 1 launch, 1 session`. Home has
+a fourth object: `legeos`, state line `2 opens, 1 launch, 1 session`.
 
-Next morning, 09:05 — Super. Effective, after 16 hours of decay from ≈30: ≈ 24. Two distinct
-days now. Trace → Tile (dwell ≥ 1 h satisfied). `Resize` to 3×2 — `find_resize` finds the room
-in empty cells; reason `grew: 23 opens, 3 terminals, 1 editor, 2 days`. The tile now shows
-`>_ Terminal  ▤ Files  <> Edit`.
+**+1.4 to +7 h** — Twenty more opens under `crates/lege-field` and `docs/`, two more terminals,
+one editor launch. Score passes 20, but Tile needs a second session, so nothing moves.
 
-Day three, afternoon — Super. Three days, two roles, effective ≈ 40. Tile → Expanded. `Resize`
-to 4×3; children appear: `crates/`, `docs/`, `README.md`, `justfile`. The user drags the tile
-to the left-centre where they want it. `Move` is theirs; `landing` is updated; the tile is
-now user-touched: it can still grow (no `user_span`), never shrink.
+**Session 2, +0.1 h** — Super. Two sessions now, and the halvings have taken ≈30 down to ≈24.
+Trace → Tile. `Resize` to 3×2 — `find_resize` finds the room in empty cells without a
+neighbour giving up a cell; reason `grew to tile: 23 opens, 3 launches, 2 sessions`. The tile
+shows `>_ Terminal  ▤ Files  <> Edit`.
 
-Day five — They open `~/Downloads` once to fetch an ISO. `DirectoryOpened` on an XDG dir
-(rule 5) → Trace; two `ArrivedHere` from the index. Next Super: a 2×2 `Downloads` beside
-`legeos`, state line `2 new`.
+**Session 3, +3 h** — Super. Three sessions, two kinds, effective ≈ 40. Tile → Expanded.
+`Resize` to 4×3; the branch body appears: `crates/`, `docs/`, the files that earned it. The
+user drags the tile to the left-centre where they want it. That `Move` is theirs; `landing`
+follows; the tile is now user-touched — it can still grow, never shrink.
 
-Day twelve — `Downloads` untouched since day five: effective < 1.0, dwell 5 days passed →
-Dormant → `Remove`, reason `no activity for 7 days`. `legeos` still Expanded. The context menu
-on `legeos` has gained **Make this a project**. The user ignores it. Fine.
+**Session 5** — They open `~/Downloads` once to fetch an ISO. `DirectoryOpened` on an XDG dir
+(rule 5) → Trace. Two files land in it, but a Trace is not an earned place: no bloom. Two
+sessions later `Downloads` reaches Tile on its own opens, and the next arrival blooms — state
+line `1 new · 3 opens, 3 sessions`. The user opens the file; the bloom is gone.
 
-Six weeks later — The user returns from a trip. `legeos` decayed to Trace on day 20 and
-Dormant on day 27; Home is Files, Desktop, and nothing. They open a terminal in `~/src/legeos`
-from Files. Next Super: `legeos` regrows, 2×2, *in the left-centre cell they moved it to*, in
-the same paper grain. The garden remembered.
+**Session 12** — `Downloads` untouched since session 5: effective < 1.0, and both 10 later
+sessions and 30 garden-hours have passed → Dormant → `Remove`, reason `receded to dormant:
+7 later sessions, 34 garden-hours without activity`. `legeos` is still Expanded.
+
+**Many sessions later** — The user comes back from a trip. The machine was off, so nothing aged
+while they were away; it is the sessions they spent elsewhere that cost `legeos` its rungs. It
+is Dormant, and Home is Files, Desktop and nothing. They open a terminal in `~/src/legeos` from
+Files. Next Super: `legeos` regrows, 2×2, *in the left-centre cell they moved it to*, with the
+same material seed. The garden remembered.
 
 ---
 
