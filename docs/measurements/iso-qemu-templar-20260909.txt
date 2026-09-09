@@ -1,0 +1,2 @@
+iso-qemu: booting /var/tmp/legeos-build/@build/templaros-0.1.0~dev1788945442+gc2403fa.dirty.iso with Secure Boot (kvm, 420s)
+iso-qemu: OK — shim → GRUB → kernel with Secure Boot on, live userspace reached, preflight network pass

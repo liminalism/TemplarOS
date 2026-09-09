@@ -1,0 +1,10 @@
+# TemplarOS medium 2026-09-09 — set 0.1.0~dev1788945442+gc2403fa.dirty
+
+1. mmdebstrap resolute (unshare) → /var/tmp/legeos-build/@build/iso/casper/filesystem.squashfs
+2. archive → templaros/devrepo, tiers manifest
+native 15, inherited 1507
+3. GRUB configuration and the EFI system partition image
+4. xorriso → /var/tmp/legeos-build/@build/templaros-0.1.0~dev1788945442+gc2403fa.dirty.iso
+Written to medium : 2133226 sectors at LBA 0
+
+aae24d622428a1c4333adb9b73564cc29bcf1f07ba77988953350ed046a488ee  templaros-0.1.0~dev1788945442+gc2403fa.dirty.iso
