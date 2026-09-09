@@ -1602,7 +1602,10 @@ mod tests {
             context.last.active_ms,
             reloaded.clock.active_ms
         );
-        assert_eq!(reloaded.clock.now(0).hours_since(context.last), 0.0);
+        assert!(
+            reloaded.clock.now(0).hours_since(context.last) < f32::EPSILON,
+            "a place used a moment ago has been idle for no garden hours at all"
+        );
     }
 
     #[test]

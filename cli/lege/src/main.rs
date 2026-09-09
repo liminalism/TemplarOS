@@ -2182,18 +2182,16 @@ mod tests {
             .skip_while(|line| line.trim_start() != "# >>> legeos garden hook >>>")
             .take_while(|line| line.trim_start() != "# <<< legeos garden hook <<<")
             .map(|line| {
-                format!(
-                    "{}\n",
-                    line.replace(
-                        "/etc/profile.d/60-legeos-garden.sh",
-                        concat!(
-                            env!("CARGO_MANIFEST_DIR"),
-                            "/../../session/profile.d/60-legeos-garden.sh"
-                        )
-                    )
+                line.replace(
+                    "/etc/profile.d/60-legeos-garden.sh",
+                    concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../session/profile.d/60-legeos-garden.sh"
+                    ),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             block.contains("60-legeos-garden.sh"),
             "the postinst block no longer sources the hook: {block}"
