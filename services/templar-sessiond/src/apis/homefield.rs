@@ -154,8 +154,13 @@ impl HomeFieldApi {
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
         // Record only after the placement committed. A rejected request or an already-present
         // tile must not create activity that did not happen.
-        self.garden
-            .observe_activity(ActivityKind::PlacedOnHome, path.to_path_buf(), None, None);
+        self.garden.observe_activity(
+            ActivityKind::PlacedOnHome,
+            path.to_path_buf(),
+            None,
+            None,
+            None,
+        );
         self.record(format!(
             "Home Field on {output}: folder {} added (revision {}).",
             path.display(),

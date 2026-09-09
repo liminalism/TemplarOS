@@ -26,7 +26,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use templar_field::{Cell, Span};
-use templar_types::{AppId, ProviderRole};
+use templar_types::{AppId, InstanceId, ProviderRole};
 
 // ---------------------------------------------------------------- the clock -----------------
 
@@ -204,6 +204,10 @@ pub struct HomeActivity {
     pub app_id: Option<AppId>,
     pub role: Option<ProviderRole>,
     pub at: GardenMoment,
+    /// The application instance this act belongs to, when the act was a launch this daemon
+    /// brokered. `None` for every act observed from outside, which is every act whose instance
+    /// nobody can vouch for.
+    pub instance_id: Option<InstanceId>,
 }
 
 // ---------------------------------------------------------------- contexts ------------------
@@ -504,9 +508,33 @@ pub struct HomeContext {
     /// What arrived here since the user last looked. Never evidence: see [`Bloom`].
     #[serde(default)]
     pub bloom: Option<Bloom>,
+    /// The application instances that came out of this place: launched here, or launched to open
+    /// a file under it. A window belongs to the place when its `ShellToplevel.instance_id` is one
+    /// of these.
+    ///
+    /// **Strong evidence only.** "Firefox was open while you edited something here" is not an
+    /// association and never becomes one; only the broker's own record of a launch *at* the place
+    /// is. Most recent last, capped at [`INSTANCE_MEMORY`] — this is a list of live windows to
+    /// recognise, not a history, and an instance nobody can see is simply never matched.
+    #[serde(default)]
+    pub instances: Vec<InstanceId>,
 }
 
+/// How many launched-here instances a place remembers.
+pub const INSTANCE_MEMORY: usize = 32;
+
 impl HomeContext {
+    /// Associate one application instance with this place, most recent last, without repeating
+    /// one it already knows.
+    pub fn remember_instance(&mut self, instance: InstanceId) {
+        self.instances.retain(|known| *known != instance);
+        self.instances.push(instance);
+        if self.instances.len() > INSTANCE_MEMORY {
+            let excess = self.instances.len() - INSTANCE_MEMORY;
+            self.instances.drain(..excess);
+        }
+    }
+
     fn new(root: PathBuf, at: GardenMoment) -> Self {
         let material_seed = fnv(root.as_os_str().as_encoded_bytes());
         Self {
@@ -529,6 +557,7 @@ impl HomeContext {
             form_candidate_since: at.session,
             last_reason: String::new(),
             bloom: None,
+            instances: Vec::new(),
         }
     }
 
@@ -1048,6 +1077,33 @@ impl Ledger {
     }
 
     /// Record one event. Returns the root it accrued to, or `None` if it was dropped.
+    /// Associate a launched instance with the place its argument lies under, **without** the act
+    /// counting as evidence of anything.
+    ///
+    /// The brokered open of a file already reaches [`Self::observe`] as a `FileOpened` from the
+    /// shell, which is where its weight comes from; the daemon's own launch record is the only
+    /// thing that knows which *instance* that open produced. Attaching it here rather than
+    /// weighting it again is what keeps one act worth one act.
+    ///
+    /// Attaches to an existing place only. A launch is not evidence enough to grow one — that is
+    /// `observe`'s judgement to make, on its own terms.
+    pub fn associate_instance(
+        &mut self,
+        path: &Path,
+        instance: InstanceId,
+        probe: &dyn RootProbe,
+        config: &GardenConfig,
+    ) -> Option<PathBuf> {
+        if !config.enabled {
+            return None;
+        }
+        let existing: Vec<PathBuf> = self.contexts.iter().map(|c| c.root.clone()).collect();
+        let root = attribute_root(path, &existing, probe, config)?;
+        let context = self.context_mut(&root)?;
+        context.remember_instance(instance);
+        Some(root)
+    }
+
     pub fn observe(
         &mut self,
         activity: &HomeActivity,
@@ -1065,6 +1121,17 @@ impl Ledger {
                 .push(HomeContext::new(root.clone(), activity.at));
         }
         let context = self.context_mut(&root).expect("just ensured");
+        // The window this act produced belongs to the place, if the act was one this daemon
+        // brokered and one of the two the doc calls strong: launched here, or launched to open a
+        // file under it. Recorded before the hidden check — a hidden place still owns its windows.
+        if let Some(instance) = activity.instance_id
+            && matches!(
+                activity.kind,
+                ActivityKind::LaunchedHere | ActivityKind::FileOpened
+            )
+        {
+            context.remember_instance(instance);
+        }
         // The one place a bloom is answered: the user opened the thing that arrived, so the
         // place has nothing left to say about it. No new source — this is the brokered open the
         // ledger already hears.
@@ -1546,7 +1613,85 @@ mod tests {
             app_id: None,
             role,
             at,
+            instance_id: None,
         }
+    }
+
+    /// A place knows which windows came out of it, and only the ones that did.
+    ///
+    /// Strong evidence is the whole rule: the launch this daemon brokered at the place, and the
+    /// brokered open of a file under it. Anything observed from outside carries no instance and
+    /// can never associate one — "it was open while you were working here" is not evidence and
+    /// must never become any.
+    #[test]
+    fn a_place_remembers_only_the_instances_that_came_out_of_it() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        let at = GardenMoment::default();
+        let here = "/home/u/work/project";
+
+        let launched = InstanceId::new();
+        let mut activity = event(here, ActivityKind::LaunchedHere, None, at);
+        activity.instance_id = Some(launched);
+        let root = ledger
+            .observe(&activity, &probe, &config)
+            .expect("a launch here earns a place");
+        assert_eq!(ledger.context(&root).unwrap().instances, vec![launched]);
+
+        // The same act again is the same instance, not a second one.
+        ledger.observe(&activity, &probe, &config);
+        assert_eq!(ledger.context(&root).unwrap().instances, vec![launched]);
+
+        // An act with no instance behind it associates nothing.
+        ledger.observe(
+            &event(here, ActivityKind::FileSaved, None, at),
+            &probe,
+            &config,
+        );
+        assert_eq!(ledger.context(&root).unwrap().instances, vec![launched]);
+
+        // The brokered open of a file under the place: the weight came from the shell's own
+        // `file-opened`, and this attaches the instance without counting the act twice.
+        let opened = InstanceId::new();
+        let score = ledger.context(&root).unwrap().score;
+        let associated = ledger.associate_instance(
+            &PathBuf::from("/home/u/work/project/notes.md"),
+            opened,
+            &probe,
+            &config,
+        );
+        assert_eq!(associated.as_ref(), Some(&root));
+        let context = ledger.context(&root).unwrap();
+        assert_eq!(context.instances, vec![launched, opened]);
+        assert!(
+            (context.score - score).abs() < f32::EPSILON,
+            "an association is not evidence"
+        );
+
+        // And a launch under a directory that is not a place grows nothing.
+        assert_eq!(
+            ledger.associate_instance(
+                &PathBuf::from("/home/u/elsewhere/thing.md"),
+                InstanceId::new(),
+                &probe,
+                &config,
+            ),
+            None
+        );
+
+        // The memory is bounded: a place that has launched a hundred things remembers the last
+        // few dozen, because this is a list of live windows to recognise and not a history.
+        for _ in 0..INSTANCE_MEMORY * 2 {
+            ledger
+                .context_mut(&root)
+                .unwrap()
+                .remember_instance(InstanceId::new());
+        }
+        assert_eq!(
+            ledger.context(&root).unwrap().instances.len(),
+            INSTANCE_MEMORY
+        );
     }
 
     #[test]

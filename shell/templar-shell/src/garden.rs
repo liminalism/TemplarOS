@@ -40,9 +40,40 @@ pub struct GardenPlace {
     pub bloom_total: u32,
     /// As many of those arrivals as the body can mark. The count above is the whole of it.
     pub bloomed: Vec<PathBuf>,
+    /// The application instances that came out of this place — launched here, or launched to
+    /// open a file under it — as the daemon's own launch record saw them.
+    ///
+    /// Strings rather than parsed ids: the shell compares them against
+    /// `ShellToplevel.instance_id`, and a value this build cannot parse should fail to match
+    /// rather than fail to load the place.
+    pub instances: Vec<String>,
 }
 
 impl GardenPlace {
+    /// The live windows that belong to this place, most recently activated first.
+    ///
+    /// A window belongs when its instance is one the place remembers — strong evidence only:
+    /// started here, or started to open a file under here. Never "it was open at the time".
+    #[must_use]
+    pub fn windows(
+        &self,
+        toplevels: &[templar_window::ShellToplevel],
+    ) -> Vec<templar_window::WindowId> {
+        if self.instances.is_empty() {
+            return Vec::new();
+        }
+        let mut mine: Vec<&templar_window::ShellToplevel> = toplevels
+            .iter()
+            .filter(|top| !top.shelved)
+            .filter(|top| {
+                top.instance_id
+                    .is_some_and(|id| self.instances.iter().any(|known| *known == id.to_string()))
+            })
+            .collect();
+        mine.sort_by_key(|top| (top.mru_rank, top.window_id));
+        mine.iter().map(|top| top.window_id).collect()
+    }
+
     /// The one-line state a Small place shows under its name. News first: what arrived is the
     /// thing that changed since the user last looked.
     pub fn state_line(&self) -> String {
@@ -99,6 +130,11 @@ pub async fn tend(output: &str) -> Result<String, String> {
 }
 
 /// Fire-and-forget: tell the garden one thing happened. Never an error for the caller.
+///
+/// No instance id, deliberately. The only acts that associate a window with a place are the ones
+/// the daemon itself brokered — it is the side that knows which instance a launch produced — so
+/// the association is made there (`homegarden::observe_launch`) and this stays what it has always
+/// been: a report that something significant happened at a path.
 pub async fn observe(kind: &str, path: &std::path::Path, app_id: &str) {
     let Ok(connection) = crate::data::session().await else {
         return;
@@ -177,5 +213,54 @@ mod tests {
         let quiet: GardenPlace =
             serde_json::from_str(r#"{"root":"/home/dk/x","summary":"1 open, 1 session"}"#).unwrap();
         assert_eq!(quiet.state_line(), "1 open, 1 session");
+    }
+
+    /// A place's windows are the ones that came out of it, and only those. The daemon vouches
+    /// for the association; this side only recognises it — an unparseable or unknown instance is
+    /// a window that is not this place's, never a window that might be.
+    #[test]
+    fn a_place_claims_only_the_windows_its_own_launches_produced() {
+        let mine = templar_types::InstanceId::new();
+        let theirs = templar_types::InstanceId::new();
+        let place: GardenPlace = serde_json::from_str(&format!(
+            r#"{{"root":"/home/dk/work","summary":"x","instances":["{mine}","not-a-uuid"]}}"#
+        ))
+        .unwrap();
+
+        let window = |id: u64, instance: Option<templar_types::InstanceId>, shelved: bool| {
+            templar_window::ShellToplevel {
+                window_id: templar_window::WindowId(id),
+                canonical_app_id: Some("org.example.App".parse().unwrap()),
+                instance_id: instance,
+                title: String::new(),
+                verified_identity: true,
+                activated: false,
+                mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
+                fullscreen: false,
+                shelved,
+                maximized: false,
+                geometry: templar_window::Rect::new(0, 0, 100, 100),
+                layer: templar_window::Layer::Normal,
+                group: None,
+            }
+        };
+        let toplevels = vec![
+            window(1, Some(theirs), false),
+            window(2, Some(mine), false),
+            // Parked: still this place's launch, but not a window anyone can be shown.
+            window(3, Some(mine), true),
+            // No identity at all — the ordinary case for an unbrokered client.
+            window(4, None, false),
+        ];
+        assert_eq!(
+            place.windows(&toplevels),
+            vec![templar_window::WindowId(2)],
+            "only the live window this place launched"
+        );
+
+        // A place that has launched nothing claims nothing, whatever is on screen.
+        let quiet: GardenPlace =
+            serde_json::from_str(r#"{"root":"/home/dk/x","summary":"y"}"#).unwrap();
+        assert!(quiet.windows(&toplevels).is_empty());
     }
 }

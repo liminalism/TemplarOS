@@ -27,7 +27,7 @@ use templar_session_core::{
     settings::{SettingValue, SettingsSchema, SettingsValues},
 };
 use templar_state::Store;
-use templar_types::{AppId, ProviderRole, dbus::session as names};
+use templar_types::{AppId, InstanceId, ProviderRole, dbus::session as names};
 use zbus::{fdo, object_server::SignalEmitter};
 
 /// Everything the host shares between D-Bus calls and the edge listener.
@@ -155,6 +155,7 @@ impl HomeGardenApi {
         path: PathBuf,
         app_id: Option<AppId>,
         role: Option<ProviderRole>,
+        instance_id: Option<InstanceId>,
     ) {
         let config = self.config();
         if !config.enabled {
@@ -169,6 +170,7 @@ impl HomeGardenApi {
             app_id,
             role,
             at,
+            instance_id,
         };
         if let Some(root) = inner
             .ledger
@@ -179,17 +181,41 @@ impl HomeGardenApi {
         }
     }
 
-    /// A launch happened: a directory argument is a `LaunchedHere` on that directory.
-    pub fn observe_launch(&self, app_id: &AppId, arguments: &[String]) {
-        let Some(directory) = launch_directory(arguments) else {
+    /// A launch happened: a directory argument is a `LaunchedHere` on that directory, and either
+    /// way the instance it produced belongs to whatever place the argument lies under.
+    ///
+    /// The two associations the doc calls strong are both this one event. A directory argument is
+    /// "launched here" and is evidence; a file argument is the brokered open, whose *weight* the
+    /// shell has already reported as `file-opened` — so the instance is attached without counting
+    /// the act twice. This is the only place in the system that knows which instance a launch
+    /// produced, which is why the association is made here and not over the bus.
+    pub fn observe_launch(&self, app_id: &AppId, arguments: &[String], instance: InstanceId) {
+        if let Some(directory) = launch_directory(arguments) {
+            self.observe_activity(
+                ActivityKind::LaunchedHere,
+                directory,
+                Some(app_id.clone()),
+                None,
+                Some(instance),
+            );
+            return;
+        }
+        let Some(file) = launch_file(arguments) else {
             return;
         };
-        self.observe_activity(
-            ActivityKind::LaunchedHere,
-            directory,
-            Some(app_id.clone()),
-            None,
-        );
+        let config = self.config();
+        if !config.enabled {
+            return;
+        }
+        let mut inner = self.inner.lock().expect("garden lock");
+        if let Some(root) =
+            inner
+                .ledger
+                .associate_instance(&file, instance, self.probe.as_ref(), &config)
+        {
+            tracing::info!(root = %root.display(), "garden associated a launched instance");
+            self.persist(&mut inner);
+        }
     }
 
     fn on_edge(&self, edge: SessionEdge) {
@@ -229,7 +255,7 @@ impl HomeGardenApi {
                 return;
             }
         }
-        self.observe_activity(ActivityKind::PlacedOnHome, desktop, None, None);
+        self.observe_activity(ActivityKind::PlacedOnHome, desktop, None, None, None);
     }
 
     /// One tending moment for `output`: stages, then the field.
@@ -488,6 +514,15 @@ impl HomeGardenApi {
 
 /// The parsed launch directory: `--directory X`, `--working-directory X`, `-d X`, or the first
 /// bare absolute argument that is a directory.
+/// The first absolute file path among the arguments — the brokered open's own argument.
+fn launch_file(arguments: &[String]) -> Option<PathBuf> {
+    arguments
+        .iter()
+        .filter(|argument| argument.starts_with('/'))
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
 fn launch_directory(arguments: &[String]) -> Option<PathBuf> {
     let mut iter = arguments.iter();
     while let Some(argument) = iter.next() {
@@ -628,6 +663,7 @@ fn context_json(
         "why": context.last_reason,
         "bloom_total": context.bloom.as_ref().map_or(0, |bloom| bloom.total),
         "bloomed": context.bloom.as_ref().map_or(&[][..], |bloom| bloom.items.as_slice()),
+        "instances": context.instances.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "tile": garden_tile_id(&context.root).0,
     })
 }
@@ -669,7 +705,9 @@ impl HomeGardenApi {
                     .ok_or_else(|| fdo::Error::InvalidArgs(format!("unknown role {role:?}")))?,
             )
         };
-        self.observe_activity(kind, path, app_id, role);
+        // No instance: an act observed over the bus is one nobody can vouch for the instance
+        // of, and a guess would be an association the user never made.
+        self.observe_activity(kind, path, app_id, role, None);
         Ok(())
     }
 
@@ -803,7 +841,7 @@ impl HomeGardenApi {
 pub fn spawn_sources(
     api: HomeGardenApi,
     edges: &SessionEdges,
-    launches: &tokio::sync::broadcast::Sender<(AppId, Vec<String>)>,
+    launches: &tokio::sync::broadcast::Sender<(AppId, Vec<String>, InstanceId)>,
 ) {
     let mut edges = edges.subscribe();
     let for_edges = api.clone();
@@ -820,7 +858,9 @@ pub fn spawn_sources(
     tokio::spawn(async move {
         loop {
             match launches.recv().await {
-                Ok((app_id, arguments)) => api.observe_launch(&app_id, &arguments),
+                Ok((app_id, arguments, instance)) => {
+                    api.observe_launch(&app_id, &arguments, instance);
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }

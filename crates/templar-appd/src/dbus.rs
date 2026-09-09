@@ -7,7 +7,7 @@
 use crate::identity::Registry;
 use crate::launcher::{self, LaunchBackend};
 use std::sync::Arc;
-use templar_types::{AppCatalog, AppId, LogicalAppId, WindowClaims};
+use templar_types::{AppCatalog, AppId, InstanceId, LogicalAppId, WindowClaims};
 use zbus::{fdo, object_server::SignalEmitter};
 
 /// One row of [`IdentityApi::list_applications`]:
@@ -254,7 +254,11 @@ impl IdentityApi {
 ///
 /// appd knows nothing about what watches — a folder argument means something to the Home garden
 /// and nothing here — so this is a closure the host injects, not an interface appd reasons about.
-pub type LaunchObserver = Box<dyn Fn(&AppId, &[String]) + Send + Sync>;
+///
+/// The instance is passed because it is the only thing that ties the launch to the *window* it
+/// eventually produces: `ShellToplevel.instance_id` is the same value, and a place that knows
+/// which instances came out of it knows which windows are its own.
+pub type LaunchObserver = Box<dyn Fn(&AppId, &[String], InstanceId) + Send + Sync>;
 
 /// `org.templaros.Launcher1`
 pub struct LauncherApi {
@@ -301,9 +305,14 @@ impl LauncherApi {
 ///
 /// Free rather than a method so a test can exercise it without a bus connection, which
 /// `LauncherApi` needs only in order to actually launch something.
-fn observed(observer: Option<&LaunchObserver>, app_id: &AppId, arguments: &[String]) {
+fn observed(
+    observer: Option<&LaunchObserver>,
+    app_id: &AppId,
+    arguments: &[String],
+    instance: InstanceId,
+) {
     if let Some(observer) = observer {
-        observer(app_id, arguments);
+        observer(app_id, arguments, instance);
     }
 }
 
@@ -335,7 +344,7 @@ impl LauncherApi {
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
-        observed(self.observer.as_ref(), &app_id, &arguments);
+        observed(self.observer.as_ref(), &app_id, &arguments, record.id);
         Ok(record.id.to_string())
     }
 
@@ -401,7 +410,7 @@ impl LauncherApi {
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         // The resolved variant, not the logical id: what actually started is what an observer
         // has to be told, or it cannot tell two copies of Firefox apart.
-        observed(self.observer.as_ref(), &chosen, &arguments);
+        observed(self.observer.as_ref(), &chosen, &arguments, record.id);
         Ok(record.id.to_string())
     }
 }
@@ -514,20 +523,26 @@ mod tests {
         let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
         let observer: LaunchObserver = Box::new({
             let seen = Arc::clone(&seen);
-            move |app_id: &AppId, arguments: &[String]| {
-                seen.lock().unwrap().push(format!("{app_id} {arguments:?}"));
+            move |app_id: &AppId, arguments: &[String], instance: InstanceId| {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{app_id} {arguments:?} {instance}"));
             }
         });
 
         let files: AppId = "org.templaros.Files".parse().unwrap();
+        let instance = InstanceId::new();
         observed(
             Some(&observer),
             &files,
             &["--directory".to_owned(), "/tmp/x".to_owned()],
+            instance,
         );
         assert_eq!(
             *seen.lock().unwrap(),
-            [r#"org.templaros.Files ["--directory", "/tmp/x"]"#]
+            [format!(
+                r#"org.templaros.Files ["--directory", "/tmp/x"] {instance}"#
+            )]
         );
     }
 

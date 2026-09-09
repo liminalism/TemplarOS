@@ -2014,6 +2014,32 @@ impl ShellApp {
     /// The tools are the project tools with the folder itself as root; the garden verbs go to
     /// `HomeGarden1`, and `garden.why` answers on the field's notice line.
     fn perform_place(&mut self, id: &'static str, path: &Path) {
+        if id == "place.show-windows" {
+            // The ids, and the name to put over them. The compositor never learns what a place
+            // is: this is the one route in the system that turns "this folder" into "these
+            // windows", and it does it here, where both are known.
+            let toplevels = self
+                .bridge
+                .as_ref()
+                .map(ShellBridge::toplevels)
+                .unwrap_or_default();
+            let Some(place) = self.garden.get(path) else {
+                return;
+            };
+            let windows = place.windows(&toplevels);
+            if windows.is_empty() {
+                return;
+            }
+            let label = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            self.open_taskfield(
+                &templar_window::taskfield::TaskFilter::Windows(windows),
+                &label,
+            );
+            return;
+        }
         if let Some(project_id) = id.strip_prefix("place.") {
             // A folder is a folder: this row is the same press as a Folder tile and takes the
             // same route, rather than resolving the `FileManager` role a second time with its own

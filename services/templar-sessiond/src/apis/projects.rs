@@ -357,6 +357,7 @@ impl ProjectsApi {
             project.root.clone(),
             None,
             None,
+            None,
         );
         Ok(())
     }
@@ -610,6 +611,7 @@ impl ProjectsApi {
         self.garden.observe_activity(
             ActivityKind::ProjectEntered,
             project.root.clone(),
+            None,
             None,
             None,
         );

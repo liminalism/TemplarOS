@@ -191,7 +191,11 @@ struct Services {
     /// than wall-clock time subscribes here and pays no round trip for it.
     session_edges: apis::lifecycle::SessionEdges,
     /// Every successful launch, as `(resolved variant, arguments)`. Fed by `Launcher1`'s observer.
-    launches: tokio::sync::broadcast::Sender<(templar_types::AppId, Vec<String>)>,
+    launches: tokio::sync::broadcast::Sender<(
+        templar_types::AppId,
+        Vec<String>,
+        templar_types::InstanceId,
+    )>,
 }
 
 fn load_services(cli: &Cli) -> Result<Services> {
@@ -356,8 +360,8 @@ async fn serve_launch_and_association_interfaces(
         .at(
             names::LAUNCHER_PATH,
             LauncherApi::new(services.registry.clone(), backend, connection.clone()).with_observer(
-                Box::new(move |app_id, arguments| {
-                    let _ = launches.send((app_id.clone(), arguments.to_vec()));
+                Box::new(move |app_id, arguments, instance| {
+                    let _ = launches.send((app_id.clone(), arguments.to_vec(), instance));
                 }),
             ),
         )

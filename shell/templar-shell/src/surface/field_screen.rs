@@ -3774,6 +3774,41 @@ impl FieldScreen {
         if rung < Representation::Wide || body.h < line {
             return;
         }
+        // What of this place is *open*. One derived line, and pressing it does not expand cards
+        // inside Home: Home asks what work exists, and which live windows belong to it is
+        // Taskfield's question. The compositor never learns what a place is — the shell sends
+        // the ids and the name to put over them.
+        let windows = place.windows(data.toplevels);
+        let body = if windows.is_empty() || body.h < 2 * line {
+            body
+        } else {
+            let (active, rest) = body.split_top(line);
+            let hovered = ui.input.hovering(active);
+            ui.label_styled(
+                active,
+                &match windows.len() {
+                    1 => "1 window active".to_owned(),
+                    n => format!("{n} windows active"),
+                },
+                design::state_style(ui),
+                if hovered {
+                    design::accent()
+                } else {
+                    design::text_dim()
+                },
+                Align::Left,
+            );
+            if ui.input.take_click(active) {
+                actions.push(FieldAction::Place {
+                    id: "place.show-windows",
+                    path: path.to_path_buf(),
+                });
+            }
+            rest
+        };
+        if body.h < line {
+            return;
+        }
         match place.form.as_str() {
             "branch" => place_forms::branch(ui, body, path, place, actions),
             "shelf" => place_forms::shelf(ui, body, path, place, actions),
