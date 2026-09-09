@@ -1174,11 +1174,19 @@ impl ShellBridge {
     /// Every toplevel this connection currently knows about, for [`crate::dock`] and
     /// [`crate::drawers::window_shelf`] to consume exactly as they already do against fixtures.
     pub fn toplevels(&self) -> Vec<ShellToplevel> {
-        self.state
+        let mut out: Vec<ShellToplevel> = self
+            .state
             .toplevels
             .iter()
             .map(|(id, tracked)| tracked.state.snapshot(synthetic_window_id(id)))
-            .collect()
+            .collect();
+        // By window id, which is the compositor's own order (`WindowService`'s records are keyed
+        // by it) and the order `task::units` documents as first-seen. The objects live in a
+        // `HashMap`, whose iteration order is arbitrary and changes as it rehashes — so without
+        // this the island's chips would be in a different order on some frames, which is the one
+        // thing a strip of icons may never do.
+        out.sort_by_key(|toplevel| toplevel.window_id);
+        out
     }
 
     fn toplevel_object(&self, window_id: WindowId) -> Option<&TemplarShellToplevelV1> {

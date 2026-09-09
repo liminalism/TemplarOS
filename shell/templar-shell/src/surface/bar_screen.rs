@@ -785,10 +785,10 @@ impl BarScreen {
             if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
                 ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
             } else {
-                let plate = entry.accent.unwrap_or(fill);
+                let plate = entry.accent().unwrap_or(fill);
                 ui.painter
                     .fill_rounded_rect(icon, ui.px(design::CHIP_RADIUS), plate);
-                let mark = if entry.accent.is_some() {
+                let mark = if entry.accent().is_some() {
                     entry.windows.len().to_string()
                 } else {
                     chip_initial(entry)
@@ -800,7 +800,7 @@ impl BarScreen {
             // bar is how the rest are reached — but a chip that says nothing about the second
             // window is a window the person can only find by moving the one on top of it. Groups
             // already carry their count as the icon mark, so this is the loose-entry case.
-            if entry.accent.is_none() && entry.windows.len() > 1 {
+            if entry.accent().is_none() && entry.windows.len() > 1 {
                 let side = ui.px(12).min(cell.h);
                 let badge = Rect::new(icon.right() - side / 2, icon.y, side.min(cell.w), side);
                 ui.painter
@@ -812,7 +812,7 @@ impl BarScreen {
                     Align::Centre,
                 );
             }
-            if let Some(accent) = entry.accent {
+            if let Some(accent) = entry.accent() {
                 // A grouped entry keeps its group's stripe, the same one the window's own band
                 // wears — at a chip's scale it runs down the left edge rather than the bottom.
                 ui.painter.fill_rect(
@@ -826,7 +826,10 @@ impl BarScreen {
                 );
             }
             if ui.input.take_click(*cell) {
-                if let Some(window) = entry.sole_window() {
+                if let Some(window) = (entry.windows.len() == 1)
+                    .then(|| entry.most_recent())
+                    .flatten()
+                {
                     if entry.is_parked(window) {
                         actions.push(BarAction::Field(FieldAction::Restore(window)));
                     }
@@ -1315,9 +1318,9 @@ mod tests {
             h.screen.preview_wants(&entries).is_empty(),
             "a closed row asks for nothing"
         );
-        // The Files entry is second: applications sort by key, and `org.example.Editor` is the
-        // one-window entry that opens no row at all.
-        open_row_of(&mut h, 1);
+        // The Files entry is first: applications are in first-seen order, and its windows are
+        // the low ids. `org.example.Editor` is the one-window entry that opens no row at all.
+        open_row_of(&mut h, 0);
         let wants: Vec<WindowId> = h
             .screen
             .preview_wants(&entries)
@@ -1743,16 +1746,20 @@ mod initial_tests {
 
     fn entry(app_id: Option<&str>, label: &str) -> Entry {
         Entry {
-            key: label.to_owned(),
+            unit: templar_window::task::TaskUnit {
+                key: templar_window::task::TaskKey::Unknown(WindowId(1)),
+                label: label.to_owned(),
+                accent: None,
+                windows: vec![WindowId(1)],
+                shelved: Vec::new(),
+            },
             label: label.to_owned(),
-            accent: None,
             app_id: app_id.map(ToOwned::to_owned),
             windows: vec![EntryWindow {
                 id: WindowId(1),
                 title: label.to_owned(),
                 preview: "window:1".to_owned(),
             }],
-            parked: Vec::new(),
             active: false,
         }
     }

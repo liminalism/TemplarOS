@@ -179,56 +179,45 @@ pub(super) fn bar_frame(
         BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
     };
 
-    let entries = vec![
-        crate::taskbar::Entry {
-            key: "group:7".to_owned(),
-            label: "Notes and sources".to_owned(),
-            accent: Some(0x00e0_7b39),
-            app_id: None,
-            windows: vec![
-                crate::taskbar::EntryWindow {
-                    id: templar_window::WindowId(1),
-                    title: "Notes".to_owned(),
-                    preview: "window:1".to_owned(),
-                },
-                crate::taskbar::EntryWindow {
-                    id: templar_window::WindowId(2),
-                    title: "Sources".to_owned(),
-                    preview: "window:2".to_owned(),
-                },
-            ],
-            parked: Vec::new(),
-            active: true,
-        },
-        // A terminal whose title is a path: the case that put a chip reading "/" on the bar.
-        crate::taskbar::Entry {
-            key: "desktop-import.kitty.desktop".to_owned(),
-            label: "/mnt/Samsung980_1TB/Rust-projects/TemplarOS".to_owned(),
-            accent: None,
-            app_id: Some("desktop-import.kitty.desktop".to_owned()),
-            windows: vec![crate::taskbar::EntryWindow {
-                id: templar_window::WindowId(3),
-                title: "/mnt/Samsung980_1TB/Rust-projects/TemplarOS".to_owned(),
-                preview: "window:3".to_owned(),
-            }],
-            parked: Vec::new(),
-            active: false,
-        },
-        crate::taskbar::Entry {
-            key: "org.templaros.Settings".to_owned(),
-            label: "Settings".to_owned(),
-            accent: None,
-            app_id: Some("org.templaros.Settings".to_owned()),
-            windows: vec![crate::taskbar::EntryWindow {
-                id: templar_window::WindowId(4),
-                title: "Appearance".to_owned(),
-                preview: "window:4".to_owned(),
-            }],
+    // Built from toplevels rather than from `Entry` literals: `taskbar::entries` is a projection
+    // of `templar_window::task::units`, so a fixture that hand-wrote the entries would be drawing
+    // a grouping the running shell cannot produce.
+    let toplevel = |id: u64, app: &str, title: &str, group: Option<(u64, &str, u32)>| {
+        templar_window::ShellToplevel {
+            window_id: templar_window::WindowId(id),
+            canonical_app_id: Some(app.parse().expect("a fixture's app id")),
+            instance_id: None,
+            title: title.to_owned(),
+            verified_identity: true,
+            activated: id == 1,
+            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
+            fullscreen: false,
             // A parked window exists only on the bar now that Home holds no window tiles.
-            parked: vec![templar_window::WindowId(4)],
-            active: false,
-        },
-    ];
+            shelved: id == 4,
+            maximized: false,
+            geometry: templar_window::Rect::new(0, 0, 800, 600),
+            layer: templar_window::Layer::Normal,
+            group: group.map(|(group_id, name, accent)| templar_window::GroupInfo {
+                group_id,
+                name: name.to_owned(),
+                accent,
+            }),
+        }
+    };
+    let group = Some((7, "Notes and sources", 0x00e0_7b39));
+    let entries = crate::taskbar::entries(&[
+        toplevel(1, "org.templaros.Notes", "Notes", group),
+        toplevel(2, "org.templaros.Notes", "Sources", group),
+        // A terminal whose title is a path: the case that put a chip reading "/" on the bar. The
+        // chip is named for the application now, so the path is only ever on the fan.
+        toplevel(
+            3,
+            "desktop-import.kitty.desktop",
+            "/mnt/Samsung980_1TB/Rust-projects/TemplarOS",
+            None,
+        ),
+        toplevel(4, "org.templaros.Settings", "Appearance", None),
+    ]);
     let logical = wanted_size(
         presence,
         open_row.then(|| entries[0].windows.len()),

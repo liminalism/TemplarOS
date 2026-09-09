@@ -22,7 +22,6 @@ pub mod app_search;
 pub mod clipboard;
 pub mod data;
 pub mod data_device;
-pub mod dock;
 pub mod drawers;
 pub mod field_model;
 pub mod file_browser;
