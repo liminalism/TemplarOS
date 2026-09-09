@@ -4,7 +4,7 @@
 # This is a *provisioner*, not an installer: one machine shape, no OEM flow, no arbitrary layouts,
 # no graphical pages. It reads distro/deploy/layout.toml (contract C3) so the partition table, the
 # subvolumes and the deployment identity are declared once and not restated here. Four ways to
-# name the target, one layout: a disk image, a whole disk (zapped), the free tail of a disk that
+# name the target, one layout: a disk image, a whole disk (zapped), the largest free block of a disk that
 # keeps every partition it has (`--free-space`, the reference laptop's case), or two existing
 # partitions (`--esp --root`).
 #
@@ -88,7 +88,8 @@ usage: provision.sh --image PATH [--apply] [options]
        provision.sh --device /dev/sdX --i-mean-it --apply [options]
 
   --image PATH        provision a disk image file (created if absent). The safe target.
-  --free-space DISK   create the ESP and the root in the unallocated tail of DISK and touch no
+  --free-space DISK   create the ESP and the root in the largest unallocated block of DISK,
+                      wherever on the disk it is, and touch no
                       existing partition. The disk keeps whatever else it boots.
   --esp PART --root PART
                       format these two existing partitions; the partition table is not touched.
@@ -457,7 +458,7 @@ image|device)
         run truncate -s "${TEMPLAROS_IMAGE_SIZE:-32G}" "$target"
     fi
     run sgdisk --zap-all "$target"
-    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:TEMPLAROS_ESP "$target"
+    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:TEMPLAR_ESP "$target"
     run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:templaros-root "$target"
     if [ "$target_kind" = image ]; then
         attach_loop
@@ -467,29 +468,32 @@ image|device)
     fi
     ;;
 free-space)
-    step "Partition the free tail of $target: ESP ($ESP_FORMAT, $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, the rest, label $ROOT_LABEL); every existing partition stays"
+    step "Partition the largest free block of $target: ESP ($ESP_FORMAT, $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, the rest, label $ROOT_LABEL); every existing partition stays"
     table="$(sgdisk -p "$target" 2>/dev/null || true)"
     [ -n "$table" ] || die "cannot read the partition table of $target (run as root, or is it not GPT?)"
     sector="$(printf '%s\n' "$table" | sed -n 's/^Sector size (logical\/physical): \([0-9]*\)\/.*/\1/p')"
-    last_usable="$(sgdisk -E "$target")"
+    # -F and -E are the first and last sector of the same thing: the largest free block. Neither
+    # says anything about where on the disk that block is, and neither needs to. A gap left by a
+    # deleted operating system is usually at the *front*, with every surviving partition above it,
+    # and this refused to use one until 2026-09-09 on the theory that a hole was more dangerous
+    # than a tail. It is not: `--new=N:0:+size` starts at the first free sector of that block and
+    # `--new=N:0:0` ends at its last, so sgdisk confines both new partitions to the block by
+    # construction and cannot reach a neighbour whatever its position.
     free_first="$(sgdisk -F "$target")"
-    # sgdisk -F is the first sector of the *largest* free block. It is the tail only if no
-    # partition starts at or after it; anything else means the space is a hole, not a tail.
+    free_last="$(sgdisk -E "$target")"
     existing="$(printf '%s\n' "$table" | awk '$1 ~ /^[0-9]+$/ { print $1, $2, $3, $6, $7, $8 }')"
-    printf '%s\n' "$existing" | awk -v first="$free_first" '$2 >= first { exit 1 }' \
-        || die "the largest free block of $target is a hole between partitions, not the tail; --free-space only extends the end of the disk"
-    free_bytes=$(( (last_usable - free_first + 1) * ${sector:-512} ))
+    free_bytes=$(( (free_last - free_first + 1) * ${sector:-512} ))
     need_bytes=$(( $(numfmt --from=iec "$ESP_SIZE_MAX") + $(numfmt --from=iec "$(layout_value root size_min)") ))
     [ "$free_bytes" -ge "$need_bytes" ] \
-        || die "$target has $(numfmt --to=iec "$free_bytes") free at its tail; the layout needs at least $(numfmt --to=iec "$need_bytes") (ESP $ESP_SIZE_MAX + root $(layout_value root size_min))"
+        || die "the largest free block of $target is $(numfmt --to=iec "$free_bytes"); the layout needs at least $(numfmt --to=iec "$need_bytes") (ESP $ESP_SIZE_MAX + root $(layout_value root size_min))"
     highest="$(printf '%s\n' "$existing" | awk 'BEGIN { n = 0 } $1 > n { n = $1 } END { print n }')"
     n_esp=$((highest + 1)); n_root=$((highest + 2))
-    note "free tail: sectors $free_first..$last_usable ($(numfmt --to=iec "$free_bytes")); new partitions $n_esp (ESP) and $n_root (root)"
+    note "free block: sectors $free_first..$free_last ($(numfmt --to=iec "$free_bytes")); new partitions $n_esp (ESP) and $n_root (root)"
     note "kept untouched:"
     printf '%s\n' "$existing" | while read -r num start end _ _ _; do
         [ -n "$num" ] && note "  partition $num (sectors $start..$end)"
     done
-    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAROS_ESP" "$target"
+    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAR_ESP" "$target"
     run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:templaros-root" "$target"
     if [ -b "$target" ]; then
         run partx --update "$target"

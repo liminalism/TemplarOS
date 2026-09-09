@@ -48,7 +48,7 @@ what `tests/integration/provision-qemu.sh` asserts against.
 
 ## What it produces
 
-1. **GPT + UEFI, no legacy BIOS.** ESP (vfat, ≤1 GiB, `TEMPLAROS_ESP`) and root (btrfs,
+1. **GPT + UEFI, no legacy BIOS.** ESP (vfat, ≤1 GiB, `TEMPLAR_ESP`) and root (btrfs,
    `templaros-root`). Sizes and labels from `layout.toml`.
 2. **Btrfs subvolumes** `@ @home @var @snapshots @deployments`, from the same declaration the
    image's `mkosi.repart` uses. `@deployments` is where `templar-hostd` stages candidate snapshots.

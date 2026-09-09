@@ -82,7 +82,7 @@ entries rather than replacing the menu.
 ```sh
 mount -o subvol=@ /dev/disk/by-label/templaros-root /mnt
 mount -o subvol=@var /dev/disk/by-label/templaros-root /mnt/var   # and @home, per layout.toml
-mount /dev/disk/by-label/TEMPLAROS_ESP /mnt/boot/efi
+mount /dev/disk/by-label/TEMPLAR_ESP /mnt/boot/efi
 for d in dev proc sys run; do mount --rbind /$d /mnt/$d; done
 chroot /mnt
 ```

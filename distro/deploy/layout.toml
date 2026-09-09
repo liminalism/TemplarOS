@@ -24,7 +24,9 @@ size_max = "1G"
 # partition label), so the mkosi image has none and is found by partition type; the provisioner
 # sets this one with `mkfs.vfat -n`. Nothing in the boot path depends on it: generated GRUB
 # entries locate the ESP with `search --file`, which works either way.
-label = "TEMPLAROS_ESP"
+# Eleven characters, because that is a FAT label's hard limit and mkfs.vfat refuses a longer
+# one outright. TEMPLAROS_ESP is thirteen; the rebrand hit that ceiling on 2026-09-09.
+label = "TEMPLAR_ESP"
 # Where the ESP is mounted on a provisioned target. hostd also accepts `/efi` (a minimal mkosi
 # image) — `deploy::esp_root` is the one place that decides.
 mount = "/boot/efi"

@@ -134,7 +134,7 @@ else
     truncate -s 512M "$esp"
     truncate -s 2G "$rootfs"
     truncate -s 1G "$data"
-    mkfs.vfat -F32 -n TEMPLAROS_ESP "$esp" >/dev/null 2>&1 || fail "mkfs.vfat on a file failed"
+    mkfs.vfat -F32 -n TEMPLAR_ESP "$esp" >/dev/null 2>&1 || fail "mkfs.vfat on a file failed"
     mkfs.btrfs -q -f -L templaros-root "$rootfs" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
     mkfs.btrfs -q -f -L templaros-data "$data" >/dev/null 2>&1 || fail "mkfs.btrfs on a file failed"
 
@@ -176,5 +176,39 @@ grep -q 'writing /mnt/templaros-provision/etc/templaros/install.toml' "$work/dry
 grep -q 'root=UUID=' "$work/dry.txt" || grep -q 'root=UUID=\${\|read at apply' "$work/dry.txt" \
     || fail "the plan does not say the boot command line will name the root by UUID"
 ok "the plan writes fstab and install.toml, and identity is by UUID"
+
+# --- 6. A free block anywhere on the disk, not only the tail ---------------------------------------
+#
+# The shape a deleted operating system leaves: a large gap at the *front* of the disk with every
+# surviving partition above it. This is the reference laptop after Windows was removed, and until
+# 2026-09-09 --free-space refused it outright ("a hole between partitions, not the tail"). What
+# matters is not only that it is accepted but that the two new partitions stay inside the gap and
+# no existing partition moves by a sector.
+# 30 GiB sparse, with a ~12 GiB gap at the front: comfortably over the layout's 9 GiB floor
+# (ESP 1 GiB + root size_min 8 GiB) so the check is about position, not size.
+gap="$work/leading-gap.img"
+truncate -s 30G "$gap"
+sgdisk -n 1:25000000:25200000 -t 1:0700 -c 1:recovery "$gap" >/dev/null 2>&1
+sgdisk -n 2:25200000:60000000 -t 2:8300 -c 2:other-root "$gap" >/dev/null 2>&1
+before="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[0-9]+ ')"
+
+"$provision" --free-space "$gap" --user dev > "$work/gap.txt" 2>&1 \
+    || fail "--free-space refused a disk whose largest free block is at the front: $(tail -3 "$work/gap.txt")"
+grep -q 'free block: sectors 2048\.\.' "$work/gap.txt" \
+    || fail "the plan did not choose the leading gap: $(grep -i 'free block' "$work/gap.txt" || echo 'no free-block line at all')"
+
+# The dry run must have changed nothing; apply it to a copy to check where the partitions land.
+after_dry="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[0-9]+ ')"
+[ "$before" = "$after_dry" ] || fail "the dry run altered the partition table"
+
+sgdisk --new=3:0:+1G --typecode=3:ef00 --change-name=3:TEMPLAR_ESP "$gap" >/dev/null 2>&1
+sgdisk --new=4:0:0 --typecode=4:8304 --change-name=4:templaros-root "$gap" >/dev/null 2>&1
+after="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[12] ')"
+[ "$(printf '%s\n' "$before" | grep -E '^ +[12] ')" = "$after" ] \
+    || fail "creating the two partitions in the gap moved an existing one"
+root_end="$(sgdisk -i 4 "$gap" 2>/dev/null | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')"
+[ "$root_end" -lt 25000000 ] \
+    || fail "the root partition ran past the end of the gap into partition 1 (ends at $root_end, the gap ends at 24999999)"
+ok "--free-space uses a gap at the front of the disk and stays inside it"
 
 echo "provision-plan: OK"
