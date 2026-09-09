@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use jpxl_bitstream::BitReader;
 use jpxl_core::limits::{AllocGuard, Limits};
 use jpxl_decode::headers::enums::ExtraChannelType;
-use templar_pdf_read::{RasterPlane, RasterProduct, RenderSession};
+use lege_pdf_read::{RasterPlane, RasterProduct, RenderSession};
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
