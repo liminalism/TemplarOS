@@ -14,6 +14,7 @@ use crate::{
     model::{Coverage, EntryKind, Generation, NativePath, RootId, RootState, RootStatus},
     query::FieldMask,
 };
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
@@ -126,19 +127,6 @@ impl crate::Index {
         sink: &mut impl Write,
         request: &SnapshotRequest,
     ) -> Result<SnapshotManifest> {
-        let generation = self.generation()?;
-        // Read before the rows, not after: a change committed while the frame is being written
-        // must land in the stream a consumer replays, never be skipped as "already in the frame".
-        // An over-count is a change replayed; an under-count is a change lost, and every mutation
-        // is idempotent.
-        let snapshot_seq = self.latest_change_seq()?;
-        let all = self.roots()?;
-        let selected: Vec<_> = all
-            .into_iter()
-            .filter(|status| request.roots.is_empty() || request.roots.contains(&status.root))
-            .filter(|status| request.include_offline || status.state != RootState::Offline)
-            .collect();
-
         // A summary is directories carrying cached totals, not leaf rows — meaningless without
         // knowing which tier each directory is at and what its aggregate says, so both are forced
         // on regardless of what the caller asked for.
@@ -158,9 +146,39 @@ impl crate::Index {
             FORMAT_EXTENDED
         };
 
-        let mut payload = Vec::new();
-        write_roots_section(&mut payload, &selected);
-        let entry_count = self.write_entries_section(&mut payload, &selected, request, mask)?;
+        // The one read transaction the doc comment above promises. It used to be four and then
+        // one per root, each on its own pooled connection, so a writer committing between them
+        // produced a frame whose header, roots and rows never coexisted — a consumer would then
+        // replay from a cursor that did not describe the rows it had. `BEGIN DEFERRED` on a
+        // read-only connection takes its snapshot at the first read and holds it under WAL until
+        // the transaction ends, which is exactly the view every section below reads from.
+        let (generation, snapshot_seq, selected, payload, entry_count) =
+            self.with_read(|connection| {
+                let view = connection.unchecked_transaction()?;
+                let generation = crate::read_generation(&view)?;
+                // Read before the rows, not after: a change committed while the frame is being
+                // written must land in the stream a consumer replays, never be skipped as
+                // "already in the frame". An over-count is a change replayed; an under-count is a
+                // change lost, and every mutation is idempotent.
+                let snapshot_seq: u64 = view
+                    .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map(|seq| seq as u64)?;
+                let selected: Vec<_> = crate::read_roots(&view)?
+                    .into_iter()
+                    .filter(|status| {
+                        request.roots.is_empty() || request.roots.contains(&status.root)
+                    })
+                    .filter(|status| request.include_offline || status.state != RootState::Offline)
+                    .collect();
+
+                let mut payload = Vec::new();
+                write_roots_section(&mut payload, &selected);
+                let entry_count =
+                    write_entries_section(&view, &mut payload, &selected, request, mask)?;
+                Ok((generation, snapshot_seq, selected, payload, entry_count))
+            })?;
 
         let payload_crc = crc32c(&payload);
         let mut header = Vec::with_capacity(HEADER_LEN as usize);
@@ -205,41 +223,41 @@ impl crate::Index {
             snapshot_seq,
         })
     }
+}
 
-    /// The body of [`Self::write_snapshot`]'s entry loop, pulled out only so that method stays
-    /// short: one read transaction per selected root, streaming each live row's masked fields
-    /// into `payload`. Returns how many entries were written.
-    ///
-    /// `request.detail == Summary` narrows the query to directory rows only; `request.subtree`
-    /// bounds it to one subtree; `request.include_coverage` bounds it to specific tiers — each is
-    /// an independent, optional `WHERE` clause, composed rather than duplicated per combination.
-    fn write_entries_section(
-        &self,
-        payload: &mut Vec<u8>,
-        selected: &[RootStatus],
-        request: &SnapshotRequest,
-        mask: FieldMask,
-    ) -> Result<u64> {
-        let want_aggregate = mask.contains(FieldMask::AGGREGATE);
-        let mut entry_count = 0u64;
-        for status in selected {
-            self.with_read(|connection| {
-                let (sql, params) = entries_query(status.root.0, request, want_aggregate);
-                let mut statement = connection.prepare(&sql)?;
-                let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
-                while let Some(sql_row) = rows.next()? {
-                    let row = entry_row_from_row(sql_row)?;
-                    write_entry_fields(payload, mask, &row);
-                    if want_aggregate {
-                        write_aggregate_field(payload, sql_row)?;
-                    }
-                    entry_count += 1;
-                }
-                Ok(())
-            })?;
+/// The body of [`crate::Index::write_snapshot`]'s entry loop, pulled out only so that method stays
+/// short: every selected root's live rows, on the caller's connection, streaming each row's masked
+/// fields into `payload`. Returns how many entries were written.
+///
+/// It takes the connection rather than a pooled one of its own precisely so that every root's rows
+/// come from the same view as the header that describes them.
+///
+/// `request.detail == Summary` narrows the query to directory rows only; `request.subtree`
+/// bounds it to one subtree; `request.include_coverage` bounds it to specific tiers — each is
+/// an independent, optional `WHERE` clause, composed rather than duplicated per combination.
+fn write_entries_section(
+    connection: &Connection,
+    payload: &mut Vec<u8>,
+    selected: &[RootStatus],
+    request: &SnapshotRequest,
+    mask: FieldMask,
+) -> Result<u64> {
+    let want_aggregate = mask.contains(FieldMask::AGGREGATE);
+    let mut entry_count = 0u64;
+    for status in selected {
+        let (sql, params) = entries_query(status.root.0, request, want_aggregate);
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+        while let Some(sql_row) = rows.next()? {
+            let row = entry_row_from_row(sql_row)?;
+            write_entry_fields(payload, mask, &row);
+            if want_aggregate {
+                write_aggregate_field(payload, sql_row)?;
+            }
+            entry_count += 1;
         }
-        Ok(entry_count)
     }
+    Ok(entry_count)
 }
 
 /// Builds `write_entries_section`'s query for one root: `request.detail == Summary` narrows it to

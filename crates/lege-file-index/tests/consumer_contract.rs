@@ -214,3 +214,108 @@ fn the_error_a_consumer_matches_on_is_the_one_the_interface_names() {
         "org.legeos.Files.Index1.Error.SnapshotRequired"
     );
 }
+
+/// A snapshot frame is one view of the database, not one per section.
+///
+/// The header's generation and change cursor, the roots section and each root's rows used to be
+/// read through separate pooled connections, so a writer committing between them produced a frame
+/// whose cursor described a database its own rows had already moved past: the consumer replays
+/// from `snapshot_seq` and is never told about rows the frame silently included.
+///
+/// The correlated marker is the index's own arithmetic. Every mutation below adds exactly one
+/// entry and appends exactly one change, so within any single view
+/// `entries - base_entries == seq - base_seq`. A frame assembled from several views breaks that
+/// equality the moment the writer lands between two of them — which is why the first root is
+/// deliberately large: reading it is the window the second root's rows fall through.
+#[test]
+fn a_snapshot_frame_is_one_view_while_a_writer_commits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bulk_tree = dir.path().join("bulk");
+    let hot_tree = dir.path().join("hot");
+    std::fs::create_dir_all(&bulk_tree).expect("the bulk tree");
+    std::fs::create_dir_all(&hot_tree).expect("the hot tree");
+
+    let index = open(dir.path(), 100_000);
+    let bulk = index
+        .add_root(
+            &NativePath::from_path(&bulk_tree),
+            RootPolicy::default_home(),
+        )
+        .expect("registering the bulk root")
+        .root;
+    let hot = index
+        .add_root(
+            &NativePath::from_path(&hot_tree),
+            RootPolicy::default_home(),
+        )
+        .expect("registering the hot root")
+        .root;
+
+    let rows: Vec<Mutation> = (0..4000)
+        .map(|index_of| Mutation::Upsert {
+            root: bulk,
+            path: NativePath::from_path(&bulk_tree.join(format!("bulk-{index_of}.txt"))),
+            meta: EntryMeta::default(),
+        })
+        .collect();
+    index
+        .apply(MutationBatch::new(MutationSource::Reconcile, rows))
+        .expect("the bulk state");
+
+    let base = index
+        .write_snapshot(&mut Vec::new(), &SnapshotRequest::default())
+        .expect("the quiet snapshot");
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let index = index.clone();
+        let stop = std::sync::Arc::clone(&stop);
+        let hot_tree = hot_tree.clone();
+        std::thread::spawn(move || {
+            let mut written = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let applied = index
+                    .apply(MutationBatch::new(
+                        MutationSource::Watcher,
+                        vec![Mutation::Upsert {
+                            root: hot,
+                            path: NativePath::from_path(
+                                &hot_tree.join(format!("hot-{written}.txt")),
+                            ),
+                            meta: EntryMeta::default(),
+                        }],
+                    ))
+                    .expect("the concurrent write");
+                assert_eq!(
+                    applied.changes.len(),
+                    1,
+                    "one new entry is one change; the equality below is built on it"
+                );
+                written += 1;
+            }
+            written
+        })
+    };
+
+    for _ in 0..40 {
+        let frame = index
+            .write_snapshot(&mut Vec::new(), &SnapshotRequest::default())
+            .expect("a snapshot taken under a writer");
+        let entries = frame
+            .entry_count
+            .checked_sub(base.entry_count)
+            .expect("a frame never holds fewer rows than the quiet one before it");
+        let changes = frame
+            .snapshot_seq
+            .checked_sub(base.snapshot_seq)
+            .expect("the change cursor never moves backwards");
+        assert_eq!(
+            entries, changes,
+            "the frame's rows and its change cursor came from different views of the database"
+        );
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let written = writer.join().expect("the writer thread");
+    assert!(written > 0, "the writer never committed anything");
+}
