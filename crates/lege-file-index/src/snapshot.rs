@@ -160,11 +160,7 @@ impl crate::Index {
                 // written must land in the stream a consumer replays, never be skipped as
                 // "already in the frame". An over-count is a change replayed; an under-count is a
                 // change lost, and every mutation is idempotent.
-                let snapshot_seq: u64 = view
-                    .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .map(|seq| seq as u64)?;
+                let snapshot_seq = crate::mutation::read_latest_change_seq(&view)?;
                 let selected: Vec<_> = crate::read_roots(&view)?
                     .into_iter()
                     .filter(|status| {

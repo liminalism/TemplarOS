@@ -414,13 +414,7 @@ impl crate::Index {
     /// carries it, taken inside the same call that wrote the frame. It is public because that is
     /// where it is read from, and because a diagnostic wants to be able to ask.
     pub fn latest_change_seq(&self) -> Result<u64> {
-        self.with_read(|connection| {
-            Ok(connection
-                .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map(|seq| seq as u64)?)
-        })
+        self.with_read(read_latest_change_seq)
     }
 
     /// A bounded page of the change log after `seq`.
@@ -1238,6 +1232,17 @@ fn change_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
         mtime_ns: row.get(9)?,
         at_ms: row.get(10)?,
     })
+}
+
+/// The highest change sequence, on a caller-supplied connection — so a reader that must see the
+/// cursor and the rows it describes in one view (`Index::write_snapshot`) reads it inside its own
+/// transaction rather than through a second pooled connection.
+pub(crate) fn read_latest_change_seq(connection: &rusqlite::Connection) -> Result<u64> {
+    Ok(connection
+        .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|seq| seq as u64)?)
 }
 
 #[cfg(test)]
