@@ -14,6 +14,26 @@
 //! Like the island it reserves nothing, and its transparent parts are desktop: the coverage it
 //! records ([`ClusterScreen::opaque_shapes`]) is the chips themselves, and the host turns that
 //! into both the surface's alpha and its input region.
+//!
+//! ## The two levels
+//!
+//! Volume and brightness are the two things on this machine a person changes by *feel* rather than
+//! by number, and until now the popover offered them as five rows that each moved a level five
+//! points and told you nothing: to go from loud to quiet was six clicks, each one a round trip,
+//! with the reading a line away and a step behind. They are sliders now — one press anywhere on a
+//! track goes there, a drag follows the pointer.
+//!
+//! The volume slider's scale is **decibels**, not percent. `Audio1`'s percentage is WirePlumber's
+//! own value, which is the cubic scale — the linear gain is `(p/100)³`, so `dB = 60·log10(p/100)`
+//! — and a track laid out linearly in that percentage spends half its length on the top 6 dB,
+//! where nothing much happens, and a tenth on the bottom 20 dB, where everything does. Laying the
+//! track out in decibels instead puts the same amount of travel behind the same change in loudness
+//! everywhere along it. [`MIN_DB`] is the quietest position; below [`MUTE_ZONE`] the bottom of the
+//! track is mute rather than an even quieter number, because "off" is a state and not a level.
+//!
+//! The brightness slider is linear in the backlight's own percentage — that scale is already about
+//! perceptual — and starts at the floor `Backlight1` enforces rather than at zero, so none of its
+//! length is spent on a screen that cannot be read.
 
 use pixelkit_raster::Rect;
 use pixelkit_text::Align;
@@ -31,9 +51,21 @@ const CLOCK_WIDTH: i32 = 160;
 /// The account chip: the account's name, its mark, and the popover behind it.
 const ACCOUNT_WIDTH: i32 = 140;
 /// The account popover's width and one row's height, and the padding inside its frame.
-const POPOVER_WIDTH: i32 = 232;
+///
+/// Wider than a menu needs to be, because two of its rows are tracks and a track's width is its
+/// resolution: at this width a decibel is about three pixels, so the quiet end of the volume
+/// slider is aimable rather than a rounding error.
+const POPOVER_WIDTH: i32 = 300;
 const POPOVER_ROW: i32 = 28;
 const POPOVER_PAD: i32 = 8;
+/// A slider's row: taller than a menu row, because the whole row is its grab target.
+const SLIDER_ROW: i32 = 30;
+/// The track itself, the name at its left, and the reading at its right.
+const TRACK_H: i32 = 8;
+const SLIDER_LABEL: i32 = 66;
+const SLIDER_READING: i32 = 40;
+/// The rule between the machine's levels and the session's verbs.
+const DIVIDER_ROW: i32 = 9;
 /// Grace after the pointer leaves the cluster before an open popover closes. The same number the
 /// island's hover row uses, and for the same reason: long enough to cross a gap, short enough that
 /// a menu never outstays the pointer.
@@ -42,21 +74,49 @@ pub const POPOVER_CLOSE_MS: u64 = 200;
 /// The gap between the popover's frame and the bar it grows out of.
 const POPOVER_GAP: i32 = 6;
 
-/// The account popover's rows, in order.
+/// The quietest position on the volume track, in decibels of gain.
+///
+/// Sixty decibels below unity is about the range a pair of speakers is useful over: quiet enough
+/// that the bottom of the track is genuinely quiet, loud enough that the step above mute is not
+/// silence with extra steps.
+const MIN_DB: f64 = -60.0;
+
+/// How much of the bottom of the volume track means *mute* rather than *very quiet*.
+///
+/// A slider that can only approach silence asymptotically has no "off", and off is the thing a
+/// person reaches for fastest. Three per cent of the track is a few pixels: enough to hit on
+/// purpose, too little to hit by accident on the way to the quietest audible setting.
+const MUTE_ZONE: f64 = 0.03;
+
+/// The lowest brightness the slider offers, matching the floor `Backlight1` enforces
+/// (`services/templar-sessiond/src/apis/backlight.rs`'s `MINIMUM_PERCENT`).
+///
+/// Duplicated rather than shared because the shell does not depend on the service, and the copy is
+/// only about where the *track* starts: the service clamps regardless, so the worst a stale copy
+/// can do is waste a few pixels of travel or stop a little above the floor.
+const BRIGHTNESS_FLOOR: u32 = 10;
+
+/// While a slider is being dragged, how often what it says actually reaches the service.
+///
+/// Every `Set` is a round trip — one `wpctl` process for volume, one logind call for brightness —
+/// and a drag produces a position per frame. The pointer's own value is what the track draws, so
+/// throttling costs nothing visible; the release always sends, so where a drag ends is never
+/// approximate.
+const SET_THROTTLE_MS: u64 = 100;
+
+/// The account popover's session rows, in order.
 ///
 /// Written out as literal `RunAction` constructions rather than as a table of bare ids on
 /// purpose: that spelling is what `xtask check-actions` reads as a pointer route, and this popover
-/// is now the only pointer route to the session and machine actions — Home no longer carries the
-/// Session or Settings widget.
+/// is the only pointer route to the session actions — Home no longer carries the Session widget.
 ///
-/// `settings.open` is not here any more: it has its own chip in the cluster, and an action offered
+/// The five level rows that used to sit above these are the two sliders now. The actions they
+/// named have not gone anywhere and neither have their pointer routes: `volume.mute` is the volume
+/// slider's own label, and the four step actions are a wheel over a track.
+///
+/// `settings.open` is not here either: it has its own chip in the cluster, and an action offered
 /// in two places is one a person has to look for twice.
-const ACCOUNT_ROWS: [FieldAction; 10] = [
-    FieldAction::RunAction("volume.decrease"),
-    FieldAction::RunAction("volume.mute"),
-    FieldAction::RunAction("volume.increase"),
-    FieldAction::RunAction("brightness.decrease"),
-    FieldAction::RunAction("brightness.increase"),
+const SESSION_ROWS: [FieldAction; 5] = [
     FieldAction::RunAction("session.lock"),
     FieldAction::RunAction("session.suspend"),
     FieldAction::RunAction("session.logout"),
@@ -72,23 +132,97 @@ fn row_id(row: &FieldAction) -> &'static str {
     }
 }
 
+/// Which of the two levels a press landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slider {
+    Volume,
+    Brightness,
+}
+
+/// A slider the pointer has hold of.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    slider: Slider,
+    /// Where along the track the pointer is, `0..=1`. The drawn position: a drag has to follow the
+    /// pointer at the frame rate, and what the service last reported is a round trip behind.
+    at: f64,
+    /// The mute state this drag has already sent, if any. A drag that crosses in or out of the
+    /// mute zone says so once per crossing, not once per throttle tick — ten `SetMuted`s a second
+    /// is ten processes saying the same thing.
+    sent_mute: Option<bool>,
+}
+
 /// How far above the bar the account popover reaches, gap included. The readings line is the
 /// first row and costs a row's height like any other.
 pub fn popover_band() -> i32 {
-    POPOVER_GAP + 2 * POPOVER_PAD + (ACCOUNT_ROWS.len() as i32 + 1) * POPOVER_ROW
+    POPOVER_GAP + 2 * POPOVER_PAD + popover_height()
 }
-/// The popover's first line: charge, volume and backlight, as the services last reported them.
-/// A reading with no hardware behind it is left out rather than shown as a dash — a machine with
-/// no backlight has nothing to say about brightness.
-fn readings_line(machine: &crate::data::MachineReadings) -> String {
-    let mut parts = vec![machine.chip_label()];
-    if let Some(audio) = machine.audio.as_ref().filter(|audio| audio.present) {
-        parts.push(format!("Volume {}%", audio.volume_percent));
+
+/// The popover's own height: the readings line, the two sliders, the rule, and the session rows.
+fn popover_height() -> i32 {
+    POPOVER_ROW + 2 * SLIDER_ROW + DIVIDER_ROW + SESSION_ROWS.len() as i32 * POPOVER_ROW
+}
+
+/// The volume percentage a position on the track means.
+///
+/// The track is linear in decibels — `dB = MIN_DB · (1 − t)` — and `Audio1`'s percentage is the
+/// cubic scale WirePlumber reports, in which the linear gain is `(p/100)³`. So `p = 100 · 10^(dB/60)`.
+/// The bottom of the track is [`MIN_DB`], not silence: mute is [`MUTE_ZONE`]'s job.
+///
+// ponytail: the wire carries an integer percentage, which is ~12 distinct positions across the
+// bottom 20 dB. Add an `Audio1.SetVolumeDb` if that ever feels chunky in the hand.
+fn volume_percent_for(t: f64) -> u32 {
+    let db = MIN_DB * (1.0 - t.clamp(0.0, 1.0));
+    (100.0 * 10f64.powf(db / 60.0)).round().clamp(0.0, 100.0) as u32
+}
+
+/// Where a volume percentage sits on the track — the inverse of [`volume_percent_for`].
+///
+/// Clamped at both ends: a sink something else has boosted past 100% reads back above 100 and
+/// draws full rather than off the end, and anything at or below [`MIN_DB`] draws at the bottom.
+fn volume_track_for(percent: u32) -> f64 {
+    if percent == 0 {
+        return 0.0;
     }
-    if let Some(backlight) = machine.backlight.as_ref().filter(|light| light.present) {
-        parts.push(format!("Brightness {}%", backlight.percent));
+    let db = 60.0 * (f64::from(percent) / 100.0).log10();
+    (1.0 - db / MIN_DB).clamp(0.0, 1.0)
+}
+
+/// The brightness percentage a position on the track means: linear from the floor to full.
+fn brightness_percent_for(t: f64) -> u32 {
+    let span = f64::from(100 - BRIGHTNESS_FLOOR);
+    (f64::from(BRIGHTNESS_FLOOR) + span * t.clamp(0.0, 1.0)).round() as u32
+}
+
+/// Where a brightness percentage sits on the track — the inverse of [`brightness_percent_for`].
+fn brightness_track_for(percent: u32) -> f64 {
+    let span = f64::from(100 - BRIGHTNESS_FLOOR);
+    (f64::from(percent.max(BRIGHTNESS_FLOOR)) - f64::from(BRIGHTNESS_FLOOR)) / span
+}
+
+/// Where along a track a pointer at `x` is asking for.
+fn fraction_at(track: Rect, x: i32) -> f64 {
+    if track.w <= 0 {
+        return 0.0;
     }
-    parts.join(" \u{b7} ")
+    (f64::from(x - track.x) / f64::from(track.w)).clamp(0.0, 1.0)
+}
+
+/// A slider row's three parts: the name, the track, and the reading.
+///
+/// The track is drawn `TRACK_H` thin and grabbed at the row's full height — a line eight pixels
+/// tall is a pretty control and a poor target, and the row has nothing else in it to hit.
+fn slider_parts(ui: &Ui<'_>, row: Rect) -> (Rect, Rect, Rect, Rect) {
+    let gap = ui.px(6);
+    let label = Rect::new(row.x, row.y, ui.px(SLIDER_LABEL), row.h);
+    let reading_w = ui.px(SLIDER_READING);
+    let reading = Rect::new(row.right() - reading_w, row.y, reading_w, row.h);
+    let left = label.right() + gap;
+    let width = (reading.x - gap - left).max(1);
+    let track_h = ui.px(TRACK_H);
+    let track = Rect::new(left, row.y + (row.h - track_h) / 2, width, track_h);
+    let grab = Rect::new(left, row.y, width, row.h);
+    (label, track, grab, reading)
 }
 
 /// What the cluster draws this frame.
@@ -114,8 +248,19 @@ struct Layout {
     network: Rect,
     clock: Rect,
     account: Rect,
-    /// The account popover's frame and its rows, when it is open and the host has made room.
-    popover: Option<(Rect, Vec<Rect>)>,
+    /// The account popover, when it is open and the host has made room.
+    popover: Option<Popover>,
+}
+
+/// The account popover's parts.
+#[derive(Debug)]
+struct Popover {
+    frame: Rect,
+    readings: Rect,
+    volume: Rect,
+    brightness: Rect,
+    divider: Rect,
+    rows: Vec<Rect>,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +277,10 @@ pub struct ClusterScreen {
     opaque: Vec<(Rect, i32)>,
     /// When the pointer left the cluster's surface, while the popover is open.
     left_at: Option<u64>,
+    /// The slider the pointer has hold of, if any.
+    drag: Option<Drag>,
+    /// When this drag last told the service where it had got to.
+    last_sent_ms: u64,
 }
 
 /// How wide the cluster is: its two margins, its four chips, and the gaps between them.
@@ -183,27 +332,46 @@ impl ClusterScreen {
 
         let popover = (account_open && area.h > bar_height).then(|| {
             let width = ui.px(POPOVER_WIDTH).min(area.w);
-            let row_h = ui.px(POPOVER_ROW);
             let pad = ui.px(POPOVER_PAD);
-            let height =
-                (2 * pad + (ACCOUNT_ROWS.len() as i32 + 1) * row_h).min(area.h - bar_height);
+            let row_h = ui.px(POPOVER_ROW);
+            let slider_h = ui.px(SLIDER_ROW);
+            let divider_h = ui.px(DIVIDER_ROW);
+            // Summed from the scaled parts rather than scaling the sum, so the frame is never a
+            // rounded pixel shorter than the rows laid out inside it.
+            let content = row_h
+                + 2 * slider_h
+                + divider_h
+                + i32::try_from(SESSION_ROWS.len()).unwrap_or(5) * row_h;
+            let height = (2 * pad + content).min(area.h - bar_height);
             let frame = Rect::new(
                 (account.right() - width).max(area.x),
                 bar.y - ui.px(POPOVER_GAP) - height,
                 width,
                 height,
             );
-            let rows = (0..=ACCOUNT_ROWS.len() as i32)
-                .map(|i| {
-                    Rect::new(
-                        frame.x + pad,
-                        frame.y + pad + i * row_h,
-                        (frame.w - 2 * pad).max(0),
-                        row_h,
-                    )
-                })
-                .collect();
-            (frame, rows)
+            // Stacked from the top in the order they read: what the machine is doing, the two
+            // levels that change it, a rule, and the verbs that end the session.
+            let inner_x = frame.x + pad;
+            let inner_w = (frame.w - 2 * pad).max(0);
+            let mut y = frame.y + pad;
+            let mut band = |height: i32| {
+                let rect = Rect::new(inner_x, y, inner_w, height);
+                y += height;
+                rect
+            };
+            let readings = band(row_h);
+            let volume = band(slider_h);
+            let brightness = band(slider_h);
+            let divider = band(divider_h);
+            let rows = (0..SESSION_ROWS.len()).map(|_| band(row_h)).collect();
+            Popover {
+                frame,
+                readings,
+                volume,
+                brightness,
+                divider,
+                rows,
+            }
         });
 
         Layout {
@@ -213,6 +381,255 @@ impl ClusterScreen {
             account,
             popover,
         }
+    }
+
+    /// Whether a drag is on this slider right now.
+    fn dragging(&self, slider: Slider) -> Option<f64> {
+        self.drag
+            .filter(|drag| drag.slider == slider)
+            .map(|drag| drag.at)
+    }
+
+    /// Paint one level as a name, a track and a reading.
+    fn paint_slider(
+        ui: &mut Ui<'_>,
+        row: Rect,
+        name: &str,
+        at: f64,
+        reading: &str,
+        live: bool,
+        pressable: bool,
+    ) {
+        let (label, track, _grab, reading_rect) = slider_parts(ui, row);
+        // Only a name that does something lights up under the pointer. The volume row's is the
+        // mute button; the brightness row's is a word.
+        let hovered = live && pressable && ui.input.hovering(label);
+        if hovered {
+            ui.painter
+                .fill_rounded_rect(label, ui.px(design::CHIP_RADIUS), design::accent_soft());
+        }
+        let ink = if live {
+            design::text()
+        } else {
+            design::text_faint()
+        };
+        ui.label_styled(label, name, design::state_style(ui), ink, Align::Left);
+        ui.bar(
+            track,
+            at,
+            if live {
+                design::accent()
+            } else {
+                design::text_faint()
+            },
+        );
+        // The handle: a person aims at a thing, not at the end of a fill.
+        if live && track.w > 0 {
+            let size = ui.px(TRACK_H + 6);
+            let centre = track.x + (f64::from(track.w) * at.clamp(0.0, 1.0)).round() as i32;
+            ui.painter.fill_rounded_rect(
+                Rect::new(
+                    (centre - size / 2).clamp(track.x, track.right() - size),
+                    track.y + (track.h - size) / 2,
+                    size,
+                    size,
+                ),
+                size / 2,
+                design::strong_ink(),
+            );
+        }
+        ui.label_styled(
+            reading_rect,
+            reading,
+            design::state_style(ui),
+            ink,
+            Align::Right,
+        );
+    }
+
+    /// The two levels: paint them where the pointer says they are, and answer what it did.
+    fn levels(
+        &mut self,
+        ui: &mut Ui<'_>,
+        popover: &Popover,
+        data: &ClusterData<'_>,
+    ) -> Vec<BarAction> {
+        self.paint_levels(ui, popover, data);
+        self.level_input(ui, popover, data)
+    }
+
+    /// Draw both tracks at the position the pointer is asking for, falling back to what the
+    /// services last reported for whichever one is not being dragged.
+    fn paint_levels(&self, ui: &mut Ui<'_>, popover: &Popover, data: &ClusterData<'_>) {
+        let audio = data.machine.audio.as_ref().filter(|state| state.present);
+        let backlight = data
+            .machine
+            .backlight
+            .as_ref()
+            .filter(|state| state.present);
+
+        // --- volume ------------------------------------------------------------------
+        let dragged = self.dragging(Slider::Volume);
+        let at = dragged.unwrap_or_else(|| {
+            audio.map_or(0.0, |state| {
+                if state.muted {
+                    0.0
+                } else {
+                    volume_track_for(state.volume_percent)
+                }
+            })
+        });
+        // While dragging, the bottom of the track *is* mute — say so before the service has been
+        // told, or the label lags the hand by a round trip.
+        let muted = match dragged {
+            Some(at) => at < MUTE_ZONE,
+            None => audio.is_some_and(|state| state.muted),
+        };
+        let reading = match audio {
+            None => "\u{2014}".to_owned(),
+            Some(_) if muted => String::new(),
+            Some(state) => format!(
+                "{}%",
+                dragged.map_or(state.volume_percent, volume_percent_for)
+            ),
+        };
+        Self::paint_slider(
+            ui,
+            popover.volume,
+            if muted { "Muted" } else { "Volume" },
+            if muted { 0.0 } else { at },
+            &reading,
+            audio.is_some(),
+            true,
+        );
+
+        // --- brightness --------------------------------------------------------------
+        let dragged = self.dragging(Slider::Brightness);
+        let at = dragged
+            .unwrap_or_else(|| backlight.map_or(0.0, |state| brightness_track_for(state.percent)));
+        let reading = match backlight {
+            None => "\u{2014}".to_owned(),
+            Some(state) => format!("{}%", dragged.map_or(state.percent, brightness_percent_for)),
+        };
+        Self::paint_slider(
+            ui,
+            popover.brightness,
+            "Brightness",
+            at,
+            &reading,
+            backlight.is_some(),
+            false,
+        );
+    }
+
+    /// What the pointer did to either track.
+    ///
+    /// One place for both, because a drag belongs to whichever track it started on and has to
+    /// keep following the pointer wherever in the popover it wanders — a slider that only tracks
+    /// while the pointer stays inside eight pixels of trough is a slider people fight.
+    fn level_input(
+        &mut self,
+        ui: &mut Ui<'_>,
+        popover: &Popover,
+        data: &ClusterData<'_>,
+    ) -> Vec<BarAction> {
+        let mut actions = Vec::new();
+        let audio = data.machine.audio.as_ref().filter(|state| state.present);
+        let backlight = data
+            .machine
+            .backlight
+            .as_ref()
+            .filter(|state| state.present);
+        for (slider, row, live) in [
+            (Slider::Volume, popover.volume, audio.is_some()),
+            (Slider::Brightness, popover.brightness, backlight.is_some()),
+        ] {
+            let (label, track, grab, _) = slider_parts(ui, row);
+            if !live {
+                continue;
+            }
+            // The volume slider's name is its mute button: "off" is a state, and the row already
+            // spells it. This is `volume.mute`'s pointer route.
+            if slider == Slider::Volume && ui.input.take_click(label) {
+                actions.push(BarAction::Field(FieldAction::RunAction("volume.mute")));
+                continue;
+            }
+            // A wheel over a track steps it, which is what keeps the four step actions reachable
+            // by pointer now that their rows are gone.
+            let (_, dy) = ui.input.take_scroll(grab);
+            if dy != 0.0 {
+                // Wheel up is a negative delta, and wheel up means more.
+                let id = match (slider, dy < 0.0) {
+                    (Slider::Volume, true) => "volume.increase",
+                    (Slider::Volume, false) => "volume.decrease",
+                    (Slider::Brightness, true) => "brightness.increase",
+                    (Slider::Brightness, false) => "brightness.decrease",
+                };
+                actions.push(BarAction::Field(FieldAction::RunAction(id)));
+                continue;
+            }
+            if ui.input.take_click(grab) {
+                let at = ui
+                    .input
+                    .cursor()
+                    .map_or(0.0, |(x, _)| fraction_at(track, x));
+                self.drag = Some(Drag {
+                    slider,
+                    at,
+                    // Where the sink already is, so a drag that starts and stays in the audible
+                    // range never sends an unmute nobody asked for.
+                    sent_mute: (slider == Slider::Volume)
+                        .then(|| audio.is_some_and(|state| state.muted)),
+                });
+                // Nothing has been sent for this drag: the press itself is the first thing to go.
+                self.last_sent_ms = 0;
+            }
+        }
+
+        // A drag follows the pointer anywhere on the popover and ends when the button comes up —
+        // or when the pointer leaves the surface, which `Input::cursor_left` reports as the button
+        // coming up, so a drag that ends off the edge still sends its last word.
+        if let Some(mut drag) = self.drag {
+            let held = ui.input.pressing(popover.frame);
+            if held {
+                let row = match drag.slider {
+                    Slider::Volume => popover.volume,
+                    Slider::Brightness => popover.brightness,
+                };
+                let (_, track, _, _) = slider_parts(ui, row);
+                if let Some((x, _)) = ui.input.cursor() {
+                    drag.at = fraction_at(track, x);
+                }
+            }
+            let due = data.now_ms.saturating_sub(self.last_sent_ms) >= SET_THROTTLE_MS;
+            if !held || due {
+                match drag.slider {
+                    Slider::Volume if drag.at < MUTE_ZONE => {
+                        if drag.sent_mute != Some(true) {
+                            drag.sent_mute = Some(true);
+                            actions.push(BarAction::Field(FieldAction::SetMuted(true)));
+                        }
+                    }
+                    Slider::Volume => {
+                        if drag.sent_mute != Some(false) {
+                            drag.sent_mute = Some(false);
+                            actions.push(BarAction::Field(FieldAction::SetMuted(false)));
+                        }
+                        actions.push(BarAction::Field(FieldAction::SetVolume(
+                            volume_percent_for(drag.at),
+                        )));
+                    }
+                    Slider::Brightness => {
+                        actions.push(BarAction::Field(FieldAction::SetBrightness(
+                            brightness_percent_for(drag.at),
+                        )));
+                    }
+                }
+                self.last_sent_ms = data.now_ms;
+            }
+            self.drag = held.then_some(drag);
+        }
+        actions
     }
 
     /// Paint the cluster and answer this frame's clicks.
@@ -237,31 +654,38 @@ impl ClusterScreen {
 
         // The account popover first, for the same reason the row is early: it floats over what is
         // above the bar and must claim its clicks before anything underneath can.
-        if let Some((frame, rows)) = &layout.popover {
+        if let Some(popover) = &layout.popover {
             // `design::shell` fills at TILE_RADIUS, not CHIP_RADIUS. Recording the smaller one
             // leaves the coverage solid where the paint has already curved away — four dark ears
-            // on every corner, of the shadow behind it.
-            self.opaque.push((*frame, ui.px(design::TILE_RADIUS)));
+            // on every corner, of the shadow behind it. The whole frame is one shape, which is
+            // also what puts the sliders' tracks inside the surface's input region.
+            self.opaque
+                .push((popover.frame, ui.px(design::TILE_RADIUS)));
             design::shell(
                 ui,
-                *frame,
+                popover.frame,
                 design::shell_fill(),
                 design::edge_strong(),
                 Elevation::Lifted,
             );
-            // The readings first, as a line rather than a row: what the machine is doing belongs
-            // beside the controls that change it, and it is the one line here that is not a
-            // button. It replaces the chip the cluster used to spend 112 pixels on.
-            if let Some(first) = rows.first() {
-                ui.label_styled(
-                    first.inset(ui.px(6)),
-                    &readings_line(data.machine),
-                    design::state_style(ui),
-                    design::text_faint(),
-                    Align::Left,
-                );
-            }
-            for (rect, row) in rows.iter().skip(1).zip(ACCOUNT_ROWS) {
+            // The charge first, as a line rather than a row: the one reading here with no control
+            // beside it, because nothing on this machine sets the battery.
+            ui.label_styled(
+                popover.readings.inset(ui.px(6)),
+                &data.machine.charge_label(),
+                design::state_style(ui),
+                design::text_faint(),
+                Align::Left,
+            );
+            actions.extend(self.levels(ui, popover, data));
+            let rule = Rect::new(
+                popover.divider.x + ui.px(4),
+                popover.divider.y + popover.divider.h / 2,
+                (popover.divider.w - ui.px(8)).max(0),
+                1,
+            );
+            ui.painter.fill_rect(rule, design::edge());
+            for (rect, row) in popover.rows.iter().zip(SESSION_ROWS) {
                 let id = row_id(&row);
                 let Some(declaration) = templar_types::action::action(id) else {
                     continue;
@@ -314,7 +738,10 @@ impl ClusterScreen {
                 }
             }
             // Anything else inside the frame is the popover's own ground, not the window behind.
-            let _ = ui.input.take_click(*frame);
+            let _ = ui.input.take_click(popover.frame);
+        } else {
+            // No popover, no tracks: a drag cannot outlive the thing it was on.
+            self.drag = None;
         }
 
         // The machine cluster, left to right: Settings, the network, the clock, the account.
@@ -402,8 +829,8 @@ impl ClusterScreen {
             )));
         }
 
-        // The account chip: Settings, the machine's controls and the session actions, in one
-        // place, because there is one of each of them on this desktop.
+        // The account chip: the machine's two levels and the session actions, in one place,
+        // because there is one of each of them on this desktop.
         let account_hovered = ui.input.hovering(layout.account);
         chip(
             ui,
@@ -448,9 +875,118 @@ impl ClusterScreen {
         actions
     }
 
-    /// When the host should wake to close a popover the pointer has left, if it should.
+    /// When the host should wake next: to close a popover the pointer has left, or to send the
+    /// next step of a drag whose pointer is holding still.
     #[must_use]
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        self.left_at.map(|left| left + POPOVER_CLOSE_MS)
+        let close = self.left_at.map(|left| left + POPOVER_CLOSE_MS);
+        let drag = self.drag.map(|_| self.last_sent_ms + SET_THROTTLE_MS);
+        match (close, drag) {
+            (Some(close), Some(drag)) => Some(close.min(drag)),
+            (some, None) | (None, some) => some,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two `f64` positions on a track are the same position.
+    fn same(left: f64, right: f64) -> bool {
+        (left - right).abs() < 1e-9
+    }
+
+    #[test]
+    fn the_volume_track_is_laid_out_in_decibels() {
+        // `Audio1`'s percentage is WirePlumber's cubic scale — checked against `pactl`, which
+        // reports a node `wpctl` calls 0.49 as -18.42 dB, exactly 60·log10(0.49325). So half the
+        // track is -30 dB, which is 32%, and not the 50% a linear track would put there.
+        assert_eq!(volume_percent_for(0.0), 10);
+        assert_eq!(volume_percent_for(0.25), 18);
+        assert_eq!(volume_percent_for(0.5), 32);
+        assert_eq!(volume_percent_for(0.75), 56);
+        assert_eq!(volume_percent_for(1.0), 100);
+    }
+
+    #[test]
+    fn a_volume_reading_and_its_position_are_inverses() {
+        for percent in [10, 18, 32, 56, 100] {
+            assert_eq!(
+                volume_percent_for(volume_track_for(percent)),
+                percent,
+                "{percent}%"
+            );
+        }
+        // Quieter than the bottom of the track, and louder than unity, both draw at an end rather
+        // than off one: something else can boost a sink past 100%, and this control does not.
+        assert!(same(volume_track_for(0), 0.0));
+        assert!(same(volume_track_for(5), 0.0));
+        assert!(same(volume_track_for(150), 1.0));
+    }
+
+    #[test]
+    fn the_mute_zone_is_a_position_and_not_a_silent_value() {
+        // The bottom of the track is the quietest *audible* setting, so "off" needs somewhere of
+        // its own to live: the first sliver, big enough to aim at and too small to cross by
+        // accident on the way to very quiet.
+        const { assert!(MUTE_ZONE > 0.0 && MUTE_ZONE < 0.1) };
+        assert!(
+            volume_percent_for(MUTE_ZONE) >= 10,
+            "everything the mute zone covers is otherwise audible"
+        );
+    }
+
+    #[test]
+    fn the_brightness_track_never_reaches_a_screen_nobody_can_read() {
+        assert_eq!(brightness_percent_for(0.0), BRIGHTNESS_FLOOR);
+        assert_eq!(brightness_percent_for(0.5), 55);
+        assert_eq!(brightness_percent_for(1.0), 100);
+        for percent in [BRIGHTNESS_FLOOR, 25, 55, 80, 100] {
+            assert_eq!(
+                brightness_percent_for(brightness_track_for(percent)),
+                percent,
+                "{percent}%"
+            );
+        }
+        // A backlight something else drove below the floor draws at the bottom of the track, not
+        // off the near end of it.
+        assert!(same(brightness_track_for(1), 0.0));
+    }
+
+    #[test]
+    fn both_tracks_only_ever_go_up() {
+        let mut last = (0, 0);
+        for step in 0..=100 {
+            let at = f64::from(step) / 100.0;
+            let now = (volume_percent_for(at), brightness_percent_for(at));
+            assert!(now.0 >= last.0 && now.1 >= last.1, "went backwards at {at}");
+            last = now;
+        }
+        assert_eq!(last, (100, 100));
+    }
+
+    #[test]
+    fn a_press_lands_where_the_pointer_is() {
+        let track = Rect::new(20, 0, 100, 8);
+        assert!(same(fraction_at(track, 20), 0.0));
+        assert!(same(fraction_at(track, 70), 0.5));
+        assert!(same(fraction_at(track, 120), 1.0));
+        // Past either end is that end, so a drag that runs off the track stops on it.
+        assert!(same(fraction_at(track, -50), 0.0));
+        assert!(same(fraction_at(track, 400), 1.0));
+        // A track with no width is a track nothing can be asked of.
+        assert!(same(fraction_at(Rect::new(0, 0, 0, 8), 5), 0.0));
+    }
+
+    #[test]
+    fn every_session_row_names_a_declared_action() {
+        for row in SESSION_ROWS {
+            let id = row_id(&row);
+            assert!(
+                templar_types::action::action(id).is_some(),
+                "{id} is not in the manifest"
+            );
+        }
     }
 }

@@ -632,24 +632,19 @@ impl MachineReadings {
         self.battery.is_some() || self.audio.is_some() || self.backlight.is_some()
     }
 
-    /// The one line the bar's readings chip shows.
+    /// The one line the account popover shows above its controls.
     ///
-    /// The charge, and "Muted" beside it when the machine is muted. Deliberately not three
-    /// percentages: three bare numbers in a row say nothing about which is which, and a chip has
-    /// no room for the words that would. Mute is the exception because it is a *state* — a person
-    /// needs to see at a glance that sound is off, in a way they never need to see that it is at
-    /// 45%. The numbers with a word beside them are in the account popover, which names each
-    /// control it offers.
-    pub fn chip_label(&self) -> String {
-        let charge = self.battery.as_ref().map_or_else(
+    /// The charge, and only the charge: it is the one reading here with no control beside it,
+    /// because nothing on this machine sets the battery. Volume and brightness used to be
+    /// appended as bare numbers because the rows that changed them were five steppers that said
+    /// nothing; they are sliders now and each carries its own level, so repeating them here would
+    /// be the same fact twice in one popover. Mute went with them, for the same reason: the
+    /// volume slider’s name *is* "Muted" when it is.
+    pub fn charge_label(&self) -> String {
+        self.battery.as_ref().map_or_else(
             || "—".to_owned(),
             templar_client::status::BatteryState::headline,
-        );
-        if self.audio.as_ref().is_some_and(|audio| audio.muted) {
-            format!("{charge} · Muted")
-        } else {
-            charge
-        }
+        )
     }
 
     /// Whether a control the account popover offers would not work right now: a machine with no
@@ -698,13 +693,22 @@ pub async fn fetch_machine_readings() -> MachineReadings {
 }
 
 pub async fn fetch_settings_widget() -> crate::surface::widgets::WidgetSnapshot {
+    settings_widget_from(&fetch_machine_readings().await)
+}
+
+/// The Settings tile's three lines, from readings already in hand.
+///
+/// Split from [`fetch_settings_widget`] because the cluster and the tile read the same three
+/// services: after a level changes, one read now feeds both, instead of the tile refreshing and
+/// the cluster keeping whatever it was told up to `RECONCILE_INTERVAL` ago.
+pub fn settings_widget_from(readings: &MachineReadings) -> crate::surface::widgets::WidgetSnapshot {
     use crate::surface::widgets::WidgetSnapshot;
     use crate::surface::widgets::settings;
     let MachineReadings {
         battery,
         audio,
         backlight,
-    } = fetch_machine_readings().await;
+    } = readings;
 
     // Nothing answering at all is a different thing from a machine without a battery, and the
     // tile has to say which. Only the first is unavailable.

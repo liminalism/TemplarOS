@@ -1817,6 +1817,9 @@ impl ShellApp {
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
+            FieldAction::SetVolume(percent) => self.spawn_volume_set(percent),
+            FieldAction::SetMuted(muted) => self.spawn_volume_muted(muted),
+            FieldAction::SetBrightness(percent) => self.spawn_brightness_set(percent),
             FieldAction::Project { id, project_id } => self.perform_project(id, &project_id),
             FieldAction::Place { id, path } => self.perform_place(id, &path),
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
@@ -3518,9 +3521,15 @@ impl ShellApp {
                 // backlight" is a real answer a person needs to see, not a click that did nothing.
                 let _ = tx.send(DataUpdate::Notice(format!("{label} — {error:#}")));
             }
-            // One tile reports both levels now, so one refetch serves either step.
-            let snapshot = crate::data::fetch_settings_widget().await;
-            let _ = tx.send(DataUpdate::Widget("settings".to_owned(), snapshot));
+            // One read for both readers. The Settings tile wanted this refetch already; the
+            // cluster needs it too, and without the second send its own numbers sat at whatever
+            // the last reconciliation left them — a slider that moved and a reading that did not.
+            let machine = crate::data::fetch_machine_readings().await;
+            let _ = tx.send(DataUpdate::Widget(
+                "settings".to_owned(),
+                crate::data::settings_widget_from(&machine),
+            ));
+            let _ = tx.send(DataUpdate::Machine(machine));
             let _ = proxy_wake.send_event(Wake);
         });
     }
@@ -3529,6 +3538,33 @@ impl ShellApp {
         self.spawn_level_step("Volume", move |connection| async move {
             let proxy = templar_client::proxies::AudioProxy::new(&connection).await?;
             proxy.adjust_volume(delta).await?;
+            Ok(())
+        });
+    }
+
+    /// Put the volume exactly here — what the cluster's slider says, rather than a step.
+    fn spawn_volume_set(&self, percent: u32) {
+        self.spawn_level_step("Volume", move |connection| async move {
+            let proxy = templar_client::proxies::AudioProxy::new(&connection).await?;
+            proxy.set_volume(percent).await?;
+            Ok(())
+        });
+    }
+
+    /// Mute or unmute, said outright rather than flipped: a drag into and out of the slider's
+    /// mute zone must be able to repeat itself without toggling back.
+    fn spawn_volume_muted(&self, muted: bool) {
+        self.spawn_level_step("Mute", move |connection| async move {
+            let proxy = templar_client::proxies::AudioProxy::new(&connection).await?;
+            proxy.set_muted(muted).await?;
+            Ok(())
+        });
+    }
+
+    fn spawn_brightness_set(&self, percent: u32) {
+        self.spawn_level_step("Brightness", move |connection| async move {
+            let proxy = templar_client::proxies::BacklightProxy::new(&connection).await?;
+            proxy.set_brightness(percent).await?;
             Ok(())
         });
     }

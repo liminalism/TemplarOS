@@ -113,6 +113,15 @@ pub enum FieldAction {
     /// region, and every menu row, reaches a capability: the tile names an action id and the
     /// host decides what performing it means, so a new control never needs a new variant here.
     RunAction(&'static str),
+    /// Put the default sink at this percentage, mute it, or unmute it.
+    ///
+    /// The three level verbs the manifest cannot carry, because an action id is a constant and
+    /// these name a number the pointer chose. `volume.increase` and friends still exist and still
+    /// step by a fixed amount; these are what a slider says, and the service is the same one.
+    SetVolume(u32),
+    SetMuted(bool),
+    /// Put the backlight at this percentage. `Backlight1` clamps it to its own floor.
+    SetBrightness(u32),
     /// The same, for an action about a project: `project.enter`, `project.restore` and the three
     /// tools. The project id is the one the menu was opened over, carried from there rather than
     /// looked up again — the field reflows while a menu is open, and "which project" must not be
