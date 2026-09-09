@@ -230,7 +230,7 @@
 
         The chord (`taskfield.open`), the Peek corner and `window.show-all` open it from the
         compositor with `all`. This request is the shell's routes into it: a chip with more
-        windows than its fan can hold (`unit`, `key` naming the application or `group:&lt;id&gt;`), a
+        windows than its fan can hold (`unit`, `key` naming the application or `group:ID`), a
         launcher result's arrow (`unit`), a HomeGarden place's "N windows active" line
         (`windows`, `key` carrying the place's name for the header), and the shelf band
         (`shelved`). The compositor never learns what a place is — the shell sends the ids.
@@ -241,7 +241,7 @@
         screen, so there is nothing to enter.
       </description>
       <arg name="filter" type="uint" enum="taskfield_filter"/>
-      <arg name="key" type="string" summary="application id, group:&lt;id&gt;, or a place's name; empty for all and shelved"/>
+      <arg name="key" type="string" summary="application id, group:ID, or a place's name; empty for all and shelved"/>
       <arg name="windows" type="array" summary="window ids as uint32, for the windows filter only"/>
     </request>
     <event name="terminal_requested" since="5">
