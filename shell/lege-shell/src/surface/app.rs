@@ -1804,7 +1804,7 @@ impl ShellApp {
                 location,
                 show_hidden,
             } => self.spawn_browse(location, show_hidden, true),
-            FieldAction::BrowseFolder(path) => self.spawn_folder_browse(path, true),
+            FieldAction::BrowseFolder { path, visited } => self.spawn_folder_browse(path, visited),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => self.open_in_file_manager(&path),
             FieldAction::RestoreFromTrash(trashed_path) => self.spawn_trash_restore(trashed_path),

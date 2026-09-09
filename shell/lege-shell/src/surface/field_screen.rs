@@ -96,7 +96,16 @@ pub enum FieldAction {
     /// Fetch one folder window's directory. Separate from [`FieldAction::BrowseLocation`] because
     /// there is one Files object but many folder windows: this one is keyed by path and cached
     /// per path, so several windows on the field each list their own directory.
-    BrowseFolder(PathBuf),
+    ///
+    /// `visited` is whether this is somewhere the person actually went. A folder window is
+    /// repainted every frame, so its own anchor arrives here constantly and for no reason of the
+    /// user's; counting that as a `directory-opened` is how the garden came to feed on Home's own
+    /// chrome — the Desktop tray earned an act of work every session simply by being drawn. Only
+    /// a directory reached *inside* the window is a visit.
+    BrowseFolder {
+        path: PathBuf,
+        visited: bool,
+    },
     /// Open this folder in whichever application holds `ProviderRole::FileManager`.
     ///
     /// The one route from Home to a folder. Every press that opens one arrives here — the Files
@@ -3837,7 +3846,10 @@ impl FieldScreen {
         let (toggle, crumb_area) = header.split_right(row_height);
         Self::paint_folder_toggle(ui, toggle, id, data, actions);
         let list = self.paint_folder_crumb(ui, crumb_area, id, anchor, &here, body);
-        actions.push(FieldAction::BrowseFolder(here.clone()));
+        actions.push(FieldAction::BrowseFolder {
+            visited: here != anchor,
+            path: here.clone(),
+        });
         let Some(listing) =
             Self::folder_listing(ui, list, row_height, data.folder_listings.get(&here))
         else {
@@ -5315,6 +5327,56 @@ mod tests {
         assert!(
             typed.contains(&FieldAction::OpenInFiles("/etc".into())),
             "a typed path: {typed:?}"
+        );
+    }
+
+    /// The garden must not feed on Home drawing itself.
+    ///
+    /// A folder window asks for its listing on every paint, so its own anchor arrives at the host
+    /// constantly and for no reason of the user's. Counting that as a `directory-opened` is how
+    /// the permanent Desktop tray earned an act of work every session simply by being on the
+    /// field: after a real day of work the ledger held exactly one place, `~/Desktop`, grown from
+    /// nothing but Home's own chrome.
+    #[test]
+    fn a_folder_window_drawn_at_its_own_anchor_is_not_a_visit_the_garden_hears_about() {
+        let mut h = Harness::new();
+        let anchor = std::path::PathBuf::from("/home/a/Desktop");
+        let id = tile_id_for("folder:/home/a/Desktop");
+        h.with_only(vec![(
+            id,
+            TileKind::Folder {
+                path: anchor.clone(),
+            },
+            Cell::new(0, 0),
+        )]);
+
+        let browses = |actions: Vec<FieldAction>| -> Vec<FieldAction> {
+            actions
+                .into_iter()
+                .filter(|action| matches!(action, FieldAction::BrowseFolder { .. }))
+                .collect()
+        };
+
+        // Repainted, and repainted again: the listing is still asked for, and nothing is a visit.
+        for _ in 0..3 {
+            assert_eq!(
+                browses(h.frame_raw()),
+                vec![FieldAction::BrowseFolder {
+                    path: anchor.clone(),
+                    visited: false,
+                }],
+            );
+        }
+
+        // Somewhere the person actually went inside the window is.
+        let inside = anchor.join("notes");
+        h.screen.folder_at.insert(id, inside.clone());
+        assert_eq!(
+            browses(h.frame_raw()),
+            vec![FieldAction::BrowseFolder {
+                path: inside,
+                visited: true,
+            }],
         );
     }
 
