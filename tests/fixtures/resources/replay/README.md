@@ -1,6 +1,6 @@
 # Replay fixtures — hand-authored, not recordings
 
-These eight traces are **written by hand**. Nobody's desktop produced them. They are scenarios
+These nine traces are **written by hand**. Nobody's desktop produced them. They are scenarios
 chosen to exercise the parts of the governor that are hard to reach otherwise, in the format
 `lege-resourced` records (`crate::trace::TraceRecord`, one JSON object per line), so
 `lege-resourced --replay` can push them back through the current policy.
@@ -24,7 +24,7 @@ cargo run -p lege-resourced -- --replay tests/fixtures/resources/replay --bless 
 Blessing is how a deliberate policy change gets committed, *after* its diff has been read and
 quoted in the commit message. It is never the way to make a surprising diff go away.
 
-## The eight scenarios
+## The nine scenarios
 
 **`01-calm-desktop.jsonl`** — 20 GiB free, no pressure, four instances including the protected
 shell. Every tick should be `normal` and should emit nothing but `restore-limits`. The trace that
@@ -61,7 +61,7 @@ chosen. Replayed with the attention and intent weights set to zero — the polic
 them — the *browser* is chosen instead, on size alone, because the user having asked to keep it and
 the terminal having been abandoned were facts the score could not see.
 `replay_fixtures.rs::attention_and_intent_change_which_instance_is_chosen` asserts that divergence,
-and asserts that the other five fixtures are untouched by the same change, since none of them
+and asserts that the other fixtures are untouched by the same change, since none of them
 carries an attention signal.
 
 Note that `stage` is `observe-only` in every record: these are decisions, not actions taken. At
@@ -74,3 +74,11 @@ for, then calm again. `07` is a kernel that offers a trigger on the delegated cg
 They exist to hold one property: `wakeup` records why the loop was awake and must never become an
 input to policy — the two must decide identically, and
 `why_the_loop_woke_is_recorded_and_changes_nothing_it_decides` fails if they stop.
+
+**`09-critical-victim-change.jsonl`** — one unbroken `critical` episode in which the chosen victim
+is terminated and disappears while the pressure stays. The tick that first selects a *second*
+victim must contain it and ask it to checkpoint, and must not kill it: the emergency delay is that
+application's chance to save its work, so it belongs to whoever was chosen rather than to how long
+the machine has been in trouble. It is killed three seconds later, on its own clock. Every other
+fixture keeps one victim from beginning to end, which is why none of them could catch this;
+`the_grace_period_follows_the_victim_rather_than_the_episode` is the assertion.
