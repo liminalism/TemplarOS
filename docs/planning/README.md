@@ -11,6 +11,11 @@ Current focused assessments:
   fourth hands-on run's findings, the window-group design (explicit, compositor-owned, one tile on Home,
   `Alt+Tab` inside and `Ctrl+Tab` across) and the interim application integration choices: the Home
   field as a launcher, fsearch for search, Kitty as the terminal, and the Files object's context menu.
+- [`../task-system-taskfield-island-peek.md`](../task-system-taskfield-island-peek.md) — the task
+  system: four scales over one model (HomeGarden the place, the Task Island, Taskfield the window
+  overview, the launcher), `Alt+Tab` as recency, and Peek as the pointer's route out of fullscreen.
+  Its appendix is the sharpening that matters — Taskfield is a *view*, not a second desktop — and
+  the readable form of what was built is [`../architecture/task-system.md`](../architecture/task-system.md).
 - [`shared-incremental-file-index.md`](shared-incremental-file-index.md) — replace the interim two-index
   search arrangement with one persistent, incrementally maintained `templar-filed` index consumed by
   TemplarOS search, a remote-index FSearch fork, Silvaview-rs, the CLI, and future clients.
