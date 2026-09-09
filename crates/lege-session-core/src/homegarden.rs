@@ -369,6 +369,77 @@ const FORM_DWELL_SESSIONS: u64 = 2;
 const FORM_FLOOR: f32 = 2.0;
 const FORM_MARGIN: f32 = 1.5;
 
+// ---------------------------------------------------------------- blooms --------------------
+
+/// What kind of thing a bloom is reporting.
+///
+/// One kind today: something arrived. The enum exists rather than a bare count because a bloom
+/// is persisted in the ledger's JSON, and a tagged value is what lets a later build add a kind
+/// without a migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BloomKind {
+    /// Files appeared under a Place the user had already earned.
+    #[default]
+    Arrived,
+}
+
+impl BloomKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Arrived => "arrived",
+        }
+    }
+}
+
+/// What an already-earned Place has to say about content that turned up inside it.
+///
+/// A bloom is a *projection over* a context, never evidence for one: it carries no weight, it
+/// never touches `score`, `stage` or `landing`, and it is only ever raised on a context that
+/// already exists at [`Stage::Tile`] or above. Content changes may alter what an earned Place
+/// shows; they may not create, resize, move or promote one
+/// (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bloom {
+    pub kind: BloomKind,
+    /// The Garden moment the oldest unresolved arrival was noticed at. Garden time, so a bloom
+    /// ages because the user kept working without looking, never because a date passed.
+    pub since: GardenMoment,
+    /// The unresolved arrivals the body can mark, oldest first, at most [`BLOOM_ITEMS`].
+    pub items: Vec<PathBuf>,
+    /// How many arrivals are still unresolved, which is what the state line counts.
+    pub total: u32,
+}
+
+/// How many arrived paths one bloom remembers by name. The state line's count is `total`; this
+/// is only how many the Large body can mark.
+///
+/// ponytail: a bloom that overflows this cap clears when its tracked items are opened, so a
+/// hundred arrivals can stop counting after eight opens. Keep a full queue only if a place that
+/// receives hundreds of files between reveals turns out to be the common case.
+pub const BLOOM_ITEMS: usize = 8;
+
+/// The count the state line stops at, so `99 new` is the loudest a place can be.
+pub const BLOOM_TOTAL_MAX: u32 = 99;
+
+/// Later sessions after which an unresolved bloom is dropped as stale. Sessions, not days.
+const BLOOM_STALE_SESSIONS: u64 = 5;
+
+/// One entry of the shared index's change log, reduced to what the garden reads from it.
+///
+/// The daemon does the reducing: it drops everything that is not a file arrival, a move or a
+/// removal, so the ledger never learns what an `EntryId`, a generation or a root id is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexChange {
+    /// A file appeared at `path`.
+    Arrived { path: PathBuf },
+    /// Something moved. `from` may be a context root, which is how a Place survives a rename.
+    Moved { from: PathBuf, to: PathBuf },
+    /// Something at `path` is gone.
+    Gone { path: PathBuf },
+}
+
 /// The persistent record behind one Place.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HomeContext {
@@ -413,6 +484,9 @@ pub struct HomeContext {
     /// The reason for the last stage change, for `garden.why`.
     #[serde(default)]
     pub last_reason: String,
+    /// What arrived here since the user last looked. Never evidence: see [`Bloom`].
+    #[serde(default)]
+    pub bloom: Option<Bloom>,
 }
 
 impl HomeContext {
@@ -437,6 +511,7 @@ impl HomeContext {
             form_candidate: Form::Plain,
             form_candidate_since: at.session,
             last_reason: String::new(),
+            bloom: None,
         }
     }
 
@@ -494,6 +569,57 @@ impl HomeContext {
             if sessions == 1 { "" } else { "s" }
         ));
         parts.join(", ")
+    }
+
+    /// Note one arrival under this place. Raises the bloom if there was none.
+    fn raise_bloom(&mut self, path: &Path, now: GardenMoment) {
+        let bloom = self.bloom.get_or_insert_with(|| Bloom {
+            kind: BloomKind::Arrived,
+            since: now,
+            items: Vec::new(),
+            total: 0,
+        });
+        if bloom.items.iter().any(|item| item == path) {
+            return;
+        }
+        bloom.total = bloom.total.saturating_add(1).min(BLOOM_TOTAL_MAX);
+        bloom.items.push(path.to_path_buf());
+        if bloom.items.len() > BLOOM_ITEMS {
+            bloom.items.remove(0);
+        }
+    }
+
+    /// The user dealt with `path`: opened it, or it is gone. The bloom forgets it, and a bloom
+    /// with nothing left to say disappears. Returns whether anything changed.
+    fn resolve_bloom(&mut self, path: &Path) -> bool {
+        let Some(bloom) = self.bloom.as_mut() else {
+            return false;
+        };
+        let Some(index) = bloom.items.iter().position(|item| item == path) else {
+            return false;
+        };
+        bloom.items.remove(index);
+        bloom.total = bloom.total.saturating_sub(1);
+        if bloom.items.is_empty() || bloom.total == 0 {
+            self.bloom = None;
+        }
+        true
+    }
+
+    /// Rewrite this place's own root and every path it remembers when an ancestor is renamed.
+    fn rename_under(&mut self, from: &Path, to: &Path) -> bool {
+        let Ok(relative) = self.root.strip_prefix(from) else {
+            return false;
+        };
+        self.root = to.join(relative);
+        if let Some(bloom) = self.bloom.as_mut() {
+            for item in &mut bloom.items {
+                if let Ok(relative) = item.strip_prefix(from) {
+                    *item = to.join(relative);
+                }
+            }
+        }
+        true
     }
 }
 
@@ -886,6 +1012,10 @@ pub struct Ledger {
     pub clock: GardenClock,
     #[serde(default)]
     pub contexts: Vec<HomeContext>,
+    /// How far the garden has read the shared index's change log. A position, never a time:
+    /// the log's own `at_ms` is wall-clock and is dropped before anything reaches here.
+    #[serde(default)]
+    pub change_cursor: u64,
 }
 
 impl Ledger {
@@ -918,6 +1048,12 @@ impl Ledger {
                 .push(HomeContext::new(root.clone(), activity.at));
         }
         let context = self.context_mut(&root).expect("just ensured");
+        // The one place a bloom is answered: the user opened the thing that arrived, so the
+        // place has nothing left to say about it. No new source — this is the brokered open the
+        // ledger already hears.
+        if activity.kind == ActivityKind::FileOpened {
+            context.resolve_bloom(&activity.path);
+        }
         if context.hidden {
             return Some(root);
         }
@@ -961,6 +1097,90 @@ impl Ledger {
         Some(root)
     }
 
+    /// Fold one page of the shared index's change log into the places that already exist.
+    /// Returns how many arrivals were noted.
+    ///
+    /// This is the whole of the rule that content never grows a Place: every arriving path is
+    /// **looked up** against the contexts the ledger already holds, and nothing is ever
+    /// inserted, promoted or resized here. A path under a directory nobody has earned is
+    /// dropped, exactly like a path under `target/`.
+    ///
+    /// The one thing a change may do to a place itself is rename it: a move whose source is a
+    /// context root — or an ancestor of one — carries the place to its new name with its score,
+    /// its buckets and its material seed intact, because a project the user renamed is the same
+    /// project.
+    pub fn ingest_changes(
+        &mut self,
+        changes: &[IndexChange],
+        now: GardenMoment,
+        config: &GardenConfig,
+    ) -> u32 {
+        if !config.enabled {
+            return 0;
+        }
+        let mut arrivals = 0;
+        for change in changes {
+            match change {
+                IndexChange::Moved { from, to } => {
+                    let mut renamed = false;
+                    for context in &mut self.contexts {
+                        renamed |= context.rename_under(from, to);
+                    }
+                    if renamed {
+                        continue;
+                    }
+                    self.resolve_arrival(from);
+                    arrivals += u32::from(self.note_arrival(to, now, config));
+                }
+                IndexChange::Arrived { path } => {
+                    arrivals += u32::from(self.note_arrival(path, now, config));
+                }
+                IndexChange::Gone { path } => {
+                    self.resolve_arrival(path);
+                }
+            }
+        }
+        arrivals
+    }
+
+    /// The earned place `path` belongs to: the deepest existing context above it that has
+    /// reached [`Stage::Tile`] and is not hidden. `None` is the ordinary answer — most of the
+    /// filesystem is under no Place at all, and that is what keeps a burst of index churn free.
+    fn earned_root(&self, path: &Path, config: &GardenConfig) -> Option<PathBuf> {
+        if !path.is_absolute() || is_ignored(path, config) {
+            return None;
+        }
+        self.contexts
+            .iter()
+            .filter(|context| {
+                !context.hidden
+                    && context.stage >= Stage::Tile
+                    && path.starts_with(&context.root)
+                    && path != context.root
+            })
+            .max_by_key(|context| context.root.components().count())
+            .map(|context| context.root.clone())
+    }
+
+    fn note_arrival(&mut self, path: &Path, now: GardenMoment, config: &GardenConfig) -> bool {
+        let Some(root) = self.earned_root(path, config) else {
+            return false;
+        };
+        let Some(context) = self.context_mut(&root) else {
+            return false;
+        };
+        context.raise_bloom(path, now);
+        true
+    }
+
+    fn resolve_arrival(&mut self, path: &Path) {
+        for context in &mut self.contexts {
+            if context.resolve_bloom(path) {
+                return;
+            }
+        }
+    }
+
     fn evict_for_room(&mut self, config: &GardenConfig) {
         while self.contexts.len() >= config.max_contexts.max(1) {
             let Some(index) = self
@@ -990,6 +1210,14 @@ impl Ledger {
         }
         for context in &mut self.contexts {
             settle_form(context, now);
+            // A bloom nobody answered for several later sessions has stopped being news.
+            if context
+                .bloom
+                .as_ref()
+                .is_some_and(|bloom| now.sessions_since(bloom.since) >= BLOOM_STALE_SESSIONS)
+            {
+                context.bloom = None;
+            }
             let from = context.stage;
             let to = if context.hidden {
                 Stage::Dormant
@@ -1811,5 +2039,248 @@ mod tests {
         reloaded.clock.resume(0);
         assert_eq!(reloaded.contexts, ledger.contexts);
         assert_eq!(reloaded.clock.session, 1);
+    }
+
+    // ---------------------------------------------------------------- blooms ----------------
+
+    /// A ledger holding one earned place at `stage`, with no field and no history.
+    fn earned(root: &str, stage: Stage) -> Ledger {
+        let mut ledger = Ledger::default();
+        let mut context = HomeContext::new(PathBuf::from(root), at(1, 0.0));
+        context.stage = stage;
+        context.score = 30.0;
+        context.buckets.push(Bucket {
+            kind: ActivityKind::LaunchedHere,
+            role: Some(ProviderRole::Terminal),
+            session: 1,
+            count: 1,
+            weight: 3.0,
+        });
+        ledger.contexts.push(context);
+        ledger
+    }
+
+    fn arrived(path: &str) -> IndexChange {
+        IndexChange::Arrived {
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn content_never_grows_a_place() {
+        let config = GardenConfig::default();
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        let before = ledger.contexts.clone();
+
+        // Ten thousand arrivals under directories nobody earned, plus build output under one
+        // that was earned: no context appears, and no place changes by one field.
+        let mut churn: Vec<IndexChange> = (0..5_000)
+            .map(|n| arrived(&format!("/home/dk/elsewhere/f{n}")))
+            .collect();
+        churn.extend((0..5_000).map(|n| arrived(&format!("/home/dk/Downloads/target/o{n}"))));
+        assert_eq!(ledger.ingest_changes(&churn, at(2, 1.0), &config), 0);
+        assert_eq!(ledger.contexts.len(), 1);
+        assert_eq!(ledger.contexts, before);
+
+        // The same burst inside the earned place blooms, and still changes nothing else.
+        let real: Vec<IndexChange> = (0..40)
+            .map(|n| arrived(&format!("/home/dk/Downloads/f{n}.mp4")))
+            .collect();
+        assert_eq!(ledger.ingest_changes(&real, at(2, 1.0), &config), 40);
+        let context = &ledger.contexts[0];
+        assert_eq!(context.stage, before[0].stage);
+        assert!((context.score - before[0].score).abs() < f32::EPSILON);
+        assert_eq!(context.landing, before[0].landing);
+        assert_eq!(context.buckets, before[0].buckets);
+        let bloom = context.bloom.as_ref().expect("a bloom");
+        assert_eq!(bloom.total, 40);
+        assert_eq!(bloom.items.len(), BLOOM_ITEMS);
+    }
+
+    #[test]
+    fn a_bloom_needs_a_place_that_was_already_earned() {
+        let config = GardenConfig::default();
+        for stage in [Stage::Dormant, Stage::Trace] {
+            let mut ledger = earned("/home/dk/Downloads", stage);
+            ledger.ingest_changes(&[arrived("/home/dk/Downloads/a.mp4")], at(2, 0.0), &config);
+            assert!(ledger.contexts[0].bloom.is_none(), "{stage:?} bloomed");
+        }
+        for stage in [Stage::Tile, Stage::Expanded] {
+            let mut ledger = earned("/home/dk/Downloads", stage);
+            ledger.ingest_changes(&[arrived("/home/dk/Downloads/a.mp4")], at(2, 0.0), &config);
+            assert!(
+                ledger.contexts[0].bloom.is_some(),
+                "{stage:?} did not bloom"
+            );
+        }
+        // Hidden says the user does not want to hear from this place at all.
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        ledger.contexts[0].hidden = true;
+        ledger.ingest_changes(&[arrived("/home/dk/Downloads/a.mp4")], at(2, 0.0), &config);
+        assert!(ledger.contexts[0].bloom.is_none());
+    }
+
+    #[test]
+    fn a_bloom_forgets_what_the_user_opened() {
+        let config = GardenConfig::default();
+        let probe = Probe::new();
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        ledger.ingest_changes(
+            &[
+                arrived("/home/dk/Downloads/a.mp4"),
+                arrived("/home/dk/Downloads/b.pdf"),
+            ],
+            at(2, 0.0),
+            &config,
+        );
+        assert_eq!(ledger.contexts[0].bloom.as_ref().unwrap().total, 2);
+
+        // `2 new` becomes `1 new` becomes nothing, through the file-opened Observe that the
+        // ledger already hears — no new source.
+        ledger.observe(
+            &event(
+                "/home/dk/Downloads/a.mp4",
+                ActivityKind::FileOpened,
+                None,
+                at(2, 0.1),
+            ),
+            &probe,
+            &config,
+        );
+        assert_eq!(ledger.contexts[0].bloom.as_ref().unwrap().total, 1);
+        ledger.observe(
+            &event(
+                "/home/dk/Downloads/b.pdf",
+                ActivityKind::FileOpened,
+                None,
+                at(2, 0.2),
+            ),
+            &probe,
+            &config,
+        );
+        assert!(ledger.contexts[0].bloom.is_none());
+    }
+
+    #[test]
+    fn a_deleted_arrival_stops_being_news_and_a_stale_bloom_is_dropped_in_sessions() {
+        let config = GardenConfig::default();
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        ledger.ingest_changes(&[arrived("/home/dk/Downloads/a.mp4")], at(2, 0.0), &config);
+        ledger.ingest_changes(
+            &[IndexChange::Gone {
+                path: PathBuf::from("/home/dk/Downloads/a.mp4"),
+            }],
+            at(2, 0.1),
+            &config,
+        );
+        assert!(ledger.contexts[0].bloom.is_none());
+
+        ledger.ingest_changes(&[arrived("/home/dk/Downloads/b.mp4")], at(2, 0.0), &config);
+        ledger.tend(at(2 + BLOOM_STALE_SESSIONS - 1, 0.0), &config);
+        assert!(ledger.contexts[0].bloom.is_some(), "not stale yet");
+        ledger.tend(at(2 + BLOOM_STALE_SESSIONS, 0.0), &config);
+        assert!(
+            ledger.contexts[0].bloom.is_none(),
+            "stale after later sessions"
+        );
+    }
+
+    #[test]
+    fn a_renamed_root_keeps_its_seed_its_buckets_and_its_bloom() {
+        let config = GardenConfig::default();
+        let mut ledger = earned("/home/dk/src/legeos", Stage::Expanded);
+        ledger.ingest_changes(
+            &[arrived("/home/dk/src/legeos/new.rs")],
+            at(2, 0.0),
+            &config,
+        );
+        let before = ledger.contexts[0].clone();
+
+        ledger.ingest_changes(
+            &[IndexChange::Moved {
+                from: PathBuf::from("/home/dk/src/legeos"),
+                to: PathBuf::from("/home/dk/src/lege-os"),
+            }],
+            at(2, 1.0),
+            &config,
+        );
+
+        assert_eq!(ledger.contexts.len(), 1, "a rename is not a second place");
+        let after = &ledger.contexts[0];
+        assert_eq!(after.root, PathBuf::from("/home/dk/src/lege-os"));
+        assert_eq!(after.material_seed, before.material_seed);
+        assert_eq!(after.buckets, before.buckets);
+        assert!((after.score - before.score).abs() < f32::EPSILON);
+        assert_eq!(after.stage, before.stage);
+        assert_eq!(
+            after.bloom.as_ref().unwrap().items,
+            vec![PathBuf::from("/home/dk/src/lege-os/new.rs")],
+            "the bloom followed the rename"
+        );
+    }
+
+    #[test]
+    fn a_renamed_ancestor_carries_every_place_beneath_it() {
+        let config = GardenConfig::default();
+        let mut ledger = earned("/home/dk/src/legeos", Stage::Expanded);
+        ledger.contexts.push(HomeContext::new(
+            PathBuf::from("/home/dk/src/other"),
+            at(1, 0.0),
+        ));
+        ledger.ingest_changes(
+            &[IndexChange::Moved {
+                from: PathBuf::from("/home/dk/src"),
+                to: PathBuf::from("/home/dk/code"),
+            }],
+            at(2, 0.0),
+            &config,
+        );
+        let roots: Vec<&Path> = ledger.contexts.iter().map(|c| c.root.as_path()).collect();
+        assert_eq!(
+            roots,
+            vec![
+                Path::new("/home/dk/code/legeos"),
+                Path::new("/home/dk/code/other")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_moved_into_an_earned_place_is_an_arrival() {
+        let config = GardenConfig::default();
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        ledger.ingest_changes(
+            &[IndexChange::Moved {
+                from: PathBuf::from("/home/dk/elsewhere/a.mp4"),
+                to: PathBuf::from("/home/dk/Downloads/a.mp4"),
+            }],
+            at(2, 0.0),
+            &config,
+        );
+        let bloom = ledger.contexts[0].bloom.as_ref().expect("a bloom");
+        assert_eq!(bloom.total, 1);
+        assert_eq!(bloom.items, vec![PathBuf::from("/home/dk/Downloads/a.mp4")]);
+    }
+
+    #[test]
+    fn the_change_cursor_and_the_bloom_round_trip_through_json() {
+        let mut ledger = earned("/home/dk/Downloads", Stage::Expanded);
+        ledger.change_cursor = 4_812;
+        ledger.ingest_changes(
+            &[arrived("/home/dk/Downloads/a.mp4")],
+            at(2, 0.0),
+            &GardenConfig::default(),
+        );
+        let json = serde_json::to_string(&ledger).unwrap();
+        let back: Ledger = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ledger);
+        // A ledger written before blooms existed still loads.
+        let old: Ledger = serde_json::from_str(
+            r#"{"clock":{"session":1,"active_ms":0},"contexts":[{"root":"/home/dk/x",
+                "score":1.5,"last":{"session":1,"active_ms":0},"material_seed":7}]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.change_cursor, 0);
+        assert!(old.contexts[0].bloom.is_none());
     }
 }

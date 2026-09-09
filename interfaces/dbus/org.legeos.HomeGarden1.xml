@@ -7,6 +7,9 @@
      `garden.tend`); every change to the field goes through HomeField1 as one batch, so it is
      undoable there and appears in History1. Time is Garden time: sessions counted and
      unlocked-session runtime accumulated at Lifecycle1's session edges, never wall-clock.
+     Tend also reads one bounded page of the shared index's change log (Files.Index1
+     ChangesSince) from a persisted cursor, so an earned place can say what arrived in it;
+     nothing subscribes to the index, and content can never grow a place.
      Implemented in services/lege-sessiond/src/apis/homegarden.rs. -->
 <node>
   <interface name="org.legeos.HomeGarden1">

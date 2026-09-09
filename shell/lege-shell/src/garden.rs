@@ -35,18 +35,35 @@ pub struct GardenPlace {
     pub hidden: bool,
     pub summary: String,
     pub why: String,
+    /// What arrived here and has not been opened yet — the `2 new` on the state line. A bloom
+    /// is a projection over a place that was already earned; it never grew or moved one.
+    pub bloom_total: u32,
+    /// As many of those arrivals as the body can mark. The count above is the whole of it.
+    pub bloomed: Vec<PathBuf>,
 }
 
 impl GardenPlace {
-    /// The one-line state a Small place shows under its name.
+    /// The one-line state a Small place shows under its name. News first: what arrived is the
+    /// thing that changed since the user last looked.
     pub fn state_line(&self) -> String {
-        if self.kept {
+        let held = if self.kept {
             format!("kept · {}", self.summary)
         } else if self.pinned {
             format!("pinned · {}", self.summary)
         } else {
             self.summary.clone()
+        };
+        match self.bloom_total {
+            0 => held,
+            new => format!("{new} new · {held}"),
         }
+    }
+
+    /// Whether `path` is one of the arrivals this place has still to show. The body marks these
+    /// rows; the mark itself is the painter's, not this module's.
+    #[must_use]
+    pub fn is_bloomed(&self, path: &std::path::Path) -> bool {
+        self.bloomed.iter().any(|item| item == path)
     }
 }
 
@@ -142,5 +159,23 @@ mod tests {
         assert_eq!(place.tree[0].name, "src");
         assert_eq!(place.form, "branch");
         assert_eq!(place.state_line(), "3 opens, 1 session");
+    }
+
+    #[test]
+    fn a_place_says_what_arrived_before_it_says_what_it_is() {
+        let place: GardenPlace = serde_json::from_str(
+            r#"{"root":"/home/dk/Downloads","stage":"expanded","summary":"4 opens, 2 sessions",
+                "pinned":true,"bloom_total":2,
+                "bloomed":["/home/dk/Downloads/a.mp4","/home/dk/Downloads/b.pdf"]}"#,
+        )
+        .unwrap();
+        assert_eq!(place.state_line(), "2 new · pinned · 4 opens, 2 sessions");
+        assert!(place.is_bloomed(std::path::Path::new("/home/dk/Downloads/a.mp4")));
+        assert!(!place.is_bloomed(std::path::Path::new("/home/dk/Downloads/old.mp4")));
+
+        // Nothing new is the ordinary case, and it says nothing.
+        let quiet: GardenPlace =
+            serde_json::from_str(r#"{"root":"/home/dk/x","summary":"1 open, 1 session"}"#).unwrap();
+        assert_eq!(quiet.state_line(), "1 open, 1 session");
     }
 }

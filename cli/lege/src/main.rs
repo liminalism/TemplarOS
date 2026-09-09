@@ -710,7 +710,7 @@ async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
                 );
             }
             let context: serde_json::Value = serde_json::from_str(&described)?;
-            let human = format!(
+            let mut human = format!(
                 "{}: {} ({}) — {}\n{}\nidle {} session(s), {:.1} garden-hours; pinned={} hidden={}",
                 root.display(),
                 context["stage"].as_str().unwrap_or("?"),
@@ -718,10 +718,18 @@ async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
                 context["summary"].as_str().unwrap_or(""),
                 context["why"].as_str().unwrap_or("(never tended)"),
                 context["idle_sessions"],
-                context["idle_hours"].as_f64().unwrap_or(0.0),
+                context["idle_garden_hours"].as_f64().unwrap_or(0.0),
                 context["pinned"],
                 context["hidden"]
             );
+            // What arrived here and has not been opened. Never a reason the place is a place:
+            // a bloom is what an earned place shows, never what earned it.
+            if let Some(total) = context["bloom_total"].as_u64().filter(|total| *total > 0) {
+                let _ = write!(human, "\n{total} new:");
+                for item in context["bloomed"].as_array().into_iter().flatten() {
+                    let _ = write!(human, " {}", item.as_str().unwrap_or(""));
+                }
+            }
             emit(json, &context, &human)
         }
         GardenCommand::Tend { output } => {

@@ -10,7 +10,7 @@ use lege_client::{
     proxies::{
         AssociationsProxy, FilesActionsProxy, FilesBrowseProxy, FilesOperationsProxy,
         FilesPreviewsProxy, FilesRecentsProxy, FilesTrashProxy, FilesVolumesProxy, HomeFieldProxy,
-        LauncherProxy, ProjectsProxy,
+        HomeGardenProxy, LauncherProxy, ProjectsProxy,
     },
 };
 use pixelkit_shell::Waker;
@@ -821,12 +821,33 @@ impl RecentClient for FilesRecentsProxy<'_> {
     }
 }
 
+#[async_trait]
+pub trait GardenClient: Send + Sync {
+    async fn observe_open(&self, path: &str, app_id: &str) -> Result<()>;
+}
+
+#[async_trait]
+impl GardenClient for HomeGardenProxy<'_> {
+    async fn observe_open(&self, path: &str, app_id: &str) -> Result<()> {
+        self.observe("file-opened", path, app_id, "")
+            .await
+            .context("telling the garden about the open")
+    }
+}
+
 /// The only permitted non-directory open path: association broker, identity-aware launcher,
-/// then a best-effort recent-file record.
+/// then a best-effort recent-file record and the same fact told to the garden.
+///
+/// Both records are best effort and neither can fail the open. They are two different questions
+/// about one act: Recents answers "what did I open lately", and the garden answers "does this
+/// place still matter" — and it is also how a bloom is put out, because opening a file that
+/// arrived is what stops it being news
+/// (`@legeos.decision.homegarden-activity-grown-places`).
 pub async fn brokered_open(
     associations: &impl AssociationClient,
     launcher: &impl LaunchClient,
     recents: &impl RecentClient,
+    garden: &impl GardenClient,
     path: &Path,
 ) -> Result<OpenResult> {
     if !path.is_absolute() {
@@ -837,6 +858,9 @@ pub async fn brokered_open(
     let instance = launcher.launch_path(&app_id, &path).await?;
     if let Err(error) = recents.record_open(&path, &mime).await {
         tracing::debug!(%error, "file opened but recent-file recording failed");
+    }
+    if let Err(error) = garden.observe_open(&path, &app_id).await {
+        tracing::debug!(%error, "file opened but the garden was not told");
     }
     Ok(OpenResult {
         app_id,
@@ -855,7 +879,10 @@ async fn open_through_services(path: &Path) -> Result<OpenResult> {
     let recents = FilesRecentsProxy::new(&connection)
         .await
         .context("Files.Recents1")?;
-    brokered_open(&associations, &launcher, &recents, path).await
+    let garden = HomeGardenProxy::new(&connection)
+        .await
+        .context("HomeGarden1")?;
+    brokered_open(&associations, &launcher, &recents, &garden, path).await
 }
 
 pub async fn print_snapshot(path: Option<&Path>, show_hidden: bool) -> Result<String> {
@@ -966,6 +993,29 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct FakeGarden(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl GardenClient for FakeGarden {
+        async fn observe_open(&self, path: &str, app_id: &str) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("file-opened:{app_id}:{path}"));
+            Ok(())
+        }
+    }
+
+    struct RefusingGarden;
+
+    #[async_trait]
+    impl GardenClient for RefusingGarden {
+        async fn observe_open(&self, _path: &str, _app_id: &str) -> Result<()> {
+            bail!("no garden here")
+        }
+    }
+
+    #[derive(Default)]
     struct FakePathRenderer(Mutex<Vec<String>>);
 
     #[async_trait]
@@ -1019,16 +1069,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn brokered_open_resolves_then_launches_and_records() {
-        let (associations, launcher, recents) = (
+    async fn brokered_open_resolves_then_launches_records_and_tells_the_garden() {
+        let (associations, launcher, recents, garden) = (
             FakeAssociation::default(),
             FakeLauncher::default(),
             FakeRecents::default(),
+            FakeGarden::default(),
         );
         let result = brokered_open(
             &associations,
             &launcher,
             &recents,
+            &garden,
             Path::new("/home/u/note.txt"),
         )
         .await
@@ -1038,6 +1090,27 @@ mod tests {
         assert_eq!(associations.0.lock().unwrap().len(), 1);
         assert_eq!(launcher.0.lock().unwrap().len(), 1);
         assert_eq!(recents.0.lock().unwrap().len(), 1);
+        // An open from the Files application reaches the garden as file-opened, beside its
+        // Recents record: without this a bloom raised on a downloaded file is never put out.
+        assert_eq!(
+            garden.0.lock().unwrap().as_slice(),
+            ["file-opened:org.example.Reader:/home/u/note.txt"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_survives_a_garden_that_is_not_answering() {
+        let garden = RefusingGarden;
+        let result = brokered_open(
+            &FakeAssociation::default(),
+            &FakeLauncher::default(),
+            &FakeRecents::default(),
+            &garden,
+            Path::new("/home/u/note.txt"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.instance, "instance-1");
     }
 
     #[tokio::test]
@@ -1046,6 +1119,7 @@ mod tests {
             &FakeAssociation::default(),
             &FakeLauncher::default(),
             &FakeRecents::default(),
+            &FakeGarden::default(),
             Path::new("relative.txt"),
         )
         .await
