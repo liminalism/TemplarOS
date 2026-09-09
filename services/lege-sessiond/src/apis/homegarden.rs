@@ -16,7 +16,7 @@ use lege_field::garden::{ContextView, HomeCorner, garden_tile_id, tend};
 use lege_session_core::{
     history::{Event, EventId, EventKind, HistoryStore, SqliteHistory},
     homefield,
-    homegarden::{self, ActivityKind, GardenConfig, HomeActivity, Ledger, RootProbe},
+    homegarden::{self, ActivityKind, GardenConfig, HomeActivity, IndexChange, Ledger, RootProbe},
     providers::ProviderRegistry,
     settings::{SettingValue, SettingsSchema, SettingsValues},
 };
@@ -276,6 +276,87 @@ impl HomeGardenApi {
     }
 
     /// Where `root`'s tile is placed, on every output that has it.
+    /// Read the shared index's change log once, at this tending moment, and fold it into the
+    /// places that already exist.
+    ///
+    /// One `ChangesSince` call from a persisted cursor, and **no subscription**: the garden
+    /// never registers for `GenerationAdvanced`, because a bloom is only ever *drawn*, and
+    /// drawing only happens at a tending moment. A resident listener would be a background
+    /// wakeup per index generation for news nobody is looking at, which is exactly what
+    /// `no-idle-wakeups` and `no-index-growth` exist to prevent.
+    ///
+    /// Below the retained floor the log cannot prove continuity, so there is no history to show:
+    /// the cursor moves to the log's head, every bloom is cleared, and this moment shows
+    /// nothing. Never a read from sequence 0 — that would bloom the whole index at once.
+    async fn read_index_changes(&self) {
+        let Ok(proxy) = lege_client::proxies::FilesIndexProxy::new(&self.connection).await else {
+            return;
+        };
+        let cursor = {
+            let inner = self.inner.lock().expect("garden lock");
+            inner.ledger.change_cursor
+        };
+        let batch_json = match proxy.changes_since(cursor, CHANGE_PAGE).await {
+            Ok(json) => json,
+            Err(error) => {
+                if is_snapshot_required(&error) {
+                    self.rebase_change_cursor(&proxy).await;
+                } else {
+                    tracing::debug!(%error, "no change log this tending moment");
+                }
+                return;
+            }
+        };
+        let batch: WireChanges = match serde_json::from_str(&batch_json) {
+            Ok(batch) => batch,
+            Err(error) => {
+                tracing::warn!(%error, "the index change page did not parse");
+                return;
+            }
+        };
+        let changes = garden_changes(&batch);
+        let config = self.config();
+        let mut inner = self.inner.lock().expect("garden lock");
+        let now = inner.ledger.clock.now(inner.monotonic_ms());
+        // A cursor of 0 is a garden that has never read the log: take the position and show
+        // nothing, so a first tending moment does not announce every file already on the disk
+        // as news.
+        let arrivals = if cursor == 0 {
+            0
+        } else {
+            inner.ledger.ingest_changes(&changes, now, &config)
+        };
+        inner.ledger.change_cursor = batch.next_seq.max(cursor);
+        self.persist(&inner);
+        if arrivals > 0 {
+            tracing::debug!(arrivals, "the garden noted new arrivals in earned places");
+        }
+    }
+
+    /// The log was pruned past the cursor: take its head and forget what we can no longer prove.
+    async fn rebase_change_cursor(&self, proxy: &lege_client::proxies::FilesIndexProxy<'_>) {
+        let head = match proxy.roots().await {
+            Ok(json) => serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|value| value["diagnostics"]["change_seq_head"].as_u64()),
+            Err(error) => {
+                tracing::debug!(%error, "could not rebase the garden's change cursor");
+                None
+            }
+        };
+        let Some(head) = head else { return };
+        let mut inner = self.inner.lock().expect("garden lock");
+        inner.ledger.change_cursor = head;
+        for context in &mut inner.ledger.contexts {
+            context.bloom = None;
+        }
+        self.persist(&inner);
+        tracing::info!(
+            head,
+            "the index change log was pruned past the garden's cursor"
+        );
+    }
+
     fn tile_locations(&self, root: &Path) -> Vec<(String, lege_field::Located)> {
         let id = garden_tile_id(root);
         let outputs = homefield::outputs(&self.store).unwrap_or_default();
@@ -389,6 +470,85 @@ struct TendReport {
     ops: Vec<(String, String)>,
 }
 
+/// How many change-log entries one tending moment reads. Bounded on purpose: a tending moment
+/// sits on the path to a paint, and a page the garden cannot finish is a page the next tending
+/// moment continues from the same cursor.
+const CHANGE_PAGE: u32 = 512;
+
+/// `EntryKind::Regular` as `Index1` puts it on the wire (`lege_file_index::model::EntryKind`).
+const KIND_REGULAR: i64 = 0;
+
+/// The D-Bus error `Index1` raises when the log has been pruned past the cursor.
+const SNAPSHOT_REQUIRED: &str = "org.legeos.Files.Index1.Error.SnapshotRequired";
+
+/// A page of `Files.Index1.ChangesSince`, reduced to the fields the garden reads. Deliberately
+/// a local mirror of `lege_filed::index_host::wire_changes_batch` rather than the index crate
+/// itself: the one policy daemon does not link the index to read four fields off a JSON page
+/// (the same choice, for the same reason, as `cli/lege/src/files.rs`).
+#[derive(serde::Deserialize)]
+struct WireChanges {
+    next_seq: u64,
+    #[serde(default)]
+    changes: Vec<WireChange>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireChange {
+    op: String,
+    path: WirePath,
+    #[serde(default)]
+    old_path: Option<WirePath>,
+    #[serde(default)]
+    kind: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct WirePath {
+    display: String,
+}
+
+/// The path, or nothing when the index could not describe it in text.
+///
+/// `Index1` carries the authoritative bytes in `bytes_b64` beside this lossy `display` string,
+/// and a file *action* must always use the bytes. The garden takes neither: it never opens a
+/// bloomed path — it stores the name, compares it against the path an `Observe` carried, and
+/// hands it to the shell as JSON. All three of those are UTF-8 only (`Observe(path: s)` is a
+/// D-Bus string; `serde_json` cannot serialise a non-UTF-8 `PathBuf` at all), so a path that did
+/// not survive the trip to text could never be matched or drawn anyway.
+///
+/// ponytail: skipping any name containing U+FFFD costs at most one missed bloom on a path no
+/// other part of this feature could have represented. Decode `bytes_b64` if the garden ever has
+/// to act on one.
+fn faithful(path: &WirePath) -> Option<PathBuf> {
+    (!path.display.contains('\u{FFFD}')).then(|| PathBuf::from(&path.display))
+}
+
+/// The change log as the ledger reads it: file arrivals, moves, removals. A `metadata` change
+/// is not news, and a `rescan` marker names no file — one root was re-enumerated, which the
+/// garden has nothing to say about.
+fn garden_changes(batch: &WireChanges) -> Vec<IndexChange> {
+    batch
+        .changes
+        .iter()
+        .filter_map(|change| {
+            let path = faithful(&change.path)?;
+            match change.op.as_str() {
+                "added" if change.kind == KIND_REGULAR => Some(IndexChange::Arrived { path }),
+                "moved" => Some(IndexChange::Moved {
+                    from: faithful(change.old_path.as_ref()?)?,
+                    to: path,
+                }),
+                "removed" => Some(IndexChange::Gone { path }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn is_snapshot_required(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == SNAPSHOT_REQUIRED)
+}
+
 fn context_json(
     context: &homegarden::HomeContext,
     now: homegarden::GardenMoment,
@@ -402,7 +562,7 @@ fn context_json(
         "sessions_seen": context.sessions_seen(),
         "breadth": context.breadth(now),
         "idle_sessions": now.sessions_since(context.last),
-        "idle_hours": now.hours_since(context.last),
+        "idle_garden_hours": now.hours_since(context.last),
         "roles": context.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
         "tree": context.tree,
         "pinned": context.pinned,
@@ -413,6 +573,8 @@ fn context_json(
         "material_seed": context.material_seed,
         "summary": context.summary(),
         "why": context.last_reason,
+        "bloom_total": context.bloom.as_ref().map_or(0, |bloom| bloom.total),
+        "bloomed": context.bloom.as_ref().map_or(&[][..], |bloom| bloom.items.as_slice()),
         "tile": garden_tile_id(&context.root).0,
     })
 }
@@ -466,6 +628,9 @@ impl HomeGardenApi {
         if output.is_empty() {
             return Err(fdo::Error::InvalidArgs("output must not be empty".into()));
         }
+        // One read of the shared index per tending moment, before the stages are recomputed,
+        // so a place that grew this moment can already say what arrived in it.
+        self.read_index_changes().await;
         let report = self.tend_output(output).map_err(failed)?;
         if report.changed > 0 {
             self.announce_field_change(output, report.revision).await;
@@ -770,5 +935,129 @@ mod tests {
         )
         .unwrap();
         assert_eq!(user_dirs_from(home, &config), vec![home.join("dl")]);
+    }
+
+    /// One page of `Index1.ChangesSince` exactly as `wire_changes_batch` writes it.
+    fn page() -> &'static str {
+        r#"{"generation":9,"next_seq":412,"more":false,"changes":[
+            {"seq":409,"generation":9,"root":1,"op":"added","entry_id":7,
+             "path":{"bytes_b64":"eA==","display":"/home/dk/Downloads/a.mp4"},
+             "old_path":null,"kind":0,"size_bytes":10,"mtime_ns":0,"at_ms":1788270784771},
+            {"seq":410,"generation":9,"root":1,"op":"added","entry_id":8,
+             "path":{"bytes_b64":"eQ==","display":"/home/dk/Downloads/sub"},
+             "old_path":null,"kind":1,"size_bytes":0,"mtime_ns":0,"at_ms":1788270784772},
+            {"seq":411,"generation":9,"root":1,"op":"moved","entry_id":9,
+             "path":{"bytes_b64":"eg==","display":"/home/dk/src/lege-os"},
+             "old_path":{"bytes_b64":"dw==","display":"/home/dk/src/legeos"},
+             "kind":1,"size_bytes":0,"mtime_ns":0,"at_ms":1788270784773},
+            {"seq":412,"generation":9,"root":1,"op":"metadata","entry_id":10,
+             "path":{"bytes_b64":"dg==","display":"/home/dk/Downloads/a.mp4"},
+             "old_path":null,"kind":0,"size_bytes":11,"mtime_ns":0,"at_ms":1788270784774}]}"#
+    }
+
+    #[test]
+    fn the_change_page_becomes_arrivals_moves_and_nothing_else() {
+        let batch: WireChanges = serde_json::from_str(page()).expect("the wire page parses");
+        assert_eq!(batch.next_seq, 412);
+        let changes = garden_changes(&batch);
+        assert_eq!(
+            changes,
+            vec![
+                IndexChange::Arrived {
+                    path: PathBuf::from("/home/dk/Downloads/a.mp4")
+                },
+                IndexChange::Moved {
+                    from: PathBuf::from("/home/dk/src/legeos"),
+                    to: PathBuf::from("/home/dk/src/lege-os"),
+                },
+            ],
+            "a directory arrival is not news, and a metadata change is not either"
+        );
+    }
+
+    #[test]
+    fn a_removal_is_read_and_a_rescan_marker_names_no_file() {
+        let batch: WireChanges = serde_json::from_str(
+            r#"{"next_seq":3,"changes":[
+                {"op":"removed","path":{"display":"/home/dk/Downloads/a.mp4"},"kind":0},
+                {"op":"rescan","path":{"display":"/home/dk"},"kind":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            garden_changes(&batch),
+            vec![IndexChange::Gone {
+                path: PathBuf::from("/home/dk/Downloads/a.mp4")
+            }]
+        );
+    }
+
+    #[test]
+    fn a_name_that_did_not_survive_the_trip_to_text_is_skipped() {
+        let batch: WireChanges = serde_json::from_str(
+            r#"{"next_seq":2,"changes":[
+                {"op":"added","path":{"display":"/home/dk/Downloads/b\uFFFDd.mp4"},"kind":0},
+                {"op":"added","path":{"display":"/home/dk/Downloads/good.mp4"},"kind":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            garden_changes(&batch),
+            vec![IndexChange::Arrived {
+                path: PathBuf::from("/home/dk/Downloads/good.mp4")
+            }]
+        );
+    }
+
+    #[test]
+    fn only_the_pruned_log_error_rebases_the_cursor() {
+        let pruned = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from(SNAPSHOT_REQUIRED).unwrap(),
+            None,
+            zbus::message::Message::method_call("/", "X")
+                .unwrap()
+                .build(&())
+                .unwrap(),
+        );
+        assert!(is_snapshot_required(&pruned));
+        let other = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.Failed").unwrap(),
+            None,
+            zbus::message::Message::method_call("/", "X")
+                .unwrap()
+                .build(&())
+                .unwrap(),
+        );
+        assert!(!is_snapshot_required(&other));
+    }
+
+    #[test]
+    fn a_context_reports_its_bloom_and_names_the_clock_its_idle_hours_are_on() {
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        ledger.contexts.push(
+            serde_json::from_str(
+                r#"{"root":"/home/dk/Downloads","score":30.0,
+                    "last":{"session":1,"active_ms":0},"stage":"expanded","material_seed":7}"#,
+            )
+            .expect("an earned place"),
+        );
+        ledger.ingest_changes(
+            &[IndexChange::Arrived {
+                path: PathBuf::from("/home/dk/Downloads/a.mp4"),
+            }],
+            homegarden::GardenMoment::default(),
+            &config,
+        );
+        let json = context_json(
+            &ledger.contexts[0],
+            homegarden::GardenMoment::default(),
+            &config,
+        );
+        assert_eq!(json["bloom_total"], 1);
+        assert_eq!(json["bloomed"][0], "/home/dk/Downloads/a.mp4");
+        assert!(
+            json.get("idle_hours").is_none(),
+            "the wall-clock name is gone"
+        );
+        assert!(json.get("idle_garden_hours").is_some());
     }
 }
