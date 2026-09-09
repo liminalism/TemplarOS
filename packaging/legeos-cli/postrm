@@ -1,0 +1,17 @@
+#!/bin/sh
+# Take the marker-guarded block back out of /etc/bash.bashrc. Anchored on both markers, so an
+# unrelated edit around it survives and a second removal finds nothing to do.
+set -e
+
+case "$1" in
+    remove|purge)
+        if [ -f /etc/bash.bashrc ]; then
+            sed -i '/^# >>> legeos garden hook >>>$/,/^# <<< legeos garden hook <<<$/d' \
+                /etc/bash.bashrc || :
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

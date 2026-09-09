@@ -989,6 +989,7 @@ fn check_packaging(root: &Path) -> Result<()> {
     ));
     problems.extend(maintainerless);
     problems.extend(missing_asset_sources);
+    problems.extend(garden_hook_delivery_problems(packages));
     problems.extend(dependency_drift(
         &parse_control_depends(&control_text),
         &deb_depends,
@@ -1047,6 +1048,71 @@ fn check_packaging(root: &Path) -> Result<()> {
         metapackages.len()
     );
     Ok(())
+}
+
+/// The path the garden's terminal prompt hook is shipped to, and the one file a graphical
+/// terminal's shell will actually read it from.
+const GARDEN_HOOK_PAYLOAD: &str = "etc/profile.d/60-legeos-garden.sh";
+const GARDEN_HOOK_DELIVERY: &str = "/etc/bash.bashrc";
+
+/// The garden's terminal hook has to arrive in a file bash reads for an *interactive, non-login*
+/// shell, because that is the only kind a graphical terminal spawns: kitty runs the login wrapper
+/// on macOS only. `/etc/profile.d` is read by `/etc/profile`, and `/etc/profile` is read by login
+/// shells alone — so the hook was packaged, installed, unit-tested and never once loaded, and the
+/// garden heard nothing from a full day at the terminal.
+///
+/// `/etc/bash.bashrc` is the one system-wide file that qualifies. It belongs to `base-files`, so
+/// the package appends a marker-guarded line to it from its maintainer scripts rather than
+/// shipping a file over it; this is what fails if that delivery is ever lost again.
+fn garden_hook_delivery_problems(packages: &[serde_json::Value]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(package) = packages.iter().find(|package| {
+        package["metadata"]["deb"]["assets"]
+            .as_array()
+            .is_some_and(|assets| {
+                assets.iter().any(|asset| {
+                    asset.get(1).and_then(serde_json::Value::as_str) == Some(GARDEN_HOOK_PAYLOAD)
+                })
+            })
+    }) else {
+        problems.push(format!(
+            "no package ships {GARDEN_HOOK_PAYLOAD}: the garden's terminal source has no payload"
+        ));
+        return problems;
+    };
+    let deb_name = package["metadata"]["deb"]["name"].as_str().unwrap_or("?");
+    let manifest_dir = Path::new(package["manifest_path"].as_str().unwrap_or(""))
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_owned();
+    let Some(scripts) = package["metadata"]["deb"]["maintainer-scripts"].as_str() else {
+        problems.push(format!(
+            "{deb_name} ships {GARDEN_HOOK_PAYLOAD} but declares no maintainer-scripts, so \
+             nothing puts it in {GARDEN_HOOK_DELIVERY}; only a login shell would ever read it \
+             and a graphical terminal never starts one"
+        ));
+        return problems;
+    };
+    let scripts = manifest_dir.join(scripts);
+    for (name, must_mention) in [
+        ("postinst", GARDEN_HOOK_PAYLOAD),
+        ("postrm", "legeos garden hook"),
+    ] {
+        let path = scripts.join(name);
+        match std::fs::read_to_string(&path) {
+            Ok(text) if text.contains(GARDEN_HOOK_DELIVERY) && text.contains(must_mention) => {}
+            Ok(_) => problems.push(format!(
+                "{deb_name}: {} does not mention both {GARDEN_HOOK_DELIVERY} and {must_mention}, \
+                 so the terminal hook's delivery is not what it claims",
+                path.display()
+            )),
+            Err(error) => problems.push(format!(
+                "{deb_name}: cannot read {} ({error}), so the terminal hook has no delivery",
+                path.display()
+            )),
+        }
+    }
+    problems
 }
 
 /// Everything `check-packaging` needs out of `[package.metadata.deb]`, gathered in one pass.
@@ -2074,13 +2140,15 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        VendoredAssets, chord_route_problems, client_interface_names, colliding_destinations,
-        declared_actions, dependency_drift, manifest_executable_is_provided,
-        metapackage_dependency_problems, packaging_problems, parse_control_depends,
-        parse_control_packages, parse_depends_list, seed_problems, server_interface_names,
-        service_inventory_problems, unlicensed_assets, unshipped_unit_binaries,
+        GARDEN_HOOK_PAYLOAD, VendoredAssets, chord_route_problems, client_interface_names,
+        colliding_destinations, declared_actions, dependency_drift, garden_hook_delivery_problems,
+        manifest_executable_is_provided, metapackage_dependency_problems, packaging_problems,
+        parse_control_depends, parse_control_packages, parse_depends_list, seed_problems,
+        server_interface_names, service_inventory_problems, unlicensed_assets,
+        unshipped_unit_binaries,
     };
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
 
     const MANIFEST_SHAPE: &str = r#"
         ActionDecl {
@@ -2415,6 +2483,37 @@ mod extraction_tests {
                 &BTreeSet::new(),
             )
             .is_empty()
+        );
+    }
+
+    /// The real tree first — the check has to hold for what is actually shipped — and then the
+    /// regression it exists for: shipping the hook to `/etc/profile.d` and calling it delivered.
+    #[test]
+    fn the_garden_hook_must_reach_a_file_a_non_login_interactive_bash_reads() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cli/lege/Cargo.toml");
+        let real = serde_json::json!({
+            "manifest_path": manifest.to_string_lossy(),
+            "metadata": { "deb": {
+                "name": "legeos-cli",
+                "maintainer-scripts": "../../packaging/legeos-cli",
+                "assets": [["../../session/profile.d/60-legeos-garden.sh", GARDEN_HOOK_PAYLOAD, "644"]],
+            }},
+        });
+        assert!(garden_hook_delivery_problems(std::slice::from_ref(&real)).is_empty());
+
+        let mut profile_d_only = real.clone();
+        profile_d_only["metadata"]["deb"]
+            .as_object_mut()
+            .unwrap()
+            .remove("maintainer-scripts");
+        let problems = garden_hook_delivery_problems(&[profile_d_only]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("/etc/bash.bashrc"));
+
+        assert_eq!(
+            garden_hook_delivery_problems(&[serde_json::json!({})]).len(),
+            1,
+            "a tree that ships the payload nowhere is a mismatch too"
         );
     }
 

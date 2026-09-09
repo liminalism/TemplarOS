@@ -2085,6 +2085,11 @@ mod tests {
     /// The prompt hook itself: it must speak only when the working directory actually changed,
     /// and it must leave every shell that is not an interactive LegeOS Bash alone. A `lege` on
     /// PATH that only records its arguments is what makes this observable without a session.
+    ///
+    /// The hook is *loaded the way the installed one is*: as an rc file read by an interactive,
+    /// non-login bash, which is the only kind a graphical terminal spawns. Sourcing it by hand
+    /// inside `bash -c` — what this test used to do — passes even when nothing on the host ever
+    /// reads the file, which is exactly how a day of terminal work reached the garden as silence.
     #[test]
     fn garden_s_prompt_hook_speaks_once_per_directory_and_stays_quiet_elsewhere() {
         let hook = concat!(
@@ -2120,19 +2125,29 @@ mod tests {
                 .status()
                 .unwrap()
         };
-        let script = format!(
-            ". {hook}; __legeos_garden_prompt; __legeos_garden_prompt; cd /; __legeos_garden_prompt"
-        );
+        let script = "__legeos_garden_prompt; __legeos_garden_prompt; cd /; __legeos_garden_prompt";
 
         // Not a LegeOS session: the hook is not even defined, so calling it fails.
-        assert!(!run("GNOME", &["--noprofile", "--norc", "-i", "-c", &script]).success());
+        assert!(
+            !run(
+                "GNOME",
+                &["--noprofile", "--rcfile", hook, "-i", "-c", script]
+            )
+            .success()
+        );
         assert!(!trace.exists() || std::fs::read_to_string(&trace).unwrap().is_empty());
 
-        // A non-interactive shell is left alone for the same reason.
-        assert!(!run("LegeOS", &["--noprofile", "--norc", "-c", &script]).success());
+        // A non-interactive shell reads no rc file at all, and would be left alone even if it did.
+        assert!(!run("LegeOS", &["--noprofile", "--rcfile", hook, "-c", script]).success());
 
         // Interactive and LegeOS: one line per directory, and the repeat says nothing.
-        assert!(run("LegeOS", &["--noprofile", "--norc", "-i", "-c", &script]).success());
+        assert!(
+            run(
+                "LegeOS",
+                &["--noprofile", "--rcfile", hook, "-i", "-c", script]
+            )
+            .success()
+        );
         let lines: Vec<String> = std::fs::read_to_string(&trace)
             .unwrap()
             .lines()
@@ -2147,6 +2162,63 @@ mod tests {
                 ),
                 "garden observe terminal-entered / --role terminal".to_owned(),
             ]
+        );
+    }
+
+    /// The other half: the line `legeos-cli`'s postinst adds to `/etc/bash.bashrc` is what makes
+    /// an interactive, non-login bash read the hook at all. Running the block the package writes
+    /// — with the payload path pointed at this checkout — is the only way to know the delivery
+    /// works without installing over the host's own `/etc`.
+    #[test]
+    fn garden_s_hook_is_loaded_by_the_line_the_package_adds_to_bash_bashrc() {
+        let postinst = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packaging/legeos-cli/postinst"
+        ))
+        .expect("legeos-cli ships maintainer scripts");
+        let block: String = postinst
+            .lines()
+            // The markers as they are *written*, not as the guard greps for them.
+            .skip_while(|line| line.trim_start() != "# >>> legeos garden hook >>>")
+            .take_while(|line| line.trim_start() != "# <<< legeos garden hook <<<")
+            .map(|line| {
+                format!(
+                    "{}\n",
+                    line.replace(
+                        "/etc/profile.d/60-legeos-garden.sh",
+                        concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../session/profile.d/60-legeos-garden.sh"
+                        )
+                    )
+                )
+            })
+            .collect();
+        assert!(
+            block.contains("60-legeos-garden.sh"),
+            "the postinst block no longer sources the hook: {block}"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let rcfile = tmp.path().join("bash.bashrc");
+        std::fs::write(&rcfile, block).unwrap();
+        let status = std::process::Command::new("bash")
+            .args([
+                "--noprofile",
+                "--rcfile",
+                &rcfile.to_string_lossy(),
+                "-i",
+                "-c",
+                "declare -F __legeos_garden_prompt",
+            ])
+            .env("XDG_CURRENT_DESKTOP", "LegeOS")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "an interactive non-login bash reading what the package installs must find the hook"
         );
     }
 }
