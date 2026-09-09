@@ -67,14 +67,36 @@ Place; the walk stops beneath it and is capped at eight ancestors. Only `stat`-c
 | Stage | Tile | Promotion needs | Demotion needs (both) |
 |---|---|---|---|
 | Dormant | none | — | — |
-| Trace | 2×2 | relevance ≥ 3 | 10 later sessions and 30 garden-hours idle, relevance < 1 |
-| Tile | 3×2 | ≥ 8, 2 sessions | 6 sessions and 15 hours, < 4 |
+| Trace | 2×1 | relevance ≥ 3 | 10 later sessions and 30 garden-hours idle, relevance < 1 |
+| Tile | 2×2 | ≥ 8, 2 sessions | 6 sessions and 15 hours, < 4 |
 | Expanded | 4×3 | ≥ 20, 3 sessions, 2 kinds/roles | 3 sessions and 6 hours, < 10 |
+| Dominant | 6×4 | ≥ 45, 5 sessions, 3 kinds/roles | 2 sessions and 4 hours, < 22 |
+
+The range is deliberately aggressive: a Trace is a *line* (a name and a state line, which is all
+the Small rung draws), and a Dominant is twelve times its area with its form drawn at size. The
+Folder class floor is 2×1 so a line is a shape a folder may have; nothing else about the class
+moved, and `GROWTH_ROOM` follows the top stage so a first landing still leaves room to reach it.
 
 One step per tending moment: a place recedes visibly, never vanishes. Pinned never recedes and
 is never removed by recession, but may grow; **kept** is pinned and frozen at its size; hidden
 never grows, and its tile leaves Home at once. A folder the user placed or resized by hand is
 kept without asking: the tender only prunes what it grew.
+
+## Forms
+
+Shape is the *mode of use*, and the ledger settles it. Each context carries a `form` — `plain`,
+`branch`, `shelf` or `folio` — derived at a tending moment from the activity tree it has already
+earned: directories worked *through* are branch evidence (weighted by depth, and half again when
+a Terminal or CodeEditor role has been seen there), file leaves are shelf or folio evidence
+according to their extension. A form must clear a floor of 2 and lead the next form by half
+again, and it must have led for **two sessions** before the drawing changes — a place that
+changed shape every time a photo was opened under it would be noise, not identity.
+
+Extension, not MIME: `Observe(kind, path, app_id, role)` is a shipped signature and there is no
+media or reader `ProviderRole` to ask either, so a file's name is the whole of the evidence.
+`created-or-renamed` and `file-saved` are still unemitted, and the tree is three deep, so a
+library organised more deeply than that under-reports. Good enough to tell a photo directory
+from a manuscript one; anything finer waits for a signal that exists.
 
 | Verb | Record | Tile |
 |---|---|---|
@@ -103,15 +125,21 @@ kept without asking: the tender only prunes what it grew.
 
 ## The Place tile
 
-Same object as any folder tile, drawn by rung: **Small** — name in the place's colour, one
-state line; **Wide** — the roles row `>_ Terminal  ▤ Files  <> Edit`, resolved through
-`Providers1` at press; **Large** — the branch body: the used structure beneath the root as a
-trunk with the branches that earned it, heavier branches thicker, files dimmer; the ordinary
-listing until any structure has been earned. **Full** is the folder window.
+Same object as any folder tile. The name is the tile's own chrome; the body is one state line
+and then the **form** the place has earned (`shell/lege-shell/src/surface/place_forms.rs`) —
+a branch (trunk at the left, the used descendants fanning off it, each band and stroke by share,
+twigs where the band has room), a shelf (the things it is looked at for, standing on a rule at
+heights by share), or nothing at all for a plain place, which falls back to the ordinary folder
+listing once it is large enough to browse. **Small** is the state line alone; the form starts at
+**Wide**; **Full** is the folder window.
+
+There is no roles row: `place.open-terminal`, `place.open-files` and `place.open-editor` are
+rows of the Place context menu, which reaches the same providers by the same route. Drawn into
+the body they made every place look like a collage of the applications used to manipulate it.
 
 ## What is deliberately not here yet
 
-Growth forms and facets (Hierarchy/Media/Documents/Gallery), blooms (`2 new`, `unwatched`),
+The folio drawing (the form is derived but nothing draws it yet), blooms (`2 new`, `unwatched`),
 material identity, sibling grouping, a Wide-vs-Tall geometry axis, bloom consumption of the
 index change log, and portal sources. Each waits on Phase 4: a day's use, judged by
 `lege garden why` on every place.

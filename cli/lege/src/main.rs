@@ -711,9 +711,10 @@ async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
             }
             let context: serde_json::Value = serde_json::from_str(&described)?;
             let human = format!(
-                "{}: {} — {}\n{}\nidle {} session(s), {:.1} garden-hours; pinned={} hidden={}",
+                "{}: {} ({}) — {}\n{}\nidle {} session(s), {:.1} garden-hours; pinned={} hidden={}",
                 root.display(),
                 context["stage"].as_str().unwrap_or("?"),
+                context["form"].as_str().unwrap_or("plain"),
                 context["summary"].as_str().unwrap_or(""),
                 context["why"].as_str().unwrap_or("(never tended)"),
                 context["idle_sessions"],

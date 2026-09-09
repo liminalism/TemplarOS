@@ -33,11 +33,11 @@ pub struct ContextView {
     pub summary: String,
 }
 
-/// The largest span a place can grow to (the ledger's Expanded stage). Growth is anchored at a
+/// The largest span a place can grow to (the ledger's top stage). Growth is anchored at a
 /// tile's top-left, so a first landing is chosen as if the tile were already this big: a Trace
 /// flush against the bottom edge could never become Expanded, and the representation ladder the
 /// stages promise would stop one rung short with empty rows above it.
-pub const GROWTH_ROOM: Span = Span::new(4, 3);
+pub const GROWTH_ROOM: Span = Span::new(6, 4);
 
 /// The corner first growths cluster at, so the user learns where to look.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -282,9 +282,9 @@ mod tests {
         let FieldOp::Place { landing, .. } = &ops[0].op else {
             panic!("{:?}", ops[0].op)
         };
-        // Row 5, not 6: the corner is taken as a 4x3 would sit in it, so the 2x2 can become 4x3
-        // in place, growing down and right into free cells.
-        assert_eq!(landing.cell, Cell::new(0, 5));
+        // Row 4, not 6: the corner is taken as a `GROWTH_ROOM` tile would sit in it, so the 2x2
+        // can become 6x4 in place, growing down and right into free cells.
+        assert_eq!(landing.cell, Cell::new(0, 4));
     }
 
     #[test]
@@ -381,13 +381,26 @@ mod tests {
         );
     }
 
-    /// A Trace placed at the corner leaves room to become Expanded in place.
+    /// A Trace is a *line*, and the corner it lands in leaves room for it to become the whole
+    /// top stage in place: the ladder is 2x1 to 6x4, twelve times the area, and none of it is
+    /// had by moving a neighbour.
     #[test]
-    fn a_corner_landing_leaves_room_to_reach_the_expanded_span() {
+    fn a_corner_landing_leaves_room_to_reach_the_top_span() {
+        assert!(
+            SpanRange::for_kind(
+                &TileKind::Folder {
+                    path: PathBuf::from("/home/dk/a")
+                },
+                12,
+                8
+            )
+            .accepts(Span::new(2, 1)),
+            "a folder must be able to be a line"
+        );
         let doc = FieldDocument::new("DP-1", 12, 8);
         let ops = tend(
             &doc,
-            &[view("/home/dk/a", Some(Span::new(2, 2)))],
+            &[view("/home/dk/a", Some(Span::new(2, 1)))],
             HomeCorner::BottomRight,
         );
         let (doc, _) = crate::apply(&doc, &ops[0].op).unwrap();

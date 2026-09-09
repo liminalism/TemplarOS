@@ -1,6 +1,6 @@
 //! What the shell knows about Homegarden's places: the `HomeGarden1.Contexts` snapshot the
-//! Folder tile draws its roles row and branch body from, and the fetches behind the tending
-//! moments (`@legeos.decision.homegarden-activity-grown-places`). The shell owns no garden
+//! Folder tile draws its form from (`crate::surface::place_forms`), and the fetches behind the
+//! tending moments (`@legeos.decision.homegarden-activity-grown-places`). The shell owns no garden
 //! state: it observes, asks for a tending, and draws what the daemon reports.
 
 use lege_client::proxies::HomeGardenProxy;
@@ -22,6 +22,10 @@ pub struct TreeNode {
 pub struct GardenPlace {
     pub root: PathBuf,
     pub stage: String,
+    /// The form the place draws in — `plain`, `branch`, `shelf`, `folio` — as the ledger settled
+    /// it. A string rather than an enum: the shell draws what the daemon reports and must keep
+    /// working against a daemon that has learned a form this build has never heard of.
+    pub form: String,
     pub effective: f32,
     pub roles: Vec<String>,
     pub tree: Vec<TreeNode>,
@@ -43,59 +47,6 @@ impl GardenPlace {
         } else {
             self.summary.clone()
         }
-    }
-}
-
-/// One row of the branch body: how deep, what, and how heavily used relative to its siblings.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BranchRow {
-    pub depth: usize,
-    pub name: String,
-    pub is_dir: bool,
-    /// 0.0..=1.0, the node's share of the strongest sibling at its level.
-    pub weight: f32,
-    pub path: PathBuf,
-}
-
-/// The tree as rows, strongest branches first at every level, at most `limit` rows, so a
-/// place's body reads as *used structure* rather than a directory listing.
-pub fn branch_rows(root: &std::path::Path, tree: &[TreeNode], limit: usize) -> Vec<BranchRow> {
-    let mut rows = Vec::new();
-    push_rows(root, tree, 0, limit, &mut rows);
-    rows
-}
-
-fn push_rows(
-    parent: &std::path::Path,
-    nodes: &[TreeNode],
-    depth: usize,
-    limit: usize,
-    rows: &mut Vec<BranchRow>,
-) {
-    let strongest = nodes
-        .iter()
-        .map(|node| node.score)
-        .fold(0.0_f32, f32::max)
-        .max(f32::EPSILON);
-    let mut ordered: Vec<&TreeNode> = nodes.iter().collect();
-    ordered.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    for node in ordered {
-        if rows.len() >= limit {
-            return;
-        }
-        let path = parent.join(&node.name);
-        rows.push(BranchRow {
-            depth,
-            name: node.name.clone(),
-            is_dir: node.is_dir,
-            weight: node.score / strongest,
-            path: path.clone(),
-        });
-        push_rows(&path, &node.children, depth + 1, limit, rows);
     }
 }
 
@@ -179,45 +130,17 @@ pub async fn manage(id: &str, path: &std::path::Path) -> Result<Option<String>, 
 mod tests {
     use super::*;
 
-    fn node(name: &str, score: f32, children: Vec<TreeNode>) -> TreeNode {
-        TreeNode {
-            name: name.into(),
-            is_dir: !children.is_empty() || !name.contains('.'),
-            score,
-            children,
-        }
-    }
-
-    #[test]
-    fn branch_rows_put_the_heaviest_branch_first_and_stop_at_the_limit() {
-        let tree = vec![
-            node("docs", 2.0, vec![node("plan.md", 1.0, vec![])]),
-            node(
-                "crates",
-                6.0,
-                vec![node("window", 4.0, vec![]), node("field", 2.0, vec![])],
-            ),
-        ];
-        let rows = branch_rows(std::path::Path::new("/home/dk/legeos"), &tree, 4);
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["crates", "window", "field", "docs"]);
-        assert_eq!(rows[0].depth, 0);
-        assert_eq!(rows[1].depth, 1);
-        assert!((rows[0].weight - 1.0).abs() < f32::EPSILON);
-        assert!((rows[2].weight - 0.5).abs() < f32::EPSILON);
-        assert_eq!(rows[1].path, PathBuf::from("/home/dk/legeos/crates/window"));
-    }
-
     #[test]
     fn a_context_payload_with_unknown_fields_still_parses() {
         let place: GardenPlace = serde_json::from_str(
             r#"{"root":"/home/dk/x","stage":"tile","effective":9.5,"roles":["terminal"],
                 "tree":[{"name":"src","is_dir":true,"score":3.0,"last":{"session":1,"active_ms":0}}],
-                "summary":"3 opens, 1 session","material_seed":7,"tile":42}"#,
+                "summary":"3 opens, 1 session","form":"branch","material_seed":7,"tile":42}"#,
         )
         .unwrap();
         assert_eq!(place.stage, "tile");
         assert_eq!(place.tree[0].name, "src");
+        assert_eq!(place.form, "branch");
         assert_eq!(place.state_line(), "3 opens, 1 session");
     }
 }

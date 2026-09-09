@@ -243,6 +243,9 @@ pub fn open_folder_ops(doc: &FieldDocument, path: &Path) -> Vec<FieldOp> {
 /// directory's children stay behind the folder's door, never exploded into Home tiles.
 /// Add-only like every merge step; `None` (no such directory) adds nothing, which is the
 /// readable degradation. The host passes `crate::drawers::standard_paths::desktop_dir()`.
+/// The span the Desktop folder opens at: the smallest folder that still has a body.
+const DESKTOP_OPENS_AT: Span = Span::new(2, 2);
+
 pub fn merge_desktop_folder(doc: &mut FieldDocument, desktop: Option<&Path>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
     let Some(path) = desktop else {
@@ -255,11 +258,14 @@ pub fn merge_desktop_folder(doc: &mut FieldDocument, desktop: Option<&Path>) -> 
     let kind = TileKind::Folder {
         path: path.to_path_buf(),
     };
-    // A tray, not a pane: Desktop opens at the folder kind's floor and grows when it is pressed
-    // (`FieldScreen::primary_action`). The desktop folder is somewhere things arrive, so it has
-    // to be *present* on Home and it must not be the biggest thing there.
+    // A tray, not a pane: Desktop opens at the smallest folder that still has a body, and grows
+    // when it is pressed (`FieldScreen::primary_action`). The desktop folder is somewhere things
+    // arrive, so it has to be *present* on Home and it must not be the biggest thing there.
+    //
+    // Not the folder class floor, which is a *line* — the shape a barely used garden Place
+    // takes. A folder the shell puts on Home for the user is never that.
     let kind_spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-    let spans = SpanRange::new(kind_spans.min, kind_spans.min, kind_spans.max);
+    let spans = SpanRange::new(kind_spans.min, DESKTOP_OPENS_AT, kind_spans.max);
     let tile = Tile {
         id,
         kind,
@@ -1553,11 +1559,13 @@ mod tests {
         merge_desktop_folder(&mut doc, Some(Path::new("/home/dk/Desktop")));
         let id = desktop_folder_tile_id();
         let tile = doc.tile(id).expect("desktop folder");
-        let floor = SpanRange::for_kind(&tile.kind, doc.cols, doc.rows).min;
-        assert_eq!(tile.spans.preferred, floor);
+        // The smallest folder with a body, not the class floor — that is a line, which is the
+        // shape a garden Place takes when it is barely used.
+        let small = DESKTOP_OPENS_AT;
+        assert_eq!(tile.spans.preferred, small);
         assert_eq!(
             doc.location(id).expect("placed").placement.span,
-            floor,
+            small,
             "it starts collapsed; pressing it is what grows it"
         );
     }

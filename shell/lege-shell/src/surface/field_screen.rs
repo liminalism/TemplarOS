@@ -35,13 +35,6 @@ use crate::field_model::{self, GAP};
 /// cells tall has to be able to show more than four things.
 const FOLDER_ROW_HEIGHT: i32 = 20;
 
-/// A Place's roles row: text-led, symbolic glyphs only — "a project should look like the
-/// project, not like a collage of the applications used to manipulate it" (docs/garden).
-const PLACE_ROLES: [(&str, &str); 3] = [
-    ("place.open-terminal", ">_"),
-    ("place.open-files", "\u{25a4}"),
-    ("place.open-editor", "<>"),
-];
 const FOLDER_ICON: i32 = 14;
 
 /// What a folder tray opens to when it is pressed, clamped to the kind's ceiling. A tray is a
@@ -53,6 +46,7 @@ use crate::surface::context_menu::{Chosen, ContextMenu, MenuTarget};
 use crate::surface::design::{self, Elevation};
 use crate::surface::file_browser::FilesBrowseView;
 use crate::surface::file_browser::{FileBrowserData, theme_icon_key};
+use crate::surface::place_forms;
 use crate::surface::widgets::{self, WidgetSnapshot};
 
 /// One typed file drop, ready for the service. The shell never decides what a conflict, a
@@ -3537,7 +3531,7 @@ impl FieldScreen {
         data: &FieldData<'_>,
         actions: &mut Vec<FieldAction>,
     ) {
-        let collapsed = data.field.tile(id).map(|tile| tile.spans.min);
+        let collapsed = data.field.tile(id).map(folder_collapsed_span);
         let expanded = data
             .field
             .location(id)
@@ -3663,12 +3657,18 @@ impl FieldScreen {
     /// Navigation is view state, not document state: the tile keeps the path it was placed at, so
     /// closing and reopening the session puts the window back where it was put, not wherever it
     /// was last browsed to.
-    /// A grown Place, one rung at a time (`@legeos.decision.homegarden-activity-grown-places`):
-    /// Small is the name and one state line; Wide adds the roles row — text-led actions resolved
-    /// through providers at press, never application icons; Large adds the branch body, the
-    /// *used* structure beneath the root drawn as a trunk with the branches that earned it,
-    /// heavier branches larger, and falls back to the ordinary listing until any has. Full is
-    /// the folder window, which never reaches here.
+    /// A grown Place: the form its own use has earned, drawn inside its allocation
+    /// (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
+    ///
+    /// The tile's chrome has already drawn the name, so the body is one state line and then the
+    /// form: a branch for a place worked through, a shelf for one looked at, nothing at all for
+    /// a place that has earned neither — a plain place large enough to browse falls back to the
+    /// ordinary folder listing, which is what a folder with no story is.
+    ///
+    /// There is no roles row. The three `place.open-*` actions are rows of the Place context
+    /// menu and reach the same providers by the same route; drawn into the body they made every
+    /// place look like a collage of the applications used to manipulate it, which is the one
+    /// thing a project must not look like.
     #[allow(clippy::too_many_arguments)]
     fn paint_place(
         &mut self,
@@ -3686,131 +3686,30 @@ impl FieldScreen {
             return;
         }
         let line = ui.px(FOLDER_ROW_HEIGHT);
-        let (name_area, rest) = inner.split_top(ui.px(26));
-        ui.label_styled(
-            name_area,
-            &tile.title,
-            design::title_style(ui),
-            if place.pinned {
-                design::accent()
-            } else {
-                design::text()
-            },
-            Align::Left,
-        );
-        let (state_area, rest) = rest.split_top(line);
+        let (state_area, body) = inner.split_top(line);
         ui.label_styled(
             state_area,
             &place.state_line(),
             design::state_style(ui),
-            design::text_dim(),
+            if place.pinned {
+                design::accent()
+            } else {
+                design::text_dim()
+            },
             Align::Left,
         );
-        if rung < Representation::Wide {
+        if rung < Representation::Wide || body.h < line {
             return;
         }
-        let (roles, rest) = rest.split_top(ui.px(28));
-        let mut x = roles.x;
-        for (id, glyph) in PLACE_ROLES {
-            let Some(declaration) = lege_types::action::action(id) else {
-                continue;
-            };
-            let label = format!("{glyph} {}", declaration.control_label());
-            let width = ui.px(24) + ui.px(8) * i32::try_from(label.chars().count()).unwrap_or(8);
-            let chip = Rect::new(
-                x,
-                roles.y + ui.px(2),
-                width.min(roles.right() - x),
-                roles.h - ui.px(4),
-            );
-            if chip.w <= ui.px(24) {
-                break;
+        match place.form.as_str() {
+            "branch" => place_forms::branch(ui, body, path, &place.tree, actions),
+            "shelf" => place_forms::shelf(ui, body, path, &place.tree, actions),
+            // Plain, and every form this build has not learned: a place with nothing earned is
+            // quiet, and a place with room to be browsed is browsable.
+            _ if rung >= Representation::Large => {
+                self.paint_folder_window(ui, body, tile.id, path, data, actions);
             }
-            if ui.input.hovering(chip) {
-                ui.painter.fill_rounded_rect(
-                    chip,
-                    ui.px(design::CHIP_RADIUS),
-                    design::accent_soft(),
-                );
-            }
-            ui.label_styled(
-                chip,
-                &label,
-                design::state_style(ui),
-                design::text(),
-                Align::Centre,
-            );
-            if ui.input.take_click(chip) {
-                actions.push(FieldAction::Place {
-                    id,
-                    path: path.to_path_buf(),
-                });
-            }
-            x += width + ui.px(6);
-        }
-        if rung < Representation::Large || rest.h < line {
-            return;
-        }
-        let rows = crate::garden::branch_rows(path, &place.tree, (rest.h / line).max(0) as usize);
-        if rows.is_empty() {
-            self.paint_folder_window(ui, rest, tile.id, path, data, actions);
-            return;
-        }
-        Self::paint_branches(ui, rest, line, &rows, actions);
-    }
-
-    /// The branch body: one row per used node, a bar whose thickness is the node's share of its
-    /// strongest sibling, directories in the accent and files dimmer.
-    fn paint_branches(
-        ui: &mut Ui<'_>,
-        rest: Rect,
-        line: i32,
-        rows: &[crate::garden::BranchRow],
-        actions: &mut Vec<FieldAction>,
-    ) {
-        let mut y = rest.y;
-        for row in rows {
-            let indent = ui.px(14) * i32::try_from(row.depth).unwrap_or(0);
-            let area = Rect::new(rest.x + indent, y, (rest.w - indent).max(0), line);
-            if ui.input.hovering(area) {
-                ui.painter.fill_rect(area, ui.theme.hover);
-            }
-            let (trunk, label) = area.split_left(ui.px(10));
-            let thickness = (ui.px(2)
-                + (f32::from(u8::try_from(ui.px(6)).unwrap_or(6)) * row.weight) as i32)
-                .max(1);
-            ui.painter.fill_rect(
-                Rect::new(
-                    trunk.x,
-                    area.y + (line - thickness) / 2,
-                    ui.px(6),
-                    thickness,
-                ),
-                if row.is_dir {
-                    design::accent()
-                } else {
-                    design::text_faint()
-                },
-            );
-            ui.label_styled(
-                label,
-                &row.name,
-                design::state_style(ui),
-                if row.is_dir {
-                    design::text()
-                } else {
-                    design::text_dim()
-                },
-                Align::Left,
-            );
-            if ui.input.take_click(area) {
-                actions.push(if row.is_dir {
-                    FieldAction::OpenInFiles(row.path.clone())
-                } else {
-                    FieldAction::OpenFile(row.path.clone())
-                });
-            }
-            y += line;
+            _ => {}
         }
     }
 
@@ -4668,9 +4567,19 @@ fn group_step(toplevels: &[ShellToplevel], from: WindowId, action: &str) -> Opti
 /// A tray is a door; the expanded size is the one at which the room behind it is worth looking at,
 /// clamped to the kind's ceiling. Both directions go through the field's own resize, so both undo
 /// and both yield to their neighbours like any other resize.
+/// What a folder window collapses to: the tile's own floor, but never one row.
+///
+/// The Folder class floor is a *line* — the shape a barely used garden Place takes, where the
+/// name and a state line are the whole of the drawing. A folder *window* at one row has nowhere
+/// to put the listing that this toggle exists to show, so it is not somewhere the toggle may
+/// send it.
+fn folder_collapsed_span(tile: &Tile) -> Span {
+    Span::new(tile.spans.min.cols, tile.spans.min.rows.max(2))
+}
+
 fn folder_toggle_op(doc: &FieldDocument, id: TileId) -> Option<FieldOp> {
     let tile = doc.tile(id)?;
-    let collapsed = tile.spans.min;
+    let collapsed = folder_collapsed_span(tile);
     let expanded = Span::new(
         tile.spans
             .max

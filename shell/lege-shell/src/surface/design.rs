@@ -61,7 +61,10 @@ pub struct Palette {
 /// The light palette — the one this shell has always drawn. Every value here is the value the
 /// matching constant had before the palette existed, so nothing about the default look moved.
 pub const LIGHT: Palette = Palette {
-    ground: 0x00ec_eef0,
+    // A warm mineral off-white, not a cool grey: the substrate a garden is grown on stays quiet
+    // and slightly warm, and the material a Place carries reads against it rather than against a
+    // screen-blue plate (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
+    ground: 0x00ee_ebe4,
     shell_fill: 0x00fb_fcfd,
     shell_low: 0x00f3_f5f7,
     system_shell: 0x00f4_f6f8,
@@ -439,11 +442,13 @@ mod tests {
 
     /// The dark palette has to differ in *every* role: one forgotten field is a light colour on a
     /// dark ground, which is exactly the bug a struct-of-roles exists to make impossible to ship
-    /// silently. And light has to be untouched, because this refactor's whole claim is that the
-    /// default look did not move.
+    /// silently. And light's roles are pinned, so a change to the default look is a change to
+    /// this test and never a side effect of one.
     #[test]
-    fn dark_palette_has_every_role_and_light_is_unchanged() {
-        assert_eq!(LIGHT.ground, 0x00ec_eef0);
+    fn dark_palette_has_every_role_and_light_is_pinned() {
+        // The one role that has moved since the palette refactor: a warm mineral off-white
+        // substrate rather than a cool grey one.
+        assert_eq!(LIGHT.ground, 0x00ee_ebe4);
         assert_eq!(LIGHT.shell_fill, 0x00fb_fcfd);
         assert_eq!(LIGHT.text, 0x0017_1b20);
         assert_eq!(LIGHT.accent, 0x000e_7482);

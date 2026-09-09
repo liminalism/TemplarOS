@@ -359,6 +359,8 @@ pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lege_field::{Cell, Span};
+    use std::path::PathBuf;
 
     /// One window, exactly as the compositor would report it, with no clock or host in it.
     fn baseline_toplevel(
@@ -383,12 +385,126 @@ mod tests {
         }
     }
 
+    /// The Places `LEGE_BASELINE_GARDEN` grows into the baseline field: the named form at the
+    /// top span, and a lightly used place at the smallest one, so every variant reviews the
+    /// scale range as well as the form. Fixed roots, trees and scores — what is under review is
+    /// the drawing, not the ledger's arithmetic, which has its own tests in `lege-session-core`.
+    fn garden_fixture(
+        form: &str,
+    ) -> (
+        Vec<lege_field::garden::ContextView>,
+        HashMap<PathBuf, crate::garden::GardenPlace>,
+    ) {
+        fn dir(
+            name: &str,
+            score: f32,
+            children: Vec<crate::garden::TreeNode>,
+        ) -> crate::garden::TreeNode {
+            crate::garden::TreeNode {
+                name: name.to_owned(),
+                is_dir: true,
+                score,
+                children,
+            }
+        }
+        fn leaf(name: &str, score: f32) -> crate::garden::TreeNode {
+            crate::garden::TreeNode {
+                name: name.to_owned(),
+                is_dir: false,
+                score,
+                children: Vec::new(),
+            }
+        }
+        // A folder of projects whose branches are the repositories: the shape the activity tree
+        // already records, and the one the branch form has to read as at a glance.
+        let (root, tree, summary) = match form {
+            "shelf" => (
+                "/home/fixture/Pictures",
+                vec![
+                    leaf("2026-trip.jpg", 9.0),
+                    leaf("sunset.png", 7.0),
+                    leaf("workshop.mp4", 6.0),
+                    leaf("portrait.webp", 4.0),
+                    leaf("scan.avif", 2.0),
+                ],
+                "21 opens, 5 sessions",
+            ),
+            "plain" => ("/home/fixture/Documents", Vec::new(), "9 opens, 3 sessions"),
+            _ => (
+                "/home/fixture/Rust-projects",
+                vec![
+                    dir(
+                        "legeos",
+                        14.0,
+                        vec![
+                            dir("crates", 8.0, Vec::new()),
+                            dir("shell", 5.0, Vec::new()),
+                        ],
+                    ),
+                    dir("pixelkit", 6.0, vec![dir("crates", 3.0, Vec::new())]),
+                    dir("Silvaview-rs", 3.0, Vec::new()),
+                    dir("bpg-rs", 1.0, Vec::new()),
+                ],
+                "34 opens, 11 launches, 7 sessions",
+            ),
+        };
+        // Fixed landings: the bottom-left of the baseline field is open, and a fixture whose
+        // Places land wherever the search happens to reach is a fixture that stops showing the
+        // form the day another object moves.
+        let grown = (
+            PathBuf::from(root),
+            Span::new(6, 4),
+            Cell::new(0, 5),
+            "expanded",
+            tree,
+            summary,
+        );
+        // The other end of the ladder: a place used lightly enough to be a line, in every
+        // variant, so the two extremes are always reviewed against each other.
+        let line = (
+            PathBuf::from("/home/fixture/Downloads"),
+            Span::new(2, 1),
+            Cell::new(7, 8),
+            "trace",
+            Vec::new(),
+            "3 opens, 1 session",
+        );
+        let mut views = Vec::new();
+        let mut places = HashMap::new();
+        for (root, span, landing, stage, tree, summary) in [grown, line] {
+            views.push(lege_field::garden::ContextView {
+                root: root.clone(),
+                wanted: Some(span),
+                landing: Some(landing),
+                pinned: false,
+                user_span: None,
+                summary: summary.to_owned(),
+            });
+            places.insert(
+                root.clone(),
+                crate::garden::GardenPlace {
+                    root,
+                    stage: stage.to_owned(),
+                    form: if tree.is_empty() {
+                        "plain".to_owned()
+                    } else {
+                        form.to_owned()
+                    },
+                    tree,
+                    summary: summary.to_owned(),
+                    ..crate::garden::GardenPlace::default()
+                },
+            );
+        }
+        (views, places)
+    }
+
     /// Fixed-pixel baseline for the default Home Field.
     ///
-    /// Last reviewed 2026-09-07, when the palette refactor landed: the only change was the Home
-    /// plate's label ink, `0x00f2_f4f6` to the palette's `strong_ink` (`0x00ff_ffff` on the light
-    /// palette). Imperceptible on light, and the reason the dark palette's Home plate is legible
-    /// at all — it was a hardcoded near-white on a light plate. Unlike `render_field`, this fixture reads
+    /// Last reviewed 2026-09-09, when the growth forms landed: the light palette's ground moved
+    /// from a cool grey to a warm mineral off-white (`0x00ec_eef0` to `0x00ee_ebe4`), which is
+    /// the substrate a garden is grown on. Nothing else in the resting field changed — the forms
+    /// themselves are reviewed through `LEGE_BASELINE_GARDEN`, which returns before this hash. Unlike `render_field`, this fixture reads
     /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
     /// therefore be reviewed and deliberately update this hash; environment changes cannot make
     /// it flicker.
@@ -445,6 +561,25 @@ mod tests {
         // the chrome reduction is its own drawing path: no heading, the name as the body's first
         // line, and the controls only on hover or focus.
         field_model::pin_app(&mut field, &"org.legeos.Files".parse().unwrap());
+        // `LEGE_BASELINE_GARDEN=branch|shelf|plain` grows two Places into the field through the
+        // real tender, so each growth form can be reviewed as a PNG with no compositor, no
+        // daemon and no day of use. Like the other variants it returns before the hash.
+        let garden = match std::env::var("LEGE_BASELINE_GARDEN") {
+            Ok(form) => {
+                let (views, places) = garden_fixture(&form);
+                for tended in lege_field::garden::tend(
+                    &field,
+                    &views,
+                    lege_field::garden::HomeCorner::BottomLeft,
+                ) {
+                    field = lege_field::apply(&field, &tended.op)
+                        .expect("the fixture field has room for the garden")
+                        .0;
+                }
+                places
+            }
+            Err(_) => HashMap::new(),
+        };
 
         let drawer_feeds = crate::home_surface::Drawer::DEFAULT
             .into_iter()
@@ -605,7 +740,7 @@ mod tests {
             widgets: &widgets,
             variants: &HashMap::new(),
             projects: &projects,
-            garden: &HashMap::new(),
+            garden: &garden,
             actions: lege_types::action::MANIFEST,
             file_search: None,
             recents: &recents,
@@ -672,6 +807,7 @@ mod tests {
             write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
         }
         if std::env::var("LEGE_BASELINE_OMNIBOX").is_ok()
+            || std::env::var("LEGE_BASELINE_GARDEN").is_ok()
             || std::env::var("LEGE_BASELINE_FILES").is_ok()
             || std::env::var("LEGE_BASELINE_HELP").is_ok()
             || std::env::var("LEGE_BASELINE_MENU").is_ok()
@@ -688,7 +824,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0xa386_f28b_037c_e53e,
+            hash, 0x203f_b173_d7a5_b672,
             "review the Home Field pixels before updating this baseline"
         );
     }
@@ -710,10 +846,10 @@ mod tests {
 
         let dump = std::env::var("LEGE_BAR_PRESENCE_DUMP").ok();
         for (presence, open_row, name, expected) in [
-            (Presence::Open, false, "open", 0xfc19_5fb8_f4de_5ae0u64),
-            (Presence::Hint, false, "hint", 0x090f_a0c5_682c_df95),
-            (Presence::Revealed, false, "revealed", 0xe1e8_7ec6_b7a2_cf8a),
-            (Presence::Open, true, "row", 0x00ae_baf7_72b7_549a),
+            (Presence::Open, false, "open", 0xdf8b_aa7d_07cd_7cf0u64),
+            (Presence::Hint, false, "hint", 0xe0c9_dac0_7b3a_e3a5),
+            (Presence::Revealed, false, "revealed", 0xe226_b28f_4194_158a),
+            (Presence::Open, true, "row", 0x60e6_9f1e_9ce2_6e7a),
         ] {
             let buffer = bar_frame(presence, open_row, 1.0);
             if let Some(dir) = &dump {

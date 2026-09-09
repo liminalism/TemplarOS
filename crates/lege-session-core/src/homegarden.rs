@@ -250,6 +250,9 @@ pub enum Stage {
     Trace,
     Tile,
     Expanded,
+    /// A place that has taken several sessions: about a quarter of the field, and its form at
+    /// full size.
+    Dominant,
 }
 
 impl Stage {
@@ -260,18 +263,25 @@ impl Stage {
             Self::Trace => "trace",
             Self::Tile => "tile",
             Self::Expanded => "expanded",
+            Self::Dominant => "dominant",
         }
     }
 
-    /// The span a garden-owned Folder tile has at this stage (Folder class floors: Small 2×2,
-    /// Wide ≥3×2, Large ≥3×3).
+    /// The span a garden-owned Folder tile has at this stage.
+    ///
+    /// The range is deliberately aggressive: a lightly relevant place is a *line* — a name and a
+    /// state line, nothing more — and one that has dominated several sessions is twelve times its
+    /// area with its form drawn at size. "The same rectangle with more text" is not a
+    /// representation stage; the test is whether a person can see from two metres which places
+    /// currently matter (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
     #[must_use]
     pub fn span(self) -> Option<Span> {
         match self {
             Self::Dormant => None,
-            Self::Trace => Some(Span::new(2, 2)),
-            Self::Tile => Some(Span::new(3, 2)),
+            Self::Trace => Some(Span::new(2, 1)),
+            Self::Tile => Some(Span::new(2, 2)),
             Self::Expanded => Some(Span::new(4, 3)),
+            Self::Dominant => Some(Span::new(6, 4)),
         }
     }
 
@@ -280,9 +290,84 @@ impl Stage {
             Self::Dormant | Self::Trace => Self::Dormant,
             Self::Tile => Self::Trace,
             Self::Expanded => Self::Tile,
+            Self::Dominant => Self::Expanded,
         }
     }
 }
+
+// ---------------------------------------------------------------- forms --------------------
+
+/// The shape a Place draws inside its allocation: what its own use has made of it
+/// (`@legeos.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`). Shape is the *mode*
+/// dimension of the garden's grammar — position is memory, size is relevance, colour is state —
+/// so it answers "what kind of work is this", never "what is in the directory".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Form {
+    /// Nothing has been earned yet: a name and a state line.
+    #[default]
+    Plain,
+    /// Worked *through*: a trunk and the descendants that mattered.
+    Branch,
+    /// Looked *at*: a row of things.
+    Shelf,
+    /// Read and written: a stack of documents. Reserved; nothing draws it yet.
+    Folio,
+}
+
+impl Form {
+    pub const ALL: [Form; 4] = [Self::Plain, Self::Branch, Self::Shelf, Self::Folio];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Branch => "branch",
+            Self::Shelf => "shelf",
+            Self::Folio => "folio",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|form| form.as_str() == name)
+    }
+}
+
+/// What a leaf's name says it is. Extension, not MIME: `HomeGarden1.Observe` is a shipped
+/// signature carrying `(kind, path, app_id, role)` and nothing else, and there is no media or
+/// reader `ProviderRole` to ask either — so the file name is the whole of the evidence the
+/// ledger has. It is enough to tell a photo directory from a manuscript one, which is all the
+/// form needs; anything finer waits for a signal that exists.
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "avif", "bmp", "flac", "gif", "heic", "jpeg", "jpg", "m4a", "mkv", "mov", "mp3", "mp4", "ogg",
+    "opus", "png", "svg", "tif", "tiff", "wav", "webm", "webp",
+];
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    "csv", "doc", "docx", "epub", "md", "odp", "ods", "odt", "pdf", "pptx", "rst", "rtf", "tex",
+    "txt", "xlsx",
+];
+
+/// The evidence a leaf carries, as an index into [`HomeContext::form_evidence`].
+fn leaf_evidence(name: &str) -> Option<usize> {
+    let extension = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    if MEDIA_EXTENSIONS.contains(&extension.as_str()) {
+        Some(1)
+    } else if DOCUMENT_EXTENSIONS.contains(&extension.as_str()) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// How many sessions a candidate form must lead for before the drawing changes. A place that
+/// changed shape every time a photo was opened under it would be noise, not identity.
+const FORM_DWELL_SESSIONS: u64 = 2;
+/// The evidence a form needs before it beats [`Form::Plain`], and by how much it must beat the
+/// next form. Both deliberately blunt: the cost of a wrong form is a place that looks like the
+/// wrong kind of work, so the tie goes to saying nothing.
+const FORM_FLOOR: f32 = 2.0;
+const FORM_MARGIN: f32 = 1.5;
 
 /// The persistent record behind one Place.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -316,6 +401,15 @@ pub struct HomeContext {
     #[serde(default)]
     pub tended_span: Option<Span>,
     pub material_seed: u64,
+    /// The form the place draws in, settled at a tending moment.
+    #[serde(default)]
+    pub form: Form,
+    /// The form the evidence has been pointing at, and since which session, so a form changes
+    /// only after the evidence has held rather than at the first file that disagrees.
+    #[serde(default)]
+    pub form_candidate: Form,
+    #[serde(default)]
+    pub form_candidate_since: u64,
     /// The reason for the last stage change, for `garden.why`.
     #[serde(default)]
     pub last_reason: String,
@@ -339,6 +433,9 @@ impl HomeContext {
             user_span: None,
             tended_span: None,
             material_seed,
+            form: Form::Plain,
+            form_candidate: Form::Plain,
+            form_candidate_since: at.session,
             last_reason: String::new(),
         }
     }
@@ -397,6 +494,77 @@ impl HomeContext {
             if sessions == 1 { "" } else { "s" }
         ));
         parts.join(", ")
+    }
+}
+
+impl HomeContext {
+    /// The weight behind each form — branch, shelf, folio — from the activity tree the place
+    /// has already earned. A directory that was worked *through* leaves directories behind, and
+    /// the deeper they go the more it was structure rather than a place things were dropped in;
+    /// a place that was looked *at* leaves files, and their names say which of the two flat
+    /// forms it is.
+    #[must_use]
+    pub fn form_evidence(&self) -> [f32; 3] {
+        fn walk(nodes: &[TreeNode], depth: usize, evidence: &mut [f32; 3]) {
+            for node in nodes {
+                if node.is_dir {
+                    evidence[0] += node.score * (1.0 + depth as f32);
+                    walk(&node.children, depth + 1, evidence);
+                } else if let Some(slot) = leaf_evidence(&node.name) {
+                    evidence[slot] += node.score;
+                }
+            }
+        }
+        let mut evidence = [0.0; 3];
+        walk(&self.tree, 0, &mut evidence);
+        // A terminal or an editor is the strongest sign of hierarchy there is — but only where
+        // structure was actually recorded, so that a place nobody has been *into* cannot be
+        // handed a branch with no branches on it.
+        if evidence[0] > 0.0
+            && self
+                .roles
+                .iter()
+                .any(|role| matches!(role, ProviderRole::Terminal | ProviderRole::CodeEditor))
+        {
+            evidence[0] *= FORM_MARGIN;
+        }
+        evidence
+    }
+
+    /// The form the evidence points at right now, before hysteresis: [`Form::Plain`] until one
+    /// form clears [`FORM_FLOOR`] and leads the next by [`FORM_MARGIN`].
+    #[must_use]
+    pub fn earned_form(&self) -> Form {
+        let evidence = self.form_evidence();
+        let forms = [Form::Branch, Form::Shelf, Form::Folio];
+        let leader = (0..3)
+            .max_by(|a, b| evidence[*a].total_cmp(&evidence[*b]))
+            .expect("three forms");
+        let runner_up = (0..3)
+            .filter(|index| *index != leader)
+            .map(|index| evidence[index])
+            .fold(0.0_f32, f32::max);
+        if evidence[leader] >= FORM_FLOOR && evidence[leader] >= runner_up * FORM_MARGIN {
+            forms[leader]
+        } else {
+            Form::Plain
+        }
+    }
+}
+
+/// Settle `context`'s form at a tending moment: a candidate has to have led for
+/// [`FORM_DWELL_SESSIONS`] before the drawing changes under the user.
+fn settle_form(context: &mut HomeContext, now: GardenMoment) {
+    let earned = context.earned_form();
+    if earned != context.form_candidate {
+        context.form_candidate = earned;
+        context.form_candidate_since = now.session;
+        return;
+    }
+    if earned != context.form
+        && now.session.saturating_sub(context.form_candidate_since) >= FORM_DWELL_SESSIONS
+    {
+        context.form = earned;
     }
 }
 
@@ -588,6 +756,16 @@ fn threshold(stage: Stage) -> Threshold {
             demote_effective: 10.0,
             demote_idle_sessions: 3,
             demote_idle_hours: 6.0,
+        },
+        // A quarter of the field is a claim on the user's attention, so the floor is high and
+        // the place gives it back quickly: one session away and it is an Expanded again.
+        Stage::Dominant => Threshold {
+            promote_effective: 45.0,
+            promote_sessions: 5,
+            promote_breadth: 3,
+            demote_effective: 22.0,
+            demote_idle_sessions: 2,
+            demote_idle_hours: 4.0,
         },
     }
 }
@@ -811,6 +989,7 @@ impl Ledger {
             return changes;
         }
         for context in &mut self.contexts {
+            settle_form(context, now);
             let from = context.stage;
             let to = if context.hidden {
                 Stage::Dormant
@@ -910,7 +1089,8 @@ fn next_stage(context: &HomeContext, now: GardenMoment, config: &GardenConfig) -
         Stage::Dormant => Stage::Trace,
         Stage::Trace => Stage::Tile,
         Stage::Tile => Stage::Expanded,
-        Stage::Expanded => return demoted(context, now, effective),
+        Stage::Expanded => Stage::Dominant,
+        Stage::Dominant => return demoted(context, now, effective),
     };
     let t = threshold(up);
     if effective >= t.promote_effective
@@ -1273,6 +1453,10 @@ mod tests {
 
     #[test]
     fn one_terminal_entry_becomes_a_trace_at_the_next_tending_moment() {
+        // The ladder the stages ask for: a line, a block, a quarter of the field.
+        assert_eq!(Stage::Trace.span(), Some(Span::new(2, 1)));
+        assert_eq!(Stage::Dominant.span(), Some(Span::new(6, 4)));
+        assert_eq!(Stage::Dominant.down(), Stage::Expanded);
         let probe = Probe::new();
         let config = GardenConfig::default();
         let mut ledger = Ledger::default();
@@ -1492,6 +1676,85 @@ mod tests {
                 .iter()
                 .all(|c| c.children.iter().all(|g| g.children.is_empty()))
         }));
+    }
+
+    /// A form is *earned*: the evidence has to lead by half again as much, and it has to have
+    /// led for two sessions before the drawing changes under the user. One file of another kind
+    /// is not an argument.
+    #[test]
+    fn a_form_is_earned_over_two_sessions_and_one_file_does_not_flip_it() {
+        let probe = Probe {
+            files: vec![
+                PathBuf::from("/home/dk/Downloads/holiday.jpg"),
+                PathBuf::from("/home/dk/Downloads/cover.png"),
+                PathBuf::from("/home/dk/Downloads/clip.mp4"),
+                PathBuf::from("/home/dk/Downloads/scan.webp"),
+                PathBuf::from("/home/dk/Downloads/receipt.pdf"),
+            ],
+            ..Probe::new()
+        };
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        for name in ["holiday.jpg", "cover.png", "clip.mp4", "scan.webp"] {
+            ledger.observe(
+                &event(
+                    &format!("/home/dk/Downloads/{name}"),
+                    ActivityKind::FileOpened,
+                    None,
+                    at(1, 0.0),
+                ),
+                &probe,
+                &config,
+            );
+        }
+        let root = Path::new("/home/dk/Downloads");
+        assert_eq!(ledger.context(root).unwrap().earned_form(), Form::Shelf);
+        // The evidence leads at once; the drawing does not follow until it has held.
+        ledger.tend(at(1, 1.0), &config);
+        assert_eq!(ledger.context(root).unwrap().form, Form::Plain);
+        ledger.tend(at(2, 2.0), &config);
+        assert_eq!(ledger.context(root).unwrap().form, Form::Plain);
+        ledger.tend(at(3, 3.0), &config);
+        assert_eq!(ledger.context(root).unwrap().form, Form::Shelf);
+        // One document under a shelf is a document under a shelf.
+        ledger.observe(
+            &event(
+                "/home/dk/Downloads/receipt.pdf",
+                ActivityKind::FileOpened,
+                None,
+                at(3, 3.0),
+            ),
+            &probe,
+            &config,
+        );
+        ledger.tend(at(9, 9.0), &config);
+        assert_eq!(ledger.context(root).unwrap().form, Form::Shelf);
+
+        // Structure worked through, with a terminal in it, is a branch — and a place with
+        // nothing earned yet says nothing rather than guessing.
+        let mut worked = Ledger::default();
+        for path in [
+            "/home/dk/src/legeos/crates",
+            "/home/dk/src/legeos/crates/lege-field",
+            "/home/dk/src/legeos/shell",
+        ] {
+            worked.observe(
+                &event(
+                    path,
+                    ActivityKind::DirectoryOpened,
+                    Some(ProviderRole::Terminal),
+                    at(1, 0.0),
+                ),
+                &probe,
+                &config,
+            );
+        }
+        let legeos = Path::new("/home/dk/src/legeos");
+        assert_eq!(worked.context(legeos).unwrap().earned_form(), Form::Branch);
+        assert_eq!(
+            HomeContext::new(PathBuf::new(), at(1, 0.0)).earned_form(),
+            Form::Plain
+        );
     }
 
     #[test]
