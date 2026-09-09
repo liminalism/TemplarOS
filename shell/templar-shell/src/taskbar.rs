@@ -120,15 +120,21 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
 }
 
 /// The name to draw. `TaskUnit::label` is deliberately raw — `templar-window` has neither the
-/// display-name rules nor the icon cache — so the prettifying happens here, once.
-fn label_of(unit: &TaskUnit) -> String {
-    match &unit.key {
-        TaskKey::Group(_) => crate::field_model::group_title(&unit.label, unit.windows.len()),
+/// display-name rules nor the icon cache — so the prettifying happens here, once, for the island
+/// and for Taskfield's section headers alike.
+#[must_use]
+pub fn display_label(key: &TaskKey, raw: &str, windows: usize) -> String {
+    match key {
+        TaskKey::Group(_) => crate::field_model::group_title(raw, windows),
         TaskKey::App(app) => crate::field_model::short_name(app),
         // Nothing but the window's own title exists for a window whose identity did not resolve,
         // and it must never be merged with anything, so its title is its name.
-        TaskKey::Unknown(_) => title_or_untitled(&unit.label),
+        TaskKey::Unknown(_) => title_or_untitled(raw),
     }
+}
+
+fn label_of(unit: &TaskUnit) -> String {
+    display_label(&unit.key, &unit.label, unit.windows.len())
 }
 
 fn entry_window(toplevel: &ShellToplevel) -> EntryWindow {

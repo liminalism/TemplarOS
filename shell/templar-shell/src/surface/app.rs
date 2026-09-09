@@ -502,6 +502,16 @@ struct ShellApp {
     cluster_screen: crate::surface::cluster_screen::ClusterScreen,
     cluster_mask: WindowBuffer,
     cluster_wanted: (i32, i32),
+    /// The window overview's labels, on `Layer::Presentation` (manager v8).
+    ///
+    /// Created when `taskfield_state` says the mode opened and dropped when it says it closed,
+    /// rather than kept mapped and hidden: it is the whole output, it exists for as long as a
+    /// gesture, and a full-screen surface lying around for a mode nobody is in is a surface that
+    /// can only be wrong. The compositor also maps and unmaps it; neither side depends on the
+    /// other getting it right.
+    taskfield: Option<HostedWindow>,
+    taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen,
+    taskfield_mask: WindowBuffer,
     bar_screen: crate::surface::bar_screen::BarScreen,
     /// The size the bar surface was last asked for (`bar_screen::wanted_size`). The compositor
     /// never configures this surface's width, so the shell is the only thing that knows it.
@@ -601,6 +611,9 @@ impl ShellApp {
             cluster_screen: crate::surface::cluster_screen::ClusterScreen::default(),
             cluster_mask: WindowBuffer::new(0, 0),
             cluster_wanted: (0, 0),
+            taskfield: None,
+            taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen::default(),
+            taskfield_mask: WindowBuffer::new(0, 0),
             bridge_generation: 0,
             last_toasted_id: None,
             browser_pending: None,
@@ -2977,6 +2990,155 @@ impl ShellApp {
         self.perform_bar(actions);
     }
 
+    /// Create the Taskfield surface when the compositor says the overview opened, and destroy it
+    /// when it says the overview closed.
+    ///
+    /// Nothing about the mode is decided here. `taskfield_state` is the whole of what the shell
+    /// knows, and this is the whole of what the shell does about it.
+    fn sync_taskfield(&mut self, event_loop: &ActiveEventLoop) {
+        let active = self
+            .bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.taskfield().active);
+        if !active {
+            self.taskfield = None;
+            return;
+        }
+        if self.taskfield.is_some() {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        let (width, height) = self.output_size();
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Taskfield")
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_inner_size(LogicalSize::new(f64::from(width), f64::from(height))),
+        ) {
+            Ok(window) => std::sync::Arc::new(window),
+            Err(error) => {
+                tracing::warn!(%error, "creating the Taskfield window");
+                return;
+            }
+        };
+        if let Err(error) = bridge.set_layer(&window, templar_window::Layer::Presentation) {
+            tracing::warn!(%error, "declaring Taskfield onto Layer::Presentation");
+            return;
+        }
+        match HostedWindow::new(window) {
+            Ok(hosted) => {
+                hosted.request_redraw();
+                self.taskfield = Some(hosted);
+            }
+            Err(error) => tracing::warn!(%error, "presenting Taskfield"),
+        }
+    }
+
+    /// Paint the overview's labels. Answers nothing: the mode's input is the compositor's, and
+    /// this surface commits an empty input region so every click reaches the window under it.
+    fn redraw_taskfield(&mut self) {
+        let Some(status) = self
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.taskfield().clone())
+        else {
+            return;
+        };
+        let toplevels = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default();
+        for key in toplevels
+            .iter()
+            .filter_map(|top| top.canonical_app_id.as_ref().map(ToString::to_string))
+            .collect::<Vec<_>>()
+        {
+            self.ensure_icon(&key);
+        }
+        let (width, height) = self.output_size();
+        // The compositor's own layout, over the compositor's own records. The cards are not on
+        // the wire and deliberately never will be.
+        let sections = templar_window::taskfield::layout(
+            &templar_window::task::units(&toplevels),
+            &toplevels,
+            &crate::surface::taskfield_screen::outputs(width, height),
+            &status.filter,
+        );
+        let Some(taskfield) = &mut self.taskfield else {
+            return;
+        };
+        if !taskfield.prepare() {
+            return;
+        }
+        let area = Rect::new(
+            0,
+            0,
+            taskfield.buffer.width as i32,
+            taskfield.buffer.height as i32,
+        );
+        let data = crate::surface::taskfield_screen::TaskfieldData {
+            status: &status,
+            sections: &sections,
+            toplevels: &toplevels,
+            icons: &self.icons,
+        };
+        {
+            let mut ui = Ui::new(
+                Painter::new(&mut taskfield.buffer),
+                &mut self.text,
+                &mut taskfield.input,
+                self.theme,
+                taskfield.scale,
+                &mut self.kernel,
+            );
+            self.taskfield_screen.draw(&mut ui, area, &data);
+        }
+        taskfield.input.end_frame();
+        if self.taskfield_mask.width != taskfield.buffer.width
+            || self.taskfield_mask.height != taskfield.buffer.height
+        {
+            self.taskfield_mask =
+                WindowBuffer::new(taskfield.buffer.width, taskfield.buffer.height);
+        }
+        let shapes = self.taskfield_screen.opaque_shapes();
+        if shapes.is_empty() {
+            // Nothing to say about this frame — an overview of no windows, or a mode that closed
+            // between the wake and the paint. An opaque present here would be a grey screen.
+            return;
+        }
+        {
+            let mut painter = Painter::new(&mut self.taskfield_mask);
+            painter.fill_rect(Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
+            for (rect, radius) in shapes {
+                painter.fill_rounded_rect_aa(
+                    &mut self.kernel,
+                    *rect,
+                    *radius as f32,
+                    MASK_SOLID,
+                    u8::MAX,
+                );
+            }
+        }
+        // No input region at all. A label band that took the pointer would swallow the click
+        // meant for the window under it, and the mode's input belongs to the compositor.
+        if let Some(bridge) = self.bridge.as_mut()
+            && let Err(error) = bridge.present_masked(
+                &taskfield.window,
+                &taskfield.buffer.pixels,
+                &self.taskfield_mask.pixels,
+                &[],
+                taskfield.buffer.width,
+                taskfield.buffer.height,
+            )
+        {
+            tracing::debug!(%error, "Taskfield could not float; drawing nothing");
+        }
+    }
+
     /// What the island and the cluster ask for. One place for both: they answer with the same
     /// `BarAction`, and a second match over it is a second chance to forget a variant.
     fn perform_bar(&mut self, actions: Vec<crate::surface::bar_screen::BarAction>) {
@@ -4554,6 +4716,16 @@ impl ApplicationHandler<Wake> for ShellApp {
             self.cluster_event(&event);
             return;
         }
+        let is_taskfield = self
+            .taskfield
+            .as_ref()
+            .is_some_and(|taskfield| taskfield.window.id() == window_id);
+        if is_taskfield {
+            if matches!(event, WindowEvent::RedrawRequested) {
+                self.redraw_taskfield();
+            }
+            return;
+        }
         let is_bar = self
             .bar
             .as_ref()
@@ -4663,6 +4835,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             .unwrap_or_default();
         self.ensure_bar(event_loop, &toplevels);
         self.ensure_cluster(event_loop, &toplevels);
+        self.sync_taskfield(event_loop);
         // The window list moved: Home's session tiles and the bar both show it, so both redraw
         // now rather than on the next slow sweep.
         let generation = self.bridge.as_ref().map_or(0, ShellBridge::generation);
@@ -4673,6 +4846,11 @@ impl ApplicationHandler<Wake> for ShellApp {
             }
             if let Some(bar) = &self.bar {
                 bar.request_redraw();
+            }
+            // Every `taskfield_state` bumps the generation too: the query, the selection and the
+            // filter all arrive that way, and every one of them changes what this draws.
+            if let Some(taskfield) = &self.taskfield {
+                taskfield.request_redraw();
             }
         }
         if self
