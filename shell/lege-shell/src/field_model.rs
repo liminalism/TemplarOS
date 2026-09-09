@@ -161,6 +161,7 @@ pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
     let mut wanted: BTreeSet<TileId> = BTreeSet::new();
     migrate_system_tiles(doc, &mut applied);
+    migrate_desktop_tray(doc, &mut applied);
     // The eight drawer tiles are superseded by the single Files
     // object, and the migration has to run before `merge_files` so the replacement can inherit
     // the place the block held instead of landing in the default corner.
@@ -448,6 +449,20 @@ fn migrate_system_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         .map(|(_, id)| id)
         .collect();
     for id in retired {
+        try_apply(doc, FieldOp::Remove { id }, applied);
+    }
+}
+
+/// Remove the Desktop tray the shell used to place on its own (`folder:desktop`). Desktop is an
+/// ordinary garden Place now, whose tile wears `garden_tile_id`, so a saved field that still
+/// carries the tray would show Desktop twice. Kind- and path-checked like every migration here:
+/// only a Folder tile at that id goes, and only the one tile.
+fn migrate_desktop_tray(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
+    let id = tile_id_for("folder:desktop");
+    if doc
+        .tile(id)
+        .is_some_and(|tile| matches!(tile.kind, TileKind::Folder { .. }))
+    {
         try_apply(doc, FieldOp::Remove { id }, applied);
     }
 }
@@ -1511,6 +1526,51 @@ mod tests {
     /// for it on a first run, so it arrives pinned and unpin, hide and recession then work on it
     /// like any other. An existing field keeps whatever Desktop tile it already has: nothing
     /// here removes one.
+    /// A field saved before Desktop became a garden Place still carries the shell's own tray at
+    /// `folder:desktop`; the merge removes it, once, and leaves any other folder tile alone.
+    #[test]
+    fn a_saved_desktop_tray_is_removed_by_the_merge() {
+        let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        let tray = Tile {
+            id: tile_id_for("folder:desktop"),
+            kind: TileKind::Folder {
+                path: "/home/dk/Desktop".into(),
+            },
+            title: "Desktop".to_owned(),
+            spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(2, 2)),
+            accent: None,
+        };
+        let other = Tile {
+            id: lege_field::garden::garden_tile_id(Path::new("/home/dk/Desktop")),
+            kind: TileKind::Folder {
+                path: "/home/dk/Desktop".into(),
+            },
+            title: "Desktop".to_owned(),
+            spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(2, 2)),
+            accent: None,
+        };
+        for tile in [tray, other] {
+            let landing = Landing {
+                container: None,
+                cell: Cell::new(0, 0),
+            };
+            let (next, _) = apply(&doc, &FieldOp::Place { tile, landing }).expect("placed");
+            doc = next;
+        }
+        merge(&mut doc, &LiveState::default());
+        assert!(
+            doc.tile(tile_id_for("folder:desktop")).is_none(),
+            "the tray is gone"
+        );
+        assert!(
+            doc.tile(lege_field::garden::garden_tile_id(Path::new(
+                "/home/dk/Desktop"
+            )))
+            .is_some(),
+            "the garden's Desktop tile stays"
+        );
+    }
+
     #[test]
     fn home_merges_no_desktop_tray_of_its_own() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
