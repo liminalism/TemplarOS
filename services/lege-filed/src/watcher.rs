@@ -176,6 +176,9 @@ pub struct WatchLoop<S: EventSource> {
     /// development host, in every test, and in a nested session — and `None` means "reconcile",
     /// which is what every root did before this existed.
     delta: Option<crate::delta_catchup::DeltaCatchUp>,
+    /// Test-only: make every apply through this loop fail, the way a database error does.
+    #[cfg(test)]
+    apply_fails: bool,
 }
 
 impl<S: EventSource> WatchLoop<S> {
@@ -201,6 +204,8 @@ impl<S: EventSource> WatchLoop<S> {
             published: None,
             dead: false,
             delta: None,
+            #[cfg(test)]
+            apply_fails: false,
         }
     }
 
@@ -290,12 +295,22 @@ impl<S: EventSource> WatchLoop<S> {
 
         if self.coalescer.ready(self.clock.as_ref())
             && let Some(batch) = self.coalescer.take(MutationSource::Watcher)
-            && let Err(error) = self.index.apply(batch)
         {
-            tracing::warn!(%error, "could not apply a batch of filesystem events");
+            self.apply_batch(batch);
         }
 
         if let Some((root, scope, trigger)) = self.repairs.pop_front() {
+            // The root's own pending events are settled *before* the pass that supersedes them.
+            // An overflow queues a repair and an `Invalidate` in the same turn, and the repair
+            // runs long before the coalescing window closes: applying that invalidation
+            // afterwards marks the root stale again with nothing left queued to prove it.
+            if let Some(pending) = self.coalescer.take_for_root(root, MutationSource::Watcher)
+                && let Err(error) = self.apply(pending)
+            {
+                // No repair queued for this: one is about to run, and queueing another here is
+                // how a permanent write failure becomes a spin.
+                tracing::warn!(root = root.0, %error, "could not settle a root before repairing it");
+            }
             self.repair(root, scope, &trigger);
         }
         if self.repairs.is_empty() {
@@ -431,6 +446,51 @@ impl<S: EventSource> WatchLoop<S> {
             _ => Trigger::RenameAmbiguous,
         };
         self.enqueue_repair(request.root, request.scope.clone(), trigger);
+    }
+
+    /// Apply a coalesced batch, and make sure a batch that could not be applied is still repaired.
+    ///
+    /// A failed apply used to be a warning and nothing else: the events were consumed, the change
+    /// they described was never taken, and the root went on claiming `current` over it forever.
+    /// Retrying the batch is the wrong answer — a batch that failed once is the likeliest thing to
+    /// fail again, and the loop would spin on it — so the roots it touched are marked stale and a
+    /// whole-root pass is queued to find the change from the filesystem instead. `enqueue_repair`
+    /// collapses those, so a failure that persists owes one repair per root, not one per batch.
+    fn apply_batch(&mut self, batch: MutationBatch) {
+        let mut roots: Vec<RootId> = Vec::new();
+        for mutation in &batch.mutations {
+            let root = mutation.root();
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        let Err(error) = self.apply(batch) else {
+            return;
+        };
+        tracing::warn!(%error, "could not apply a batch of filesystem events; repairing instead");
+        let reason = StaleReason::Inconsistent {
+            detail: format!("a batch of filesystem events could not be applied: {error}"),
+        };
+        for root in roots {
+            let _ = self.index.mark_stale(root, &reason);
+            self.enqueue_repair(root, ScanScope::Root, Trigger::Requested);
+        }
+    }
+
+    /// `Index::apply`, with a seam a test can break.
+    ///
+    /// The branch that matters is the one where the write fails and the loop still has to record
+    /// what that means, and no real `Index` can be made to fail the first while allowing the
+    /// second. Test-only, so the seam does not exist in the shipped daemon.
+    fn apply(&self, batch: MutationBatch) -> Result<(), String> {
+        #[cfg(test)]
+        if self.apply_fails {
+            return Err("an injected index failure".to_owned());
+        }
+        self.index
+            .apply(batch)
+            .map(|_applied| ())
+            .map_err(|error| error.to_string())
     }
 
     /// Queue one repair, collapsing it against the repairs already waiting.
@@ -1057,6 +1117,116 @@ mod tests {
             loop_.repairs.pop_front().map(|queued| queued.0),
             Some(other),
             "the root that has been waiting goes first, not last"
+        );
+    }
+
+    /// Recovery has to be ordered, or it undoes itself.
+    ///
+    /// An overflow queues a repair *and* an `Invalidate` in the same turn. The repair runs at
+    /// once; the invalidation sits below the coalescing window and lands afterwards, marking the
+    /// root stale again — and with nothing queued, because the pass that would have answered it
+    /// has already run. A root that ends a successful recovery stale is worse than one that never
+    /// recovered: it looks repaired and is not.
+    #[test]
+    fn an_overflow_repair_settles_its_invalidation_before_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, clock) = loop_fixture(dir.path());
+        assert_eq!(
+            loop_.index().root_status(root).unwrap().state,
+            lege_file_index::RootState::Current,
+            "the fixture starts from a proven root"
+        );
+
+        loop_.owner.source_mut().push_overflow();
+        loop_.step(Some(Duration::ZERO));
+        assert_eq!(
+            loop_.index().root_status(root).unwrap().state,
+            lege_file_index::RootState::Current,
+            "the repair the overflow queued walks the tree and proves it again"
+        );
+
+        // Long enough for the window the invalidation was still sitting in to close.
+        clock.advance(1_000);
+        loop_.step(Some(Duration::ZERO));
+
+        assert_eq!(
+            loop_.index().root_status(root).unwrap().state,
+            lege_file_index::RootState::Current,
+            "an invalidation the repair already answered must not land behind it"
+        );
+        assert!(
+            loop_.repairs.is_empty(),
+            "and nothing may be left stale with no repair queued to prove it"
+        );
+        assert_eq!(loop_.next_wake(), None);
+    }
+
+    /// A batch the index refuses is a change the watcher saw and the index does not hold.
+    ///
+    /// It used to be a warning and nothing else: the events were consumed, no pass was scheduled
+    /// to find them again, and the root went on calling itself `current` over the file it was
+    /// missing. The batch is the wrong thing to retry, so the root is marked stale and walked.
+    #[test]
+    fn a_batch_that_fails_to_apply_is_repaired_rather_than_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut loop_, root, clock) = loop_fixture(dir.path());
+        let notes = dir.path().join("tree/notes");
+        let created = notes.join("late.txt");
+        fs::write(&created, b"seen by the watcher, refused by the index").unwrap();
+
+        // The mark and the queue, before the same turn's repair consumes them.
+        loop_.apply_fails = true;
+        loop_.apply_batch(MutationBatch::new(
+            MutationSource::Watcher,
+            vec![Mutation::Remove {
+                root,
+                path: NativePath::from_path(&created),
+            }],
+        ));
+        assert_eq!(
+            loop_.index().root_status(root).unwrap().state,
+            lege_file_index::RootState::Stale,
+            "an unapplied batch means the index and the tree disagree"
+        );
+        assert_eq!(
+            loop_.repairs.len(),
+            1,
+            "and the disagreement is owed a pass, not a log line"
+        );
+        loop_.repairs.clear();
+
+        let watch = loop_
+            .owner
+            .source_mut()
+            .watch_for(&notes)
+            .expect("the repair pass armed the subdirectory");
+        loop_.owner.source_mut().push_named(
+            watch,
+            "late.txt",
+            lege_file_index::watch::RawKind::Created,
+            false,
+        );
+        loop_.step(Some(Duration::ZERO));
+        clock.advance(250);
+        loop_.step(Some(Duration::ZERO));
+
+        assert!(
+            loop_
+                .index()
+                .entry(root, &NativePath::from_path(&created))
+                .unwrap()
+                .is_some(),
+            "the repair the failure queued has to find what the batch could not record"
+        );
+        assert!(
+            loop_.repairs.is_empty(),
+            "one repair per root, collapsed, and it has run"
+        );
+        assert!(!loop_.is_dead());
+        assert_eq!(
+            loop_.next_wake(),
+            None,
+            "a failure that persists must leave the loop parked, not spinning on a zero wait"
         );
     }
 
