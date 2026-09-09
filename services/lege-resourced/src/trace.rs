@@ -5,9 +5,9 @@
 //! be complete (every input the decision used) and readable (one JSON object per line). It is
 //! **not** state the governor depends on: [`TraceRing`] never blocks the sampling loop on disk —
 //! every write is best-effort, and failures are logged and dropped, never propagated (ADR-0002:
-//! no fsync on the loop). The in-memory ring (bounded by count) always answers `RecentTraces`
-//! even if the disk write failed or the directory is not writable at all; the on-disk file
-//! (bounded by size, with one rotation) is what survives a restart.
+//! no fsync on the loop). The in-memory ring (bounded by count *and* by bytes) always answers
+//! `RecentTraces` even if the disk write failed or the directory is not writable at all; the
+//! on-disk file (bounded by size, with one rotation) is what survives a restart.
 
 use crate::policy::{PressureLevel, ScoreBreakdown, Stage};
 use crate::psi::Psi;
@@ -97,12 +97,23 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// A bounded ring: `max_records` in memory (what `RecentTraces` serves from), a rotated on-disk
-/// JSONL file capped at `max_file_bytes` (one `.1` backup, then overwritten).
+/// A bounded ring: at most `max_records` **and** at most `max_memory_bytes` in memory (what
+/// `RecentTraces` serves from), plus a rotated on-disk JSONL file capped at `max_file_bytes` (one
+/// `.1` backup, then overwritten).
+///
+/// Both memory bounds, because a record is not a fixed size: it carries one entry per running
+/// instance, so a desktop with fifty applications open writes records an order of magnitude
+/// larger than a desktop with five, and a ring bounded only by count is a ring whose memory cost
+/// is set by whatever the user happens to be running. The count keeps the history readable; the
+/// byte budget is what makes it bounded.
 #[derive(Debug)]
 pub struct TraceRing {
     memory: VecDeque<String>,
     max_records: usize,
+    /// The sum of `memory`'s line lengths, maintained rather than recomputed: the append runs on
+    /// the sampling loop's thread.
+    memory_bytes: usize,
+    max_memory_bytes: usize,
     path: PathBuf,
     max_file_bytes: u64,
     file: Option<File>,
@@ -111,7 +122,12 @@ pub struct TraceRing {
 impl TraceRing {
     /// Best-effort open: `dir` is created if missing, and the file is opened for append. Any
     /// failure downgrades to memory-only recording (logged once, not fatal).
-    pub fn open(dir: &Path, max_records: usize, max_file_bytes: u64) -> Self {
+    pub fn open(
+        dir: &Path,
+        max_records: usize,
+        max_memory_bytes: usize,
+        max_file_bytes: u64,
+    ) -> Self {
         let path = dir.join("traces.jsonl");
         let file = fs::create_dir_all(dir)
             .and_then(|()| OpenOptions::new().create(true).append(true).open(&path))
@@ -122,6 +138,8 @@ impl TraceRing {
         Self {
             memory: VecDeque::with_capacity(max_records.min(4096)),
             max_records: max_records.max(1),
+            memory_bytes: 0,
+            max_memory_bytes: max_memory_bytes.max(4096),
             path,
             max_file_bytes: max_file_bytes.max(4096),
             file,
@@ -129,10 +147,12 @@ impl TraceRing {
     }
 
     /// In-memory only — used by `--once` and by tests that do not want a filesystem dependency.
-    pub fn in_memory(max_records: usize) -> Self {
+    pub fn in_memory(max_records: usize, max_memory_bytes: usize) -> Self {
         Self {
             memory: VecDeque::with_capacity(max_records.min(4096)),
             max_records: max_records.max(1),
+            memory_bytes: 0,
+            max_memory_bytes: max_memory_bytes.max(4096),
             path: PathBuf::new(),
             max_file_bytes: 0,
             file: None,
@@ -145,10 +165,28 @@ impl TraceRing {
             return;
         };
 
-        if self.memory.len() >= self.max_records {
-            self.memory.pop_front();
+        // A single record that cannot fit the whole budget is not kept: making room for it
+        // would empty the ring of every episode it exists to preserve, and a record that large
+        // (thousands of instances, or a budget set to nothing) is itself the anomaly. Say so and
+        // keep the history.
+        if line.len() > self.max_memory_bytes {
+            tracing::warn!(
+                bytes = line.len(),
+                budget = self.max_memory_bytes,
+                "trace ring: a record larger than the whole memory budget was not kept"
+            );
+        } else {
+            while self.memory.len() >= self.max_records
+                || self.memory_bytes + line.len() > self.max_memory_bytes
+            {
+                let Some(evicted) = self.memory.pop_front() else {
+                    break;
+                };
+                self.memory_bytes -= evicted.len();
+            }
+            self.memory_bytes += line.len();
+            self.memory.push_back(line.clone());
         }
-        self.memory.push_back(line.clone());
 
         if let Some(file) = self.file.as_mut() {
             if let Err(error) = writeln!(file, "{line}") {
@@ -189,6 +227,11 @@ impl TraceRing {
         self.memory.len()
     }
 
+    /// What the in-memory ring currently costs, in bytes of recorded JSON.
+    pub fn memory_bytes(&self) -> usize {
+        self.memory_bytes
+    }
+
     pub fn is_empty(&self) -> bool {
         self.memory.is_empty()
     }
@@ -219,7 +262,7 @@ mod tests {
 
     #[test]
     fn recent_returns_newest_first_and_respects_limit() {
-        let mut ring = TraceRing::in_memory(10);
+        let mut ring = TraceRing::in_memory(10, 64 * 1024);
         ring.append(&sample_record(PressureLevel::Normal));
         ring.append(&sample_record(PressureLevel::Elevated));
         ring.append(&sample_record(PressureLevel::Severe));
@@ -232,11 +275,85 @@ mod tests {
 
     #[test]
     fn memory_ring_is_bounded_by_count() {
-        let mut ring = TraceRing::in_memory(3);
+        let mut ring = TraceRing::in_memory(3, 64 * 1024);
         for _ in 0..10 {
             ring.append(&sample_record(PressureLevel::Normal));
         }
         assert_eq!(ring.len(), 3);
+    }
+
+    /// A record with `count` instances in it, so a test can vary the *size* of what it records
+    /// the way a desktop does: the number of applications the user has open.
+    fn record_with_instances(count: usize) -> TraceRecord {
+        let mut record = sample_record(PressureLevel::Severe);
+        record.instances = (0..count)
+            .map(|index| InstanceTrace {
+                instance_id: InstanceId::new(),
+                app_id: format!("org.legeos.Application{index}"),
+                memory_current_bytes: GIB,
+                memory_growth_bytes_per_second: 0,
+                full_psi_avg10: 0.5,
+                foreground: false,
+                visible: false,
+                protected: false,
+                disposable: false,
+                has_unsaved_work: false,
+                last_interaction_age_ms: None,
+                project_important: false,
+                supports_checkpoint: false,
+                checkpoint_age_ms: None,
+                user_pinned: false,
+                victim_score: 1.0,
+                score_breakdown: ScoreBreakdown::default(),
+            })
+            .collect();
+        record
+    }
+
+    /// The bound that matters: records are not a fixed size, so a ring bounded only by count is
+    /// bounded by whatever the user happens to be running. Five thousand records of a fifty-
+    /// application desktop is tens of megabytes inside the process that has to survive the
+    /// machine running out of memory.
+    #[test]
+    fn memory_ring_stays_under_its_byte_budget_whatever_the_records_weigh() {
+        let budget = 64 * 1024;
+        let mut ring = TraceRing::in_memory(5000, budget);
+        for instances in [0, 1, 40, 3, 120, 7] {
+            for _ in 0..50 {
+                ring.append(&record_with_instances(instances));
+                assert!(
+                    ring.memory_bytes() <= budget,
+                    "{instances} instances put the ring at {} bytes",
+                    ring.memory_bytes()
+                );
+            }
+        }
+        assert!(!ring.is_empty(), "the ring still holds recent history");
+        assert_eq!(
+            ring.memory_bytes(),
+            ring.recent(usize::MAX)
+                .iter()
+                .map(String::len)
+                .sum::<usize>(),
+            "the running total drifted from what the ring is actually holding"
+        );
+    }
+
+    /// The oversized-record policy: one record bigger than the entire budget is dropped rather
+    /// than emptying the ring to make room for itself. Losing one pathological record is a
+    /// smaller loss than losing every episode recorded before it.
+    #[test]
+    fn a_record_larger_than_the_whole_budget_is_dropped_and_the_history_survives() {
+        let mut ring = TraceRing::in_memory(100, 8192);
+        ring.append(&sample_record(PressureLevel::Elevated));
+        ring.append(&sample_record(PressureLevel::Severe));
+        let kept = ring.len();
+
+        ring.append(&record_with_instances(200));
+
+        assert_eq!(ring.len(), kept, "the oversized record evicted history");
+        assert!(ring.memory_bytes() <= 8192);
+        assert!(ring.recent(10)[0].contains("\"severe\""));
     }
 
     #[test]
@@ -245,7 +362,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         {
-            let mut ring = TraceRing::open(&dir, 1000, 2048);
+            let mut ring = TraceRing::open(&dir, 1000, 256 * 1024, 2048);
             for _ in 0..64 {
                 ring.append(&sample_record(PressureLevel::Severe));
             }
@@ -273,7 +390,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::write(&dir, b"not a directory").unwrap();
 
-        let mut ring = TraceRing::open(&dir.join("nested"), 10, 4096);
+        let mut ring = TraceRing::open(&dir.join("nested"), 10, 64 * 1024, 4096);
         ring.append(&sample_record(PressureLevel::Normal));
         assert_eq!(ring.len(), 1);
 

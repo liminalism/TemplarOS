@@ -342,7 +342,7 @@ impl SharedState {
 
     /// No persistence, in-memory trace ring: for tests and `--once`.
     pub fn in_memory() -> Self {
-        Self::new(None, TraceRing::in_memory(256))
+        Self::new(None, TraceRing::in_memory(256, 256 * 1024))
     }
 
     pub fn stage(&self) -> Stage {
@@ -616,12 +616,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("stage.toml");
 
-        let shared = SharedState::new(Some(path.clone()), TraceRing::in_memory(4));
+        let shared = SharedState::new(Some(path.clone()), TraceRing::in_memory(4, 64 * 1024));
         assert_eq!(shared.stage(), Stage::ObserveOnly);
         shared.set_stage(Stage::Throttle);
         assert_eq!(shared.stage(), Stage::Throttle);
 
-        let reloaded = SharedState::new(Some(path), TraceRing::in_memory(4));
+        let reloaded = SharedState::new(Some(path), TraceRing::in_memory(4, 64 * 1024));
         assert_eq!(reloaded.stage(), Stage::Throttle);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -633,7 +633,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let shared = SharedState::new(Some(path), TraceRing::in_memory(4));
+        let shared = SharedState::new(Some(path), TraceRing::in_memory(4, 64 * 1024));
         assert_eq!(shared.stage(), Stage::ObserveOnly);
     }
 }

@@ -4,9 +4,10 @@
 //! [`tick`] is the one function that reads PSI/cgroups, decides, applies, records a trace and
 //! publishes a [`Report`] — used identically by `--once` (called once, synchronously, no bus at
 //! all) and by the long-running loop (called every `interval`, on its own thread). Signals cross
-//! from that thread to the tokio-hosted D-Bus connection over a plain channel (`SignalEvent`):
-//! sending into an unbounded `tokio::sync::mpsc` channel is itself a synchronous, non-blocking
-//! call, so the loop thread never awaits anything and a stalled bus can never delay it.
+//! from that thread to the tokio-hosted D-Bus connection over a plain channel (`SignalEvent`),
+//! through a [`SignalOutbox`]: every send is `try_send` into a *bounded* channel, so the loop
+//! thread never awaits anything, a stalled bus can never delay it, and a bus that has stopped
+//! receiving altogether costs a bounded amount of memory rather than an unbounded one.
 
 use crate::{
     config,
@@ -558,6 +559,22 @@ pub const IDLE_HEARTBEAT: Duration = Duration::from_secs(60);
 const TRIGGER_STALL: Duration = Duration::from_millis(150);
 const TRIGGER_WINDOW: Duration = Duration::from_secs(1);
 
+/// How long to wait before the next tick.
+///
+/// The long heartbeat is only allowed while the kernel is going to interrupt it: with no usable
+/// trigger — a kernel without PSI, an undelegated cgroup, or a descriptor that hung up while the
+/// governor was running — waiting a minute at `Normal` would mean an application could appear,
+/// grow and be killed by the kernel's own OOM killer between two samples. Without a trigger the
+/// loop samples at the interval it was configured with, exactly as it did before it was
+/// event-driven.
+fn next_wait(level: PressureLevel, event_driven: bool, interval: Duration) -> Duration {
+    if level == PressureLevel::Normal && event_driven {
+        IDLE_HEARTBEAT
+    } else {
+        interval
+    }
+}
+
 /// The long-running loop: wake on memory pressure or on the heartbeat, forever, on its own
 /// thread.
 ///
@@ -578,13 +595,20 @@ pub fn run_loop(
     mut ctx: TickContext,
     shared: Arc<SharedState>,
     interval: Duration,
-    events: tokio::sync::mpsc::UnboundedSender<SignalEvent>,
+    events: tokio::sync::mpsc::Sender<SignalEvent>,
 ) {
+    let mut outbox = SignalOutbox::new(events);
+    // Both slices, not just `session.slice`: the governor governs `app.slice`, which is
+    // `session.slice`'s *sibling* — a trigger armed on one of them is not crossed by the
+    // pressure the other one is under, so an application eating the machine woke nothing at all.
+    let app = crate::cgroup::Cgroup::from_directory(ctx.paths.app_slice.clone());
     let session = crate::cgroup::Cgroup::from_directory(ctx.paths.session_slice.clone());
-    let wait = crate::psi::PressureWait::for_cgroup(&session, TRIGGER_STALL, TRIGGER_WINDOW);
+    let mut wait =
+        crate::psi::PressureWait::for_cgroups(&[&app, &session], TRIGGER_STALL, TRIGGER_WINDOW);
     tracing::info!(
         event_driven = wait.is_event_driven(),
-        pressure = %session.directory().join("memory.pressure").display(),
+        app_pressure = %app.directory().join("memory.pressure").display(),
+        session_pressure = %session.directory().join("memory.pressure").display(),
         "governor loop armed"
     );
 
@@ -595,13 +619,13 @@ pub fn run_loop(
 
         if outcome.level_changed {
             let report_json = serde_json::to_string(&outcome.report).unwrap_or_default();
-            let _ = events.send(SignalEvent::PressureChanged {
+            outbox.send(SignalEvent::PressureChanged {
                 level: outcome.level.to_string(),
                 report_json,
             });
         }
         for action in &outcome.actions {
-            let _ = events.send(SignalEvent::PressureAction {
+            outbox.send(SignalEvent::PressureAction {
                 kind: action.kind,
                 instance_id: action.instance_id.to_string(),
                 applied: action.applied,
@@ -611,7 +635,7 @@ pub fn run_loop(
         }
         for stall in &outcome.stalls {
             let detail_json = serde_json::to_string(stall).unwrap_or_default();
-            let _ = events.send(SignalEvent::NonMemoryStall {
+            outbox.send(SignalEvent::NonMemoryStall {
                 kind: stall.kind(),
                 detail_json,
             });
@@ -629,11 +653,8 @@ pub fn run_loop(
         // and a trigger that has already fired says nothing more until the stall clears. Calm,
         // wait for the kernel — and the heartbeat is the backstop for the one thing PSI cannot
         // report, which is an instance appearing in or leaving the slice.
-        wakeup = if outcome.level == PressureLevel::Normal {
-            wait.wait(IDLE_HEARTBEAT)
-        } else {
-            wait.wait(interval)
-        };
+        let timeout = next_wait(outcome.level, wait.is_event_driven(), interval);
+        wakeup = wait.wait(timeout);
     }
 }
 
@@ -655,6 +676,115 @@ pub enum SignalEvent {
         kind: &'static str,
         detail_json: String,
     },
+}
+
+/// How many signals may be queued for the D-Bus task, in the channel and again in the outbox
+/// behind it. Two bounds of this size are the *whole* backlog: a bus that has stopped receiving
+/// costs the governor a bounded amount of memory and nothing else. The number is deliberately
+/// small — a consumer that is more than a hundred signals behind is not slow, it is gone, and
+/// what it eventually reads should be the end of the story rather than the beginning.
+const SIGNAL_QUEUE_BOUND: usize = 64;
+
+/// The loop thread's end of the signal channel, and the rule for what happens when the D-Bus task
+/// stops keeping up.
+///
+/// The channel used to be unbounded, which meant a stalled or wedged bus task was an unbounded
+/// allocation inside the one process that must survive a machine running out of memory (ADR-0002)
+/// — the failure it exists to govern. Bounding it means deciding what to drop, and the three
+/// signals are not equal:
+///
+/// - `PressureChanged` **coalesces**: it describes the level *now*, so an older queued one
+///   describes a level that is no longer true and there is no value in delivering it first.
+/// - `NonMemoryStall` is diagnostics; the oldest goes.
+/// - `PressureAction` is **never** dropped while anything else could be dropped instead. Trim and
+///   checkpoint requests are cooperative: the signal *is* the delivery, so a dropped one is a
+///   request the application never heard, not a report it missed.
+///
+/// Nothing here blocks: every path is `try_send` or a push into a bounded queue, because this
+/// runs on the sampling loop's thread.
+#[derive(Debug)]
+pub struct SignalOutbox {
+    events: tokio::sync::mpsc::Sender<SignalEvent>,
+    /// What the channel would not take, oldest first.
+    pending: std::collections::VecDeque<SignalEvent>,
+    dropped: u64,
+}
+
+impl SignalOutbox {
+    #[must_use]
+    pub fn new(events: tokio::sync::mpsc::Sender<SignalEvent>) -> Self {
+        Self {
+            events,
+            pending: std::collections::VecDeque::new(),
+            dropped: 0,
+        }
+    }
+
+    /// Queue `event` for emission, never blocking and never growing without bound.
+    pub fn send(&mut self, event: SignalEvent) {
+        self.flush();
+        if !self.pending.is_empty() {
+            // Ordering: anything queued ahead of this must be emitted ahead of it.
+            self.queue(event);
+            return;
+        }
+        // A `Closed` channel is the bus task being gone: the governor keeps governing, and
+        // nobody is listening. Only a full one has anything to decide about.
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(event)) =
+            self.events.try_send(event)
+        {
+            self.queue(event);
+        }
+    }
+
+    /// Hand the channel as much of the backlog as it will take right now.
+    pub fn flush(&mut self) {
+        while let Some(event) = self.pending.pop_front() {
+            match self.events.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                    self.pending.push_front(event);
+                    return;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    self.pending.clear();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// How many signals the disposition rule has thrown away since the process started.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    fn queue(&mut self, event: SignalEvent) {
+        if matches!(event, SignalEvent::PressureChanged { .. }) {
+            self.pending
+                .retain(|queued| !matches!(queued, SignalEvent::PressureChanged { .. }));
+        }
+        self.pending.push_back(event);
+
+        while self.pending.len() > SIGNAL_QUEUE_BOUND {
+            // Chatter before consequence: only once the backlog is *all* actions does an action
+            // go, and then the oldest, so the most recent requests are the ones that survive.
+            let index = self
+                .pending
+                .iter()
+                .position(|queued| !matches!(queued, SignalEvent::PressureAction { .. }))
+                .unwrap_or(0);
+            self.pending.remove(index);
+            self.dropped += 1;
+            if self.dropped == 1 {
+                tracing::warn!(
+                    bound = SIGNAL_QUEUE_BOUND,
+                    "the resources signal consumer is not keeping up; signals are being dropped"
+                );
+            }
+        }
+    }
 }
 
 async fn dispatch_signal(emitter: &SignalEmitter<'static>, event: SignalEvent) -> zbus::Result<()> {
@@ -716,11 +846,14 @@ pub async fn serve(interval: Duration, config_path: &Path, state_dir: &Path) -> 
         critical_reserve_mib = config.critical_reserve_bytes / (1024 * 1024),
         "thresholds scaled to this machine",
     );
-    let traces = TraceRing::open(state_dir, 5000, 4 * 1024 * 1024);
+    // 5000 records, but never more than 2 MiB of them: a record carries one entry per running
+    // instance, so the count alone bounds nothing on a desktop with fifty applications open —
+    // and this is the process that must still be alive when memory has run out (ADR-0002).
+    let traces = TraceRing::open(state_dir, 5000, 2 * 1024 * 1024, 4 * 1024 * 1024);
     let stage_path = state_dir.join("stage.toml");
     let shared = Arc::new(SharedState::new(Some(stage_path), traces));
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SignalEvent>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<SignalEvent>(SIGNAL_QUEUE_BOUND);
 
     let connection = zbus::connection::Builder::session()?
         .name(names::BUS_NAME)?
@@ -784,6 +917,118 @@ mod tests {
     use super::*;
     use lege_types::{AppId, unit};
     use std::fs;
+
+    /// The scheduling the loop actually performs, without running the loop: a healthy trigger
+    /// earns the long heartbeat, and everything else — no trigger on this kernel, or a trigger
+    /// that died while the governor was running — samples at the configured interval. Waiting a
+    /// minute without a trigger is not "event-driven", it is blind.
+    #[test]
+    fn only_a_healthy_trigger_earns_the_idle_heartbeat() {
+        let interval = Duration::from_secs(1);
+        assert_eq!(
+            next_wait(PressureLevel::Normal, true, interval),
+            IDLE_HEARTBEAT
+        );
+        assert_eq!(next_wait(PressureLevel::Normal, false, interval), interval);
+        for level in [
+            PressureLevel::Elevated,
+            PressureLevel::Severe,
+            PressureLevel::Critical,
+        ] {
+            assert_eq!(next_wait(level, true, interval), interval);
+            assert_eq!(next_wait(level, false, interval), interval);
+        }
+
+        // And the two halves meet: a cgroup that cannot register a trigger reports itself as not
+        // event-driven, which is what turns the heartbeat back into the interval.
+        let dir = tempfile::tempdir().unwrap();
+        let cgroup = crate::cgroup::Cgroup::from_directory(dir.path().to_path_buf());
+        let wait = crate::psi::PressureWait::for_cgroups(&[&cgroup], TRIGGER_STALL, TRIGGER_WINDOW);
+        assert!(!wait.is_event_driven());
+        assert_eq!(
+            next_wait(PressureLevel::Normal, wait.is_event_driven(), interval),
+            interval
+        );
+    }
+
+    /// The failure this bound exists for: the D-Bus task stops receiving — wedged, or gone —
+    /// while the governor keeps deciding. The backlog must stay bounded, and what survives it
+    /// must be the actions, because a `PressureAction` *is* the delivery of a cooperative trim or
+    /// checkpoint request, not a report about one.
+    #[test]
+    fn a_stalled_signal_consumer_costs_a_bounded_queue_and_never_loses_an_action() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<SignalEvent>(SIGNAL_QUEUE_BOUND);
+        let mut outbox = SignalOutbox::new(tx);
+        let actions = 40;
+
+        for round in 0..500 {
+            outbox.send(SignalEvent::PressureChanged {
+                level: format!("severe {round}"),
+                report_json: String::new(),
+            });
+            outbox.send(SignalEvent::NonMemoryStall {
+                kind: "io",
+                detail_json: String::new(),
+            });
+            if round < actions {
+                outbox.send(SignalEvent::PressureAction {
+                    kind: "trim-caches",
+                    instance_id: round.to_string(),
+                    applied: true,
+                    reason: String::new(),
+                    detail_json: String::new(),
+                });
+            }
+            assert!(
+                outbox.pending.len() <= SIGNAL_QUEUE_BOUND,
+                "the backlog grew to {} at round {round}",
+                outbox.pending.len()
+            );
+        }
+        assert!(
+            outbox.dropped() > 0,
+            "nothing was dropped, so nothing was actually bounded"
+        );
+
+        // The consumer comes back.
+        let mut received = Vec::new();
+        loop {
+            let before = received.len();
+            while let Ok(event) = rx.try_recv() {
+                received.push(event);
+            }
+            outbox.flush();
+            if received.len() == before {
+                break;
+            }
+        }
+
+        let delivered_actions: Vec<String> = received
+            .iter()
+            .filter_map(|event| match event {
+                SignalEvent::PressureAction { instance_id, .. } => Some(instance_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<String> = (0..actions).map(|round| round.to_string()).collect();
+        assert_eq!(
+            delivered_actions, expected,
+            "an action was dropped while chatter was queued"
+        );
+        assert!(
+            received.len() <= 2 * SIGNAL_QUEUE_BOUND,
+            "{} signals survived a stalled consumer",
+            received.len()
+        );
+
+        // Coalescing: the level the shell finally hears about is the one that is true now, not
+        // one from four hundred ticks ago.
+        let last_level = received.iter().rev().find_map(|event| match event {
+            SignalEvent::PressureChanged { level, .. } => Some(level.clone()),
+            _ => None,
+        });
+        assert_eq!(last_level.as_deref(), Some("severe 499"));
+    }
 
     #[test]
     fn locking_current_pages_does_not_poison_future_allocations() {

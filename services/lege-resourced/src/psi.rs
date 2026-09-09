@@ -240,73 +240,129 @@ impl Trigger {
             fd: OwnedFd::from(file),
         })
     }
+}
 
-    /// Wait for the threshold to be crossed, or for `timeout` to elapse.
+/// `revents` bits that say the descriptor is finished rather than that a threshold was crossed.
+/// A descriptor that reports one of these reports it forever, and `poll` returns from it at once,
+/// so polling it again is a spin rather than a wait.
+const BROKEN: libc::c_short = libc::POLLERR | libc::POLLHUP | libc::POLLNVAL;
+
+/// How the loop waits: on the pressure triggers the kernel offers, on the clock otherwise.
+///
+/// More than one trigger, because the governor's scope is more than one cgroup: it acts on
+/// `app.slice` and protects `session.slice`, which are siblings — a trigger on only one of them
+/// cannot be woken by the pressure the other one is under.
+#[derive(Debug, Default)]
+pub struct PressureWait {
+    triggers: Vec<Trigger>,
+}
+
+impl PressureWait {
+    /// Register a trigger on each cgroup's `memory.pressure` and keep the ones the kernel
+    /// accepted. None accepted is not an error: a kernel without PSI, a cgroup that is not
+    /// delegated, a container. The loop falls back to sleeping on the interval and says so in the
+    /// trace, which is what [`Wakeup::Fallback`] is for.
+    #[must_use]
+    pub fn for_cgroups(
+        cgroups: &[&crate::cgroup::Cgroup],
+        stall: Duration,
+        window: Duration,
+    ) -> Self {
+        Self {
+            triggers: cgroups
+                .iter()
+                .filter_map(|cgroup| {
+                    Trigger::open(&cgroup.directory().join("memory.pressure"), stall, window)
+                })
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn from_triggers(triggers: Vec<Trigger>) -> Self {
+        Self { triggers }
+    }
+
+    /// Whether any usable trigger is still registered.
+    ///
+    /// This can go from true to false while the loop runs: a descriptor that hangs up is dropped
+    /// rather than polled again, and the caller has to know, because the long idle heartbeat is
+    /// only safe while there is a kernel trigger to interrupt it.
+    #[must_use]
+    pub fn is_event_driven(&self) -> bool {
+        !self.triggers.is_empty()
+    }
+
+    /// Block until pressure or `timeout`. With no usable trigger this is the sleep the loop
+    /// always did.
     ///
     /// `POLLPRI` and not `POLLIN`: the kernel signals a PSI trigger as an exceptional condition,
     /// and a descriptor registered this way is *always* readable, so a `POLLIN` wait would return
     /// instantly forever.
-    pub fn wait(&self, timeout: Duration) -> Wakeup {
-        let mut poll = libc::pollfd {
-            fd: self.fd.as_raw_fd(),
-            events: libc::POLLPRI,
-            revents: 0,
-        };
-        // SAFETY: `poll` is handed one initialised `pollfd` describing a descriptor this struct
-        // owns and keeps alive for the duration of the call. Failure is reported by the return
-        // value; there are no preconditions beyond a valid pointer and length.
+    #[must_use]
+    pub fn wait(&mut self, timeout: Duration) -> Wakeup {
+        if self.triggers.is_empty() {
+            std::thread::sleep(timeout);
+            return Wakeup::Fallback;
+        }
+
+        let mut fds: Vec<libc::pollfd> = self
+            .triggers
+            .iter()
+            .map(|trigger| libc::pollfd {
+                fd: trigger.fd.as_raw_fd(),
+                events: libc::POLLPRI,
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: `poll` is handed `fds.len()` initialised `pollfd`s describing descriptors this
+        // struct owns and keeps alive for the duration of the call. Failure is reported by the
+        // return value; there are no preconditions beyond a valid pointer and length.
         #[allow(unsafe_code)]
         let ready = unsafe {
             libc::poll(
-                std::ptr::from_mut(&mut poll),
-                1,
+                fds.as_mut_ptr(),
+                libc::nfds_t::try_from(fds.len()).unwrap_or(0),
                 i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX),
             )
         };
-        if ready > 0 && poll.revents & libc::POLLPRI != 0 {
+
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                // A signal, not pressure. Treating it as a timeout costs one early sample and
+                // never a missed one.
+                return Wakeup::Timeout;
+            }
+            // Anything else is a `poll` that will fail identically every time it is called, and
+            // calling it in a loop is a spin, not a wait: give the triggers up and sample on the
+            // clock, which is what the governor did before there were triggers at all.
+            tracing::warn!(%error, "pressure poll failed; sampling on the interval from now on");
+            self.triggers.clear();
+            std::thread::sleep(timeout);
+            return Wakeup::Fallback;
+        }
+
+        let crossed = fds.iter().any(|fd| fd.revents & libc::POLLPRI != 0);
+        if fds.iter().any(|fd| fd.revents & BROKEN != 0) {
+            let mut revents = fds.iter().map(|fd| fd.revents);
+            self.triggers
+                .retain(|_| revents.next().is_some_and(|revents| revents & BROKEN == 0));
+            tracing::warn!(
+                remaining = self.triggers.len(),
+                "a pressure trigger descriptor hung up; it will not be polled again"
+            );
+        }
+
+        if crossed {
             Wakeup::Trigger
-        } else {
-            // A negative return is EINTR or EAGAIN: a signal, not pressure. Treating it as a
-            // timeout costs one early sample and never a missed one.
-            Wakeup::Timeout
-        }
-    }
-}
-
-/// How the loop waits: on a pressure trigger where the kernel offers one, on the clock otherwise.
-#[derive(Debug, Default)]
-pub struct PressureWait {
-    trigger: Option<Trigger>,
-}
-
-impl PressureWait {
-    /// Register a trigger on `cgroup`'s `memory.pressure`, or fall back to sleeping.
-    #[must_use]
-    pub fn for_cgroup(cgroup: &crate::cgroup::Cgroup, stall: Duration, window: Duration) -> Self {
-        Self {
-            trigger: Trigger::open(&cgroup.directory().join("memory.pressure"), stall, window),
-        }
-    }
-
-    #[must_use]
-    pub fn from_trigger(trigger: Option<Trigger>) -> Self {
-        Self { trigger }
-    }
-
-    /// Whether a trigger was registered at all.
-    #[must_use]
-    pub fn is_event_driven(&self) -> bool {
-        self.trigger.is_some()
-    }
-
-    /// Block until pressure or `timeout`. With no trigger this is the sleep the loop always did.
-    #[must_use]
-    pub fn wait(&self, timeout: Duration) -> Wakeup {
-        if let Some(trigger) = &self.trigger {
-            trigger.wait(timeout)
-        } else {
+        } else if self.triggers.is_empty() {
+            // The last descriptor died, and it died immediately: sleep out the timeout the caller
+            // asked for rather than returning from a wait that did not wait.
             std::thread::sleep(timeout);
             Wakeup::Fallback
+        } else {
+            Wakeup::Timeout
         }
     }
 }
@@ -316,10 +372,9 @@ mod wakeup_tests {
     use super::*;
     use std::os::fd::FromRawFd;
 
-    /// A pipe stands in for a `memory.pressure` descriptor: writing to it makes the read end
-    /// ready, which is what a crossed threshold does. It exercises the `poll` call itself — the
-    /// part with the `unsafe` block and the timeout arithmetic — without a kernel that has PSI,
-    /// a delegated cgroup, or any pressure at all.
+    /// A pipe stands in for a `memory.pressure` descriptor: it exercises the `poll` call itself —
+    /// the part with the `unsafe` block, the timeout arithmetic and the hang-up handling —
+    /// without a kernel that has PSI, a delegated cgroup, or any pressure at all.
     fn pipe() -> (OwnedFd, OwnedFd) {
         let mut fds = [0; 2];
         // SAFETY: `pipe` writes two descriptors into a two-element array and reports failure
@@ -334,45 +389,101 @@ mod wakeup_tests {
         }
     }
 
+    fn waiting_on(fds: Vec<OwnedFd>) -> PressureWait {
+        PressureWait::from_triggers(fds.into_iter().map(|fd| Trigger { fd }).collect())
+    }
+
     #[test]
     fn a_wait_that_nothing_signals_times_out_rather_than_spinning() {
         let (read, _write) = pipe();
-        let trigger = Trigger { fd: read };
+        let mut wait = waiting_on(vec![read]);
         let started = std::time::Instant::now();
-        assert_eq!(trigger.wait(Duration::from_millis(50)), Wakeup::Timeout);
+        assert_eq!(wait.wait(Duration::from_millis(50)), Wakeup::Timeout);
         assert!(
             started.elapsed() >= Duration::from_millis(45),
             "the wait returned immediately: {:?}",
             started.elapsed()
         );
+        assert!(wait.is_event_driven());
     }
 
     #[test]
     fn a_signalled_descriptor_wakes_the_wait() {
-        // POLLPRI, not POLLIN: out-of-band data on a pipe is what a PSI trigger looks like to
-        // poll, and a POLLIN wait on a PSI descriptor returns instantly forever.
-        let (read, write) = pipe();
-        let raw_write = write.as_raw_fd();
+        // POLLPRI, not POLLIN: the kernel raises a PSI trigger as an exceptional condition, and a
+        // POLLIN wait on a PSI descriptor would return instantly forever. A loopback TCP socket
+        // is the one out-of-band source available to an unprivileged test — a pipe is not one
+        // (`send` on it fails with ENOTSOCK), which is why the earlier version of this test never
+        // reached the POLLPRI branch it was written for and asserted the timeout path twice.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+
         // SAFETY: `send` writes `len` bytes from a valid pointer to a descriptor this test owns.
         #[allow(unsafe_code)]
-        let sent = unsafe { libc::send(raw_write, b"x".as_ptr().cast(), 1, libc::MSG_OOB) };
-        let trigger = Trigger { fd: read };
-        if sent < 0 {
-            // A pipe cannot carry out-of-band data on every kernel; the timeout path above is
-            // what this build could check.
-            assert_eq!(trigger.wait(Duration::from_millis(20)), Wakeup::Timeout);
-            return;
-        }
-        assert_eq!(trigger.wait(Duration::from_secs(5)), Wakeup::Trigger);
+        let sent =
+            unsafe { libc::send(client.as_raw_fd(), b"x".as_ptr().cast(), 1, libc::MSG_OOB) };
+        assert_eq!(sent, 1, "sending urgent data failed");
+
+        let mut wait = waiting_on(vec![OwnedFd::from(server)]);
+        assert_eq!(wait.wait(Duration::from_secs(5)), Wakeup::Trigger);
+        assert!(wait.is_event_driven(), "a live descriptor is kept");
     }
 
     #[test]
     fn a_wait_with_no_trigger_sleeps_and_says_it_fell_back() {
-        let wait = PressureWait::default();
+        let mut wait = PressureWait::default();
         assert!(!wait.is_event_driven());
         let started = std::time::Instant::now();
         assert_eq!(wait.wait(Duration::from_millis(30)), Wakeup::Fallback);
         assert!(started.elapsed() >= Duration::from_millis(25));
+    }
+
+    /// The spin this file used to be able to produce: a descriptor whose peer is gone reports
+    /// `POLLHUP` forever and `poll` returns from it immediately, so a wait that mapped it to
+    /// `Timeout` woke the governor as fast as the machine could run it. It must be dropped, once,
+    /// and the loop must go back to sleeping for the timeout it asked for.
+    #[test]
+    fn a_hung_up_descriptor_is_dropped_and_the_wait_falls_back_to_the_clock() {
+        let (read, write) = pipe();
+        drop(write);
+        let mut wait = waiting_on(vec![read]);
+
+        let started = std::time::Instant::now();
+        assert_eq!(wait.wait(Duration::from_millis(50)), Wakeup::Fallback);
+        assert!(
+            started.elapsed() >= Duration::from_millis(45),
+            "the hung-up descriptor returned without waiting: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !wait.is_event_driven(),
+            "a dead descriptor must not be polled again"
+        );
+
+        let started = std::time::Instant::now();
+        assert_eq!(wait.wait(Duration::from_millis(50)), Wakeup::Fallback);
+        assert!(started.elapsed() >= Duration::from_millis(45));
+    }
+
+    #[test]
+    fn a_hung_up_descriptor_does_not_take_a_healthy_one_with_it() {
+        let (dead, write) = pipe();
+        drop(write);
+        let (live, _live_write) = pipe();
+        let mut wait = waiting_on(vec![dead, live]);
+
+        assert_eq!(wait.wait(Duration::from_millis(50)), Wakeup::Timeout);
+        assert!(wait.is_event_driven(), "the healthy trigger is still armed");
+
+        // And the survivor is the healthy one: this wait blocks for its whole timeout instead of
+        // returning at once on a hang-up.
+        let started = std::time::Instant::now();
+        assert_eq!(wait.wait(Duration::from_millis(50)), Wakeup::Timeout);
+        assert!(
+            started.elapsed() >= Duration::from_millis(45),
+            "the dead descriptor was polled again: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -381,8 +492,11 @@ mod wakeup_tests {
         // keep running exactly as it did before, not refuse to start.
         let dir = tempfile::tempdir().unwrap();
         let cgroup = crate::cgroup::Cgroup::from_directory(dir.path().to_path_buf());
-        let wait =
-            PressureWait::for_cgroup(&cgroup, Duration::from_millis(150), Duration::from_secs(1));
+        let wait = PressureWait::for_cgroups(
+            &[&cgroup],
+            Duration::from_millis(150),
+            Duration::from_secs(1),
+        );
         assert!(!wait.is_event_driven());
     }
 }

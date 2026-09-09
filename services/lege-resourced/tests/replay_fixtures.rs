@@ -23,7 +23,7 @@ fn the_checked_in_traces_replay_identically_through_this_build() {
     let dir = fixtures();
     assert!(dir.is_dir(), "replay fixtures missing at {}", dir.display());
     let reports = replay::replay_path(&dir, GovernorConfig::default()).expect("reading fixtures");
-    assert_eq!(reports.len(), 8, "eight scenarios are checked in");
+    assert_eq!(reports.len(), 9, "nine scenarios are checked in");
 
     let mut diff = String::new();
     for report in &reports {
@@ -60,6 +60,7 @@ fn the_fixtures_still_cover_the_situations_they_were_written_for() {
             "06-attention-and-intent.jsonl",
             "07-pressure-trigger-wakeup.jsonl",
             "08-no-trigger-fallback-sampling.jsonl",
+            "09-critical-victim-change.jsonl",
         ]
     );
 
@@ -163,6 +164,59 @@ fn attention_and_intent_change_which_instance_is_chosen() {
             assert!(report.agrees(), "{}", report.render());
         }
     }
+}
+
+#[test]
+fn the_grace_period_follows_the_victim_rather_than_the_episode() {
+    // `09` is one unbroken Critical episode in which the first victim is terminated and vanishes
+    // while the pressure stays. The tick that first selects the second victim must ask it to
+    // checkpoint and must *not* kill it: the emergency delay is that application's chance to save
+    // its work, so it belongs to whoever was chosen, not to how long the machine has been in
+    // trouble. Bound to the episode instead, the second victim was asked to checkpoint and killed
+    // in the same tick.
+    let records: Vec<lege_resourced::trace::TraceRecord> =
+        std::fs::read_to_string(fixtures().join("09-critical-victim-change.jsonl"))
+            .expect("09")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a fixture record"))
+            .collect();
+
+    let kinds = |record: &lege_resourced::trace::TraceRecord| -> Vec<String> {
+        record
+            .actions
+            .iter()
+            .map(|action| action.kind.clone())
+            .collect()
+    };
+
+    let first_victim = records[0].victim.expect("a victim from the first tick");
+    let transition = records
+        .iter()
+        .position(|record| record.victim.is_some_and(|victim| victim != first_victim))
+        .expect("the fixture must change victim");
+
+    assert!(
+        kinds(&records[transition - 1]).contains(&"kill-cgroup".to_owned()),
+        "the first victim's own delay must have elapsed before it vanishes"
+    );
+    assert!(
+        records[transition]
+            .instances
+            .iter()
+            .all(|instance| instance.instance_id != first_victim),
+        "the first victim is gone by the tick the second one is chosen"
+    );
+    assert_eq!(records[transition].level.to_string(), "critical");
+    let at_transition = kinds(&records[transition]);
+    assert!(at_transition.contains(&"request-checkpoint".to_owned()));
+    assert!(
+        !at_transition.contains(&"kill-cgroup".to_owned()),
+        "the second victim inherited the first one's expired countdown: {at_transition:?}"
+    );
+    assert!(
+        kinds(records.last().expect("records")).contains(&"kill-cgroup".to_owned()),
+        "the second victim must still be killed once its own delay elapses"
+    );
 }
 
 #[test]

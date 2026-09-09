@@ -449,7 +449,14 @@ fn is_idle(app: &AppSample) -> bool {
 #[derive(Debug)]
 pub struct Governor {
     config: GovernorConfig,
-    critical_since: Option<Instant>,
+    /// Which instance the emergency grace period is running for, and since when.
+    ///
+    /// Bound to the victim, not to the episode: the delay is a *specific application's* chance to
+    /// checkpoint before it is terminated, so it belongs to whoever was chosen. Kept for the
+    /// episode instead, it became a countdown the machine was running — and the next instance
+    /// selected inherited an expired one and was killed on the first tick it was ever chosen on,
+    /// having been asked to save its work in the same breath.
+    critical_since: Option<(InstanceId, Instant)>,
     current_level: PressureLevel,
     /// A raw level below `current_level` seen for `pending.1` consecutive ticks so far.
     pending: Option<(PressureLevel, u32)>,
@@ -724,10 +731,21 @@ impl Governor {
     /// One victim, contained hard, and terminated only after the delay has elapsed.
     fn critical_steps(&mut self, now: Instant, ranked: &[&AppSample]) -> Vec<ReclaimStep> {
         let Some(target) = ranked.first() else {
+            // Nobody to contain: whatever grace period was running was somebody else's.
+            self.critical_since = None;
             return Vec::new();
         };
-        let started = self.critical_since.get_or_insert(now);
-        let elapsed = now.saturating_duration_since(*started);
+        let started = match self.critical_since {
+            Some((instance_id, started)) if instance_id == target.instance_id => started,
+            _ => {
+                // A different victim — the first one exited, or the ranking moved. Its grace
+                // period does not transfer: this one is being asked to checkpoint now, and gets
+                // the whole delay to do it in.
+                self.critical_since = Some((target.instance_id, now));
+                now
+            }
+        };
+        let elapsed = now.saturating_duration_since(started);
         let high = target
             .memory_current
             .saturating_mul(8)
@@ -1420,6 +1438,119 @@ mod tests {
             &apps,
         );
         assert!(!again.iter().any(|a| matches!(a, Action::KillCgroup { .. })));
+    }
+
+    /// The grace period belongs to the victim, not to the pressure episode. Critical pressure
+    /// that persists while the chosen instance exits used to leave the countdown running, so the
+    /// next instance chosen was asked to checkpoint and killed in the same tick — a request with
+    /// no time in it at all.
+    #[test]
+    fn a_new_victim_gets_the_whole_grace_period_of_its_own() {
+        let mut governor = Governor::new(GovernorConfig {
+            emergency_kill_delay: Duration::from_secs(3),
+            ..Default::default()
+        });
+        let first = sample(10);
+        let second = sample(9);
+        let start = Instant::now();
+
+        governor.decide(start, PressureLevel::Critical, std::slice::from_ref(&first));
+        let killed = governor.decide(
+            start + Duration::from_secs(4),
+            PressureLevel::Critical,
+            std::slice::from_ref(&first),
+        );
+        assert!(killed.iter().any(|action| matches!(
+            action,
+            Action::KillCgroup { instance_id, .. } if *instance_id == first.instance_id
+        )));
+
+        // The first victim is gone; pressure has not moved. The second is contained and asked to
+        // checkpoint — and not killed, because its own delay has not elapsed.
+        let transition = governor.decide(
+            start + Duration::from_secs(5),
+            PressureLevel::Critical,
+            std::slice::from_ref(&second),
+        );
+        assert!(transition.iter().any(|action| matches!(
+            action,
+            Action::RequestCheckpoint { instance_id, .. } if *instance_id == second.instance_id
+        )));
+        assert!(transition.iter().any(|action| matches!(
+            action,
+            Action::SetMemoryHigh { instance_id, .. } if *instance_id == second.instance_id
+        )));
+        assert!(
+            !transition
+                .iter()
+                .any(|action| matches!(action, Action::KillCgroup { .. })),
+            "the second victim inherited the first one's expired countdown"
+        );
+
+        // Still not, one second before its delay is up.
+        let waiting = governor.decide(
+            start + Duration::from_secs(7),
+            PressureLevel::Critical,
+            std::slice::from_ref(&second),
+        );
+        assert!(
+            !waiting
+                .iter()
+                .any(|action| matches!(action, Action::KillCgroup { .. }))
+        );
+
+        // And then it is, on its own clock.
+        let expired = governor.decide(
+            start + Duration::from_secs(9),
+            PressureLevel::Critical,
+            std::slice::from_ref(&second),
+        );
+        assert!(expired.iter().any(|action| matches!(
+            action,
+            Action::KillCgroup { instance_id, .. } if *instance_id == second.instance_id
+        )));
+    }
+
+    /// The same reset, for the other way a victim can go away: a tick with nothing selectable at
+    /// all (everything left is protected) must not leave a countdown running for whoever is
+    /// chosen next.
+    #[test]
+    fn a_critical_tick_with_no_target_does_not_leave_a_countdown_running() {
+        let mut governor = Governor::new(GovernorConfig {
+            emergency_kill_delay: Duration::from_secs(3),
+            ..Default::default()
+        });
+        let victim = sample(10);
+        let mut shielded = sample(10);
+        shielded.protected = true;
+        let start = Instant::now();
+
+        governor.decide(
+            start,
+            PressureLevel::Critical,
+            std::slice::from_ref(&victim),
+        );
+        assert!(
+            governor
+                .decide(
+                    start + Duration::from_secs(1),
+                    PressureLevel::Critical,
+                    &[shielded],
+                )
+                .is_empty()
+        );
+
+        let returning = governor.decide(
+            start + Duration::from_secs(4),
+            PressureLevel::Critical,
+            &[victim],
+        );
+        assert!(
+            !returning
+                .iter()
+                .any(|action| matches!(action, Action::KillCgroup { .. })),
+            "a tick with no target left the previous victim's countdown running"
+        );
     }
 
     #[test]
