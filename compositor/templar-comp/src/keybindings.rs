@@ -848,6 +848,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         tracing::info!(cards, "entering Taskfield");
         self.switcher = None;
         self.switch_ring = None;
+        self.taskfield_press = None;
         crate::protocols_shell::send_taskfield_state(self);
         // Entering and leaving change *only* where windows are drawn — no `Space` membership, no
         // geometry, no client commit — so a damage-tracked backend has nothing else to notice.
@@ -864,6 +865,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return false;
         }
         tracing::info!("leaving Taskfield");
+        self.taskfield_press = None;
         self.shell_protocol.taskfield_key.clear();
         crate::protocols_shell::send_taskfield_state(self);
         B::request_redraw(self);

@@ -299,6 +299,63 @@ fn press_target_at(candidates: &[PressCandidate], pos: TemplarPoint) -> PressTar
     PressTarget::Nothing
 }
 
+/// What a primary-button press-and-release in the window overview turned out to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskfieldRelease {
+    /// A click. Go to this window and leave; `None` — a click on the scrim — leaves and activates
+    /// nothing, because looking at your windows is not choosing one.
+    Activate(Option<WindowId>),
+    /// A card dragged out of its own section and dropped on another's. Group the two and leave.
+    /// `anchor` is the section's *first* card, so the group whose identity survives a merge is the
+    /// one that was already there (`window_groups::group_windows`).
+    Group { dragged: WindowId, anchor: WindowId },
+    /// A drag that landed nowhere. Nothing happens and the mode stays up: a gesture the user
+    /// started and then thought better of must not also close what they were looking at.
+    Cancel,
+}
+
+/// Decide what a press at `pressed_at` released at `released_at` asked for, over the frozen
+/// layout: one `Vec` of `(window, card)` per section, in the order [`templar_window::taskfield`]
+/// laid them out.
+///
+/// Pure, and the whole of the gesture: the mode already owns the pointer, so there is no grab
+/// state, no threshold timer and nothing to unwind — a press point and a release point are
+/// everything, and the same [`is_click`] slop the name-tag pin uses separates the two readings.
+fn taskfield_release(
+    sections: &[Vec<(WindowId, templar_window::Rect)>],
+    pressed_at: TemplarPoint,
+    released_at: TemplarPoint,
+) -> TaskfieldRelease {
+    let card_at = |pos: TemplarPoint| {
+        sections.iter().enumerate().find_map(|(index, cards)| {
+            cards
+                .iter()
+                .find(|(_, rect)| rect_contains(*rect, pos))
+                .map(|(window_id, _)| (index, *window_id))
+        })
+    };
+    let from = card_at(pressed_at);
+    if is_click(pressed_at, released_at) {
+        return TaskfieldRelease::Activate(from.map(|(_, window_id)| window_id));
+    }
+    // A drag has to start on a card and end on another section's: dragging from the scrim relates
+    // nothing to anything, and dropping inside the section a card is already in is a no-op that
+    // must not be spelled as a regroup.
+    let (Some((source, dragged)), Some((target, _))) = (from, card_at(released_at)) else {
+        return TaskfieldRelease::Cancel;
+    };
+    if source == target {
+        return TaskfieldRelease::Cancel;
+    }
+    match sections.get(target).and_then(|cards| cards.first()) {
+        Some((anchor, _)) => TaskfieldRelease::Group {
+            dragged,
+            anchor: *anchor,
+        },
+        None => TaskfieldRelease::Cancel,
+    }
+}
+
 /// Which window a press should bring forward before it does anything else, or `None` when it
 /// should bring none forward.
 ///
@@ -1044,6 +1101,20 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return;
         }
 
+        // The window overview owns the pointer, and it needs the *release* as much as the press:
+        // a click chooses a card, and a drag beyond `CLICK_SLOP` drops one card's window into
+        // another section's group. `swallowing_press` would eat the release before this could see
+        // it, so the mode is asked first.
+        if !self.session_lock.locked
+            && matches!(
+                self.window_service.presentation(),
+                templar_window::Presentation::Taskfield(_)
+            )
+            && self.taskfield_button(pointer.current_location(), button, button_state)
+        {
+            return;
+        }
+
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             // A click means the user is doing something else — the fallback switcher HUD
             // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
@@ -1183,6 +1254,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// away. Locked sessions show nothing of the windows behind the lock surface, cursor included.
     fn update_perimeter_cursor(&mut self, pos: TemplarPoint) {
         if self.session_lock.locked || self.pointer_gesture_active() {
+            return;
+        }
+        // While a card is being dragged the selection ring is the drop target: one ring, already
+        // drawn, moved — rather than a second widget that would be the dragged card's ghost. The
+        // ring is on the card the release would group *into*, which is the thing the gesture is
+        // about.
+        if let Some(pressed_at) = self.taskfield_press
+            && !is_click(pressed_at, pos)
+            && let PressTarget::Window(window_id) = press_target_at(&self.press_candidates(), pos)
+            && self.window_service.taskfield_selected(Some(window_id))
+        {
+            crate::protocols_shell::send_taskfield_state(self);
+            B::request_redraw(self);
             return;
         }
         let shape = match press_target_at(&self.press_candidates(), pos) {
@@ -1500,6 +1584,72 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .is_some_and(|pointer| pointer.is_grabbed())
     }
 
+    /// One pointer button while the window overview is up. `true` when the mode took the event and
+    /// no client may see it.
+    ///
+    /// The shell's own overview chrome is the one exception: its surface covers the output but
+    /// accepts input only where it drew something, so a point its input region takes is its query
+    /// field or its menu and goes straight through.
+    fn taskfield_button(
+        &mut self,
+        location: Point<f64, Logical>,
+        button: u32,
+        state: ButtonState,
+    ) -> bool {
+        if self.surface_under(location).is_some() {
+            self.taskfield_press = None;
+            return false;
+        }
+        // Secondary and middle buttons are swallowed and do nothing. A card's context menu —
+        // close, park, ungroup — is the shell's, drawn over its own Presentation surface; the
+        // compositor has no menu widget, and half of one would be worse than none.
+        if button != BTN_LEFT {
+            return true;
+        }
+        let pos = to_templar_point(location);
+        if state == ButtonState::Pressed {
+            self.taskfield_press = Some(pos);
+            return true;
+        }
+        let Some(pressed_at) = self.taskfield_press.take() else {
+            return true;
+        };
+        let templar_window::Presentation::Taskfield(taskfield) = self.window_service.presentation()
+        else {
+            return true;
+        };
+        let sections: Vec<Vec<(WindowId, templar_window::Rect)>> = taskfield
+            .sections
+            .iter()
+            .map(|section| {
+                section
+                    .cards
+                    .iter()
+                    .map(|card| (card.window, card.rect))
+                    .collect()
+            })
+            .collect();
+        match taskfield_release(&sections, pressed_at, pos) {
+            TaskfieldRelease::Cancel => {}
+            TaskfieldRelease::Activate(window_id) => {
+                self.leave_taskfield();
+                if let Some(window_id) = window_id {
+                    activate_window(self, window_id);
+                }
+                crate::space_sync::sync_after_change(self);
+            }
+            TaskfieldRelease::Group { dragged, anchor } => {
+                // Grouping is the same one entry point the band drop and `Super+G` take, so the
+                // three cannot drift: the target is the anchor, and the dragged window is placed
+                // beside it. Then out of the mode, because the answer has been given.
+                self.leave_taskfield();
+                crate::window_groups::group_windows(self, anchor, dragged);
+                crate::space_sync::sync_after_change(self);
+            }
+        }
+        true
+    }
+
     /// Returns whether the press was the compositor's own — one of the affordances on a window's
     /// tag strip — and must therefore not also be delivered to a client.
     fn handle_press_for_focus_or_drag(
@@ -1513,31 +1663,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
         let pos = to_templar_point(location);
         let target = self.press_target_at(pos);
-
-        // A click in the window overview is the one act of the mode that chooses: the card under
-        // the pointer is activated and the mode ends. A click on *nothing* ends it too and
-        // activates nothing at all — looking at your windows is not choosing one. Either way the
-        // press is the compositor's and no client sees it, so a card cannot be scrolled or typed
-        // into while it is a picture of itself.
-        if matches!(
-            self.window_service.presentation(),
-            templar_window::Presentation::Taskfield(_)
-        ) {
-            // Unless the shell's own overview chrome wants it: its surface covers the output but
-            // accepts input only where it drew something (its `wl_surface` input region), so a
-            // press its region takes is its query field or its menu, not a card.
-            if self.surface_under(location).is_some() {
-                return false;
-            }
-            if button == BTN_LEFT {
-                self.leave_taskfield();
-                if let PressTarget::Window(window_id) = target {
-                    activate_window(self, window_id);
-                }
-                crate::space_sync::sync_after_change(self);
-            }
-            return true;
-        }
 
         // Click to focus, and only click — TemplarOS does not follow the mouse. Pressing anywhere a
         // window owns brings that window forward first: its title band, its resize affordances
@@ -2175,6 +2300,74 @@ mod tests {
                 "outside the card at {x},{y}"
             );
         }
+    }
+
+    /// The overview's one pointer gesture, decided from two points and the frozen layout: a click
+    /// chooses, a drag between sections groups, and anything else changes nothing.
+    #[test]
+    fn a_click_chooses_a_card_and_a_drag_between_sections_groups_them() {
+        // Two sections, two cards each, laid out the way `taskfield::layout` stacks them.
+        let sections = vec![
+            vec![
+                (WindowId(1), Rect::new(100, 100, 200, 120)),
+                (WindowId(2), Rect::new(320, 100, 200, 120)),
+            ],
+            vec![
+                (WindowId(3), Rect::new(100, 300, 200, 120)),
+                (WindowId(4), Rect::new(320, 300, 200, 120)),
+            ],
+        ];
+        let inside = at(150, 150);
+
+        // A press and release on the same card, within the slop: go there.
+        assert_eq!(
+            taskfield_release(&sections, inside, at(150 + CLICK_SLOP, 150)),
+            TaskfieldRelease::Activate(Some(WindowId(1)))
+        );
+        // A click on the scrim: leave, and activate nothing. This is the acceptance.
+        assert_eq!(
+            taskfield_release(&sections, at(700, 700), at(700, 700)),
+            TaskfieldRelease::Activate(None)
+        );
+
+        // Dragged out of its section and onto the other's: group, with that section's *first*
+        // card as the anchor — the group already there is the one whose identity survives.
+        assert_eq!(
+            taskfield_release(&sections, inside, at(400, 350)),
+            TaskfieldRelease::Group {
+                dragged: WindowId(1),
+                anchor: WindowId(3),
+            }
+        );
+        // And the other way, so the anchor is not simply "the lower one".
+        assert_eq!(
+            taskfield_release(&sections, at(400, 350), inside),
+            TaskfieldRelease::Group {
+                dragged: WindowId(4),
+                anchor: WindowId(1),
+            }
+        );
+
+        // Within one section there is nothing to relate: those windows are already one unit.
+        assert_eq!(
+            taskfield_release(&sections, inside, at(400, 150)),
+            TaskfieldRelease::Cancel
+        );
+        // Dragged from the scrim, or dropped on it: a gesture the user thought better of leaves
+        // the mode up rather than closing what they were looking at.
+        assert_eq!(
+            taskfield_release(&sections, at(700, 700), inside),
+            TaskfieldRelease::Cancel
+        );
+        assert_eq!(
+            taskfield_release(&sections, inside, at(700, 700)),
+            TaskfieldRelease::Cancel
+        );
+        // No cards at all: every reading is "nothing".
+        assert_eq!(
+            taskfield_release(&[], inside, at(400, 350)),
+            TaskfieldRelease::Cancel
+        );
     }
 
     /// Eight points around one window's perimeter, two per side, and the four cursor names they
