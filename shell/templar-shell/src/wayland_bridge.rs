@@ -94,7 +94,7 @@ use templar_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 7;
+const SHELL_PROTOCOL_VERSION: u32 = 8;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule

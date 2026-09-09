@@ -41,6 +41,7 @@ check-interfaces:
     cargo run -q -p xtask -- check-packaging
     cargo run -q -p xtask -- check-assets
     cargo run -q -p xtask -- check-actions
+    cargo run -q -p xtask -- check-wayland-versions
 
 # `templar doctor` against this machine
 doctor *ARGS:

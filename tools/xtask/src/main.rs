@@ -40,6 +40,9 @@ enum Command {
     /// Every `ActionDecl` with a `cli_verb` names a real `templar` subcommand, every action a shell
     /// surface performs is declared, and every action with a chord also has a pointer route.
     CheckActions,
+    /// Every `since` in the private Wayland protocols is reachable, and both ends' negotiated
+    /// version constants are the version the XML actually declares.
+    CheckWaylandVersions,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
     Copyright,
     /// Build every package in the component matrix as one identified set.
@@ -364,6 +367,136 @@ fn pointer_routes(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(routes)
 }
 
+/// Where each private protocol's negotiated version constant is written down. Both ends clamp to
+/// their own constant, so both must reach the version the XML declares before a new member can be
+/// used — and neither may claim a version the XML does not define.
+const PROTOCOL_VERSION_CONSTANTS: &[(&str, &str, &str)] = &[
+    (
+        "templar_shell_manager_v1",
+        "compositor/templar-comp/src/protocols_shell.rs",
+        "pub const SHELL_PROTOCOL_VERSION: u32 = ",
+    ),
+    (
+        "templar_shell_manager_v1",
+        "shell/templar-shell/src/wayland_bridge.rs",
+        "const SHELL_PROTOCOL_VERSION: u32 = ",
+    ),
+];
+
+/// The private Wayland protocols are append-only and versioned by hand, and nothing else checks
+/// them: `check-interface-signatures` reads `interfaces/dbus/*.xml` and never looks here.
+///
+/// Most of the discipline is enforced by the compiler for free, and deliberately so — the bindings
+/// are generated from the XML by `wayland_scanner::generate_server_code!` at compile time, so
+/// adding a request or an event breaks every `match` that does not handle it until someone does.
+/// What the compiler cannot see is the *numbers*, and this is them:
+///
+/// * a `since` above its interface's `version` names a member no peer can ever reach;
+/// * a toplevel list older than the toplevels it creates silently makes the newer toplevel events
+///   unreachable, because objects are created at the list resource's negotiated version;
+/// * a version constant above the XML's advertises members that do not exist, and one below it
+///   means the addition is not wired up yet.
+fn check_wayland_versions(root: &Path) -> Result<()> {
+    let dir = root.join("interfaces/wayland");
+    let mut versions: BTreeMap<String, u32> = BTreeMap::new();
+    let mut problems: Vec<String> = Vec::new();
+    let mut members = 0usize;
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "xml"))
+        .collect();
+    files.sort();
+
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        let mut current: Option<(String, u32)> = None;
+        for line in text.lines() {
+            if let Some(name) = quoted_after(line, "<interface name=\"") {
+                let version = quoted_after(line, "version=\"")
+                    .and_then(|raw| raw.parse::<u32>().ok())
+                    .unwrap_or(1);
+                versions.insert(name.clone(), version);
+                current = Some((name, version));
+                continue;
+            }
+            let Some(since) =
+                quoted_after(line, "since=\"").and_then(|raw| raw.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            members += 1;
+            if let Some((interface, version)) = &current
+                && since > *version
+            {
+                problems.push(format!(
+                    "{interface} is version {version} but declares a member since={since}: no peer can reach it"
+                ));
+            }
+        }
+    }
+
+    // Objects are created at the list resource's negotiated version, so a lower list version
+    // silently makes newer toplevel events unreachable. The XML says so; this is what checks it.
+    if let (Some(list), Some(toplevel)) = (
+        versions.get("templar_shell_toplevel_list_v1"),
+        versions.get("templar_shell_toplevel_v1"),
+    ) && list < toplevel
+    {
+        problems.push(format!(
+            "templar_shell_toplevel_list_v1 is version {list}, below templar_shell_toplevel_v1's {toplevel}: \
+             toplevels are created at the list's version, so its newer events would be unreachable"
+        ));
+    }
+
+    for (interface, path, needle) in PROTOCOL_VERSION_CONSTANTS {
+        let Some(declared) = versions.get(*interface) else {
+            problems.push(format!(
+                "{interface} is named by {path} but not by any protocol XML"
+            ));
+            continue;
+        };
+        let file = root.join(path);
+        let text = std::fs::read_to_string(&file)
+            .with_context(|| format!("reading {}", file.display()))?;
+        let Some(value) = text
+            .split_once(needle)
+            .and_then(|(_, rest)| rest.split(';').next())
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+        else {
+            problems.push(format!("{path} has no `{needle}<n>;`"));
+            continue;
+        };
+        if value != *declared {
+            problems.push(format!(
+                "{path} negotiates {interface} at version {value}, but the XML declares {declared} — \
+                 bump the constant when wiring the addition up, and never above the XML"
+            ));
+        }
+    }
+
+    if !problems.is_empty() {
+        for problem in &problems {
+            eprintln!("check-wayland-versions: {problem}");
+        }
+        bail!("{} Wayland versioning problem(s)", problems.len());
+    }
+    println!(
+        "check-wayland-versions: {} interface(s), {members} versioned member(s), both ends in step",
+        versions.len()
+    );
+    Ok(())
+}
+
+/// The contents of the first `"…"` after `needle` on `line`.
+fn quoted_after(line: &str, needle: &str) -> Option<String> {
+    let (_, rest) = line.split_once(needle)?;
+    rest.split('"').next().map(ToString::to_string)
+}
+
 /// Every `.rs` file under `dir`, recursively.
 fn rust_sources(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -446,6 +579,7 @@ fn main() -> Result<()> {
         Command::CheckProxies => check_proxies(&root),
         Command::CheckAssets => check_assets(&root),
         Command::CheckActions => check_actions(&root),
+        Command::CheckWaylandVersions => check_wayland_versions(&root),
         Command::Copyright => copyright(&root),
         Command::BuildSet {
             dry_run,
@@ -2147,6 +2281,17 @@ fn copyright(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod extraction_tests {
+    #[test]
+    fn a_quoted_attribute_is_read_up_to_its_closing_quote() {
+        let line = r#"  <interface name="templar_shell_manager_v1" version="8">"#;
+        assert_eq!(
+            super::quoted_after(line, "<interface name=\""),
+            Some("templar_shell_manager_v1".into())
+        );
+        assert_eq!(super::quoted_after(line, "version=\""), Some("8".into()));
+        assert_eq!(super::quoted_after(line, "since=\""), None);
+    }
+
     use super::{
         GARDEN_HOOK_PAYLOAD, VendoredAssets, chord_route_problems, client_interface_names,
         colliding_destinations, declared_actions, dependency_drift, garden_hook_delivery_problems,
