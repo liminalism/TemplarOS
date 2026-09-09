@@ -6,6 +6,7 @@
 # AKR: a rebuildable cache and disposable agent notes.
 .akr/cache/
 .agent/scratch/
+.agent/handoffs/
 
 # Upstream fork checkouts (pinned by distro/forks/manifest.toml, fetched by `just forks-fetch`)
 /forks/
@@ -26,7 +27,7 @@
 /debian/files
 /debian/*.debhelper.log
 /debian/*.substvars
-/debian/legeos-*/
+/debian/templaros-*/
 /debian/tmp/
 /vendor/
 
