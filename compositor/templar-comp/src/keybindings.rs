@@ -66,6 +66,57 @@ pub enum RecoveryAction {
     ParkFocused,
     /// `Super+grave`: show the drop-down terminal, or put it away again (§4.6). Never closes it.
     ToggleTerminal,
+    /// A key pressed while the window overview owns the keyboard ([`taskfield_key`]).
+    Taskfield(TaskfieldKey),
+}
+
+/// What a key does while `Presentation::Taskfield` is up. The mode is modal — every key is the
+/// compositor's, none reaches a client — so this table is total in the sense that matters: a key
+/// it does not name is swallowed rather than delivered somewhere the user cannot see.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskfieldKey {
+    /// An arrow: the next card in reading order (`templar_window::taskfield::step`).
+    Step(templar_window::Direction),
+    /// Enter: go to the selected window, and leave. The one act of the mode that activates
+    /// anything — leaving any other way activates nothing at all.
+    Activate,
+    /// Escape: clear the query if there is one, else leave, changing nothing.
+    Escape,
+    /// Delete: *ask* the selected window's client to close (`xdg_toplevel.close`). Asking, never
+    /// killing: a client with unsaved work gets its own say, exactly as the band's close tag does.
+    Close,
+    /// A printable character typed into the query.
+    Type(char),
+    /// Backspace: one character back out of it.
+    Backspace,
+}
+
+/// Which [`TaskfieldKey`], if any, `keysym` performs. Consulted only after
+/// [`recovery_action`] has declined the key, so the reserved combinations — `Super+Tab` to leave,
+/// `Ctrl+Alt+Escape`, the Home routes — keep working inside the mode and are not swallowed by it.
+#[must_use]
+pub fn taskfield_key(modifiers: ModifiersState, keysym: Keysym) -> Option<TaskfieldKey> {
+    use templar_window::Direction;
+    if modifiers.ctrl || modifiers.alt || modifiers.logo {
+        return None;
+    }
+    match keysym.raw() {
+        keysyms::KEY_Left => return Some(TaskfieldKey::Step(Direction::Left)),
+        keysyms::KEY_Right => return Some(TaskfieldKey::Step(Direction::Right)),
+        keysyms::KEY_Up => return Some(TaskfieldKey::Step(Direction::Up)),
+        keysyms::KEY_Down => return Some(TaskfieldKey::Step(Direction::Down)),
+        keysyms::KEY_Return | keysyms::KEY_KP_Enter => return Some(TaskfieldKey::Activate),
+        keysyms::KEY_Escape => return Some(TaskfieldKey::Escape),
+        keysyms::KEY_Delete | keysyms::KEY_KP_Delete => return Some(TaskfieldKey::Close),
+        keysyms::KEY_BackSpace => return Some(TaskfieldKey::Backspace),
+        _ => {}
+    }
+    // Anything that produces a character goes into the query — including a space, which is why
+    // this is checked after the named keys and not by `char::is_alphanumeric`.
+    keysym
+        .key_char()
+        .filter(|character| !character.is_control())
+        .map(TaskfieldKey::Type)
 }
 
 /// How many spatial hops one step may take to find the next window along. A first rule rather
@@ -450,6 +501,65 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             RecoveryAction::CycleFocusForward | RecoveryAction::CycleFocusBackward => {
                 self.step_switcher(false, matches!(action, RecoveryAction::CycleFocusForward));
             }
+            RecoveryAction::Taskfield(key) => self.apply_taskfield_key(key),
+        }
+    }
+
+    /// One key, while the window overview owns the keyboard.
+    ///
+    /// Only [`TaskfieldKey::Activate`] activates anything. Leaving any other way — Escape, the
+    /// chord again, a click on nothing — puts the scene back exactly as it was and hands the
+    /// keyboard back to the window that already had it, because "I looked at my windows" is not
+    /// "I chose one".
+    fn apply_taskfield_key(&mut self, key: TaskfieldKey) {
+        let templar_window::Presentation::Taskfield(taskfield) = self.window_service.presentation()
+        else {
+            return;
+        };
+        let selected = taskfield.selected;
+        let changed = match key {
+            TaskfieldKey::Step(direction) => {
+                let next =
+                    templar_window::taskfield::step(&taskfield.sections, selected, direction);
+                next.is_some() && self.window_service.taskfield_selected(next)
+            }
+            TaskfieldKey::Activate => {
+                self.leave_taskfield();
+                if let Some(window_id) = selected {
+                    crate::input::activate_window(self, window_id);
+                }
+                crate::space_sync::sync_after_change(self);
+                return;
+            }
+            TaskfieldKey::Escape => {
+                if taskfield.query.is_empty() {
+                    self.leave_taskfield();
+                    crate::space_sync::sync_after_change(self);
+                    return;
+                }
+                self.window_service.taskfield_query(String::new())
+            }
+            TaskfieldKey::Close => {
+                if let Some(window_id) = selected {
+                    crate::backend::close_window(self, window_id);
+                }
+                // The card goes when the client actually closes the window, not when it is asked.
+                false
+            }
+            TaskfieldKey::Type(character) => {
+                let mut query = taskfield.query.clone();
+                query.push(character);
+                self.window_service.taskfield_query(query)
+            }
+            TaskfieldKey::Backspace => {
+                let mut query = taskfield.query.clone();
+                query.pop();
+                self.window_service.taskfield_query(query)
+            }
+        };
+        if changed {
+            crate::protocols_shell::send_taskfield_state(self);
+            B::request_redraw(self);
         }
     }
 
@@ -928,6 +1038,62 @@ mod tests {
                 "Ctrl+Tab must reach the application"
             );
         }
+    }
+
+    /// The overview's modal table: arrows move, Enter chooses, Escape backs out, Delete asks,
+    /// and everything else printable is a query. A combination `recovery_action` claims is never
+    /// reached here — the caller asks it first — which is what keeps `Super+Tab` able to close a
+    /// mode that swallows every other key.
+    #[test]
+    fn the_overview_reads_arrows_enter_escape_and_typing() {
+        use templar_window::Direction;
+        let none = mods(false, false, false);
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Right)),
+            Some(TaskfieldKey::Step(Direction::Right))
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Up)),
+            Some(TaskfieldKey::Step(Direction::Up))
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Return)),
+            Some(TaskfieldKey::Activate)
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Escape)),
+            Some(TaskfieldKey::Escape)
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Delete)),
+            Some(TaskfieldKey::Close)
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_BackSpace)),
+            Some(TaskfieldKey::Backspace)
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_f)),
+            Some(TaskfieldKey::Type('f'))
+        );
+        // A space is a query character, not a named key — which is why the named keys are
+        // checked first rather than by asking whether the character is alphanumeric.
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_space)),
+            Some(TaskfieldKey::Type(' '))
+        );
+        // A modified key belongs to `recovery_action` or to nothing: typing into the query is
+        // what an *unmodified* key does.
+        assert_eq!(taskfield_key(logo(), Keysym::new(keysyms::KEY_f)), None);
+        assert_eq!(
+            taskfield_key(mods(true, false, false), Keysym::new(keysyms::KEY_f)),
+            None
+        );
+        // Shift is not a modifier here: it is how a capital letter is typed.
+        assert_eq!(
+            taskfield_key(mods(false, false, true), Keysym::new(keysyms::KEY_F)),
+            Some(TaskfieldKey::Type('F'))
+        );
     }
 
     #[test]

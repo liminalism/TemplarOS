@@ -776,6 +776,50 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
+    /// The pressure overlay's modal keyboard capture. `true` when the overlay took the key and
+    /// nothing else should look at it.
+    fn overlay_took_key<I: InputBackend>(
+        &mut self,
+        keyboard: &smithay::input::keyboard::KeyboardHandle<Self>,
+        event: &I::KeyboardKeyEvent,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
+        // The pressure overlay is modal while it is showing: every key is captured here, never
+        // forwarded to whatever client happened to have focus before it appeared (COMPOSITOR.md's
+        // "Layer::Recovery ... above everything except the lock screen"). Gated on `!locked` for
+        // the same reason `run_recovery_action` below is: a hostile overlay state must not become
+        // a way to interact with anything while the session is locked (`src/session_lock.rs`'s
+        // module doc on partial input isolation).
+        if self.session_lock.locked || self.recovery_protocol.pressure_overlay.is_none() {
+            return false;
+        }
+        let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
+        let action = keyboard.input::<Option<crate::keybindings::OverlayAction>, _>(
+            self,
+            event.key_code(),
+            event.state(),
+            serial,
+            time,
+            |_, modifiers, handle| {
+                // Always `Intercept`, even for a key that maps to nothing: `Forward` would
+                // hand it to the client behind the overlay, which is exactly what a modal
+                // overlay must not do.
+                if !pressed {
+                    return FilterResult::Intercept(None);
+                }
+                FilterResult::Intercept(crate::keybindings::overlay_action(
+                    *modifiers,
+                    handle.modified_sym(),
+                ))
+            },
+        );
+        if let Some(Some(action)) = action {
+            self.apply_overlay_action(action);
+        }
+        true
+    }
+
     fn on_keyboard<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(event);
@@ -783,40 +827,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return;
         };
 
-        // The pressure overlay is modal while it is showing: every key is captured here, never
-        // forwarded to whatever client happened to have focus before it appeared (COMPOSITOR.md's
-        // "Layer::Recovery ... above everything except the lock screen"). Gated on `!locked` for
-        // the same reason `run_recovery_action` below is: a hostile overlay state must not become
-        // a way to interact with anything while the session is locked (`src/session_lock.rs`'s
-        // module doc on partial input isolation).
-        if !self.session_lock.locked && self.recovery_protocol.pressure_overlay.is_some() {
-            let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
-            let action = keyboard.input::<Option<crate::keybindings::OverlayAction>, _>(
-                self,
-                event.key_code(),
-                event.state(),
-                serial,
-                time,
-                |_, modifiers, handle| {
-                    // Always `Intercept`, even for a key that maps to nothing: `Forward` would
-                    // hand it to the client behind the overlay, which is exactly what a modal
-                    // overlay must not do.
-                    if !pressed {
-                        return FilterResult::Intercept(None);
-                    }
-                    FilterResult::Intercept(crate::keybindings::overlay_action(
-                        *modifiers,
-                        handle.modified_sym(),
-                    ))
-                },
-            );
-            if let Some(Some(action)) = action {
-                self.apply_overlay_action(action);
-            }
+        if self.overlay_took_key::<I>(&keyboard, event, serial, time) {
             return;
         }
 
         let home_revealed = self.window_service.home_revealed();
+        // The window overview is modal: every key is the compositor's while it is up, and none
+        // reaches the client behind a card. The reserved combinations still run first, so
+        // `Super+Tab` closes the mode, `Ctrl+Alt+Escape` still escapes, and a bare Super still
+        // goes Home — a modal mode that swallowed the recovery chords would be a trap.
+        let in_taskfield = matches!(
+            self.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        );
         let action = keyboard.input::<Option<crate::keybindings::RecoveryAction>, _>(
             self,
             event.key_code(),
@@ -858,10 +881,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     crate::keybindings::SuperTapDecision::Forward => {}
                 }
                 if event.state() != smithay::backend::input::KeyState::Pressed {
+                    // A release of a key whose press was swallowed must be swallowed too, or the
+                    // client behind a card sees half a keystroke it never got the start of.
+                    if in_taskfield {
+                        return FilterResult::Intercept(None);
+                    }
                     return FilterResult::Forward;
                 }
                 match crate::keybindings::recovery_action(*modifiers, keysym, home_revealed) {
                     Some(action) => FilterResult::Intercept(Some(action)),
+                    None if in_taskfield => FilterResult::Intercept(
+                        crate::keybindings::taskfield_key(*modifiers, keysym)
+                            .map(crate::keybindings::RecoveryAction::Taskfield),
+                    ),
                     None => FilterResult::Forward,
                 }
             },
@@ -1091,6 +1123,31 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// Every visible window as the hit-test sees it, top first. Shared by the press path and the
     /// motion path, so what the cursor promises and what a press then does cannot disagree.
     fn press_candidates(&self) -> Vec<PressCandidate> {
+        // In the window overview a window owns its *card* and nothing else — the same rectangle
+        // the renderer drew it into (`WindowService::presentation_rect`), so a card is clicked
+        // exactly where it is seen. It wears no frame there: no band, no resize zone, no control
+        // tags, because none of them was drawn.
+        if matches!(
+            self.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        ) {
+            return self
+                .window_service
+                .stacking_order()
+                .into_iter()
+                .filter_map(|window_id| {
+                    Some(PressCandidate {
+                        window_id,
+                        geometry: self.window_service.presentation_rect(window_id)?,
+                        is_client: true,
+                        has_frame: false,
+                        maximized: false,
+                        strip: None,
+                        strip_over_client: false,
+                    })
+                })
+                .collect();
+        }
         self.window_service
             .stacking_order()
             .into_iter()
@@ -1446,6 +1503,25 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let pos = to_templar_point(location);
         let target = self.press_target_at(pos);
 
+        // A click in the window overview is the one act of the mode that chooses: the card under
+        // the pointer is activated and the mode ends. A click on *nothing* ends it too and
+        // activates nothing at all — looking at your windows is not choosing one. Either way the
+        // press is the compositor's and no client sees it, so a card cannot be scrolled or typed
+        // into while it is a picture of itself.
+        if matches!(
+            self.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        ) {
+            if button == BTN_LEFT {
+                self.leave_taskfield();
+                if let PressTarget::Window(window_id) = target {
+                    activate_window(self, window_id);
+                }
+                crate::space_sync::sync_after_change(self);
+            }
+            return true;
+        }
+
         // Click to focus, and only click — TemplarOS does not follow the mouse. Pressing anywhere a
         // window owns brings that window forward first: its title band, its resize affordances
         // and its client area alike. Doing it before anything else means a drag started from the
@@ -1621,6 +1697,28 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             let origin = self.space.output_geometry(output)?.loc.to_f64();
             let surface = self.session_lock.surfaces.get(&output.name())?;
             return Some((surface.wl_surface().clone(), origin));
+        }
+        // The window overview is modal for the pointer exactly as it is for the keyboard: the
+        // only surface that can be pointed at is the shell's `Layer::Presentation` one, and only
+        // inside its own rectangle. Every client window on screen is a *picture* of itself there
+        // (`press_candidates`), and a picture takes no pointer events. Guarded here, in the one
+        // hit-test every pointer path routes through, so no later caller can forget it.
+        if matches!(
+            self.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        ) {
+            let presentation = self
+                .window_service
+                .stacking_order()
+                .into_iter()
+                .find(|id| {
+                    self.window_service.layer_of(*id) == Some(templar_window::Layer::Presentation)
+                })?;
+            let window = self.windows.element_of(presentation)?;
+            let location = self.space.element_location(window)?;
+            return window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(s, p)| (s, (p + location).to_f64()));
         }
         self.space
             .element_under(pos)
@@ -2022,6 +2120,43 @@ mod tests {
             maximized: true,
             strip: Some(templar_window::tag_strip(output)),
             strip_over_client: true,
+        }
+    }
+
+    /// A card as `press_candidates` builds one in the window overview: the presentation
+    /// rectangle, and nothing else the window normally owns.
+    fn card(raw: u64, rect: Rect) -> PressCandidate {
+        PressCandidate {
+            window_id: WindowId(raw),
+            geometry: rect,
+            is_client: true,
+            has_frame: false,
+            maximized: false,
+            strip: None,
+            strip_over_client: false,
+        }
+    }
+
+    /// In the overview a window is a picture of itself: the whole card chooses it, and none of
+    /// the affordances it wears in the ordinary scene exist — there is no band to drag, no tag
+    /// to press and no resize zone outside it, because none of them was drawn.
+    #[test]
+    fn a_card_is_chosen_anywhere_and_offers_no_affordance() {
+        let candidates = [card(1, Rect::new(200, 100, 320, 180))];
+        for (x, y) in [(200, 100), (360, 190), (519, 279)] {
+            assert_eq!(
+                press_target_at(&candidates, at(x, y)),
+                PressTarget::Window(WindowId(1)),
+                "inside the card at {x},{y}"
+            );
+        }
+        // Just outside every edge: nothing, where a framed window would have offered a resize.
+        for (x, y) in [(199, 190), (520, 190), (360, 99), (360, 280), (198, 98)] {
+            assert_eq!(
+                press_target_at(&candidates, at(x, y)),
+                PressTarget::Nothing,
+                "outside the card at {x},{y}"
+            );
         }
     }
 
