@@ -25,11 +25,13 @@
       <arg name="state_json" type="s" direction="out"/>
     </method>
 
-    <!-- Set the backlight, as a percentage, clamped to 1..=100.
+    <!-- Set the backlight, as a percentage, clamped to 10..=100.
 
-         The floor is 1, not 0: a backlight really can be driven to a black screen, and on most
+         The floor is 10, not 0: a backlight really can be driven to a black screen, and on most
          panels there is then no way to see the control that would turn it back up. Turning the
-         display off is a different action from dimming it, and this is not it. -->
+         display off is a different action from dimming it, and this is not it. Ten rather than
+         one because a 1% panel is unreadable in a lit room, which is the same fault a step later;
+         the floor is here rather than in each caller so there is one number for all of them. -->
     <method name="SetBrightness">
       <arg name="percent" type="u" direction="in"/>
     </method>

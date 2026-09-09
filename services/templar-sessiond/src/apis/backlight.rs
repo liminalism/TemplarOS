@@ -29,7 +29,13 @@ pub const SYSFS_BACKLIGHT: &str = "/sys/class/backlight";
 /// Not zero. A backlight really can be driven to a black screen, and on most panels there is then
 /// no way to see the control that would turn it back up. Turning the display off is a different
 /// action from dimming it, and this is not it.
-pub const MINIMUM_PERCENT: u32 = 1;
+///
+/// Ten rather than one, because "not black" was never the whole requirement: on a panel with a
+/// fine scale, 1% is a screen a person cannot read in a lit room, and every caller — the shell's
+/// slider, `brightness.decrease`, the CLI — could reach it. The floor belongs here rather than in
+/// any one of them, so there is one number and nobody can dim past it. A slider whose track starts
+/// at the floor then spends none of its length on levels the display cannot be used at.
+pub const MINIMUM_PERCENT: u32 = 10;
 
 /// What `Backlight1.Get` answers.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -166,8 +172,9 @@ fn percent_of(raw: u64, max_raw: u64) -> u32 {
     ((u128::from(raw) * 100 + u128::from(max_raw) / 2) / u128::from(max_raw)).min(100) as u32
 }
 
-/// A percentage to raw units, never below one raw step: on a 12-step backlight, 1% would round to
-/// zero and black the screen, which is exactly what [`MINIMUM_PERCENT`] exists to prevent.
+/// A percentage to raw units, never below one raw step: on a four-step backlight even
+/// [`MINIMUM_PERCENT`] would round to zero and black the screen, which is exactly what that floor
+/// exists to prevent.
 fn raw_of(percent: u32, max_raw: u64) -> u64 {
     let percent = u64::from(percent.clamp(MINIMUM_PERCENT, 100));
     ((max_raw * percent + 50) / 100).max(1).min(max_raw)
@@ -344,6 +351,9 @@ mod tests {
         let writer = Arc::new(FakeWriter::default());
         let api = BacklightApi::new(SysfsBacklight::new(root.path()), writer.clone());
 
+        // The floor is a decision, not an accident: a number this one is spelled out so lowering
+        // it has to be deliberate.
+        assert_eq!(MINIMUM_PERCENT, 10);
         assert_eq!(api.apply(0).await.unwrap(), Some(MINIMUM_PERCENT));
         assert_eq!(api.apply(200).await.unwrap(), Some(100));
         let calls = writer.0.lock().unwrap();
