@@ -1418,6 +1418,7 @@ mod tests {
             (RecoveryAction::StepLeft, "window.step-left"),
             (RecoveryAction::ParkFocused, "window.park"),
             (RecoveryAction::OpenTaskfield, "taskfield.open"),
+            (RecoveryAction::RevealLauncher, "launcher.show-all"),
             (
                 RecoveryAction::WithinUnitForward,
                 "window.within-unit-forward",
