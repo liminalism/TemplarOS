@@ -1318,6 +1318,17 @@ record legeos.papercut.the-lege-field-integration-proptest-reported/1 : papercut
     created_at 2026-08-24
 }
 
+record legeos.papercut.the-lege-templar-rename-8b2ae24-rewrote-seven/1 : papercut {
+    title "The lege->templar rename (8b2ae24) rewrote seven immutable registered…"
+    state verified
+    statement """
+        The lege->templar rename (8b2ae24) rewrote seven immutable registered sources under sources/external (hash mismatch, AKR-S021) and left 34 observation `watches` globs and 525 scope globs naming crates/lege-*, compositor/lege-comp, shell/lege-shell paths that no longer exist (AKR-G022/G023), so `akr check` exits 1 and knowledge.start refused until the sources were restored byte-for-byte. The rename script should have skipped sources/ and rewritten the ledger's path globs; the 559 stale globs still need a bulk path rewrite.
+        """
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    author "claude"
+    created_at 2026-09-09
+}
+
 record legeos.papercut.the-live-medium-s-getty-banner-reads-ubuntu-26/1 : papercut {
     title "The live medium's getty banner reads \"Ubuntu 26.04.1 LTS legeos-live\"…"
     state verified

@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:e0960e18674d3f8e222a9c07fc16febf6f08587b54f67edde263f8d365efda06"
+    source_graph "sha256:c44850697bcd7adbf142ad9b646da3e24226688688517ce12fd81696b9c25d1b"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:140ab71ed95a755f2400ba05fb1d0c85a65b98805cf32f47cb46cc745c2e3987"
-    records 295
+    hash "sha256:49d5474b220e032cdade843007985ef6000fa07fb5a0ffa0ad4527e0d110163b"
+    records 300
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:e72a900d28bde6819700a349a800fd68c4bf506319dd9b708c3fd0469abdc9fd"
-    records 141
+    hash "sha256:0cca757cb1a1f4749e6273efe7a7fa032549af4816b3940ca5774e53a519081e"
+    records 143
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:b9eeb6d45eb62e1edbecd34171949ec0ba0521cb8f8e2bdd3626e467e43dac94"
-    records 145
+    hash "sha256:ae23d428a140cb6fdc301db36952d618feba72a226e70baa77e18353ca3ac1ed"
+    records 146
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -4988,9 +4988,19 @@ seal @legeos.evidence.home-file-brokered-open-20260824/1 {
     hash "sha256:ff2b17b1b83d92e83a4e7e3e687a54644bbb3894e2a4cf2ecfd57a2316f5f1d3"
 }
 
+seal @legeos.evidence.home-file-brokered-open-20260909/1 {
+    state verified
+    hash "sha256:d0bef07e43681864c90a3cee4c5f6178f084e02f0722f036471252c51a3bc4fc"
+}
+
 seal @legeos.evidence.home-file-clickable-panes-20260824/1 {
     state verified
     hash "sha256:29431fe4c259102bb758d30811839fc7a8c64ab821e258f7abf5f8d20187256c"
+}
+
+seal @legeos.evidence.home-file-clickable-panes-20260909/1 {
+    state verified
+    hash "sha256:c5d8a30313abb39a3dac5f1bcb39a441ee2abd9576ed17270d1fe55aa1d059bf"
 }
 
 seal @legeos.evidence.home-file-live-dbus-20260824/1 {
@@ -5008,14 +5018,29 @@ seal @legeos.evidence.home-file-structured-browse-20260824/1 {
     hash "sha256:670525fe4920b14e00126c325f15f27c913680b6abfca8dc0ce6b79e1c872a09"
 }
 
+seal @legeos.evidence.home-file-structured-browse-20260909/1 {
+    state verified
+    hash "sha256:34ed850134a31a4dc310fe7a875f76867f3a0ab97ee1e36472cc0f877d3b4f08"
+}
+
 seal @legeos.evidence.home-file-window-overview-20260824/1 {
     state verified
     hash "sha256:b8ed33b9a8c3137e0144988096c61d25ce628af6234a0676ed81ea1be5657c08"
 }
 
+seal @legeos.evidence.home-file-window-overview-20260909/1 {
+    state verified
+    hash "sha256:6b5ead5043e2c471f02f7e7f1fd79a705ddde31d5e5fae12e9bb76bb07b2beca"
+}
+
 seal @legeos.evidence.home-file-workspace-20260824/1 {
     state verified
     hash "sha256:1ae4726c2d1c3e434cb5b208084b1644c3410a4c879a229b87f83f7bc641888f"
+}
+
+seal @legeos.evidence.home-file-workspace-20260909/1 {
+    state verified
+    hash "sha256:59e9a47d074f40d6936ebf343448716e550f95d72a2adccd39ecc699a7ad5e10"
 }
 
 seal @legeos.evidence.home-folders-and-panes-20260831/1 {
@@ -6263,6 +6288,11 @@ seal @legeos.papercut.agents-md-and-the-global-instructions-describe/1 {
     hash "sha256:e8d22ca4a952ef556fc7e1a2b3a44448e32bd806360712a158a41ba293073b14"
 }
 
+seal @legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 {
+    state verified
+    hash "sha256:45fcbf01e8530f2e8fb962f8bd6834a88cc8558f9cb1edc9b88ced029df37a36"
+}
+
 seal @legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 {
     state verified
     hash "sha256:9bfa072531e6befa10691794d1f8f575e5440af4a63e21b3aa089de3496c5d72"
@@ -6746,6 +6776,11 @@ seal @legeos.papercut.the-installed-legeos-set-on-the-development/1 {
 seal @legeos.papercut.the-lege-field-integration-proptest-reported/1 {
     state verified
     hash "sha256:23d4ee8e6f27726f1d39426d6e96bc8c52fe016eb0c5e531c9c6b9a6aff149b4"
+}
+
+seal @legeos.papercut.the-lege-templar-rename-8b2ae24-rewrote-seven/1 {
+    state verified
+    hash "sha256:6bf40d8c2cd340b668ab2a1667f9ab62fcb7da88a21a3272668dbbc3d950e329"
 }
 
 seal @legeos.papercut.the-live-medium-s-getty-banner-reads-ubuntu-26/1 {
@@ -7234,8 +7269,13 @@ seal @legeos.work.home-file-surface/2 {
 }
 
 seal @legeos.work.home-file-surface/3 {
+    state superseded
+    hash "sha256:ddf630d1c8350c89d4a3b055eccc18839a474de4071eab8d0c66e9ede225250e"
+}
+
+seal @legeos.work.home-file-surface/4 {
     state completed
-    hash "sha256:8f30373d73a0ab2a9cb57547f3969c4bbfa4c6a4737ca85ebf14d81c3d40f527"
+    hash "sha256:5f969b3b90fd908a9e7c63f47992ee650e91d60bf99587c8fd3e44849d18b362"
 }
 
 seal @legeos.work.home-folders-and-shortcut-panes/1 {

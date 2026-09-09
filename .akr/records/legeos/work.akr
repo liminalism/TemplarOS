@@ -3739,7 +3739,7 @@ record legeos.work.home-file-surface/2 : work {
 
 record legeos.work.home-file-surface/3 : work {
     title "Home file surface — real drive-backed contents, clickable navigation and brokered file opening"
-    state completed
+    state superseded
     scope [
         path "crates/lege-client/**",
         path "crates/lege-field/**",
@@ -3806,6 +3806,73 @@ record legeos.work.home-file-surface/3 : work {
     implements [ @legeos.constraint.services-not-indicators/1 ]
     part_of [ @legeos.work.home-field/1 ]
     supersedes [ @legeos.work.home-file-surface/2 ]
+    supported_by [ @legeos.observation.hardware-home-loads-but-file-panes-empty/1 ]
+}
+
+record legeos.work.home-file-surface/4 : work {
+    title "Home file surface — real drive-backed contents, clickable navigation and brokered file opening"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-field/**",
+        path "debian/control",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.templaros.Files.*",
+        path "services/templar-filed/**",
+        path "session/units/user/templar-filed.service",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Replace Home's text-only folder and drive panes with a bounded structured browser backed by templar-filed. Expanded file panes show actual entries from XDG folders and user-visible mounted volumes, directory rows navigate by pointer and keyboard, file rows resolve and launch through Associations1 and Launcher1, and Home remains the taskbar-free open-window/process overview reached by a bare Super tap. Use the existing Silvaview-derived treemap code for space composition only; its size-descending treemap ordering is not the list-view policy.
+        """
+    note """
+        Revision 4 (2026-09-09): the project rename (8b2ae24, lege -> templar) left this record's scope globs and check commands naming crates that no longer exist, and revision 3's scope correction had already put the 2026-08-24 evidence behind the record's last content change, which blocked `akr build`. Paths and commands renamed; every check re-run at 01445f5 and re-verified. Scope corrected 2026-09-08: `docs/homefield.md` matched no tracked file; the Home Field's architecture document is `docs/architecture/files.md`.
+        """
+    acceptance {
+        check brokered-file-opening {
+            statement """
+                Home opens a selected file only by resolving Associations1 then launching the returned canonical AppId through Launcher1, and reports an unresolved association without bypassing policy.
+                """
+            method command
+            command "cargo test -p templar-shell brokered_file_open"
+            verified_by [ @legeos.evidence.home-file-brokered-open-20260909/1 ]
+        }
+        check clickable-file-panes {
+            statement """
+                Expanded Home folder and drive panes render actual service entries; pointer and keyboard activation navigate directories and request file opening, with back/up and drive-root navigation.
+                """
+            method command
+            command "cargo test -p templar-shell file_browser"
+            verified_by [ @legeos.evidence.home-file-clickable-panes-20260909/1 ]
+        }
+        check home-window-overview-preserved {
+            statement """
+                Every compositor toplevel remains represented on Home and the bare-Super tap/reveal path remains the taskbar-free route to see all open windows at once.
+                """
+            method command
+            command "cargo test -p templar-shell field_model && cargo test -p templar-comp keybindings::tests"
+            verified_by [ @legeos.evidence.home-file-window-overview-20260909/1 ]
+        }
+        check structured-directory-data {
+            statement """
+                templar-filed exposes bounded structured directory entries with deterministic folder-first natural-name ordering, including hidden/symlink/type/size/mtime metadata and clear errors.
+                """
+            method command
+            command "cargo test -p templar-filed browse"
+            verified_by [ @legeos.evidence.home-file-structured-browse-20260909/1 ]
+        }
+        check workspace-verifies {
+            statement """
+                Formatting, warnings-denied clippy, workspace tests and interface consistency checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- check-interfaces"
+            verified_by [ @legeos.evidence.home-file-workspace-20260909/1 ]
+        }
+    }
+    implements [ @legeos.constraint.services-not-indicators/1 ]
+    part_of [ @legeos.work.home-field/1 ]
+    supersedes [ @legeos.work.home-file-surface/3 ]
     supported_by [ @legeos.observation.hardware-home-loads-but-file-panes-empty/1 ]
 }
 

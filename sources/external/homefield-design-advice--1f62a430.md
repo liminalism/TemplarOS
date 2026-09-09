@@ -119,7 +119,7 @@ A default home field should not be fully packed with every application. It might
 │ └──────────────────────────────────────────────┘ └──────────────────┘ │
 │                                                                        │
 │ ┌─ DRIVES ─────────────────┐ ┌─ PARKED SESSIONS ────────────────────┐ │
-│ │ System       412 GB free │ │ Waterfox │ Files │ Templar │ Terminal   │ │
+│ │ System       412 GB free │ │ Waterfox │ Files │ Lege │ Terminal   │ │
 │ │ Projects     684 GB free │ │ 23 tabs  │ /src  │ PDF  │ cargo test │ │
 │ └──────────────────────────┘ └───────────────────────────────────────┘ │
 │                                                                        │
@@ -184,7 +184,7 @@ A clean interaction model would be:
 For example:
 
 ```text
-┌ paper.pdf ┐  ───────────────▶  ┌ TEMPLAR VIEWER ┐
+┌ paper.pdf ┐  ───────────────▶  ┌ LEGE VIEWER ┐
 └───────────┘                     │  OPEN        │
                                   └──────────────┘
 ```
@@ -460,7 +460,7 @@ A representative interaction would be:
 2. Existing windows pull back into parked previews around their projects.
 3. Pick up benchmark.csv from the Inbox tray.
 4. Compatible destinations illuminate:
-      Templar Viewer       OPEN
+      Lege Viewer       OPEN
       JPEG XL project   ADD REFERENCE
       Benchmarks tray   ADD TO COLLECTION
 5. Throw toward Benchmarks.

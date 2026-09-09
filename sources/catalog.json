@@ -81,7 +81,7 @@
     "media_type": "text/markdown",
     "origin": "internal-reference",
     "path": "sources/external/full-side-two-axis-window-resizing-first-draft--f2cf997f.md",
-    "scope": "crates/templar-window/**",
+    "scope": "crates/lege-window/**",
     "title": "Full-Side Two-Axis Window Resizing — First Draft"
   },
   {
@@ -93,7 +93,7 @@
     "media_type": "text/markdown",
     "origin": "external",
     "path": "sources/external/garden-design-conversation-20260907--37ce41cd.md",
-    "scope": "shell/templar-shell/**",
+    "scope": "shell/lege-shell/**",
     "title": "garden.md — the Home design conversation: dashboard diagnosis, then the activity-grown Home"
   },
   {
@@ -105,7 +105,7 @@
     "media_type": "text/markdown",
     "origin": "external",
     "path": "sources/external/garden2-growth-forms-and-session-time-20260907--28b96ed0.md",
-    "scope": "shell/templar-shell/**",
+    "scope": "shell/lege-shell/**",
     "title": "garden2.md — growth forms, Garden Clock (session time), branches and blooms"
   },
   {
@@ -129,7 +129,7 @@
     "media_type": "text/markdown",
     "origin": "internal-reference",
     "path": "sources/external/homegarden-plan-20260907--5e16651f.md",
-    "scope": "crates/templar-field/**",
+    "scope": "crates/lege-field/**",
     "title": "Homegarden — an activity-grown Home (planning document, 2026-09-07)"
   },
   {
@@ -291,7 +291,7 @@
     "media_type": "text/markdown",
     "origin": "internal-reference",
     "path": "sources/external/legacy-files-design--ba1c98e0.md",
-    "scope": "apps/templar-files/**",
+    "scope": "apps/lege-files/**",
     "title": "Files design notes"
   },
   {
@@ -459,7 +459,7 @@
     "media_type": "text/markdown",
     "origin": "internal-reference",
     "path": "sources/external/legacy-homefield-design--5f223a99.md",
-    "scope": "shell/templar-shell/**",
+    "scope": "shell/lege-shell/**",
     "title": "Home Field design notes"
   },
   {
@@ -565,7 +565,7 @@
     "media_type": "text/markdown",
     "origin": "external",
     "path": "sources/external/planning-initial-shape--b29cdcb0.md",
-    "title": "Planning: initial shape — assessment and architecture of the TemplarOS desktop OS"
+    "title": "Planning: initial shape — assessment and architecture of the LegeOS desktop OS"
   },
   {
     "added_at": "2026-08-17",

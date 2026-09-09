@@ -307,16 +307,16 @@ A manifest could look like this:
 
 ```json
 {
-  "id": "app.templar.Viewer",
-  "display_name": "Templar Viewer",
-  "primary_desktop_file_id": "app.templar.Viewer.desktop",
-  "executable": "/usr/bin/templar-viewer",
+  "id": "app.lege.Viewer",
+  "display_name": "Lege Viewer",
+  "primary_desktop_file_id": "app.lege.Viewer.desktop",
+  "executable": "/usr/bin/lege-viewer",
   "aliases": {
-    "desktop_file_ids": ["app.templar.Viewer.desktop"],
-    "wayland_app_ids": ["app.templar.Viewer"],
-    "startup_wm_classes": ["templar-viewer"],
+    "desktop_file_ids": ["app.lege.Viewer.desktop"],
+    "wayland_app_ids": ["app.lege.Viewer"],
+    "startup_wm_classes": ["lege-viewer"],
     "flatpak_ids": [],
-    "executable_paths": ["/usr/bin/templar-viewer"]
+    "executable_paths": ["/usr/bin/lege-viewer"]
   },
   "mime_types": [
     "application/pdf",

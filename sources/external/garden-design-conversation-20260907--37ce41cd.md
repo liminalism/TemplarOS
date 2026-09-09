@@ -27,7 +27,7 @@ I would instead make the screen roughly:
 │                                                                          │
 │  CURRENT                                                                 │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │  TEMPLAR                                                building ●   │  │
+│  │  LEGE                                                building ●   │  │
 │  │  PDF / OCR tooling                                                │  │
 │  │                                                                    │  │
 │  │   >_ Terminal      Files      Edit      Build      Git            │  │
@@ -184,7 +184,7 @@ Smithay
 
 unless they're represented indirectly as project state:
 
-TEMPLAR
+LEGE
 3 running
 
 The taskbar owns the actual windows.
@@ -321,7 +321,7 @@ Color/light modifies the material.
 
 So:
 
-TEMPLAR
+LEGE
 
 might have a distinctive fine gray marble structure.
 
@@ -344,10 +344,10 @@ everything is fancy
 
 Not every tile should have equal weight.
 
-If Templar is current:
+If Lege is current:
 
 ┌─────────────────────────────────────┐
-│ TEMPLAR                               │
+│ LEGE                               │
 │                                     │
 │ >_ Terminal  Files  Edit            │
 │                                     │
@@ -376,7 +376,7 @@ Because your original concept includes throwable/rearrangeable objects, Home cou
 
 Something like:
 
-                  TEMPLAR
+                  LEGE
              ┌─────────────┐
              │             │
              └─────────────┘
@@ -439,7 +439,7 @@ OS
 
 APPLICATIONS
 ────────────────────────────────
-[ Templar ] [ Evidence ]
+[ Lege ] [ Evidence ]
 
 These aren't filesystem folders.
 
@@ -462,7 +462,7 @@ Use perhaps four levels only:
 
 For example:
 
-TEMPLAR                       ← strong
+LEGE                       ← strong
 PDF processing             ← secondary
 
 >_ Terminal   Files   Edit ← actions
@@ -661,7 +661,7 @@ I would implement this before any marble/crystal work:
 │                                                                          │
 │  CURRENT                                                                 │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ TEMPLAR                                                               │  │
+│  │ LEGE                                                               │  │
 │  │ >_ Terminal       Files       Edit                                 │  │
 │  │                                                                    │  │
 │  │ renderer.rs    distro plan    README        build active           │  │
@@ -703,7 +703,7 @@ There are three kinds of objects:
 
 Roots are stable places the system knows exist: home directory, major mounted data volumes, perhaps Downloads/Documents if actually used. These are the soil. They don't need giant permanent cards.
 
-Growths are folders or working contexts that emerge from activity. If you repeatedly work inside /data/code/Templar, that directory becomes a Home object automatically.
+Growths are folders or working contexts that emerge from activity. If you repeatedly work inside /data/code/Lege, that directory becomes a Home object automatically.
 
 Pinned objects are things the user has explicitly decided should not decay away.
 
@@ -730,7 +730,7 @@ The clever part is that this can use information TemplarOS is already in a posit
 
 Suppose you work in:
 
-/data/code/Templar/
+/data/code/Lege/
 
 Over an hour, Templar observes:
 
@@ -761,7 +761,7 @@ geometry.rs
 Home grows:
 
 ┌───────────────────────────────┐
-│ TEMPLAR                          │
+│ LEGE                          │
 │                               │
 │ Terminal    Files    Editor   │
 │                               │
@@ -771,7 +771,7 @@ Home grows:
 
 And you never had to tell TemplarOS:
 
-“Templar is my current project.”
+“Lege is my current project.”
 
 It inferred only the conservative fact:
 
@@ -787,7 +787,7 @@ The screen effectively becomes a visualized working-set cache.
 
 Your mental working set might currently be:
 
-Templar                         large / active
+Lege                         large / active
 
 SaveYourSkin                 medium
 
@@ -891,9 +891,9 @@ But those should remain semantic.
 
 Home says:
 
-Open terminal at /data/code/Templar
-Open folder /data/code/Templar
-Edit context /data/code/Templar
+Open terminal at /data/code/Lege
+Open folder /data/code/Lege
+Edit context /data/code/Lege
 
 The Templar launcher resolves those today to:
 
@@ -920,7 +920,7 @@ Working context
 
 Automatically inferred.
 
-root = /data/code/Templar
+root = /data/code/Lege
 confidence = 0.87
 activity = high
 Project
@@ -941,7 +941,7 @@ A working context can exist without becoming a Project.
 
 Then perhaps:
 
-Templar has remained active for 12 days
+Lege has remained active for 12 days
 
 and the UI unobtrusively offers:
 
@@ -1000,7 +1000,7 @@ I would not let the Home rearrange itself constantly.
 
 That would make it clever but unusable.
 
-If Templar is currently left-center, it should remain approximately left-center tomorrow.
+If Lege is currently left-center, it should remain approximately left-center tomorrow.
 
 Activity changes:
 
@@ -1109,7 +1109,7 @@ For example:
                              Search
 
 
-          Templar                       SaveYourSkin
+          Lege                       SaveYourSkin
 
      ┌─────────────┐              ┌────────────┐
      │             │              │            │
@@ -1127,11 +1127,11 @@ Folder activity can also cause children to emerge
 
 This gives you the “tiled access to important parts” idea without static widget definitions.
 
-Suppose Templar has enough room because it is active.
+Suppose Lege has enough room because it is active.
 
 Its most important children could appear:
 
-TEMPLAR
+LEGE
 ─────────────────────────────
 
 renderer/          distro/
@@ -1149,7 +1149,7 @@ explicit pins.
 
 If activity shifts from renderer/ to distro/, the representation gradually changes.
 
-Again, no special Templar widget was programmed.
+Again, no special Lege widget was programmed.
 
 It is just the generic active-directory representation operating on indexed activity.
 
@@ -1197,7 +1197,7 @@ This can also be recursive
 Imagine:
 
 /data/code
-    ├── Templar
+    ├── Lege
     ├── SaveYourSkin
     ├── jp2lam
     └── jpegXL-rs
@@ -1207,7 +1207,7 @@ If all four become active, Home might notice that their common parent has become
 CODE
 ─────────────────────────────────────
 
-[ Templar ]  [ SYS ]  [ jp2lam ]  [ JPXL ]
+[ Lege ]  [ SYS ]  [ jp2lam ]  [ JPXL ]
 
 You don't necessarily need the user to create a “Code” Home group manually.
 
@@ -1293,9 +1293,9 @@ When a folder becomes an established Home object, give it a deterministic subtle
 
 Then:
 
-/data/code/Templar
+/data/code/Lege
 
-looks recognizably like Templar whenever it resurfaces.
+looks recognizably like Lege whenever it resurfaces.
 
 The material isn't saying “this is a project.”
 
@@ -1352,7 +1352,7 @@ Not assuming any project is current:
 │                 Search files, places, apps, commands…               │
 │                                                                      │
 │                                                                      │
-│     TEMPLAR                                  SAVE YOUR SKIN              │
+│     LEGE                                  SAVE YOUR SKIN              │
 │   ╭──────────────────────╮             ╭────────────────────╮        │
 │   │ renderer/   distro/  │             │ engine/   docs/    │        │
 │   │ README               │             │                    │        │

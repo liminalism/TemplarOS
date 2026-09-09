@@ -522,7 +522,7 @@ Entries might say:
 
 or:
 
-> The default application for `application/pdf` changed from Templar Viewer to Waterfox. Undo.
+> The default application for `application/pdf` changed from Lege Viewer to Waterfox. Undo.
 
 Not every operation can be reversed, but every important system decision can be explained.
 

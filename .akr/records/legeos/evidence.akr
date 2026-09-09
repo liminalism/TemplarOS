@@ -1699,6 +1699,18 @@ record legeos.evidence.home-file-brokered-open-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.home-file-brokered-open-20260909/1 : evidence {
+    title "2 passed, 0 failed at 01445f5 after the lege->templar rename."
+    state verified
+    result pass
+    method command
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    command "cargo test -p templar-shell brokered_file_open"
+    summary """
+        2 passed, 0 failed at 01445f5 after the lege->templar rename.
+        """
+}
+
 record legeos.evidence.home-file-clickable-panes-20260824/1 : evidence {
     title "Clickable Home file pane tests"
     state verified
@@ -1708,6 +1720,18 @@ record legeos.evidence.home-file-clickable-panes-20260824/1 : evidence {
     command "cargo test -p lege-shell file_browser"
     summary """
         Four file-browser tests passed for real file drawers, pointer activation, keyboard/root/up navigation and actionable search-result rows.
+        """
+}
+
+record legeos.evidence.home-file-clickable-panes-20260909/1 : evidence {
+    title "28 passed, 0 failed at 01445f5 after the lege->templar rename."
+    state verified
+    result pass
+    method command
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    command "cargo test -p templar-shell file_browser"
+    summary """
+        28 passed, 0 failed at 01445f5 after the lege->templar rename.
         """
 }
 
@@ -1746,6 +1770,18 @@ record legeos.evidence.home-file-structured-browse-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.home-file-structured-browse-20260909/1 : evidence {
+    title "12 passed, 0 failed at 01445f5."
+    state verified
+    result pass
+    method command
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    command "cargo test -p templar-filed browse"
+    summary """
+        12 passed, 0 failed at 01445f5.
+        """
+}
+
 record legeos.evidence.home-file-window-overview-20260824/1 : evidence {
     title "Home window overview and Super tests"
     state verified
@@ -1758,6 +1794,18 @@ record legeos.evidence.home-file-window-overview-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.home-file-window-overview-20260909/1 : evidence {
+    title "field_model 22 passed; keybindings::tests 22 passed; 0 failed at 01445f5."
+    state verified
+    result pass
+    method command
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    command "cargo test -p templar-shell field_model && cargo test -p templar-comp keybindings::tests"
+    summary """
+        field_model 22 passed; keybindings::tests 22 passed; 0 failed at 01445f5.
+        """
+}
+
 record legeos.evidence.home-file-workspace-20260824/1 : evidence {
     title "Home file surface workspace gate"
     state verified
@@ -1767,6 +1815,18 @@ record legeos.evidence.home-file-workspace-20260824/1 : evidence {
     command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- check-interfaces"
     summary """
         Formatting, warnings-denied workspace Clippy, the complete workspace suite and all 25 server/client interface documents passed.
+        """
+}
+
+record legeos.evidence.home-file-workspace-20260909/1 : evidence {
+    title "fmt clean, clippy clean, workspace tests all green (267 passed, 3 ignored), check-interfaces 35/35 at 01445f5."
+    state verified
+    result pass
+    method command
+    observed_at git:01445f52e1a8c86aba1b8765ba84ba7cf72c609c
+    command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo run -q -p xtask -- check-interfaces"
+    summary """
+        fmt clean, clippy clean, workspace tests all green (267 passed, 3 ignored), check-interfaces 35/35 at 01445f5.
         """
 }
 
