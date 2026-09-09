@@ -551,11 +551,15 @@ mod tests {
         field_model::merge(&mut field, &live);
         // One of each placeable object class the material roles distinguish: the merge already
         // adds widgets and the system shelf; a bound folder and a shortcut pane join here so
-        // this baseline is also the reviewed render for their tints.
-        field_model::merge_desktop_folder(
-            &mut field,
-            Some(std::path::Path::new("/home/fixture/Desktop")),
-        );
+        // this baseline is also the reviewed render for their tints. The folder is placed the
+        // way any folder now reaches Home — Home merges no Desktop tray of its own.
+        for op in
+            field_model::open_folder_ops(&field, std::path::Path::new("/home/fixture/Desktop"))
+        {
+            if let Ok((next, _)) = lege_field::apply(&field, &op) {
+                field = next;
+            }
+        }
         field_model::route_file_drop(&mut field, std::path::Path::new("/home/fixture/notes.md"));
         // One pinned application, so the baseline also reviews the compact rung — which since
         // the chrome reduction is its own drawing path: no heading, the name as the body's first
@@ -824,7 +828,7 @@ mod tests {
                 })
             });
         assert_eq!(
-            hash, 0x203f_b173_d7a5_b672,
+            hash, 0xa233_05b9_3b20_87b6,
             "review the Home Field pixels before updating this baseline"
         );
     }

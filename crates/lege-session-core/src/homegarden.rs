@@ -84,6 +84,23 @@ impl GardenClock {
         }
     }
 
+    /// Fold what the open interval has run so far into `active_ms` and start a new one from
+    /// `monotonic_ms`. Idempotent, and it never invents time: it only moves time that has
+    /// already elapsed from the unpersisted interval into the persisted total.
+    ///
+    /// The daemon does this before every write, because [`Self::pause`] is reached only from a
+    /// lock or a sleep. A session that ends any other way — a logout, the daemon stopping —
+    /// emits no edge, so without this the whole interval is lost and `active_ms` stays at zero
+    /// for ever while [`Self::now`] keeps looking healthy inside the running session. Garden
+    /// hours that never advance mean nothing ever recedes: every demotion needs idle hours as
+    /// well as idle sessions.
+    pub fn checkpoint(&mut self, monotonic_ms: u64) {
+        if let Some(started) = self.interval_started {
+            self.active_ms += monotonic_ms.saturating_sub(started);
+            self.interval_started = Some(monotonic_ms);
+        }
+    }
+
     /// The moment now, counting the open interval without closing it.
     #[must_use]
     pub fn now(&self, monotonic_ms: u64) -> GardenMoment {
@@ -2008,6 +2025,78 @@ mod tests {
         let reloaded: GardenClock = serde_json::from_str(&json).unwrap();
         assert!(!reloaded.is_active());
         assert_eq!(reloaded.now(9_000_000).active_ms, 60_000);
+    }
+
+    /// A session that ends without a lock or a sleep — a logout, the daemon stopping — emits no
+    /// edge, so `pause` is never called and the open interval is never folded in. Without the
+    /// checkpoint the persisted `active_ms` stayed at zero across seven real sessions, garden
+    /// hours never advanced, and nothing could ever recede.
+    #[test]
+    fn a_session_that_ends_without_a_lock_still_ages_the_garden() {
+        let mut clock = GardenClock::default();
+        clock.start_session(0);
+        // Two hours of work, then the store is written and the session simply ends.
+        clock.checkpoint(7_200_000);
+        let json = serde_json::to_string(&clock).unwrap();
+        let mut next: GardenClock = serde_json::from_str(&json).unwrap();
+        assert!(!next.is_active());
+        assert_eq!(next.now(0).active_ms, 7_200_000, "the two hours survived");
+
+        // The next session adds to them rather than starting over.
+        next.start_session(0);
+        next.checkpoint(1_800_000);
+        assert_eq!(
+            next.now(1_800_000),
+            GardenMoment {
+                session: 2,
+                active_ms: 9_000_000
+            }
+        );
+        // A checkpoint is idempotent and never invents time.
+        next.checkpoint(1_800_000);
+        next.checkpoint(1_800_000);
+        assert_eq!(next.now(1_800_000).active_ms, 9_000_000);
+    }
+
+    /// The daemon stamps an activity with `now()` — which counts the open interval — and then
+    /// persists. If the write did not fold that interval in, the stored moment of last use sat
+    /// *ahead* of the stored clock, `hours_since` saturated to zero on the next start, and
+    /// recency stopped decaying as well as recession stopping.
+    #[test]
+    fn a_place_s_last_moment_never_runs_ahead_of_the_persisted_clock() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        ledger.clock.start_session(0);
+        for elapsed in [1_385, 900_000, 3_600_000] {
+            let at = ledger.clock.now(elapsed);
+            ledger.observe(
+                &event(
+                    "/home/dk/src/legeos",
+                    ActivityKind::TerminalEntered,
+                    None,
+                    at,
+                ),
+                &probe,
+                &config,
+            );
+            ledger.clock.checkpoint(elapsed);
+        }
+        let json = serde_json::to_string(&ledger).unwrap();
+        let reloaded: Ledger = serde_json::from_str(&json).unwrap();
+        let context = reloaded
+            .context(Path::new("/home/dk/src/legeos"))
+            .expect("the place was observed");
+        assert!(
+            context.last.active_ms <= reloaded.clock.active_ms,
+            "last {} ran ahead of the clock {}",
+            context.last.active_ms,
+            reloaded.clock.active_ms
+        );
+        assert!(
+            reloaded.clock.now(0).hours_since(context.last) < f32::EPSILON,
+            "a place used a moment ago has been idle for no garden hours at all"
+        );
     }
 
     #[test]

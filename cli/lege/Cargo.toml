@@ -50,6 +50,10 @@ name = "legeos-cli"
 section = "utils"
 priority = "optional"
 depends = "$auto"
+# The garden's terminal hook only reaches a graphical terminal's shell through /etc/bash.bashrc;
+# postinst adds the marker-guarded line and postrm takes it back out (see the scripts, and
+# `xtask check-packaging`, which fails if that delivery is ever dropped back to /etc/profile.d).
+maintainer-scripts = "../../packaging/legeos-cli"
 assets = [
     ["target/release/lege", "usr/bin/lege", "755"],
     # The component matrix travels with the tool that reads it.

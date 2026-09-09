@@ -1,0 +1,35 @@
+#!/bin/sh
+# Homegarden's terminal prompt hook has to be *read* by the shell a graphical terminal spawns.
+#
+# kitty — and every other terminal on Linux — execs the user's shell plainly; the login wrapper
+# is macOS-only (kitty's own child.py). Bash reads /etc/profile, and so /etc/profile.d, only for
+# a *login* shell, which means the hook shipped to /etc/profile.d was installed, tested and never
+# once loaded. /etc/bash.bashrc is the one system-wide file bash reads for an interactive,
+# non-login shell, and it belongs to base-files, so this appends a marker-guarded block to it
+# rather than shipping a file over it. The payload itself stays in /etc/profile.d, where it also
+# still serves login shells; being sourced twice is a no-op, because it defines its function only
+# if it is not already defined.
+#
+# The block below is run verbatim by `cargo test -p lege garden`, so a change to it that stops
+# loading the hook fails there rather than on someone's desktop a week later.
+set -e
+
+case "$1" in
+    configure)
+        if [ -f /etc/bash.bashrc ] &&
+            ! grep -qF '# >>> legeos garden hook >>>' /etc/bash.bashrc
+        then
+            cat >>/etc/bash.bashrc <<'HOOK'
+# >>> legeos garden hook >>>
+# A graphical terminal spawns an interactive, non-login bash: it reads this file and never
+# /etc/profile.d. Installed by legeos-cli, and removed again when it is.
+[ -r /etc/profile.d/60-legeos-garden.sh ] && . /etc/profile.d/60-legeos-garden.sh
+# <<< legeos garden hook <<<
+HOOK
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
