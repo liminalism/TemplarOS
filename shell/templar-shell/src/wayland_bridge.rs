@@ -81,6 +81,7 @@ use templar_types::{AppId, InstanceId};
 use templar_window::{
     GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId,
     geometry::{Alignment, Edge},
+    taskfield::TaskFilter,
 };
 
 /// The highest `templar_shell_v1` version this shell speaks (`interfaces/wayland/templar-shell-v1.xml`).
@@ -103,6 +104,10 @@ const ALIGNMENT_SINCE: u32 = 6;
 
 /// The manager version that carries `templar_shell_toplevel_v1`'s window-group requests.
 const GROUP_SINCE: u32 = 5;
+
+/// The manager version that carries Taskfield: `open_taskfield`, `taskfield_state`,
+/// `launcher_focus`, and `presentation` as a layer.
+const TASKFIELD_SINCE: u32 = 8;
 
 use crate::protocol::templar_shell_v1::{
     templar_shell_manager_v1::{self, TemplarShellManagerV1},
@@ -318,6 +323,18 @@ pub struct BridgeState {
     /// window exists. Counted rather than flagged: two quick presses are two launches asked for,
     /// and a flag would silently drop the second.
     terminal_requests: u32,
+    /// `templar_shell_manager_v1.taskfield_state`'s last word (version 8): whether the window
+    /// overview is up and what it is showing. The compositor owns the mode and its keys, so this
+    /// is the shell's whole view of it.
+    taskfield: TaskfieldStatus,
+    /// The window ids of the last `windows`-filtered `open_taskfield` this shell sent.
+    ///
+    /// `taskfield_state` names the filter but not the list — the shell is the only side that knows
+    /// what a place is, so it is the side that remembers which windows it asked for.
+    taskfield_windows: Vec<WindowId>,
+    /// `launcher_focus` events not yet answered. Counted like `terminal_requests`, and for the
+    /// same reason: two presses of `Super+Space` are two people asking, and a flag drops one.
+    launcher_focus: u32,
     /// Bumped on every toplevel or reveal event, so a host can redraw when the window list
     /// changed and only then, instead of on a timer.
     generation: u64,
@@ -328,6 +345,24 @@ pub struct BridgeState {
     /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
     /// well as a privileged one, and this is the normal half.
     pub(crate) data: DataDeviceBridge,
+}
+
+/// What the compositor says the window overview is showing (version 8).
+///
+/// Deliberately not a `templar_window::taskfield::TaskfieldState`: that type carries the laid-out
+/// sections, and the shell does not receive them. It runs `taskfield::layout` over the toplevels
+/// and outputs it already holds — the same function on the same bytes — so a card and its label
+/// cannot land in two places.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TaskfieldStatus {
+    /// Whether the overview is up. The Taskfield surface is mapped exactly while this is true.
+    pub active: bool,
+    pub filter: TaskFilter,
+    /// The filter's key as the compositor echoed it: an application id, `group:ID`, or the place
+    /// name the shell sent with a `windows` filter. Empty for `all` and `shelved`.
+    pub key: String,
+    pub query: String,
+    pub selected: Option<WindowId>,
 }
 
 /// Everything `wl_data_device` needs, on the same connection as the rest.
@@ -655,6 +690,29 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
             // Version 5: bound only once `SHELL_PROTOCOL_VERSION` reaches 5, with the
             // window-group work.
             templar_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
+            // Version 8. Every field is the compositor's: it owns the mode, and its keys, and
+            // this event is the whole of what the shell knows about either.
+            templar_shell_manager_v1::Event::TaskfieldState {
+                active,
+                filter,
+                key,
+                query,
+                selected,
+            } => {
+                let filter = filter_from_wire(filter, &key, &state.taskfield_windows);
+                state.taskfield = TaskfieldStatus {
+                    active: active != 0,
+                    filter,
+                    key,
+                    query,
+                    selected: (selected != 0).then_some(WindowId(u64::from(selected))),
+                };
+                state.generation = state.generation.wrapping_add(1);
+            }
+            // Version 8: `Super+Space` revealed Home and wants the caret in the Apps bar.
+            templar_shell_manager_v1::Event::LauncherFocus => {
+                state.launcher_focus = state.launcher_focus.saturating_add(1);
+            }
         }
     }
 }
@@ -732,6 +790,10 @@ fn wire_layer(layer: Layer) -> templar_shell_manager_v1::Layer {
         Layer::AppOnTop => templar_shell_manager_v1::Layer::AppOnTop,
         Layer::Normal => templar_shell_manager_v1::Layer::Normal,
         Layer::HomeSurface => templar_shell_manager_v1::Layer::HomeSurface,
+        // Version 8. Appended to the wire enum because a wire value can only be appended; its
+        // place on screen is between `system_modal` and `shell_overlay`, which is `Layer::ALL`'s
+        // order. Only the Taskfield surface asks for it, and only against a version-8 compositor.
+        Layer::Presentation => templar_shell_manager_v1::Layer::Presentation,
     }
 }
 
@@ -745,6 +807,53 @@ fn layer_from_wire(wire: templar_shell_manager_v1::Layer) -> Layer {
         templar_shell_manager_v1::Layer::AppOnTop => Layer::AppOnTop,
         templar_shell_manager_v1::Layer::Normal => Layer::Normal,
         templar_shell_manager_v1::Layer::HomeSurface => Layer::HomeSurface,
+        templar_shell_manager_v1::Layer::Presentation => Layer::Presentation,
+    }
+}
+
+/// `TaskFilter` -> the wire enum, and the `key` that goes with it (version 8).
+///
+/// `label` is the place's name and is used only by `Windows`: the compositor never learns what a
+/// place is, so the header it draws for one is a string the shell hands it. Every other filter's
+/// key is the filter's own.
+fn wire_filter(
+    filter: &TaskFilter,
+    label: &str,
+) -> (templar_shell_manager_v1::TaskfieldFilter, String) {
+    match filter {
+        TaskFilter::All => (
+            templar_shell_manager_v1::TaskfieldFilter::All,
+            String::new(),
+        ),
+        TaskFilter::Unit(key) => (templar_shell_manager_v1::TaskfieldFilter::Unit, key.wire()),
+        TaskFilter::Windows(_) => (
+            templar_shell_manager_v1::TaskfieldFilter::Windows,
+            label.to_owned(),
+        ),
+        TaskFilter::Shelved => (
+            templar_shell_manager_v1::TaskfieldFilter::Shelved,
+            String::new(),
+        ),
+    }
+}
+
+/// The inverse, over `taskfield_state`'s `filter` and `key`. `windows` is the list this shell last
+/// asked for, because the event does not carry one — an unknown key or a filter this shell does
+/// not recognise reads as `All`, which is what the compositor shows when it cannot narrow either.
+fn filter_from_wire(
+    wire: WEnum<templar_shell_manager_v1::TaskfieldFilter>,
+    key: &str,
+    windows: &[WindowId],
+) -> TaskFilter {
+    match wire.into_result() {
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
+            templar_window::task::TaskKey::from_wire(key).map_or(TaskFilter::All, TaskFilter::Unit)
+        }
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => {
+            TaskFilter::Windows(windows.to_vec())
+        }
+        Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
+        _ => TaskFilter::All,
     }
 }
 
@@ -1306,6 +1415,48 @@ impl ShellBridge {
         }
         self.manager.set_terminal(app_id.to_owned());
         self.connection.flush().context("flushing set_terminal")
+    }
+
+    /// Open the window overview, filtered (version 8).
+    ///
+    /// The chord, the Peek corner and `window.show-all` open it from the compositor with `All`;
+    /// this is the shell's routes in — a chip with more windows than its fan can hold, a launcher
+    /// result's arrow, a HomeGarden place's "N windows active" line, and the shelf band. `label`
+    /// names the place for a `Windows` filter and is ignored by every other one.
+    ///
+    /// The compositor ignores a filter that selects nothing: an overview of no windows is a black
+    /// screen, so there is nothing to enter.
+    pub fn open_taskfield(&mut self, filter: &TaskFilter, label: &str) -> Result<()> {
+        if self.manager.version() < TASKFIELD_SINCE {
+            bail!("the compositor speaks templar_shell_v1 < 8, which has no open_taskfield");
+        }
+        let (wire, key) = wire_filter(filter, label);
+        let windows: Vec<WindowId> = match filter {
+            TaskFilter::Windows(ids) => ids.clone(),
+            _ => Vec::new(),
+        };
+        // The event that comes back names the filter but not the list; this is the only side that
+        // knows which windows a place's line meant, so it is the side that remembers.
+        let bytes: Vec<u8> = windows
+            .iter()
+            .flat_map(|id| u32::try_from(id.0).unwrap_or(0).to_ne_bytes())
+            .collect();
+        self.state.taskfield_windows = windows;
+        self.manager.open_taskfield(wire, key, bytes);
+        self.connection.flush().context("flushing open_taskfield")
+    }
+
+    /// What the compositor last said the overview is showing.
+    #[must_use]
+    pub fn taskfield(&self) -> &TaskfieldStatus {
+        &self.state.taskfield
+    }
+
+    /// How many times `Super+Space` asked for the Apps bar since this was last called. Drained
+    /// for the same reason the terminal requests are: an unanswered one would be answered again
+    /// on the next frame.
+    pub fn take_launcher_focus(&mut self) -> u32 {
+        std::mem::take(&mut self.state.launcher_focus)
     }
 
     /// How many times the chord asked for a terminal to be *started* since this was last called.
