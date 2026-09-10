@@ -358,6 +358,17 @@ record legeos.papercut.cargo-xtask-check-packaging-reports-three/1 : papercut {
     created_at 2026-09-05
 }
 
+record legeos.papercut.check-actions-cannot-see-a-chord-the-compositor/1 : papercut {
+    title "check-actions cannot see a chord the compositor binds but the manifest…"
+    state verified
+    statement """
+        check-actions cannot see a chord the compositor binds but the manifest does not declare: it reads the manifest and the surfaces, and the compositor's recovery_action table is only cross-checked in the other direction by a #[cfg(test)] table in keybindings.rs that iterates the actions it already knows. Super+Space was bound with nothing in the manifest at 552ecb1 and no gate noticed until ac0bdff.
+        """
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    author "claude"
+    created_at 2026-09-10
+}
+
 record legeos.papercut.cleaning-an-explicitly-validated-mktemp-smoke/1 : papercut {
     title "Cleaning an explicitly validated mktemp smoke directory, exec rejected…"
     state verified
@@ -891,6 +902,17 @@ record legeos.papercut.multi-grep-with-compositor-lege-comp-src/1 : papercut {
     about "fff"
     author "codex"
     created_at 2026-09-07
+}
+
+record legeos.papercut.nested-on-an-x11-host-scripts-nested-session-sh/1 : papercut {
+    title "Nested on an X11 host: scripts/nested-session.sh dies with…"
+    state verified
+    statement """
+        Nested on an X11 host: scripts/nested-session.sh dies with `WAYLAND_DISPLAY: unbound variable`, and the nested winit compositor window is created at the host's full screen size so its bottom ~64 px (the whole island and cluster row) sit off-screen; WINIT_X11_SCALE_FACTOR=1 and starting templar-comp by hand with `env -u WAYLAND_DISPLAY` work around both.
+        """
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    author "claude"
+    created_at 2026-09-10
 }
 
 record legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 : papercut {
@@ -1449,6 +1471,17 @@ record legeos.papercut.ux-papercut-in-the-same-session-lege-dev-deploy/1 : paper
     observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.wayland-scanner-0-31-panics-on-any-xml-entity/1 : papercut {
+    title "wayland-scanner 0.31 panics on any XML entity reference in a protocol…"
+    state verified
+    statement """
+        wayland-scanner 0.31 panics on any XML entity reference in a protocol file ("Ill-formed protocol file: Ok(GeneralRef(...))") with no line number and no mention of the entity; a `&lt;` in an arg summary took the whole shell's generated bindings down at 56b890a until d3c0cd9 rewrote it. A gate that greps interfaces/wayland/*.xml for `&[a-z]+;` would turn the panic into one sentence.
+        """
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    author "claude"
+    created_at 2026-09-10
 }
 
 record legeos.papercut.while-adding-bounded-image-rs-decoding-its/1 : papercut {

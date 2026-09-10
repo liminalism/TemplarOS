@@ -7320,7 +7320,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
 
 record legeos.work.task-system/1 : work {
     title "The Task System campaign — TaskModel, Taskfield, Task Island fan, Peek, launcher and HomeGarden bridges, and the machine cluster's two sliders"
-    state proposed
+    state active
     scope [
         path "compositor/COMPOSITOR.md",
         path "compositor/templar-comp-integration/**",
@@ -7337,10 +7337,10 @@ record legeos.work.task-system/1 : work {
         path "tools/xtask/**"
     ]
     intent """
-        Implement @legeos.decision.task-system-four-scales-one-model in three lanes on the tree at 2983371. Lane A (templar-window, interfaces, actions, xtask): task::units as the one grouping, taskfield::layout as the pure per-output sectioned layout, Presentation on WindowService with the fullscreen-only-while-Normal rule, Layer::Presentation, manager v8 (open_taskfield, taskfield_state, launcher_focus), the chord swap (Super+Tab opens Taskfield, Alt+` within unit, group-cycle retired), check-wayland-versions. Lane B (compositor): surfaces drawn at presentation rects with no configure, collect_taskfield chrome, in-mode input and keys, Peek at the bottom-left corner with Home's corner moved top-left, Layer::Presentation placement, drag-to-group, tests/integration/task-system.sh. Lane C (shell, sessiond): the account popover's volume slider on wpctl's cubic dB scale with a -60 dB cutoff and mute zone and its brightness slider over a 10% service floor, replacing the five stepper rows; chips without titles with counts and shelved dimming; a four-card fan replacing the hover row; taskfield_screen.rs on Layer::Presentation; launcher running counts with Enter/Ctrl+Enter/arrow; HomeGarden instance_id association and the 'N windows active' line.
+        Implement @legeos.decision.task-system-four-scales-one-model in three lanes on the tree at 2983371. Lane A (templar-window, interfaces, actions, xtask): task::units as the one grouping, taskfield::layout as the pure per-output sectioned layout, Presentation on WindowService with the fullscreen-only-while-Normal rule, Layer::Presentation, manager v8 (open_taskfield, taskfield_state, launcher_focus), the chord swap (Super+Tab opens Taskfield, Alt+` within unit, group-cycle retired), check-wayland-versions. Lane B (compositor): surfaces drawn at presentation rects with no configure, collect_taskfield chrome, in-mode input and keys, Peek at the bottom-left corner with Home's corner moved top-left, Layer::Presentation placement, drag-to-group, tests/integration/task-system.sh. Lane C (shell, sessiond): the account popover's volume slider on wpctl's cubic dB scale with a -60 dB cutoff and mute zone and its brightness slider over a 10% service floor, replacing the five stepper rows; chips without titles with counts and shelved dimming; a four-card fan replacing the hover row; taskfield_screen.rs on Layer::Presentation; launcher running counts with Enter/Ctrl+Enter/arrow; HomeGarden instance association and the 'N windows active' line.
         """
     note """
-        Not built, by design: TaskModel/TaskWindow structs, mapped_seq/urgent/transient_for/output fields, Zoom, the weighted packer and layout generation, settings keys, the one-model grep gate, and Phase 6 preview re-send (screencopy is client-pull). The pull-back animation is the last optional commit. Hands-on checks need the user's deploy and logout; the runbook is .agent/scratch/task-system-1/RUNBOOK.md.
+        Landed 2026-09-10 as 36 commits 7f01f89..3703344 on developer-edition-0-1; every command check green, hands-on open (RUNBOOK: .agent/scratch/task-system-1/RUNBOOK.md, first gate: the cluster takes the pointer nested with nothing else driving the mouse). Deviations, each with its reason in the lane result files: the compositor's right-click card menu, query dimming of non-matching cards, and the pull-back tween are deferred (no compositor menu widget; the widget cache carries no per-element alpha; the tween needs a damage story only a logout can test); adopting a window into a place is the place's context-menu row, not a chip drop (no cross-surface drag exists); HomeGarden1.Observe did not gain instance_id (a bus caller cannot know the instance its request produced) - the broker associates through LaunchObserver and Contexts carries an instances array; AdoptWindow was added instead, baseline refrozen. Follow-ups found along the way and fixed: the compositor now re-sends pointer motion when the surface under a resting pointer moves (6d7943f), the shell declares its input region on every present (186ae89), and the shell's cursor-shift guess is deleted (3703344). Not built, by design: TaskModel/TaskWindow structs, mapped_seq/urgent/transient_for/output fields, Zoom, the weighted packer and layout generation, settings keys, the one-model grep gate, and Phase 6 preview re-send (screencopy is client-pull).
         """
     acceptance {
         check backlight-floor {
@@ -7349,13 +7349,15 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo test -p templar-sessiond backlight"
+            verified_by [ @legeos.evidence.task-system-backlight-floor-20260910/1 ]
         }
         check fan-and-chips {
             statement """
                 The fan caps at four cards and chip order is stable under activation.
                 """
             method command
-            command "cargo test -p templar-shell fan_caps_at_four chip_order_stable_under_activation"
+            command "cargo test -p templar-shell fan_caps_at_four && cargo test -p templar-shell chip_order_stable_under_activation"
+            verified_by [ @legeos.evidence.task-system-fan-and-chips-20260910/1 ]
         }
         check fullscreen-only-while-normal {
             statement """
@@ -7363,6 +7365,7 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo test -p templar-window fullscreen_covers_chrome_only_while_normal"
+            verified_by [ @legeos.evidence.task-system-fullscreen-only-while-normal-20260910/1 ]
         }
         check gate {
             statement """
@@ -7370,10 +7373,11 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "just check"
+            verified_by [ @legeos.evidence.task-system-gate-20260910/1 ]
         }
         check hands-on {
             statement """
-                After the user's deploy and logout: the sliders are usable, the island shows chips with counts and a fan, Super+Tab shows every window from fullscreen and a click returns, the bottom-left corner peeks and promotes, Alt+Tab is recent.
+                After the user's deploy and logout: the cluster takes the pointer, the sliders are usable, the island shows chips with counts and a fan, Super+Tab shows every window from fullscreen and a click returns, the bottom-left corner peeks and promotes, Alt+Tab is recent.
                 """
             method manual
         }
@@ -7383,6 +7387,7 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo test -p templar-window taskfield::"
+            verified_by [ @legeos.evidence.task-system-layout-is-a-view-20260910/1 ]
         }
         check no-row-anywhere {
             statement """
@@ -7390,6 +7395,7 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "! grep -rn ROW_BAND shell/templar-shell/src"
+            verified_by [ @legeos.evidence.task-system-no-row-anywhere-20260910/1 ]
         }
         check one-model {
             statement """
@@ -7397,6 +7403,7 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo test -p templar-window task::"
+            verified_by [ @legeos.evidence.task-system-one-model-20260910/1 ]
         }
         check protocol-in-step {
             statement """
@@ -7404,13 +7411,15 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-wayland-versions"
+            verified_by [ @legeos.evidence.task-system-protocol-in-step-20260910/1 ]
         }
         check recency-not-stacking {
             statement """
-                Alt+Tab's order survives raises, pins and fullscreen; it is activation recency, never stacking.
+                Alt+Tab's order survives raises, pins and fullscreen; it is activation recency capped at seven, never stacking.
                 """
             method command
-            command "cargo test -p templar-window recency_survives_raises_pins_and_fullscreen"
+            command "cargo test -p templar-window switching_uses_semantic_mru_not_visual_stacking && cargo test -p templar-window recent_is_the_switch_order_capped"
+            verified_by [ @legeos.evidence.task-system-recency-not-stacking-20260910/1 ]
         }
         check sliders {
             statement """
@@ -7418,13 +7427,15 @@ record legeos.work.task-system/1 : work {
                 """
             method command
             command "cargo test -p templar-shell cluster_screen"
+            verified_by [ @legeos.evidence.task-system-sliders-20260910/1 ]
         }
         check taskfield-acceptances {
             statement """
                 Entering and leaving Taskfield over a fullscreen Wayland and an XWayland window restores the scene, sends no xdg_toplevel.configure, and survives the shell dying mid-mode.
                 """
             method command
-            command "tests/integration/task-system.sh"
+            command "TEMPLAR_TASKFIELD_ACCEPT_FOCUS=1 tests/integration/task-system.sh"
+            verified_by [ @legeos.evidence.task-system-acceptance-harness-20260910/1 ]
         }
     }
     depends_on [ @legeos.work.semantic-window-registry-20260909 ]

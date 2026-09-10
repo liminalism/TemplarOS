@@ -3259,6 +3259,138 @@ record legeos.evidence.super-press-hold-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.task-system-acceptance-harness-20260910/1 : evidence {
+    title "The harness (nested compositor, kitty as the Wayland client, xdotool) ran clean for its pointer-free half at 82d86d8 against a v7 shell; the keyed half needs TEMPLAR_TASKFIELD_ACCEPT_FOCUS=1 and borrows the X keyboard, and a later nested check's synthetic input reached the live desktop, so it was left to the user (RUNBOOK section C)."
+    state verified
+    result inconclusive
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "tests/integration/task-system.sh"
+    summary """
+        The harness (nested compositor, kitty as the Wayland client, xdotool) ran clean for its pointer-free half at 82d86d8 against a v7 shell; the keyed half needs TEMPLAR_TASKFIELD_ACCEPT_FOCUS=1 and borrows the X keyboard, and a later nested check's synthetic input reached the live desktop, so it was left to the user (RUNBOOK section C).
+        """
+}
+
+record legeos.evidence.task-system-backlight-floor-20260910/1 : evidence {
+    title "6 passed at 3703344: SetBrightness and AdjustBrightness clamp every caller to 10..=100 (MINIMUM_PERCENT 1 -> 10, cc9f316) while raw_of keeps a one-step panel's one raw step."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-sessiond backlight"
+    summary """
+        6 passed at 3703344: SetBrightness and AdjustBrightness clamp every caller to 10..=100 (MINIMUM_PERCENT 1 -> 10, cc9f316) while raw_of keeps a one-step panel's one raw step.
+        """
+}
+
+record legeos.evidence.task-system-fan-and-chips-20260910/1 : evidence {
+    title "Both pass at 3703344: the fan shows at most four cards and hands over to Taskfield above that; chip order is first-seen and does not move on activation (Bridge::toplevels now sorts by window id so it is not rehash-dependent)."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-shell fan_caps_at_four && cargo test -p templar-shell chip_order_stable_under_activation"
+    summary """
+        Both pass at 3703344: the fan shows at most four cards and hands over to Taskfield above that; chip order is first-seen and does not move on activation (Bridge::toplevels now sorts by window id so it is not rehash-dependent).
+        """
+}
+
+record legeos.evidence.task-system-fullscreen-only-while-normal-20260910/1 : evidence {
+    title "1 passed at 3703344: is_visible, home_is_covered and the overlay rule answer to Presentation, and a fullscreen window covers passive chrome only while Normal."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-window fullscreen_covers_chrome_only_while_normal"
+    summary """
+        1 passed at 3703344: is_visible, home_is_covered and the overlay rule answer to Presentation, and a fullscreen window covers passive chrome only while Normal.
+        """
+}
+
+record legeos.evidence.task-system-gate-20260910/1 : evidence {
+    title "Green on the integrated tree at 3703344: fmt, clippy pedantic -D warnings, 2094 workspace tests passed 0 failed, MSRV 1.97, tree-check, deps-check, check-interfaces, check-interface-signatures, check-proxies, check-packaging, check-assets, check-actions (73 named actions declared, 21 chords routed, 4 exempt), check-wayland-versions. Log: .agent/scratch/task-system-1/just-check.log."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "just check"
+    summary """
+        Green on the integrated tree at 3703344: fmt, clippy pedantic -D warnings, 2094 workspace tests passed 0 failed, MSRV 1.97, tree-check, deps-check, check-interfaces, check-interface-signatures, check-proxies, check-packaging, check-assets, check-actions (73 named actions declared, 21 chords routed, 4 exempt), check-wayland-versions. Log: .agent/scratch/task-system-1/just-check.log.
+        """
+}
+
+record legeos.evidence.task-system-layout-is-a-view-20260910/1 : evidence {
+    title "9 passed, 0 failed at 3703344, including the proptests that every card lies inside its output, never exceeds its window or falls below MIN_CARD, and a query change never moves a card."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-window taskfield::"
+    summary """
+        9 passed, 0 failed at 3703344, including the proptests that every card lies inside its output, never exceeds its window or falls below MIN_CARD, and a query change never moves a card.
+        """
+}
+
+record legeos.evidence.task-system-no-row-anywhere-20260910/1 : evidence {
+    title "ROW_BAND, ROW_ITEM_WIDTH and the hover row are gone at 3703344; FAN_BAND and the four-card fan replaced them (5f83fdc)."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "! grep -rn ROW_BAND shell/templar-shell/src"
+    summary """
+        ROW_BAND, ROW_ITEM_WIDTH and the hover row are gone at 3703344; FAN_BAND and the four-card fan replaced them (5f83fdc).
+        """
+}
+
+record legeos.evidence.task-system-one-model-20260910/1 : evidence {
+    title "10 passed, 0 failed at 3703344: units are groups first then apps in stable order, activation never reorders, unverified identity never merges, chip_action hands over above four, within_unit is the group when grouped."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-window task::"
+    summary """
+        10 passed, 0 failed at 3703344: units are groups first then apps in stable order, activation never reorders, unverified identity never merges, chip_action hands over above four, within_unit is the group when grouped.
+        """
+}
+
+record legeos.evidence.task-system-protocol-in-step-20260910/1 : evidence {
+    title "4 interfaces, 29 versioned members, both ends in step at 3703344 (manager v8: open_taskfield, taskfield_state, launcher_focus, layer presentation=8)."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo run -q -p xtask -- check-wayland-versions"
+    summary """
+        4 interfaces, 29 versioned members, both ends in step at 3703344 (manager v8: open_taskfield, taskfield_state, launcher_focus, layer presentation=8).
+        """
+}
+
+record legeos.evidence.task-system-recency-not-stacking-20260910/1 : evidence {
+    title "switching_uses_semantic_mru_not_visual_stacking and recent_is_the_switch_order_capped pass at 3703344; recent() is switch_order capped at RECENT_MAX=7."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-window switching_uses_semantic_mru_not_visual_stacking recent_is_the_switch_order_capped"
+    summary """
+        switching_uses_semantic_mru_not_visual_stacking and recent_is_the_switch_order_capped pass at 3703344; recent() is switch_order capped at RECENT_MAX=7.
+        """
+}
+
+record legeos.evidence.task-system-sliders-20260910/1 : evidence {
+    title "7 passed at 3703344: the volume track is laid out in decibels (dB = -60·(1-t); percent = 100·10^(dB/60), wpctl's cubic scale), reading and position are inverses, the bottom 3% is a mute position not a silent value, brightness never reaches below 10%, both tracks are monotonic, a press lands where the pointer is, every session row names a declared action. Nested screenshots: .agent/scratch/task-system-1 in the lane-c worktree (mid-track reads 30%)."
+    state verified
+    result pass
+    method command
+    observed_at git:37033447950b39b2f9238f5c8ff0bff56ebb23fd
+    command "cargo test -p templar-shell cluster_screen"
+    summary """
+        7 passed at 3703344: the volume track is laid out in decibels (dB = -60·(1-t); percent = 100·10^(dB/60), wpctl's cubic scale), reading and position are inverses, the bottom 3% is a mute position not a silent value, brightness never reaches below 10%, both tracks are monotonic, a press lands where the pointer is, every session row names a declared action. Nested screenshots: .agent/scratch/task-system-1 in the lane-c worktree (mid-track reads 30%).
+        """
+}
+
 record legeos.evidence.taskbar-accounts-for-every-window-20260908/1 : evidence {
     title "taskbar::entries loses no window: every unshelved client window is in exactly one entry"
     state verified

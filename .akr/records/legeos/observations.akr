@@ -159,6 +159,27 @@ record legeos.observation.btrfs-send-needs-privilege-but-snapshotting-does-not/2
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
+record legeos.observation.cluster-pointer-delivery-with-an-input-region-is-unverified/1 : observation {
+    title "Nested, the machine cluster once received no pointer events while its input region was declared; the measurement was confounded and the user verifies it by hand"
+    state verified
+    scope [
+        path "compositor/templar-comp/src/input.rs",
+        path "shell/templar-shell/src/surface/cluster_screen.rs",
+        path "shell/templar-shell/src/wayland_bridge.rs"
+    ]
+    statement """
+        During the task-system campaign's nested checks, Lane C measured that the bottom-right cluster received no pointer events while wl_surface.set_input_region was declared with the correct chip rectangles [(8,8,112,32),(128,8,96,32),(232,8,160,32),(400,8,140,32)] on a 548x48 surface, and received them when the call was skipped; the island, which declares no region, delivered either way. The earlier ~25-30 px input/paint offset report was an artefact of measuring X screen coordinates against output coordinates. The user reports that during those runs they were using the machine and two other sessions were driving the pointer at once, so the hit-test result is most likely confounded, not a defect; Smithay's RendererSurfaceState::contains_point and RegionAttributes::contains read correctly for these rectangles. Unverified either way. What changed in this campaign around it: 186ae89 declares the input region on every present (previously only on the masked path, so a plain present kept the previous frame's region); 6d7943f makes the compositor re-run pointer motion when the surface under a resting pointer moves or resizes; 3703344 deletes the shell's follow_bottom_anchored_resize compensation. The user's hands-on gate: hover the bottom-right chips nested with nothing else driving the pointer, click the account chip, and drag the sliders; if the cluster does not react, the one-line suspect is declare_input_region in wayland_bridge.rs. Rule learned the hard way: never drive synthetic X input (xdotool) on this machine while it is in use; a nested check's clicks landed on the live browser.
+        """
+    observed_at git:186ae89b0a66a0f808164e7956a30eda8f48c967
+    method manual
+    watches [
+        "shell/templar-shell/src/wayland_bridge.rs",
+        "compositor/templar-comp/src/space_sync.rs",
+        "compositor/templar-comp/src/input.rs"
+    ]
+    review_after 2026-09-24
+}
+
 record legeos.observation.delta-catch-up-cost-tracks-the-change-and-beats-a-crawl-except-on-bulk-creation/1 : observation {
     title "A Btrfs metadata delta beats a crawl by 22x to 53x on renames, deletes and quiet periods, and ties it when the change is as large as the tree"
     state superseded
@@ -858,6 +879,25 @@ record legeos.observation.hostd-hands-a-privileged-fd-through-deltaopen/2 : obse
     ]
     resolves [ @legeos.question.no-route-for-a-privileged-fd-to-reach-the-per-user-daemon ]
     supersedes [ @legeos.observation.hostd-hands-a-privileged-fd-through-deltaopen/1 ]
+}
+
+record legeos.observation.identity-never-resolves-in-a-nested-session/1 : observation {
+    title "Identity never resolves in a nested session, so the fan, the chip count, grouping and the launcher's running count can only be seen offscreen or on hardware"
+    state verified
+    scope [
+        path "crates/templar-window/src/task.rs",
+        path "shell/templar-shell/src/taskbar.rs"
+    ]
+    statement """
+        Windows launched through `templar app launch` inside the nested session arrive with verified_identity false (identity is the cgroup's, and the nested session has no per-app cgroup), so task::units gives each window its own Unknown unit and never merges two windows of one application. Every island behaviour that depends on a unit with more than one window (the fan, the count badge, within-unit switching, the launcher's 'N running') is therefore invisible nested; it is exercised by the offscreen fan render and by the user's hands-on on hardware, and nothing else.
+        """
+    observed_at git:5f83fdc6512063394fda3dfbbf08e0c35dc1a4a9
+    method manual
+    watches [
+        "shell/templar-shell/src/taskbar.rs",
+        "crates/templar-window/src/task.rs",
+        "scripts/nested-session.sh"
+    ]
 }
 
 record legeos.observation.index-baseline-2026-09-04/1 : observation {
