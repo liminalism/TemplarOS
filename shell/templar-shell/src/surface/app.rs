@@ -232,41 +232,6 @@ fn declare_input_shapes(
     }
 }
 
-/// Move a bottom-anchored surface's stored pointer with the surface, after it resized.
-///
-/// The compositor sends no motion when a surface moves under a pointer that has not moved, and
-/// these surfaces grow *upward*: the chips stay exactly where they were on screen, but everything
-/// gains height at the top, so a surface-local `y` that was on a chip is now in the empty band
-/// above it. Left alone, a motionless mouse resting on a chip would open its row, lose the chip to
-/// the growth, close the row, shrink, find the chip again — a cycle of about six hundred
-/// milliseconds. Shifting the stored cursor by the height delta is the whole fix, and it is the
-/// same arithmetic the compositor would do if it re-sent the event.
-///
-/// **Physical pixels throughout, from one source.** The cursor winit stores is physical
-/// (`CursorMoved` carries a `PhysicalPosition`), so the delta has to be too: measuring it in
-/// logical pixels against a physical cursor is right only where the two are the same number,
-/// which is scale 1 and nowhere else — and a scaled output is exactly where a slider somebody is
-/// dragging lives. The height it is measured against is remembered here rather than read off the
-/// colour buffer, because the buffer is resized by the next *paint*: two configures before one
-/// paint would each measure from the same stale number and shift the cursor twice.
-///
-// ponytail: deleted when the compositor re-sends motion on surface move.
-fn follow_bottom_anchored_resize(window: &mut HostedWindow) {
-    let now = window.window.inner_size().height;
-    // Recorded even when there is no cursor to move: the next resize's delta has to be measured
-    // from the size this surface actually has, not from the last size a pointer happened to be
-    // over it for.
-    let was = std::mem::replace(&mut window.anchored_height, now);
-    let Some((x, y)) = window.input.cursor() else {
-        return;
-    };
-    if now == was || was == 0 {
-        return;
-    }
-    let moved = y + i32::try_from(i64::from(now) - i64::from(was)).unwrap_or(0);
-    window.input.cursor_moved(x as f32, moved as f32);
-}
-
 /// `1 item` or `3 items` — what an operation summary calls a path set.
 fn items(count: usize) -> String {
     if count == 1 {
@@ -3283,7 +3248,9 @@ impl ShellApp {
                         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                             cluster.scale = pixelkit_shell::Scale::new(*scale_factor);
                         }
-                        follow_bottom_anchored_resize(cluster);
+                        // The stored cursor needs no correction: the compositor re-sends the
+                        // pointer's motion whenever the surface under it moves or resizes
+                        // (`compositor/templar-comp/src/space_sync.rs`).
                         cluster.request_redraw();
                     }
                     WindowEvent::CursorMoved { position, .. } => {
@@ -3322,7 +3289,9 @@ impl ShellApp {
                         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                             bar.scale = pixelkit_shell::Scale::new(*scale_factor);
                         }
-                        follow_bottom_anchored_resize(bar);
+                        // The stored cursor needs no correction: the compositor re-sends the
+                        // pointer's motion whenever the surface under it moves or resizes
+                        // (`compositor/templar-comp/src/space_sync.rs`).
                         bar.request_redraw();
                     }
                     WindowEvent::CursorMoved { position, .. } => {

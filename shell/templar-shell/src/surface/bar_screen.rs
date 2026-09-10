@@ -1296,9 +1296,9 @@ mod tests {
     ///
     /// The re-aim is not modelling anything: the harness lays its chips from the buffer's own
     /// origin, so a chip's coordinates do not move when the surface resizes. On hardware they do,
-    /// in both axes — the host answers with `follow_bottom_anchored_resize` for the height, and
-    /// centring the chip strip (`layout`) is what holds them still in the width. Neither is
-    /// visible from here, which is why both are named in the runbook.
+    /// in both axes — the compositor re-sends the pointer's motion when the surface under it
+    /// resizes (`space_sync.rs`), and centring the chip strip (`layout`) is what holds them still
+    /// in the width. Neither is visible from here, which is why both are named in the runbook.
     fn open_fan_of(h: &mut Harness, index: usize) {
         for now in [0, 0, HOVER_OPEN_MS, HOVER_OPEN_MS] {
             h.now = now;
