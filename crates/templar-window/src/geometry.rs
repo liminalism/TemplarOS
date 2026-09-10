@@ -2158,6 +2158,42 @@ mod tests {
         }
     }
 
+    /// Alignment moves a surface **along** its edge and never across it: the island (`Centre`)
+    /// and the machine cluster (`End`) share one bottom edge, and both are anchored to it by the
+    /// same expression. Written down because a cluster whose input sat some pixels above where it
+    /// painted was first blamed on `End` alignment — and the y here is not a function of the
+    /// alignment at all, so it could not have been.
+    #[test]
+    fn alignment_moves_a_surface_along_its_edge_and_never_across_it() {
+        let output = Output::new("winit", Rect::new(0, 0, 1280, 900), 1000);
+        let zone = Exclusive {
+            edge: Edge::Bottom,
+            size: 48,
+            alignment: Alignment::Start,
+        };
+        // The machine cluster's real numbers, measured nested: 548 wide, 48 tall, and the popover
+        // open at 378 tall — every alignment puts every one of them flush on the bottom edge.
+        for height in [48, 378] {
+            let requested = Rect::new(0, 0, 548, height);
+            let mut xs = Vec::new();
+            for alignment in [Alignment::Start, Alignment::Centre, Alignment::End] {
+                let placed = shell_surface_placement(
+                    Layer::ShellOverlay,
+                    Some(Exclusive { alignment, ..zone }),
+                    &output,
+                    requested,
+                );
+                assert_eq!(
+                    (placed.y, placed.height),
+                    (900 - height, height),
+                    "{alignment:?} moved a bottom-anchored surface across its edge"
+                );
+                xs.push(placed.x);
+            }
+            assert_eq!(xs, vec![0, (1280 - 548) / 2, 1280 - 548]);
+        }
+    }
+
     /// A Notification-layer shell surface keeps its requested size and anchors to the
     /// top-right of the output's usable area, clear of any reserved edge.
     #[test]
