@@ -241,20 +241,29 @@ fn declare_input_shapes(
 /// the growth, close the row, shrink, find the chip again — a cycle of about six hundred
 /// milliseconds. Shifting the stored cursor by the height delta is the whole fix, and it is the
 /// same arithmetic the compositor would do if it re-sent the event.
+///
+/// **Physical pixels throughout, from one source.** The cursor winit stores is physical
+/// (`CursorMoved` carries a `PhysicalPosition`), so the delta has to be too: measuring it in
+/// logical pixels against a physical cursor is right only where the two are the same number,
+/// which is scale 1 and nowhere else — and a scaled output is exactly where a slider somebody is
+/// dragging lives. The height it is measured against is remembered here rather than read off the
+/// colour buffer, because the buffer is resized by the next *paint*: two configures before one
+/// paint would each measure from the same stale number and shift the cursor twice.
+///
+// ponytail: deleted when the compositor re-sends motion on surface move.
 fn follow_bottom_anchored_resize(window: &mut HostedWindow) {
+    let now = window.window.inner_size().height;
+    // Recorded even when there is no cursor to move: the next resize's delta has to be measured
+    // from the size this surface actually has, not from the last size a pointer happened to be
+    // over it for.
+    let was = std::mem::replace(&mut window.anchored_height, now);
     let Some((x, y)) = window.input.cursor() else {
         return;
     };
-    let height = window
-        .window
-        .inner_size()
-        .to_logical::<f64>(window.window.scale_factor())
-        .height as i32;
-    let was = window.buffer.height as i32;
-    if height == was || was == 0 {
+    if now == was || was == 0 {
         return;
     }
-    let moved = y + (height - was);
+    let moved = y + i32::try_from(i64::from(now) - i64::from(was)).unwrap_or(0);
     window.input.cursor_moved(x as f32, moved as f32);
 }
 

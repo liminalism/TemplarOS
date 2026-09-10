@@ -48,6 +48,13 @@ pub struct HostedWindow {
     pub buffer: WindowBuffer,
     pub scale: Scale,
     pub input: Input,
+    /// The surface height, in physical pixels, that the stored cursor was last made relative to.
+    ///
+    /// Not the buffer's height: that is only refreshed by the next redraw, so two configures
+    /// before one paint would both measure their delta from the same stale number and apply it
+    /// twice. This is written every time the delta is applied, whether or not anything was drawn
+    /// in between (`surface::app::follow_bottom_anchored_resize`).
+    pub anchored_height: u32,
 }
 
 impl std::fmt::Debug for HostedWindow {
@@ -70,6 +77,7 @@ impl HostedWindow {
             buffer: WindowBuffer::new(1, 1),
             scale,
             input: Input::new(),
+            anchored_height: 0,
         })
     }
 
