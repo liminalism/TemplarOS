@@ -919,6 +919,16 @@ pub const MANIFEST: &[ActionDecl] = &[
         requires: Requires::Window,
     },
     ActionDecl {
+        id: "place.adopt-window",
+        label: "Adopt this window into the place",
+        control: Some("Adopt"),
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Window,
+    },
+    ActionDecl {
         id: "place.open-terminal",
         label: "Open terminal here",
         control: Some("Terminal"),
