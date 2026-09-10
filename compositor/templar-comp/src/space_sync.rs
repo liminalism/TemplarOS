@@ -11,8 +11,109 @@
 
 use crate::state::{Backend, TemplarCompState};
 use smithay::desktop::Window;
+use smithay::input::pointer::MotionEvent;
+use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::seat::WaylandFocus;
-use templar_window::{Rect, WindowId};
+use templar_window::{Point, Rect, WindowId};
+
+/// Where every visible window sits, top first — the scene as the pointer hit-test sees it.
+///
+/// Taken once before a resync and once after, so [`pointer_scene_changed`] can answer whether the
+/// thing under a motionless pointer moved out from under it.
+fn pointer_scene<B: Backend + 'static>(state: &TemplarCompState<B>) -> Vec<(WindowId, Rect)> {
+    state
+        .window_service
+        .stacking_order()
+        .into_iter()
+        .filter(|window_id| state.window_service.is_visible(*window_id))
+        .map(|window_id| (window_id, client_area(state, window_id)))
+        .collect()
+}
+
+/// Whether the scene at `pointer` changed in a way the pointer has to be told about: a window
+/// containing the pointer moved or resized, or one appeared or vanished under it.
+///
+/// The guard, and the reason it is a guard: a resync runs after anything at all that touches
+/// `WindowService`, most of which moves nothing the pointer is over. Re-delivering motion
+/// unconditionally would send a `wl_pointer.motion` per resync — a wake-up per event on a desktop
+/// that is meant to be silent when nothing is happening (`scripts/idle-wakeups.sh`).
+///
+/// Pure: two lists and a point, no seat, no `Space`, no display.
+fn pointer_scene_changed(
+    before: &[(WindowId, Rect)],
+    after: &[(WindowId, Rect)],
+    pointer: Point,
+) -> bool {
+    let contains = |rect: &Rect| {
+        pointer.x >= rect.x
+            && pointer.x < rect.right()
+            && pointer.y >= rect.y
+            && pointer.y < rect.bottom()
+    };
+    let moved = |list: &[(WindowId, Rect)], other: &[(WindowId, Rect)]| {
+        list.iter().any(|(window_id, rect)| {
+            match other.iter().find(|(id, _)| id == window_id) {
+                // Still there: it matters only if it moved, and only if the pointer is on one of
+                // the two rectangles — a window that moved somewhere the pointer is not is not
+                // the pointer's business.
+                Some((_, was)) => was != rect && (contains(rect) || contains(was)),
+                // Gone, or new: either way what is under the pointer is not what it was.
+                None => contains(rect),
+            }
+        })
+    };
+    moved(after, before) || moved(before, after)
+}
+
+/// Re-deliver pointer motion at the same place, because the surface under the pointer moved.
+///
+/// A pointer that has not moved gets no motion event, so a surface that grows *upward* under it —
+/// the island opening its row, the machine cluster opening its popover — leaves the client
+/// believing the pointer is where it was in the old, shorter surface. Every surface-local
+/// coordinate it computes from then on is wrong by the height it gained, which is a chip that
+/// highlights a row above the pointer, and (when the growth is driven by that very hover) an
+/// oscillation: grow, lose the chip, shrink, find it again.
+///
+/// This is the compositor's job, not the client's: the compositor is the only party that knows
+/// the surface moved, and `wl_pointer` has no other way to say so. Re-running the motion handler
+/// at the unchanged global location is exactly what a zero-pixel move would have done — focus is
+/// recomputed, an enter/leave pair is sent if the pointer crossed into another surface, and the
+/// surface-local coordinate is derived from the new placement.
+///
+/// Not called while a pointer grab is running: a drag or resize owns the pointer for its whole
+/// duration and re-entering focus resolution underneath it is exactly what a grab exists to
+/// prevent. Not `note_activity` either — nothing happened; the screen must not wake for this.
+fn refresh_pointer_focus<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    before: &[(WindowId, Rect)],
+) {
+    let Some(pointer) = state.seat.get_pointer() else {
+        return;
+    };
+    if pointer.is_grabbed() {
+        return;
+    }
+    let location = pointer.current_location();
+    let at = Point {
+        x: location.x.floor() as i32,
+        y: location.y.floor() as i32,
+    };
+    if !pointer_scene_changed(before, &pointer_scene(state), at) {
+        return;
+    }
+    let under = state.surface_under(location);
+    let time = crate::window_bridge::now_monotonic_ns(&state.clock) / 1_000_000;
+    pointer.motion(
+        state,
+        under,
+        &MotionEvent {
+            location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: u32::try_from(time % u64::from(u32::MAX)).unwrap_or(0),
+        },
+    );
+    pointer.frame(state);
+}
 
 /// The Smithay `Window` for `window_id`: the index first (`WindowIndex::element_of`, which knows
 /// hidden windows too), then `Space` for anything mapped before the index learned about it.
@@ -182,6 +283,7 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
 /// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    let before = pointer_scene(state);
     // Reconcile existence before order. A toplevel may be temporarily unmapped while retaining
     // its semantic record, and a broken/missing layer assignment must never leave an old Space
     // element visible even though stacking_order cannot name it.
@@ -255,4 +357,81 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
     // events synchronously from the same call site that touched `WindowService`".
     let snapshot = templar_comp_integration::snapshot(&state.window_service);
     state.shell_broadcaster.publish(snapshot);
+
+    // Last, and only if something under the pointer actually moved: the pointer's own view of the
+    // scene is part of the scene, and this is the one funnel every change comes through.
+    refresh_pointer_focus(state, &before);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pointer_scene_changed;
+    use templar_window::{Point, Rect, WindowId};
+
+    fn at(x: i32, y: i32) -> Point {
+        Point { x, y }
+    }
+
+    /// The guard that decides whether a resync owes the pointer a motion event. It has to be
+    /// *both* precise and cheap: too eager and every resync becomes a wake-up on an idle desktop,
+    /// too shy and the machine cluster's popover leaves the client hit-testing the pointer
+    /// against the surface it used to be.
+    #[test]
+    fn only_a_window_moving_under_the_pointer_owes_it_a_motion_event() {
+        let island = (WindowId(1), Rect::new(600, 1032, 300, 48));
+        let cluster_closed = (WindowId(2), Rect::new(732, 852, 548, 48));
+        // The popover grew it upward: the bottom edge stayed, the top moved up 330.
+        let cluster_open = (WindowId(2), Rect::new(732, 522, 548, 378));
+        let on_a_chip = at(1202, 876);
+
+        // The case this exists for: the pointer is resting on a chip and the surface under it
+        // grows. Its surface-local position changed without the pointer moving.
+        assert!(pointer_scene_changed(
+            &[island, cluster_closed],
+            &[island, cluster_open],
+            on_a_chip
+        ));
+        // And back again when the popover closes.
+        assert!(pointer_scene_changed(
+            &[island, cluster_open],
+            &[island, cluster_closed],
+            on_a_chip
+        ));
+
+        // Something moved, but not under the pointer: this is most resyncs, and it must cost
+        // nothing.
+        let island_wide = (WindowId(1), Rect::new(400, 1032, 700, 48));
+        assert!(!pointer_scene_changed(
+            &[island, cluster_closed],
+            &[island_wide, cluster_closed],
+            on_a_chip
+        ));
+        // Nothing moved at all: the overwhelmingly common resync.
+        assert!(!pointer_scene_changed(
+            &[island, cluster_closed],
+            &[island, cluster_closed],
+            on_a_chip
+        ));
+        // An empty scene, and a scene that became empty somewhere else.
+        assert!(!pointer_scene_changed(&[], &[], on_a_chip));
+        assert!(!pointer_scene_changed(&[island], &[], on_a_chip));
+
+        // A window vanishing from under the pointer — shelved, closed, hidden by a reveal — is
+        // the pointer's business: it is now over whatever was behind.
+        assert!(pointer_scene_changed(&[cluster_closed], &[], on_a_chip));
+        // And one appearing under it.
+        assert!(pointer_scene_changed(&[], &[cluster_closed], on_a_chip));
+
+        // A window that moved *onto* the pointer counts even though it was nowhere near before.
+        let elsewhere = (WindowId(3), Rect::new(0, 0, 100, 100));
+        let onto = (WindowId(3), Rect::new(1100, 800, 400, 200));
+        assert!(pointer_scene_changed(&[elsewhere], &[onto], on_a_chip));
+
+        // The rectangle is half-open, exactly as the hit-test is: a pointer on the bottom or
+        // right edge is already outside, so a window resizing to end there owes nothing.
+        let box_ = (WindowId(4), Rect::new(0, 0, 100, 100));
+        let taller = (WindowId(4), Rect::new(0, 0, 100, 140));
+        assert!(!pointer_scene_changed(&[box_], &[taller], at(100, 50)));
+        assert!(pointer_scene_changed(&[box_], &[taller], at(99, 50)));
+    }
 }
