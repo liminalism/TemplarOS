@@ -216,6 +216,7 @@
     },
     "org.templaros.HomeGarden1": {
       "methods": {
+        "AdoptWindow": "(ss)->()",
         "Clock": "()->(s)",
         "Contexts": "()->(s)",
         "Describe": "(s)->(s)",
