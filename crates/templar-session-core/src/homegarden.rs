@@ -1104,6 +1104,26 @@ impl Ledger {
         Some(root)
     }
 
+    /// The user said this window belongs here.
+    ///
+    /// The third strong association, and the only one nobody has to infer: `LaunchedHere` and the
+    /// brokered open are the daemon's own observations, and this is a person pointing at a window
+    /// and a place and saying they go together. `root` must already be a place — an adopt is not
+    /// evidence that a folder matters, only that a window belongs to one that already does, and
+    /// nothing about the place's stage, score or buckets moves.
+    ///
+    /// `false` when `root` names no context, which the caller reports rather than swallows: the
+    /// user aimed at something.
+    pub fn adopt_instance(&mut self, root: &Path, instance: InstanceId) -> bool {
+        match self.context_mut(root) {
+            Some(context) => {
+                context.remember_instance(instance);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn observe(
         &mut self,
         activity: &HomeActivity,
@@ -1667,6 +1687,22 @@ mod tests {
         assert!(
             (context.score - score).abs() < f32::EPSILON,
             "an association is not evidence"
+        );
+
+        // An explicit adopt is the third strong association: the user pointing at a window and
+        // a place. It associates and changes nothing else, and it refuses a path that is not a
+        // place rather than quietly growing one.
+        let adopted = InstanceId::new();
+        assert!(ledger.adopt_instance(&root, adopted));
+        let context = ledger.context(&root).unwrap();
+        assert_eq!(context.instances, vec![launched, opened, adopted]);
+        assert!(
+            (context.score - score).abs() < f32::EPSILON,
+            "an adopt is not evidence either"
+        );
+        assert!(
+            !ledger.adopt_instance(&PathBuf::from("/home/u/nowhere"), InstanceId::new()),
+            "a path that is no place is refused, not grown"
         );
 
         // And a launch under a directory that is not a place grows nothing.

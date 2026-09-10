@@ -134,6 +134,10 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("project.open-files", MenuScope::Project),
     MenuItem::new("project.open-editor", MenuScope::Project),
     // A Place's tools and its gardening, above the generic tile rows for the same reason.
+    // Above the tools, because it is about *this window and this place* rather than about
+    // opening something new — and because it is the one row here whose availability depends on
+    // what has focus.
+    MenuItem::new("place.adopt-window", MenuScope::Place),
     MenuItem::new("place.open-terminal", MenuScope::Place),
     MenuItem::new("place.open-files", MenuScope::Place),
     MenuItem::new("place.open-editor", MenuScope::Place),
@@ -250,6 +254,14 @@ pub struct MenuTarget {
     /// "Keep this size and place" is not offered for a place already kept.
     pub place_pinned: bool,
     pub place_kept: bool,
+    /// The window that has the keyboard right now, if any, and whether it is one a place can be
+    /// told about — an adopt names an *instance*, which only a brokered launch has.
+    ///
+    /// Carried on the target rather than looked up when the row is chosen, for the same reason
+    /// `project` and `place` are: the field reflows and windows come and go while a menu is open,
+    /// and "which window" must be the one the menu was opened over, not whatever has focus by
+    /// the time a row is pressed.
+    pub adoptable_window: Option<WindowId>,
 }
 
 impl MenuTarget {
@@ -279,6 +291,9 @@ impl MenuTarget {
             "garden.pin" => !self.place_pinned,
             "garden.unpin" => self.place_pinned,
             "garden.keep" => !self.place_kept,
+            // Nothing to adopt with: no focused window, or one whose identity no launch of ours
+            // vouches for. Offering the row anyway would be offering a press that cannot work.
+            "place.adopt-window" => self.adoptable_window.is_some(),
             _ => true,
         }
     }
@@ -1071,6 +1086,23 @@ mod tests {
             ..place.clone()
         };
         assert!(!ids(&kept).contains(&"garden.keep"));
+
+        // Adopt is offered only when there is a window to adopt, and never anywhere but over a
+        // place: it is a sentence with two halves, and half of it is not a row.
+        assert!(
+            !ids(&place).contains(&"place.adopt-window"),
+            "nothing has focus, so there is nothing to adopt"
+        );
+        let with_window = MenuTarget {
+            adoptable_window: Some(WindowId(7)),
+            ..place.clone()
+        };
+        assert!(ids(&with_window).contains(&"place.adopt-window"));
+        let no_place = MenuTarget {
+            adoptable_window: Some(WindowId(7)),
+            ..MenuTarget::default()
+        };
+        assert!(!ids(&no_place).contains(&"place.adopt-window"));
     }
     #[test]
     fn opening_over_a_target_with_no_rows_opens_nothing() {

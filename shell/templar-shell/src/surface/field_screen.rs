@@ -122,6 +122,14 @@ pub enum FieldAction {
     SetMuted(bool),
     /// Put the backlight at this percentage. `Backlight1` clamps it to its own floor.
     SetBrightness(u32),
+    /// Say outright that a running window belongs to a place (`place.adopt-window`).
+    ///
+    /// The third strong association, and the only one nobody has to infer: the other two are the
+    /// daemon's own record of a launch at the place and of the brokered open of a file under it.
+    Adopt {
+        path: std::path::PathBuf,
+        window: WindowId,
+    },
     /// Show every window of one unit in the compositor's overview, filtered to it
     /// (`launcher.show-all`, and a chip with more windows than its fan can hold).
     Taskfield(templar_window::task::TaskKey),
@@ -2690,6 +2698,14 @@ impl FieldScreen {
                 place: place.clone(),
                 place_pinned: place_state.is_some_and(|p| p.pinned),
                 place_kept: place_state.is_some_and(|p| p.kept),
+                // Only over a place, and only a window whose launch this desktop brokered: an
+                // adopt associates an instance, and a window without one has nothing to associate.
+                adoptable_window: place.as_ref().and_then(|_| {
+                    data.toplevels
+                        .iter()
+                        .find(|top| top.activated && top.instance_id.is_some())
+                        .map(|top| top.window_id)
+                }),
             },
             choices,
         );
@@ -2761,6 +2777,16 @@ impl FieldScreen {
             | "project.open-editor") => {
                 if let Some(project_id) = chosen.target.project.clone() {
                     actions.push(FieldAction::Project { id, project_id });
+                }
+            }
+            "place.adopt-window" => {
+                if let Some((path, window)) = chosen
+                    .target
+                    .place
+                    .clone()
+                    .zip(chosen.target.adoptable_window)
+                {
+                    actions.push(FieldAction::Adopt { path, window });
                 }
             }
             id if id.starts_with("place.") || id.starts_with("garden.") => {

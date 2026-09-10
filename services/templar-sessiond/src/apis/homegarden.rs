@@ -810,6 +810,22 @@ impl HomeGardenApi {
         Ok(())
     }
 
+    async fn adopt_window(&self, path: &str, instance_id: &str) -> fdo::Result<()> {
+        let path = parse_path(path)?;
+        let Some(instance) = InstanceId::parse(instance_id) else {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{instance_id:?} is not an instance id"
+            )));
+        };
+        let mut inner = self.inner.lock().expect("garden lock");
+        if !inner.ledger.adopt_instance(&path, instance) {
+            return Err(not_a_place(&path));
+        }
+        self.persist(&mut inner);
+        tracing::info!(root = %path.display(), "garden adopted a window");
+        Ok(())
+    }
+
     async fn forget_all(&self) -> fdo::Result<()> {
         let mut inner = self.inner.lock().expect("garden lock");
         inner.ledger.forget_all();

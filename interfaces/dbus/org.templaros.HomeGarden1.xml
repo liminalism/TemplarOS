@@ -68,6 +68,17 @@
     </method>
     <!-- Drop every context except the pinned ones. -->
     <method name="ForgetAll"/>
+    <!-- Say outright that a running window belongs to this place: the window's instance joins the
+         place's `instances`, so it appears in that place's "N windows active" line and in the
+         overview that line opens. The third strong association, beside launched-here and the
+         brokered open of a file under the place — the difference is that the user made this one.
+         An association only: it changes no stage, no score and no bucket, because saying where a
+         window belongs is not the same act as working there. `path` must already be a place;
+         `instance_id` is `ShellToplevel.instance_id`, which only a brokered launch has. -->
+    <method name="AdoptWindow">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="in"/>
+    </method>
     <!-- The Garden Clock now: {"session": n, "active_ms": n, "active": bool}. -->
     <method name="Clock">
       <arg name="moment_json" type="s" direction="out"/>

@@ -1830,6 +1830,7 @@ impl ShellApp {
             FieldAction::DropFiles(drop) => self.spawn_file_drop(&drop),
             FieldAction::FileVerb(request) => self.perform_file_verb(&request),
             FieldAction::RunAction(id) => self.perform_declared(id),
+            FieldAction::Adopt { path, window } => self.perform_adopt(&path, window),
             FieldAction::Taskfield(key) => {
                 self.open_taskfield(&templar_window::taskfield::TaskFilter::Unit(key), "");
             }
@@ -2013,6 +2014,47 @@ impl ShellApp {
     /// A Place's tools and its gardening (`@templaros.decision.homegarden-activity-grown-places`).
     /// The tools are the project tools with the folder itself as root; the garden verbs go to
     /// `HomeGarden1`, and `garden.why` answers on the field's notice line.
+    /// `place.adopt-window`: tell the garden this window belongs to this place.
+    ///
+    /// The window is turned into its instance here, where the toplevel list is, so nothing below
+    /// this has to know what a window is. A window with no instance is one no launch of ours
+    /// brokered — the association would have nothing to key on, and saying so is better than a
+    /// press that quietly does nothing.
+    fn perform_adopt(&mut self, path: &Path, window: templar_window::WindowId) {
+        let instance = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|top| top.window_id == window)
+            .and_then(|top| top.instance_id);
+        let Some(instance) = instance else {
+            let now_ms = self.started.elapsed().as_millis() as u64;
+            self.field_screen.report(
+                "That window was not started by this desktop, so no place can claim it".to_owned(),
+                now_ms,
+            );
+            return;
+        };
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
+        let path = path.to_path_buf();
+        self.runtime.spawn(async move {
+            match crate::garden::adopt(&path, instance).await {
+                // The place's own line ("N windows active") is what changed, so the places are
+                // refetched rather than the whole field retended: nothing about the tile moved.
+                Ok(()) => {
+                    let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
+                }
+                Err(error) => {
+                    let _ = tx.send(DataUpdate::Notice(error));
+                }
+            }
+            let _ = proxy_wake.send_event(Wake);
+        });
+    }
+
     fn perform_place(&mut self, id: &'static str, path: &Path) {
         if id == "place.show-windows" {
             // The ids, and the name to put over them. The compositor never learns what a place

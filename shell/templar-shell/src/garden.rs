@@ -147,6 +147,27 @@ pub async fn observe(kind: &str, path: &std::path::Path, app_id: &str) {
         .await;
 }
 
+/// Say outright that a running window belongs to this place.
+///
+/// The window is named by its *instance* — the launch it came from — because that is what a
+/// window and a place have in common: `ShellToplevel.instance_id` is the value the daemon's own
+/// launch record filed the place's other windows under, so an adopt lands in the same set by the
+/// same key. A window with no instance is a window no launch of ours brokered, and there is
+/// nothing to adopt.
+pub async fn adopt(
+    path: &std::path::Path,
+    instance: templar_types::InstanceId,
+) -> Result<(), String> {
+    let connection = crate::data::session().await?;
+    let proxy = HomeGardenProxy::new(&connection)
+        .await
+        .map_err(|error| format!("garden unavailable: {error}"))?;
+    proxy
+        .adopt_window(&path.to_string_lossy(), &instance.to_string())
+        .await
+        .map_err(|error| format!("could not adopt that window: {error}"))
+}
+
 /// `garden.pin` and friends against one root; `why` returns the description.
 pub async fn manage(id: &str, path: &std::path::Path) -> Result<Option<String>, String> {
     let connection = crate::data::session().await?;

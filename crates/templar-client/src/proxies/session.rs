@@ -405,6 +405,10 @@ mod homegarden {
         fn forget(&self, path: &str) -> zbus::Result<()>;
         fn forget_all(&self) -> zbus::Result<()>;
 
+        /// Say outright that a running window belongs to this place. An association, not
+        /// evidence: no stage, no score, no bucket moves.
+        fn adopt_window(&self, path: &str, instance_id: &str) -> zbus::Result<()>;
+
         /// The Garden Clock now.
         fn clock(&self) -> zbus::Result<String>;
 
