@@ -1643,25 +1643,62 @@ impl ShellBridge {
         let buffer = self.masked.get(&key).expect("allocated above");
         buffer.write_masked(colour, coverage)?;
         surface.set_opaque_region(None);
-        // And the input region is the shapes, for the same reason the alpha is. Without it the
-        // surface's whole rectangle takes the pointer: a click on the desktop *between* two chips
-        // would be swallowed by a bar that is not there, and the compositor would read the pointer
-        // as being on the shell's own chrome — which is what suppresses the hot corner and holds a
-        // fullscreen peek open.
-        if let Some(compositor) = self.state.session_lock.compositor() {
-            let region = compositor.create_region(&qh, ());
-            for (x, y, width, height) in shapes {
-                region.add(*x, *y, *width, *height);
-            }
-            surface.set_input_region(Some(&region));
-            region.destroy();
-        }
+        self.declare_input_region(&surface, &qh, shapes);
         surface.attach(Some(&buffer.buffer), 0, 0);
         surface.damage_buffer(0, 0, width as i32, height as i32);
         surface.commit();
         self.connection
             .flush()
             .context("flushing a masked surface frame")
+    }
+
+    /// Say which parts of `window` take the pointer, on a frame that is not floating.
+    ///
+    /// The region belongs to *presenting*, not to floating. `wl_surface.set_input_region` is
+    /// sticky: a frame that does not declare one keeps whatever the last frame said. So a surface
+    /// that fell back to an opaque present — no `wl_shm`, an older compositor, a frame with
+    /// nothing solid on it — kept a region describing shapes that are no longer there, at a size
+    /// the surface may no longer be. That is a surface taking clicks where it draws nothing and
+    /// refusing them where it does, and it survives until the next frame that happens to float.
+    ///
+    /// An empty `shapes` is not "no opinion", it is "none of it": a surface with nothing solid on
+    /// it takes no pointer at all, which is what lets the desktop underneath have it.
+    pub fn declare_input_shapes(
+        &mut self,
+        window: &winit::window::Window,
+        shapes: &[(i32, i32, i32, i32)],
+    ) -> Result<()> {
+        let surface = self.wrap_surface(window)?;
+        let qh = self.queue.handle();
+        self.declare_input_region(&surface, &qh, shapes);
+        surface.commit();
+        self.connection
+            .flush()
+            .context("flushing an input region declaration")
+    }
+
+    /// The one place a region is built, so the floating path and the opaque one cannot disagree
+    /// about what a frame's shapes mean.
+    ///
+    /// Without a region the surface's whole rectangle takes the pointer: a click on the desktop
+    /// *between* two chips would be swallowed by a bar that is not there, and the compositor would
+    /// read the pointer as being on the shell's own chrome — which is what suppresses the hot
+    /// corner and holds a fullscreen peek open.
+    fn declare_input_region(
+        &self,
+        surface: &WlSurface,
+        qh: &QueueHandle<BridgeState>,
+        shapes: &[(i32, i32, i32, i32)],
+    ) {
+        let Some(compositor) = self.state.session_lock.compositor() else {
+            return;
+        };
+        let region = compositor.create_region(qh, ());
+        for (x, y, width, height) in shapes {
+            region.add(*x, *y, *width, *height);
+        }
+        surface.set_input_region(Some(&region));
+        region.destroy();
     }
 
     fn wrap_surface(&self, window: &winit::window::Window) -> Result<WlSurface> {

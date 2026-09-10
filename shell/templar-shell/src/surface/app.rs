@@ -212,6 +212,26 @@ fn next_minute() -> Instant {
     Instant::now() + Duration::from_secs(60 - now % 60)
 }
 
+/// Say which parts of a surface take the pointer, for a frame that did not float.
+///
+/// The floating path declares this inside `present_masked`; this is the same declaration for the
+/// path that could not float, so that *every* present says what it means. Failure is logged and
+/// nothing else: a surface whose region could not be declared is a surface with the previous
+/// frame's, which is exactly the state this exists to avoid, but it is not a reason to drop the
+/// frame as well.
+fn declare_input_shapes(
+    bridge: Option<&mut ShellBridge>,
+    window: &winit::window::Window,
+    shapes: &[(i32, i32, i32, i32)],
+    what: &str,
+) {
+    if let Some(bridge) = bridge
+        && let Err(error) = bridge.declare_input_shapes(window, shapes)
+    {
+        tracing::debug!(%error, "could not declare {what}'s input region");
+    }
+}
+
 /// Move a bottom-anchored surface's stored pointer with the surface, after it resized.
 ///
 /// The compositor sends no motion when a surface moves under a pointer that has not moved, and
@@ -2856,6 +2876,10 @@ impl ShellApp {
                 }
             });
         if !presented {
+            // The colour buffer goes up opaque, but the region still has to be said: it is part
+            // of presenting, and a frame that leaves the last one in force is a surface taking
+            // clicks where it no longer draws.
+            declare_input_shapes(self.bridge.as_mut(), &bar.window, &regions, "the bar");
             bar.present();
         }
         // A fan card shows the window, not its name, so the windows in the open fan are captured
@@ -3044,6 +3068,12 @@ impl ShellApp {
             }
         });
         if !presented {
+            declare_input_shapes(
+                self.bridge.as_mut(),
+                &cluster.window,
+                &regions,
+                "the cluster",
+            );
             cluster.present();
         }
         let wanted = crate::surface::cluster_screen::wanted_size(
@@ -3178,7 +3208,10 @@ impl ShellApp {
         let shapes = self.taskfield_screen.opaque_shapes();
         if shapes.is_empty() {
             // Nothing to say about this frame — an overview of no windows, or a mode that closed
-            // between the wake and the paint. An opaque present here would be a grey screen.
+            // between the wake and the paint. An opaque present here would be a grey screen, so
+            // the frame is skipped; the region is not, or the labels of the frame before it would
+            // go on taking the pointer over cards that have moved.
+            declare_input_shapes(self.bridge.as_mut(), &taskfield.window, &[], "Taskfield");
             return;
         }
         {
