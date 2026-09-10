@@ -771,12 +771,10 @@ fn taskfield_labels(
     // One title band per card, inside the bottom of the card itself: the card *is* the window, so
     // there is no tile below it to hang a strip off, and a strip outside it would overlap the next
     // row. `scatter_label_band` splits the rectangle the same way it always did.
-    let mut live = std::collections::HashSet::new();
     for card in taskfield.cards() {
         if output_rect.intersection(card.rect) != Some(card.rect) {
             continue;
         }
-        live.insert(card.window);
         let selected = taskfield.selected == Some(card.window);
         let title = window_service
             .window(card.window)
@@ -813,6 +811,9 @@ fn taskfield_labels(
             elements.push(element);
         }
     }
+    // Retain every card in the mode, not only the ones on this output: a per-output retain
+    // dropped the other output's label caches and forced a rerasterize when that output drew.
+    let live: std::collections::HashSet<_> = taskfield.cards().map(|card| card.window).collect();
     chrome.taskfield_labels.retain(|id, _| live.contains(id));
 }
 

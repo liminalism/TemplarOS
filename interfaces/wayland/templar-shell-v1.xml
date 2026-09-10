@@ -350,13 +350,13 @@
   <!-- Keep this version at least as high as templar_shell_toplevel_v1: objects are created at
        the list resource's negotiated version. A lower list version silently makes newer
        toplevel events unreachable. -->
-  <interface name="templar_shell_toplevel_list_v1" version="4">
+  <interface name="templar_shell_toplevel_list_v1" version="5">
     <event name="toplevel">
       <arg name="id" type="new_id" interface="templar_shell_toplevel_v1"/>
     </event>
   </interface>
 
-  <interface name="templar_shell_toplevel_v1" version="4">
+  <interface name="templar_shell_toplevel_v1" version="5">
     <!-- The same opaque string `ext_foreign_toplevel_handle_v1.identifier` carries for this
          window, sent once, before the first `identity`. It is what lets the shell pair a window
          preview obtained through the standard capture protocols with the window's entry here. -->
@@ -409,6 +409,12 @@
          activated mapped application window; larger values are older. -->
     <event name="mru_rank" since="4">
       <arg name="rank" type="uint"/>
+    </event>
+    <!-- The compositor's semantic WindowId, sent once, append-only. Distinct from this
+         object's Wayland protocol_id, which is a transport identity the shell used to
+         fabricate WindowId values that the compositor then misread as registry ids. -->
+    <event name="window_id" since="5">
+      <arg name="id" type="uint"/>
     </event>
     <event name="closed"/>
     <request name="activate">

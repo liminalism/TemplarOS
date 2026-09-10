@@ -41,7 +41,7 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::Scale,
+    utils::{Logical, Rectangle, Scale},
 };
 use std::collections::HashSet;
 use templar_window::{Rect, WindowId};
@@ -180,6 +180,7 @@ pub fn collect(
                     output_geometry,
                     output_scale,
                     inputs.window_service.presentation_rect(window_id),
+                    inputs.window_service.taskfield_card_alpha(window_id),
                     renderer,
                     &mut elements,
                 );
@@ -187,12 +188,42 @@ pub fn collect(
         }
     }
 
-    // A safety net, not a second policy: anything `Space` is showing that the stacking order did
-    // not account for is drawn beneath everything the order did, rather than silently vanishing.
-    // `WindowService` is the sole z-order authority (COMPOSITOR.md property 4), so this list is
-    // normally empty — but a window that is on screen must not disappear because two mirrors of
-    // the same fact briefly disagreed. `Space::elements()` is bottom-first, so `rev()` here keeps
-    // this tail front-to-back like the rest.
+    append_leftovers(
+        inputs,
+        &drawn,
+        output_geometry,
+        output_scale,
+        renderer,
+        &mut elements,
+    );
+
+    // Last, so it is bottom-most: the overview's scrim is the only chrome the windows are drawn
+    // *on top of*. Home is already in the window loop (bottom of stacking) and is visible in
+    // Taskfield so it stays mapped; inserting the scrim after the cards puts it above Home and
+    // below the cards, which is the ground they stand on.
+    elements.extend(background.into_iter().map(SceneElement::Chrome));
+
+    retain_visible_chrome(chrome, inputs, live_chrome);
+    elements
+}
+
+/// Anything `Space` is showing that the stacking order did not account for, drawn beneath
+/// everything the order did. Not in Taskfield: a leftover without a card used to be drawn at its
+/// real size, which is how a filter left full-size windows sitting on the overview.
+fn append_leftovers(
+    inputs: &ChromeInputs<'_>,
+    drawn: &[Window],
+    output_geometry: Rectangle<i32, Logical>,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<SceneElement>,
+) {
+    if matches!(
+        inputs.window_service.presentation(),
+        templar_window::Presentation::Taskfield(_)
+    ) {
+        return;
+    }
     let leftovers: Vec<Window> = inputs
         .space
         .elements()
@@ -207,17 +238,28 @@ pub fn collect(
             output_geometry,
             output_scale,
             None,
+            1.0,
             renderer,
-            &mut elements,
+            elements,
         );
     }
+}
 
-    // Last, so it is bottom-most: the overview's scrim is the only chrome the windows are drawn
-    // *on top of*.
-    elements.extend(background.into_iter().map(SceneElement::Chrome));
-
+/// Retain every currently visible window's chrome, not only the ones drawn on this output: a
+/// per-output retain dropped the other output's caches and forced a rerasterize next frame.
+fn retain_visible_chrome(
+    chrome: &mut ChromeState,
+    inputs: &ChromeInputs<'_>,
+    mut live_chrome: HashSet<WindowId>,
+) {
+    live_chrome.extend(
+        inputs
+            .window_service
+            .stacking_order()
+            .into_iter()
+            .filter(|id| inputs.window_service.is_visible(*id)),
+    );
     chrome.retain_window_chrome(&live_chrome);
-    elements
 }
 
 /// One window's surface elements, positioned exactly as `Space` would have positioned them —
@@ -274,6 +316,7 @@ fn surface_elements(
     output_geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     output_scale: f64,
     presentation: Option<Rect>,
+    alpha: f32,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<SceneElement>,
 ) {
@@ -301,7 +344,7 @@ fn surface_elements(
                 renderer,
                 smithay::utils::Point::from((origin.0.round() as i32, origin.1.round() as i32)),
                 Scale::from(output_scale * k),
-                1.0,
+                alpha,
             )
             .into_iter()
             .map(SceneElement::Surface),
@@ -319,7 +362,7 @@ fn surface_elements(
     elements.extend(
         AsRenderElements::<GlesRenderer>::render_elements::<
             WaylandSurfaceRenderElement<GlesRenderer>,
-        >(window, renderer, physical, scale, 1.0)
+        >(window, renderer, physical, scale, alpha)
         .into_iter()
         .map(SceneElement::Surface),
     );

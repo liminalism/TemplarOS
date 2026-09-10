@@ -117,13 +117,10 @@ use crate::protocol::templar_shell_v1::{
 
 /// One toplevel as tracked from the wire, plus the object that lets the shell act on it.
 ///
-/// The wire protocol never sends `templar_window::WindowId` — `templar_shell_toplevel_v1` objects carry
-/// no such field (`interfaces/wayland/templar-shell-v1.xml`); the object's own identity on this
-/// connection *is* the window's identity here. [`WindowId`] is reused anyway, rather than
-/// inventing a parallel type, so the already-tested [`templar_window::grouping_key`],
-/// [`crate::dock::group`] and [`crate::drawers::window_shelf`] keep working completely unmodified
-/// against this data: its value is synthetic, [`ObjectId::protocol_id`] of this object, stable for
-/// exactly as long as the object exists (see [`synthetic_window_id`]).
+/// Version 5 sends the compositor's semantic [`WindowId`] once (`window_id`). Until that event
+/// arrives — and against a version-4 compositor — the object's Wayland protocol_id is used as a
+/// fallback (see [`synthetic_window_id`]), which is a transport identity and must not be sent
+/// back as a registry id. Activate/close still go through the proxy either way.
 #[derive(Clone)]
 struct TrackedToplevel {
     proxy: TemplarShellToplevelV1,
@@ -153,6 +150,9 @@ struct ToplevelState {
     /// The window group this window belongs to, as the `group` event last reported it
     /// (version 3). `None` is "in no group" — the wire says so with a `group_id` of 0.
     group: Option<GroupInfo>,
+    /// The compositor's semantic [`WindowId`], from `window_id` (version 5). Distinct from this
+    /// object's Wayland protocol_id, which is only a transport identity.
+    semantic_id: Option<WindowId>,
 }
 
 impl TrackedToplevel {
@@ -183,6 +183,7 @@ impl Default for ToplevelState {
             // least surprising guess and self-corrects the moment any state changes.
             layer: Layer::Normal,
             group: None,
+            semantic_id: None,
         }
     }
 }
@@ -259,13 +260,16 @@ impl ToplevelState {
                 self.group = group_from_wire(group_id, name, accent);
             }
             templar_shell_toplevel_v1::Event::MruRank { rank } => self.mru_rank = rank,
+            templar_shell_toplevel_v1::Event::WindowId { id } => {
+                self.semantic_id = Some(WindowId(u64::from(id)));
+            }
             templar_shell_toplevel_v1::Event::Closed => unreachable!("handled by the dispatcher"),
         }
     }
 
-    fn snapshot(&self, window_id: WindowId) -> ShellToplevel {
+    fn snapshot(&self, fallback: WindowId) -> ShellToplevel {
         ShellToplevel {
-            window_id,
+            window_id: self.semantic_id.unwrap_or(fallback),
             canonical_app_id: self.canonical_app_id.clone(),
             instance_id: self.instance_id,
             title: self.title.clone(),
@@ -1193,7 +1197,9 @@ impl ShellBridge {
         self.state
             .toplevels
             .iter()
-            .find(|(id, _)| synthetic_window_id(id) == window_id)
+            .find(|(id, tracked)| {
+                tracked.state.semantic_id == Some(window_id) || synthetic_window_id(id) == window_id
+            })
             .map(|(_, tracked)| &tracked.proxy)
     }
 
@@ -1599,6 +1605,17 @@ impl ShellBridge {
     // the same simplification `session_lock` makes, and the same reason (one surface, one frame
     // in flight, redrawn only when something changed). A double buffer is the upgrade if a
     // frame ever tears.
+    /// Drop the masked buffer for `window`, if any. Called when the host destroys a surface so
+    /// the shm file/pool/buffer does not leak across repeated Taskfield/cluster windows.
+    pub fn forget_surface(&mut self, window: &winit::window::Window) {
+        let Ok(surface) = self.wrap_surface(window) else {
+            return;
+        };
+        if let Some(old) = self.masked.remove(&surface.id()) {
+            old.destroy();
+        }
+    }
+
     pub fn present_masked(
         &mut self,
         window: &winit::window::Window,
@@ -1641,6 +1658,13 @@ impl ShellBridge {
             );
         }
         let buffer = self.masked.get(&key).expect("allocated above");
+        if !buffer.released() {
+            // The compositor still holds the attached buffer; rewriting it is a protocol error
+            // and the frame would tear. Skip this present — the next one after `wl_buffer.release`
+            // will go out.
+            return Ok(());
+        }
+        buffer.mark_busy();
         buffer.write_masked(colour, coverage)?;
         surface.set_opaque_region(None);
         self.declare_input_region(&surface, &qh, shapes);
@@ -1758,6 +1782,18 @@ mod tests {
         let mut state = ToplevelState::default();
         state.apply(templar_shell_toplevel_v1::Event::MruRank { rank: 3 });
         assert_eq!(state.snapshot(WindowId(1)).mru_rank, 3);
+    }
+
+    #[test]
+    fn a_window_id_event_is_the_semantic_id_and_not_the_transport_fallback() {
+        let mut state = ToplevelState::default();
+        assert_eq!(state.snapshot(WindowId(99)).window_id, WindowId(99));
+        state.apply(templar_shell_toplevel_v1::Event::WindowId { id: 7 });
+        assert_eq!(
+            state.snapshot(WindowId(99)).window_id,
+            WindowId(7),
+            "the compositor's registry id wins over the object's protocol_id"
+        );
     }
 
     #[test]

@@ -238,6 +238,11 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// callback reschedules itself (`TimeoutAction::ToDuration`) when the pointer settled again
     /// mid-flight, rather than a fresh source per motion event of a sweep.
     pub dwell_timer_pending: bool,
+    /// The pointer scene last applied to `Space` — stacking order and client rectangles, top
+    /// first. `space_sync::sync_after_change` compares this to the scene it is about to apply,
+    /// because snapshotting `WindowService` *after* the caller already mutated it made the
+    /// motionless-pointer refresh compare a list to itself.
+    pub last_pointer_scene: Vec<(templar_window::WindowId, templar_window::Rect)>,
     /// Set while a press on one of the compositor's own affordances is being swallowed, so its
     /// release is swallowed with it (`input::on_pointer_button`).
     ///
@@ -375,6 +380,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             home_mapped: None,
             dwell: None,
             dwell_timer_pending: false,
+            last_pointer_scene: Vec::new(),
             swallowing_press: false,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),

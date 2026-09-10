@@ -879,6 +879,9 @@ pub fn sync_toplevels<B: Backend + 'static>(
         if object.version() >= 4 {
             object.mru_rank(toplevel.mru_rank);
         }
+        if object.version() >= 5 {
+            object.window_id(u32::try_from(toplevel.window_id.0).unwrap_or(u32::MAX));
+        }
     }
 
     state
@@ -908,6 +911,9 @@ pub fn sync_toplevels<B: Backend + 'static>(
             manager.bar_peeked(peeked.clone());
         }
     }
+    // Presentation is part of the same snapshot: activate/map/destroy used to leave Taskfield
+    // without telling the shell, because only Home/Peek rode this funnel.
+    send_taskfield_state(state);
 }
 
 /// `open_taskfield`: the shell's routes into the window overview — a chip whose fan is too small,

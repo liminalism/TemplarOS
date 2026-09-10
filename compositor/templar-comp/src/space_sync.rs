@@ -30,15 +30,16 @@ fn pointer_scene<B: Backend + 'static>(state: &TemplarCompState<B>) -> Vec<(Wind
         .collect()
 }
 
-/// Whether the scene at `pointer` changed in a way the pointer has to be told about: a window
-/// containing the pointer moved or resized, or one appeared or vanished under it.
+/// Whether the scene at `pointer` changed in a way the pointer has to be told about: the topmost
+/// window containing the pointer changed identity or rectangle, including a stacking swap of two
+/// overlapping windows whose rectangles did not move.
 ///
 /// The guard, and the reason it is a guard: a resync runs after anything at all that touches
 /// `WindowService`, most of which moves nothing the pointer is over. Re-delivering motion
 /// unconditionally would send a `wl_pointer.motion` per resync — a wake-up per event on a desktop
 /// that is meant to be silent when nothing is happening (`scripts/idle-wakeups.sh`).
 ///
-/// Pure: two lists and a point, no seat, no `Space`, no display.
+/// Pure: two lists and a point, no seat, no `Space`, no display. Lists are top-first.
 fn pointer_scene_changed(
     before: &[(WindowId, Rect)],
     after: &[(WindowId, Rect)],
@@ -50,19 +51,18 @@ fn pointer_scene_changed(
             && pointer.y >= rect.y
             && pointer.y < rect.bottom()
     };
-    let moved = |list: &[(WindowId, Rect)], other: &[(WindowId, Rect)]| {
-        list.iter().any(|(window_id, rect)| {
-            match other.iter().find(|(id, _)| id == window_id) {
-                // Still there: it matters only if it moved, and only if the pointer is on one of
-                // the two rectangles — a window that moved somewhere the pointer is not is not
-                // the pointer's business.
-                Some((_, was)) => was != rect && (contains(rect) || contains(was)),
-                // Gone, or new: either way what is under the pointer is not what it was.
-                None => contains(rect),
-            }
-        })
+    let under = |list: &[(WindowId, Rect)]| {
+        list.iter()
+            .find(|(_, rect)| contains(rect))
+            .map(|(window_id, rect)| (*window_id, *rect))
     };
-    moved(after, before) || moved(before, after)
+    match (under(before), under(after)) {
+        (None, None) => false,
+        (Some((before_id, before_rect)), Some((after_id, after_rect))) => {
+            before_id != after_id || before_rect != after_rect
+        }
+        _ => true,
+    }
 }
 
 /// Re-deliver pointer motion at the same place, because the surface under the pointer moved.
@@ -283,7 +283,7 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
 /// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
-    let before = pointer_scene(state);
+    let before = std::mem::take(&mut state.last_pointer_scene);
     // Reconcile existence before order. A toplevel may be temporarily unmapped while retaining
     // its semantic record, and a broken/missing layer assignment must never leave an old Space
     // element visible even though stacking_order cannot name it.
@@ -339,14 +339,10 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
 
     log_home_visibility(state);
 
-    for record in state.window_service.windows() {
-        if let Some(instance_id) = record.identity.instance_id {
-            state.governor.set_instance_state(
-                instance_id,
-                record.activated,
-                record.mapped && !record.shelved,
-            );
-        }
+    for (instance_id, (foreground, visible)) in aggregated_instance_states(state) {
+        state
+            .governor
+            .set_instance_state(instance_id, foreground, visible);
     }
 
     // `publish` hands the snapshot to the broadcaster's background task and returns immediately;
@@ -360,12 +356,43 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
 
     // Last, and only if something under the pointer actually moved: the pointer's own view of the
     // scene is part of the scene, and this is the one funnel every change comes through.
+    let after = pointer_scene(state);
     refresh_pointer_focus(state, &before);
+    state.last_pointer_scene = after;
+}
+
+/// One governor record per instance: OR of `activated` and of `mapped && !shelved` across every
+/// sibling window. Publishing per `WindowRecord` let HashMap iteration pick a shelved sibling
+/// to overwrite the active one.
+fn aggregated_instance_states<B: Backend + 'static>(
+    state: &TemplarCompState<B>,
+) -> std::collections::HashMap<templar_types::InstanceId, (bool, bool)> {
+    aggregate_instance_states(state.window_service.windows().filter_map(|record| {
+        record.identity.instance_id.map(|instance_id| {
+            (
+                instance_id,
+                record.activated,
+                record.mapped && !record.shelved,
+            )
+        })
+    }))
+}
+
+fn aggregate_instance_states(
+    windows: impl Iterator<Item = (templar_types::InstanceId, bool, bool)>,
+) -> std::collections::HashMap<templar_types::InstanceId, (bool, bool)> {
+    let mut by_instance = std::collections::HashMap::new();
+    for (instance_id, foreground, visible) in windows {
+        let entry = by_instance.entry(instance_id).or_insert((false, false));
+        entry.0 |= foreground;
+        entry.1 |= visible;
+    }
+    by_instance
 }
 
 #[cfg(test)]
 mod tests {
-    use super::pointer_scene_changed;
+    use super::{aggregate_instance_states, pointer_scene_changed};
     use templar_window::{Point, Rect, WindowId};
 
     fn at(x: i32, y: i32) -> Point {
@@ -427,11 +454,42 @@ mod tests {
         let onto = (WindowId(3), Rect::new(1100, 800, 400, 200));
         assert!(pointer_scene_changed(&[elsewhere], &[onto], on_a_chip));
 
+        // Overlapping windows swapping stacking: neither rectangle moved, but the window under
+        // the pointer did. Lists are top-first.
+        let lower = (WindowId(1), Rect::new(0, 0, 400, 400));
+        let upper = (WindowId(2), Rect::new(100, 100, 400, 400));
+        let overlap = at(200, 200);
+        assert!(pointer_scene_changed(
+            &[upper, lower],
+            &[lower, upper],
+            overlap
+        ));
+        assert!(!pointer_scene_changed(
+            &[upper, lower],
+            &[upper, lower],
+            overlap
+        ));
+
         // The rectangle is half-open, exactly as the hit-test is: a pointer on the bottom or
         // right edge is already outside, so a window resizing to end there owes nothing.
         let box_ = (WindowId(4), Rect::new(0, 0, 100, 100));
         let taller = (WindowId(4), Rect::new(0, 0, 100, 140));
         assert!(!pointer_scene_changed(&[box_], &[taller], at(100, 50)));
         assert!(pointer_scene_changed(&[box_], &[taller], at(99, 50)));
+    }
+
+    #[test]
+    fn instance_state_aggregates_siblings_in_either_order() {
+        let instance = templar_types::InstanceId::new();
+        let active_visible = (instance, true, true);
+        let inactive_shelved = (instance, false, false);
+        for order in [
+            [active_visible, inactive_shelved],
+            [inactive_shelved, active_visible],
+        ] {
+            let aggregated = aggregate_instance_states(order.into_iter());
+            assert_eq!(aggregated.len(), 1);
+            assert_eq!(aggregated[&instance], (true, true));
+        }
     }
 }

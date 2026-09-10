@@ -12,7 +12,7 @@ use crate::{
     shell::{GroupInfo, ShellToplevel},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use templar_types::{AppId, InstanceId, WindowClaims};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -338,7 +338,11 @@ impl<I: IdentityCache> WindowService<I> {
         );
         // A window the user just opened must be seen: any presentation hiding or shrinking the
         // scene ends the moment something new arrives, rather than hiding the new window too.
-        self.presentation = Presentation::Normal;
+        // Trusted-shell overlays (Taskfield labels, the island, Home) map through here as well
+        // and must not cancel the mode they are drawing — their role is assigned after this call.
+        if client != ClientKind::TrustedShell {
+            self.presentation = Presentation::Normal;
+        }
 
         // `Layer::Normal` is reachable by every `ClientKind` (its minimum trust is the lowest
         // there is), so this cannot fail today — but it must not be able to abort the render
@@ -698,7 +702,7 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
-        if !window.mapped || window.shelved {
+        if !window.mapped {
             return false;
         }
         // `Layer::Presentation` exists only while the mode it draws does: the shell's overview
@@ -708,6 +712,20 @@ impl<I: IdentityCache> WindowService<I> {
         // the three cannot disagree about it.
         if self.layer_of(window_id) == Some(Layer::Presentation) {
             return matches!(self.presentation, Presentation::Taskfield(_));
+        }
+        if matches!(self.presentation, Presentation::Taskfield(_)) {
+            // The overview is a picture of cards, not of the ordinary scene: an application
+            // window is on screen only if it has a card (including a mapped shelved one), Home
+            // stays the backdrop under the scrim, and everything else — the island, a filtered-
+            // out window — is out. Drawing a non-card at its real size is how a filter used to
+            // leave full-size windows sitting on the overview.
+            if window.role == WindowRole::Application {
+                return self.presentation_rect(window_id).is_some();
+            }
+            return self.layer_of(window_id) == Some(Layer::HomeSurface);
+        }
+        if window.shelved {
+            return false;
         }
         if self.layer_of(window_id) == Some(Layer::HomeSurface) {
             return self.home_revealed() || !self.home_is_covered(window.geometry);
@@ -783,8 +801,8 @@ impl<I: IdentityCache> WindowService<I> {
     /// selects nothing: Taskfield is a view of windows that exist, so with none there is nothing to
     /// enter and no way to tell that from a black screen.
     pub fn enter_taskfield(&mut self, filter: TaskFilter) -> bool {
-        let units = self.task_units();
         let toplevels = self.shell_toplevels();
+        let units = crate::task::units(&toplevels);
         let sections = taskfield::layout(&units, &toplevels, &self.outputs, &filter);
         if sections.is_empty() {
             return false;
@@ -804,6 +822,7 @@ impl<I: IdentityCache> WindowService<I> {
             filter,
             query: String::new(),
             sections,
+            matching: None,
         };
         let next = Presentation::Taskfield(state);
         let changed = self.presentation != next;
@@ -821,6 +840,19 @@ impl<I: IdentityCache> WindowService<I> {
         false
     }
 
+    /// Step the overview's selection, skipping cards the query rejects. Cards do not move.
+    pub fn taskfield_step(&mut self, direction: crate::Direction) -> bool {
+        let next = match &self.presentation {
+            Presentation::Taskfield(state) => {
+                taskfield::step_matching(&state.sections, state.selected, direction, |id| {
+                    state.matches(id)
+                })
+            }
+            _ => return false,
+        };
+        self.taskfield_selected(next)
+    }
+
     /// Move Taskfield's selection. Selection highlights; it never moves geometry.
     pub fn taskfield_selected(&mut self, window_id: Option<WindowId>) -> bool {
         let Presentation::Taskfield(state) = &mut self.presentation else {
@@ -832,14 +864,121 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Set Taskfield's query. Matching *dims* non-matches ([`crate::task::matches`]); it never
-    /// relayouts, so the card under the pointer does not move as the user types.
+    /// relayouts, so the card under the pointer does not move as the user types. Selection jumps
+    /// to the first match when the current card no longer answers.
     pub fn taskfield_query(&mut self, query: String) -> bool {
+        let matching = self.taskfield_matching_set(&query);
         let Presentation::Taskfield(state) = &mut self.presentation else {
             return false;
         };
-        let changed = state.query != query;
+        let changed = state.query != query || state.matching != matching;
         state.query = query;
+        state.matching = matching;
+        if let Some(matching) = &state.matching
+            && state.selected.is_none_or(|id| !matching.contains(&id))
+        {
+            let next = state
+                .cards()
+                .find(|card| matching.contains(&card.window))
+                .map(|card| card.window);
+            state.selected = next;
+        }
         changed
+    }
+
+    /// Advance the overflowing section named by `key` by one page. When that section never got
+    /// cells (the All layout ran out of the output), this opens the unit as its own filter so
+    /// the windows actually fit. `false` when nothing changed.
+    pub fn taskfield_overflow(&mut self, key: crate::TaskKey) -> bool {
+        let can_page = matches!(
+            &self.presentation,
+            Presentation::Taskfield(state)
+                if state.sections.iter().any(|section| {
+                    section.key == key
+                        && !section.cells.is_empty()
+                        && section.windows.len() > section.cells.len()
+                })
+        );
+        if can_page {
+            let geometries: HashMap<WindowId, Rect> = self
+                .windows
+                .iter()
+                .map(|(id, window)| (*id, window.geometry))
+                .collect();
+            let Presentation::Taskfield(state) = &mut self.presentation else {
+                return false;
+            };
+            let changed = {
+                let Some(section) = state.sections.iter_mut().find(|section| section.key == key)
+                else {
+                    return false;
+                };
+                taskfield::page(section, |id| geometries.get(&id).copied())
+            };
+            if changed && state.selected.is_some_and(|id| state.card(id).is_none()) {
+                state.selected = state
+                    .sections
+                    .iter()
+                    .find(|section| section.key == key)
+                    .and_then(|section| section.cards.first())
+                    .map(|card| card.window);
+            }
+            return changed;
+        }
+        self.enter_taskfield(TaskFilter::Unit(key))
+    }
+
+    /// Page the section the selection is in, or the first overflowing section.
+    pub fn taskfield_page_selected(&mut self) -> bool {
+        let key = match &self.presentation {
+            Presentation::Taskfield(state) => state
+                .selected
+                .and_then(|id| {
+                    state
+                        .sections
+                        .iter()
+                        .find(|section| section.cards.iter().any(|card| card.window == id))
+                        .map(|section| section.key.clone())
+                })
+                .or_else(|| {
+                    state
+                        .sections
+                        .iter()
+                        .find(|section| section.overflow > 0)
+                        .map(|section| section.key.clone())
+                }),
+            _ => None,
+        };
+        key.is_some_and(|key| self.taskfield_overflow(key))
+    }
+
+    /// Alpha for a card in the overview: 1.0 when it matches (or the query is empty), dimmed
+    /// otherwise. The compositor paints with this; the layout does not.
+    #[must_use]
+    pub fn taskfield_card_alpha(&self, window_id: WindowId) -> f32 {
+        match &self.presentation {
+            Presentation::Taskfield(state) if !state.matches(window_id) => 0.35,
+            _ => 1.0,
+        }
+    }
+
+    fn taskfield_matching_set(&self, query: &str) -> Option<HashSet<WindowId>> {
+        if query.trim().is_empty() {
+            return None;
+        }
+        let toplevels = self.shell_toplevels();
+        let units = crate::task::units(&toplevels);
+        let mut matching = std::collections::HashSet::new();
+        for toplevel in &toplevels {
+            if let Some(unit) = units
+                .iter()
+                .find(|unit| unit.windows.contains(&toplevel.window_id))
+                && crate::task::matches(unit, toplevel, query)
+            {
+                matching.insert(toplevel.window_id);
+            }
+        }
+        Some(matching)
     }
 
     /// Where `window_id` is drawn instead of its real geometry, or `None` when it is drawn where it
@@ -1041,9 +1180,12 @@ impl<I: IdentityCache> WindowService<I> {
             .filter(|window| self.is_client_window(window.id) && window.mapped && window.shelved)
             .collect();
         shelved.sort_by_key(|window| std::cmp::Reverse(window.shelf_rank.unwrap_or(0)));
+        let ranks = self.application_mru_ranks();
         shelved
             .into_iter()
-            .map(|window| self.to_shell_toplevel(window, self.mru_rank(window)))
+            .map(|window| {
+                self.to_shell_toplevel(window, ranks.get(&window.id).copied().unwrap_or(u32::MAX))
+            })
             .collect()
     }
 
@@ -1276,9 +1418,19 @@ impl<I: IdentityCache> WindowService<I> {
         if !self
             .windows
             .get(&window_id)
-            .is_some_and(|window| window.mapped && !window.shelved)
+            .is_some_and(|window| window.mapped)
         {
             return false;
+        }
+        // Accepted activation is how a shelved card comes back: selection highlights and does
+        // not unshelve, a click or Enter does. The shelf is a view of mapped windows, so a
+        // mapped-and-shelved record is a valid target.
+        if self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.shelved)
+        {
+            let _ = self.unshelve(window_id);
         }
         for window in self.windows.values_mut() {
             window.activated = window.id == window_id;
@@ -1675,11 +1827,14 @@ impl<I: IdentityCache> WindowService<I> {
     /// no raw claims, and no shell-owned surfaces. Feeding the Home Surface or dock back into this
     /// list would make the shell create session tiles and recursive previews of its own windows.
     pub fn shell_toplevels(&self) -> Vec<ShellToplevel> {
+        let ranks = self.application_mru_ranks();
         let mut list: Vec<ShellToplevel> = self
             .windows
             .values()
             .filter(|window| window.role == WindowRole::Application && window.mapped)
-            .map(|window| self.to_shell_toplevel(window, self.mru_rank(window)))
+            .map(|window| {
+                self.to_shell_toplevel(window, ranks.get(&window.id).copied().unwrap_or(u32::MAX))
+            })
             .collect();
         list.sort_by_key(|toplevel| toplevel.window_id);
         list
@@ -1693,18 +1848,25 @@ impl<I: IdentityCache> WindowService<I> {
         crate::task::units(&self.shell_toplevels())
     }
 
-    fn mru_rank(&self, window: &WindowRecord) -> u32 {
-        self.windows
+    /// One rank per mapped application window: sort once, enumerate. Callers that used to
+    /// rescan the map per window (`O(n²)` via [`Self::mru_rank`]) share this snapshot instead.
+    fn application_mru_ranks(&self) -> HashMap<WindowId, u32> {
+        let mut eligible: Vec<&WindowRecord> = self
+            .windows
             .values()
-            .filter(|candidate| candidate.role == WindowRole::Application && candidate.mapped)
-            .filter(|candidate| {
-                candidate.last_activated > window.last_activated
-                    || (candidate.last_activated == window.last_activated
-                        && candidate.id > window.id)
-            })
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX)
+            .filter(|window| window.role == WindowRole::Application && window.mapped)
+            .collect();
+        eligible.sort_by(|left, right| {
+            right
+                .last_activated
+                .cmp(&left.last_activated)
+                .then(right.id.cmp(&left.id))
+        });
+        eligible
+            .into_iter()
+            .enumerate()
+            .map(|(rank, window)| (window.id, u32::try_from(rank).unwrap_or(u32::MAX)))
+            .collect()
     }
 
     fn to_shell_toplevel(&self, window: &WindowRecord, mru_rank: u32) -> ShellToplevel {
@@ -3110,6 +3272,168 @@ mod tests {
         let mut service = WindowService::new(FakeCache::default(), outputs());
         assert!(!service.enter_taskfield(TaskFilter::All));
         assert_eq!(service.presentation(), &Presentation::Normal);
+    }
+
+    #[test]
+    fn mapping_a_shell_overlay_does_not_cancel_taskfield() {
+        let (mut service, ids) = service_with(2);
+        assert!(service.enter_taskfield(TaskFilter::All));
+        let overlay = service.on_toplevel_mapped(
+            9,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "taskfield".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(overlay, Layer::Presentation, ClientKind::TrustedShell)
+            .unwrap();
+        service.set_role(overlay, WindowRole::Overlay);
+        assert!(
+            matches!(service.presentation(), Presentation::Taskfield(_)),
+            "the overlay that draws the mode must not cancel it"
+        );
+        assert!(service.is_visible(overlay));
+        assert!(service.presentation_rect(ids[0]).is_some());
+    }
+
+    #[test]
+    fn mapping_an_application_leaves_taskfield() {
+        let (mut service, _ids) = service_with(1);
+        assert!(service.enter_taskfield(TaskFilter::All));
+        let _fresh = service.on_toplevel_mapped(
+            4,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "fresh".into(),
+            Rect::new(40, 40, 400, 300),
+        );
+        assert_eq!(service.presentation(), &Presentation::Normal);
+    }
+
+    #[test]
+    fn taskfield_shows_shelved_cards_and_hides_the_rest() {
+        let (mut service, ids) = service_with(3);
+        assert!(service.shelve(ids[2]));
+        assert!(service.enter_taskfield(TaskFilter::Shelved));
+        assert!(
+            service.is_visible(ids[2]),
+            "a mapped shelved card is a presentation-only view"
+        );
+        assert!(
+            !service.is_visible(ids[0]),
+            "a window without a card is not drawn at its real size"
+        );
+        assert!(
+            !service.is_visible(ids[1]),
+            "filtered-out live windows stay off the overview"
+        );
+        assert!(service.presentation_rect(ids[2]).is_some());
+        assert_eq!(service.presentation_rect(ids[0]), None);
+    }
+
+    #[test]
+    fn paging_overflow_reaches_every_window_of_an_oversized_unit() {
+        let mut service = WindowService::new(
+            FakeCache::default(),
+            vec![Output::new("eDP-1", Rect::new(0, 0, 1366, 768), 1000)],
+        );
+        let ids: Vec<WindowId> = (0..40)
+            .map(|index| {
+                service.on_toplevel_mapped(
+                    index + 1,
+                    ClientKind::Application,
+                    WindowClaims::default(),
+                    format!("files {index}"),
+                    Rect::new(40, 40, 800, 600),
+                )
+            })
+            .collect();
+        for id in &ids {
+            service.update_identity(
+                *id,
+                CachedIdentity {
+                    app_id: Some("org.templaros.Files".parse().unwrap()),
+                    instance_id: None,
+                    verified: true,
+                    claim_mismatch: false,
+                },
+            );
+        }
+        let key = crate::TaskKey::App("org.templaros.Files".parse().unwrap());
+        assert!(service.enter_taskfield(TaskFilter::Unit(key.clone())));
+        let mut seen = HashSet::new();
+        let pages = {
+            let Presentation::Taskfield(state) = service.presentation() else {
+                panic!("in the mode");
+            };
+            state.sections[0]
+                .windows
+                .len()
+                .div_ceil(state.sections[0].cells.len().max(1))
+        };
+        for _ in 0..pages {
+            let Presentation::Taskfield(state) = service.presentation() else {
+                panic!("in the mode");
+            };
+            for card in state.cards() {
+                seen.insert(card.window);
+            }
+            if seen.len() == ids.len() {
+                break;
+            }
+            assert!(service.taskfield_overflow(key.clone()));
+        }
+        assert_eq!(seen.len(), ids.len());
+        assert_eq!(
+            service.window(ids[0]).unwrap().geometry,
+            Rect::new(40, 40, 800, 600)
+        );
+    }
+
+    #[test]
+    fn a_query_dims_without_moving_cards_and_steers_selection() {
+        let (mut service, ids) = service_with(3);
+        service.windows.get_mut(&ids[0]).unwrap().title = "alpha".into();
+        service.windows.get_mut(&ids[1]).unwrap().title = "beta".into();
+        service.windows.get_mut(&ids[2]).unwrap().title = "gamma".into();
+        assert!(service.enter_taskfield(TaskFilter::All));
+        let before = service.presentation_rect(ids[0]);
+        assert!(service.taskfield_query("beta".into()));
+        assert_eq!(service.presentation_rect(ids[0]), before);
+        assert!((service.taskfield_card_alpha(ids[1]) - 1.0).abs() < f32::EPSILON);
+        assert!(service.taskfield_card_alpha(ids[0]) < 1.0);
+        let Presentation::Taskfield(state) = service.presentation() else {
+            panic!("in the mode");
+        };
+        assert_eq!(state.selected, Some(ids[1]));
+    }
+
+    #[test]
+    fn enter_and_leave_do_not_change_window_geometry() {
+        let (mut service, ids) = service_with(3);
+        let before: Vec<_> = ids
+            .iter()
+            .map(|id| service.window(*id).unwrap().geometry)
+            .collect();
+        assert!(service.enter_taskfield(TaskFilter::All));
+        assert!(service.leave_taskfield());
+        let after: Vec<_> = ids
+            .iter()
+            .map(|id| service.window(*id).unwrap().geometry)
+            .collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn activating_a_shelved_card_unshelves_it() {
+        let (mut service, ids) = service_with(2);
+        assert!(service.shelve(ids[0]));
+        assert!(service.enter_taskfield(TaskFilter::Shelved));
+        assert!(service.activate(ids[0]));
+        assert!(!service.window(ids[0]).unwrap().shelved);
+        assert_eq!(service.presentation(), &Presentation::Normal);
+        assert!(service.is_visible(ids[0]));
     }
 
     #[test]

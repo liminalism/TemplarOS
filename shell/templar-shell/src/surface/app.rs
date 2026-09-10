@@ -504,6 +504,10 @@ struct ShellApp {
     /// can only be wrong. The compositor also maps and unmaps it; neither side depends on the
     /// other getting it right.
     taskfield: Option<HostedWindow>,
+    /// Frozen at first paint after the mode opens, thrown away when it closes. The compositor
+    /// owns the layout; recomputing from the live snapshot every frame is how labels drifted
+    /// off the cards they name when a window closed or resized.
+    taskfield_sections: Option<Vec<templar_window::taskfield::Section>>,
     taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen,
     taskfield_mask: WindowBuffer,
     bar_screen: crate::surface::bar_screen::BarScreen,
@@ -606,6 +610,7 @@ impl ShellApp {
             cluster_mask: WindowBuffer::new(0, 0),
             cluster_wanted: (0, 0),
             taskfield: None,
+            taskfield_sections: None,
             taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen::default(),
             taskfield_mask: WindowBuffer::new(0, 0),
             bridge_generation: 0,
@@ -2903,7 +2908,9 @@ impl ShellApp {
             toplevels,
         ) && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
         if wanted_gone {
-            self.cluster = None;
+            if let (Some(bridge), Some(hosted)) = (&mut self.bridge, self.cluster.take()) {
+                bridge.forget_surface(&hosted.window);
+            }
             self.cluster_wanted = (0, 0);
             // And with it whatever was open on it. The screen's state does not survive the screen:
             // a popover left open when something went fullscreen would otherwise be waiting when
@@ -3076,7 +3083,10 @@ impl ShellApp {
             .as_ref()
             .is_some_and(|bridge| bridge.taskfield().active);
         if !active {
-            self.taskfield = None;
+            if let (Some(bridge), Some(hosted)) = (&mut self.bridge, self.taskfield.take()) {
+                bridge.forget_surface(&hosted.window);
+            }
+            self.taskfield_sections = None;
             return;
         }
         if self.taskfield.is_some() {
@@ -3135,14 +3145,19 @@ impl ShellApp {
             self.ensure_icon(&key);
         }
         let (width, height) = self.output_size();
-        // The compositor's own layout, over the compositor's own records. The cards are not on
-        // the wire and deliberately never will be.
-        let sections = templar_window::taskfield::layout(
-            &templar_window::task::units(&toplevels),
-            &toplevels,
-            &crate::surface::taskfield_screen::outputs(width, height),
-            &status.filter,
-        );
+        // Frozen at first paint: the compositor laid the cards out once on entry, and a live
+        // recompute here is how labels drifted when a window closed or resized. The remaining
+        // disagreement — this surface invents a zero-origin scale-1 output — is a
+        // `taskfield_card` event, not a second layout.
+        if self.taskfield_sections.is_none() {
+            self.taskfield_sections = Some(templar_window::taskfield::layout(
+                &templar_window::task::units(&toplevels),
+                &toplevels,
+                &crate::surface::taskfield_screen::outputs(width, height),
+                &status.filter,
+            ));
+        }
+        let sections = self.taskfield_sections.clone().unwrap_or_default();
         let Some(taskfield) = &mut self.taskfield else {
             return;
         };
@@ -3230,6 +3245,9 @@ impl ShellApp {
                 BarAction::Field(action) => self.perform(action),
                 // A chip with more windows than its fan can hold hands the question over.
                 BarAction::Taskfield(key) => self.perform(FieldAction::Taskfield(key)),
+                BarAction::Overview => {
+                    self.open_taskfield(&templar_window::taskfield::TaskFilter::All, "");
+                }
             }
         }
     }

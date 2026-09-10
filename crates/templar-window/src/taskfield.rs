@@ -16,7 +16,7 @@
 //! dead, and the shell — when it is alive — runs *this same function* over the toplevels it holds
 //! to place its own labels over the same cards.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{
     Output, Rect, ShellToplevel, TaskKey, TaskUnit,
@@ -71,8 +71,17 @@ pub struct Section {
     /// The band the name, accent and count are drawn in, always inside the output.
     pub header: Rect,
     pub cards: Vec<Card>,
-    /// How many of the unit's windows on this output did not fit. Drawn as `+n more`, whose route
-    /// is `open_taskfield` filtered to this unit — where they do fit. Nothing is unreachable.
+    /// Frozen cell rectangles, reading order. Paging paints different windows into these without
+    /// moving the cells, so a card never slides out from under the pointer as a side effect.
+    pub cells: Vec<Rect>,
+    /// Every window of this unit on this output, in pack order. Paging walks this list.
+    pub windows: Vec<crate::WindowId>,
+    /// Current page, zero-based. Wrapping is [`page`]'s job.
+    pub page: usize,
+    /// Windows of this unit on this output that are not on the current page, in pack order.
+    pub rest: Vec<crate::WindowId>,
+    /// How many of the unit's windows on this output did not fit on this page. Drawn as `+n more`.
+    /// Equal to [`Self::rest`]'s length; paging swaps `rest` into [`Self::cards`].
     pub overflow: usize,
 }
 
@@ -85,6 +94,9 @@ pub struct TaskfieldState {
     pub query: String,
     pub selected: Option<crate::WindowId>,
     pub sections: Vec<Section>,
+    /// Windows that answer the current query, or `None` when the query is empty (everything
+    /// matches). Filled by `WindowService` so dimming and selection share one set.
+    pub matching: Option<HashSet<crate::WindowId>>,
 }
 
 impl TaskfieldState {
@@ -103,6 +115,14 @@ impl TaskfieldState {
         self.sections
             .iter()
             .flat_map(|section| section.cards.iter().copied())
+    }
+
+    /// Whether `window` answers the query. An empty query matches everything.
+    #[must_use]
+    pub fn matches(&self, window: crate::WindowId) -> bool {
+        self.matching
+            .as_ref()
+            .is_none_or(|matching| matching.contains(&window))
     }
 }
 
@@ -174,6 +194,71 @@ pub fn step(
     }
 }
 
+/// [`step`], skipping windows `matching` rejects. An empty query is `matching` always true —
+/// the cards do not move; only which one is selected does.
+#[must_use]
+pub fn step_matching(
+    sections: &[Section],
+    from: Option<crate::WindowId>,
+    direction: Direction,
+    matching: impl Fn(crate::WindowId) -> bool,
+) -> Option<crate::WindowId> {
+    let mut current = from;
+    loop {
+        let next = step(sections, current, direction)?;
+        if matching(next) {
+            return Some(next);
+        }
+        current = Some(next);
+    }
+}
+
+/// Which overflowing section's header contains `pos`, if any. The compositor's overflow click
+/// and PageDown share this so a header and a key cannot disagree about whose rest they show.
+#[must_use]
+pub fn overflow_at(sections: &[Section], pos: crate::Point) -> Option<usize> {
+    sections.iter().position(|section| {
+        section.overflow > 0
+            && pos.x >= section.header.x
+            && pos.x < section.header.right()
+            && pos.y >= section.header.y
+            && pos.y < section.header.bottom()
+    })
+}
+
+/// Advance `section` by one page: the next `cells.len()` windows occupy the same frozen cells.
+/// Wraps to the first page after the last. `false` when there is nothing to show.
+pub fn page(section: &mut Section, geometry_of: impl Fn(crate::WindowId) -> Option<Rect>) -> bool {
+    let n = section.cells.len();
+    if n == 0 || section.windows.len() <= n {
+        return false;
+    }
+    let pages = section.windows.len().div_ceil(n);
+    section.page = (section.page + 1) % pages;
+    let start = section.page.saturating_mul(n);
+    let end = (start + n).min(section.windows.len());
+    let shown = &section.windows[start.min(section.windows.len())..end];
+    section.cards = shown
+        .iter()
+        .zip(section.cells.iter())
+        .filter_map(|(id, cell)| {
+            geometry_of(*id).map(|geometry| Card {
+                window: *id,
+                rect: card_in(*cell, geometry),
+            })
+        })
+        .collect();
+    section.rest = section
+        .windows
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index < start || *index >= end)
+        .map(|(_, id)| *id)
+        .collect();
+    section.overflow = section.rest.len();
+    true
+}
+
 /// The windows `filter` admits, by id.
 fn in_scope<'a>(
     units: &[TaskUnit],
@@ -232,6 +317,8 @@ fn pack(members: &[(&TaskUnit, Vec<&ShellToplevel>)], output: &Output) -> Vec<Se
         y += HEADER_HEIGHT;
 
         let mut cards = Vec::new();
+        let mut cells = Vec::new();
+        let mut rest = Vec::new();
         for (index, toplevel) in mine.iter().enumerate() {
             let column = i32::try_from(index).unwrap_or(i32::MAX) % columns;
             let row = i32::try_from(index).unwrap_or(i32::MAX) / columns;
@@ -242,8 +329,10 @@ fn pack(members: &[(&TaskUnit, Vec<&ShellToplevel>)], output: &Output) -> Vec<Se
                 cell_height,
             );
             if cell.bottom() > area.bottom() {
-                break;
+                rest.push(toplevel.window_id);
+                continue;
             }
+            cells.push(cell);
             cards.push(Card {
                 window: toplevel.window_id,
                 rect: card_in(cell, toplevel.geometry),
@@ -251,12 +340,17 @@ fn pack(members: &[(&TaskUnit, Vec<&ShellToplevel>)], output: &Output) -> Vec<Se
         }
         y += rows(cards.len(), columns) * (cell_height + GAP) + GAP;
 
+        let windows: Vec<crate::WindowId> = mine.iter().map(|top| top.window_id).collect();
         out.push(Section {
             key: unit.key.clone(),
             label: unit.label.clone(),
             accent: unit.accent,
             header: Rect::new(area.x, header_y, area.width, HEADER_HEIGHT),
-            overflow: mine.len() - cards.len(),
+            overflow: rest.len(),
+            cells,
+            windows,
+            page: 0,
+            rest,
             cards,
         });
     }
@@ -443,6 +537,67 @@ mod tests {
             section.cards.len() + section.overflow,
             400,
             "every window is either drawn or counted; none vanishes"
+        );
+        assert_eq!(section.rest.len(), section.overflow);
+        assert_eq!(section.cells.len(), section.cards.len());
+    }
+
+    #[test]
+    fn paging_a_unit_reaches_every_window_on_a_small_output() {
+        let output = vec![Output::new("eDP-1", Rect::new(0, 0, 1366, 768), 1000)];
+        let toplevels = windows(80, "org.templaros.Files");
+        let units = task::units(&toplevels);
+        let mut sections = layout(
+            &units,
+            &toplevels,
+            &output,
+            &TaskFilter::Unit(units[0].key.clone()),
+        );
+        assert_eq!(sections.len(), 1);
+        let geometry_of = |id: crate::WindowId| {
+            toplevels
+                .iter()
+                .find(|top| top.window_id == id)
+                .map(|top| top.geometry)
+        };
+        let mut seen = std::collections::HashSet::new();
+        let cells = sections[0].cells.clone();
+        let pages = sections[0]
+            .windows
+            .len()
+            .div_ceil(sections[0].cells.len().max(1));
+        for _ in 0..pages {
+            for card in &sections[0].cards {
+                seen.insert(card.window);
+            }
+            assert_eq!(
+                sections[0].cells, cells,
+                "paging must not move the frozen cells"
+            );
+            if seen.len() == 80 {
+                break;
+            }
+            assert!(page(&mut sections[0], geometry_of));
+        }
+        assert_eq!(seen.len(), 80, "every window occupied a cell on some page");
+    }
+
+    #[test]
+    fn stepping_skips_windows_the_query_rejects() {
+        let toplevels = windows(4, "org.templaros.Files");
+        let sections = laid_out(&toplevels, &one_output(), &TaskFilter::All);
+        let first = sections[0].cards[0].window;
+        let third = sections[0].cards[2].window;
+        let matching = |id: crate::WindowId| id == first || id == third;
+        assert_eq!(
+            step_matching(&sections, Some(first), Direction::Right, matching),
+            Some(third),
+            "a non-matching card between two matches is skipped"
+        );
+        let second = sections[0].cards[1].window;
+        assert_ne!(
+            step_matching(&sections, Some(first), Direction::Right, matching),
+            Some(second)
         );
     }
 

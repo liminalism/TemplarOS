@@ -105,8 +105,19 @@ pub fn activate_window<B: Backend + 'static>(state: &mut TemplarCompState<B>, wi
         .find(|window| window.activated)
         .map(|window| window.id)
         .filter(|id| *id != window_id);
+    let was_shelved = state
+        .window_service
+        .window(window_id)
+        .is_some_and(|window| window.shelved);
     if !state.window_service.activate(window_id) {
         return;
+    }
+    if was_shelved
+        && let Some(geometry) = state.window_service.window(window_id).map(|w| w.geometry)
+    {
+        // Unshelve may have repaired the rectangle against the current topology; the client
+        // has to hear the size, the same way a shelf restore from the protocol does.
+        crate::space_sync::apply_resized_geometry(state, window_id, geometry, false);
     }
     if let Some(outgoing) = outgoing {
         state.previous_focus = Some(outgoing);
@@ -312,6 +323,8 @@ enum TaskfieldRelease {
     /// A drag that landed nowhere. Nothing happens and the mode stays up: a gesture the user
     /// started and then thought better of must not also close what they were looking at.
     Cancel,
+    /// A click on an overflowing section's header: show the next page of that unit.
+    Overflow(usize),
 }
 
 /// Decide what a press at `pressed_at` released at `released_at` asked for, over the frozen
@@ -323,6 +336,7 @@ enum TaskfieldRelease {
 /// everything, and the same [`is_click`] slop the name-tag pin uses separates the two readings.
 fn taskfield_release(
     sections: &[Vec<(WindowId, templar_window::Rect)>],
+    overflow_headers: &[(usize, templar_window::Rect)],
     pressed_at: TemplarPoint,
     released_at: TemplarPoint,
 ) -> TaskfieldRelease {
@@ -336,6 +350,13 @@ fn taskfield_release(
     };
     let from = card_at(pressed_at);
     if is_click(pressed_at, released_at) {
+        if from.is_none()
+            && let Some(&(index, _)) = overflow_headers
+                .iter()
+                .find(|(_, header)| rect_contains(*header, pressed_at))
+        {
+            return TaskfieldRelease::Overflow(index);
+        }
         return TaskfieldRelease::Activate(from.map(|(_, window_id)| window_id));
     }
     // A drag has to start on a card and end on another section's: dragging from the scrim relates
@@ -671,16 +692,35 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
             }
             match self.gesture {
                 Gesture::Move => {
+                    // Capture the unrepaired anchor *before* `finish_drag` writes the repaired
+                    // rectangle. `move_group` computes its displacement from the anchor's current
+                    // geometry; after the repair that delta is zero and followers miss the
+                    // displacement that put the anchor back on screen.
+                    let unrepaired = data
+                        .window_service
+                        .window(self.window_id)
+                        .map(|window| window.geometry);
                     if let Some((_, geometry)) = data.window_service.finish_drag() {
                         crate::space_sync::apply_dragged_geometry(data, self.window_id, geometry);
-                        if !self.followers.is_empty() {
-                            // The invariant is enforced once, at the end, for the whole group:
-                            // `move_group` carries every member through the anchor's own repair
-                            // displacement and then repairs each of them in turn.
-                            for (id, moved) in
-                                data.window_service.move_group(self.window_id, geometry)
-                            {
-                                crate::space_sync::apply_dragged_geometry(data, id, moved);
+                        if !self.followers.is_empty() && unrepaired.is_some() {
+                            for (id, offset) in &self.followers {
+                                let Some(size) =
+                                    data.window_service.window(*id).map(|w| w.geometry)
+                                else {
+                                    continue;
+                                };
+                                let placed = templar_window::Rect::new(
+                                    geometry.x.saturating_add(offset.x),
+                                    geometry.y.saturating_add(offset.y),
+                                    size.width,
+                                    size.height,
+                                );
+                                let repaired = templar_window::repair_window(
+                                    placed,
+                                    data.window_service.outputs(),
+                                );
+                                data.window_service.set_geometry(*id, repaired);
+                                crate::space_sync::apply_dragged_geometry(data, *id, repaired);
                             }
                         }
                     }
@@ -801,9 +841,14 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
 
     /// The grab ending for any reason at all — including one this grab did not handle, such as
     /// the seat being taken away — clears the drop-target highlight, so a band can never be left
-    /// glowing at a drag that is over.
+    /// glowing at a drag that is over. It also drops any in-flight drag/resize and the
+    /// compositor cursor, because cancellation used to leave both latched with nothing to
+    /// finish them.
     fn unset(&mut self, data: &mut TemplarCompState<B>) {
         data.drop_target = None;
+        let _ = data.window_service.finish_drag();
+        let _ = data.window_service.finish_resize();
+        data.show_compositor_cursor(None);
     }
 }
 
@@ -1119,8 +1164,20 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // A click means the user is doing something else — the fallback switcher HUD
             // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
             self.switcher = None;
-            self.swallowing_press =
+            let compositor_owned =
                 self.handle_press_for_focus_or_drag(pointer.current_location(), serial, button);
+            // A grab installed by that press owns the matching release (`WindowGestureGrab::button`
+            // finishes the drag). Swallowing the pair is how a tag/edge grab used to never see
+            // `BTN_LEFT` come up. Only affordances that act and return — close, park, maximize,
+            // pin — still swallow the release; they installed no grab to deliver it to.
+            let grab_installed = self
+                .seat
+                .get_pointer()
+                .is_some_and(|grabbed| grabbed.is_grabbed());
+            self.swallowing_press = swallow_matching_release(compositor_owned, grab_installed);
+            if compositor_owned {
+                return;
+            }
         }
         // A press the compositor took is not also the client's. Where a grab was installed this
         // makes no difference (the grab has `Focus::Clear`), but a tag that acts and returns —
@@ -1385,18 +1442,23 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // the keyboard moved somewhere visible, exactly as reaching it from `Super+H` does.
             DwellIntent::HomeCorner => self.reveal_home(RevealHome::Show),
             DwellIntent::BarPeek(output) => {
-                // A first dwell raises the island; resting there again asks for the rest. The
-                // promotion is the same corner and the same gesture at two depths — reach once
-                // for "what is running", reach again for "show me" — so the pointer never has to
-                // learn a second place. `set_peek_output` answering `false` *is* "the island is
-                // already up for this output", which is what makes the second dwell recognisable
-                // without a second piece of state.
-                let changed = if self.window_service.set_peek_output(Some(output)) {
-                    true
-                } else {
-                    self.enter_taskfield(templar_window::TaskFilter::All)
-                };
-                if changed {
+                // A first dwell raises the island. The timer is then re-armed for promotion
+                // without requiring another motion event — a pointer that has stopped sending
+                // motion is exactly the rest that earned the peek, and it is still resting.
+                if self.window_service.set_peek_output(Some(output.clone())) {
+                    crate::space_sync::sync_after_change(self);
+                }
+                let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+                self.dwell = Some(Dwell {
+                    intent: DwellIntent::BarPromote(output),
+                    at: pos,
+                    since_ns: now,
+                });
+                return Some(Duration::from_millis(DWELL_MS));
+            }
+            DwellIntent::BarPromote(_output) => {
+                let _ = self.window_service.set_peek_output(None);
+                if self.enter_taskfield(templar_window::TaskFilter::All) {
                     crate::space_sync::sync_after_change(self);
                 }
             }
@@ -1482,13 +1544,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // The strip a covering window's chrome puts on screen is `TAG_HEIGHT` tall and the peek
         // band is its bottom ten pixels, so without this, resting on the close tag long enough to
         // aim at it opens the switcher underneath the thing being aimed at.
-        if self.window_service.covering_chrome().is_some()
-            || !in_peek_band(output.logical, pos)
-            || self.window_service.peek_output() == Some(output.name.as_str())
-        {
+        if self.window_service.covering_chrome().is_some() || !in_peek_band(output.logical, pos) {
             return None;
         }
-        covering.map(|_| DwellIntent::BarPeek(output.name.clone()))
+        covering.map(|_| {
+            if self.window_service.peek_output() == Some(output.name.as_str()) {
+                DwellIntent::BarPromote(output.name.clone())
+            } else {
+                DwellIntent::BarPeek(output.name.clone())
+            }
+        })
     }
 
     /// Pin or unpin a window on a click of its name tag, and put the new answer on screen: the
@@ -1614,23 +1679,49 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let Some(pressed_at) = self.taskfield_press.take() else {
             return true;
         };
-        let templar_window::Presentation::Taskfield(taskfield) = self.window_service.presentation()
+        let Some((sections, overflow_headers, overflow_keys)) =
+            (match self.window_service.presentation() {
+                templar_window::Presentation::Taskfield(taskfield) => Some((
+                    taskfield
+                        .sections
+                        .iter()
+                        .map(|section| {
+                            section
+                                .cards
+                                .iter()
+                                .map(|card| (card.window, card.rect))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>(),
+                    taskfield
+                        .sections
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, section)| section.overflow > 0)
+                        .map(|(index, section)| (index, section.header))
+                        .collect::<Vec<_>>(),
+                    taskfield
+                        .sections
+                        .iter()
+                        .map(|section| section.key.clone())
+                        .collect::<Vec<_>>(),
+                )),
+                _ => None,
+            })
         else {
             return true;
         };
-        let sections: Vec<Vec<(WindowId, templar_window::Rect)>> = taskfield
-            .sections
-            .iter()
-            .map(|section| {
-                section
-                    .cards
-                    .iter()
-                    .map(|card| (card.window, card.rect))
-                    .collect()
-            })
-            .collect();
-        match taskfield_release(&sections, pressed_at, pos) {
+        match taskfield_release(&sections, &overflow_headers, pressed_at, pos) {
             TaskfieldRelease::Cancel => {}
+            TaskfieldRelease::Overflow(index) => {
+                if let Some(key) = overflow_keys.get(index).cloned()
+                    && self.window_service.taskfield_overflow(key)
+                {
+                    crate::protocols_shell::send_taskfield_state(self);
+                    crate::space_sync::sync_after_change(self);
+                    B::request_redraw(self);
+                }
+            }
             TaskfieldRelease::Activate(window_id) => {
                 self.leave_taskfield();
                 if let Some(window_id) = window_id {
@@ -1962,6 +2053,15 @@ fn is_click(pressed: TemplarPoint, released: TemplarPoint) -> bool {
     (released.x - pressed.x).abs() <= CLICK_SLOP && (released.y - pressed.y).abs() <= CLICK_SLOP
 }
 
+/// Whether a compositor-owned press still owns its matching release.
+///
+/// A grab installed by that press (`WindowGestureGrab`) needs the release to finish; swallowing
+/// the pair is how a tag/edge drag used to never end. Affordances that act and return — close,
+/// park, maximize, pin — install no grab, so they still swallow the release.
+fn swallow_matching_release(compositor_owned: bool, grab_installed: bool) -> bool {
+    compositor_owned && !grab_installed
+}
+
 /// What the pointer resting at the bottom of the screen is asking for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DwellIntent {
@@ -1973,6 +2073,11 @@ pub enum DwellIntent {
     /// edge has been asked for (`bar_peeked`, either way). The shell cannot see this for itself —
     /// whatever is under the pointer owns it — so it is the compositor that has to notice.
     BarPeek(String),
+    /// A second dwell on an already-peeked edge: open Taskfield. Distinct from [`Self::BarPeek`]
+    /// so the dwell clock restarts after the island comes up, rather than treating "already
+    /// peeked" as no intent at all — which is how promotion used to be unreachable without a
+    /// motion past the island.
+    BarPromote(String),
     /// Either bottom corner of a window that fills the screen: show that window's own name tag
     /// and controls over it. Such a window has no frame to reach for and the shell's bar carries
     /// no copy of its controls, so without this there is no pointer route to closing it at all.
@@ -2235,6 +2340,35 @@ mod tests {
         assert_eq!(peeking.since_ns, 5_000_000, "a new intent is a new clock");
     }
 
+    #[test]
+    fn a_second_dwell_on_an_already_peeked_edge_is_a_new_intent() {
+        let peek = dwell_after_motion(
+            None,
+            Some(DwellIntent::BarPeek("eDP-1".to_owned())),
+            at(0, 1079),
+            0,
+        )
+        .unwrap();
+        let promote = dwell_after_motion(
+            Some(peek),
+            Some(DwellIntent::BarPromote("eDP-1".to_owned())),
+            at(0, 1079),
+            5_000_000,
+        )
+        .unwrap();
+        assert_eq!(promote.intent, DwellIntent::BarPromote("eDP-1".to_owned()));
+        assert_eq!(promote.since_ns, 5_000_000, "promotion restarts the clock");
+        assert!(
+            swallow_matching_release(true, false),
+            "close/park/pin still swallow the release"
+        );
+        assert!(
+            !swallow_matching_release(true, true),
+            "a grab owns its matching release"
+        );
+        assert!(!swallow_matching_release(false, false));
+    }
+
     /// A framed client window, laid out the way the compositor lays one out: the record's
     /// geometry is the *frame*, and the strip is the one `templar_window` puts below the client
     /// area (`frame_around`/`tag_strip`).
@@ -2321,19 +2455,29 @@ mod tests {
 
         // A press and release on the same card, within the slop: go there.
         assert_eq!(
-            taskfield_release(&sections, inside, at(150 + CLICK_SLOP, 150)),
+            taskfield_release(&sections, &[], inside, at(150 + CLICK_SLOP, 150)),
             TaskfieldRelease::Activate(Some(WindowId(1)))
         );
         // A click on the scrim: leave, and activate nothing. This is the acceptance.
         assert_eq!(
-            taskfield_release(&sections, at(700, 700), at(700, 700)),
+            taskfield_release(&sections, &[], at(700, 700), at(700, 700)),
             TaskfieldRelease::Activate(None)
+        );
+        // A click on an overflowing section's header pages that unit rather than leaving.
+        assert_eq!(
+            taskfield_release(
+                &sections,
+                &[(0, Rect::new(100, 70, 400, 28))],
+                at(120, 80),
+                at(120, 80)
+            ),
+            TaskfieldRelease::Overflow(0)
         );
 
         // Dragged out of its section and onto the other's: group, with that section's *first*
         // card as the anchor — the group already there is the one whose identity survives.
         assert_eq!(
-            taskfield_release(&sections, inside, at(400, 350)),
+            taskfield_release(&sections, &[], inside, at(400, 350)),
             TaskfieldRelease::Group {
                 dragged: WindowId(1),
                 anchor: WindowId(3),
@@ -2341,7 +2485,7 @@ mod tests {
         );
         // And the other way, so the anchor is not simply "the lower one".
         assert_eq!(
-            taskfield_release(&sections, at(400, 350), inside),
+            taskfield_release(&sections, &[], at(400, 350), inside),
             TaskfieldRelease::Group {
                 dragged: WindowId(4),
                 anchor: WindowId(1),
@@ -2350,22 +2494,22 @@ mod tests {
 
         // Within one section there is nothing to relate: those windows are already one unit.
         assert_eq!(
-            taskfield_release(&sections, inside, at(400, 150)),
+            taskfield_release(&sections, &[], inside, at(400, 150)),
             TaskfieldRelease::Cancel
         );
         // Dragged from the scrim, or dropped on it: a gesture the user thought better of leaves
         // the mode up rather than closing what they were looking at.
         assert_eq!(
-            taskfield_release(&sections, at(700, 700), inside),
+            taskfield_release(&sections, &[], at(700, 700), inside),
             TaskfieldRelease::Cancel
         );
         assert_eq!(
-            taskfield_release(&sections, inside, at(700, 700)),
+            taskfield_release(&sections, &[], inside, at(700, 700)),
             TaskfieldRelease::Cancel
         );
         // No cards at all: every reading is "nothing".
         assert_eq!(
-            taskfield_release(&[], inside, at(400, 350)),
+            taskfield_release(&[], &[], inside, at(400, 350)),
             TaskfieldRelease::Cancel
         );
     }

@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use pixelkit_raster::Bitmap;
@@ -60,12 +61,23 @@ pub(crate) struct ShmBuffer {
     pub(crate) width: u32,
     pub(crate) height: u32,
     stride: u32,
+    /// `true` once `wl_buffer.release` has arrived, or before the first attach. Writing a buffer
+    /// the compositor still holds is a protocol error.
+    released: Arc<AtomicBool>,
 }
 
 impl ShmBuffer {
     pub(crate) fn destroy(&self) {
         self.buffer.destroy();
         self.pool.destroy();
+    }
+
+    pub(crate) fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_busy(&self) {
+        self.released.store(false, Ordering::Release);
     }
 
     /// Read the buffer back as a bitmap: the compositor wrote `Argb8888`, little-endian, which
@@ -362,6 +374,7 @@ pub(crate) fn allocate(
         qh,
         (),
     );
+    let released = Arc::new(AtomicBool::new(true));
     let buffer = pool.create_buffer(
         0,
         width as i32,
@@ -369,7 +382,7 @@ pub(crate) fn allocate(
         stride as i32,
         format,
         qh,
-        (),
+        Arc::clone(&released),
     );
     Ok(ShmBuffer {
         file,
@@ -378,6 +391,7 @@ pub(crate) fn allocate(
         width,
         height,
         stride,
+        released,
     })
 }
 
@@ -566,14 +580,17 @@ impl Dispatch<WlShmPool, ()> for BridgeState {
     }
 }
 
-impl Dispatch<WlBuffer, ()> for BridgeState {
+impl Dispatch<WlBuffer, Arc<AtomicBool>> for BridgeState {
     fn event(
         _state: &mut Self,
         _proxy: &WlBuffer,
-        _event: wl_buffer::Event,
-        (): &(),
+        event: wl_buffer::Event,
+        released: &Arc<AtomicBool>,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if matches!(event, wl_buffer::Event::Release) {
+            released.store(true, Ordering::Release);
+        }
     }
 }

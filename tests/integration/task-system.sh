@@ -15,6 +15,12 @@
 # window is the one that will receive it. A key sent to the wrong window is not a failed test, it
 # is typing into the user's editor.
 #
+# The mode-state acceptances (entered, selected WindowId, geometry unchanged, paging, query
+# dimming) live in-process: `cargo test -p templar-window taskfield:: paging_ a_query_dims
+# enter_and_leave` and `cargo test -p templar-comp a_click_chooses`. This script is the nested
+# compositor smoke; it must not be treated as proof the mode ran, because a screenshot match
+# and a log grep of an earlier round can pass without Super+Tab ever reaching the nested seat.
+#
 #   TEMPLAR_TASKFIELD_ACCEPT_FOCUS=1 tests/integration/task-system.sh
 #   TEMPLAR_TASKFIELD_ROUNDS=100 TEMPLAR_TASKFIELD_ACCEPT_FOCUS=1 tests/integration/task-system.sh
 set -euo pipefail

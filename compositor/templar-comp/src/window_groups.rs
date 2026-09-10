@@ -64,6 +64,13 @@ pub fn group_windows<B: Backend + 'static>(
     {
         crate::xdg_shell::apply_maximized(state, joining, false);
     }
+    if state
+        .window_service
+        .window(joining)
+        .is_some_and(|window| window.fullscreen)
+    {
+        crate::xdg_shell::apply_fullscreen(state, joining, false);
+    }
     let ctx = trusted_ctx(state);
     let effect = state.window_service.handle_command(
         WindowCommand::Group {

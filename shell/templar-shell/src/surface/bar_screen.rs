@@ -157,6 +157,8 @@ pub enum BarAction {
     /// to this unit. A linear strip is intrinsically bad at thirty windows, and this is the chip
     /// admitting it rather than growing.
     Taskfield(templar_window::task::TaskKey),
+    /// More chips than the island can hold at full width: open the overview of everything.
+    Overview,
 }
 
 /// How much of the bar is on screen: the whole of it, a hint of it, or the whole of it because
@@ -228,11 +230,33 @@ pub struct BarScreen {
 struct Layout {
     bar: Rect,
     cells: Vec<Rect>,
+    /// Present when more entries exist than fit at full chip width. Clicking it opens Taskfield
+    /// over everything, rather than clipping later chips to zero width.
+    overflow: Option<Rect>,
+    /// How many entries were not given a chip (the overflow chip's count).
+    overflow_count: usize,
     /// The open fan's cards, in [`fan_of`]'s order: most recently activated first, which is the
     /// one on top and the rightmost. Painting runs backwards so the top card is painted last;
     /// hit-testing runs forwards so the first rectangle a point is in is the card a person can
     /// actually see there.
     fan: Vec<Rect>,
+}
+
+/// How many full-width chips fit in `bar_width`, and whether the rest need an overflow chip.
+#[must_use]
+fn chip_slots(bar_width: i32, entries: usize, cell: i32, gap: i32, pad: i32) -> (usize, bool) {
+    let inner = (bar_width - 2 * pad).max(0);
+    let stride = cell + gap;
+    let max_full = if stride <= 0 {
+        0
+    } else {
+        usize::try_from(((inner + gap) / stride).max(0)).unwrap_or(0)
+    };
+    if entries <= max_full {
+        (entries, false)
+    } else {
+        (max_full.saturating_sub(1), true)
+    }
 }
 
 /// The surface size the host should ask for, in logical pixels.
@@ -584,7 +608,20 @@ impl BarScreen {
         // title is the Windows taskbar's signature, and it is also the redundancy this desktop
         // spent a campaign removing: the window itself wears its name on its own tag, so a second
         // copy of it down here says nothing new and costs 220 pixels of the switcher's room.
-        let cells: Vec<Rect> = data.entries.iter().map(|_| chip(ui.px(CELL))).collect();
+        //
+        // When the surface is narrower than the chips, later cells used to clip to width 0 with
+        // no way to reach them. An overflow chip takes the last slot and opens the overview.
+        let cell_w = ui.px(CELL);
+        let (shown, has_overflow) =
+            chip_slots(bar.w, data.entries.len(), cell_w, gap, ui.px(CHIP_PAD));
+        let cells: Vec<Rect> = data
+            .entries
+            .iter()
+            .take(shown)
+            .map(|_| chip(cell_w))
+            .collect();
+        let overflow = has_overflow.then(|| chip(cell_w));
+        let overflow_count = data.entries.len().saturating_sub(shown);
 
         let fan =
             match open_fan.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
@@ -607,7 +644,13 @@ impl BarScreen {
                 _ => Vec::new(),
             };
 
-        Layout { bar, cells, fan }
+        Layout {
+            bar,
+            cells,
+            overflow,
+            overflow_count,
+            fan,
+        }
     }
 
     fn update_hover(&mut self, ui: &Ui<'_>, layout: &Layout, data: &BarData<'_>) {
@@ -914,6 +957,21 @@ impl BarScreen {
                         self.left_at = None;
                     }
                 }
+            }
+        }
+
+        if let Some(cell) = layout.overflow {
+            chip(ui, cell, design::TAG_FILL);
+            ui.label(
+                cell,
+                &format!("+{}", layout.overflow_count),
+                design::TAG_INK,
+                Align::Centre,
+            );
+            if ui.input.take_click(cell) {
+                actions.push(BarAction::Overview);
+                self.open_fan = None;
+                self.left_at = None;
             }
         }
 
@@ -1488,6 +1546,21 @@ mod tests {
             "an empty island is not a bar: {empty} of {W}"
         );
         assert_eq!(island_width(3) - empty, 3 * (CELL + CHIP_GAP));
+
+        // A strip too narrow for every chip keeps an overflow chip rather than clipping later
+        // ones to zero. One slot is the overflow; the rest that fit stay full-width.
+        let pad = CHIP_PAD;
+        let (shown, overflow) = chip_slots(2 * pad + CELL, 10, CELL, CHIP_GAP, pad);
+        assert!(overflow);
+        assert_eq!(shown, 0, "one cell of room is the overflow chip");
+        let (shown, overflow) =
+            chip_slots(2 * pad + 3 * (CELL + CHIP_GAP), 10, CELL, CHIP_GAP, pad);
+        assert!(overflow);
+        assert_eq!(shown, 2);
+        let (shown, overflow) =
+            chip_slots(2 * pad + 10 * (CELL + CHIP_GAP), 10, CELL, CHIP_GAP, pad);
+        assert!(!overflow);
+        assert_eq!(shown, 10);
 
         assert_eq!(wanted_size(open, None, false, 0, W), (empty, BAR_HEIGHT));
         // A fan is wider than the island it hangs off, so it is the fan that sets the width.

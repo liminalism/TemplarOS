@@ -89,6 +89,8 @@ pub enum TaskfieldKey {
     Type(char),
     /// Backspace: one character back out of it.
     Backspace,
+    /// PageDown: the next page of the selected (or first overflowing) section.
+    Page,
 }
 
 /// Which [`TaskfieldKey`], if any, `keysym` performs. Consulted only after
@@ -109,6 +111,7 @@ pub fn taskfield_key(modifiers: ModifiersState, keysym: Keysym) -> Option<Taskfi
         keysyms::KEY_Escape => return Some(TaskfieldKey::Escape),
         keysyms::KEY_Delete | keysyms::KEY_KP_Delete => return Some(TaskfieldKey::Close),
         keysyms::KEY_BackSpace => return Some(TaskfieldKey::Backspace),
+        keysyms::KEY_Next => return Some(TaskfieldKey::Page),
         _ => {}
     }
     // Anything that produces a character goes into the query — including a space, which is why
@@ -512,16 +515,23 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// keyboard back to the window that already had it, because "I looked at my windows" is not
     /// "I chose one".
     fn apply_taskfield_key(&mut self, key: TaskfieldKey) {
-        let templar_window::Presentation::Taskfield(taskfield) = self.window_service.presentation()
-        else {
+        let Some((selected, query)) = (match self.window_service.presentation() {
+            templar_window::Presentation::Taskfield(taskfield) => {
+                Some((taskfield.selected, taskfield.query.clone()))
+            }
+            _ => None,
+        }) else {
             return;
         };
-        let selected = taskfield.selected;
         let changed = match key {
-            TaskfieldKey::Step(direction) => {
-                let next =
-                    templar_window::taskfield::step(&taskfield.sections, selected, direction);
-                next.is_some() && self.window_service.taskfield_selected(next)
+            TaskfieldKey::Step(direction) => self.window_service.taskfield_step(direction),
+            TaskfieldKey::Page => {
+                let changed = self.window_service.taskfield_page_selected();
+                if changed {
+                    crate::protocols_shell::send_taskfield_state(self);
+                    B::request_redraw(self);
+                }
+                return;
             }
             TaskfieldKey::Activate => {
                 self.leave_taskfield();
@@ -532,7 +542,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 return;
             }
             TaskfieldKey::Escape => {
-                if taskfield.query.is_empty() {
+                if query.is_empty() {
                     self.leave_taskfield();
                     crate::space_sync::sync_after_change(self);
                     return;
@@ -547,12 +557,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 false
             }
             TaskfieldKey::Type(character) => {
-                let mut query = taskfield.query.clone();
+                let mut query = query;
                 query.push(character);
                 self.window_service.taskfield_query(query)
             }
             TaskfieldKey::Backspace => {
-                let mut query = taskfield.query.clone();
+                let mut query = query;
                 query.pop();
                 self.window_service.taskfield_query(query)
             }
@@ -1085,6 +1095,10 @@ mod tests {
         assert_eq!(
             taskfield_key(none, Keysym::new(keysyms::KEY_BackSpace)),
             Some(TaskfieldKey::Backspace)
+        );
+        assert_eq!(
+            taskfield_key(none, Keysym::new(keysyms::KEY_Next)),
+            Some(TaskfieldKey::Page)
         );
         assert_eq!(
             taskfield_key(none, Keysym::new(keysyms::KEY_f)),
