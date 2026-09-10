@@ -778,6 +778,17 @@ record legeos.papercut.knowledge-get-on-legeos-work-home-field/1 : papercut {
     created_at 2026-08-31
 }
 
+record legeos.papercut.knowledge-mcp-tools-were-not-connected-this/1 : papercut {
+    title "knowledge.* MCP tools were not connected this session (search_tool only…"
+    state verified
+    statement """
+        knowledge.* MCP tools were not connected this session (search_tool only returned fff and tasks); used the akr CLI for start/context/propose/validate instead.
+        """
+    observed_at git:1f268eae1bafea4ad4a05a508b0a59421ebbcde0
+    author "grok"
+    created_at 2026-09-10
+}
+
 record legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 : papercut {
     title "knowledge.propose exposes a generic slots object but not each kind's…"
     state verified
@@ -1114,6 +1125,17 @@ record legeos.papercut.the-acceptance-command-just-image-summary/1 : papercut {
     observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.the-advisor-packet-named-akr-context/1 : papercut {
+    title "The advisor packet named akr context conceptually but I tried the key…"
+    state verified
+    statement """
+        The advisor packet named akr context conceptually but I tried the key positionally; CLI requires --goal. Corrected to akr context --goal legeos.work.task-system.
+        """
+    observed_at git:1f268eae1bafea4ad4a05a508b0a59421ebbcde0
+    author "astra-advisor"
+    created_at 2026-09-10
 }
 
 record legeos.papercut.the-akr-start-output-did-not-show-copyable/1 : papercut {

@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:2a041790ab59ca48fa4be2adfb40ee7c474bcb994ce5676aa826f7be7ead5e9d"
+    source_graph "sha256:66d0f9839b5e24302d214cc771105421cf5667f318e6637d59f6d2480a632ca0"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:860d4c2db217a0b7279195b365f2232b34c22702c0cfa3539f4ec27ad3309ef7"
-    records 146
+    hash "sha256:492ee57029abd3e6a53be3ca143752f8bd625f93cb26b1f2518dcff108535e35"
+    records 148
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:8490e31a7aa0d6966ba87536d093036319ad25bfa3ca3b98f7f6b5cdd0b25ee5"
-    records 147
+    hash "sha256:3fd53ef05a6334628ef869d988642c7ff1789913647798e7842a55b20d8f649b"
+    records 148
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -6639,6 +6639,11 @@ seal @legeos.papercut.knowledge-get-on-legeos-work-home-field/1 {
     hash "sha256:5c85c76353346566f2a1c3601a5e4274ba662097d087a091b610bd8974267183"
 }
 
+seal @legeos.papercut.knowledge-mcp-tools-were-not-connected-this/1 {
+    state verified
+    hash "sha256:4568a809e33f20c968fc050bf773c2b062fa809c135dd5683fbd544857d3876c"
+}
+
 seal @legeos.papercut.knowledge-propose-exposes-a-generic-slots/1 {
     state verified
     hash "sha256:8a9e8d06f285fc9bdff110be1eb57f4095dc323e46040f72c45073b2c53fe6d7"
@@ -6787,6 +6792,11 @@ seal @legeos.papercut.tests-integration-nested-session-sh-deleted-its/1 {
 seal @legeos.papercut.the-acceptance-command-just-image-summary/1 {
     state verified
     hash "sha256:a5434177ba8843b02e94bc17ae7b072b0971d42d69a6750c0611a340613698bf"
+}
+
+seal @legeos.papercut.the-advisor-packet-named-akr-context/1 {
+    state verified
+    hash "sha256:2bce19cd8029d52a911be720a0652f4efd1d48e7f498ed11271acad29719f44c"
 }
 
 seal @legeos.papercut.the-akr-start-output-did-not-show-copyable/1 {

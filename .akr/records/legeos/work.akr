@@ -7443,6 +7443,23 @@ record legeos.work.task-system/1 : work {
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
+record legeos.work.taskbar-windowing-ownership-fixes-20260910/1 : work {
+    title "Taskbar/windowing ownership-boundary fixes from the architecture advisor"
+    state proposed
+    intent """
+        Fix the Task System ownership-boundary faults from advisor ad-ef8f413647fa: compositor move/resize grabs that swallow their own release; Taskfield cancelling itself when its overlay maps; scene membership that is not card-based; motionless-pointer refresh comparing a scene to itself; Peek promotion unreachable; governor last-write-wins per sibling; group-drag repair dropping followers; semantic WindowId vs Wayland object id; masked-buffer leak; compositor-owned frozen layout vs shell reconstruction.
+        """
+    note """
+        P1 ownership-boundary fixes landed uncommitted on developer-edition-0-1 (grab release, overlay map, card-only scene, last-applied pointer scene, semantic window_id since=5, frozen shell layout, masked-buffer teardown, peek promotion, governor OR-aggregate, group-drag repair).
+
+        P2 follow-ups on the same tree: compositor-owned Taskfield paging (frozen cells, PageDown / overflowing header click, Unit filter reaches every window at 1366x768); query matching dims cards (alpha 0.35) and steers selection without moving layout; island overflow chip instead of zero-width chips (BarAction::Overview). In-process acceptances: templar-window paging_ / a_query_dims / enter_and_leave, templar-comp overflow header click. tests/integration/task-system.sh is nested smoke only — it is not proof the mode ran.
+
+        Still follow-up: taskfield_card events for output-local physical coordinates (HiDPI / second output / negative origin). Hands-on after deploy/logout.
+        """
+    depends_on [ @legeos.work.task-system/1 ]
+    part_of [ @legeos.milestone.developer-edition-0-1/1 ]
+}
+
 record legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908/1 : work {
     title "The island floats: an Argb8888 buffer on the bar's surface, its alpha from a coverage mask, with the opaque present as the fallback"
     state proposed
