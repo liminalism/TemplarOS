@@ -1148,6 +1148,30 @@ record legeos.evidence.four-sided-resize-20260909/1 : evidence {
         """
 }
 
+record legeos.evidence.garden-gallery-every-theme-20260929/1 : evidence {
+    title "40 renders (5 themes x code/photos/manuscript/sparse x Wide/Dominant) plus a contact sheet at .agent/scratch/homegarden-styles/gallery.png, headless. Reviewed by eye: stone, mineral, orchard natural; cushion acceptable; radial legible after label and icicle fixes but plainest."
+    state verified
+    result pass
+    method command
+    observed_at git:4acedd74b923054a3f752912c0b25c4045798544
+    command "templar-shell --garden-gallery .agent/scratch/homegarden-styles"
+    summary """
+        40 renders (5 themes x code/photos/manuscript/sparse x Wide/Dominant) plus a contact sheet at .agent/scratch/homegarden-styles/gallery.png, headless. Reviewed by eye: stone, mineral, orchard natural; cushion acceptable; radial legible after label and icicle fixes but plainest.
+        """
+}
+
+record legeos.evidence.garden-layout-invariants-20260929/1 : evidence {
+    title "21 passed (1 ignored timing report): bounds, determinism, sibling-order stability, area proportionality (Voronoi within 15%), pipe-model widths, node budget, empty and zero-weight inputs."
+    state verified
+    result pass
+    method command
+    observed_at git:4acedd74b923054a3f752912c0b25c4045798544
+    command "cargo test -p templar-treemap"
+    summary """
+        21 passed (1 ignored timing report): bounds, determinism, sibling-order stability, area proportionality (Voronoi within 15%), pipe-model widths, node budget, empty and zero-weight inputs.
+        """
+}
+
 record legeos.evidence.gesture-rails-gate-tests-20260928/1 : evidence {
     title "17 recognizer tests pass: entry from above (straight, diagonal through a side, one segment jumping the gate) opens left/right on sideways travel; low sideways crossings, starts inside, held buttons and exceptions never arm; side latched; re-arm needs above; stale arm expires."
     state verified
@@ -2087,6 +2111,18 @@ record legeos.evidence.homegarden-5-gate-20260909/1 : evidence {
         """
 }
 
+record legeos.evidence.homegarden-ledger-and-clock-tests-20260929/1 : evidence {
+    title "Ledger, host and lifecycle suites pass, including a_long_idle_place_touched_once_returns_at_its_aged_relevance, a_qualifying_place_climbs_one_stage_per_dwell_not_per_reveal, tree_nodes_are_capped_per_session_and_age, the_nearest_repository_root_wins_over_an_umbrella, the_garden_clock_stops_while_the_seat_is_idle_and_idle_does_not_undo_a_lock, the_writer_stores_the_newest_save_before_answering_a_flush, only_the_compositor_may_report_idleness. Workspace: 2176 passed, 0 failed."
+    state verified
+    result pass
+    method command
+    observed_at git:4acedd74b923054a3f752912c0b25c4045798544
+    command "cargo test -p templar-session-core -p templar-sessiond"
+    summary """
+        Ledger, host and lifecycle suites pass, including a_long_idle_place_touched_once_returns_at_its_aged_relevance, a_qualifying_place_climbs_one_stage_per_dwell_not_per_reveal, tree_nodes_are_capped_per_session_and_age, the_nearest_repository_root_wins_over_an_umbrella, the_garden_clock_stops_while_the_seat_is_idle_and_idle_does_not_undo_a_lock, the_writer_stores_the_newest_save_before_answering_a_flush, only_the_compositor_may_report_idleness. Workspace: 2176 passed, 0 failed.
+        """
+}
+
 record legeos.evidence.homegarden-phases-0-3-tests-20260908/1 : evidence {
     title "Homegarden Phases 0–3: unit, property and gate evidence"
     state verified
@@ -2237,6 +2273,31 @@ record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence 
         """
 }
 
+record legeos.evidence.iso-autoinstall-wired-network-qemu-20260929/1 : evidence {
+    title "Direct-kernel QEMU boot of the g4084f63 medium with templaros.autoinstall=1 and virtio wired user networking: autoinstall logged ens3:ethernet:connected:Wired connection 1 with 10.0.2.15/24 (NetworkManager manages wired via the netplan renderer file), then STOPPED at 'no filesystem labelled lubuntu_2504' having written nothing."
+    state verified
+    result pass
+    method command
+    observed_at git:4084f63959befd6a8f4154ae09577e1fbcbd003f
+    command "/var/tmp/legeos-build/@build/qemu-autoinstall-network.sh"
+    summary """
+        Direct-kernel QEMU boot of the g4084f63 medium with templaros.autoinstall=1 and virtio wired user networking: autoinstall logged ens3:ethernet:connected:Wired connection 1 with 10.0.2.15/24 (NetworkManager manages wired via the netplan renderer file), then STOPPED at 'no filesystem labelled lubuntu_2504' having written nothing.
+        """
+}
+
+record legeos.evidence.iso-g4084f63-secure-boot-qemu-20260929/1 : evidence {
+    title "Set 0.1.0~dev1790680477+g4084f63 built in resolute, published to archive-templar, repo verify ok (after reindex), ISO built; iso-qemu: shim -> GRUB -> kernel with Secure Boot on, live userspace reached, preflight network pass; sha256 OK."
+    state verified
+    result pass
+    method command
+    observed_at git:4084f63959befd6a8f4154ae09577e1fbcbd003f
+    command "tests/integration/iso-qemu.sh (TEMPLAR_ISO=templaros-0.1.0~dev1790680477+g4084f63.iso)"
+    artifact "/var/tmp/legeos-build/@build/continue-iso-20260929.log"
+    summary """
+        Set 0.1.0~dev1790680477+g4084f63 built in resolute, published to archive-templar, repo verify ok (after reindex), ISO built; iso-qemu: shim -> GRUB -> kernel with Secure Boot on, live userspace reached, preflight network pass; sha256 OK.
+        """
+}
+
 record legeos.evidence.iso-native-refresh-1789113275-qemu-sb/1 : evidence {
     title "iso-qemu: shim to GRUB to kernel with Secure Boot on, live userspace reached, preflight network pass for set 0.1.0~dev1789113275+ge7458c3.dirty (4.5G, sha256 b433f75f). Native refresh of the morning squashfs; provisioner sha 4d80918e matches installer/provision.sh; GRUB has console=tty1 and casper-md5check masked."
     state verified
@@ -2345,6 +2406,17 @@ record legeos.evidence.legeos-nm-tray-packaged-20260908/1 : evidence {
     artifact "distro/forks/nm-tray-2/debian"
     summary """
         Preflight passed (the fork working tree at pin 0965344 carries both --popup and X-LegeOS-Provides, contrary to the manifest note) and dpkg-buildpackage produced target/debian/legeos-nm-tray_0.5.1+legeos1~g0965344.dirty_amd64.deb, shipping /usr/bin/nm-tray, /usr/share/applications/nm-tray.desktop and /etc/xdg/autostart/nm-tray-autostart.desktop. Installing it is the user's step.
+        """
+}
+
+record legeos.evidence.live-medium-ethernet-was-unmanaged-20260929/1 : evidence {
+    title "The ge7458c3 live squashfs shipped /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf (unmanaged-devices=*,except:type:wifi,...) and no /etc/netplan, so NetworkManager left every wired and USB ethernet device unmanaged; the provisioner downloads Ubuntu from archive.ubuntu.com, so a wired-only install could never reach the mirror."
+    state verified
+    result fail
+    method observation
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    summary """
+        The ge7458c3 live squashfs shipped /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf (unmanaged-devices=*,except:type:wifi,...) and no /etc/netplan, so NetworkManager left every wired and USB ethernet device unmanaged; the provisioner downloads Ubuntu from archive.ubuntu.com, so a wired-only install could never reach the mirror.
         """
 }
 

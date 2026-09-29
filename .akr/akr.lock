@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:f2f888339f1b5ae2c8d5f22cbe2aef5545c91a25528f2d68febd5353597dc107"
+    source_graph "sha256:6b90102e49431d8f06d68ee654cec2a31c2d2370876877f749e8a7bc0f7e9187"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:1ff8b9ced794604c63c99fecbed192d4fa111bb8d88ec982bb7fed0a8330bc28"
-    records 317
+    hash "sha256:cbcc14aa9d2a644a9a78f1a116236aab4b9e343b2e44b2d835f4a74f2c5c16e6"
+    records 323
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:3f828e40be2645573e875bac658c091f34e107beb6c0c834f1d74c4053395217"
-    records 150
+    hash "sha256:6b89f563dff918f3b0fe09b8a5c6635b375d88206978935346dccadf09f144ef"
+    records 151
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -4811,6 +4811,16 @@ seal @legeos.evidence.four-sided-resize-20260909/1 {
     hash "sha256:e098f8428d22bcc72181fa3ae88bf6c4f93d4c6d39a85c4cd8e574399ddc5f87"
 }
 
+seal @legeos.evidence.garden-gallery-every-theme-20260929/1 {
+    state verified
+    hash "sha256:22b436fdd1e41f64efd53d8e25890156b176da3469b4d6289bb8b5c0da2be5a4"
+}
+
+seal @legeos.evidence.garden-layout-invariants-20260929/1 {
+    state verified
+    hash "sha256:b64913fab38ddfa68226254047c8af8e2d41e7ae5942a768549f221a34ff4fc5"
+}
+
 seal @legeos.evidence.gesture-rails-gate-tests-20260928/1 {
     state verified
     hash "sha256:76b1cca5b442416f783da2543ba01cabe6c68a9e22e6277ab8f586fa909deef4"
@@ -5196,6 +5206,11 @@ seal @legeos.evidence.homegarden-5-gate-20260909/1 {
     hash "sha256:f7d8c57deaa4d87dfbf07d27af353a60c61ec3d20236698dfe5a9dc14df8ad19"
 }
 
+seal @legeos.evidence.homegarden-ledger-and-clock-tests-20260929/1 {
+    state verified
+    hash "sha256:f3f171a282c5d62443d98e32edf2948c86413a5a1d51f4149333e3fc77a59bbb"
+}
+
 seal @legeos.evidence.homegarden-phases-0-3-tests-20260908/1 {
     state verified
     hash "sha256:2be34a66eabb614a1fdf1ba8902a8e6482156e0e8d1b0253a89f623a2f395697"
@@ -5256,6 +5271,16 @@ seal @legeos.evidence.installer-refuses-failed-preflight-20260907/1 {
     hash "sha256:337425c2c9616885ecdd98bce0628249ab03ae4181dbf9a67ae8ccb7cf0d9d0c"
 }
 
+seal @legeos.evidence.iso-autoinstall-wired-network-qemu-20260929/1 {
+    state verified
+    hash "sha256:9783717f0d144755c2b60f8786d9f5406419634d36b420cd50d28f249514388d"
+}
+
+seal @legeos.evidence.iso-g4084f63-secure-boot-qemu-20260929/1 {
+    state verified
+    hash "sha256:743c64b99ae9ddd4990d50db83b4067910c7e19ab4ee7932f0420ea2a96d50e5"
+}
+
 seal @legeos.evidence.iso-native-refresh-1789113275-qemu-sb/1 {
     state verified
     hash "sha256:f8358f1f1c5d01e2f01282f0808e4b29233c2e27582c2ea081e14c40a4620a6d"
@@ -5299,6 +5324,11 @@ seal @legeos.evidence.lege-treemap-lifted-and-pure/1 {
 seal @legeos.evidence.legeos-nm-tray-packaged-20260908/1 {
     state verified
     hash "sha256:7590b207e1ab51f92a1c95a229aa9efb230af746618c513c91a703336417fe13"
+}
+
+seal @legeos.evidence.live-medium-ethernet-was-unmanaged-20260929/1 {
+    state verified
+    hash "sha256:3c3c33877ff6c646e397d309ce9e48939b17e92cc7c5430072d916ca7f23839f"
 }
 
 seal @legeos.evidence.live-preflight-fixture-tests-20260907/1 {
@@ -7604,6 +7634,11 @@ seal @legeos.work.home-widget-notifications/1 {
 seal @legeos.work.home-widget-status-instruments/1 {
     state completed
     hash "sha256:21f26cb0200f2e1201a948ed42aedce57cd1dc006147c23eeffb7c39acde093e"
+}
+
+seal @legeos.work.homegarden-aged-evidence-and-drawn-structures-20260929/1 {
+    state active
+    hash "sha256:65a55ae9197702e2e4e3b7586f29ca9f8e643dd3652de42ace1174cff538a46f"
 }
 
 seal @legeos.work.homegarden-blooms-20260909/1 {
